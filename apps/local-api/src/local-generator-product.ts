@@ -323,9 +323,20 @@ export function buildLocalGeneratorDurableRunCommand(input: {
               const declared = input.built.action.outputs.find(
                 (candidate) => candidate.slot === selected.slot,
               );
+              const customPrompt = declared?.promptParameter
+                ? input.built.request.parameters[declared.promptParameter]
+                : undefined;
+              if (customPrompt !== undefined &&
+                  (typeof customPrompt !== "string" || !customPrompt.trim())) {
+                throw new LocalGeneratorProductError(
+                  "GENERATOR_PROMPT_INVALID", "The analysis prompt must be non-empty text.",
+                );
+              }
               return {
                 slot: selected.slot,
-                ...(declared?.prompt ? { prompt: declared.prompt } : {}),
+                ...(typeof customPrompt === "string"
+                  ? { prompt: customPrompt.trim(), responseFormat: "text" }
+                  : declared?.prompt ? { prompt: declared.prompt } : {}),
                 ...(declared?.promptVersion
                   ? { promptVersion: declared.promptVersion }
                   : {}),

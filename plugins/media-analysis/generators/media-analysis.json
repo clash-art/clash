@@ -22,14 +22,24 @@
         "parametersSchema": {
           "type": "object",
           "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S",
+              "description": "Analyze the source using this question or instruction and return a free-form answer. Omit categories."
+            },
             "categories": {
               "type": "array",
               "items": { "type": "string" },
               "minItems": 1,
-              "uniqueItems": true
+              "uniqueItems": true,
+              "default": ["description"]
             }
           },
-          "required": ["categories"],
+          "oneOf": [
+            { "properties": { "prompt": {} }, "required": ["prompt"] },
+            { "properties": { "categories": {} }, "required": ["categories"] }
+          ],
           "additionalProperties": false
         },
         "invocationInputs": [
@@ -49,6 +59,7 @@
             "title": "Semantic description",
             "sourceMediaKinds": ["image", "video", "audio"],
             "prompt": "Return a concise semantic description as JSON with a non-empty text field.",
+            "promptParameter": "prompt",
             "promptVersion": "media-analysis/v1",
             "assetType": { "kind": "document", "documentKind": "media.analysis.description", "schemaVersion": 1 },
             "cardinality": { "minItems": 0, "maxItems": 1 }

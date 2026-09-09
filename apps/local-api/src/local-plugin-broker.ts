@@ -220,6 +220,7 @@ export interface LocalExecutablePluginBrokerOptions {
     category: string;
     prompt: string;
     promptVersion: string;
+    responseFormat?: "json" | "text";
   }) => Promise<ExecutableMediaAnalysisResult>;
   transcribeSpeech?: (input: {
     projectId: string;
@@ -676,7 +677,8 @@ export function createLocalExecutablePluginBroker(
           typeof frozenOutput !== "object" ||
           Array.isArray(frozenOutput) ||
           frozenOutput.prompt !== operation.prompt ||
-          frozenOutput.promptVersion !== operation.promptVersion
+          frozenOutput.promptVersion !== operation.promptVersion ||
+          (frozenOutput.responseFormat ?? "json") !== (operation.responseFormat ?? "json")
         ) {
           throw new Error(
             "Media analysis request does not match the frozen invocation model, category, prompt, or prompt version.",
@@ -710,6 +712,7 @@ export function createLocalExecutablePluginBroker(
             category: operation.category,
             prompt: operation.prompt,
             promptVersion: operation.promptVersion,
+            ...(operation.responseFormat ? { responseFormat: operation.responseFormat } : {}),
           }),
         ) as ExecutablePluginJsonValue;
       } else if (operation.kind === "speech.transcribe") {

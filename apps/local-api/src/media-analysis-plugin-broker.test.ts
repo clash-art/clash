@@ -171,10 +171,27 @@ describe("media analysis plugin broker", () => {
       { category: "description" },
       { prompt: "Different prompt." },
       { promptVersion: "v2" },
+      { responseFormat: "text" as const },
     ]) {
       await expect(broker(request({ ...base, ...drift }), context())).rejects.toThrow(/frozen invocation/i);
     }
     expect(analyzeMedia).not.toHaveBeenCalled();
+  });
+
+  it("forwards the frozen free-form prompt and response format", async () => {
+    const prompt = "What happens before the train arrives?";
+    const analyzeMedia = vi.fn(async () => ({ status: "completed" as const,
+      provider: "dummy", route: "dummy", underlyingModel: "dummy", result: { text: "People wait." } }));
+    const broker = createLocalExecutablePluginBroker({ loadProviderAccounts: async () => [], analyzeMedia });
+    await broker(request({ kind: "media.analyze", reference, modelId: "analysis-card",
+      category: "description", prompt, promptVersion: "v1", responseFormat: "text" }),
+    context("clash.media-analysis", {
+      modelId: "analysis-card", modelRoute: frozenRoute, categories: ["description"],
+      modelConsumer: { semanticShape: "media_analysis", outputs: [{
+        slot: "description", prompt, promptVersion: "v1", responseFormat: "text",
+      }] },
+    }));
+    expect(analyzeMedia).toHaveBeenCalledWith(expect.objectContaining({ prompt, responseFormat: "text" }));
   });
 
   it("rejects an unfrozen source before the execution route", async () => {

@@ -91,6 +91,7 @@ describe("first-party media analysis Generator package", () => {
       operation: "submit",
     };
     const result = await plugin.invoke(invocation, {
+      document: async ({ slot, ...document }: Record<string, unknown>) => ({ slot, kind: "document", document }),
       hostTools: {
         mediaAnalyze: async (request: Record<string, unknown>) => {
           calls.push(request);
@@ -115,5 +116,29 @@ describe("first-party media analysis Generator package", () => {
         { slot: "tags", kind: "document", document: { documentKind: "media.analysis.tags" } },
       ],
     });
+
+    const question = "Which shot best shows the station entrance, and why?";
+    const answer = "Use the opening wide shot: the entrance is unobstructed.";
+    const { categories: _categories, ...askValues } = invocation.input.values;
+    const asked = await plugin.invoke({
+      ...invocation,
+      target: invocation.target,
+      input: { ...invocation.input, values: {
+        ...askValues, prompt: question,
+      } },
+    }, {
+      document: async ({ slot, ...document }: Record<string, unknown>) => ({ slot, kind: "document", document }),
+      hostTools: {
+        mediaAnalyze: async (request: Record<string, unknown>) => {
+          expect(request).toMatchObject({ prompt: question, responseFormat: "text" });
+          return { status: "completed", provider: "dummy-provider", route: "dummy-shape",
+            underlyingModel: "provider-managed", result: { text: answer } };
+        },
+      },
+    });
+    expect(asked).toMatchObject({ status: "completed", outputs: [{
+      slot: "description", kind: "document",
+      document: { body: { result: { text: answer } } },
+    }] });
   });
 });

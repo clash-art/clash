@@ -1,8 +1,9 @@
 {
   "name": "clash.media-analysis",
-  "summary": "First-party inert media-analysis Generator producing selected typed semantic Documents.",
+  "summary": "Media-analysis Generator: analyze with a custom prompt for a free-form answer, or categories for typed semantic results.",
   "rules": [
     "Generator output declarations are the sole category authority.",
+    "The analyze action accepts either prompt or categories. A prompt-only run emits description with the answer in result.text; its exact prompt is frozen by the Host.",
     "Do not add verbatim transcript output; ASR owns transcripts.",
     "This Generator declares semanticShape=media_analysis and must not recognize any Provider or Hilo implementation.",
     "Importing src/stdio.ts must never start analysis or stdio serving."

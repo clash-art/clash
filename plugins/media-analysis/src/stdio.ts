@@ -100,7 +100,11 @@ async function analyzeStep(
   const invocation = ExecutablePluginInvocationSchema.parse(input);
   const reference = sourceReference(invocation);
   const values = invocation.input.values;
-  const categories = selectedCategories(values, reference.asset.kind);
+  const customPrompt = values.prompt === undefined ? undefined : requiredString(values, "prompt");
+  const categories = selectedCategories(
+    customPrompt ? { ...values, categories: ["description"] } : values,
+    reference.asset.kind,
+  );
   const source = values.source;
   if (!source || typeof source !== "object" || Array.isArray(source)) {
     throw new Error("Media analysis requires frozen source identity.");
@@ -119,7 +123,7 @@ async function analyzeStep(
 
   for (const category of categories) {
     const declared = outputsBySlot.get(category)!;
-    const prompt = declared.prompt!;
+    const prompt = customPrompt ?? declared.prompt!;
     const promptVersion = declared.promptVersion!;
     const analyzed = ExecutableMediaAnalysisResultSchema.parse(
       await context.hostTools.mediaAnalyze({
@@ -128,6 +132,7 @@ async function analyzeStep(
         category,
         prompt,
         promptVersion,
+        ...(customPrompt ? { responseFormat: "text" as const } : {}),
       }),
     );
     if (analyzed.status !== "completed") {

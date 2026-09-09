@@ -31,6 +31,33 @@ function runnableOption() {
 }
 
 describe("local media analysis execution", () => {
+  it("returns a free-form answer without requiring model JSON or refining scenes", async () => {
+    const answer = "The train enters from the left at 00:05.";
+    const generateText = vi.fn(async () => ({ text: answer }));
+    const service = createLocalMediaAnalysisService({
+      config: {
+        get: async () => ({
+          videoEnabled: true, modelId: "multi-route-card", allowedCategories: null,
+          video: { fps: 1, mediaResolution: "medium",
+            boundaryRefinement: { enabled: true, fps: 24, safetyMarginSeconds: 0.5 } },
+        }),
+        assertRunnable: async () => runnableOption(),
+      },
+      aigc: { generateText } as never,
+    });
+    const result = await service.analyze({
+      projectId: "project-1", invocationId: "ask-1", taskId: "ask-1", reference,
+      modelId: "multi-route-card", route: frozenRoute, category: "description",
+      prompt: "When and where does the train enter?", promptVersion: "ask/v1",
+      responseFormat: "text",
+    });
+    expect(result).toMatchObject({ result: { text: answer } });
+    expect(generateText).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: "When and where does the train enter?",
+    }));
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
   it("pins generic text generation to the Host-frozen Provider route and reports its lineage", async () => {
     const generateText = vi.fn(async () => ({
       text: '{"text":"A train arrives."}',
@@ -121,6 +148,7 @@ describe("local media analysis execution", () => {
     });
     expect(generateText).toHaveBeenCalledWith(expect.objectContaining({
       modelParams: {
+        video_processing: "auto",
         video_fps: 2,
         video_media_resolution: "high",
       },
@@ -177,6 +205,7 @@ describe("local media analysis execution", () => {
     expect(generateText).toHaveBeenCalledTimes(2);
     expect(generateText.mock.calls[1]?.[0]).toMatchObject({
       modelParams: {
+        video_processing: "static",
         video_fps: 12,
         video_media_resolution: "medium",
         video_start_seconds: 3.55,

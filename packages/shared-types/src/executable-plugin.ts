@@ -1362,6 +1362,7 @@ export const ExecutableMediaAnalysisOperationSchema = z
     category: z.string().trim().min(1),
     prompt: z.string().trim().min(1),
     promptVersion: z.string().trim().min(1),
+    responseFormat: z.enum(["json", "text"]).optional(),
   })
   .strict();
 

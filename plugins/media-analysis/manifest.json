@@ -3,7 +3,7 @@
   "id": "clash.media-analysis",
   "version": "0.1.0",
   "name": "Clash Media Analysis",
-  "description": "Actively analyze one frozen Project Asset into selected typed semantic Documents.",
+  "description": "Analyze an image, video, or audio Asset using a custom prompt, or select structured analysis categories.",
   "author": "Clash",
   "runtime": {
     "kind": "local",

@@ -282,9 +282,18 @@ export function buildLocalGeneratorActionRun(
   );
   const outputContract = (() => {
     if (!action.selectOutputsByParameter) return action.outputs;
-    const selected = (input.parameters as Record<string, unknown>)[
+    const supplied = (input.parameters as Record<string, unknown>)[
       action.selectOutputsByParameter
     ];
+    // A declaration may provide a default selection for prompt-only invocations.
+    const properties = action.parametersSchema.properties;
+    const selector = properties && typeof properties === "object" && !Array.isArray(properties)
+      ? properties[action.selectOutputsByParameter]
+      : undefined;
+    const selected = supplied === undefined && selector &&
+      typeof selector === "object" && !Array.isArray(selector)
+      ? selector.default
+      : supplied;
     if (!Array.isArray(selected)) {
       contractError(
         `Action parameter ${action.selectOutputsByParameter} must select output slots.`,

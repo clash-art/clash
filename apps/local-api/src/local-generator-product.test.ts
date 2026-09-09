@@ -1057,6 +1057,16 @@ describe("buildLocalGeneratorDurableRunCommand", () => {
       generatorRevisionId: "analysis:r1",
       actionRunId: "analysis-run",
     });
+    const question = "Which shot should I use to establish the location?";
+    built.action.outputs[0]!.promptParameter = "prompt";
+    built.request.parameters = { categories: ["description"], prompt: question };
+    const [freeform] = buildLocalGeneratorDurableRunCommands({
+      doc, projectId: "project-1", built, actor: { kind: "agent", id: "agent-1" },
+      deadlineAt: Date.now() + 1_000, modelId: "settings-card",
+    });
+    expect(freeform?.executor.input.values.modelConsumer).toMatchObject({
+      outputs: [{ slot: "description", prompt: question, responseFormat: "text" }],
+    });
   });
 
   it("gives a model media output a GLB delivery name", () => {

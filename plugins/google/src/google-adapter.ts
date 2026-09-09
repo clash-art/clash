@@ -514,9 +514,42 @@ function videoMetadata(params: Record<string, unknown>): Record<string, unknown>
   };
 }
 
+// https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/video-understanding
+const agenticVideoModels = new Set([
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
+]);
+
+function useAgenticVideo(
+  values: Record<string, unknown>,
+  references: GoogleInputReferences,
+  model: string,
+): boolean {
+  const params = record(values.modelParams);
+  return (
+    values.kind === "text" &&
+    !values.body &&
+    (params.video_processing === "auto" ||
+      (params.video_processing === undefined && params.video_fps === undefined)) &&
+    agenticVideoModels.has(model) &&
+    // Clipping and custom frame sampling are static-only. A clipped review must
+    // retain its window even if a caller accidentally requests automatic mode.
+    params.video_start_seconds === undefined &&
+    params.video_end_seconds === undefined &&
+    (references.content.length > 0
+      ? references.content.some(
+          (reference) => reference.form !== "text" && reference.kind === "video",
+        )
+      : references.videos.length > 0)
+  );
+}
+
 function googleMediaPart(
   media: GoogleMediaReference,
   params: Record<string, unknown> = {},
+  agentic = false,
 ): Record<string, unknown> {
   const data = media.form === "url" ? dataPart(media.url, media.mediaType) : {
     inlineData: {
@@ -524,6 +557,9 @@ function googleMediaPart(
       data: Buffer.from(media.bytes).toString("base64"),
     },
   };
+  if (media.kind === "video" && agentic) {
+    return { ...data, mediaProcessing: "AGENTIC" };
+  }
   const metadata = media.kind === "video" ? videoMetadata(params) : undefined;
   return { ...data, ...(metadata ? { videoMetadata: metadata } : {}) };
 }
@@ -531,20 +567,21 @@ function googleMediaPart(
 function orderedParts(
   values: Record<string, unknown>,
   references: GoogleInputReferences,
+  agentic = false,
 ): Record<string, unknown>[] {
   const params = record(values.modelParams);
   if (references.content.length > 0) {
     return references.content.map((reference) =>
       reference.form === "text"
         ? { text: reference.text }
-        : googleMediaPart(reference, params),
+        : googleMediaPart(reference, params, agentic),
     );
   }
   const prompt = typeof values.prompt === "string" ? values.prompt : "";
   return [
     ...(prompt ? [{ text: prompt }] : []),
     ...references.images.map((reference) => googleMediaPart(reference, params)),
-    ...references.videos.map((reference) => googleMediaPart(reference, params)),
+    ...references.videos.map((reference) => googleMediaPart(reference, params, agentic)),
     ...references.audios.map((reference) => googleMediaPart(reference, params)),
   ];
 }
@@ -552,6 +589,7 @@ function orderedParts(
 function generateContentBody(
   values: Record<string, unknown>,
   references: GoogleInputReferences,
+  agentic = false,
 ): Record<string, unknown> {
   const explicit = values.body;
   if (explicit && typeof explicit === "object")
@@ -589,10 +627,10 @@ function generateContentBody(
     ...(systemPrompt
       ? { systemInstruction: { parts: [{ text: systemPrompt }] } }
       : {}),
-    contents: [{ role: "user", parts: orderedParts(values, references) }],
+    contents: [{ role: "user", parts: orderedParts(values, references, agentic) }],
     generationConfig: {
       responseModalities,
-      ...(mediaResolution ? { mediaResolution } : {}),
+      ...(!agentic && mediaResolution ? { mediaResolution } : {}),
       ...(kind === "image" && Object.keys(imageConfig).length
         ? { imageConfig }
         : {}),
@@ -1025,12 +1063,18 @@ export const googleAdapter: ProviderExecutor = {
       kind === "video" &&
       (modelId.startsWith("veo-") || model.startsWith("veo-"));
     const references = await resolveInputReferences(invocation, context);
+    const agentic = !interaction && !veo && useAgenticVideo(values, references, model);
+    // Agentic video is preview-only on Agent Platform; AI Studio already uses v1beta.
+    const contentBaseUrl =
+      agentic && (credentials.service === "agent-platform" || credentials.accessToken)
+        ? baseUrl.replace(/\/v1\/?$/, "/v1beta1")
+        : baseUrl;
     const url = interaction
       ? interactionPath(baseUrl, credentials, "rejected")
       : veo
         ? veoPath(baseUrl, credentials, model, "predictLongRunning", "rejected")
         : googleModelPath({
-            baseUrl,
+            baseUrl: contentBaseUrl,
             model,
             ...(credentials.projectId
               ? { projectId: credentials.projectId }
@@ -1041,7 +1085,7 @@ export const googleAdapter: ProviderExecutor = {
       ? interactionBody(values, model, references)
       : veo
         ? veoBody(values, references)
-        : generateContentBody(values, references);
+        : generateContentBody(values, references, agentic);
     const response = await fetchImpl(url, {
       method: "POST",
       headers,

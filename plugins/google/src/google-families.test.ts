@@ -73,6 +73,68 @@ function context(
 }
 
 describe("Google API families", () => {
+  // Wire contract and supported models:
+  // https://ai.google.dev/gemini-api/docs/generate-content/video-understanding
+  // https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/video-understanding
+  it.each([
+    ["gemini-3.8-flash", "agent-platform", false, true],
+    ["gemini-3.7-flash", "agent-platform", false, true],
+    ["gemini-3.6-flash", "agent-platform", false, true],
+    ["gemini-3.5-flash-lite", "agent-platform", false, true],
+    ["gemini-3.7-flash", "agent-platform", true, true],
+    ["gemini-3.7-flash", "ai-studio", false, true],
+    ["gemini-3.5-flash", "agent-platform", false, false],
+    ["gemini-3.7-flash-image", "ai-studio", false, false],
+  ] as const)("selects generateContent processing for %s on %s (project: %s, agentic: %s)", async (model, service, project, agentic) => {
+    const requests: CapturedRequest[] = [];
+    await googleAdapter.submit(
+      invocation({
+        modelId: "analysis-card", upstreamModel: model, kind: "text", prompt: "Describe.",
+        modelParams: { video_media_resolution: "high" },
+      }, { references: [{ slot: "video", index: 0, asset: {
+        assetId: "video", uri: "clash-asset://video", kind: "video",
+      } }] }),
+      context({ candidates: [{ content: { parts: [{ text: "Description" }] } }] },
+        requests, project
+          ? { accessToken: "test-token", projectId: "test-project", service, region: "global" }
+          : { apiKey: "test-key", service, region: "global" },
+        async () => ({ form: "provider-url", providerUrl: "https://youtu.be/7Z5Vy9JBANs",
+          kind: "video", mediaType: "video/mp4" })),
+    );
+    expect(requests[0]?.url).toBe(service === "ai-studio"
+      ? `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
+      : project
+        ? `https://aiplatform.googleapis.com/v1beta1/projects/test-project/locations/global/publishers/google/models/${model}:generateContent`
+        : `https://aiplatform.googleapis.com/${agentic ? "v1beta1" : "v1"}/publishers/google/models/${model}:generateContent`);
+    expect(requests[0]?.body.generationConfig).toEqual(agentic
+      ? { responseModalities: ["TEXT"] }
+      : { responseModalities: ["TEXT"], mediaResolution: "MEDIA_RESOLUTION_HIGH" });
+    expect(requests[0]?.body.contents).toEqual([{ role: "user", parts: [
+      { text: "Describe." },
+      { fileData: { mimeType: "video/mp4", fileUri: "https://youtu.be/7Z5Vy9JBANs" },
+        ...(agentic ? { mediaProcessing: "AGENTIC" } : {}) },
+    ] }]);
+  });
+
+  it.each([
+    [{ video_processing: "static", video_fps: 12 }, false],
+    [{ video_fps: 12 }, false],
+    [{ video_processing: "auto", video_fps: 12 }, true],
+  ] as const)("respects explicit sampling controls %j", async (modelParams, agentic) => {
+    const requests: CapturedRequest[] = [];
+    await googleAdapter.submit(invocation({
+      upstreamModel: "gemini-3.7-flash", kind: "text", modelParams,
+    }, { references: [{ slot: "content", index: 0, asset: {
+      assetId: "video", uri: "clash-asset://video", kind: "video",
+    } }] }), context({ candidates: [{ content: { parts: [{ text: "Answer" }] } }] },
+      requests, { apiKey: "test-key", service: "ai-studio" },
+      async () => ({ form: "bytes", bytes: new Uint8Array([1, 2]), kind: "video", mediaType: "video/mp4" })));
+    expect(requests[0]?.body.contents).toEqual([{ role: "user", parts: [{
+      inlineData: { mimeType: "video/mp4", data: "AQI=" },
+      ...(agentic ? { mediaProcessing: "AGENTIC" } : { videoMetadata: { fps: 12 } }),
+    }] }]);
+  });
+
   it("classifies a non-JSON submit outage as an ambiguous retryable failure", async () => {
     vi.stubGlobal("fetch", async () => ({
       ok: false,
@@ -382,16 +444,21 @@ describe("Google API families", () => {
     });
   });
 
-  it("maps generic video analysis controls to Gemini videoMetadata and mediaResolution", async () => {
+  it.each([
+    ["gemini-3.5-flash", "auto"],
+    ["gemini-3.7-flash", "static"],
+    ["gemini-3.7-flash", "auto"],
+  ])("preserves clipped video sampling for %s in %s mode", async (model, processing) => {
     const requests: CapturedRequest[] = [];
     await googleAdapter.submit(
       invocation(
         {
-          modelId: "gemini-3.5-flash",
-          upstreamModel: "gemini-3.5-flash",
+          modelId: model,
+          upstreamModel: model,
           kind: "text",
           prompt: "Review this boundary.",
           modelParams: {
+            video_processing: processing,
             video_fps: 12,
             video_start_seconds: 4.25,
             video_end_seconds: 6.75,
@@ -424,7 +491,8 @@ describe("Google API families", () => {
       ),
     );
 
-    expect(requests[0]?.body).toMatchObject({
+    expect(requests[0]?.url).toBe(`https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1/publishers/google/models/${model}:generateContent`);
+    expect(requests[0]?.body).toEqual({
       contents: [{
         role: "user",
         parts: [

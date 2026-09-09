@@ -5,7 +5,31 @@ never run on import and media import never schedules analysis. Agents create a
 Project Generator revision and submit its ordinary `analyze` Action through the
 existing Generator CLI/MCP surface.
 
-The Generator definition is the category authority. Every category declares its
+## Free-form analysis and presets
+
+The same `analyze` Action accepts an image, video, or audio source and either a
+custom `prompt` or a list of preset `categories` (not both). For example, its Run
+`parameters` can be:
+
+```json
+{ "prompt": "Which moment best establishes the location? Give a timestamp and explain why." }
+```
+
+The model answers in free text, without a required model JSON schema. The Host
+stores the answer in the existing `description` Document's `result.text`, so it
+remains available through the ordinary Run/Document readback. The default output
+comes from the installed parameter declaration. The exact custom prompt and
+text response format are frozen with the execution request and checked by the
+broker. A follow-up is another Run with a new prompt; there is no implicit
+provider conversation history.
+
+Presets use the existing parameter shape, for example:
+
+```json
+{ "categories": ["description", "scene-shot"] }
+```
+
+The Generator definition is the preset authority. Every category declares its
 own selectable output slot, source media kinds, prompt/version, and typed
 Document kind. The Host derives Settings `categoryOptions` and Action validation
 from that installed definition; it does not keep a second category list.
@@ -49,6 +73,15 @@ No model parameter is sent. Lineage records the Card id, actual selected
 Provider/API route, and `provider-managed` underlying-model semantics. Other
 compatible VLM Cards run through the same `ExternalAigcService.generateText`
 route resolver, including native Google image/video/audio reference routes.
+
+Video analysis requests automatic processing. The Google adapter enables
+Agentic `generateContent` for Gemini 3.8 Flash, 3.7 Flash, 3.6 Flash, and 3.5
+Flash-Lite, using Agent Platform `v1beta1` or AI Studio `v1beta`. Generic text
+generation with video references also enables it by default for these models.
+An explicit static mode, FPS without automatic mode, or clipping interval
+preserves static sampling. Other models keep the configured sampling controls.
+The `scene-shot` preset alone can run the optional configured high-FPS boundary
+refinement; free-form analysis does not schedule it.
 
 ## Publication
 

@@ -1,4 +1,5 @@
 import { LoroDoc } from "loro-crdt";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -140,6 +141,27 @@ function build(
 }
 
 describe("Local Generator contract boundary", () => {
+  it("selects the answer output for a prompt-only media analysis and rejects ambiguous inputs", () => {
+    const media = JSON.parse(readFileSync(
+      new URL("../../../plugins/media-analysis/generators/media-analysis.json", import.meta.url), "utf8",
+    ));
+    const overrides = {
+      definition: { ...definition, actions: media.spec.actions },
+      actionId: "analyze",
+      invocationInputRefs: [{ slot: "source", target: { kind: "media" as const, projectAssetId: "background" } }],
+    };
+    const prompt = "Which object is closest to the camera?";
+    const built = build(projectDoc(), { ...overrides, parameters: { prompt } });
+    expect(built.request.parameters).toEqual({ prompt });
+    expect(built.request.outputContract).toMatchObject([{ slot: "description" }]);
+    const invalidParameters: Array<Record<string, string | string[]>> = [
+      {}, { prompt: " " }, { prompt, categories: ["tags"] },
+    ];
+    for (const parameters of invalidParameters) {
+      expect(() => build(projectDoc(), { ...overrides, parameters })).toThrow();
+    }
+  });
+
   it("derives the immutable Run contract and realm-free executor from the trusted definition", () => {
     const built = build();
 

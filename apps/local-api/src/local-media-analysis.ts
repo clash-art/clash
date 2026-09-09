@@ -18,6 +18,7 @@ export interface LocalMediaAnalysisInput {
   category: string;
   prompt: string;
   promptVersion: string;
+  responseFormat?: "json" | "text";
 }
 
 function parseJsonResult(value: string): unknown {
@@ -84,13 +85,17 @@ export function createLocalMediaAnalysisService(options: {
         ...(input.reference.asset.kind === "video"
           ? {
               modelParams: {
+                // The Provider chooses whether its upstream supports adaptive analysis.
+                video_processing: "auto",
                 video_fps: config.video.fps,
                 video_media_resolution: config.video.mediaResolution,
               },
             }
           : {}),
       });
-      let parsed = parseJsonResult(result.text);
+      let parsed = input.responseFormat === "text"
+        ? { text: result.text }
+        : parseJsonResult(result.text);
       const refinement = config.video.boundaryRefinement;
       const scenes = sceneBoundaries(parsed);
       if (
@@ -126,6 +131,7 @@ export function createLocalMediaAnalysisService(options: {
             providerRoute: input.route,
             references: [input.reference],
             modelParams: {
+              video_processing: "static",
               video_fps: refinement.fps,
               video_media_resolution: config.video.mediaResolution,
               video_start_seconds: startSeconds,

@@ -184,6 +184,8 @@ export const GeneratorActionOutputPortSchema = z
     title: nonEmptyIdSchema.optional(),
     sourceMediaKinds: z.array(GeneratorMediaKindSchema).min(1).optional(),
     prompt: nonEmptyIdSchema.optional(),
+    /** Optional invocation parameter supplying a free-form prompt and text response. */
+    promptParameter: nonEmptyIdSchema.optional(),
     promptVersion: nonEmptyIdSchema.optional(),
   })
   .strict();
