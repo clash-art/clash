@@ -1,0 +1,9 @@
+{
+  "name": "@clash/dcc-assets",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.ts",
+    "package": "node package.ts"
+  }
+}

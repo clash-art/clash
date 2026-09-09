@@ -28,7 +28,7 @@ export const CLASH_MCP_COMMANDS: readonly ClashMcpCommand[] = [
     id: "plugin",
     title: "Plugins",
     useWhen:
-      "discovering, creating, validating, activating, installing, rolling back, or removing executable Clash plugins",
+      "managing Clash plugins, controlling connected Blender/Maya scenes, and exchanging native materials with Clash Assets",
   },
   {
     id: "assets",

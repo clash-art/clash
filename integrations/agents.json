@@ -1,0 +1,6 @@
+{
+  "summary": "Native external-application integrations that consume existing Clash product contracts.",
+  "subdirectories": {
+    "dcc-assets": "Blender and Maya material exchange, native Python adapters with TypeScript packaging and tests."
+  }
+}

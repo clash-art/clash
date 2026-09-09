@@ -247,9 +247,9 @@ export class ClashMcpServer extends McpServer {
         title: pluginDefinition.title,
         description: describeClashTool({
           useWhen:
-            "the Agent needs to inspect or change executable Clash plugins during the current task",
+            "the Agent needs plugin lifecycle operations or connected Blender/Maya control and Clash material exchange",
           effect:
-            "returns live plugin lifecycle contracts when operation is omitted, or validates and executes one plugin operation exactly once",
+            "returns live plugin contracts including dcc_* native application operations when operation is omitted, or validates and executes one plugin operation exactly once",
           returns:
             "typed plugin lifecycle contracts or the selected operation's exact result",
           next: "choose the smallest matching operation, then call clash_plugin with operation and arguments",
@@ -415,8 +415,7 @@ export class ClashMcpServer extends McpServer {
             "returns live Generators contracts when operation is omitted, or validates and executes one registered Generators leaf exactly once",
           returns:
             "typed Generators operation contracts or the selected leaf operation's exact result",
-          next:
-            "choose the smallest matching operation, submit and poll the Action Run, then read its output commit; never claim complete, finished, or successful project media without that persisted readback",
+          next: "choose the smallest matching operation, submit and poll the Action Run, then read its output commit; never claim complete, finished, or successful project media without that persisted readback",
         }),
         inputSchema: {
           operation: z

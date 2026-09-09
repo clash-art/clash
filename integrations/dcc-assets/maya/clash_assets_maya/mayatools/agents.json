@@ -1,0 +1,9 @@
+{
+  "summary": "MIT-licensed MayaMCP native operation scripts vendored from clash-art/MayaMCP; provenance and exclusions in UPSTREAM.md.",
+  "architecture_notes": [
+    "Python here is the user-authorized native Maya adapter exception. Do not import the upstream standalone MCP server.",
+    "Update against the pinned upstream commit and preserve LICENSE and local fixes.",
+    "generate_scene is deliberately excluded because upstream source is syntactically invalid.",
+    "Scripts run through shared/maya_tools.py on the native UI thread; no separate MCP configuration."
+  ]
+}

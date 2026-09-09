@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerClashDccMcp, type DccGateway } from "./dcc";
 import {
   registerAppResource,
   registerAppTool,
@@ -559,7 +560,9 @@ const toolDefinitions: Record<
         .string()
         .min(1)
         .optional()
-        .describe("Existing active Project Asset ID; required for type image, video, or audio"),
+        .describe(
+          "Existing active Project Asset ID; required for type image, video, or audio",
+        ),
       refs: z.array(z.string()).optional(),
       params: z
         .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
@@ -607,12 +610,16 @@ const toolDefinitions: Record<
       viewState: z
         .unknown()
         .optional()
-        .describe("Complete structured plugin View state; read the node first and preserve all four Storyboard groups"),
+        .describe(
+          "Complete structured plugin View state; read the node first and preserve all four Storyboard groups",
+        ),
       viewStateFile: z
         .string()
         .min(1)
         .optional()
-        .describe("Workspace-relative JSON file containing complete plugin View state; mutually exclusive with viewState"),
+        .describe(
+          "Workspace-relative JSON file containing complete plugin View state; mutually exclusive with viewState",
+        ),
     },
   },
   clash_canvas_move: {
@@ -1109,12 +1116,14 @@ export function createClashMcpServer(
     appSurfaces?: boolean;
     pluginGateway?: PluginMcpGateway;
     generatorRequest?: GeneratorRequest;
+    dccGateway?: DccGateway;
   } = {},
 ): McpServer {
   const server = new ClashMcpServer({
     name: "clash",
     version: process.env.CLASH_DISTRIBUTION_VERSION ?? "0.1.0",
   });
+  registerClashDccMcp(server, options.dccGateway);
   const bundledAppJavascript =
     options.bundledAppJavascript ??
     readFileSync(new URL("./canvas-app-client.js", import.meta.url), "utf8");

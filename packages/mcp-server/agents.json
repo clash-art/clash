@@ -1,0 +1,16 @@
+{
+  "summary": "Bundled Clash MCP tools for Assets, Canvas, plugin lifecycle, and native Blender/Maya control.",
+  "architecture_notes": [
+    "ClashMcpServer owns the fixed progressive-disclosure dispatchers. Native DCC operations are clash_plugin_dcc_* leaves under the existing clash_plugin dispatcher, never a separate user-configured MCP service.",
+    "dcc.ts discovers the native addon for the requested real working folder through machine-private ~/.clash/dcc-connections records. It only connects to loopback, binds app/workspace/session identity, and never returns session credentials to the agent.",
+    "Native Python execution is full local application access, not a sandbox. Unknown mutation outcomes are never retried automatically.",
+    "The native adapters in integrations/dcc-assets run all application API operations on their UI thread and publish media through the existing Clash Asset CLI authority."
+  ],
+  "key_files": {
+    "src/server.ts": "Composes the bundled tools, including native DCC operations.",
+    "src/dcc.ts": "MCP native-control contracts, loopback transport, and screenshot image results.",
+    "dcc_maya_tools / dcc_maya_call": "Progressive discovery and validated execution of the native Maya addon bundled MayaMCP operations under clash_plugin.",
+    "src/dcc-transport.test.ts": "Real Node-to-Python plugin transport, workspace discovery and ambiguous-outcome tests.",
+    "src/dcc.test.ts": "Exercises native operations through the actual MCP client and existing plugin dispatcher."
+  }
+}

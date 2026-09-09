@@ -1,0 +1,30 @@
+{
+  "summary": "Native Blender/Maya agent control and material exchange, automatically exposed through the bundled Clash MCP.",
+  "architecture_notes": [
+    "User-authorized exception: native DCC adapters and their shared transport are Python; packaging and tests are TypeScript.",
+    "No new Asset Host routes, storage authority or sync workflow. Native control is a session-authenticated loopback connection behind the existing Clash MCP, not a separately configured MCP server.",
+    "The selected working folder resolves project identity through normal CLI discovery. No status preflight, cloud credentials, or marker edits.",
+    "Transfers run in a CLI subprocess polled on native UI timers. No background Python thread touches either DCC API.",
+    "Receive copies the authorized CLI projection into a fresh working-tree file. Never load mutable DCC resources directly from an immutable Asset cache link.",
+    "Unchanged source path and bytes derive a stable import id for retry. Host remains the authority for supported formats and immutable publication.",
+    "Scene/object inspection, viewport capture and native Python execution provide the core Blender-MCP-style controls. This is not a vendored copy of a third-party Blender MCP and does not claim its external asset-provider integrations.",
+    "Connection credentials live only in machine-private ~/.clash/dcc-connections; they are never project markers, cloud admission, public Asset data, or agent arguments.",
+    "Native commands execute on the UI thread. Responses are session-scoped and replay-safe; expired response bodies cause an unknown-result error rather than reexecution. A timeout never authorizes automatic mutation retry."
+  ],
+  "key_files": {
+    "shared/bridge.py": "Public CLI transport, asynchronous Jobs, snapshot uploads, and independent receive copies.",
+    "shared/control.py": "Bounded, session-authenticated, nonblocking loopback server polled by native UI timers.",
+    "shared/native.py": "Native Python execution with bounded captured output and explicit partial-failure guidance.",
+    "shared/maya_tools.py": "Discovers pinned MayaMCP native scripts and derives/validates tool contracts without a second MCP server.",
+    "maya/clash_assets_maya/mayatools/UPSTREAM.md": "Vendored MIT source revision, excluded broken generator, and local fixes.",
+    "blender/clash_assets/__init__.py": "Native Sidebar UI, image/GLB import, selected-object GLB export.",
+    "maya/clash_assets_maya/__init__.py": "PySide6/PySide2 material browser and file-texture import.",
+    "package.ts": "Assembles self-contained host-specific installation archives."
+  },
+  "verification": [
+    "node --test integrations/dcc-assets/tests/*.test.ts",
+    "node integrations/dcc-assets/package.ts",
+    "make lint",
+    "Native Blender/Maya smoke checks in README.md are required before claiming host compatibility is verified."
+  ]
+}

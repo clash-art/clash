@@ -396,11 +396,13 @@ test("bundled MCP exposes executable plugin lifecycle through the fixed plugin d
           destructive: boolean;
         }>;
       }
-    ).operations.map(({ operation, readOnly, destructive }) => ({
-      operation,
-      readOnly,
-      destructive,
-    })),
+    ).operations
+      .filter(({ operation }) => !operation.startsWith("dcc_"))
+      .map(({ operation, readOnly, destructive }) => ({
+        operation,
+        readOnly,
+        destructive,
+      })),
     [
       { operation: "activate", readOnly: false, destructive: false },
       { operation: "checkout", readOnly: false, destructive: false },
