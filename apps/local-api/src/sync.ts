@@ -39,6 +39,8 @@ import {
   projectTimelineRenderActionRunId,
   readProjectAsset,
   readProjectTimeline,
+  ProjectMetadataEnvelopeSchema,
+  type ProjectMetadata,
   type ActionAssetBinding,
   type ActivityAction,
   type ActivityMessage,
@@ -70,6 +72,12 @@ export interface LocalSyncOptions {
 export interface RemoteLoroPersistence {
   loadSnapshot?(projectId: string): Promise<Uint8Array | null>;
   appendUpdate(projectId: string, update: Uint8Array): Promise<void>;
+  /** Optional product metadata mirror; deliberately separate from Loro bytes. */
+  loadProjectMetadata?(projectId: string): Promise<ProjectMetadata | null>;
+  saveProjectMetadata?(
+    projectId: string,
+    metadata: ProjectMetadata,
+  ): Promise<void>;
   createLink?(options: {
     projectId: string;
     doc(): LoroDoc;
@@ -79,7 +87,7 @@ export interface RemoteLoroPersistence {
 
 export type RemoteLoroPersistenceSource =
   | RemoteLoroPersistence
-  | (() =>
+  | ((projectId?: string) =>
       | RemoteLoroPersistence
       | undefined
       | Promise<RemoteLoroPersistence | undefined>);
@@ -349,9 +357,10 @@ async function assertRemoteOk(
 
 async function resolveRemotePersistence(
   source: RemoteLoroPersistenceSource | undefined,
+  projectId?: string,
 ): Promise<RemoteLoroPersistence | undefined> {
   if (!source) return undefined;
-  if (typeof source === "function") return source();
+  if (typeof source === "function") return source(projectId);
   return source;
 }
 
@@ -384,6 +393,34 @@ export function createHttpRemoteLoroPersistence(
         },
       );
       await assertRemoteOk(response, "update append");
+    },
+    async loadProjectMetadata(projectId) {
+      const response = await fetchImpl(
+        remoteProjectUrl(options.baseUrl, projectId, "metadata"),
+        {
+          method: "GET",
+          headers: remoteHeaders(options.token),
+        },
+      );
+      if (response.status === 404 || response.status === 204) return null;
+      await assertRemoteOk(response, "metadata load");
+      const payload = ProjectMetadataEnvelopeSchema.parse(
+        await response.json(),
+      );
+      return payload.metadata;
+    },
+    async saveProjectMetadata(projectId, metadata) {
+      const response = await fetchImpl(
+        remoteProjectUrl(options.baseUrl, projectId, "metadata"),
+        {
+          method: "PUT",
+          headers: remoteHeaders(options.token, {
+            "content-type": "application/json",
+          }),
+          body: JSON.stringify({ schemaVersion: 1, metadata }),
+        },
+      );
+      await assertRemoteOk(response, "metadata save");
     },
     createLink({ projectId, doc, commit }) {
       return new LoroCloudReplicaLink({
@@ -436,6 +473,7 @@ async function loadDoc(options: LocalSyncOptions): Promise<{
   let importedRemoteSnapshot = false;
   const remotePersistence = await resolveRemotePersistence(
     options.remotePersistence,
+    options.projectId,
   );
   if (remotePersistence?.loadSnapshot) {
     try {
@@ -1106,7 +1144,7 @@ export class LocalLoroRoom {
       return;
     }
     if (!this.remotePersistence) return;
-    void resolveRemotePersistence(this.remotePersistence)
+    void resolveRemotePersistence(this.remotePersistence, this.projectId)
       .then((remotePersistence) => {
         const link = this.attachRemoteLink(remotePersistence);
         return link

@@ -15,9 +15,12 @@ export type ProjectReplicationState = Record<string, unknown>;
 
 export type ProjectWorkspaceIdKind = "managed" | "external";
 
-export const PROJECT_TIMELINE_FILE_PATTERN = "<timeline-id>.timeline.yaml" as const;
-export const PROJECT_TIMELINE_PULL_COMMAND = "clash timeline pull --timeline <id>" as const;
-export const PROJECT_TIMELINE_APPLY_COMMAND = "clash timeline apply --timeline <id>" as const;
+export const PROJECT_TIMELINE_FILE_PATTERN =
+  "<timeline-id>.timeline.yaml" as const;
+export const PROJECT_TIMELINE_PULL_COMMAND =
+  "clash timeline pull --timeline <id>" as const;
+export const PROJECT_TIMELINE_APPLY_COMMAND =
+  "clash timeline apply --timeline <id>" as const;
 export const PROJECT_TIMELINE_PUBLIC_COMMANDS = [
   "clash timeline list",
   "clash timeline create --id <id> --name <name>",
@@ -194,8 +197,10 @@ export interface ProjectStatusStorage {
   };
 }
 
-export type ProjectCollaborationMode = "local-only" | "synced" | "shared" | "unknown";
-export type ProjectRoomAuthority = "local" | "local-with-cloud-mirror" | "cloud-sequencer";
+export type ProjectCollaborationMode =
+  "local-only" | "synced" | "shared" | "unknown";
+export type ProjectRoomAuthority =
+  "local" | "local-with-cloud-mirror" | "cloud-sequencer";
 export type ProjectCloudRoomMode = "disabled" | "sequencer";
 export type ProjectSyncReadinessStatus = "disabled" | "pending" | "ready";
 
@@ -297,6 +302,13 @@ export interface ProjectStatusSyncPolicy {
       agentWritable: false;
       conflictPolicy: "same-revision-id-same-hash-idempotent-conflict-otherwise";
     };
+    projectMetadata: {
+      requirement: "project-metadata";
+      source: "hosted-project-metadata-store";
+      fields: ["name", "description", "createdAt", "updatedAt", "deletedAt"];
+      mediaBlobsIncluded: false;
+      conflictPolicy: "updated-at-lww-with-stable-tie-breaker";
+    };
   };
   excluded: {
     rawAgentTraces: {
@@ -391,13 +403,14 @@ export function buildProjectRecoveryPolicy(
   const collaboration = status.collaboration;
   const defaultLocalRestoreAllowed =
     collaboration.mode !== "shared" && collaboration.mode !== "unknown";
-  const reason: ProjectRecoveryPolicyReason = collaboration.mode === "shared"
-    ? "shared-cloud-sequencer-restore-blocked"
-    : collaboration.mode === "synced"
-      ? "cloud-sync-local-replica-review-required"
-      : collaboration.mode === "unknown"
-        ? "sync-mode-unknown-local-replica-review-required"
-        : "local-only-manual-review-required";
+  const reason: ProjectRecoveryPolicyReason =
+    collaboration.mode === "shared"
+      ? "shared-cloud-sequencer-restore-blocked"
+      : collaboration.mode === "synced"
+        ? "cloud-sync-local-replica-review-required"
+        : collaboration.mode === "unknown"
+          ? "sync-mode-unknown-local-replica-review-required"
+          : "local-only-manual-review-required";
 
   return {
     scope: "local-canonical-replica",
@@ -406,7 +419,8 @@ export function buildProjectRecoveryPolicy(
     roomAuthority: collaboration.roomAuthority,
     cloudProjectRoom: collaboration.cloudProjectRoom,
     syncReadinessStatus: collaboration.syncReadiness.status,
-    localRestoreAllowed: options.localRestoreAllowed ?? defaultLocalRestoreAllowed,
+    localRestoreAllowed:
+      options.localRestoreAllowed ?? defaultLocalRestoreAllowed,
     cloudStateIncluded: false,
     cloudStateMutated: false,
     requiresCloudConflictReview: collaboration.mode !== "local-only",
@@ -430,13 +444,16 @@ export function buildProjectStatus(
     "projects",
     projectIdPathSegment(context.projectId),
   );
-  const localApiDataDir = options.localApiDataDir ?? joinPath(clashRoot, "local-api");
+  const localApiDataDir =
+    options.localApiDataDir ?? joinPath(clashRoot, "local-api");
   const localApiProjectRoot = joinPath(
     localApiDataDir,
     "projects",
     encodeURIComponent(context.projectId),
   );
-  const markerRoot = context.markerPath ? projectMarkerRoot(context.markerPath) : undefined;
+  const markerRoot = context.markerPath
+    ? projectMarkerRoot(context.markerPath)
+    : undefined;
   const activeWorkspaceRoot = markerRoot ?? projectWorkspaceRoot;
   const projections = joinPath(activeWorkspaceRoot, "projections");
   const timelines = joinPath(activeWorkspaceRoot, "timelines");
@@ -446,14 +463,16 @@ export function buildProjectStatus(
   const sessions = joinPath(activeWorkspaceRoot, "sessions");
   const assetLinks = joinPath(activeWorkspaceRoot, "assets", "links");
   const runtimeRoot = joinPath(projectWorkspaceRoot, "runtime");
-  const workspaceProtectedPaths = activeWorkspaceRoot === projectWorkspaceRoot
-    ? [runtimeRoot]
-    : [];
+  const workspaceProtectedPaths =
+    activeWorkspaceRoot === projectWorkspaceRoot ? [runtimeRoot] : [];
   const mode =
     typeof options.replicationState?.mode === "string"
       ? options.replicationState.mode
       : "unknown";
-  const collaboration = projectCollaborationStatus(mode, options.replicationState ?? undefined);
+  const collaboration = projectCollaborationStatus(
+    mode,
+    options.replicationState ?? undefined,
+  );
   const localSqlitePath = joinPath(localApiDataDir, "local.sqlite");
   const userConfigPath = joinPath(clashRoot, "config.yaml");
   const hostCredentialsPath = joinPath(clashRoot, "credentials.json");
@@ -463,13 +482,7 @@ export function buildProjectStatus(
   const loroReplicaRoot = joinPath(localApiProjectRoot, "loro");
   const loroSnapshotPath = joinPath(loroReplicaRoot, "snapshot.bin");
   const loroUpdatesLogPath = joinPath(loroReplicaRoot, "updates.log");
-  const editablePaths = [
-    drafts,
-    projections,
-    timelines,
-    sessions,
-    assetLinks,
-  ];
+  const editablePaths = [drafts, projections, timelines, sessions, assetLinks];
   const protectedPaths = [
     localApiDataDir,
     localSqlitePath,
@@ -487,7 +500,11 @@ export function buildProjectStatus(
     schemaVersion: 1,
     role: "project-reference-and-draft-workspace",
     ...(options.currentWorkingDirectory
-      ? { currentWorkingDirectory: normalizePath(options.currentWorkingDirectory) }
+      ? {
+          currentWorkingDirectory: normalizePath(
+            options.currentWorkingDirectory,
+          ),
+        }
       : {}),
     ...(context.markerPath ? { markerPath: context.markerPath } : {}),
     ...(markerRoot ? { markerRoot } : {}),
@@ -497,7 +514,10 @@ export function buildProjectStatus(
       : {}),
     projectWorkspaceRoot,
     locatedInProjectWorkspace: options.currentWorkingDirectory
-      ? isSameOrInsidePath(options.currentWorkingDirectory, projectWorkspaceRoot)
+      ? isSameOrInsidePath(
+          options.currentWorkingDirectory,
+          projectWorkspaceRoot,
+        )
       : null,
     ownsCanonicalSnapshot: false,
     ownsCanonicalMetadata: false,
@@ -705,10 +725,12 @@ export function projectCollaborationStatus(
   rawMode: unknown,
   sync: Record<string, unknown> | undefined = undefined,
 ): ProjectStatusCollaboration {
-  const raw = typeof rawMode === "string" && rawMode.trim() ? rawMode.trim() : "unknown";
+  const raw =
+    typeof rawMode === "string" && rawMode.trim() ? rawMode.trim() : "unknown";
   const normalized = normalizeCollaborationMode(raw);
   const syncReadiness = projectSyncReadiness(normalized, sync);
-  const webOpenable = normalized === "shared" || (normalized === "synced" && syncReadiness.ready);
+  const webOpenable =
+    normalized === "shared" || (normalized === "synced" && syncReadiness.ready);
   const actions = projectActionGates(normalized, syncReadiness, webOpenable);
   return {
     schemaVersion: 1,
@@ -735,7 +757,9 @@ export function projectCollaborationStatus(
   };
 }
 
-function projectRoomPolicy(mode: ProjectCollaborationMode): ProjectStatusProjectRoomPolicy {
+function projectRoomPolicy(
+  mode: ProjectCollaborationMode,
+): ProjectStatusProjectRoomPolicy {
   return {
     schemaVersion: 1,
     localSurface: "removed",
@@ -775,7 +799,15 @@ function projectSyncPolicy(
         contentKinds: ["text-revision-content"],
         mediaAsset: false,
         agentWritable: false,
-        conflictPolicy: "same-revision-id-same-hash-idempotent-conflict-otherwise",
+        conflictPolicy:
+          "same-revision-id-same-hash-idempotent-conflict-otherwise",
+      },
+      projectMetadata: {
+        requirement: "project-metadata",
+        source: "hosted-project-metadata-store",
+        fields: ["name", "description", "createdAt", "updatedAt", "deletedAt"],
+        mediaBlobsIncluded: false,
+        conflictPolicy: "updated-at-lww-with-stable-tie-breaker",
       },
     },
     excluded: {
@@ -805,7 +837,12 @@ function projectSyncCloudAdmission(
   return "unknown-until-sync-mode-known";
 }
 
-const CLOUD_SYNC_REQUIREMENTS = ["canvas", "asset-metadata", "revision-content"];
+const CLOUD_SYNC_REQUIREMENTS = [
+  "canvas",
+  "asset-metadata",
+  "revision-content",
+  "project-metadata",
+];
 
 function projectSyncReadiness(
   mode: ProjectCollaborationMode,
@@ -828,11 +865,12 @@ function projectSyncReadiness(
     };
   }
 
-  const capabilities = sync && typeof sync.capabilities === "object" && sync.capabilities !== null
-    ? sync.capabilities as Record<string, unknown>
-    : {};
-  const missing = CLOUD_SYNC_REQUIREMENTS.filter((requirement) =>
-    !syncCapabilityReady(capabilities, requirement)
+  const capabilities =
+    sync && typeof sync.capabilities === "object" && sync.capabilities !== null
+      ? (sync.capabilities as Record<string, unknown>)
+      : {};
+  const missing = CLOUD_SYNC_REQUIREMENTS.filter(
+    (requirement) => !syncCapabilityReady(capabilities, requirement),
   );
   return {
     status: missing.length === 0 ? "ready" : "pending",
@@ -842,13 +880,28 @@ function projectSyncReadiness(
   };
 }
 
-function syncCapabilityReady(capabilities: Record<string, unknown>, requirement: string): boolean {
+function syncCapabilityReady(
+  capabilities: Record<string, unknown>,
+  requirement: string,
+): boolean {
   if (capabilities[requirement] === true) return true;
   if (requirement === "asset-metadata") {
-    return capabilities.assetMetadata === true || capabilities.asset_metadata === true;
+    return (
+      capabilities.assetMetadata === true ||
+      capabilities.asset_metadata === true
+    );
   }
   if (requirement === "revision-content") {
-    return capabilities.revisionContent === true || capabilities.revision_content === true;
+    return (
+      capabilities.revisionContent === true ||
+      capabilities.revision_content === true
+    );
+  }
+  if (requirement === "project-metadata") {
+    return (
+      capabilities.projectMetadata === true ||
+      capabilities.project_metadata === true
+    );
   }
   return false;
 }
@@ -992,8 +1045,10 @@ function normalizePath(path: string): string {
 function isSameOrInsidePath(candidate: string, root: string): boolean {
   const normalizedCandidate = normalizePath(candidate);
   const normalizedRoot = normalizePath(root);
-  return normalizedCandidate === normalizedRoot
-    || normalizedCandidate.startsWith(`${normalizedRoot.replace(/\/+$/, "")}/`);
+  return (
+    normalizedCandidate === normalizedRoot ||
+    normalizedCandidate.startsWith(`${normalizedRoot.replace(/\/+$/, "")}/`)
+  );
 }
 
 function markerString(value: unknown): string | undefined {

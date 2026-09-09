@@ -3,11 +3,16 @@ import {
   type RemoteLoroPersistence,
   type RemoteLoroPersistenceEnv,
 } from "./sync.js";
-import { createSqliteLocalConfigStore, type SqliteLocalConfigStore } from "./local-config-store.js";
+import {
+  createSqliteLocalConfigStore,
+  type SqliteLocalConfigStore,
+} from "./local-config-store.js";
 import {
   createClashUserConfigStore,
   type ClashUserConfigStore,
 } from "./user-config.js";
+import { createLocalMetadataStore } from "./local-metadata-store.js";
+import type { ProjectCloudAdmission } from "@clash/shared-types";
 
 export type LocalSyncMode = "local-only" | "cloud-sync";
 export type RemoteLoroSource = "none" | "env" | "config";
@@ -16,6 +21,8 @@ export interface LocalSyncCapabilities {
   canvas: boolean;
   asset_metadata: boolean;
   revision_content: boolean;
+  /** Project name/description/lifecycle metadata; disabled until explicitly opted in. */
+  project_metadata: boolean;
 }
 
 export interface PublicLocalSyncConfig {
@@ -36,12 +43,20 @@ export type LocalSyncConfigReadState = PublicLocalSyncConfig & {
 export interface LocalSyncConfigStore {
   getPublicConfig(): Promise<PublicLocalSyncConfig>;
   getReadState?(): Promise<LocalSyncConfigReadState>;
-  updateFromRequest(input: Record<string, unknown>): Promise<PublicLocalSyncConfig>;
-  resolveRemotePersistence(): Promise<RemoteLoroPersistence | undefined>;
+  updateFromRequest(
+    input: Record<string, unknown>,
+  ): Promise<PublicLocalSyncConfig>;
+  resolveRemotePersistence(
+    projectId?: string,
+  ): Promise<RemoteLoroPersistence | undefined>;
+  getProjectCloudAdmission?(projectId: string): Promise<ProjectCloudAdmission | null>;
 }
 
 export class LocalSyncConfigError extends Error {
-  constructor(message: string, readonly status = 400) {
+  constructor(
+    message: string,
+    readonly status = 400,
+  ) {
     super(message);
   }
 }
@@ -101,6 +116,7 @@ function defaultSyncCapabilities(): LocalSyncCapabilities {
     canvas: false,
     asset_metadata: false,
     revision_content: false,
+    project_metadata: false,
   };
 }
 
@@ -114,17 +130,26 @@ function normalizeCapabilities(
   }
   const record = value as Record<string, unknown>;
   return {
-    canvas: record.canvas === undefined ? fallback.canvas : record.canvas === true,
-    asset_metadata: record.asset_metadata === undefined
-      ? fallback.asset_metadata
-      : record.asset_metadata === true,
-    revision_content: record.revision_content === undefined
-      ? fallback.revision_content
-      : record.revision_content === true,
+    canvas:
+      record.canvas === undefined ? fallback.canvas : record.canvas === true,
+    asset_metadata:
+      record.asset_metadata === undefined
+        ? fallback.asset_metadata
+        : record.asset_metadata === true,
+    revision_content:
+      record.revision_content === undefined
+        ? fallback.revision_content
+        : record.revision_content === true,
+    project_metadata:
+      record.project_metadata === undefined
+        ? fallback.project_metadata
+        : record.project_metadata === true,
   };
 }
 
-function envConfig(env: RemoteLoroPersistenceEnv | undefined): EffectiveLocalSyncConfig {
+function envConfig(
+  env: RemoteLoroPersistenceEnv | undefined,
+): EffectiveLocalSyncConfig {
   const url = normalizeRemoteUrl(env?.CLASH_REMOTE_LORO_URL);
   return {
     mode: url ? "cloud-sync" : "local-only",
@@ -136,7 +161,9 @@ function envConfig(env: RemoteLoroPersistenceEnv | undefined): EffectiveLocalSyn
   };
 }
 
-function toPublicConfig(config: EffectiveLocalSyncConfig): PublicLocalSyncConfig {
+function toPublicConfig(
+  config: EffectiveLocalSyncConfig,
+): PublicLocalSyncConfig {
   const enabled = config.mode === "cloud-sync" && !!config.remoteLoroUrl;
   return {
     mode: enabled ? "cloud-sync" : "local-only",
@@ -150,15 +177,21 @@ function toPublicConfig(config: EffectiveLocalSyncConfig): PublicLocalSyncConfig
   };
 }
 
-function toReadState(config: EffectiveLocalSyncConfig): LocalSyncConfigReadState {
+function toReadState(
+  config: EffectiveLocalSyncConfig,
+): LocalSyncConfigReadState {
   return {
     ...toPublicConfig(config),
     updated_at: config.updatedAt,
   };
 }
 
-async function readLegacyConfig(store: SqliteLocalConfigStore): Promise<LocalSyncConfigFile | null> {
-  const data = await store.getJson<Partial<LocalSyncConfigFile>>(LOCAL_SYNC_CONFIG_KEY);
+async function readLegacyConfig(
+  store: SqliteLocalConfigStore,
+): Promise<LocalSyncConfigFile | null> {
+  const data = await store.getJson<Partial<LocalSyncConfigFile>>(
+    LOCAL_SYNC_CONFIG_KEY,
+  );
   if (!data) return null;
   return {
     version: 1,
@@ -166,31 +199,48 @@ async function readLegacyConfig(store: SqliteLocalConfigStore): Promise<LocalSyn
     remoteLoroUrl: normalizeRemoteUrl(data.remoteLoroUrl),
     remoteLoroToken: trimToNull(data.remoteLoroToken),
     capabilities: normalizeCapabilities(data.capabilities),
-    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : new Date(0).toISOString(),
+    updatedAt:
+      typeof data.updatedAt === "string"
+        ? data.updatedAt
+        : new Date(0).toISOString(),
   };
 }
 
-async function readConfig(store: ClashUserConfigStore): Promise<LocalSyncConfigFile | null> {
+async function readConfig(
+  store: ClashUserConfigStore,
+): Promise<LocalSyncConfigFile | null> {
   const value = await store.getSection<unknown>("sync");
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const remote = record.remote_loro && typeof record.remote_loro === "object" && !Array.isArray(record.remote_loro)
-    ? record.remote_loro as Record<string, unknown>
-    : {};
+  const remote =
+    record.remote_loro &&
+    typeof record.remote_loro === "object" &&
+    !Array.isArray(record.remote_loro)
+      ? (record.remote_loro as Record<string, unknown>)
+      : {};
   const credentials = await store.getCredentials();
   return {
     version: 1,
     mode: normalizeMode(record.mode),
     remoteLoroUrl: normalizeRemoteUrl(remote.url),
-    remoteLoroToken: trimToNull(credentials.syncRemoteLoroToken),
+    // A signed-in local-only host may only have the CLI API token. Reuse it
+    // for the project-scoped admission/Loro transport without changing the
+    // process-wide sync mode.
+    remoteLoroToken: trimToNull(
+      credentials.syncRemoteLoroToken ?? credentials.cliApiKey,
+    ),
     capabilities: normalizeCapabilities(record.capabilities),
-    updatedAt: typeof record.updated_at === "string"
-      ? record.updated_at
-      : new Date(0).toISOString(),
+    updatedAt:
+      typeof record.updated_at === "string"
+        ? record.updated_at
+        : new Date(0).toISOString(),
   };
 }
 
-async function writeConfig(store: ClashUserConfigStore, config: LocalSyncConfigFile): Promise<void> {
+async function writeConfig(
+  store: ClashUserConfigStore,
+  config: LocalSyncConfigFile,
+): Promise<void> {
   await store.updateCredentials((current) => {
     const next = { ...current };
     if (config.remoteLoroToken) {
@@ -215,6 +265,7 @@ export function createLocalSyncConfigStore(
 ): LocalSyncConfigStore {
   const configStore = createClashUserConfigStore(options.dataDir);
   const legacyStore = createSqliteLocalConfigStore(options.dataDir);
+  const metadataStore = createLocalMetadataStore(options.dataDir);
   const env = options.env ?? {};
   let migration: Promise<void> | null = null;
 
@@ -237,7 +288,10 @@ export function createLocalSyncConfigStore(
       mode: file.mode,
       remoteLoroUrl: file.remoteLoroUrl,
       remoteLoroToken: file.remoteLoroToken,
-      capabilities: file.mode === "cloud-sync" ? file.capabilities : defaultSyncCapabilities(),
+      capabilities:
+        file.mode === "cloud-sync"
+          ? file.capabilities
+          : defaultSyncCapabilities(),
       source: file.remoteLoroUrl ? "config" : "none",
       updatedAt: file.updatedAt,
     };
@@ -252,6 +306,10 @@ export function createLocalSyncConfigStore(
       return toReadState(await effective());
     },
 
+    async getProjectCloudAdmission(projectId: string) {
+      return metadataStore.getLatestProjectCloudAdmission(projectId);
+    },
+
     async updateFromRequest(input) {
       await ensureMigrated();
       const current = (await readConfig(configStore)) ?? {
@@ -263,20 +321,30 @@ export function createLocalSyncConfigStore(
         updatedAt: new Date(0).toISOString(),
       };
 
-      const mode = input.mode === undefined ? current.mode : normalizeMode(input.mode);
-      const remoteLoroUrl = Object.prototype.hasOwnProperty.call(input, "remote_loro_url")
+      const mode =
+        input.mode === undefined ? current.mode : normalizeMode(input.mode);
+      const remoteLoroUrl = Object.prototype.hasOwnProperty.call(
+        input,
+        "remote_loro_url",
+      )
         ? normalizeRemoteUrl(input.remote_loro_url)
         : current.remoteLoroUrl;
-      const remoteLoroToken = Object.prototype.hasOwnProperty.call(input, "remote_loro_token")
+      const remoteLoroToken = Object.prototype.hasOwnProperty.call(
+        input,
+        "remote_loro_token",
+      )
         ? trimToNull(input.remote_loro_token)
         : current.remoteLoroToken;
 
       if (mode === "cloud-sync" && !remoteLoroUrl) {
-        throw new LocalSyncConfigError("remote_loro_url is required for cloud-sync mode");
+        throw new LocalSyncConfigError(
+          "remote_loro_url is required for cloud-sync mode",
+        );
       }
-      const capabilities = mode === "cloud-sync"
-        ? normalizeCapabilities(input.capabilities, current.capabilities)
-        : defaultSyncCapabilities();
+      const capabilities =
+        mode === "cloud-sync"
+          ? normalizeCapabilities(input.capabilities, current.capabilities)
+          : defaultSyncCapabilities();
 
       const next: LocalSyncConfigFile = {
         version: 1,
@@ -297,12 +365,33 @@ export function createLocalSyncConfigStore(
       });
     },
 
-    async resolveRemotePersistence() {
+    async resolveRemotePersistence(projectId?: string) {
       const config = await effective();
-      if (config.mode !== "cloud-sync" || !config.remoteLoroUrl) return undefined;
+      if (config.mode === "cloud-sync" && config.remoteLoroUrl) {
+        return createHttpRemoteLoroPersistence({
+          baseUrl: config.remoteLoroUrl,
+          token: config.remoteLoroToken ?? undefined,
+          fetch: options.fetch,
+        });
+      }
+      if (!projectId) return undefined;
+      const admission = await metadataStore.getLatestProjectCloudAdmission(
+        projectId,
+      );
+      if (
+        !admission ||
+        admission.status === "local-only" ||
+        admission.status === "failed"
+      ) {
+        return undefined;
+      }
+      const credentials = await configStore.getCredentials();
+      const token =
+        config.remoteLoroToken ??
+        trimToNull(credentials.syncRemoteLoroToken ?? credentials.cliApiKey);
       return createHttpRemoteLoroPersistence({
-        baseUrl: config.remoteLoroUrl,
-        token: config.remoteLoroToken ?? undefined,
+        baseUrl: admission.syncBaseUrl,
+        token: token ?? undefined,
         fetch: options.fetch,
       });
     },

@@ -5,8 +5,9 @@
 > staging/probe/seal boundary. Local image thumbnails, video first-frame
 > posters, and bounded audio waveforms are Host-private Durable
 > representations; Timeline filmstrips remain device-local presentation data.
-> Physical purge, Cloud replication, and hosted storage remain design-only in
-> the current work.
+> The host-neutral Cloud delivery/replication transport is implemented;
+> canonical hosted Resource Registry admission and production object-store
+> wiring remain deployment-specific.
 
 This guide is the authority for **Media Asset and Resource** identity,
 publication, binding, and lifecycle. Native Generator semantics live in
@@ -29,12 +30,12 @@ The old Local `/api/v1/assets*` storage-row protocol is retired and returns
 `410`; new Local writes do not update `asset_refs` or storage-shaped Asset rows.
 Legacy rows remain readable only by the one-way materializer and storage doctor.
 The hosted api-cf Asset rows are not migrated in this work because Cloud
-execution, OSS binding, Project claims, and multi-device transfer are explicitly
-design-only. The legacy hosted `/api/v1/assets*` raw-R2-key CRUD/probe router is
+execution, OSS binding, Project claims, and multi-device transfer still need
+deployment-specific registry wiring. The legacy hosted `/api/v1/assets*` raw-R2-key CRUD/probe router is
 therefore absent rather than exposed as a second Asset authority. The internal
 rows and probe helpers remain legacy inputs for hosted generation and Loro
 compatibility only; they are not a public Asset protocol. They must converge on
-the shared contracts before Cloud delivery is claimed. The old api-cf
+the shared contracts before hosted Asset authority is claimed. The old api-cf
 `/api/v1/edits` executor was likewise removed rather than kept as a second
 R2/D1, random-identity execution path; a future hosted edit must use the designed
 Workflow/OSS consumer-CAS protocol.
@@ -79,6 +80,39 @@ Presentation code may consume a stable entry id, availability, and an
 authorized locator; it may not publish cache bytes or URLs as canonical
 metadata, use them as consumer-CAS keys, or create an alternate Asset API.
 
+## Standalone delivery and bidirectional Resource replication
+
+The hosted path is intentionally a conventional client-server flow:
+
+```text
+Desktop / CLI / Web
+        │  Loro state + Resource identity
+        ▼
+Project API / sync endpoint
+        │  issue short-lived capability
+        ▼
+Standalone delivery endpoint
+        │  opaque resource capability
+        ▼
+Resource Store adapter (R2, S3, filesystem, ...)
+```
+
+Project Loro carries the Project structure, Asset entries, immutable
+`resourceId`, digest, byte length, and availability state. It never carries
+media bytes, object-store keys, or signed URLs. A Resource replicator performs
+the byte transfer in either direction: upload local bytes to the server when a
+Project is admitted to the cloud, and download verified bytes to a new local
+Host when another device opens the Project. Each transfer is at-least-once and
+safe to retry because the receiver verifies `byteLength + sha256` before
+installing or publishing to its CAS.
+
+The signed URL is only a transport capability. `AssetDeliveryPort` issues it;
+`AssetDeliveryStore` is the storage port behind the delivery endpoint. The
+Cloudflare implementation supplies R2 as one adapter, while a Node deployment
+can supply an S3-compatible or filesystem adapter without changing the Loro
+protocol or client code. The capability contains `resourceId`, scope, purpose,
+method, and expiry, but never a private storage locator.
+
 ```mermaid
 flowchart TD
   subgraph core["Core product authority"]
@@ -109,8 +143,9 @@ The dotted presentation edges never point back into the core subgraph.
 ### Multi-member, multi-device synchronization
 
 Every member and every device observes the same Project identities, but each
-device has its own byte availability. Project metadata and Resource bytes use
-two independent planes joined only by the stable `resourceId`.
+device has its own byte availability. Project metadata, Loro product state,
+and Resource bytes use independent planes; ProjectAsset references join the
+product state to bytes only through the stable `resourceId`.
 
 ```mermaid
 flowchart LR
@@ -129,7 +164,8 @@ flowchart LR
   end
 
   subgraph teamCloud["Team cloud"]
-    room["ProjectRoom\nLoro metadata"]
+    room["ProjectRoom\nLoro project state"]
+    projectMeta["Project metadata\nJSON mirror"]
     registry["Resource Registry\nstatus + claims"]
     oss["OSS\nimmutable bytes"]
     cloudRun["Cloud private-Task runtime<br/>future design"]
@@ -140,6 +176,10 @@ flowchart LR
   hostA2 <-->|"ProjectAsset / Action / node"| room
   hostB <-->|"ProjectAsset / Action / node"| room
   cloudRun <-->|"public Run / product projection / Output Commit"| room
+  hostA <-->|"name / description / lifecycle"| projectMeta
+  hostA2 <-->|"name / description / lifecycle"| projectMeta
+  hostB <-->|"name / description / lifecycle"| projectMeta
+  projectMeta -->|"D1 / hosted metadata adapter"| cloudRun
 
   hostA -. "silent upload" .-> oss
   oss -. "async verified download" .-> casA2
@@ -155,17 +195,30 @@ flowchart LR
 ```
 
 `ProjectRoom` never carries bytes, OSS keys, signed URLs, local paths, or
-transfer progress. The Resource Registry never becomes a second Project state
-store: it only answers whether a stable Resource is admitted and available to
-this Project. The same flow covers two devices owned by one person and devices
-owned by different collaborators; Project membership gates both metadata and
-Resource claims.
+transfer progress. Basic Project metadata is a separate, versioned JSON mirror
+(`GET/PUT /loro/:projectId/metadata`) so the CRDT room stays focused on
+mergeable Project state. The mirror is guarded by the explicit
+`project_metadata` capability and is disabled by default; local SQLite remains
+the authority until a user enables cloud sync. The Resource Registry never
+becomes a second Project state store: it only answers whether a stable Resource
+is admitted and available to this Project. The same flow covers two devices
+owned by one person and devices owned by different collaborators; Project
+membership gates both metadata and Resource claims.
 
 ### Add, admit, and synchronize
 
 The product first decides whether an operation created new bytes or admitted an
 existing immutable Resource. Both paths converge on one ProjectAsset shape and
 one Action-binding path.
+
+Project metadata follows the same local-first boundary without being embedded
+in a Loro update. The local Host reads and writes its SQLite row, and an
+explicitly enabled `project_metadata` capability mirrors the versioned fields
+through the host-neutral `GET/PUT /loro/:projectId/metadata` adapter. The
+default (`local-only`, all capabilities false) never performs a cloud request;
+there is no background cloud switch hidden in ordinary project reads or
+mutations. When enabled, metadata replication is best-effort and
+last-updated-wins with a stable tie-breaker for equal timestamps.
 
 ```mermaid
 flowchart TD
@@ -1180,9 +1233,11 @@ Project state and media bytes use different replication planes.
 
 ### Execution follows the initiating surface
 
-> Delivery status: Local execution is implemented. Every Cloud/Web execution,
-> Workflow, OSS-staging, and hosted publication flow in this section is target
-> design only; there is no Cloud Durable Run adapter in the current product.
+> Delivery status: Local execution is implemented. The Cloud Durable Run
+> coordination adapter (D1 journal, CAS coordinator, Workflow wake loop, and
+> journal-first dispatcher) is implemented. Provider-specific OSS staging and
+> hosted ProjectPublisher wiring remains deployment-specific; hosted Provider
+> routes are not all migrated yet.
 > Native Generator v2 has a delivered standalone Project Loro Action Run with
 > the four public states `pending`, `running`, `succeeded`, and `failed`. Legacy
 > Canvas, Timeline, Director, and Provider execution still projects through its
@@ -1471,9 +1526,11 @@ cannot infer authority from apparent orphanhood.
 
 ### Cloud design responsibility and failure matrix
 
-This table is target design, not a statement that the Cloud adapter exists. It
-makes the owner, synchronized fact, private state, failure projection, and
-authorization boundary explicit for every cross-device media transition.
+The coordination and recovery rows are implemented by the Cloud Durable Run
+adapter. Provider-specific OSS staging, Registry reconciliation, and hosted
+ProjectPublisher wiring remain deployment work. The table makes the owner,
+synchronized fact, private state, failure projection, and authorization
+boundary explicit for every cross-device media transition.
 
 | Transition                           | Responsible component                       | Synchronized product fact                                                                               | Private/replaceable state                                     | Failure and recovery                                                                                                                                   | Authorization                                                            |
 | ------------------------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
@@ -1688,16 +1745,17 @@ renderer calls `/assets/sign` or manufactures `/api/assets/view/<key>`.
 
 The logical data ownership is:
 
-| State                        | Authority                               | Replication             |
-| ---------------------------- | --------------------------------------- | ----------------------- |
-| ProjectAsset entries         | Project Loro                            | Project sync            |
-| Actions and bindings         | Project Loro                            | Project sync            |
-| GlobalAsset entries          | Library service/local library replica   | Account/Workspace sync  |
-| Resource bytes               | Host CAS and team Resource storage      | Resource replicator     |
-| Resource claims              | Registry projection of admitted entries | Registry reconciliation |
-| Resolved URLs and paths      | Current Host                            | Never synchronized      |
-| Transfer progress and caches | Current device                          | Never synchronized      |
-| Reverse indexes              | SQLite/D1 derived index                 | Rebuildable             |
+| State                              | Authority                               | Replication                            |
+| ---------------------------------- | --------------------------------------- | -------------------------------------- |
+| ProjectAsset entries               | Project Loro                            | Project sync                           |
+| Actions and bindings               | Project Loro                            | Project sync                           |
+| Project name/description/lifecycle | Local SQLite (cloud mirror in D1)       | Versioned JSON metadata mirror, opt-in |
+| GlobalAsset entries                | Library service/local library replica   | Account/Workspace sync                 |
+| Resource bytes                     | Host CAS and team Resource storage      | Resource replicator                    |
+| Resource claims                    | Registry projection of admitted entries | Registry reconciliation                |
+| Resolved URLs and paths            | Current Host                            | Never synchronized                     |
+| Transfer progress and caches       | Current device                          | Never synchronized                     |
+| Reverse indexes                    | SQLite/D1 derived index                 | Rebuildable                            |
 
 The repository's no-foreign-key rule remains in force. Application-level
 transactions, Project CAS, claim checks, and tombstones enforce integrity.
@@ -1828,7 +1886,8 @@ Project authority adapter. Registry staging and later claim reconciliation are i
 steps, not part of a cross-system transaction. local-api implements this boundary. The Web hook
 adds only React caching over the shared HTTP client; shared-runtime adds only cwd/Host discovery
 and result envelopes; GUI, CLI, and MCP Global-library/admit/publish flows use the same SDK
-transports and Host connection discovery. api-cf remains the future Cloud adapter.
+transports and Host connection discovery. api-cf now contains the Cloud Durable Run coordination
+adapter; provider/OSS/ProjectPublisher ports remain deployment-specific.
 
 ## Delivery status and deliberate gaps
 
@@ -2074,8 +2133,9 @@ conflict may invent a Resource or silently fall back to `asset_refs` after cutov
 - **Complete for raw transport retirement:** remove Local raw upload/read/sign
   routes, api-cf's anonymous upload and public caller-key signing routes, the
   Web upload carve-out/R2 binding, and the legacy sync worker's duplicate R2
-  routes/binding. The remaining api-cf signed GET is capability delivery only;
-  hosted upload remains disabled and design-only.
+  routes/binding. Hosted delivery now has an opaque capability GET/HEAD/PUT
+  transport; the Resource Registry resolver and byte-store adapter are injected
+  by the deployment and are not a second Asset authority.
 - **Complete for Local:** adapt plugin capability handles from frozen Action bindings.
 - **Complete for Local product paths:** delete storage-row URL dialects and duplicate
   identity resolvers. Device-local derived preview caches remain caches, never authorities.
@@ -2083,9 +2143,20 @@ conflict may invent a Resource or silently fall back to `asset_refs` after cutov
 
 ### Phase 6: team Resource replication
 
-**Design complete; implementation intentionally deferred.**
+**Transport implemented; canonical hosted registry admission remains
+deployment-specific.**
 
-- Add Resource upload/verification and Project claim admission.
+- **Complete for the shared transport:** `AssetDeliveryPort`, the opaque
+  HMAC capability signer, `AssetDeliveryStore`, and verified `pushResource` /
+  `pullResource` are host-neutral and work for Local, Cloudflare, Node, and
+  S3-compatible adapters.
+- **Complete for api-cf transport:** `/assets/capability/:token` validates
+  expiry, scope claims, upload length, SHA-256 digest, and byte ranges before
+  reading or writing the configured store. The route is mounted only when a
+  deployment supplies its Resource Registry resolver.
+
+- Wire Resource upload/verification and Project claim admission into the
+  hosted Resource Registry.
 - Derive Project claims by reconciling synchronized ProjectAsset lifecycle;
   never make Registry claim creation a second Project membership write.
 - Synchronize local-origin Project structure and stable Resource references
@@ -2100,7 +2171,8 @@ conflict may invent a Resource or silently fall back to `asset_refs` after cutov
   unpublished staging by TTL.
 - Keep OSS object references in the cloud Resource registry, never Project
   Loro; do not introduce a second Project sync envelope.
-- Add asynchronous verified download and local availability projection.
+- Wire asynchronous verified download and local availability projection into
+  the hosted Project admission flow.
 - Resolve collaborators through Project permission rather than creator
   ownership.
 - Select a cloud-owned private Task for Web submissions and a discovered

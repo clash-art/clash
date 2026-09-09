@@ -125,6 +125,16 @@ export {
 } from "./durable-run-engine.js";
 
 export {
+  createProjectMetadataReplicator,
+  type ProjectMetadataReplicatorOptions,
+  type ProjectMetadataStore,
+  type ProjectMetadataSyncRemote,
+  type ProjectMetadataSyncResult,
+} from "./project-metadata-sync.js";
+
+export * from "./project-cloud-sync.js";
+
+export {
   buildMiniMaxH3Content,
   type MiniMaxH3ContentInput,
   type MiniMaxH3OrderedContentPart,

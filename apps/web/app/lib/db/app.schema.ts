@@ -18,6 +18,7 @@ export const projects = sqliteTable("project", {
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
   ownerId: text("owner_id").notNull(),
+  tenantId: text("tenant_id"),
   name: text("name").notNull(),
   description: text("description"),
   createdAt: integer("created_at", { mode: "timestamp" }).default(
@@ -28,6 +29,29 @@ export const projects = sqliteTable("project", {
   ),
   deletedAt: integer("deleted_at", { mode: "timestamp" }),
 });
+
+export const tenants = sqliteTable("tenant", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull(),
+  name: text("name").notNull(),
+  createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+});
+
+export const tenantMembers = sqliteTable(
+  "tenant_member",
+  {
+    tenantId: text("tenant_id").notNull(),
+    userId: text("user_id").notNull(),
+    role: text("role").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    primary: primaryKey({ columns: [table.tenantId, table.userId] }),
+    userIdx: index("tenant_member_user_idx").on(table.userId),
+  }),
+);
 
 /**
  * API Tokens — enables CLI and external agent access.

@@ -131,6 +131,9 @@ import {
   type ModelCard,
   type ModelUpstreamRoute,
   type ModelKind,
+  type ProjectMetadata,
+  ProjectCloudAdmissionRequestSchema,
+  ProjectCloudAdmissionResponseSchema,
   type HostMutationRecord,
   type TextAppliedRevision,
   type UserModelCardConfig,
@@ -157,7 +160,7 @@ import {
   WorkspaceImportStartSchema,
   type ActionRunModelRoute,
 } from "@clash/shared-types";
-import type { AssetKind, ResolvedAsset } from "@clash/shared-types/assets";
+import type { Asset, AssetKind, ResolvedAsset } from "@clash/shared-types/assets";
 
 const execFileAsync = promisify(execFile);
 
@@ -227,6 +230,11 @@ import {
   type PublicAssetStorageService,
 } from "./public-asset-storage.js";
 import type { RemoteLoroPersistenceEnv } from "./sync.js";
+import { createLocalProjectMetadataReplication } from "./project-metadata-replication.js";
+import {
+  createHttpCloudAdmissionClient,
+  type LocalCloudAdmissionClient,
+} from "./project-cloud-admission.js";
 import {
   normalizeProviderAccountInput,
   providerAccountKey,
@@ -357,6 +365,10 @@ export interface LocalApiOptions {
   /** Machine-level public Asset storage shared by Desktop, CLI, MCP and plugins. */
   publicAssetStorage?: PublicAssetStorageService;
   syncEnv?: RemoteLoroPersistenceEnv;
+  /** Optional cloud control-plane adapter. Admission is project-scoped and does not enable global sync. */
+  cloudAdmission?: LocalCloudAdmissionClient;
+  /** Starts the project room after admission so the initial Loro replica can be mirrored. */
+  ensureProjectSync?: (projectId: string) => Promise<void>;
   providerOAuth?: Partial<Record<ProviderOAuthId, ProviderOAuthDriver>>;
   providerPluginExecutor?: ProviderPluginExecutor;
   /** Host policy for a complete durable Provider run. Defaults to 30 minutes. */
@@ -1296,6 +1308,34 @@ function createDb(dataDir: string) {
     return task;
   }
 
+  async function getProjectCloudAdmission(
+    projectId: string,
+    localReplicaId: string,
+  ) {
+    await writeQueue.catch(() => undefined);
+    return metadataStore.getProjectCloudAdmission(projectId, localReplicaId);
+  }
+
+  async function getLatestProjectCloudAdmission(projectId: string) {
+    await writeQueue.catch(() => undefined);
+    return metadataStore.getLatestProjectCloudAdmission(projectId);
+  }
+
+  async function upsertProjectCloudAdmission(
+    admission: Parameters<
+      typeof metadataStore.upsertProjectCloudAdmission
+    >[0],
+  ): Promise<void> {
+    const task = writeQueue
+      .catch(() => undefined)
+      .then(() => metadataStore.upsertProjectCloudAdmission(admission));
+    writeQueue = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
   return {
     load,
     update,
@@ -1311,6 +1351,9 @@ function createDb(dataDir: string) {
     listSessionEvents,
     renameSessionEvents,
     deleteSessionEvents,
+    getProjectCloudAdmission,
+    getLatestProjectCloudAdmission,
+    upsertProjectCloudAdmission,
   };
 }
 
@@ -1761,6 +1804,27 @@ interface V1ProjectCanvasThumbnail {
   revision: string;
   width: number;
   height: number;
+}
+
+function localProjectSyncMetadata(project: LocalProject): ProjectMetadata {
+  // Hosted D1 project timestamps use epoch-second precision. Normalize the
+  // local millisecond timestamps at this boundary so a successful mirror does
+  // not turn every subsequent read into another PUT merely because the local
+  // clock retained sub-second precision.
+  const syncTimestamp = (value: string | null): string | null => {
+    if (value === null) return null;
+    const milliseconds = Date.parse(value);
+    if (!Number.isFinite(milliseconds)) return value;
+    return new Date(Math.floor(milliseconds / 1_000) * 1_000).toISOString();
+  };
+  return {
+    projectId: project.id,
+    name: project.name,
+    description: project.description,
+    createdAt: syncTimestamp(project.createdAt) ?? project.createdAt,
+    updatedAt: syncTimestamp(project.updatedAt) ?? project.updatedAt,
+    deletedAt: syncTimestamp(project.deletedAt ?? null),
+  };
 }
 
 function toV1Project(
@@ -3540,6 +3604,15 @@ function modelRoutesForProviderAccount(
 
 export function createLocalApiApp(options: LocalApiOptions): Hono {
   const userId = options.userId ?? "local-user";
+  const localReplicaId = options.hostIdentity?.hostId ?? `local:${userId}`;
+  const cloudAdmission =
+    options.cloudAdmission ??
+    (options.syncEnv?.CLASH_REMOTE_LORO_URL
+      ? createHttpCloudAdmissionClient({
+          baseUrl: options.syncEnv.CLASH_REMOTE_LORO_URL,
+          token: options.syncEnv.CLASH_REMOTE_LORO_TOKEN,
+        })
+      : undefined);
   const mediaAnalysisConfig =
     options.mediaAnalysisConfig ??
     createLocalMediaAnalysisConfigStore({
@@ -3866,6 +3939,42 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       dataDir: options.dataDir,
       env: options.syncEnv ?? process.env,
     });
+  const projectMetadataReplication = createLocalProjectMetadataReplication({
+    syncConfig,
+    local: {
+      async read(projectId) {
+        const project = (await db.load()).projects.find(
+          (candidate) => candidate.id === projectId,
+        );
+        return project ? localProjectSyncMetadata(project) : null;
+      },
+      async write(metadata) {
+        await db.update((state) => {
+          const project = state.projects.find(
+            (candidate) => candidate.id === metadata.projectId,
+          );
+          if (!project) {
+            throw new Error(
+              `Cannot apply remote metadata for unknown Project ${metadata.projectId}`,
+            );
+          }
+          project.name = metadata.name;
+          project.description = metadata.description;
+          project.createdAt = metadata.createdAt;
+          project.updatedAt = metadata.updatedAt;
+          project.deletedAt = metadata.deletedAt;
+        });
+      },
+    },
+  });
+  const syncProjectMetadataInBackground = (projectId: string) => {
+    void projectMetadataReplication.sync(projectId).catch((error) => {
+      console.error(
+        `[local-api] failed to mirror Project metadata for ${projectId}`,
+        error,
+      );
+    });
+  };
   const publicAssetStorage =
     options.publicAssetStorage ??
     createPublicAssetStorageService({ dataDir: options.dataDir });
@@ -9543,6 +9652,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           : archived === "include"
             ? state.projects
             : activeProjects(state);
+      for (const project of visibleProjects) {
+        syncProjectMetadataInBackground(project.id);
+      }
       return c.json({
         projects: await Promise.all(
           visibleProjects.map(async (project) => {
@@ -9623,6 +9735,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         reason: "v1 project create",
       }),
     );
+    syncProjectMetadataInBackground(project.id);
     return c.json(
       {
         id: project.id,
@@ -9640,6 +9753,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const state = await db.load();
     const project = findActiveProject(state, projectId, userId);
     if (!project) return c.json({ error: "not found" }, 404);
+    syncProjectMetadataInBackground(project.id);
     const sync = await syncConfig.getPublicConfig();
     return c.json(
       buildProjectStatus(
@@ -9654,6 +9768,95 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         },
       ),
     );
+  });
+
+  app.get("/api/v1/projects/:projectId/cloud-admission", async (c) => {
+    const projectId = c.req.param("projectId");
+    const project = findActiveProject(
+      await db.load(),
+      projectId,
+      userId,
+    );
+    if (!project) return c.json({ error: "not found" }, 404);
+    const admission = await db.getProjectCloudAdmission(
+      projectId,
+      c.req.query("localReplicaId")?.trim() || localReplicaId,
+    );
+    return c.json({ admission });
+  });
+
+  app.post("/api/v1/projects/:projectId/cloud-admission", async (c) => {
+    if (!cloudAdmission) {
+      return c.json(
+        { error: "Cloud admission is not configured", code: "CLOUD_UNAVAILABLE" },
+        503,
+      );
+    }
+    const state = await db.load();
+    const projectId = c.req.param("projectId");
+    const project = findActiveProject(state, projectId, userId);
+    if (!project) return c.json({ error: "not found" }, 404);
+    const body = (await c.req.json().catch(() => ({}))) as {
+      localReplicaId?: unknown;
+      resourceIds?: unknown;
+    };
+    const requestedReplicaId =
+      typeof body.localReplicaId === "string" && body.localReplicaId.trim()
+        ? body.localReplicaId.trim()
+        : localReplicaId;
+    const requestedResourceIds = Array.isArray(body.resourceIds)
+      ? body.resourceIds.filter((id): id is string => typeof id === "string")
+      : state.assets
+          .filter((asset) => asset.projectId === projectId)
+          .map((asset) => {
+            const candidate = asset as Asset & { resourceId?: string };
+            return candidate.resourceId ?? candidate.id;
+          });
+    const request = ProjectCloudAdmissionRequestSchema.parse({
+      schemaVersion: 1,
+      projectId,
+      localReplicaId: requestedReplicaId,
+      metadata: localProjectSyncMetadata(project),
+      resourceIds: [...new Set(requestedResourceIds)],
+    });
+    try {
+      const response = await cloudAdmission.admit(request);
+      await db.upsertProjectCloudAdmission(response.admission);
+      // Admission is the only user-visible switch. Starting the room here
+      // makes initial snapshot/update mirroring happen even before Desktop
+      // opens a WebSocket; it still leaves the global sync setting untouched.
+      const initialSync = options.ensureProjectSync?.(projectId);
+      if (initialSync) {
+        void initialSync.catch((error) => {
+          console.error(
+            `[local-api] initial cloud sync failed for ${projectId}`,
+            error,
+          );
+        });
+      }
+      // Metadata is a separate product plane from the Loro byte stream. Kick
+      // its idempotent mirror as part of admission so a freshly admitted
+      // Project is visible remotely even before its next ordinary mutation.
+      syncProjectMetadataInBackground(projectId);
+      return c.json(ProjectCloudAdmissionResponseSchema.parse(response), 201);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = {
+        schemaVersion: 1 as const,
+        projectId,
+        tenantId: "pending",
+        userId,
+        localReplicaId: requestedReplicaId,
+        syncBaseUrl: "https://cloud-admission-failed.invalid",
+        status: "failed" as const,
+        capabilities: { canvas: false, projectMetadata: false, resources: false },
+        admittedAt: null,
+        updatedAt: nowIso(),
+        lastError: message,
+      };
+      await db.upsertProjectCloudAdmission(failed);
+      return c.json({ error: message, code: "CLOUD_ADMISSION_FAILED", admission: failed }, 502);
+    }
   });
 
   app.post("/api/v1/text-revisions", async (c) => {
@@ -9793,12 +9996,14 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
 
   app.get("/api/v1/projects/:id", async (c) => {
     const state = await db.load();
+    const projectId = c.req.param("id");
     const includeDeleted =
       normalizeString(c.req.query("includeDeleted")) === "true";
     const project = includeDeleted
-      ? state.projects.find((candidate) => candidate.id === c.req.param("id"))
-      : findActiveProject(state, c.req.param("id"));
+      ? state.projects.find((candidate) => candidate.id === projectId)
+      : findActiveProject(state, projectId);
     if (!project) return c.json({ error: "Project not found" }, 404);
+    syncProjectMetadataInBackground(project.id);
     // A deleted Project read is a recovery-control-plane operation. Do not
     // materialize legacy media or require its bytes merely to obtain the
     // current read proof for restore/purge; missing old blobs must not make a
@@ -9921,6 +10126,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           reason: "project update",
         }),
       );
+      syncProjectMetadataInBackground(projectId);
     }
     return c.json(result.body, result.status);
   });
@@ -11356,6 +11562,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             reason: "project soft delete",
           }),
         );
+        syncProjectMetadataInBackground(projectId);
       }
     }
     return c.json(result.body, result.status);
@@ -11436,6 +11643,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             reason: "project restore",
           }),
         );
+        syncProjectMetadataInBackground(projectId);
       }
     }
     return c.json(result.body, result.status);

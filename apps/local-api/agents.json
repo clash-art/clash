@@ -43,6 +43,7 @@
     "src/local-asset-representations.ts": "Owner-private Durable Run consumer for image thumbnails, video first-frame posters, and bounded audio waveforms, including stable recipe identity, SQLite CAS publication, retry scheduling, and restart recovery.",
     "src/local-metadata-store.ts": "Legacy SQLite typed-metadata body/query projection used by compatibility workflows; it is not the native Project Document Asset authority.",
     "src/sync.ts": "Project Loro owner and journal-driven wake scheduler; composes the portable replica core, local protocol server and optional cloud link. Peer sync cannot author Project Asset authority or frozen/run-owned Asset bindings.",
+    "src/project-metadata-replication.ts": "Capability-gated Project name/description/lifecycle metadata mirror. Local SQLite remains authoritative by default; the optional remote adapter is host-neutral and uses the same reconnect-safe cloud configuration as Loro.",
     "src/loro/replica-ports.ts": "File WAL/checkpoint adapter for @clash/replica.",
     "src/loro/cloud-replica-link.ts": "Node WebSocket adapter for the local-api to hosted ProjectRoom official-protocol link.",
     "src/project-canvas-preview-cache.ts": "Revision-keyed Main canvas project-card projection and legacy read-through cache builder; the projection is derived state, not Project authority.",

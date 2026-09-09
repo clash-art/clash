@@ -17,6 +17,7 @@
     "baseUrl": ".",
     "paths": {
       "@clash/shared-layout": ["../../packages/shared-layout/src/index.ts"],
+      "@clash/asset-sdk/delivery": ["../../packages/asset-sdk/src/delivery.ts"],
       "@clash/shared-types": ["../../packages/shared-types/src/index.ts"],
       "@clash/shared-types/*": ["../../packages/shared-types/src/*.ts"],
       "@clash/shared-runtime": ["../../packages/shared-runtime/src/index.ts"],

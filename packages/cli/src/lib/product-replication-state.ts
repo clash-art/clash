@@ -14,7 +14,10 @@ interface SqliteDatabase {
 }
 
 interface SqliteModule {
-  DatabaseSync: new (path: string, options?: { readOnly?: boolean }) => SqliteDatabase;
+  DatabaseSync: new (
+    path: string,
+    options?: { readOnly?: boolean },
+  ) => SqliteDatabase;
 }
 
 export interface ProductReplicationStateOptions {
@@ -47,9 +50,9 @@ export function readProductReplicationState(
   try {
     const { DatabaseSync } = nodeRequire()("node:sqlite") as SqliteModule;
     db = new DatabaseSync(sqlitePath, { readOnly: true });
-    const row = db.prepare(
-      "SELECT value_json FROM local_config WHERE key = ?",
-    ).get("local-sync-config");
+    const row = db
+      .prepare("SELECT value_json FROM local_config WHERE key = ?")
+      .get("local-sync-config");
     if (!row || typeof row.value_json !== "string") return fallback;
     return syncStateFromStoredConfig(JSON.parse(row.value_json));
   } catch (error) {
@@ -60,7 +63,9 @@ export function readProductReplicationState(
   }
 }
 
-function syncStateFromEnv(env: Record<string, string | undefined>): Record<string, unknown> {
+function syncStateFromEnv(
+  env: Record<string, string | undefined>,
+): Record<string, unknown> {
   const remoteUrl = env.CLASH_REMOTE_LORO_URL?.trim();
   return remoteUrl
     ? { mode: "cloud-sync", capabilities: emptyCapabilities() }
@@ -88,6 +93,7 @@ function syncStateFromStoredConfig(value: unknown): Record<string, unknown> {
       canvas: capabilities.canvas === true,
       asset_metadata: capabilities.asset_metadata === true,
       revision_content: capabilities.revision_content === true,
+      project_metadata: capabilities.project_metadata === true,
     },
   };
 }
@@ -97,6 +103,7 @@ function emptyCapabilities(): Record<string, boolean> {
     canvas: false,
     asset_metadata: false,
     revision_content: false,
+    project_metadata: false,
   };
 }
 
@@ -109,5 +116,8 @@ function nonEmptyString(value: unknown): value is string {
 }
 
 function isMissingLocalConfigTable(error: unknown): boolean {
-  return error instanceof Error && /no such table:\s*local_config/i.test(error.message);
+  return (
+    error instanceof Error &&
+    /no such table:\s*local_config/i.test(error.message)
+  );
 }

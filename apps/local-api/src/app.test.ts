@@ -108,6 +108,7 @@ const DEFAULT_SYNC_CAPABILITIES = {
   canvas: false,
   asset_metadata: false,
   revision_content: false,
+  project_metadata: false,
 };
 
 beforeEach(async () => {
@@ -1878,9 +1879,7 @@ describe("local API app", () => {
       { method: "DELETE" },
     );
     expect(marketplacePluginUninstalled.status).toBe(204);
-    expect(uninstallMarketplacePlugin).toHaveBeenCalledWith(
-      "clash.storyboard",
-    );
+    expect(uninstallMarketplacePlugin).toHaveBeenCalledWith("clash.storyboard");
 
     expect(
       (
@@ -11352,8 +11351,18 @@ describe("local API app", () => {
         syncReadiness: {
           status: "disabled",
           ready: false,
-          required: ["canvas", "asset-metadata", "revision-content"],
-          missing: ["canvas", "asset-metadata", "revision-content"],
+          required: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
+          missing: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
         },
         actions: {
           openInWeb: {
@@ -11599,14 +11608,29 @@ describe("local API app", () => {
         syncReadiness: {
           status: "pending",
           ready: false,
-          required: ["canvas", "asset-metadata", "revision-content"],
-          missing: ["canvas", "asset-metadata", "revision-content"],
+          required: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
+          missing: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
         },
         actions: {
           openInWeb: {
             allowed: false,
             reason: "cloud-sync-not-ready",
-            requirements: ["canvas", "asset-metadata", "revision-content"],
+            requirements: [
+              "canvas",
+              "asset-metadata",
+              "revision-content",
+              "project-metadata",
+            ],
           },
           enableSync: {
             allowed: false,
@@ -11616,7 +11640,12 @@ describe("local API app", () => {
           shareProject: {
             allowed: false,
             reason: "cloud-sync-not-ready",
-            requirements: ["canvas", "asset-metadata", "revision-content"],
+            requirements: [
+              "canvas",
+              "asset-metadata",
+              "revision-content",
+              "project-metadata",
+            ],
           },
           runLocalAgent: {
             allowed: true,
@@ -11648,6 +11677,7 @@ describe("local API app", () => {
           canvas: true,
           asset_metadata: true,
           revision_content: true,
+          project_metadata: true,
         },
       }),
     });
@@ -11679,7 +11709,12 @@ describe("local API app", () => {
         syncReadiness: {
           status: "ready",
           ready: true,
-          required: ["canvas", "asset-metadata", "revision-content"],
+          required: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
           missing: [],
         },
         actions: {
@@ -12034,6 +12069,11 @@ describe("local API app", () => {
     const syncConfig = createLocalSyncConfigStore({
       dataDir,
       env: {},
+      fetch: vi.fn(async (_input: string, init?: RequestInit) =>
+        init?.method === "GET"
+          ? new Response(null, { status: 404 })
+          : new Response(null, { status: 204 }),
+      ),
     });
     await syncConfig.updateFromRequest({
       mode: "cloud-sync",
@@ -12043,6 +12083,7 @@ describe("local API app", () => {
         canvas: true,
         asset_metadata: true,
         revision_content: true,
+        project_metadata: true,
       },
     });
     const app = createLocalApiApp({

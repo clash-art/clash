@@ -19,6 +19,7 @@
     "@ai-sdk/google-vertex": "^4.0.98",
     "@ai-sdk/openai": "^3.0.48",
     "@clash/shared-runtime": "workspace:*",
+    "@clash/asset-sdk": "workspace:*",
     "@clash/replica": "workspace:*",
     "@clash/shared-layout": "workspace:^",
     "@clash/shared-types": "workspace:*",

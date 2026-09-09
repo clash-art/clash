@@ -76,6 +76,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
           first: vi.fn().mockResolvedValue(null),
         }),
       }),
+      batch: vi.fn().mockResolvedValue([]),
     } as any,
     WORKER_PUBLIC_URL: "https://api.example.com",
     ...overrides,
@@ -208,6 +209,131 @@ describe("Hono routes", () => {
       expect(Array.from(new Uint8Array(await forwarded.arrayBuffer()))).toEqual(
         [4, 5, 6],
       );
+    });
+
+    it("stores project metadata separately from the Loro document", async () => {
+      const run = vi.fn().mockResolvedValue({ meta: { changes: 1 } });
+      const prepare = vi.fn((sql: string) => ({
+        bind: vi.fn(() => ({
+          first: vi.fn().mockResolvedValue(
+            sql.includes("SELECT id, name")
+              ? {
+                  id: "project/one",
+                  name: "Cloud project",
+                  description: "Metadata row",
+                  created_at: 1_788_480_000,
+                  updated_at: 1_788_480_060,
+                  deleted_at: null,
+                }
+              : null,
+          ),
+          run,
+          all: vi.fn().mockResolvedValue({ results: [] }),
+        })),
+      }));
+      env = makeEnv({ ENVIRONMENT: "development", DB: { prepare } as any });
+
+      const getResponse = await app.request(
+        "/loro/project%2Fone/metadata",
+        {},
+        env,
+      );
+      expect(getResponse.status).toBe(200);
+      expect(await getResponse.json()).toEqual({
+        schemaVersion: 1,
+        metadata: {
+          projectId: "project/one",
+          name: "Cloud project",
+          description: "Metadata row",
+          createdAt: "2026-09-04T00:00:00.000Z",
+          updatedAt: "2026-09-04T00:01:00.000Z",
+          deletedAt: null,
+        },
+      });
+
+      const metadata = {
+        projectId: "project/one",
+        name: "Local project",
+        description: null,
+        createdAt: "2026-09-04T00:00:00.000Z",
+        updatedAt: "2026-09-04T00:01:00.000Z",
+        deletedAt: null,
+      };
+      const putResponse = await app.request(
+        "/loro/project%2Fone/metadata",
+        {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ schemaVersion: 1, metadata }),
+        },
+        env,
+      );
+      expect(putResponse.status).toBe(204);
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("project cloud admission", () => {
+    it("creates a personal tenant admission without requiring the DO", async () => {
+      const admissionRow = {
+        project_id: "project-1",
+        tenant_id: "personal:user-1",
+        user_id: "user-1",
+        local_replica_id: "replica-1",
+        sync_base_url: "https://api.example.com",
+        status: "pending",
+        capabilities_json: JSON.stringify({
+          canvas: true,
+          projectMetadata: true,
+          resources: true,
+        }),
+        admitted_at: null,
+        updated_at: 1_700_000_000,
+        last_error: null,
+      };
+      const projectDb = {
+        prepare: vi.fn((sql: string) => {
+          const statement = {
+            bind: vi.fn(() => statement),
+            run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
+            all: vi.fn().mockResolvedValue({ results: [] }),
+            first: vi.fn().mockImplementation(async () => {
+              if (sql.includes("FROM project_cloud_admission")) {
+                return admissionRow;
+              }
+              return null;
+            }),
+          };
+          return statement;
+        }),
+        batch: vi.fn().mockResolvedValue([]),
+      } as any;
+      env = makeEnv({ DB: projectDb });
+
+      const res = await app.request("/api/v1/projects/project-1/cloud-admission", {
+        method: "POST",
+        headers: { ...USER_HEADERS, "content-type": "application/json" },
+        body: JSON.stringify({
+          schemaVersion: 1,
+          projectId: "project-1",
+          localReplicaId: "replica-1",
+          metadata: {
+            projectId: "project-1",
+            name: "Demo",
+            description: null,
+            createdAt: "2026-09-04T00:00:00.000Z",
+            updatedAt: "2026-09-04T00:00:00.000Z",
+            deletedAt: null,
+          },
+          resourceIds: [],
+        }),
+      }, env);
+
+      expect(res.status).toBe(201);
+      const json = (await res.json()) as any;
+      expect(json.admission.tenantId).toBe("personal:user-1");
+      expect(json.admission.status).toBe("pending");
+      expect(projectDb.batch).toHaveBeenCalledTimes(1);
     });
   });
 

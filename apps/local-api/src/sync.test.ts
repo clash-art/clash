@@ -827,16 +827,12 @@ describe("LocalLoroRoom", () => {
   it("acknowledges a peer update after persisting it", async () => {
     const order: string[] = [];
     const originalAppendUpdate = FileReplicaStore.prototype.appendUpdate;
-    vi
-      .spyOn(FileReplicaStore.prototype, "appendUpdate")
-      .mockImplementation(async function (
-        this: FileReplicaStore,
-        projectId,
-        update,
-      ) {
+    vi.spyOn(FileReplicaStore.prototype, "appendUpdate").mockImplementation(
+      async function (this: FileReplicaStore, projectId, update) {
         order.push("append");
         await originalAppendUpdate.call(this, projectId, update);
-      });
+      },
+    );
     const room = await LocalLoroRoom.open({
       dataDir,
       projectId: "project/sync-ack",
@@ -3214,8 +3210,7 @@ describe("LocalLoroRoom", () => {
   it("attaches a server-to-server replica link and durably imports cloud updates", async () => {
     const published: Uint8Array[] = [];
     let cloudCommit:
-      | ((batchId: string, updates: Uint8Array[]) => Promise<void>)
-      | undefined;
+      ((batchId: string, updates: Uint8Array[]) => Promise<void>) | undefined;
     const link = {
       start: vi.fn(),
       publish: vi.fn((update: Uint8Array) => {
@@ -3238,12 +3233,19 @@ describe("LocalLoroRoom", () => {
     expect(link.start).toHaveBeenCalledTimes(1);
 
     const local = new LoroDoc();
-    local.getMap("nodes").set("local", { type: "text", data: { label: "Local" } });
-    await room.receive(room.addPeer(() => {}), local.export({ mode: "snapshot" }));
+    local
+      .getMap("nodes")
+      .set("local", { type: "text", data: { label: "Local" } });
+    await room.receive(
+      room.addPeer(() => {}),
+      local.export({ mode: "snapshot" }),
+    );
     expect(published.length).toBeGreaterThan(0);
 
     const cloud = new LoroDoc();
-    cloud.getMap("nodes").set("cloud", { type: "text", data: { label: "Cloud" } });
+    cloud
+      .getMap("nodes")
+      .set("cloud", { type: "text", data: { label: "Cloud" } });
     await cloudCommit?.("0x0000000000000099", [
       cloud.export({ mode: "snapshot" }),
     ]);
@@ -3680,7 +3682,9 @@ describe("attachLocalSync", () => {
       }),
     );
     await vi.waitFor(() => {
-      expect(messages.some((message) => message.type === MessageType.JoinResponseOk)).toBe(true);
+      expect(
+        messages.some((message) => message.type === MessageType.JoinResponseOk),
+      ).toBe(true);
     });
 
     const source = new LoroDoc();
@@ -3906,6 +3910,51 @@ describe("createHttpRemoteLoroPersistence", () => {
     expect(postedBody).toBeInstanceOf(ArrayBuffer);
     const postedBuffer = postedBody as unknown as ArrayBuffer;
     expect(Array.from(new Uint8Array(postedBuffer))).toEqual([9, 8, 7]);
+  });
+
+  it("round-trips versioned project metadata over the same host-neutral transport", async () => {
+    const metadata = {
+      projectId: "project/one",
+      name: "Remote project",
+      description: "Mirrored metadata",
+      createdAt: "2026-09-04T00:00:00.000Z",
+      updatedAt: "2026-09-04T00:01:00.000Z",
+      deletedAt: null,
+    };
+    const fetchImpl = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(String(input)).toBe(
+          "https://remote.example/loro/project%2Fone/metadata",
+        );
+        expect(init?.headers).toMatchObject({
+          authorization: "Bearer secret",
+        });
+        if (init?.method === "GET") {
+          return Response.json({ schemaVersion: 1, metadata });
+        }
+        expect(init?.method).toBe("PUT");
+        expect(init?.headers).toMatchObject({
+          "content-type": "application/json",
+        });
+        expect(JSON.parse(String(init?.body))).toEqual({
+          schemaVersion: 1,
+          metadata,
+        });
+        return new Response(null, { status: 204 });
+      },
+    );
+    const persistence = createHttpRemoteLoroPersistence({
+      baseUrl: "https://remote.example/",
+      token: "secret",
+      fetch: fetchImpl,
+    });
+
+    await expect(
+      persistence.loadProjectMetadata?.("project/one"),
+    ).resolves.toEqual(metadata);
+    await expect(
+      persistence.saveProjectMetadata?.("project/one", metadata),
+    ).resolves.toBeUndefined();
   });
 });
 

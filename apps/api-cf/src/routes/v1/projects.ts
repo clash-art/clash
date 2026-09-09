@@ -4,6 +4,14 @@ import {
   getProjectById,
   listProjectsWithAssets,
 } from "../../services/projects-d1";
+import {
+  ProjectCloudAdmissionRequestSchema,
+  ProjectCloudAdmissionResponseSchema,
+} from "@clash/shared-types";
+import {
+  cloudSyncBaseUrl,
+  createD1CloudProjectAdmissionStore,
+} from "../../services/cloud-project-admission";
 
 export const projectRoutes = new Hono<{ Bindings: Env }>();
 
@@ -66,6 +74,65 @@ projectRoutes.get("/:id", async (c) => {
   }
 
   return c.json(project);
+});
+
+/**
+ * Admit a local-only Project into the caller's hosted personal Tenant.
+ *
+ * This is intentionally project-scoped: logging in does not change the
+ * process-wide sync mode and does not upload any other local Projects.
+ */
+projectRoutes.post("/:id/cloud-admission", async (c) => {
+  const userId = getUserId(c);
+  const projectId = c.req.param("id");
+  const parsed = ProjectCloudAdmissionRequestSchema.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success || parsed.data.projectId !== projectId) {
+    return c.json(
+      {
+        error: "Invalid project cloud admission request",
+        details: parsed.success ? undefined : parsed.error.issues,
+      },
+      400,
+    );
+  }
+  try {
+    const response = await createD1CloudProjectAdmissionStore(c.env.DB).admit({
+      userId,
+      request: parsed.data,
+      syncBaseUrl: cloudSyncBaseUrl(c.req.raw, c.env),
+    });
+    return c.json(ProjectCloudAdmissionResponseSchema.parse(response), 201);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Forbidden") {
+      return c.json({ error: "Project not found" }, 404);
+    }
+    return c.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Project cloud admission failed",
+      },
+      500,
+    );
+  }
+});
+
+projectRoutes.get("/:id/cloud-admission", async (c) => {
+  const userId = getUserId(c);
+  const projectId = c.req.param("id");
+  const localReplicaId = c.req.query("localReplicaId")?.trim();
+  if (!localReplicaId) {
+    return c.json({ error: "localReplicaId is required" }, 400);
+  }
+  const admission = await createD1CloudProjectAdmissionStore(c.env.DB).read({
+    userId,
+    projectId,
+    localReplicaId,
+  });
+  return admission ? c.json({ admission }) : c.json({ error: "Project not found" }, 404);
 });
 
 // PATCH /api/v1/projects/:id — Rename a project

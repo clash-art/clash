@@ -94,6 +94,27 @@ export {
 } from "./generator-v2.js";
 
 export {
+  PROJECT_METADATA_SCHEMA_VERSION,
+  ProjectMetadataEnvelopeSchema,
+  ProjectMetadataSchema,
+  type ProjectMetadata,
+  type ProjectMetadataEnvelope,
+} from "./project-metadata.js";
+
+export {
+  ProjectCloudAdmissionRequestSchema,
+  ProjectCloudAdmissionResponseSchema,
+  ProjectCloudAdmissionSchema,
+  ProjectCloudAdmissionStatusSchema,
+  ProjectCloudCapabilitiesSchema,
+  type ProjectCloudAdmission,
+  type ProjectCloudAdmissionRequest,
+  type ProjectCloudAdmissionResponse,
+  type ProjectCloudAdmissionStatus,
+  type ProjectCloudCapabilities,
+} from "./project-cloud-admission.js";
+
+export {
   DocumentAssetMutabilitySchema,
   DocumentAssetRevisionSchema,
   DocumentAttachmentSchema,

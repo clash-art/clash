@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildProjectRecoveryPolicy, buildProjectStatus, projectWorkspaceId } from "./project-status";
+import {
+  buildProjectRecoveryPolicy,
+  buildProjectStatus,
+  projectWorkspaceId,
+} from "./project-status";
 
 const expectedTracePolicy = {
   schemaVersion: 1,
@@ -65,6 +69,13 @@ const expectedSyncMirrorPolicy = {
     agentWritable: false,
     conflictPolicy: "same-revision-id-same-hash-idempotent-conflict-otherwise",
   },
+  projectMetadata: {
+    requirement: "project-metadata",
+    source: "hosted-project-metadata-store",
+    fields: ["name", "description", "createdAt", "updatedAt", "deletedAt"],
+    mediaBlobsIncluded: false,
+    conflictPolicy: "updated-at-lww-with-stable-tie-breaker",
+  },
 } as const;
 
 function expectedSyncPolicy(cloudAdmission: string) {
@@ -87,10 +98,26 @@ function expectedSyncPolicy(cloudAdmission: string) {
 
 describe("project status path builder", () => {
   it("derives stable workspace ids without embedding project ids", () => {
-    const first = projectWorkspaceId("managed", "project/with spaces", "/tmp/workspace");
-    const second = projectWorkspaceId("managed", "project/with spaces", "/tmp/workspace");
-    const differentWorkspace = projectWorkspaceId("managed", "project/with spaces", "/tmp/other-workspace");
-    const external = projectWorkspaceId("external", "project/with spaces", "/tmp/workspace");
+    const first = projectWorkspaceId(
+      "managed",
+      "project/with spaces",
+      "/tmp/workspace",
+    );
+    const second = projectWorkspaceId(
+      "managed",
+      "project/with spaces",
+      "/tmp/workspace",
+    );
+    const differentWorkspace = projectWorkspaceId(
+      "managed",
+      "project/with spaces",
+      "/tmp/other-workspace",
+    );
+    const external = projectWorkspaceId(
+      "external",
+      "project/with spaces",
+      "/tmp/workspace",
+    );
 
     expect(first).toMatch(/^managed:[a-f0-9]{16}$/);
     expect(first).toBe(second);
@@ -103,33 +130,49 @@ describe("project status path builder", () => {
   it("keeps Project Timeline history in the canonical Loro replica", () => {
     const status = buildProjectStatus(
       { projectId: "timeline-history", source: "marker" },
-      { clashRoot: "/tmp/clash-home", localApiDataDir: "/tmp/clash-home/local-api" },
+      {
+        clashRoot: "/tmp/clash-home",
+        localApiDataDir: "/tmp/clash-home/local-api",
+      },
     );
 
     expect(status.storage.canonicalReplica).toHaveProperty("projectState");
     expect(status.storage.canonicalReplica).not.toHaveProperty("canvas");
-    expect(status.storage.canonicalReplica.contentBlobs).not.toHaveProperty("timelineRevisions");
+    expect(status.storage.canonicalReplica.contentBlobs).not.toHaveProperty(
+      "timelineRevisions",
+    );
     expect(status.storage.contentModel.timelines).toMatchObject({
       liveState: "loro-project-timeline-entity",
       revisionAuthority: "loro-project-history",
       revisionIdentity: "state-hash",
       downstreamRendersPinRevision: true,
     });
-    expect(status.storage.contentModel.timelines).not.toHaveProperty("revisionRegistry");
-    expect(status.storage.contentModel.timelines).not.toHaveProperty("revisionBlobPath");
-    expect(status.storage.contentModel.timelines).not.toHaveProperty("contentRegistry");
-    expect(status.collaboration.syncPolicy.mirror.revisionContent.registries).toEqual([
-      "text_revisions",
-    ]);
+    expect(status.storage.contentModel.timelines).not.toHaveProperty(
+      "revisionRegistry",
+    );
+    expect(status.storage.contentModel.timelines).not.toHaveProperty(
+      "revisionBlobPath",
+    );
+    expect(status.storage.contentModel.timelines).not.toHaveProperty(
+      "contentRegistry",
+    );
+    expect(
+      status.collaboration.syncPolicy.mirror.revisionContent.registries,
+    ).toEqual(["text_revisions"]);
   });
 
   it("builds agent-editable roots and protected local store paths", () => {
     const status = buildProjectStatus(
       { projectId: "project/one", source: "explicit" },
-      { clashRoot: "/tmp/clash-home", localApiDataDir: "/tmp/clash-home/local-api" },
+      {
+        clashRoot: "/tmp/clash-home",
+        localApiDataDir: "/tmp/clash-home/local-api",
+      },
     );
 
-    expect(status.projectWorkspaceRoot).toBe("/tmp/clash-home/projects/project%2Fone");
+    expect(status.projectWorkspaceRoot).toBe(
+      "/tmp/clash-home/projects/project%2Fone",
+    );
     expect(status.currentWorkspace).toEqual({
       schemaVersion: 1,
       role: "project-reference-and-draft-workspace",
@@ -140,12 +183,22 @@ describe("project status path builder", () => {
       ownsCanonicalMetadata: false,
       deletionDeletesProjectState: false,
     });
-    expect(status.roots.projections).toBe("/tmp/clash-home/projects/project%2Fone/projections");
-    expect(status.roots.timelines).toBe("/tmp/clash-home/projects/project%2Fone/timelines");
-    expect(status.roots.assetLinks).toBe("/tmp/clash-home/projects/project%2Fone/assets/links");
-    expect(status.roots.runtime).toBe("/tmp/clash-home/projects/project%2Fone/runtime");
+    expect(status.roots.projections).toBe(
+      "/tmp/clash-home/projects/project%2Fone/projections",
+    );
+    expect(status.roots.timelines).toBe(
+      "/tmp/clash-home/projects/project%2Fone/timelines",
+    );
+    expect(status.roots.assetLinks).toBe(
+      "/tmp/clash-home/projects/project%2Fone/assets/links",
+    );
+    expect(status.roots.runtime).toBe(
+      "/tmp/clash-home/projects/project%2Fone/runtime",
+    );
     expect(status.runtimeRoot).toBe(status.roots.runtime);
-    expect(status.localSqlitePath).toBe("/tmp/clash-home/local-api/local.sqlite");
+    expect(status.localSqlitePath).toBe(
+      "/tmp/clash-home/local-api/local.sqlite",
+    );
     expect(status.storage.canonicalReplica.metadata.localConfig).toEqual({
       role: "user-editable-machine-config",
       format: "yaml",
@@ -156,14 +209,30 @@ describe("project status path builder", () => {
       mutationSurface: "host-api-cli-or-editor",
       sqliteConfigRows: "migration-only",
     });
-    expect(status.storage.localSecrets.files.hostCredentials.path).toBe("/tmp/clash-home/credentials.json");
-    expect(status.loro.snapshotPath).toBe("/tmp/clash-home/local-api/projects/project%2Fone/loro/snapshot.bin");
-    expect(status.storage.canonicalReplica.mediaAssets.path).toBe("/tmp/clash-home/assets/blobs");
-    expect(status.storage.canonicalReplica.contentBlobs.textRevisions.path).toBe("/tmp/clash-home/local-api/text-revision-blobs");
-    expect(status.storage.contentModel.textNodes.revisionRegistry).toBe("text_revisions");
-    expect(status.storage.contentModel.textNodes.revisionBlobPath).toBe(status.storage.canonicalReplica.contentBlobs.textRevisions.path);
-    expect(status.storage.contentModel.textNodes.historyCommand).toBe("clash text history");
-    expect(status.storage.contentModel.textNodes.contentCommand).toBe("clash text content");
+    expect(status.storage.localSecrets.files.hostCredentials.path).toBe(
+      "/tmp/clash-home/credentials.json",
+    );
+    expect(status.loro.snapshotPath).toBe(
+      "/tmp/clash-home/local-api/projects/project%2Fone/loro/snapshot.bin",
+    );
+    expect(status.storage.canonicalReplica.mediaAssets.path).toBe(
+      "/tmp/clash-home/assets/blobs",
+    );
+    expect(
+      status.storage.canonicalReplica.contentBlobs.textRevisions.path,
+    ).toBe("/tmp/clash-home/local-api/text-revision-blobs");
+    expect(status.storage.contentModel.textNodes.revisionRegistry).toBe(
+      "text_revisions",
+    );
+    expect(status.storage.contentModel.textNodes.revisionBlobPath).toBe(
+      status.storage.canonicalReplica.contentBlobs.textRevisions.path,
+    );
+    expect(status.storage.contentModel.textNodes.historyCommand).toBe(
+      "clash text history",
+    );
+    expect(status.storage.contentModel.textNodes.contentCommand).toBe(
+      "clash text content",
+    );
     expect(status.storage.contentModel.textNodes.contentRegistry).toEqual({
       kind: "sqlite-non-media-revision-registry",
       table: "text_revisions",
@@ -171,10 +240,18 @@ describe("project status path builder", () => {
       mediaAssetTable: false,
     });
     expect(status.storage.contentModel.textNodes.mediaAsset).toBe(false);
-    expect(status.storage.contentModel.timelines.revisionAuthority).toBe("loro-project-history");
-    expect(status.storage.contentModel.timelines.revisionIdentity).toBe("state-hash");
-    expect(status.storage.contentModel.timelines.liveState).toBe("loro-project-timeline-entity");
-    expect(status.storage.contentModel.timelines.projectionFilePattern).toBe("<timeline-id>.timeline.yaml");
+    expect(status.storage.contentModel.timelines.revisionAuthority).toBe(
+      "loro-project-history",
+    );
+    expect(status.storage.contentModel.timelines.revisionIdentity).toBe(
+      "state-hash",
+    );
+    expect(status.storage.contentModel.timelines.liveState).toBe(
+      "loro-project-timeline-entity",
+    );
+    expect(status.storage.contentModel.timelines.projectionFilePattern).toBe(
+      "<timeline-id>.timeline.yaml",
+    );
     expect(status.storage.contentModel.timelines.publicCommands).toEqual([
       "clash timeline list",
       "clash timeline create --id <id> --name <name>",
@@ -184,19 +261,39 @@ describe("project status path builder", () => {
       "clash timeline pull --timeline <id>",
       "clash timeline apply --timeline <id>",
     ]);
-    expect(status.storage.contentModel.timelines.copyOnWriteWhenReferenced).toBe(false);
-    expect(status.storage.contentModel.timelines.downstreamRendersPinRevision).toBe(true);
-    expect(status.storage.contentModel.timelines).not.toHaveProperty("historyCommand");
-    expect(status.storage.contentModel.timelines).not.toHaveProperty("restoreCommand");
-    expect(status.storage.contentModel.timelines).not.toHaveProperty("contentRegistry");
+    expect(
+      status.storage.contentModel.timelines.copyOnWriteWhenReferenced,
+    ).toBe(false);
+    expect(
+      status.storage.contentModel.timelines.downstreamRendersPinRevision,
+    ).toBe(true);
+    expect(status.storage.contentModel.timelines).not.toHaveProperty(
+      "historyCommand",
+    );
+    expect(status.storage.contentModel.timelines).not.toHaveProperty(
+      "restoreCommand",
+    );
+    expect(status.storage.contentModel.timelines).not.toHaveProperty(
+      "contentRegistry",
+    );
     expect(status.editablePaths).toContain(status.roots.drafts);
     expect(status.editablePaths).toContain(status.roots.timelines);
     expect(status.protectedPaths).toContain(status.loro.snapshotPath);
-    expect(status.protectedPaths).toContain(status.storage.canonicalReplica.mediaAssets.path);
-    expect(status.protectedPaths).toContain(status.storage.canonicalReplica.contentBlobs.textRevisions.path);
-    expect(status.protectedPaths).toContain(status.storage.canonicalReplica.contentBlobs.assetMetadataBodies.path);
-    expect(status.protectedPaths).toContain(status.storage.canonicalReplica.metadata.localConfig.path);
-    expect(status.protectedPaths).toContain(status.storage.localSecrets.files.hostCredentials.path);
+    expect(status.protectedPaths).toContain(
+      status.storage.canonicalReplica.mediaAssets.path,
+    );
+    expect(status.protectedPaths).toContain(
+      status.storage.canonicalReplica.contentBlobs.textRevisions.path,
+    );
+    expect(status.protectedPaths).toContain(
+      status.storage.canonicalReplica.contentBlobs.assetMetadataBodies.path,
+    );
+    expect(status.protectedPaths).toContain(
+      status.storage.canonicalReplica.metadata.localConfig.path,
+    );
+    expect(status.protectedPaths).toContain(
+      status.storage.localSecrets.files.hostCredentials.path,
+    );
     expect(status.protectedPaths).toContain(status.roots.runtime);
     expect(status.collaboration).toEqual({
       schemaVersion: 1,
@@ -209,8 +306,18 @@ describe("project status path builder", () => {
       syncReadiness: {
         status: "disabled",
         ready: false,
-        required: ["canvas", "asset-metadata", "revision-content"],
-        missing: ["canvas", "asset-metadata", "revision-content"],
+        required: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
+        missing: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
       },
       actions: {
         openInWeb: {
@@ -353,7 +460,8 @@ describe("project status path builder", () => {
         textNodes: {
           liveState: "loro-canvas-text-node-data",
           editableProjection: "storage.workspace.viewFiles.texts",
-          projectionPath: "/tmp/clash-home/projects/project%2Fone/projections/text",
+          projectionPath:
+            "/tmp/clash-home/projects/project%2Fone/projections/text",
           applyCommand: "clash text apply",
           replaceCommand: "clash text replace",
           restoreCommand: "clash text restore",
@@ -520,7 +628,10 @@ describe("project status path builder", () => {
     );
     const cloudSync = buildProjectStatus(
       { projectId: "project-synced", source: "explicit" },
-      { clashRoot: "/tmp/clash-home", replicationState: { mode: "cloud-sync" } },
+      {
+        clashRoot: "/tmp/clash-home",
+        replicationState: { mode: "cloud-sync" },
+      },
     );
     const shared = buildProjectStatus(
       { projectId: "project-shared", source: "explicit" },
@@ -540,7 +651,12 @@ describe("project status path builder", () => {
       syncReadiness: {
         status: "disabled",
         ready: false,
-        missing: ["canvas", "asset-metadata", "revision-content"],
+        missing: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
       },
       actions: {
         openInWeb: {
@@ -578,13 +694,23 @@ describe("project status path builder", () => {
       syncReadiness: {
         status: "pending",
         ready: false,
-        missing: ["canvas", "asset-metadata", "revision-content"],
+        missing: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
       },
       actions: {
         openInWeb: {
           allowed: false,
           reason: "cloud-sync-not-ready",
-          requirements: ["canvas", "asset-metadata", "revision-content"],
+          requirements: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
         },
         enableSync: {
           allowed: false,
@@ -594,7 +720,12 @@ describe("project status path builder", () => {
         shareProject: {
           allowed: false,
           reason: "cloud-sync-not-ready",
-          requirements: ["canvas", "asset-metadata", "revision-content"],
+          requirements: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
         },
         runLocalAgent: {
           allowed: true,
@@ -658,6 +789,7 @@ describe("project status path builder", () => {
           canvas: true,
           assetMetadata: true,
           revisionContent: true,
+          projectMetadata: true,
         },
       },
     });
@@ -687,6 +819,7 @@ describe("project status path builder", () => {
             canvas: true,
             assetMetadata: true,
             revisionContent: true,
+            projectMetadata: true,
           },
         },
       },
@@ -739,7 +872,9 @@ describe("project status path builder", () => {
       requiresCloudConflictReview: true,
       reason: "sync-mode-unknown-local-replica-review-required",
     });
-    expect(buildProjectRecoveryPolicy(cloudSync, { localRestoreAllowed: false })).toMatchObject({
+    expect(
+      buildProjectRecoveryPolicy(cloudSync, { localRestoreAllowed: false }),
+    ).toMatchObject({
       collaborationMode: "synced",
       localRestoreAllowed: false,
       reason: "cloud-sync-local-replica-review-required",
@@ -749,7 +884,10 @@ describe("project status path builder", () => {
   it("keeps cloud-sync pending until canvas, asset metadata, and revision content sync are all ready", () => {
     const pending = buildProjectStatus(
       { projectId: "project-synced", source: "explicit" },
-      { clashRoot: "/tmp/clash-home", replicationState: { mode: "cloud-sync" } },
+      {
+        clashRoot: "/tmp/clash-home",
+        replicationState: { mode: "cloud-sync" },
+      },
     );
     const ready = buildProjectStatus(
       { projectId: "project-synced", source: "explicit" },
@@ -761,6 +899,7 @@ describe("project status path builder", () => {
             canvas: true,
             assetMetadata: true,
             revisionContent: true,
+            projectMetadata: true,
           },
         },
       },
@@ -773,18 +912,33 @@ describe("project status path builder", () => {
       syncReadiness: {
         status: "pending",
         ready: false,
-        missing: ["canvas", "asset-metadata", "revision-content"],
+        missing: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
       },
       actions: {
         openInWeb: {
           allowed: false,
           reason: "cloud-sync-not-ready",
-          requirements: ["canvas", "asset-metadata", "revision-content"],
+          requirements: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
         },
         shareProject: {
           allowed: false,
           reason: "cloud-sync-not-ready",
-          requirements: ["canvas", "asset-metadata", "revision-content"],
+          requirements: [
+            "canvas",
+            "asset-metadata",
+            "revision-content",
+            "project-metadata",
+          ],
         },
       },
     });
@@ -836,6 +990,7 @@ describe("project status path builder", () => {
             canvas: true,
             assetMetadata: true,
             revisionContent: true,
+            projectMetadata: true,
           },
         },
       },
@@ -848,18 +1003,18 @@ describe("project status path builder", () => {
       syncReadiness: {
         status: "pending",
         ready: false,
-        missing: ["revision-content"],
+        missing: ["revision-content", "project-metadata"],
       },
       actions: {
         openInWeb: {
           allowed: false,
           reason: "cloud-sync-not-ready",
-          requirements: ["revision-content"],
+          requirements: ["revision-content", "project-metadata"],
         },
         shareProject: {
           allowed: false,
           reason: "cloud-sync-not-ready",
-          requirements: ["revision-content"],
+          requirements: ["revision-content", "project-metadata"],
         },
       },
     });
@@ -886,6 +1041,7 @@ describe("project status path builder", () => {
             canvas: true,
             assetMetadata: true,
             revisionContent: true,
+            projectMetadata: true,
           },
         },
       },
@@ -902,7 +1058,8 @@ describe("project status path builder", () => {
           contentKinds: ["text-revision-content"],
           mediaAsset: false,
           agentWritable: false,
-          conflictPolicy: "same-revision-id-same-hash-idempotent-conflict-otherwise",
+          conflictPolicy:
+            "same-revision-id-same-hash-idempotent-conflict-otherwise",
         },
       },
       excluded: {
@@ -924,7 +1081,9 @@ describe("project status path builder", () => {
       { clashRoot: "/tmp/clash-home", replicationState: { mode: "shared" } },
     );
 
-    expect(status.collaboration.projectRoom).toEqual(expectedProjectRoomPolicy("sequencer"));
+    expect(status.collaboration.projectRoom).toEqual(
+      expectedProjectRoomPolicy("sequencer"),
+    );
     expect(status.collaboration.tracePolicy).toEqual(expectedTracePolicy);
   });
 });

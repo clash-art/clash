@@ -6317,6 +6317,7 @@ interface LocalSyncCapabilities {
   canvas: boolean;
   asset_metadata: boolean;
   revision_content: boolean;
+  project_metadata: boolean;
 }
 
 const LOCAL_SYNC_CAPABILITY_FIELDS: Array<{
@@ -6339,6 +6340,12 @@ const LOCAL_SYNC_CAPABILITY_FIELDS: Array<{
     label: "Revision content mirror ready",
     description: "Text and timeline revision content blobs are mirrored.",
   },
+  {
+    key: "project_metadata",
+    label: "Project metadata mirror ready",
+    description:
+      "Project name, description, and lifecycle metadata are mirrored.",
+  },
 ];
 
 function defaultLocalSyncCapabilities(): LocalSyncCapabilities {
@@ -6346,6 +6353,7 @@ function defaultLocalSyncCapabilities(): LocalSyncCapabilities {
     canvas: false,
     asset_metadata: false,
     revision_content: false,
+    project_metadata: false,
   };
 }
 

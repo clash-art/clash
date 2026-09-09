@@ -104,19 +104,24 @@ async function writeProductReplicationConfig(
 ): Promise<void> {
   const clashHome = join(homeDir, ".clash");
   await mkdir(clashHome, { recursive: true });
-  const capabilities = config.capabilities as Record<string, unknown> | undefined;
-  await writeFile(join(clashHome, "config.yaml"), [
-    "version: 1",
-    "sync:",
-    `  mode: ${String(config.mode ?? "local-only")}`,
-    "  remote_loro:",
-    `    url: ${JSON.stringify(config.remoteLoroUrl ?? null)}`,
-    "  capabilities:",
-    `    canvas: ${capabilities?.canvas === true}`,
-    `    asset_metadata: ${capabilities?.asset_metadata === true}`,
-    `    revision_content: ${capabilities?.revision_content === true}`,
-    "",
-  ].join("\n"));
+  const capabilities = config.capabilities as
+    Record<string, unknown> | undefined;
+  await writeFile(
+    join(clashHome, "config.yaml"),
+    [
+      "version: 1",
+      "sync:",
+      `  mode: ${String(config.mode ?? "local-only")}`,
+      "  remote_loro:",
+      `    url: ${JSON.stringify(config.remoteLoroUrl ?? null)}`,
+      "  capabilities:",
+      `    canvas: ${capabilities?.canvas === true}`,
+      `    asset_metadata: ${capabilities?.asset_metadata === true}`,
+      `    revision_content: ${capabilities?.revision_content === true}`,
+      `    project_metadata: ${capabilities?.project_metadata === true}`,
+      "",
+    ].join("\n"),
+  );
 }
 
 test("project status exposes agent-readable project roots and protected local files", () => {
@@ -138,7 +143,12 @@ test("project status exposes agent-readable project roots and protected local fi
     replicationState: { mode: "local" },
   });
 
-  const projectStore = join(homeDir, ".clash", "projects", "project%2Fwith%20spaces");
+  const projectStore = join(
+    homeDir,
+    ".clash",
+    "projects",
+    "project%2Fwith%20spaces",
+  );
   const workspaceRoot = "/tmp/workspace";
   const localApiDataDir = join(homeDir, ".clash", "local-api");
   const assetBlobRoot = join(homeDir, ".clash", "assets", "blobs");
@@ -166,8 +176,18 @@ test("project status exposes agent-readable project roots and protected local fi
     syncReadiness: {
       status: "disabled",
       ready: false,
-      required: ["canvas", "asset-metadata", "revision-content"],
-      missing: ["canvas", "asset-metadata", "revision-content"],
+      required: [
+        "canvas",
+        "asset-metadata",
+        "revision-content",
+        "project-metadata",
+      ],
+      missing: [
+        "canvas",
+        "asset-metadata",
+        "revision-content",
+        "project-metadata",
+      ],
     },
     actions: {
       openInWeb: {
@@ -398,8 +418,14 @@ test("project status exposes agent-readable project roots and protected local fi
 });
 
 test("project status uses collision-resistant project workspace paths", () => {
-  const first = buildProjectStatus({ projectId: "project/one", source: "explicit" }, { homeDir: "/tmp/clash-home" });
-  const second = buildProjectStatus({ projectId: "project_one", source: "explicit" }, { homeDir: "/tmp/clash-home" });
+  const first = buildProjectStatus(
+    { projectId: "project/one", source: "explicit" },
+    { homeDir: "/tmp/clash-home" },
+  );
+  const second = buildProjectStatus(
+    { projectId: "project_one", source: "explicit" },
+    { homeDir: "/tmp/clash-home" },
+  );
 
   assert.notEqual(first.projectWorkspaceRoot, second.projectWorkspaceRoot);
   assert.match(first.projectWorkspaceRoot, /project%2Fone|project%252Fone/);
@@ -409,7 +435,10 @@ test("project pointer marker uses the product-internal local-only default", asyn
   const homeDir = await tempDir();
   const cwd = await tempDir();
 
-  const initialized = await initProject({ cwd, projectId: "local_status_project" });
+  const initialized = await initProject({
+    cwd,
+    projectId: "local_status_project",
+  });
   const status = await resolveProjectStatus({ cwd, env: {}, homeDir });
 
   assert.equal(status.projectId, "local_status_project");
@@ -467,6 +496,7 @@ test("project status reads canonical sync readiness from the product SQLite stor
       canvas: true,
       asset_metadata: true,
       revision_content: true,
+      project_metadata: true,
     },
     updatedAt: new Date(0).toISOString(),
   });
@@ -479,7 +509,12 @@ test("project status reads canonical sync readiness from the product SQLite stor
   assert.deepEqual(status.collaboration.syncReadiness, {
     status: "ready",
     ready: true,
-    required: ["canvas", "asset-metadata", "revision-content"],
+    required: [
+      "canvas",
+      "asset-metadata",
+      "revision-content",
+      "project-metadata",
+    ],
     missing: [],
   });
 });
@@ -508,20 +543,28 @@ test("project status uses canonical sync readiness supplied by the product", asy
   assert.deepEqual(status.collaboration.syncReadiness, {
     status: "pending",
     ready: false,
-    required: ["canvas", "asset-metadata", "revision-content"],
-    missing: ["revision-content"],
+    required: [
+      "canvas",
+      "asset-metadata",
+      "revision-content",
+      "project-metadata",
+    ],
+    missing: ["revision-content", "project-metadata"],
   });
   assert.deepEqual(status.collaboration.actions.openInWeb, {
     allowed: false,
     reason: "cloud-sync-not-ready",
-    requirements: ["revision-content"],
+    requirements: ["revision-content", "project-metadata"],
   });
   assert.deepEqual(status.collaboration.actions.shareProject, {
     allowed: false,
     reason: "cloud-sync-not-ready",
-    requirements: ["revision-content"],
+    requirements: ["revision-content", "project-metadata"],
   });
-  assert.deepEqual(status.collaboration.syncPolicy, expectedSyncPolicy("blocked-until-requirements-ready"));
+  assert.deepEqual(
+    status.collaboration.syncPolicy,
+    expectedSyncPolicy("blocked-until-requirements-ready"),
+  );
 });
 
 test("project status identifies the current marker workspace separately from the canonical store", async () => {
@@ -529,9 +572,16 @@ test("project status identifies the current marker workspace separately from the
   const cwd = await tempDir();
   const childCwd = join(cwd, "drafts", "nested");
   await mkdir(childCwd, { recursive: true });
-  const initialized = await initProject({ cwd, projectId: "workspace_status_project" });
+  const initialized = await initProject({
+    cwd,
+    projectId: "workspace_status_project",
+  });
 
-  const status = await resolveProjectStatus({ cwd: childCwd, env: {}, homeDir });
+  const status = await resolveProjectStatus({
+    cwd: childCwd,
+    env: {},
+    homeDir,
+  });
 
   assert.deepEqual(status.currentWorkspace, {
     schemaVersion: 1,
@@ -541,7 +591,12 @@ test("project status identifies the current marker workspace separately from the
     markerRoot: cwd,
     markerStore: "managed",
     markerWorkspaceId: initialized.workspaceId,
-    projectWorkspaceRoot: join(homeDir, ".clash", "projects", "workspace_status_project"),
+    projectWorkspaceRoot: join(
+      homeDir,
+      ".clash",
+      "projects",
+      "workspace_status_project",
+    ),
     locatedInProjectWorkspace: false,
     ownsCanonicalSnapshot: false,
     ownsCanonicalMetadata: false,
@@ -551,7 +606,10 @@ test("project status identifies the current marker workspace separately from the
   assert.equal(status.storage.workspace.root, cwd);
   assert.equal(status.roots.timelines, join(cwd, "timelines"));
   assert.equal(status.roots.projections, join(cwd, "projections"));
-  assert.equal(status.storage.canonicalReplica.metadata.path, join(homeDir, ".clash", "local-api", "local.sqlite"));
+  assert.equal(
+    status.storage.canonicalReplica.metadata.path,
+    join(homeDir, ".clash", "local-api", "local.sqlite"),
+  );
 });
 
 test("project status exposes explicit collaboration gates for synced and shared modes", () => {
@@ -581,14 +639,29 @@ test("project status exposes explicit collaboration gates for synced and shared 
     syncReadiness: {
       status: "pending",
       ready: false,
-      required: ["canvas", "asset-metadata", "revision-content"],
-      missing: ["canvas", "asset-metadata", "revision-content"],
+      required: [
+        "canvas",
+        "asset-metadata",
+        "revision-content",
+        "project-metadata",
+      ],
+      missing: [
+        "canvas",
+        "asset-metadata",
+        "revision-content",
+        "project-metadata",
+      ],
     },
     actions: {
       openInWeb: {
         allowed: false,
         reason: "cloud-sync-not-ready",
-        requirements: ["canvas", "asset-metadata", "revision-content"],
+        requirements: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
       },
       enableSync: {
         allowed: false,
@@ -598,7 +671,12 @@ test("project status exposes explicit collaboration gates for synced and shared 
       shareProject: {
         allowed: false,
         reason: "cloud-sync-not-ready",
-        requirements: ["canvas", "asset-metadata", "revision-content"],
+        requirements: [
+          "canvas",
+          "asset-metadata",
+          "revision-content",
+          "project-metadata",
+        ],
       },
       runLocalAgent: {
         allowed: true,
@@ -625,7 +703,12 @@ test("project status exposes explicit collaboration gates for synced and shared 
     syncReadiness: {
       status: "ready",
       ready: true,
-      required: ["canvas", "asset-metadata", "revision-content"],
+      required: [
+        "canvas",
+        "asset-metadata",
+        "revision-content",
+        "project-metadata",
+      ],
       missing: [],
     },
     actions: {
@@ -716,5 +799,8 @@ test("project status honors CLASH_HOME for managed roots", async () => {
   assert.equal(status.projectStore, join(clashRoot, "projects", "env_project"));
   assert.equal(status.clashHome, clashRoot);
   assert.equal(status.localApiDataDir, join(clashRoot, "local-api"));
-  assert.equal(status.localSqlitePath, join(clashRoot, "local-api", "local.sqlite"));
+  assert.equal(
+    status.localSqlitePath,
+    join(clashRoot, "local-api", "local.sqlite"),
+  );
 });

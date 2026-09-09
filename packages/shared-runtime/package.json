@@ -43,6 +43,11 @@
       "import": "./src/generator-client.ts",
       "default": "./dist/generator-client.js"
     },
+    "./durable-run-engine": {
+      "types": "./src/durable-run-engine.ts",
+      "import": "./src/durable-run-engine.ts",
+      "default": "./dist/durable-run-engine.js"
+    },
     "./project-host-client": {
       "types": "./dist/project-host-client.d.ts",
       "import": "./dist/project-host-client.js",

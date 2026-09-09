@@ -1,8 +1,9 @@
 # Durable Run Protocol
 
-> Status: shared durability protocol. The Local adapter is the only delivered
-> execution owner. The Cloud adapter described here is a future port; this
-> document does not claim that Cloud execution or failover exists.
+> Status: shared durability protocol. The Local adapter and the Cloud
+> coordination adapter are delivered. Cloudflare-specific provider, OSS
+> staging, and ProjectPublisher ports remain deployment wiring; this document
+> does not claim that every hosted Provider route has been migrated.
 
 Native Generator v2 execution creates a standalone Project Loro Action Run
 today. Its immutable request pins a Generator Revision, Action, semantic

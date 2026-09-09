@@ -14,10 +14,20 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 
+import type { AssetDeliveryStore } from "@clash/asset-sdk/delivery";
+import {
+  ProjectCloudAdmissionRequestSchema,
+  ProjectCloudAdmissionResponseSchema,
+  ProjectMetadataEnvelopeSchema,
+} from "@clash/shared-types";
 import type { Env } from "./config";
 import { api } from "./routes/index";
 import { v1Routes } from "./routes/v1/index";
 import { assetDeliveryRoutes } from "./routes/assets";
+import {
+  createAssetCapabilityRoutes,
+  type AssetCapabilityRoutesOptions,
+} from "./routes/asset-capability";
 import { betterAuthRoutes } from "./routes/better-auth";
 import { projectsD1Routes } from "./routes/projects-d1";
 import { internalProjectsContextRoutes } from "./routes/internal-projects-context";
@@ -31,9 +41,25 @@ import {
   getUserIdFromRequest,
 } from "./services/session";
 import { authenticateRequest } from "./loro/auth";
+import {
+  createD1ProjectMetadataStore,
+  type CloudProjectMetadataStore,
+} from "./services/cloud-project-metadata";
+import {
+  cloudSyncBaseUrl,
+  type CloudProjectAdmissionStore,
+} from "./services/cloud-project-admission";
 
 export interface CreateAppOptions {
   plugins?: Plugin[];
+  /** Resolver supplied by the deployment's Resource Registry; storage locators stay private. */
+  assetDeliveryResolver?: AssetCapabilityRoutesOptions["resolve"];
+  /** Optional R2/S3/filesystem adapter behind the standalone capability route. */
+  assetDeliveryStore?: AssetDeliveryStore;
+  /** Optional Node/SaaS adapter; Cloudflare defaults to D1. */
+  projectMetadataStore?: (env: Env) => CloudProjectMetadataStore;
+  /** Optional Node/SaaS admission authority; Cloudflare defaults to D1. */
+  projectAdmissionStore?: CloudProjectAdmissionStore;
 }
 
 function decodeProjectIdParam(raw: string): string {
@@ -149,6 +175,46 @@ export function createApp(
     return forwardLoroPersistenceRequest(c, projectId);
   });
 
+  // Project metadata is ordinary client-server state, not part of the CRDT
+  // byte stream and not owned by the ProjectRoom Durable Object.
+  app.get("/loro/:projectId/metadata", async (c) => {
+    const projectId = decodeProjectIdParam(c.req.param("projectId"));
+    try {
+      await authenticateRequest(c.req.raw, c.env as any, projectId);
+    } catch {
+      return c.text("Unauthorized", 401);
+    }
+    const store =
+      opts.projectMetadataStore?.(c.env) ??
+      createD1ProjectMetadataStore(c.env.DB);
+    const metadata = await store.read(projectId);
+    return metadata
+      ? c.json({ schemaVersion: 1 as const, metadata })
+      : c.json({ error: "Project metadata not found" }, 404);
+  });
+
+  app.put("/loro/:projectId/metadata", async (c) => {
+    const projectId = decodeProjectIdParam(c.req.param("projectId"));
+    try {
+      await authenticateRequest(c.req.raw, c.env as any, projectId);
+    } catch {
+      return c.text("Unauthorized", 401);
+    }
+    const parsed = ProjectMetadataEnvelopeSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success || parsed.data.metadata.projectId !== projectId) {
+      return c.json({ error: "Invalid Project metadata envelope" }, 400);
+    }
+    const store =
+      opts.projectMetadataStore?.(c.env) ??
+      createD1ProjectMetadataStore(c.env.DB);
+    const written = await store.write(parsed.data.metadata);
+    return written
+      ? new Response(null, { status: 204 })
+      : c.json({ error: "Project metadata not found" }, 404);
+  });
+
   // ─── AI Chat: /agents/supervisor/:room → SupervisorAgent DO ──
   // Room name format: "projectId:agentId" — each room is an independent agent instance.
   // Multiple agents can share the same project canvas via ProjectRoom.
@@ -194,11 +260,73 @@ export function createApp(
     return c.env.RUNTIME_ROOM.get(id).fetch(fwd);
   });
 
+  // Opaque capability delivery is mounted only when the deployment supplies a
+  // Resource Registry resolver. The route never accepts a caller-supplied
+  // storage key; the legacy transport below remains compatibility-only.
+  if (opts.assetDeliveryResolver) {
+    app.route(
+      "/assets/capability",
+      createAssetCapabilityRoutes({
+        resolve: opts.assetDeliveryResolver,
+        ...(opts.assetDeliveryStore ? { store: opts.assetDeliveryStore } : {}),
+      }),
+    );
+  }
+
   // Signed capability delivery is a transport adapter, not Asset authority.
   app.route("/assets", assetDeliveryRoutes);
 
   // ─── Better Auth — runs server-side so frontends just proxy ──
   app.route("/api/better-auth", betterAuthRoutes);
+
+  // A Node/SaaS deployment can supply the same admission contract without
+  // binding the control plane to D1. Mount these specific paths before the
+  // default D1-backed v1 project router when an adapter is supplied.
+  const projectAdmissionStore = opts.projectAdmissionStore;
+  if (projectAdmissionStore) {
+    app.post("/api/v1/projects/:projectId/cloud-admission", async (c) => {
+      const userId = c.req.header("x-user-id");
+      if (!userId) return c.json({ error: "unauthorized" }, 401);
+      const projectId = c.req.param("projectId");
+      const parsed = ProjectCloudAdmissionRequestSchema.safeParse(
+        await c.req.json().catch(() => null),
+      );
+      if (!parsed.success || parsed.data.projectId !== projectId) {
+        return c.json({ error: "Invalid project cloud admission request" }, 400);
+      }
+      try {
+        const response = await projectAdmissionStore.admit({
+          userId,
+          request: parsed.data,
+          syncBaseUrl: cloudSyncBaseUrl(c.req.raw, c.env),
+        });
+        return c.json(ProjectCloudAdmissionResponseSchema.parse(response), 201);
+      } catch (error) {
+        return c.json(
+          {
+            error:
+              error instanceof Error ? error.message : "Cloud admission failed",
+          },
+          500,
+        );
+      }
+    });
+    app.get("/api/v1/projects/:projectId/cloud-admission", async (c) => {
+      const userId = c.req.header("x-user-id");
+      const localReplicaId = c.req.query("localReplicaId")?.trim();
+      if (!userId || !localReplicaId) {
+        return c.json({ error: "unauthorized or localReplicaId missing" }, 401);
+      }
+      const admission = await projectAdmissionStore.read({
+        userId,
+        projectId: c.req.param("projectId"),
+        localReplicaId,
+      });
+      return admission
+        ? c.json({ admission })
+        : c.json({ error: "Project not found" }, 404);
+    });
+  }
 
   // ─── Public REST API v1 ─────────────────────────────────────
   app.route("/api/v1", v1Routes);

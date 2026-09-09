@@ -554,4 +554,118 @@ describe("local-to-cloud Loro replication under deterministic chaos", () => {
       `seed=${CHAOS_SEED} trace=${cloud.trace.join(" -> ")}`,
     ).toEqual([]);
   }, 30_000);
+
+  it("converges a long two-replica sequence across repeated faults and checkpoints", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-loro-long-chaos-"));
+    const cloud = new ChaosCloudHost();
+    await cloud.start();
+    cleanup.push(
+      () => cloud.close(),
+      () => rm(root, { recursive: true, force: true }),
+    );
+
+    const errors: Error[] = [];
+    const readiness = new ReplicaLinkReadiness();
+    const persistence = remotePersistence(cloud, errors, readiness);
+    let roomA = await LocalLoroRoom.open({
+      dataDir: join(root, "machine-a"),
+      projectId: PROJECT_ID,
+      remotePersistence: persistence,
+      workflowProcessor: null,
+    });
+    let roomB = await LocalLoroRoom.open({
+      dataDir: join(root, "machine-b"),
+      projectId: PROJECT_ID,
+      remotePersistence: persistence,
+      workflowProcessor: null,
+    });
+    cleanup.push(async () => {
+      await Promise.allSettled([roomA.close(), roomB.close()]);
+    });
+    await readiness.waitFor(2, cloud.trace);
+
+    const random = new SeededRandom(CHAOS_SEED ^ 0x128);
+    const expected: Record<string, number> = {};
+    const writeBatch = async (start: number, count: number) => {
+      await Promise.all(
+        Array.from({ length: count }, async (_, offset) => {
+          const index = start + offset;
+          const key = `long-${index}`;
+          const value = random.next();
+          expected[key] = value;
+          const room = index % 2 === 0 ? roomA : roomB;
+          await room.mutateProject((doc) => {
+            doc.getMap("chaos").set(key, value);
+            return { value: undefined };
+          });
+        }),
+      );
+    };
+
+    // Normal burst, then an ambiguous commit where the success ACK is lost.
+    await writeBatch(0, 16);
+    await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+    cloud.loseNextSuccessfulAck();
+    await writeBatch(16, 16);
+    await readiness.waitFor(2, cloud.trace);
+    await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+
+    // Lose a write before commit. The link must reconnect and replay it.
+    cloud.loseNextInboundUpdate();
+    await writeBatch(32, 16);
+    await readiness.waitFor(2, cloud.trace);
+    await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+    await cloud.checkpoint();
+
+    // Duplicate one batch and then partition both clients during the next burst.
+    cloud.duplicateNextUpdate();
+    await writeBatch(48, 16);
+    await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+    cloud.disconnectAll();
+    await readiness.waitForExact(0, cloud.trace);
+    await writeBatch(64, 16);
+    await readiness.waitFor(2, cloud.trace);
+    await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+
+    // A checkpoint races with live writes, followed by a cloud process restart.
+    await Promise.all([cloud.checkpoint(), writeBatch(80, 16)]);
+    await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+    await cloud.restartReplica();
+    expect(matchesExpected(cloud.document, expected)).toBe(true);
+    await readiness.waitFor(2, cloud.trace);
+
+    // Restart one local Host and finish with another ordinary burst.
+    await roomA.close();
+    roomA = await LocalLoroRoom.open({
+      dataDir: join(root, "machine-a"),
+      projectId: PROJECT_ID,
+      remotePersistence: persistence,
+      workflowProcessor: null,
+    });
+    cloud.trace.push("fault:long-local-a-restart");
+    await readiness.waitFor(2, cloud.trace);
+    await writeBatch(96, 32);
+
+    await waitUntil(
+      () =>
+        matchesExpected(cloud.document, expected) &&
+        matchesExpected(LoroDoc.fromSnapshot(roomA.snapshot()), expected) &&
+        matchesExpected(LoroDoc.fromSnapshot(roomB.snapshot()), expected),
+      cloud.trace,
+      20_000,
+    );
+    await cloud.checkpoint();
+    await cloud.restartReplica();
+
+    expect(Object.keys(expected)).toHaveLength(128);
+    expect(chaosState(cloud.document)).toEqual(expected);
+    expect(
+      cloud.failures,
+      `seed=${CHAOS_SEED} trace=${cloud.trace.join(" -> ")}`,
+    ).toEqual([]);
+    expect(
+      errors,
+      `seed=${CHAOS_SEED} trace=${cloud.trace.join(" -> ")}`,
+    ).toEqual([]);
+  }, 45_000);
 });

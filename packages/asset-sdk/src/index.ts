@@ -47,3 +47,52 @@ export {
   type PersonalGlobalAssetHttpClient,
   type PersonalGlobalAssetHttpClientOptions,
 } from "./personal-global-asset-http-client.js";
+
+export {
+  AssetDeliveryError,
+  createAssetDeliveryPort,
+  type AssetDeliveryAuthorizationInput,
+  type AssetDeliveryAuthorizer,
+  type AssetDeliveryErrorCode,
+  type AssetDeliveryOperation,
+  type AssetDeliveryPort,
+  type AssetDeliveryPortOptions,
+  type AssetDeliveryPurpose,
+  type AssetDeliveryReadRequest,
+  type AssetDeliveryScope,
+  type AssetDeliverySigner,
+  type AssetDeliverySignerInput,
+  type AssetDeliverySignerResult,
+  type AssetDeliveryUploadRequest,
+  type AssetDeliveryUrl,
+} from "./asset-delivery.js";
+
+export {
+  createHmacAssetDeliverySigner,
+  verifyHmacAssetDeliveryCapability,
+  type AssetDeliveryCapabilityClaims,
+  type HmacAssetDeliverySignerOptions,
+  type VerifyHmacAssetDeliveryCapabilityOptions,
+} from "./asset-delivery-capability.js";
+
+export {
+  ResourceReplicationError,
+  pushProjectResources,
+  pullResource,
+  pushResource,
+  type PullResourceOptions,
+  type PushResourceOptions,
+  type ResourceByteStore,
+  type ResourceReplicationBaseOptions,
+  type ResourceReplicationErrorCode,
+  type ResourceReplicationResult,
+  type ResourceReplicationStatus,
+  type ProjectResourceReplicationOptions,
+  type ProjectResourceReplicationResult,
+} from "./resource-replication.js";
+
+export type {
+  AssetDeliveryByteRange,
+  AssetDeliveryStore,
+  AssetDeliveryStoredObject,
+} from "./asset-delivery-store.js";

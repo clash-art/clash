@@ -126,6 +126,8 @@ import {
   LocalLoroRoomHub,
   type RemoteLoroPersistenceSource,
 } from "./sync.js";
+import type { LocalCloudAdmissionClient } from "./project-cloud-admission.js";
+import { createHttpCloudAdmissionClient } from "./project-cloud-admission.js";
 import { createLocalSyncConfigStore } from "./sync-config.js";
 import {
   createLocalAudioConfigStore,
@@ -168,6 +170,8 @@ export interface LocalApiServerOptions {
   /** Injectable so a signed-in Desktop can provide managed Clash storage later. */
   publicAssetStorage?: PublicAssetStorageService;
   remotePersistence?: RemoteLoroPersistenceSource | null;
+  /** Optional project-scoped cloud admission control-plane adapter. */
+  cloudAdmission?: LocalCloudAdmissionClient;
   /** Injectable download transport for completed provider media URLs. */
   providerAssetFetch?: typeof fetch;
   /** Replay harness only: workflow scheduling cap; provider responses remain untouched. */
@@ -1707,6 +1711,26 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     );
   };
   const clashUserConfigStore = createClashUserConfigStore(options.dataDir);
+  const syncConfigSection = await clashUserConfigStore.getSection<{
+    remote_loro?: { url?: unknown };
+  }>("sync");
+  const cloudAdmissionBaseUrl =
+    process.env.CLASH_REMOTE_LORO_URL?.trim() ||
+    (typeof syncConfigSection?.remote_loro?.url === "string"
+      ? syncConfigSection.remote_loro.url.trim()
+      : "");
+  const cloudAdmission =
+    options.cloudAdmission ??
+    (cloudAdmissionBaseUrl
+      ? createHttpCloudAdmissionClient({
+          baseUrl: cloudAdmissionBaseUrl,
+          token: async () => {
+            const credentials = await clashUserConfigStore.getCredentials();
+            const token = credentials.syncRemoteLoroToken ?? credentials.cliApiKey;
+            return typeof token === "string" ? token : undefined;
+          },
+        })
+      : undefined);
   const mediaAnalysisConfig = createLocalMediaAnalysisConfigStore({
     dataDir: options.dataDir,
     resolveOptions: (sourceKind) =>
@@ -1744,6 +1768,10 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     falMock,
     syncConfig,
     publicAssetStorage,
+    ...(cloudAdmission ? { cloudAdmission } : {}),
+    ensureProjectSync: async (projectId) => {
+      await roomHub?.room(projectId);
+    },
     audioConfig,
     mediaAnalysisConfig,
     resolveGeneratorModelConsumer: async ({ semanticShape, sourceKind }) => {
@@ -1947,7 +1975,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   });
   const remotePersistence =
     options.remotePersistence === undefined
-      ? () => syncConfig.resolveRemotePersistence()
+      ? (projectId?: string) => syncConfig.resolveRemotePersistence(projectId)
       : (options.remotePersistence ?? undefined);
   roomHub = new LocalLoroRoomHub(
     options.dataDir,

@@ -1085,6 +1085,7 @@ describe("SettingsClient sync section", () => {
                 canvas: false,
                 asset_metadata: false,
                 revision_content: false,
+                project_metadata: false,
               },
             }),
             { headers: { "content-type": "application/json" } },
@@ -1099,6 +1100,7 @@ describe("SettingsClient sync section", () => {
               canvas: true,
               asset_metadata: true,
               revision_content: true,
+              project_metadata: true,
             },
           });
           return new Response(
@@ -1114,6 +1116,7 @@ describe("SettingsClient sync section", () => {
                 canvas: true,
                 asset_metadata: true,
                 revision_content: true,
+                project_metadata: true,
               },
             }),
             { headers: { "content-type": "application/json" } },
@@ -1173,6 +1176,9 @@ describe("SettingsClient sync section", () => {
     );
     fireEvent.click(
       screen.getByRole("switch", { name: "Revision content mirror ready" }),
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Project metadata mirror ready" }),
     );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
