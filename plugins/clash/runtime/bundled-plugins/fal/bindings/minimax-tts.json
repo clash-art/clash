@@ -1,9 +1,0 @@
-{
-  "apiVersion": "clash.binding/v1",
-  "kind": "model-provider-binding",
-  "spec": {
-    "id": "minimax-tts",
-    "modelId": "minimax-tts",
-    "upstreamModel": "fal-ai/minimax/speech-02-hd"
-  }
-}

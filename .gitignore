@@ -24,6 +24,10 @@ ENV/
 out/
 dist/
 build/
+# Generated plugin distributions; included in release packages, not Git.
+/plugins/clash/runtime/
+/plugins/clash-director/runtime/
+/plugins/clash-timeline/runtime/
 apps/desktop/release/
 *.egg-info/
 

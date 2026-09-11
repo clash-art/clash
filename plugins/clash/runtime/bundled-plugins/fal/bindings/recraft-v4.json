@@ -1,9 +1,0 @@
-{
-  "apiVersion": "clash.binding/v1",
-  "kind": "model-provider-binding",
-  "spec": {
-    "id": "recraft-v4",
-    "modelId": "recraft-v4",
-    "upstreamModel": "fal-ai/recraft/v4/pro/text-to-image"
-  }
-}

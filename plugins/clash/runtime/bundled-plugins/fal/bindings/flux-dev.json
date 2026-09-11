@@ -1,9 +1,0 @@
-{
-  "apiVersion": "clash.binding/v1",
-  "kind": "model-provider-binding",
-  "spec": {
-    "id": "flux-dev",
-    "modelId": "flux-dev",
-    "upstreamModel": "fal-ai/flux/dev"
-  }
-}
