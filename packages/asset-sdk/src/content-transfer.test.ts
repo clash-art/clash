@@ -4,6 +4,7 @@ import {
   readBoundedContent,
   readContentTransferLimitError,
   ContentTransferLimitError,
+  contentTransferMaxBytes,
 } from "./content-transfer.js";
 
 function stream(chunks: Uint8Array[]) {
@@ -23,7 +24,20 @@ function stream(chunks: Uint8Array[]) {
   };
 }
 
-describe("bounded whole-object content transfer", () => {
+describe("bounded content transfer", () => {
+  it("accepts the requested 512 MiB object boundary and rejects the next byte", () => {
+    // Product requirement: the user explicitly raised the object cap to 512 MiB.
+    const requestedLimit = 512 * 1024 * 1024;
+    expect(() => assertContentTransferSize(requestedLimit)).not.toThrow();
+    expect(() => assertContentTransferSize(requestedLimit + 1)).toThrow(
+      ContentTransferLimitError,
+    );
+    expect(contentTransferMaxBytes()).toBe(requestedLimit);
+    expect(contentTransferMaxBytes(8)).toBe(8);
+    expect(() => contentTransferMaxBytes(requestedLimit + 1)).toThrow(
+      RangeError,
+    );
+  });
   it("accepts the configured boundary and rejects oversized declared facts before reading", async () => {
     expect(() => assertContentTransferSize(8, 8)).not.toThrow();
     expect(() => assertContentTransferSize(9, 8)).toThrow(

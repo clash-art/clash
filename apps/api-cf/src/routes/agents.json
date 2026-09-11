@@ -1,0 +1,9 @@
+{
+  "summary": "Hono transport adapters. Product contracts and authorization remain in shared contracts and the corresponding service ports.",
+  "key_files": {
+    "asset-capability.ts": "Consumes existing signed Resource capabilities. Project replica multipart requests recheck admission and exact references; generic preview/range streaming retains its existing policy.",
+    "project-content-transfer.ts": "Shared HTTP glue for Resource and Document all-PUT multipart phases and exact-length streaming responses. No client storage locator, ETag or resource list is accepted as authority.",
+    "project-content-transfer.test.ts": "Checks incremental response delivery, actual overflow/truncation failure and explicit unsupported storage without buffered fallback.",
+    "v1/project-content.ts": "Project Resource capability issuance and immutable Document body transport; authoritative Loro references and current exact replica admission gate every request."
+  }
+}

@@ -16,7 +16,37 @@ export interface AssetDeliveryStoredObject {
   contentType?: string;
 }
 
+export interface AssetDeliveryMultipartSession {
+  /** Caller-generated opaque ID; never sufficient authorization by itself. */
+  uploadId: string;
+  target: {
+    /** Private authenticated Project/replica/Resource or Document identity. */
+    identity: string;
+    locator: string;
+    digest: string;
+    byteLength: number;
+    contentType?: string;
+  };
+}
+
+export interface AssetDeliveryMultipartStore {
+  begin(session: AssetDeliveryMultipartSession): Promise<void>;
+  part(
+    session: AssetDeliveryMultipartSession,
+    partNumber: number,
+    bytes: Uint8Array,
+  ): Promise<void>;
+  /** Revalidate current admission/references after verification, before publication. */
+  complete(
+    session: AssetDeliveryMultipartSession,
+    beforePublish: () => Promise<void>,
+  ): Promise<void>;
+  abort(session: AssetDeliveryMultipartSession): Promise<void>;
+}
+
 export interface AssetDeliveryStore {
+  /** Optional resumable private staging adapter; never falls back to whole-object buffering. */
+  multipart?: AssetDeliveryMultipartStore;
   head(locator: string):
     | Promise<
         | {

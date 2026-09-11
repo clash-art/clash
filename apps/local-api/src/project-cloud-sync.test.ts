@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { LoroDoc } from "loro-crdt";
 import {
@@ -13,6 +14,7 @@ import {
 } from "@clash/shared-types";
 import { storeMetadataBody } from "@clash/shared-runtime";
 import type { AssetDeliveryStore } from "@clash/asset-sdk/delivery";
+import { PROJECT_CLOUD_CONTENT_PART_BYTES } from "@clash/asset-sdk/delivery";
 import { createLocalProjectCloudSync } from "./project-cloud-sync";
 import { createLocalMetadataStore } from "./local-metadata-store";
 import { createLocalResourceStore } from "./local-resource-store";
@@ -182,8 +184,10 @@ async function fixture(autoSchedule = true) {
   };
   service = createLocalProjectCloudSync(options);
   cleanup.push(() => service.close());
-  async function addResource(id: string) {
-    const bytes = new TextEncoder().encode(`bytes:${id}`);
+  async function addResource(
+    id: string,
+    bytes = new TextEncoder().encode(`bytes:${id}`),
+  ) {
     const source = await resourceStore.install({
       kind: "image",
       bytes,
@@ -226,6 +230,53 @@ async function fixture(autoSchedule = true) {
 }
 
 describe("production Project cloud coordinator adapter", () => {
+  it("uploads a large local Resource through bounded multipart requests before readiness", async () => {
+    const f = await fixture(false);
+    const { source, bytes } = await f.addResource(
+      "large",
+      new Uint8Array(PROJECT_CLOUD_CONTENT_PART_BYTES + 7),
+    );
+    const { resourceLocator } = await import(
+      new URL("../../api-cf/src/services/project-content.ts", import.meta.url)
+        .href
+    );
+    const key = await resourceLocator("tenant", source.resource);
+    const originalFetch = f.options.fetch;
+    const parts: Uint8Array[] = [];
+    let complete = false;
+    const service = createLocalProjectCloudSync({
+      ...f.options,
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        const action = url.searchParams.get("upload");
+        if (!action) return originalFetch(input, init);
+        if (action === "begin")
+          return Response.json({
+            uploadId: url.searchParams.get("uploadId"),
+            partSize: PROJECT_CLOUD_CONTENT_PART_BYTES,
+          });
+        if (action === "part") {
+          expect((await f.admission())?.status).toBe("syncing");
+          const part = init?.body as Uint8Array;
+          expect(part.byteLength).toBeLessThanOrEqual(
+            PROJECT_CLOUD_CONTENT_PART_BYTES,
+          );
+          parts.push(part);
+        } else if (action === "complete") {
+          f.objects.set(key, new Uint8Array(Buffer.concat(parts)));
+          complete = true;
+        } else throw new Error(`Unexpected upload action ${action}`);
+        return new Response(null, { status: 204 });
+      },
+    });
+    cleanup.push(() => service.close());
+    await service.schedule("project");
+    expect(complete).toBe(true);
+    expect((await f.admission())?.status).toBe("ready");
+    expect(createHash("sha256").update(f.objects.get(key)!).digest("hex")).toBe(
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+  });
   it("reaches ready only after acknowledged Loro, metadata, media and Document bytes, and retries after restart", async () => {
     const f = await fixture();
     f.rejectUploads(true);

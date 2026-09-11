@@ -20,7 +20,8 @@
     "src/asset-delivery-store.ts": "Host-neutral byte-store port used behind standalone delivery endpoints.",
     "src/resource-replication.ts": "Verified at-least-once Resource byte push/pull for local and hosted replicas.",
     "src/delivery.ts": "Narrow server-runtime entrypoint for delivery and replication ports.",
-    "src/content-transfer.ts": "Whole-object Project cloud transport policy: hard 32 MiB ceiling (adapters may lower), structured limit error, preflight size validation, and cancellable actual-byte bounded stream reader. Local publication and generic preview delivery do not inherit this cap."
+    "src/content-transfer.ts": "Project cloud transport policy: 512 MiB object ceiling (adapters may lower), 8 MiB request parts, structured errors and cancellable byte-bounded readers. Local publication and generic previews do not inherit the object cap.",
+    "src/cloud-content-upload.ts": "Portable authenticated Project multipart sender: one bounded part at a time, completion-only publication and best-effort abort; owners retain retry/cancellation policy."
   },
   "architecture_notes": "Resource bytes and projections are Host-owned ports. ProjectAssetEntry remains Project Loro authority and ResolvedAsset is read-only. Delivery is storage-neutral: R2, S3, filesystem, and other stores implement AssetDeliveryStore behind the standalone capability endpoint."
 }

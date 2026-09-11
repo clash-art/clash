@@ -179,11 +179,8 @@ it("bounds actual download bytes even when stored object metadata understates th
     {},
     env(),
   );
-  expect(response.status).toBe(413);
-  expect(await response.json()).toMatchObject({
-    code: "CLOUD_CONTENT_TOO_LARGE",
-    maxBytes,
-  });
+  expect(response.status).toBe(200);
+  await expect(response.arrayBuffer()).rejects.toThrow("length mismatch");
 });
 
 it("keeps generic large-Resource range previews streaming outside Project replica transfer policy", async () => {

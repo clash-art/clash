@@ -81,8 +81,9 @@ a concrete boundary benefit. Validate public exports and affected consumers.
 - Host tests cover retry after restart, unchanged content without repeated PUTs,
   resources added during upload, cancellation, source-Host-offline receiving,
   and preservation of opaque Resource identity. Final checks passed.
-- User-requested transport limit: whole-object cloud replication is capped at
-  32 MiB per Resource or Document body. Enforce declared facts before allocation
+- User-requested transport limit: cloud replication was initially capped at
+  32 MiB per Resource or Document body (raised to 512 MiB by the
+  multipart follow-up below). Enforce declared facts before allocation
   and actual streamed bytes on both sides, with explicit over-limit errors.
   Local asset publication remains unrestricted; generic media range delivery
   preserves streaming. Implementation and boundary regressions passed; the
@@ -353,3 +354,18 @@ those edits and review overlap before each stage; never stage unrelated work
 with a blanket `git add -A`. Generated plugin `runtime/` directories remain
 ignored and must not be recommitted. Commit/push checkpoints follow the user's
 existing authorization, after reviewing the staged scope and validation.
+
+## Follow-up: 512 MiB cloud content transport
+
+- Raised the user-requested per-Resource and per-Document limit to 512 MiB.
+  Uploads larger than 8 MiB use sequential bounded multipart requests through
+  the existing authenticated endpoints; downloads and local installation stream.
+- Private R2 staging is published only after exact length and full SHA-256
+  verification. Each request checks admission; completion and abort coordinate
+  through persisted publication state. Expired sessions are reclaimed in bounded
+  cron batches. Preserve R2's default incomplete multipart lifecycle rule.
+- Verified an actual 512 MiB Resource round trip and a roughly 40 MiB Document
+  round trip in Miniflare/R2. SDK tests (14), Host tests (13), API unit tests (12),
+  and seven distinct integration cases passed, including boundary rejection,
+  revocation, concurrent completion, cleanup, and uncertain publication recovery.
+- Final `make lint` passed all 53 tasks. No production deployment.

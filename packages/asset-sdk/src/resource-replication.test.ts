@@ -9,6 +9,7 @@ import {
 } from "./resource-replication.js";
 import type { AssetDeliveryPort, AssetDeliveryUrl } from "./asset-delivery.js";
 import type { Resource } from "@clash/shared-types/assets";
+import { PROJECT_CLOUD_CONTENT_PART_BYTES } from "./content-transfer.js";
 
 const bytes = new TextEncoder().encode("hello");
 // SHA-256("hello"), the canonical published test vector.
@@ -51,6 +52,53 @@ function store(
 }
 
 describe("ResourceReplicator", () => {
+  it("uses multipart requests for an admitted Project resource above one part", async () => {
+    const value = new Uint8Array(PROJECT_CLOUD_CONTENT_PART_BYTES + 3);
+    const hash = [
+      ...new Uint8Array(await crypto.subtle.digest("SHA-256", value)),
+    ]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    let sent = 0;
+    let completed = false;
+    await pushResource({
+      resource: {
+        ...resource,
+        byteLength: value.length,
+        digest: { algorithm: "sha256", value: hash },
+      },
+      local: { read: async () => value, write: async () => undefined },
+      delivery: {
+        issueReadUrl: vi.fn(),
+        issueUploadUrl: async () => url("upload"),
+      },
+      scope: {
+        tenantId: "tenant",
+        projectId: "project",
+        localReplicaId: "replica",
+      },
+      fetch: async (input, init) => {
+        const request = new URL(String(input));
+        const action = request.searchParams.get("upload");
+        if (action === "begin")
+          return Response.json({
+            uploadId: request.searchParams.get("uploadId"),
+            partSize: PROJECT_CLOUD_CONTENT_PART_BYTES,
+          });
+        if (action === "part") {
+          const part = init?.body as Uint8Array;
+          expect(part.length).toBeLessThanOrEqual(
+            PROJECT_CLOUD_CONTENT_PART_BYTES,
+          );
+          sent += part.length;
+        } else if (action === "complete") completed = true;
+        else throw new Error("Expected multipart request");
+        return new Response(null, { status: 204 });
+      },
+    });
+    expect(sent).toBe(value.length);
+    expect(completed).toBe(true);
+  });
   it("pushes local bytes through an upload URL without putting bytes in Project state", async () => {
     const local = store(bytes);
     const delivery: AssetDeliveryPort = {

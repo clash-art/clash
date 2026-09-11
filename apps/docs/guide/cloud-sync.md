@@ -76,18 +76,40 @@ and content-addressed Resource PUTs are safe to repeat. Periodic reconciliation
 checks cloud availability before uploading: unchanged Resources and Document
 bodies do not produce repeated byte PUTs. Each attempt has a ten-minute network
 budget by default (configurable through the Host adapter); shutdown cancels
-outstanding requests. Whole-object cloud synchronization has a **32 MiB hard limit per Resource or
+outstanding requests. Cloud synchronization has a **512 MiB hard limit per Resource or
 Document body**. Local Asset publication and local reads are unaffected. The
 shared transport policy permits adapters to choose a smaller cap. Oversized
 content leaves Project readiness failed with a `maxBytes` diagnostic; cloud
 routes return HTTP 413 with `code: CLOUD_CONTENT_TOO_LARGE` and `maxBytes`.
-The Host checks registry/reference sizes before opening byte files, and Host
-pulls plus cloud Project PUT/GET routes bound actual streamed bytes instead of
-trusting Content-Length. Project cloud GET responses are buffered within that
-cap to reject overflow before delivering a successful response. Generic
-capability preview/range delivery retains streaming and is outside this
-whole-object Project policy. Multipart or larger-object cloud replication is
-not implemented.
+The Host checks registry/reference sizes before opening byte files. Objects
+above 8 MiB use authenticated multipart requests, each at most 8 MiB; smaller
+objects retain direct PUT. Resource capabilities and Document admission are
+revalidated on every request. Upload session IDs, part receipts and temporary
+objects are transport state, never additional mutation authority.
+
+R2 multipart staging is private. Completion verifies the whole object's length
+and SHA-256 incrementally and rechecks admission/references before publishing
+the checksum-verified canonical object. Sessions expire after 24 hours; scheduled
+cleanup processes bounded pages to remove their private staging state. A digest
+mismatch requires a new session. During completion or publication, abort returns
+409; after completion it is idempotent. Completion can be retried without changing
+immutable Resource or Document identity, including an uncertain publication result.
+
+An interruption before session metadata is persisted can leave an incomplete R2
+multipart upload. Deployment must retain R2's default lifecycle rule that aborts
+these uploads after seven days ([R2 object lifecycles](https://developers.cloudflare.com/r2/buckets/object-lifecycles/)).
+
+Downloads retain exact-length checks while streaming, including Resource range
+responses. Overflow or truncation fails the stream; a successful response header
+alone does not prove that a full transfer succeeded. The Host verifies bytes
+before installing a Resource through its existing staging/inspection boundary,
+or atomically installing an exact Document body. Document replication does not
+parse and reserialize the revision. Generic preview delivery remains outside
+the Project object-size policy.
+
+This split avoids buffering an entire 512 MiB object inside a Worker and keeps
+requests beneath the platform's request-size ceiling. See
+[Cloudflare Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
 
 The Settings connection is unset by default. It supplies endpoint and credential
 configuration for new admissions; it does not authorize any Project or revoke

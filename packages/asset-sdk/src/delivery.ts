@@ -49,10 +49,13 @@ export type {
   AssetDeliveryByteRange,
   AssetDeliveryStore,
   AssetDeliveryStoredObject,
+  AssetDeliveryMultipartSession,
+  AssetDeliveryMultipartStore,
 } from "./asset-delivery-store.js";
 
 export {
   PROJECT_CLOUD_CONTENT_MAX_BYTES,
+  PROJECT_CLOUD_CONTENT_PART_BYTES,
   ContentTransferLimitError,
   assertContentTransferSize,
   contentTransferMaxBytes,
@@ -60,3 +63,9 @@ export {
   readContentTransferLimitError,
   type ContentTransferLimits,
 } from "./content-transfer.js";
+
+export {
+  uploadCloudContent,
+  type CloudContentUploadOptions,
+  type CloudContentUploadSource,
+} from "./cloud-content-upload.js";

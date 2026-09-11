@@ -1,7 +1,13 @@
+import { MultipartContentError } from "../../services/project-content-multipart";
+import {
+  handleMultipartContent,
+  exactLengthContentStream,
+} from "../project-content-transfer";
 import { Hono } from "hono";
 import { ProjectResourceDeliveryRequestSchema } from "@clash/shared-types/project-sync-content";
 import {
   ContentTransferLimitError,
+  PROJECT_CLOUD_CONTENT_PART_BYTES,
   assertContentTransferSize,
   readBoundedContent,
   type AssetDeliveryStore,
@@ -34,7 +40,9 @@ export function createProjectContentRoutes(
           { error: error.message, code: error.code, maxBytes: error.maxBytes },
           413,
         )
-      : c.json({ error: "Cloud content transport unavailable" }, 503),
+      : error instanceof MultipartContentError
+        ? c.json({ error: error.message }, error.status)
+        : c.json({ error: "Cloud content transport unavailable" }, 503),
   );
   routes.post("/:id/resources/:resourceId/delivery", async (c) => {
     const userId = c.req.header("x-user-id");
@@ -137,10 +145,53 @@ export function createProjectContentRoutes(
       assertContentTransferSize(ref.byteLength, options.maxBytes);
       const key = await documentLocator(admission.tenantId, digest);
       if (c.req.method === "PUT") {
+        const response = await handleMultipartContent(
+          c.req.raw,
+          store,
+          {
+            identity: JSON.stringify({
+              tenantId: admission.tenantId,
+              projectId,
+              localReplicaId,
+              digest,
+            }),
+            locator: key,
+            digest: ref.digest,
+            byteLength: ref.byteLength,
+            contentType: ref.contentType,
+          },
+          async () => {
+            if (!(await ports.authorize({ projectId, localReplicaId, userId })))
+              throw new MultipartContentError(
+                403,
+                "Document no longer admitted",
+              );
+            if (
+              !(
+                await projectContentReferences(ports, projectId)
+              ).documents.some(
+                (value) =>
+                  value.digest === ref.digest &&
+                  value.byteLength === ref.byteLength,
+              )
+            )
+              throw new MultipartContentError(
+                403,
+                "Document no longer referenced",
+              );
+          },
+        );
+        if (response) return response;
+        const requestMaxBytes = Math.min(
+          options.maxBytes ?? PROJECT_CLOUD_CONTENT_PART_BYTES,
+          PROJECT_CLOUD_CONTENT_PART_BYTES,
+        );
         const declaredLength = c.req.header("content-length");
         if (declaredLength !== undefined)
-          assertContentTransferSize(Number(declaredLength), options.maxBytes);
-        const bytes = await readBoundedContent(c.req.raw.body, options);
+          assertContentTransferSize(Number(declaredLength), requestMaxBytes);
+        const bytes = await readBoundedContent(c.req.raw.body, {
+          maxBytes: requestMaxBytes,
+        });
         if (
           bytes.byteLength !== ref.byteLength ||
           `sha256:${await contentHash(bytes)}` !== ref.digest
@@ -171,15 +222,18 @@ export function createProjectContentRoutes(
       const value = await store.get(key);
       if (!value) return c.json({ error: "document_not_replicated" }, 404);
       assertContentTransferSize(value.size, options.maxBytes);
-      const bytes = await readBoundedContent(value.body, options);
-      if (bytes.byteLength !== ref.byteLength)
+      if (value.size !== ref.byteLength)
         return c.json({ error: "document_integrity_mismatch" }, 502);
-      return new Response(bytes, {
-        headers: {
-          "Content-Type": ref.contentType,
-          "Cache-Control": "private, no-store",
+      return new Response(
+        exactLengthContentStream(value.body, ref.byteLength),
+        {
+          headers: {
+            "Content-Type": ref.contentType,
+            "Content-Length": String(ref.byteLength),
+            "Cache-Control": "private, no-store",
+          },
         },
-      });
+      );
     },
   );
   return routes;

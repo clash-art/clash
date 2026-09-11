@@ -1,9 +1,11 @@
 import {
   assertContentTransferSize,
+  PROJECT_CLOUD_CONTENT_PART_BYTES,
   readBoundedContent,
   readContentTransferLimitError,
   type ContentTransferLimits,
 } from "./content-transfer.js";
+import { uploadCloudContent } from "./cloud-content-upload.js";
 import { ResourceSchema, type Resource } from "@clash/shared-types/assets";
 
 import type {
@@ -176,16 +178,33 @@ export async function pushResource(
   if (resource.contentType && !headers.has("content-type")) {
     headers.set("content-type", resource.contentType);
   }
-  const response = await fetchResource(fetch, "upload", delivery.url, {
-    method: delivery.method,
-    headers,
-    body: bytes as unknown as RequestInit["body"],
-  });
-  if (!response.ok)
-    throw (
-      (await readContentTransferLimitError(response)) ??
-      responseError("upload", response)
-    );
+  if (
+    options.scope.localReplicaId &&
+    bytes.byteLength > PROJECT_CLOUD_CONTENT_PART_BYTES
+  ) {
+    await uploadCloudContent({
+      url: delivery.url,
+      headers,
+      maxBytes: options.maxBytes,
+      fetch,
+      source: {
+        byteLength: bytes.byteLength,
+        readPart: async (offset, length) =>
+          bytes.subarray(offset, offset + length),
+      },
+    });
+  } else {
+    const response = await fetchResource(fetch, "upload", delivery.url, {
+      method: delivery.method,
+      headers,
+      body: bytes as unknown as RequestInit["body"],
+    });
+    if (!response.ok)
+      throw (
+        (await readContentTransferLimitError(response)) ??
+        responseError("upload", response)
+      );
+  }
   return {
     status: "uploaded",
     resourceId: resource.id,

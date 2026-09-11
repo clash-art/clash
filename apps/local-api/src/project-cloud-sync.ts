@@ -1,12 +1,10 @@
 import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
-import { createHash } from "node:crypto";
 import { createProjectCloudSyncCoordinator } from "@clash/shared-runtime/project-cloud-sync";
 import {
   createProjectMetadataReplicator,
   metadataBodyBlobPath,
-  storeMetadataBody,
 } from "@clash/shared-runtime";
 import { projectSyncContent } from "@clash/shared-types/project-sync-content";
 import {
@@ -18,7 +16,8 @@ import {
   assertContentTransferSize,
   readBoundedContent,
   readContentTransferLimitError,
-  pullResource,
+  PROJECT_CLOUD_CONTENT_PART_BYTES,
+  contentTransferMaxBytes,
   pushResource,
   type AssetDeliveryPort,
   type AssetDeliveryUrl,
@@ -27,6 +26,13 @@ import {
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { createLocalResourceStore } from "./local-resource-store.js";
+import {
+  cloudContentChunks,
+  installCloudContentFile,
+  uploadCloudContentFile,
+  validateCloudContentResponse,
+  verifyCloudContentFile,
+} from "./project-cloud-content.js";
 import type { LocalAssetInspectionService } from "./local-asset-inspections.js";
 import type { LocalLoroRoomHub, RemoteLoroPersistence } from "./sync.js";
 
@@ -321,24 +327,79 @@ export function createLocalProjectCloudSync(
                   error.status !== 404
                 )
                   throw error;
-                await pushResource(common);
+                if (resource.byteLength > PROJECT_CLOUD_CONTENT_PART_BYTES) {
+                  const capability = await common.delivery.issueUploadUrl({
+                    resourceId: resource.id,
+                    scope: common.scope,
+                    purpose: "host-staging",
+                    byteLength: resource.byteLength,
+                    digest: `sha256:${resource.digest.value}`,
+                    contentType: resource.contentType,
+                  });
+                  await uploadCloudContentFile({
+                    path: local.path,
+                    byteLength: resource.byteLength,
+                    digest: `sha256:${resource.digest.value}`,
+                    maxBytes: options.maxBytes,
+                    signal,
+                    url: capability.url,
+                    headers: capability.headers,
+                    fetch: common.fetch,
+                  });
+                } else await pushResource(common);
               }
-            } else await pullResource(common);
+            } else {
+              const capability = await common.delivery.issueReadUrl({
+                resourceId: resource.id,
+                scope: common.scope,
+                purpose: "download",
+              });
+              const response = await common.fetch(capability.url, {
+                headers: capability.headers,
+              });
+              if (!response.ok)
+                throw (
+                  (await readContentTransferLimitError(response)) ??
+                  new ProjectContentHttpError(response.status)
+                );
+              await validateCloudContentResponse(
+                response,
+                resource.byteLength,
+                options.maxBytes,
+              );
+              if (!response.body)
+                throw new Error("Remote Resource bytes unavailable");
+              const staged = await resources.stageStream({
+                source: cloudContentChunks(response.body, signal),
+                declaredByteLength: resource.byteLength,
+                maxByteLength: contentTransferMaxBytes(options.maxBytes),
+                expectedDigest: resource.digest.value,
+              });
+              await assertCurrent();
+              const inspected = await options.inspection.finalize({
+                resourceId: staged.resourceId,
+                kind: resource.kind,
+                contentType: resource.contentType,
+              });
+              await resources.installReplica({
+                resource,
+                verifiedResourceId: inspected.source.resource.id,
+              });
+            }
           }
           for (const body of refs.documents) {
             await assertCurrent();
             assertContentTransferSize(body.byteLength, options.maxBytes);
             const path = `${base}/document-bodies/${encodeURIComponent(body.digest)}`;
-            const local = await readLocalBytes(
-              metadataBodyBlobPath(options.dataDir, body.digest),
-            );
+            const file = {
+              path: metadataBodyBlobPath(options.dataDir, body.digest),
+              digest: body.digest,
+              byteLength: body.byteLength,
+              maxBytes: options.maxBytes,
+              signal,
+            };
+            const local = await verifyCloudContentFile(file);
             if (local) {
-              if (
-                local.length !== body.byteLength ||
-                `sha256:${createHash("sha256").update(local).digest("hex")}` !==
-                  body.digest
-              )
-                throw new Error("Local Document body integrity mismatch");
               try {
                 await authenticated(path, { method: "HEAD" });
               } catch (error) {
@@ -347,32 +408,39 @@ export function createLocalProjectCloudSync(
                   error.status !== 404
                 )
                   throw error;
-                await authenticated(path, {
-                  method: "PUT",
-                  body: new Uint8Array(local).buffer,
-                  headers: { "content-type": body.contentType },
-                });
+                if (body.byteLength > PROJECT_CLOUD_CONTENT_PART_BYTES) {
+                  await uploadCloudContentFile({
+                    ...file,
+                    url: `${initial.admission.syncBaseUrl.replace(/\/+$/, "")}${path}`,
+                    fetch: async (input, init) => {
+                      const target = new URL(String(input));
+                      return authenticated(
+                        `${target.pathname}${target.search}`,
+                        init,
+                      );
+                    },
+                  });
+                } else {
+                  const value = await readLocalBytes(file.path);
+                  if (!value)
+                    throw new Error("Local Document bytes unavailable");
+                  await authenticated(path, {
+                    method: "PUT",
+                    body: Uint8Array.from(value),
+                    headers: { "content-type": body.contentType },
+                  });
+                }
               }
             } else {
               const response = await authenticated(path);
-              const declaredLength = response.headers.get("content-length");
-              if (declaredLength !== null)
-                assertContentTransferSize(
-                  Number(declaredLength),
-                  options.maxBytes,
-                );
-              const value = await readBoundedContent(response.body, options);
-              if (
-                value.length !== body.byteLength ||
-                `sha256:${createHash("sha256").update(value).digest("hex")}` !==
-                  body.digest
-              )
-                throw new Error("Remote Document body integrity mismatch");
-              await storeMetadataBody({
-                dataDir: options.dataDir,
-                body: JSON.parse(new TextDecoder().decode(value)),
-                expectedContentHash: body.digest,
-              });
+              await validateCloudContentResponse(
+                response,
+                body.byteLength,
+                options.maxBytes,
+              );
+              if (!response.body)
+                throw new Error("Remote Document bytes unavailable");
+              await installCloudContentFile({ ...file, body: response.body });
             }
           }
         },

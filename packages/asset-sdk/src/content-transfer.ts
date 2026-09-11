@@ -1,6 +1,9 @@
-/** Product policy for whole-object Project cloud transfers. Local publication
+/** Product policy for Project cloud object transfers. Local publication
  * has no corresponding restriction. Adapters/tests may choose a smaller cap. */
-export const PROJECT_CLOUD_CONTENT_MAX_BYTES = 32 * 1024 * 1024;
+export const PROJECT_CLOUD_CONTENT_MAX_BYTES = 512 * 1024 * 1024;
+
+/** Keep individual cloud requests and buffered parts below Worker limits. */
+export const PROJECT_CLOUD_CONTENT_PART_BYTES = 8 * 1024 * 1024;
 
 export interface ContentTransferLimits {
   maxBytes?: number;
@@ -10,7 +13,7 @@ export class ContentTransferLimitError extends Error {
   readonly code = "CLOUD_CONTENT_TOO_LARGE";
   constructor(readonly maxBytes = PROJECT_CLOUD_CONTENT_MAX_BYTES) {
     super(
-      `Cloud content exceeds the whole-object transfer limit (maxBytes=${maxBytes}). Local assets remain available.`,
+      `Cloud content exceeds the transfer limit (maxBytes=${maxBytes}). Local assets remain available.`,
     );
     this.name = "ContentTransferLimitError";
   }

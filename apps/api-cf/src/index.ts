@@ -1,3 +1,4 @@
+import { cleanupProjectContentUploads } from "./services/project-content-multipart";
 import { recoverHostedGenerations } from "./generation/recovery";
 import type { Env } from "./config";
 import { createApp } from "./app";
@@ -34,7 +35,7 @@ const app = createApp();
 export default {
   fetch: app.fetch,
   scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(recoverHostedGenerations(env));
+    ctx.waitUntil(Promise.all([recoverHostedGenerations(env), cleanupProjectContentUploads(env.R2_BUCKET)]));
   },
 };
 export { recoverHostedGenerations };

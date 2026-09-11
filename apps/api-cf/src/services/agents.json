@@ -6,6 +6,7 @@
     "cloud-asset-delivery.ts": "Cloud signing-secret and external-origin adapter for Resource capabilities.",
     "provider-task-boundaries.test.ts": "Captured protocol regressions for explicit hosted provider submit/status checks, opaque token reuse and transient HTTP classification.",
     "minimax-video.ts": "Hosted request/credential translation over the shared portable MiniMax executor; no blocking poll loop.",
-    "settings-d1.ts": "D1-backed settings and historical installed-record reads/removal. Worker Action manifest installation returns structured 410 before any D1 access; real executable installation belongs to Local Host."
+    "settings-d1.ts": "D1-backed settings and historical installed-record reads/removal. Worker Action manifest installation returns structured 410 before any D1 access; real executable installation belongs to Local Host.",
+    "project-content-multipart.ts": "R2-only adapter for the optional shared multipart storage port: authenticated target-bound sessions, immutable part receipts, CAS publication ownership, incremental SHA-256 and streamed checksum-verified canonical writes. Sessions expire after 24 hours; the existing cron advances a bounded cleanup cursor. Upload IDs and private locators never grant authorization."
   }
 }

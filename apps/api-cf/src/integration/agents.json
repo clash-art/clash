@@ -1,0 +1,8 @@
+{
+  "summary": "Opt-in Miniflare/workerd integration against real local D1, Durable Objects and R2. Run selected tests serially to limit scratch storage and memory pressure.",
+  "key_files": {
+    "project-content-miniflare.integration.test.ts": "Default D1 admission, ProjectRoom reference and R2 registry/byte transport path.",
+    "project-content-multipart.integration.test.ts": "Product-limit Resource HTTP/R2 round trip with one reusable request-part buffer and incremental download hashing; large Document replication, private staging, resume, publication/abort races, corruption and TTL cleanup. Never deep-compare large byte arrays or allocate an entire product-limit object.",
+    "test-worker.ts": "Local integration Worker bindings and existing durable runtime entrypoints."
+  }
+}

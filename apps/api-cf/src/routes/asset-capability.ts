@@ -1,7 +1,16 @@
+import {
+  createR2ProjectMultipartStore,
+  MultipartContentError,
+} from "../services/project-content-multipart";
+import {
+  handleMultipartContent,
+  exactLengthContentStream,
+} from "./project-content-transfer";
 import { Hono } from "hono";
 
 import {
   ContentTransferLimitError,
+  PROJECT_CLOUD_CONTENT_PART_BYTES,
   assertContentTransferSize,
   readBoundedContent,
   type AssetDeliveryCapabilityClaims,
@@ -77,6 +86,7 @@ export function createR2AssetDeliveryStore(
   bucket: R2Bucket,
 ): AssetDeliveryStore {
   return {
+    multipart: createR2ProjectMultipartStore(bucket),
     async head(locator) {
       const object = await bucket.head(locator);
       if (!object) return undefined;
@@ -137,7 +147,9 @@ export function createAssetCapabilityRoutes(
           { error: error.message, code: error.code, maxBytes: error.maxBytes },
           413,
         )
-      : c.json({ error: "Cloud content transport unavailable" }, 503),
+      : error instanceof MultipartContentError
+        ? c.json({ error: error.message }, error.status)
+        : c.json({ error: "Cloud content transport unavailable" }, 503),
   );
 
   routes.options(
@@ -179,11 +191,47 @@ export function createAssetCapabilityRoutes(
       }
       if (boundedTransfer)
         assertContentTransferSize(claims.byteLength, options.maxBytes);
+      if (claims.scope.localReplicaId) {
+        const response = await handleMultipartContent(
+          c.req.raw,
+          store,
+          {
+            identity: JSON.stringify({
+              scope: claims.scope,
+              resourceId: claims.resourceId,
+            }),
+            locator: storageKey,
+            digest: claims.digest ?? "",
+            byteLength: claims.byteLength,
+            contentType: resource.contentType ?? claims.contentType,
+          },
+          async () => {
+            const current = await options.resolve(claims, c.env);
+            if (!current || current.storageKey !== storageKey)
+              throw new MultipartContentError(
+                403,
+                "Resource no longer admitted",
+              );
+          },
+        );
+        if (response) {
+          corsHeaders().forEach((value, key) =>
+            response.headers.set(key, value),
+          );
+          return response;
+        }
+      }
+      const requestMaxBytes = Math.min(
+        options.maxBytes ?? PROJECT_CLOUD_CONTENT_PART_BYTES,
+        PROJECT_CLOUD_CONTENT_PART_BYTES,
+      );
       const declaredLength = c.req.header("content-length");
       if (boundedTransfer && declaredLength !== undefined)
-        assertContentTransferSize(Number(declaredLength), options.maxBytes);
+        assertContentTransferSize(Number(declaredLength), requestMaxBytes);
       const bytes = boundedTransfer
-        ? await readBoundedContent(c.req.raw.body, options)
+        ? await readBoundedContent(c.req.raw.body, {
+            maxBytes: requestMaxBytes,
+          })
         : new Uint8Array(await c.req.arrayBuffer());
       if (
         (declaredLength !== undefined &&
@@ -251,10 +299,7 @@ export function createAssetCapabilityRoutes(
           status: 206,
           headers: responseHeaders,
         });
-      const bytes = await readBoundedContent(object.body, options);
-      if (bytes.byteLength !== length)
-        return c.text("Resource integrity mismatch", 502);
-      return new Response(bytes, {
+      return new Response(exactLengthContentStream(object.body, length), {
         status: 206,
         headers: responseHeaders,
       });
@@ -267,10 +312,10 @@ export function createAssetCapabilityRoutes(
         status: 200,
         headers: responseHeaders,
       });
-    const bytes = await readBoundedContent(object.body, options);
-    if (bytes.byteLength !== head.size)
-      return c.text("Resource integrity mismatch", 502);
-    return new Response(bytes, { status: 200, headers: responseHeaders });
+    return new Response(exactLengthContentStream(object.body, head.size), {
+      status: 200,
+      headers: responseHeaders,
+    });
   });
 
   return routes;
