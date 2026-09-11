@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Video Editing"
+  short_description: "Shape visual phrases around real music and accents"
+  default_prompt: "Use $clash-music-video for the requested creative task, following its scope and the project's existing choices."

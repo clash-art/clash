@@ -7,15 +7,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createActionAssetBinding,
   createProjectAsset,
+  createProjectGenerator,
+  Canvas,
   listActionAssetBindings,
   listActionAssetReferences,
   listProjectAssets,
   MODEL_CARDS,
   readProjectAsset,
+  readProjectActionRun,
+  readGeneratorRevision,
+  readOutputCommit,
+  generatorDefinitionFromExecutablePluginRegistration,
 } from "@clash/shared-types";
 
 import { createLocalApiApp } from "./app.js";
-import { createLocalDurableRun } from "./durable-run-coordinator.js";
+import { createLocalDurableRun, parseFrozenExecutorInput } from "./durable-run-coordinator.js";
 import { createSqliteDurableRunJournal } from "./durable-run-journal.js";
 import { createProviderExecutionHandoffStore } from "./provider-execution-handoff.js";
 import type {
@@ -120,6 +126,179 @@ const plan: ProviderPluginExecutionPlan = {
     references: [],
   },
 };
+
+it("executes an existing native revision from a Canvas placement without recreating its draft", async () => {
+  const dataDir = await temporaryDataDir();
+  const doc = new LoroDoc();
+  const definition = generatorDefinitionFromExecutablePluginRegistration({
+    pluginId: "clash.model-generation", version: "0.1.0", schemaHash: `sha256:${"e".repeat(64)}`,
+    document: JSON.parse(await readFile(new URL("../../../plugins/model-generation/generators/video.json", import.meta.url), "utf8")),
+  });
+  const revision = { id: "authored-revision", generatorId: "authored-draft",
+    definitionRef: { pluginId: definition.pluginId, definitionId: definition.definitionId, version: definition.version, schemaHash: definition.schemaHash },
+    state: { modelId: "test-video", prompt: "Native paper city", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: [] };
+  const created = createProjectGenerator(doc, { head: { id: revision.generatorId, headRevisionId: revision.id }, revision });
+  if (!created.ok) throw new Error(created.error.message);
+  doc.getMap("nodes").set("native-output", { type: "video", data: {
+    status: "pending", generatorRevision: { generatorId: revision.generatorId, generatorRevisionId: revision.id },
+    prompt: "stale Canvas prompt", modelId: "stale-model", modelParams: { resolution: "invented" },
+  } });
+  doc.getMap("nodes").set("invalid-native-output", { type: "video", data: {
+    status: "pending", generatorRevision: { generatorId: "missing-revision-id" },
+  } });
+  const planned = vi.fn(async () => ({ ...plan, route: { modelCode: "test-video", kind: "video" as const, priority: 1,
+    providerId: plan.provider, upstreamId: plan.provider, upstreamModel: plan.modelEndpoint, apiShape: plan.provider, executorBinding: binding } }));
+  const submitted: string[] = [];
+  const processor = createLocalWorkflowProcessor({ dataDir,
+    modelCards: async () => [{ ...MODEL_CARDS.find((c) => c.id === "minimax-h3")!, id: "test-video" }],
+    resolveGeneratorDefinition: async () => definition, aigc: aigc(planned),
+    durableProviderRuns: { ownerId: "local-api", now: () => 100, providerPluginExecutor: async (request) => {
+      submitted.push(request.taskId);
+      return { status: "accepted", binding, pollState: { taskId: request.taskId }, retryAfterMs: 5000 };
+    } },
+  });
+  await processor.process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  expect((doc.getMap("nodes").get("invalid-native-output") as any).data.status).toBe("failed");
+  expect(planned).toHaveBeenCalledWith(expect.objectContaining({ model: revision.state.modelId, prompt: revision.state.prompt, modelParams: revision.state.params }), "video");
+  expect(submitted).not.toEqual([]);
+  const run = readProjectActionRun(doc, identityFromProviderTaskId(submitted[0]!, "media").actionRunId)!;
+  expect(run.generatorRevision).toEqual({ generatorId: revision.generatorId, generatorRevisionId: revision.id });
+  expect(readGeneratorRevision(doc, run.generatorRevision)).toEqual(revision);
+  const before = [...submitted];
+  await processor.process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  expect(submitted).toEqual(before);
+  const next = { ...revision, id: "another-revision", generatorId: "another-draft" };
+  const nextCreated = createProjectGenerator(doc, { head: { id: next.generatorId, headRevisionId: next.id }, revision: next });
+  if (!nextCreated.ok) throw new Error(nextCreated.error.message);
+  const pending = doc.getMap("nodes").get("native-output") as any;
+  doc.getMap("nodes").set("native-output", { ...pending, data: { ...pending.data,
+    generatorRevision: { generatorId: next.generatorId, generatorRevisionId: next.id },
+  } });
+  await processor.process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  const journal = createSqliteDurableRunJournal(dataDir);
+  const originalTask = await journal.load(identityFromProviderTaskId(submitted[0]!, "media"));
+  const nextTask = await journal.load(identityFromProviderTaskId(submitted.at(-1)!, "media"));
+  if (!nextTask || !originalTask) throw new Error("Both native requests must be durable before execution.");
+  expect(parseFrozenExecutorInput(nextTask.executorInput).nodeProjectionRevisionId)
+    .not.toEqual(parseFrozenExecutorInput(originalTask.executorInput).nodeProjectionRevisionId);
+});
+
+it("shares a Generator Revision across a Canvas batch while giving each output its own Run", async () => {
+  const dataDir = await temporaryDataDir();
+  const doc = pendingDoc();
+  const nodes = doc.getMap("nodes");
+  const first = nodes.get("node-1") as any;
+  const data = { ...first.data, duration: 5, aspectRatio: "16:9", modelParams: { duration: 5, aspect_ratio: "16:9", resolution: "768P" } };
+  nodes.set("node-1", { ...first, data });
+  nodes.set("node-2", { ...first, data: { ...data, label: "Second result" } });
+  nodes.set("node-3", { ...first, data: { ...data, label: "Independent source result" } });
+  const canvas = new Canvas(doc, () => {});
+  canvas.createNode("source", "action-badge", { actionType: "video-gen", modelId: "test-video", content: "A paper city" });
+  canvas.insertEdge("first-output", "source", "node-1", "default");
+  canvas.insertEdge("second-output", "source", "node-2", "default");
+  canvas.createNode("other-source", "action-badge", { actionType: "video-gen", modelId: "test-video", content: "A paper city" });
+  canvas.insertEdge("other-output", "other-source", "node-3", "default");
+  const definition = generatorDefinitionFromExecutablePluginRegistration({
+    pluginId: "clash.model-generation", version: "0.1.0", schemaHash: `sha256:${"e".repeat(64)}`,
+    document: JSON.parse(await readFile(new URL("../../../plugins/model-generation/generators/video.json", import.meta.url), "utf8")),
+  });
+  const taskIds: string[] = [];
+  const taskTargets: string[] = [];
+  const processor = createLocalWorkflowProcessor({ dataDir,
+    modelCards: async () => [{ ...MODEL_CARDS.find((c) => c.id === "minimax-h3")!, id: "test-video" }],
+    resolveGeneratorDefinition: async () => definition,
+    aigc: aigc(async () => ({ ...plan, route: { modelCode: "test-video", kind: "video", priority: 1,
+      providerId: plan.provider, upstreamId: plan.provider, upstreamModel: plan.modelEndpoint, apiShape: plan.provider, executorBinding: binding } })),
+    durableProviderRuns: { ownerId: "local-api", now: () => 100, providerPluginExecutor: async (request) => {
+      taskIds.push(request.taskId);
+      taskTargets.push(request.nodeId!);
+      return { status: "accepted", binding, pollState: { taskId: request.taskId }, retryAfterMs: 5000 };
+    } },
+  });
+  await processor.process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  const runs = taskIds.map((taskId) => readProjectActionRun(doc, identityFromProviderTaskId(taskId, "media").actionRunId)!);
+  expect([...taskTargets].sort()).toEqual(["node-1", "node-2", "node-3"]);
+  const byTarget = new Map(taskTargets.map((target, index) => [target, runs[index]]));
+  expect(byTarget.get("node-1")!.actionRunId).not.toBe(byTarget.get("node-2")!.actionRunId);
+  expect(byTarget.get("node-1")!.generatorRevision).toEqual(byTarget.get("node-2")!.generatorRevision);
+  expect(byTarget.get("node-1")!.generatorRevision).not.toEqual(byTarget.get("node-3")!.generatorRevision);
+  expect((nodes.get("node-1") as any).data.generatorId).toBe((nodes.get("node-2") as any).data.generatorId);
+  const before = [...taskIds];
+  const second = nodes.get("node-2") as any;
+  nodes.set("node-2", { ...second, data: { ...second.data, actionRunId: byTarget.get("node-1")!.actionRunId } });
+  await processor.process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  expect((nodes.get("node-2") as any).data.actionRunId).toBe(byTarget.get("node-2")!.actionRunId);
+  expect(taskIds).toEqual(before);
+});
+
+it.each(["unchanged", "edited", "deleted"] as const)("admits Canvas media through a native Generator Run and preserves the %s projection after restart", async (projection) => {
+  const dataDir = await temporaryDataDir();
+  const doc = pendingDoc();
+  const node = doc.getMap("nodes").get("node-1") as any;
+  doc.getMap("nodes").set("node-1", { ...node, data: { ...node.data,
+    duration: 5, aspectRatio: "16:9", modelParams: { duration: 4, resolution: "768P", aspect_ratio: "1:1" },
+  } });
+  const definition = generatorDefinitionFromExecutablePluginRegistration({
+    pluginId: "clash.model-generation", version: "0.1.0", schemaHash: `sha256:${"e".repeat(64)}`,
+    document: JSON.parse(await readFile(new URL("../../../plugins/model-generation/generators/video.json", import.meta.url), "utf8")),
+  });
+  const routedPlan: ProviderPluginExecutionPlan = { ...plan, route: { modelCode: "test-video", kind: "video", priority: 1, providerId: plan.provider, upstreamId: plan.provider,
+    upstreamModel: plan.modelEndpoint, apiShape: plan.provider, executorBinding: binding } };
+  const now = { value: 100 };
+  let providerTaskId = "";
+  const options = { dataDir, modelCards: async () => [{ ...MODEL_CARDS.find((c) => c.id === "minimax-h3")!, id: "test-video" }],
+    resolveGeneratorDefinition: async () => definition, aigc: aigc(vi.fn(async () => routedPlan)),
+    assetInspection: completeByteDerivedInspection(dataDir),
+  };
+  const submit = vi.fn(async (request: any) => {
+    providerTaskId = request.taskId;
+    const identity = identityFromProviderTaskId(providerTaskId, "media");
+    expect(readProjectActionRun(doc, identity.actionRunId)?.status).toBe("running");
+    return { status: "accepted" as const, binding, pollState: { task: "provider-task" }, retryAfterMs: 5 };
+  });
+  const first = createLocalWorkflowProcessor({ ...options, durableProviderRuns: { ownerId: "local-api", providerPluginExecutor: submit, now: () => now.value } });
+  await first.process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  expect(submit, JSON.stringify(doc.getMap("nodes").get("node-1"))).toHaveBeenCalledOnce();
+  const identity = identityFromProviderTaskId(providerTaskId, "media");
+  const task = await createSqliteDurableRunJournal(dataDir).load(identity);
+  expect(task?.executorInput).toMatchObject({ targetKind: "generator-action", nodeId: "node-1" });
+  const publicRun = readProjectActionRun(doc, identity.actionRunId)!;
+  expect(readGeneratorRevision(doc, publicRun.generatorRevision)?.state.params)
+    .toMatchObject({ duration: 5, resolution: "768P", aspect_ratio: "16:9" });
+  const staged = await createLocalPluginAssetStagingStore({ dataDir }).stage({
+    projectId: "project-1", taskId: providerTaskId, slot: "media", pluginId: binding.pluginId,
+    pluginVersion: binding.version, accountId: "private-account", invocationId: "poll-result", kind: "video",
+    mediaType: "video/mp4", bytes: new Uint8Array([0, 0, 0, 24]),
+  });
+  if (projection === "deleted") doc.getMap("nodes").delete("node-1");
+  if (projection === "edited") {
+    const current = doc.getMap("nodes").get("node-1") as any;
+    doc.getMap("nodes").set("node-1", { ...current, data: { ...current.data, prompt: "A different draft", status: "draft" } });
+  }
+  now.value = 106;
+  const poll = vi.fn(async () => ({ status: "completed" as const, binding,
+    media: { assetId: staged.projectAssetId, uri: `clash-asset://${staged.projectAssetId}`, kind: "video" as const, mediaType: "video/mp4" },
+  }));
+  await createLocalWorkflowProcessor({ ...options, durableProviderRuns: { ownerId: "local-api", providerPluginExecutor: poll, now: () => now.value } })
+    .process({ doc, projectId: "project-1", checkpoint: async () => {} });
+  expect(readProjectActionRun(doc, identity.actionRunId)?.status).toBe("succeeded");
+  expect(readOutputCommit(doc, identity)?.asset).toEqual({ kind: "media", projectAssetId: staged.projectAssetId });
+  if (projection === "unchanged") expect((doc.getMap("nodes").get("node-1") as any).data).toMatchObject({ status: "completed", assetId: staged.projectAssetId });
+  if (projection === "deleted") expect(doc.getMap("nodes").get("node-1")).toBeUndefined();
+  if (projection === "edited") expect((doc.getMap("nodes").get("node-1") as any).data).toMatchObject({ status: "draft", prompt: "A different draft" });
+  if (projection === "unchanged") {
+    const completed = doc.getMap("nodes").get("node-1") as any;
+    const pendingData = { ...completed.data, status: "pending" };
+    delete pendingData.assetId;
+    doc.getMap("nodes").set("node-1", { ...completed, data: pendingData });
+    await createLocalWorkflowProcessor({ ...options, resolveGeneratorDefinition: async () => { throw new Error("A completed Run must not resolve a newer definition."); },
+      durableProviderRuns: { ownerId: "local-api", providerPluginExecutor: poll, now: () => now.value },
+    }).process({ doc, projectId: "project-1", checkpoint: async () => {} });
+    expect((doc.getMap("nodes").get("node-1") as any).data).toMatchObject({ status: "completed", assetId: staged.projectAssetId });
+    expect(poll).toHaveBeenCalledOnce();
+  }
+  expect(submit).toHaveBeenCalledOnce();
+});
 
 function aigc(
   planProviderPlugin: ExternalAigcService["planProviderPlugin"],

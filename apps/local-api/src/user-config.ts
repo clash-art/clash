@@ -13,6 +13,7 @@ import {
 import { dirname, join } from "node:path";
 import { parseDocument } from "yaml";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
+import { HostSkillInstallationsSchema } from "@clash/shared-types";
 
 export interface ClashUserConfigStore {
   readonly clashHome: string;
@@ -20,6 +21,7 @@ export interface ClashUserConfigStore {
   readonly credentialsPath: string;
   getSection<T>(name: string): Promise<T | null>;
   setSection(name: string, value: unknown): Promise<void>;
+  updateSection(name: string, update: (current: unknown) => unknown): Promise<void>;
   getCredentials(): Promise<Record<string, unknown>>;
   updateCredentials(
     update: (current: Record<string, unknown>) => Record<string, unknown>,
@@ -89,6 +91,7 @@ export function validateClashUserConfig(
     throw new Error("config.yaml version must be 1");
   }
   const server = optionalRecord(value, "server");
+  if (value.skills !== undefined) HostSkillInstallationsSchema.parse(value.skills);
   if (server) validateStringField(server, "url", "server");
 
   const harnesses = optionalRecord(value, "harnesses");
@@ -460,6 +463,22 @@ export function createClashUserConfigStore(
             configPath,
             serializeYamlSection(source, name, value),
           );
+        });
+      });
+    },
+
+    async updateSection(name, update) {
+      await ensureRootMigrated();
+      await serializedWrite(configPath, async () => {
+        await withConfigLock(clashHome, async () => {
+          const source = await readText(configPath);
+          const document = parseDocument(source ?? "");
+          if (document.errors.length) throw new Error(`Cannot update config.yaml: ${document.errors[0]?.message}`);
+          const root = document.toJS() ?? {};
+          validateClashUserConfig(root);
+          const value = update(root[name]);
+          validateClashUserConfig({ ...root, [name]: value });
+          await atomicWrite(configPath, serializeYamlSection(source, name, value));
         });
       });
     },

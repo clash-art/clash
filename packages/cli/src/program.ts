@@ -8,6 +8,7 @@ import { canvasesCommand } from "./commands/canvases";
 import { directorCommand } from "./commands/director";
 import { doctorCommand } from "./commands/doctor";
 import { effectCommand } from "./commands/effects";
+import { logsCommand } from "./commands/logs";
 import { hostCommand } from "./commands/host";
 import { generatorsCommand } from "./commands/generators";
 import { modelsCommand } from "./commands/models";
@@ -59,13 +60,14 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .option("--profile <profile>", "Runtime profile: dev or prod")
     .version(process.env.CLASH_DISTRIBUTION_VERSION ?? "0.1.0");
 
-  program.hook("preAction", async () => {
+  program.hook("preAction", async (_command, actionCommand) => {
     const requested = program.opts<{ profile?: string }>().profile;
     process.env.CLASH_PROFILE = resolveClashProfile({
       ...process.env,
       ...(requested ? { CLASH_PROFILE: requested } : {}),
     });
-    await options.beforeAction?.(program);
+    // Offline diagnostics must remain available when Host startup itself failed.
+    if (actionCommand.name() !== "logs") await options.beforeAction?.(program);
   });
 
   program.addCommand(authCommand);
@@ -76,6 +78,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   program.addCommand(pluginCommand);
   program.addCommand(modelsCommand);
   program.addCommand(hostCommand);
+  program.addCommand(logsCommand);
   program.addCommand(generatorsCommand);
   registerProviderCommands(program);
   program.addCommand(timelineCommand);

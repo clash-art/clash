@@ -1,4 +1,5 @@
 import { delimiter, dirname, join, resolve } from "node:path";
+import { clashHomeForLocalDataDir } from "@clash/shared-runtime/local-paths";
 
 export interface WebDistPathInput {
   envWebDistDir?: string;
@@ -40,7 +41,7 @@ export function resolveDesktopStatePaths(
     root,
     userData: join(root, "user-data"),
     sessionData: join(root, "session-data"),
-    logs: join(clashHome, "logs", "desktop"),
+    logs: join(clashHomeForLocalDataDir(localApiDataDir), "logs", "desktop"),
     crashDumps: join(root, "crash-dumps"),
   };
 }

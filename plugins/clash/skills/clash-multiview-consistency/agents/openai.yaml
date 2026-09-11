@@ -1,0 +1,4 @@
+interface:
+  display_name: "Multiview Consistency"
+  short_description: "Keep one design consistent across different views"
+  default_prompt: "Use $clash-multiview-consistency to derive and review multiple views of this subject while preserving its selected design."

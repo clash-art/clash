@@ -1,6 +1,8 @@
 {
   "summary": "The 'Protocol Layer' of the application. Contains Zod schemas and TypeScript interfaces used by both Frontend and Backend.",
   "context_hints": [
+    "The timeline-envelope public subpath contains only the frozen Timeline envelope schema and type. Executors must use it without importing Generator projection, YAML, or Loro runtime.",
+    "Canvas-bound Timeline and Director Stage creation and attachment use commitProjectMutation: prepare on an isolated Loro draft, apply the successful final diff as one local commit, and discard failed drafts. Low-level Canvas exports must never expose partial ownership to the live replica.",
     "Modify this package when you need to change API contracts or Data Models",
     "Timeline docs and the standalone Timeline skill are generated from annotations during Timeline plugin builds and shared-types prepack; synchronization tests fail on drift",
     "Python models are generated from these Zod schemas"
@@ -11,11 +13,16 @@
     "scripts": "Scripts for code generation (TS -> Python and Timeline contract -> docs/skills)."
   },
   "key_files": {
+    "src/presence.ts": "Ephemeral JSON sideband contracts alongside Loro sync, including validated Host project.load-error messages. Load failures carry a Project identity and user-facing migration cause; they are not persisted Project state or peer-authored updates.",
+    "src/acp-fork.ts": "Inclusive assistant-message fork boundary and conservative support checks for verified ACP adapter versions.",
+    "src/project-mutation.ts": "Synchronous domain mutation boundary: isolated preparation, failure discard, and a single local diff/commit preserving normal sync and undo behavior.",
     "src/index.ts": "Main entry point exporting all types.",
-    "src/executable-plugin.ts": "Versioned plugin manifest and package validation for Cards, Providers, native multi-Action Generator documents, SDK dependency operations, invocation ABI, and immutable plugin bindings. Generator registrations inject package provenance but never a Host execution realm.",
+    "src/executable-plugin.ts": "Versioned plugin manifest and package validation for Cards, Providers, native multi-Action Generator documents, SDK dependency operations, invocation ABI, and immutable plugin bindings. Optional Action Card generator mappings explicitly select a same-package Definition/Action and persistent media or plain-text Document slots; activation validates the executor, output, and required input contract. Generator registrations inject package provenance but never a Host execution realm.",
     "src/generator-v2.ts": "Canonical Asset + Generator domain contract: semantic plugin-backed Generator definitions, versioned Project Generator state, exact revision inputs, Action Runs, and output commits without runtime-realm identity.",
+    "src/model-output-contract.ts": "Model generation output contract shared by Definition validation, Host planning, and frozen Run parsing. Supports media and the plain-text Document contract; arbitrary typed analysis Documents remain separate Actions.",
+    "src/generator-requests.ts": "Shared native Generator request contracts for HTTP validation and MCP disclosure; create/advance change draft state, while submit admits an Action Run. Provider account preference is submission-only owner-private state. CLI contract disclosure derives JSON Schema directly from these validators, including nested JSON and input references.",
     "src/plugin-json-value.ts": "Cycle-free JSON value contract shared by executable Plugin invocations and Generator definition state/parameter schemas.",
-    "src/generator-v1-compat.ts": "Fail-closed migration adapters from v1 ActionSpec, activated Action Cards, and plugin-backed Custom Actions to Generator v2 definitions; exact plugin hashes pass through and runtime realms never become semantic identity.",
+    "src/generator-v1-compat.ts": "Fail-closed migration adapters from v1 ActionSpec, activated Action Cards, and plugin-backed Custom Actions to Generator v2 definitions; exact plugin hashes pass through and runtime realms never become semantic identity. Explicitly native Cards reject synthetic Definition conversion.",
     "src/project-generators.ts": "Host-owned Project Loro authority for Project Generator heads/tombstones, immutable Generator revisions, Action Run requests/outcomes, grow-only started facts, and insert-or-compare output commits. Synced peers replicate these facts but must not mutate their LWW slots directly.",
     "src/project-output-assets.ts": "Project-aware exact output resolver used by Generator authority to reject dangling, inactive, or contract-mismatched Media and Document OutputCommits before terminal success.",
     "src/workspace-bundle.ts": "Strict portable Workspace v1 manifest and Host transfer wire schemas for workspace.json, tagged project.bin, generic SHA-256 CAS objects, provenance-only source Workspace identity, and opaque staged import/export capabilities.",
@@ -40,7 +47,16 @@
     "src/timeline-dsl-docs.ts": "Deterministic JavaDoc-style Markdown and Skill reference renderer generated from Timeline capability annotations.",
     "src/models.ts": "AI Model configuration and metadata schemas.",
     "src/tasks.ts": "Task definitions for the Async Job system.",
-    "src/pipeline.ts": "Pipeline execution state definitions."
+    "src/pipeline.ts": "Pipeline execution state definitions.",
+    "src/canvas-model-generator.ts": "Read-only Model and mapped Action Card Generator-to-Canvas projection. Placements store identity and presentation metadata; native state supplies the form projection, and semantic node writes are rejected. Canvas execution pins the Generator revision and selected Action without rebuilding authoring inputs.",
+    "src/action-card-draft.ts": "Shared mapped Action Card prompt and Asset-input authoring. Freezes exact Document revisions and media identities before queued edits; snapshots only ordinary authored text. Validates explicit Definition port mappings, preserves flat plugin state, and maintains collection order through append/reorder while deduplicating exact Asset references.",
+    "src/model-media-input.ts": "Model Card-owned input role selection, shared by frontend edits and Host legacy migration. Start/End are singleton roles; modality collections carry item keys.",
+    "src/model-prompt-content.ts": "Shared ordered Model prompt edits, media order projection, and media reordering. Authored order lives in contentParts, independently of canonicalized input identity arrays; UI projection and positional Provider lowering read this order.",
+    "src/model-prompt-mentions.ts": "Shared Model authoring boundary for Canvas mentions and text picker inputs. Freezes exact applied Document revisions, snapshots ordinary authored text, resolves media to persistent Asset inputs, deduplicates exact references and preserves unmentioned attachments. Consumed by GUI and formal Canvas Host update.",
+    "src/model-keyframes.ts": "Canonical Model keyframe draft editing and timing math. Addition/replacement/removal returns ordered image refs, contentParts and timing params together, using Model Card limits and frame rate. Shared with the legacy presentation math to avoid divergent insertion rules.",
+    "src/canvas-ops.ts": "Shared Canvas mutation authority. Automatic insertion avoids pushing nodes with downstream references; layoutPendingNodes completes only unreferenced legacy placement for Host admission, without rewriting authored data.",
+    "src/canvas-asset-reference.ts": "Shared Canvas source resolution and exact Asset reference identity. Applied text resolves to a validated Document/revision pair; media resolves to its Project Asset. Used by native connection validation, graph compilation, copy projection, and peer guards; it never resolves a mutable Document head.",
+    "src/director-code.ts": "Director-owned component registry and exact source Document decoder. stage:code is a plugin protocol slot, not a platform Recipe primitive."
   },
   "architecture_notes": "Single Source of Truth (SSOT) pattern. Zod is the master definition. Model cards own provider implementation route metadata via providerImplementations; provider definitions must not reintroduce provider-supported model matrices."
 }

@@ -16,6 +16,7 @@ type CaptureRequest = {
   aspectRatio: DirectorAspectRatio;
   longEdge: number;
   assetUrls?: Record<string, string>;
+  codeSources?: Record<string, string>;
   environmentUrl?: string;
 };
 
@@ -95,6 +96,8 @@ window.clashDirectorCapture = async (request) => {
           environmentUrl={request.environmentUrl}
           showEnvironmentBackground={Boolean(request.environmentUrl)}
           assetUrls={request.assetUrls}
+          codeSources={request.codeSources}
+          onError={(error) => { settled = true; window.clearTimeout(timeout); reject(error); }}
           renderPalette={directorRenderPaletteFallback}
           onFrameRendered={() => { void finish(); }}
           className="clash-director-headless-viewport"

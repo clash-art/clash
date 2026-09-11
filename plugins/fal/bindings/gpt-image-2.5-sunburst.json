@@ -1,0 +1,18 @@
+{
+  "apiVersion": "clash.binding/v1",
+  "kind": "model-provider-binding",
+  "spec": {
+    "id": "gpt-image-2.5-sunburst",
+    "modelId": "gpt-image-2.5-sunburst",
+    "upstreamModel": "openai/gpt-image-2.5/sunburst/text-to-image",
+    "assetInputs": [
+      {
+        "match": {
+          "kinds": ["image"]
+        },
+        "representations": ["provider-url", "bytes"]
+      }
+    ],
+    "excludedParameterIds": ["moderation"]
+  }
+}

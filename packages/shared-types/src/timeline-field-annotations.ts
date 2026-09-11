@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { TimelineItemKeyframesSchema } from "./timeline-keyframes";
+import { TimelineItemKeyframesSchema } from "./timeline-keyframes.js";
 import {
   TIMELINE_MASK_APPLIES_TO_ITEM_TYPES,
   TimelineItemMaskSchema,
-} from "./timeline-mask";
+} from "./timeline-mask.js";
 
 /**
  * Java-annotation-style metadata for the complete persisted Timeline contract.

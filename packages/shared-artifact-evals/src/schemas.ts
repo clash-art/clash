@@ -736,6 +736,10 @@ export const ArtifactBenchmarkCaseSchema = z
     prompt: z.string().optional(),
     passScore: z.number().min(0).max(100),
     timeoutMs: z.number().int().positive(),
+    skillPack: z
+      .object({ path: z.string().min(1), id: SafeIdSchema })
+      .strict()
+      .optional(),
     skills: z.array(z.string().min(1)),
     inputFixture: z
       .object({

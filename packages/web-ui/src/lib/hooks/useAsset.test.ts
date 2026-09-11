@@ -64,6 +64,49 @@ describe("useAsset", () => {
     invalidateAsset("project-2", "asset-1");
   });
 
+  it("does not rerender unchanged asset consumers on a project refresh, but publishes changed projections", async () => {
+    let first = makeAsset();
+    let second = makeAsset({ id: "asset-2" });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      jsonResponse({ assets: [first, second] }),
+    );
+    await listProjectAssets("project-1");
+    let firstRenders = 0;
+    let secondRenders = 0;
+    const one = renderHook(() => {
+      firstRenders++;
+      return useAsset("project-1", "asset-1");
+    });
+    const two = renderHook(() => {
+      secondRenders++;
+      return useAsset("project-1", "asset-2");
+    });
+    const before = [firstRenders, secondRenders];
+    const original = one.result.current;
+    await act(async () => {
+      await listProjectAssets("project-1");
+    });
+    expect(one.result.current).toBe(original);
+    expect([firstRenders, secondRenders]).toEqual(before);
+    second = makeAsset({
+      id: "asset-2",
+      url: "https://media.clash.test/new-delivery",
+      metadata: { width: 2048 },
+    });
+    await act(async () => {
+      await listProjectAssets("project-1");
+    });
+    expect(firstRenders).toBe(before[0]);
+    expect(two.result.current?.url).toBe(second.url);
+    expect(two.result.current?.metadata.width).toBe(2048);
+    first = makeAsset({ status: "failed", error: "Projection unavailable" });
+    await act(async () => {
+      await listProjectAssets("project-1");
+    });
+    expect(one.result.current?.status).toBe("failed");
+    expect(one.result.current?.error).toBe("Projection unavailable");
+  });
+
   it("returns undefined immediately when assetId is undefined", () => {
     const { result } = renderHook(() => useAsset("project-1", undefined));
     expect(result.current).toBeUndefined();

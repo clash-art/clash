@@ -1,3 +1,4 @@
+import { createLogger } from "../../lib/logger";
 import { memo, useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { Handle, Position, NodeProps, Node } from "@xyflow/react";
 import SourceHandleMenu from "./SourceHandleMenu";
@@ -46,6 +47,8 @@ type WaveformCacheEntry = {
 };
 
 const waveformCache = new Map<string, WaveformCacheEntry>();
+
+const mediaLog = createLogger("audio");
 
 function readWaveformCache(key: string): WaveformCacheEntry | undefined {
   const cached = waveformCache.get(key);
@@ -292,7 +295,7 @@ const AudioNode = ({
             return;
           } catch (error) {
             if (aborted || controller.signal.aborted) return;
-            console.warn("[AudioNode] waveform representation failed", error);
+            mediaLog.warn("audio.waveform_failed", { nodeId: id, error });
           }
         }
         if (!showModal) return;
@@ -318,7 +321,7 @@ const AudioNode = ({
           ctx.close().catch(() => {});
         }
       } catch (e) {
-        if (!aborted) console.warn("[AudioNode] decode failed", e);
+        if (!aborted) mediaLog.warn("audio.decode_failed", { nodeId: id, error: e });
       } finally {
         if (!aborted) setDecoding(false);
       }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clash Infographic"
+  short_description: "Turn source facts into clear visual explanations"
+  default_prompt: "Use $clash-infographic to match information structure to source facts and create a readable infographic with verified labels and relationships."

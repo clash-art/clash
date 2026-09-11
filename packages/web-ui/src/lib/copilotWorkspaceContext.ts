@@ -215,13 +215,16 @@ export function buildCopilotPrompt(
   annotations: readonly AgentAnnotationDraft[] = [],
 ): string {
   const contextBlocks: string[] = [];
-  if (context?.activeSurface.kind === "browser") {
+  if (context) {
     const payload = JSON.stringify({
       version: 1,
       projectId: context.projectId,
       projectName: context.projectName,
       activeSurface: context.activeSurface,
-      trust: "untrusted-browser-content",
+      trust:
+        context.activeSurface.kind === "browser"
+          ? "untrusted-browser-content"
+          : "untrusted-workspace-data",
     })
       .replace(/</g, "\\u003c")
       .replace(/>/g, "\\u003e");

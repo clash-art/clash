@@ -21,6 +21,7 @@ import {
   type ActionRunRequest,
   type ProjectAssetEntry,
 } from "@clash/shared-types";
+import type { LocalDurableRunCreateCommand } from "./durable-run-coordinator.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createSqliteDurableRunJournal } from "./durable-run-journal.js";
@@ -171,6 +172,101 @@ function legacyOutputBinding(
 }
 
 describe("Local Generator Run bridge", () => {
+  it.each(["completed", "wrong-kind", "binding-drift"] as const)(
+    "keeps a Provider-backed Generator Run authoritative across restart: %s",
+    async (outcome) => {
+      const doc = projectDoc();
+      const dataDir = await temporaryDataDir();
+      const journal = createSqliteDurableRunJournal(dataDir);
+      const bridge = createLocalGeneratorRunBridge({ ownerId: "host-1", journal });
+      const providerBinding = {
+        pluginId: "vendor.media",
+        version: "2.0.0",
+        exportId: "execute",
+        schemaHash: `sha256:${"b".repeat(64)}`,
+      };
+      const providerInput = {
+        values: { modelId: "image-model", prompt: "a quiet courtyard", resolution: "768P" },
+        references: [],
+      };
+      const command: LocalDurableRunCreateCommand = {
+        ...durableCommand(),
+        executor: {
+          ...durableCommand().executor,
+          providerExecution: {
+            binding: providerBinding,
+            accountId: "private-provider-account",
+            assetInputs: [],
+            input: providerInput,
+          },
+        },
+      };
+      await bridge.enqueue({ doc, request: request(), command, checkpoint: async () => undefined });
+      const identity = { actionRunId: command.actionRunId, outputSlot: command.outputSlot };
+      let acceptedTaskId: string | undefined;
+      const coordinator = (restarted: boolean) => createLocalDurableRunCoordinator({
+        ownerId: "host-1",
+        journal: createSqliteDurableRunJournal(dataDir),
+        retryPolicy: createBoundedRetryPolicy({
+          maxFailures: { submit: 1, poll: 1, stage: 1, publish: 1 },
+          baseDelayMs: 0,
+          maxDelayMs: 0,
+        }),
+        providerPluginExecutor: async (invocation) => {
+          expect(invocation.binding).toEqual(providerBinding);
+          expect(invocation.input).toEqual(providerInput);
+          expect(invocation.accountId).toBe("private-provider-account");
+          if (!restarted) {
+            acceptedTaskId = invocation.taskId;
+            return { status: "accepted", binding: providerBinding,
+              pollState: { upstreamTaskId: "accepted-once" }, retryAfterMs: 0 };
+          }
+          expect(invocation.taskId).toBe(acceptedTaskId);
+          expect(invocation.pollState).toEqual({ upstreamTaskId: "accepted-once" });
+          return {
+            status: "completed",
+            binding: outcome === "binding-drift" ? { ...providerBinding, version: "3.0.0" } : providerBinding,
+            media: { assetId: "asset-courtyard", uri: "clash-asset://asset-courtyard",
+              kind: outcome === "wrong-kind" ? "video" : "image", mediaType: "image/png" },
+          };
+        },
+        executablePluginAction: async () => { throw new Error("The selected Provider must execute this Run."); },
+        outputStore: {
+          async stage() { return { kind: "asset", projectAsset: generatedAsset() }; },
+        },
+        publisher: {
+          async publish({ run }) {
+            await bridge.publishMediaSuccess({ doc, actionRunId: run.actionRunId,
+              outputSlot: run.outputSlot, entry: generatedAsset(), checkpoint: async () => undefined });
+          },
+          async publishFailure({ run }) {
+            await bridge.publishFailure({ doc, actionRunId: run.actionRunId, checkpoint: async () => undefined });
+          },
+        },
+      });
+      const first = coordinator(false);
+      await first.coordinate({ type: "advance", identity });
+      await first.coordinate({ type: "advance", identity });
+      expect(await journal.load(identity)).toMatchObject({ phase: "polling" });
+      const resumed = coordinator(true);
+      for (let step = 0; step < 8; step += 1) {
+        if ((await resumed.coordinate({ type: "advance", identity })).kind === "terminal") break;
+      }
+      expect(readProjectActionRun(doc, command.actionRunId)?.status).toBe(
+        outcome === "completed" ? "succeeded" : "failed",
+      );
+      const commit = readOutputCommit(doc, identity);
+      if (outcome === "completed") {
+        expect(commit).not.toBeNull();
+        expect(readProjectAsset(doc, "asset-courtyard")).not.toBeNull();
+      } else {
+        expect(commit).toBeNull();
+        expect(readProjectAsset(doc, "asset-courtyard")).toBeNull();
+      }
+      expect(readProjectActionRun(doc, command.actionRunId)?.executor).toEqual(request().executor);
+    },
+  );
+
   it("checkpoints public pending before the private journal and projects only coarse running afterwards", async () => {
     const doc = projectDoc();
     const dataDir = await temporaryDataDir();

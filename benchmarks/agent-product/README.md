@@ -10,6 +10,11 @@ product readback. Cases marked `blocked` are executable specifications for a
 missing contract. The runner records them without launching an agent, so a
 filesystem imitation cannot be mistaken for product support.
 
+Each functional Task selects the `project` skill pack from the shipped Clash
+catalog and adds only its required Director, Timeline, or Remotion skills. The
+same task-scoped installer and Environment content locks used by the creative
+suite preserve that exact selection; packaging does not imply loading all skills.
+
 Ready cases run as one standardized Environment transition. The runner imports
 the exact product Workspace bundle declared by digest, executes the Agent, and
 exports a verified `modified-workspace` bundle with the same Project identity.

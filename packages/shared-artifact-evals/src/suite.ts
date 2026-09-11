@@ -1,10 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { extname } from "node:path";
+import { dirname, extname } from "node:path";
 
 import { parse as parseYaml } from "yaml";
 
 import { ArtifactBenchmarkSuiteSchema } from "./schemas";
 import type { ArtifactBenchmarkSuite } from "./types";
+import { resolveTaskSkillPack } from "./task-skill-pack";
 
 function formatSuiteIssues(
   issues: Array<{ path: PropertyKey[]; message: string }>,
@@ -38,5 +39,13 @@ export async function loadBenchmarkSuite(
       `Invalid benchmark suite '${path}': ${formatSuiteIssues(parsed.error.issues)}`,
     );
   }
-  return parsed.data;
+  return {
+    ...parsed.data,
+    cases: await Promise.all(
+      parsed.data.cases.map(async (task) => ({
+        ...task,
+        skills: await resolveTaskSkillPack(task, dirname(path)),
+      })),
+    ),
+  };
 }

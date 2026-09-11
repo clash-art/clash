@@ -48,6 +48,11 @@ const personalGlobalAssets = createPersonalGlobalAssetHttpClient({
 
 function cacheAsset(projectId: string, asset: ResolvedAsset): void {
   const key = scopedKey(projectId, asset.id);
+  const current = cache.get(key);
+  // These are validated JSON projections from the Host. Keep the existing
+  // snapshot when a list/availability refresh returns the same facts, while
+  // still publishing URL, status, metadata and lifecycle changes immediately.
+  if (current && JSON.stringify(current) === JSON.stringify(asset)) return;
   cache.set(key, asset);
   for (const notify of subscribers.get(key) ?? []) notify();
 }

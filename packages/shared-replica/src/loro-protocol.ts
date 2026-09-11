@@ -353,6 +353,7 @@ export class LoroProtocolServerSession {
  */
 export class LoroProtocolClientSession {
   private joined = false;
+  private recoveryRequired = false;
   private permission: "read" | "write" = "read";
   private unsubscribeLocalUpdates: (() => void) | undefined;
   private readonly pending = new Map<HexString, Uint8Array[]>();
@@ -361,6 +362,10 @@ export class LoroProtocolClientSession {
   constructor(private readonly options: LoroProtocolClientSessionOptions) {}
 
   join(auth = new Uint8Array()): void {
+    if (this.recoveryRequired) {
+      this.options.onError?.(new Error("Recover the rejected local replica before starting a new sync session."));
+      return;
+    }
     this.joined = false;
     const version = this.options.doc.version();
     try {
@@ -443,6 +448,7 @@ export class LoroProtocolClientSession {
     permission: "read" | "write",
     serverVersionBytes: Uint8Array,
   ): Promise<void> {
+    if (this.recoveryRequired) return;
     this.permission = permission;
     this.joined = true;
     this.subscribeToLocalUpdates();
@@ -586,6 +592,12 @@ export class LoroProtocolClientSession {
     if (!updates) return;
     this.pending.delete(refId);
     if (status !== UpdateStatusCode.Ok) {
+      // Later local operations can depend on the rejected CRDT operation ids.
+      // Preserve the document for recovery, but never keep publishing that chain.
+      this.recoveryRequired = true;
+      this.joined = false;
+      this.unsubscribeLocalUpdates?.();
+      this.unsubscribeLocalUpdates = undefined;
       this.options.onUpdateRejected?.(refId, status, updates);
     }
   }

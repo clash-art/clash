@@ -14,7 +14,7 @@ import { Button } from "./ui/button";
 import { ClashArtwork, ClashPublisherArtwork } from "./ClashArtwork";
 import { marketplacePluginPath } from "./marketplaceRouting";
 import { marketplaceItemTone } from "./marketplaceItemTone";
-import { settingsRowClassName } from "./SettingsPrimitives";
+import { Card } from "./ui/card";
 import { cn } from "./ai-elements/utils";
 import {
   marketplaceSkillReference,
@@ -176,6 +176,12 @@ export function MarketplacePluginDeclarations({
     ["Publisher", item.author],
     ["Version", item.version ?? item.sourceVersion],
     ["Source", item.source],
+    [
+      "Collection",
+      item.curation?.collection === "official-picks"
+        ? `${item.curation.curator} Official Picks`
+        : undefined,
+    ],
     ["Runtime", item.runtime],
     ["Execution contract", item.executionContract],
     ["Output type", item.outputType],
@@ -222,6 +228,46 @@ export function MarketplacePluginDeclarations({
           </div>
         ))}
       </dl>
+
+      {item.attribution ? (
+        <section
+          aria-label="Source attribution"
+          className="space-y-2 text-sm text-content-secondary"
+        >
+          <div className="flex flex-wrap gap-x-4 gap-y-2">
+            <a
+              href={item.attribution.sourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-4"
+            >
+              Original skill
+            </a>
+            {item.attribution.licenseUrl ? (
+              <a
+                href={item.attribution.licenseUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-4"
+              >
+                {item.attribution.license ?? "License"}
+              </a>
+            ) : item.attribution.license ? (
+              <span>{item.attribution.license}</span>
+            ) : null}
+          </div>
+          {item.attribution.repositoryStars !== undefined ? (
+            <p>
+              {item.attribution.repositoryStars.toLocaleString()} repository
+              stars
+              {item.attribution.checkedAt
+                ? ` · checked ${item.attribution.checkedAt}`
+                : ""}
+            </p>
+          ) : null}
+          {item.attribution.notes ? <p>{item.attribution.notes}</p> : null}
+        </section>
+      ) : null}
 
       {declarations.length > 0 ? (
         <div className="space-y-4">
@@ -374,154 +420,159 @@ export function MarketplaceItemCard({
   });
 
   return (
-    <li
-      ref={draggable.setNodeRef}
-      data-slot="marketplace-item"
-      data-layout="model-card"
-      data-dragging={draggable.isDragging ? "true" : "false"}
-      style={{ transform: CSS.Translate.toString(draggable.transform) }}
-      {...(referenceEnabled ? draggable.attributes : {})}
-      {...(referenceEnabled ? draggable.listeners : {})}
-      className={cn(
-        settingsRowClassName,
-        "group/marketplace-card relative flex min-h-[148px] min-w-0 flex-col transition-[border-color,box-shadow,transform,opacity] duration-200 hover:-translate-y-0.5 hover:border-ring motion-reduce:hover:translate-y-0",
-        draggable.isDragging && "opacity-60",
-      )}
-    >
-      <Link
-        to={marketplacePluginPath(item)}
-        aria-label={`View ${item.name} details`}
-        className="flex min-w-0 flex-1 items-start gap-3.5 rounded-t-[var(--settings-row-radius)] p-4 text-left outline-none transition-colors hover:bg-accent/35 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+    <Card asChild interaction="surface">
+      <li
+        ref={draggable.setNodeRef}
+        data-slot="marketplace-item"
+        data-layout="model-card"
+        data-dragging={draggable.isDragging ? "true" : "false"}
+        style={{ transform: CSS.Translate.toString(draggable.transform) }}
+        {...(referenceEnabled ? draggable.attributes : {})}
+        {...(referenceEnabled ? draggable.listeners : {})}
+        className={cn(
+          "group/marketplace-card relative flex min-h-[148px] min-w-0 flex-col",
+          draggable.isDragging && "opacity-60",
+        )}
       >
-        {item.cover ? (
-          <MarketplaceItemArtwork item={item} />
-        ) : (
-          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-black/[0.06] bg-white p-1 shadow-[0_4px_14px_rgba(31,26,23,0.08)] dark:border-white/10">
+        <Link
+          to={marketplacePluginPath(item)}
+          aria-label={`View ${item.name} details`}
+          className="flex min-w-0 flex-1 items-start gap-3.5 rounded-[var(--surface-card-radius)] p-4 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        >
+          {item.cover ? (
             <MarketplaceItemArtwork item={item} />
-          </span>
-        )}
-        <span className="min-w-0 flex-1 pt-0.5">
-          <span className="flex min-w-0 items-start justify-between gap-2">
-            <span className="min-w-0">
-              <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <h3 className="truncate text-[15px] font-semibold leading-5 text-content-primary">
-                  {item.name}
-                </h3>
-                {item.author ? (
-                  <span className="text-xs text-content-muted">
-                    @{item.author}
-                  </span>
-                ) : null}
-                {item.version ? (
-                  <span className="font-mono text-xs text-content-muted">
-                    v{item.version}
-                  </span>
-                ) : null}
+          ) : (
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-black/[0.06] bg-white p-1 shadow-[0_4px_14px_rgba(31,26,23,0.08)] dark:border-white/10">
+              <MarketplaceItemArtwork item={item} />
+            </span>
+          )}
+          <span className="min-w-0 flex-1 pt-0.5">
+            <span className="flex min-w-0 items-start justify-between gap-2">
+              <span className="min-w-0">
+                <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <h3 className="truncate text-[15px] font-semibold leading-5 text-content-primary">
+                    {item.name}
+                  </h3>
+                  {item.author ? (
+                    <span className="text-xs text-content-muted">
+                      @{item.author}
+                    </span>
+                  ) : null}
+                  {item.version ? (
+                    <span className="font-mono text-xs text-content-muted">
+                      v{item.version}
+                    </span>
+                  ) : null}
+                </span>
               </span>
+              <CaretRight
+                className="mt-0.5 h-4 w-4 shrink-0 text-content-muted "
+                aria-hidden="true"
+              />
             </span>
-            <CaretRight
-              className="mt-0.5 h-4 w-4 shrink-0 text-content-muted transition-transform group-hover/marketplace-card:translate-x-0.5 group-hover/marketplace-card:text-brand"
-              aria-hidden="true"
-            />
+
+            {item.description ? (
+              <span className="mt-3 block line-clamp-2 min-h-8 text-xs leading-4 text-content-secondary">
+                {item.description}
+              </span>
+            ) : null}
+
+            {item.tags && item.tags.length > 0 ? (
+              <span className="mt-3 flex min-w-0 flex-wrap gap-1.5">
+                {item.tags.slice(0, 2).map((tag) => (
+                  <Badge
+                    key={tag}
+                    data-tag=""
+                    variant="secondary"
+                    className="rounded-md px-2"
+                  >
+                    {tag}
+                  </Badge>
+                ))}
+              </span>
+            ) : null}
           </span>
+        </Link>
 
-          {item.description ? (
-            <span className="mt-3 block line-clamp-2 min-h-8 text-xs leading-4 text-content-secondary">
-              {item.description}
-            </span>
-          ) : null}
+        <div className="flex min-h-8 min-w-0 flex-wrap items-center justify-end gap-2 px-4 pb-4">
+          {canManage || referenceEnabled ? (
+            <>
+              <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                {installed ? (
+                  <Badge variant="secondary" tone="sage">
+                    <Check
+                      className="h-3 w-3"
+                      weight="bold"
+                      aria-hidden="true"
+                    />
+                    Installed
+                  </Badge>
+                ) : null}
+                {isReferenceAdded ? (
+                  <Badge variant="secondary" tone="blue">
+                    Added to Composer
+                  </Badge>
+                ) : null}
+                {installError ? (
+                  <Badge
+                    role={errorContext === "reference" ? "alert" : "status"}
+                    aria-live="polite"
+                    variant="secondary"
+                    tone="coral"
+                    className="max-w-full whitespace-normal text-left"
+                  >
+                    {errorContext === "install" ? "Install failed: " : null}
+                    {installError}
+                  </Badge>
+                ) : null}
+              </div>
 
-          {item.tags && item.tags.length > 0 ? (
-            <span className="mt-3 flex min-w-0 flex-wrap gap-1.5">
-              {item.tags.slice(0, 2).map((tag) => (
-                <Badge
-                  key={tag}
-                  data-tag=""
-                  variant="secondary"
-                  className="rounded-md px-2"
-                >
-                  {tag}
-                </Badge>
-              ))}
-            </span>
-          ) : null}
-        </span>
-      </Link>
+              <div className="flex shrink-0 items-center gap-2">
+                {canManage && !installed ? (
+                  <Button
+                    onClick={() => void install()}
+                    disabled={installing || addingReference}
+                    leftIcon={
+                      installing && errorContext === "install" ? undefined : (
+                        <Download
+                          className="h-3.5 w-3.5"
+                          weight="bold"
+                          aria-hidden="true"
+                        />
+                      )
+                    }
+                    size="sm"
+                    shape="rounded"
+                    className="h-8 rounded-lg px-3 text-xs"
+                  >
+                    {installing && errorContext === "install"
+                      ? "Installing…"
+                      : installError && errorContext === "install"
+                        ? "Retry"
+                        : "Install"}
+                  </Button>
+                ) : null}
 
-      <div className="flex min-h-8 min-w-0 flex-wrap items-center justify-end gap-2 px-4 pb-4">
-        {canManage || referenceEnabled ? (
-          <>
-            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-              {installed ? (
-                <Badge variant="secondary" tone="sage">
-                  <Check className="h-3 w-3" weight="bold" aria-hidden="true" />
-                  Installed
-                </Badge>
-              ) : null}
-              {isReferenceAdded ? (
-                <Badge variant="secondary" tone="blue">
-                  Added to Composer
-                </Badge>
-              ) : null}
-              {installError ? (
-                <Badge
-                  role={errorContext === "reference" ? "alert" : "status"}
-                  aria-live="polite"
-                  variant="secondary"
-                  tone="coral"
-                  className="max-w-full whitespace-normal text-left"
-                >
-                  {errorContext === "install" ? "Install failed: " : null}
-                  {installError}
-                </Badge>
-              ) : null}
-            </div>
-
-            <div className="flex shrink-0 items-center gap-2">
-              {canManage && !installed ? (
-                <Button
-                  onClick={() => void install()}
-                  disabled={installing || addingReference}
-                  leftIcon={
-                    installing && errorContext === "install" ? undefined : (
-                      <Download
-                        className="h-3.5 w-3.5"
-                        weight="bold"
-                        aria-hidden="true"
-                      />
-                    )
-                  }
-                  size="sm"
-                  shape="rounded"
-                  className="h-8 rounded-lg px-3 text-xs"
-                >
-                  {installing && errorContext === "install"
-                    ? "Installing…"
-                    : installError && errorContext === "install"
-                      ? "Retry"
-                      : "Install"}
-                </Button>
-              ) : null}
-
-              {referenceEnabled && !isReferenceAdded ? (
-                <Button
-                  onClick={() => void addReference()}
-                  disabled={addingReference || installing}
-                  size="sm"
-                  shape="rounded"
-                  className="h-8 rounded-lg px-3 text-xs"
-                >
-                  {addingReference ? "Adding…" : "Add to Composer"}
-                </Button>
-              ) : null}
-            </div>
-          </>
-        ) : (
-          <Badge variant="secondary" tone="blue" className="w-fit">
-            Available in workspace
-          </Badge>
-        )}
-      </div>
-    </li>
+                {referenceEnabled && !isReferenceAdded ? (
+                  <Button
+                    onClick={() => void addReference()}
+                    disabled={addingReference || installing}
+                    size="sm"
+                    shape="rounded"
+                    className="h-8 rounded-lg px-3 text-xs"
+                  >
+                    {addingReference ? "Adding…" : "Add to Composer"}
+                  </Button>
+                ) : null}
+              </div>
+            </>
+          ) : (
+            <Badge variant="secondary" tone="blue" className="w-fit">
+              Available in workspace
+            </Badge>
+          )}
+        </div>
+      </li>
+    </Card>
   );
 }

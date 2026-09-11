@@ -35,11 +35,15 @@ import {
 } from "node:net";
 import { fileURLToPath } from "node:url";
 import type { ProjectHostResponse } from "@clash/shared-runtime/project-host-client";
+import { createGeneratorClient } from "@clash/shared-runtime/generator-client";
 import { createProjectAssetHttpClient } from "@clash/asset-sdk";
 import {
   DirectorStageStateSchema,
   projectDirectorStageReadToken,
-  type ActionAssetBinding,
+  ProjectActionRunSchema,
+  OutputCommitSchema,
+  type ProjectActionRun,
+  type OutputCommit,
   type ProjectDirectorStage,
 } from "@clash/shared-types";
 
@@ -52,6 +56,8 @@ import {
   type BenchmarkAttemptVerification,
 } from "./attempt-manifest";
 import { writeBenchmarkTaskManifest } from "./benchmark-task";
+import { resolveTaskSkillPack } from "./task-skill-pack";
+import { renderCodexTaskSkillContext } from "./codex-task-skills";
 import { createBenchmarkEvaluationPipeline } from "./evaluation-pipeline";
 import {
   parseEvaluationRecord,
@@ -251,7 +257,8 @@ type DirectorReadbackReport = {
       aspectRatio: string;
       width: number;
       height: number;
-      outputBinding: ActionAssetBinding;
+      actionRun: ProjectActionRun;
+      outputCommit: OutputCommit;
     }>;
   }>;
   imageMatches: Array<{
@@ -1399,6 +1406,7 @@ function resolveAgentCommand(
   workspace: string,
   prompt: string,
   clashAccess?: AgentClashAccess,
+  taskSkillContext?: string,
 ): { command: string; args: string[] } {
   if (agent.adapter === "codex") {
     const clashConfig = clashAccess?.mcp
@@ -1450,6 +1458,10 @@ function resolveAgentCommand(
       workspace,
       ...(agent.model ? ["--model", agent.model] : []),
       ...(agent.args ?? []),
+      "-c",
+      "skills.include_instructions=false",
+      "-c",
+      `developer_instructions=${JSON.stringify(taskSkillContext ?? "")}`,
       ...clashConfig,
       prompt,
     ];
@@ -1635,6 +1647,17 @@ async function runAgent(input: {
   processScope: BenchmarkProcessScope;
 }): Promise<AgentRunReport> {
   await mkdir(input.logsRoot, { recursive: true });
+  const taskSkillContext =
+    input.agent.adapter === "codex"
+      ? await renderCodexTaskSkillContext(input.workspace)
+      : undefined;
+  if (taskSkillContext !== undefined) {
+    await writeFile(
+      join(input.logsRoot, "task-skills.md"),
+      taskSkillContext,
+      "utf8",
+    );
+  }
   const stdoutPath = join(
     input.logsRoot,
     input.agent.adapter === "codex" ||
@@ -1653,6 +1676,7 @@ async function runAgent(input: {
     input.workspace,
     input.prompt,
     input.clashAccess,
+    taskSkillContext,
   );
   if (input.lockedExecutablePath) {
     resolvedAgent.command = input.lockedExecutablePath;
@@ -1859,7 +1883,7 @@ async function createFreshDirectory(
   }
 }
 
-async function installCaseSkills(
+export async function installCaseSkills(
   skillPaths: string[],
   suiteRoot: string,
   workspace: string,
@@ -2591,10 +2615,11 @@ async function verifyDirectorCaptureWithProjectAssets(input: {
   ready: ProjectHostReady;
   stage: ProjectDirectorStage;
   receiptStateSha256: string;
+  actionRunIds: unknown;
   frames: Array<
     Omit<
       DirectorReadbackReport["captures"][number]["frames"][number],
-      "outputBinding"
+      "actionRun" | "outputCommit"
     >
   >;
 }): Promise<DirectorReadbackReport["captures"][number]["frames"]> {
@@ -2609,8 +2634,26 @@ async function verifyDirectorCaptureWithProjectAssets(input: {
     fetch: (request, init) =>
       fetch(request, { ...init, signal: AbortSignal.timeout(15_000) }),
   });
+  const actionRunIds = input.actionRunIds;
+  if (
+    !Array.isArray(actionRunIds) ||
+    actionRunIds.length !== input.frames.length ||
+    !actionRunIds.every(
+      (id): id is string => typeof id === "string" && Boolean(id.trim()),
+    )
+  ) {
+    throw new Error(
+      "Director capture receipt must identify one native Action Run per frame",
+    );
+  }
+  const generators = createGeneratorClient((path, init) =>
+    fetch(new URL(path, input.ready.apiUrl), {
+      ...init,
+      signal: AbortSignal.timeout(15_000),
+    }),
+  );
   return Promise.all(
-    input.frames.map(async (frame) => {
+    input.frames.map(async (frame, index) => {
       if (!frame.projectAssetId) {
         throw new Error(
           `Director capture frame '${frame.artifactId}' is missing its Project Asset identity`,
@@ -2698,34 +2741,57 @@ async function verifyDirectorCaptureWithProjectAssets(input: {
         );
       }
 
-      const outputBindings = (
-        await client.references({
-          projectId: input.ready.projectId,
-          assetId,
-        })
-      ).value.filter((binding) => binding.direction === "output");
-      if (outputBindings.length !== 1) {
-        throw new Error(
-          `Director capture Project Asset ${assetId} must have exactly one output ActionAssetBinding (found ${outputBindings.length})`,
-        );
-      }
-      const outputBinding = outputBindings[0]!;
-      const expectedActionId =
-        input.stage.owner.kind === "canvas-action"
-          ? `node:${input.stage.owner.actionNodeId}`
-          : `director:${input.stage.id}`;
+      const actionRunId = actionRunIds[index]!;
+      const runResponse = (await generators.getActionRun(
+        input.ready.projectId,
+        actionRunId,
+      )) as { run?: unknown };
+      const actionRun = ProjectActionRunSchema.parse(runResponse.run);
       if (
-        outputBinding.owner.kind !== "run" ||
-        outputBinding.owner.actionId !== expectedActionId ||
-        outputBinding.owner.actionRevisionId !== input.stage.revisionId
+        actionRun.actionRunId !== actionRunId ||
+        actionRun.status !== "succeeded" ||
+        actionRun.generatorRevision.generatorId !== input.stage.id ||
+        actionRun.generatorRevision.generatorRevisionId !==
+          input.stage.revisionId ||
+        actionRun.actionId !== "capture-frame" ||
+        actionRun.executor.pluginId !== "clash.director" ||
+        actionRun.executor.exportId !== "capture-frame" ||
+        actionRun.parameters.label !== frame.artifactId ||
+        actionRun.parameters.timeSeconds !== frame.timeSeconds ||
+        actionRun.parameters.aspectRatio !== frame.aspectRatio ||
+        actionRun.parameters.longEdge !== Math.max(frame.width, frame.height) ||
+        !actionRun.outputContract.some(
+          (output) =>
+            output.slot === "frame" &&
+            output.assetType.kind === "media" &&
+            output.assetType.mediaKind === "image",
+        )
       ) {
         throw new Error(
-          `Director capture Project Asset ${assetId} output ActionAssetBinding is not owned by ${expectedActionId} at Stage revision ${input.stage.revisionId}`,
+          `Director capture Action Run ${actionRunId} does not match the Stage revision and frame parameters`,
+        );
+      }
+      const commitResponse = (await generators.getOutputCommit(
+        input.ready.projectId,
+        actionRunId,
+        "frame",
+      )) as { commit?: unknown };
+      const outputCommit = OutputCommitSchema.parse(commitResponse.commit);
+      if (
+        outputCommit.actionRunId !== actionRunId ||
+        outputCommit.outputSlot !== "frame" ||
+        outputCommit.itemKey !== undefined ||
+        outputCommit.asset.kind !== "media" ||
+        outputCommit.asset.projectAssetId !== assetId
+      ) {
+        throw new Error(
+          `Director Output Commit does not identify the capture Asset ${assetId}`,
         );
       }
       return {
         ...frame,
-        outputBinding,
+        actionRun,
+        outputCommit,
       };
     }),
   );
@@ -2886,6 +2952,7 @@ async function captureDirectorReadback(input: {
         renderer?: unknown;
         stateSha256?: unknown;
         frames?: unknown;
+        actionRunIds?: unknown;
       };
       if (
         value.captured !== true ||
@@ -2967,6 +3034,7 @@ async function captureDirectorReadback(input: {
           ready: input.ready,
           stage: liveStage,
           receiptStateSha256: value.stateSha256,
+          actionRunIds: value.actionRunIds,
           frames,
         });
       } catch (error) {
@@ -5120,6 +5188,9 @@ async function runBenchmarkSuiteInProcessScope(
   const suiteRoot = await realpath(input.suiteRoot);
   if (!(await stat(suiteRoot)).isDirectory())
     throw new Error("suiteRoot must be a directory");
+  for (const benchmark of parsedSuite.data.cases) {
+    benchmark.skills = await resolveTaskSkillPack(benchmark, suiteRoot);
+  }
   await mkdir(resolve(input.outputRoot), { recursive: true });
   const outputRoot = await realpath(resolve(input.outputRoot));
   if (!(await stat(outputRoot)).isDirectory())

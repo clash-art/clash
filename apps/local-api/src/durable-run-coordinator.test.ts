@@ -368,7 +368,7 @@ describe("Local Durable Run coordinator", () => {
     },
   );
 
-  it("freezes a node-less Project Asset delivery in the same journal", async () => {
+  it.each(["A chestnut horse", "", "  keep authored whitespace  "])("freezes a node-less Project Asset delivery without changing prompt %j", async (prompt) => {
     const dataDir = await temporaryDataDir();
     const now = { value: 100 };
     const run = harness({
@@ -390,7 +390,7 @@ describe("Local Durable Run coordinator", () => {
           kind: "project-asset",
           actionId: "director:model-generation",
           name: "generated-model.glb",
-          prompt: "A chestnut horse",
+          prompt,
         },
       },
     });
@@ -408,7 +408,7 @@ describe("Local Durable Run coordinator", () => {
           kind: "project-asset",
           actionId: "director:model-generation",
           name: "generated-model.glb",
-          prompt: "A chestnut horse",
+          prompt,
         },
       },
     });

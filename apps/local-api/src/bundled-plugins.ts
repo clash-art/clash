@@ -88,6 +88,17 @@ export class BuiltinPluginImmutableError extends Error {
  * activated under the actions directory, and never appears here. `hrhrng.hub` is one.
  */
 export const BUNDLED_PLUGINS = [
+  { id: "clash.gpt-image", packageName: "@clash-plugin/gpt-image", workspaceDir: "gpt-image" },
+  {
+    id: "clash.agent-text",
+    packageName: "@clash-plugin/agent-text",
+    workspaceDir: "agent-text",
+  },
+  {
+    id: "clash.model-generation",
+    packageName: "@clash-plugin/model-generation",
+    workspaceDir: "model-generation",
+  },
   {
     id: "clash.asset-edit",
     packageName: "@clash-plugin/asset-edit",

@@ -16,6 +16,7 @@ export type DirectorStageRenderRequest = {
     aspectRatio: DirectorCaptureAspectRatio;
   }>;
   assetUrls?: Record<string, string>;
+  codeSources?: Record<string, string>;
   environmentUrl?: string;
 };
 
@@ -202,6 +203,7 @@ export function createHeadlessDirectorStageRenderer(options: {
             aspectRatio: frame.aspectRatio,
             longEdge: request.longEdge,
             assetUrls: request.assetUrls,
+            codeSources: request.codeSources,
             environmentUrl: request.environmentUrl,
           }) as BrowserCaptureResult;
           const prefix = "data:image/png;base64,";

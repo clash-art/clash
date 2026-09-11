@@ -103,7 +103,7 @@ function request(actionRunId: string): ActionRunRequest {
   };
 }
 
-function command(actionRunId: string, now: number): LocalDurableRunCreateCommand {
+function command(actionRunId: string, now: number, providerExecution = false): LocalDurableRunCreateCommand {
   const run = request(actionRunId);
   return {
     type: "create",
@@ -113,6 +113,12 @@ function command(actionRunId: string, now: number): LocalDurableRunCreateCommand
     executor: {
       targetKind: "generator-action",
       binding: videoEnhanceBinding,
+      ...(providerExecution ? { providerExecution: {
+        binding: providerBinding,
+        accountId: "account-1",
+        assetInputs: [],
+        input: { values: {}, references: [] },
+      } } : {}),
       actionId: "enhance",
       actor: { kind: "system", id: "local-api" },
       publicOwner: {
@@ -130,7 +136,7 @@ function command(actionRunId: string, now: number): LocalDurableRunCreateCommand
       input: {
         values: {
           modelId: "video-enhance-card",
-          modelRoute: frozenRoute,
+          ...(providerExecution ? {} : { modelRoute: frozenRoute }),
           modelParams: {},
         },
         references: [],
@@ -187,6 +193,7 @@ async function buildProcessor(
     mediaType: string;
   },
   now: () => number,
+  providerExecution = false,
 ) {
   return createLocalWorkflowProcessor({
     dataDir: directory,
@@ -206,6 +213,7 @@ async function buildProcessor(
     durableProviderRuns: {
       ownerId: "host-1",
       providerPluginExecutor: async () => {
+        if (providerExecution) return { status: "completed", binding: providerBinding, media: assetHandle };
         throw new Error(
           "Generator Actions must dispatch through executablePluginAction, not Provider execution.",
         );
@@ -217,17 +225,18 @@ async function buildProcessor(
 }
 
 describe("clash.video-enhance real processor publication boundary", () => {
-  it("publishes an immutable Project Asset and names it in the OutputCommit from a receipt owned by the frozen Provider executor", async () => {
+  it.each([false, true])("publishes an immutable Project Asset and OutputCommit from its frozen Provider receipt (direct execution: %s)", async (providerExecution) => {
     const actionRunId = "run-video-enhance-publish-1";
     const directory = await dataDir();
     const doc = projectDoc(actionRunId);
     const journal = createSqliteDurableRunJournal(directory);
     const now = { value: 1_000 };
+    const creation = command(actionRunId, now.value, providerExecution);
     await createLocalDurableRun({
       ownerId: "host-1",
       journal,
       clock: { now: () => now.value },
-      command: command(actionRunId, now.value),
+      command: creation,
     });
     // The exact frozen Provider executor plugin/version/account, under this Run's own task and
     // canonical output slot -- the only receipt shape `expectedProviderReceiptOwner` accepts for a
@@ -236,7 +245,7 @@ describe("clash.video-enhance real processor publication boundary", () => {
       dataDir: directory,
     }).stage({
       projectId: "project-1",
-      taskId: actionRunId,
+      taskId: providerExecution ? `${actionRunId}:media` : actionRunId,
       slot: "media",
       pluginId: providerBinding.pluginId,
       pluginVersion: providerBinding.version,
@@ -256,6 +265,7 @@ describe("clash.video-enhance real processor publication boundary", () => {
         mediaType: "video/mp4",
       },
       () => now.value,
+      providerExecution,
     );
 
     await processor.process({
@@ -283,7 +293,7 @@ describe("clash.video-enhance real processor publication boundary", () => {
     ).toMatchObject({ phase: "succeeded", projectedAt: expect.any(Number) });
   });
 
-  it.each([
+  it.each(([
     [
       "a wrong Provider plugin",
       {
@@ -320,9 +330,9 @@ describe("clash.video-enhance real processor publication boundary", () => {
         slot: "video",
       },
     ],
-  ])(
-    "rejects a receipt staged under %s through the real processor, publishing nothing",
-    async (_label, drift) => {
+  ] as const).flatMap(([label, drift]) => [false, true].map((direct) => ({ label, drift, direct }))))(
+    "rejects a receipt staged under $label through the real processor (direct: $direct)",
+    async ({ drift, direct }) => {
       const actionRunId = `run-video-enhance-reject-${drift.pluginId}-${drift.pluginVersion}-${drift.accountId}-${drift.slot}`;
       const directory = await dataDir();
       const doc = projectDoc(actionRunId);
@@ -332,13 +342,13 @@ describe("clash.video-enhance real processor publication boundary", () => {
         ownerId: "host-1",
         journal,
         clock: { now: () => now.value },
-        command: command(actionRunId, now.value),
+        command: command(actionRunId, now.value, direct),
       });
       const staged = await createLocalPluginAssetStagingStore({
         dataDir: directory,
       }).stage({
         projectId: "project-1",
-        taskId: actionRunId,
+        taskId: direct ? `${actionRunId}:media` : actionRunId,
         slot: drift.slot,
         pluginId: drift.pluginId,
         pluginVersion: drift.pluginVersion,
@@ -358,6 +368,7 @@ describe("clash.video-enhance real processor publication boundary", () => {
           mediaType: "video/mp4",
         },
         () => now.value,
+        direct,
       );
 
       await processor.process({

@@ -31,7 +31,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "inputFixture": {
         "path": "fixtures/asset-svg-v1",
         "manifestSha256": "82632b7f39230e30bfc9e6a4c586e54072f512c055ca7c85f46ea028a79209bb"
@@ -114,7 +114,11 @@
           "weight": 20,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "asset-image-exact-import-mcp-v1",
@@ -144,7 +148,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "inputFixture": {
         "path": "fixtures/asset-svg-v1",
         "manifestSha256": "82632b7f39230e30bfc9e6a4c586e54072f512c055ca7c85f46ea028a79209bb"
@@ -227,7 +231,11 @@
           "weight": 20,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "asset-image-exact-import-cli-v1",
@@ -257,7 +265,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "inputFixture": {
         "path": "fixtures/asset-svg-v1",
         "manifestSha256": "82632b7f39230e30bfc9e6a4c586e54072f512c055ca7c85f46ea028a79209bb"
@@ -340,7 +348,11 @@
           "weight": 20,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "asset-trash-restore-v1",
@@ -370,7 +382,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "inputFixture": {
         "path": "fixtures/asset-svg-v1",
         "manifestSha256": "82632b7f39230e30bfc9e6a4c586e54072f512c055ca7c85f46ea028a79209bb"
@@ -454,7 +466,11 @@
           "weight": 25,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "director-three-beat-v1",
@@ -499,10 +515,7 @@
       },
       "passScore": 100,
       "timeoutMs": 900000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "lane": "agent-product",
@@ -596,7 +609,11 @@
           "weight": 10,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "timeline-multitrack-render-v1",
@@ -647,7 +664,6 @@
       "passScore": 100,
       "timeoutMs": 1200000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
       ],
@@ -757,7 +773,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "remotion-character-render-v1",
@@ -813,7 +833,6 @@
       "passScore": 100,
       "timeoutMs": 1200000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-mg-character",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
@@ -956,7 +975,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "mixed-director-remotion-timeline-v1",
@@ -1035,7 +1058,6 @@
       "passScore": 100,
       "timeoutMs": 1500000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-director-production",
         "../../../plugins/clash/skills/clash-mg-character",
         "../../../plugins/clash/skills/clash-timeline-production",
@@ -1233,7 +1255,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "generator-multi-action-v1",
@@ -1278,7 +1304,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "execution": {
         "profile": "clash-host",
         "lane": "blocked-contract",
@@ -1356,7 +1382,11 @@
           "weight": 40,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "generator-cow-replay-v1",
@@ -1396,7 +1426,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "execution": {
         "profile": "clash-host",
         "lane": "blocked-contract",
@@ -1473,7 +1503,11 @@
           "weight": 25,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "document-version-attachment-v1",
@@ -1508,7 +1542,7 @@
       },
       "passScore": 100,
       "timeoutMs": 300000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "execution": {
         "profile": "clash-host",
         "lane": "blocked-contract",
@@ -1573,7 +1607,11 @@
           "weight": 20,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "asr-generator-transcript-document-v1",
@@ -1608,7 +1646,7 @@
       },
       "passScore": 100,
       "timeoutMs": 600000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": [],
       "execution": {
         "profile": "clash-host",
         "lane": "blocked-contract",
@@ -1684,7 +1722,11 @@
           "weight": 40,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "stage-generator-multi-action-v1",
@@ -1719,10 +1761,7 @@
       },
       "passScore": 100,
       "timeoutMs": 600000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "lane": "blocked-contract",
@@ -1790,7 +1829,11 @@
           "weight": 60,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     },
     {
       "id": "timeline-generator-render-v1",
@@ -1825,10 +1868,7 @@
       },
       "passScore": 100,
       "timeoutMs": 1200000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-timeline-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-timeline-production"],
       "execution": {
         "profile": "clash-host",
         "lane": "blocked-contract",
@@ -1900,7 +1940,11 @@
           "weight": 35,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "project"
+      }
     }
   ]
 }

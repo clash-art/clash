@@ -1,3 +1,6 @@
+import { coerceModelParameterInput } from "@clash/shared-types";
+import { createLocalGeneratorProductService } from "./local-generator-product.js";
+import { createLocalModelExecutionPlanner, modelGenerationRevisionFromReferences } from "./local-model-generation.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { LoroDoc } from "loro-crdt";
 import {
@@ -9,6 +12,9 @@ import {
 } from "@clash/shared-runtime";
 import {
   DocumentAssetRevisionSchema,
+  MODEL_TEXT_DOCUMENT_KIND,
+  MODEL_TEXT_DOCUMENT_SCHEMA_VERSION,
+  GeneratorRevisionRefSchema,
   extractPromptText,
   ActionBindingOwnerSchema,
   ensureActionAssetBinding,
@@ -25,7 +31,11 @@ import {
   ProjectAssetEntrySchema,
   ProjectTimelineEnvelopeSchema,
   readProjectAsset,
+  Canvas,
   readProjectActionRun,
+  resolveExecutableActionCardGenerator,
+  replaceDraftActionAssetInputBindings,
+  readOutputCommit,
   readGeneratorRevision,
   readProjectTimeline,
   validateReferenceMedia,
@@ -128,6 +138,10 @@ export interface LocalWorkflowProcessorOptions {
   mediaBaseUrl?: string | (() => string);
   aigc?: ExternalAigcService;
   modelCards?: () => Promise<ModelCard[]>;
+  /** Activated Action Cards can explicitly project a native Generator Action. */
+  listPluginCards?: () => Promise<import("@clash/shared-types").ExecutablePluginCardRegistration[]>;
+  /** Production Model execution uses native Generator definitions. */
+  resolveGeneratorDefinition?: (pluginId: string, definitionId: string) => Promise<import("@clash/shared-types").GeneratorDefinition>;
   executablePluginAction?: ExecutablePluginActionInvoker;
   /** Resolve one active, schema-pinned Action before a durable run is frozen. */
   resolvePluginBinding?: (
@@ -337,6 +351,10 @@ function durableProviderNodeData(
   }
   delete next.pendingTask;
   delete next.pendingTaskAt;
+  if (updates.documentRevision !== undefined) {
+    delete next.content;
+    delete next.textRevision;
+  }
   if (updates.status !== "failed") {
     delete next.error;
     delete next.failureCode;
@@ -355,9 +373,23 @@ function canvasNodeProjectionRevisionId(input: {
     nodeId: string,
   ) => { assetId: string; kind: ProcessableKind } | undefined;
 }): string {
-  const prompt =
-    input.executionPrompt ??
-    authoredPromptFromData(input.nodeData, `Mock ${input.kind}`);
+  if (input.nodeData.generatorRevision !== undefined) {
+    // Native requests are identified by their pinned revision. View-only fields
+    // cannot change execution; rewiring the revision must invalidate publication.
+    // Validate inside per-node admission so a malformed reference fails that node only.
+    const generatorRevision = input.nodeData.generatorRevision;
+    return `sha256:${createHash("sha256").update(canonicalJson({
+      projectId: input.projectId, nodeId: input.nodeId, kind: input.kind, generatorRevision,
+      ...(input.nodeData.generatorActionId === undefined ? {} : { generatorActionId: input.nodeData.generatorActionId }),
+    })).digest("hex")}`;
+  }
+  const targetKind = input.targetKind ?? (
+    typeof input.nodeData.actionType === "string" && input.nodeData.actionType.startsWith("custom:")
+      ? "action" : "generation"
+  );
+  const prompt = input.executionPrompt ?? (targetKind === "action"
+    ? customActionPromptFromData(input.nodeData)
+    : authoredPromptFromData(input.nodeData, `Mock ${input.kind}`));
   const mentions: Array<
     | {
         index: number;
@@ -399,7 +431,7 @@ function canvasNodeProjectionRevisionId(input: {
     ...(parsedBinding.success ? { pluginBinding: parsedBinding.data } : {}),
   };
   const semanticProjection =
-    input.targetKind === "action"
+    targetKind === "action"
       ? {
           ...commonProjection,
           customActionId: input.nodeData.customActionId,
@@ -664,7 +696,7 @@ function mixedContentReferences(input: {
   resolveMention(
     nodeId: string,
   ): { assetId: string; kind: ProcessableKind } | undefined;
-}): ExecutablePluginReference[] {
+}): { references: ExecutablePluginReference[]; labels: string[] } {
   const keyOf = (kind: ProcessableKind, assetId: string) =>
     `${kind}\u0000${assetId}`;
   const firstAssetByKey = new Map<string, ProjectAssetEntry>();
@@ -677,7 +709,7 @@ function mixedContentReferences(input: {
 
   const consumedGlobalByKey = new Map<string, number>();
   const ordered: Array<
-    { text: { nodeId: string; value: string } } | { asset: ProjectAssetEntry }
+    { text: { nodeId: string; value: string } } | { asset: ProjectAssetEntry; label?: string }
   > = [];
   for (const [partIndex, part] of input.promptParts.entries()) {
     if (part.type === "text") {
@@ -697,7 +729,7 @@ function mixedContentReferences(input: {
     const key = keyOf(mention.kind, mention.assetId);
     const asset = firstAssetByKey.get(key);
     if (!asset) continue;
-    ordered.push({ asset });
+    ordered.push({ asset, label: part.label });
     const globallyAvailable = globalCountByKey.get(key) ?? 0;
     const alreadyConsumed = consumedGlobalByKey.get(key) ?? 0;
     if (alreadyConsumed < globallyAvailable) {
@@ -716,11 +748,11 @@ function mixedContentReferences(input: {
     ordered.push({ asset: reference.asset });
   }
 
-  return ordered.map((entry, index) =>
+  return { labels: ordered.map((entry) => "asset" in entry ? entry.label ?? "" : ""), references: ordered.map((entry, index) =>
     "text" in entry
       ? { slot: "content", index, text: entry.text }
       : assetReference(entry.asset, "content", index),
-  );
+  ) };
 }
 
 function textHash(content: string): string {
@@ -1137,6 +1169,68 @@ export function createLocalWorkflowProcessor(
               : undefined;
           },
         });
+      // Terminal tasks no longer invoke publication when replayed. Restore the
+      // Canvas view from the public Run/Commit, guarded by the frozen request,
+      // rather than leaving an acknowledged result in "generating" state.
+      const projectGeneratorRunToCanvas = async (identity: {
+        actionRunId: string;
+        outputSlot: string;
+      }) => {
+        const task = await durableJournal.load(identity);
+        const run = readProjectActionRun(doc, identity.actionRunId);
+        if (!task || !run) return;
+        const frozen = frozenExecutorInput(task);
+        if (frozen.targetKind !== "generator-action" || !frozen.nodeId) return;
+        const target = nodes.get(frozen.nodeId) as
+          | { type?: string; data?: Record<string, unknown> }
+          | undefined;
+        if (
+          target?.type !== frozen.kind ||
+          !target.data ||
+          !isCurrentProviderNodeRevision({
+            frozen,
+            actionRunId: identity.actionRunId,
+            nodeData: target.data,
+            currentProjectionRevisionId: nodeProjectionRevisionId(
+              frozen.nodeId,
+              frozen.kind,
+              target.data,
+            ),
+          })
+        ) return;
+        const commit = readOutputCommit(doc, identity);
+        if (run.status === "succeeded" && !commit) {
+          throw new Error("A succeeded Generator Run requires its Output Commit.");
+        }
+        const updates = run.status === "succeeded"
+          ? {
+              status: "completed",
+              ...(commit?.asset.kind === "media"
+                ? { assetId: commit.asset.projectAssetId }
+                : commit?.asset.kind === "document"
+                  ? { documentRevision: commit.asset }
+                  : {}),
+            }
+          : run.status === "failed"
+            ? { status: "failed", error: task.failure?.message ?? "Generation failed.", failureCode: task.failure?.code }
+            : { status: "generating" };
+        const data = durableProviderNodeData(target.data, {
+          ...updates,
+          generatorId: run.generatorRevision.generatorId,
+          generatorRevisionId: run.generatorRevision.generatorRevisionId,
+          actionRunId: run.actionRunId,
+        });
+        const hadLegacyInputs = listActionAssetBindingsForOwner(doc, {
+          kind: "draft", actionId: `node:${frozen.nodeId}`,
+        }).some((binding) => binding.direction === "input");
+        const retired = replaceDraftActionAssetInputBindings(doc, `node:${frozen.nodeId}`, []);
+        if (!retired.ok) throw new Error(retired.error);
+        const dataChanged = canonicalJson(data) !== canonicalJson(target.data);
+        if (!dataChanged && !hadLegacyInputs) return;
+        if (dataChanged) nodes.set(frozen.nodeId, { ...target, data });
+        changed = true;
+        await input.checkpoint?.();
+      };
       const durable = options.durableProviderRuns;
       const localExecutor: ExecutablePluginActionInvoker = async (request) => {
         const attemptBudgetMs = request.timeoutMs ?? generationDeadlineMs;
@@ -1331,7 +1425,7 @@ export function createLocalWorkflowProcessor(
               ? (nodes.get(frozen.nodeId) as Record<string, any> | undefined)
               : undefined;
             if (
-              frozen.nodeId &&
+              frozen.nodeId && frozen.targetKind !== "generator-action" &&
               (!rawTarget?.data || typeof rawTarget.data !== "object")
             ) {
               throw new Error(
@@ -1533,7 +1627,7 @@ export function createLocalWorkflowProcessor(
             }
             const expectedReceiptTaskId =
               frozen.targetKind === "action" ||
-              frozen.targetKind === "generator-action"
+              (frozen.targetKind === "generator-action" && !frozen.providerExecution)
                 ? run.actionRunId
                 : idempotencyKey;
             const expectedOwner = await expectedProviderReceiptOwner({
@@ -1607,7 +1701,7 @@ export function createLocalWorkflowProcessor(
               ? (nodes.get(frozen.nodeId) as Record<string, any> | undefined)
               : undefined;
             if (
-              frozen.nodeId &&
+              frozen.nodeId && frozen.targetKind !== "generator-action" &&
               (!target?.data || typeof target.data !== "object")
             ) {
               throw new Error(
@@ -1738,6 +1832,19 @@ export function createLocalWorkflowProcessor(
                 },
               });
               changed = publication.changed || changed;
+              if (frozen.nodeId && revision.documentKind === MODEL_TEXT_DOCUMENT_KIND && revision.schemaVersion === MODEL_TEXT_DOCUMENT_SCHEMA_VERSION) {
+                const target = nodes.get(frozen.nodeId) as { type?: string; data?: Record<string, unknown> } | undefined;
+                if (target?.type === "text" && target.data && isCurrentProviderNodeRevision({
+                  frozen, actionRunId: run.actionRunId, nodeData: target.data,
+                  currentProjectionRevisionId: nodeProjectionRevisionId(frozen.nodeId, frozen.kind, target.data),
+                })) {
+                  nodes.set(frozen.nodeId, { ...target, data: durableProviderNodeData(target.data, {
+                    status: "completed", documentRevision: publication.commit.asset,
+                  }) });
+                  changed = true;
+                  await input.checkpoint?.();
+                }
+              }
               return;
             }
             let publishedAsset: ProjectAssetEntry | undefined;
@@ -1802,7 +1909,7 @@ export function createLocalWorkflowProcessor(
                 verified.source.resourceId,
               );
             }
-            if (frozen.delivery) {
+            if (frozen.delivery && (!frozen.nodeId || !target?.data)) {
               if (!publishedAsset) {
                 throw new Error(
                   "Direct Project Asset delivery requires a staged Asset output.",
@@ -1893,7 +2000,7 @@ export function createLocalWorkflowProcessor(
                 },
               });
               changed = publication.changed || changed;
-              return;
+              if (!frozen.nodeId) return;
             }
             if (!frozen.nodeId) return;
             const target = nodes.get(frozen.nodeId) as
@@ -1995,6 +2102,7 @@ export function createLocalWorkflowProcessor(
             checkpoint: input.checkpoint,
           });
           changed = before?.status === "pending" || changed;
+          return run;
         }
         const owner = durableActionOwner(frozen, identity.actionRunId);
         const frozenAssetReferences = frozen.input.references.filter(
@@ -2198,6 +2306,98 @@ export function createLocalWorkflowProcessor(
                 })
               ) {
                 continue;
+              }
+              // Restore an admitted native Run without consulting the active
+              // catalogue. Its archived Definition and frozen Task own replay.
+              const cachedRun = typeof data.actionRunId === "string"
+                ? readProjectActionRun(doc, data.actionRunId) : undefined;
+              const cachedSlot = cachedRun?.outputContract.length === 1
+                ? cachedRun.outputContract[0]?.slot : undefined;
+              if (cachedRun && cachedSlot) {
+                const cachedIdentity = { actionRunId: cachedRun.actionRunId, outputSlot: cachedSlot };
+                const cachedTask = await durableJournal.load(cachedIdentity);
+                const frozen = cachedTask ? frozenExecutorInput(cachedTask) : undefined;
+                if (frozen?.targetKind === "generator-action" && frozen.nodeId === nodeId &&
+                    frozen.nodeProjectionRevisionId === projectionRevisionId) {
+                  await driveDurableRun(cachedIdentity);
+                  await projectGeneratorRunToCanvas(cachedIdentity);
+                  continue;
+                }
+              }
+              if (options.listPluginCards && options.resolveGeneratorDefinition) {
+                const registration = (await options.listPluginCards()).find((entry) =>
+                  entry.pluginId === parsedBinding.data.pluginId && entry.document.kind === "action-card" &&
+                  entry.document.spec.id === custom.actionId);
+                const card = registration?.document.kind === "action-card" ? registration.document.spec : undefined;
+                if (card?.generator && registration) {
+                  if (!input.checkpoint) throw new Error("Canvas Action admission requires a Project checkpoint.");
+                  if (registration.version !== parsedBinding.data.version || registration.schemaHash !== parsedBinding.data.schemaHash ||
+                      card.functionExportId !== parsedBinding.data.exportId) {
+                    throw new Error("The Action Card changed since this request was authored. Read the updated Card and recreate the request.");
+                  }
+                  if (card.outputType !== custom.outputType || node.type !== custom.outputType) {
+                    throw new Error("The Canvas output does not match the Action Card's declared output kind.");
+                  }
+                  const definition = await options.resolveGeneratorDefinition(registration.pluginId, card.generator.definitionId);
+                  if (definition.pluginId !== registration.pluginId || definition.version !== registration.version ||
+                      definition.schemaHash !== registration.schemaHash) {
+                    throw new Error("The Action Card and Generator Definition must belong to the same immutable plugin package.");
+                  }
+                  const { action, output } = resolveExecutableActionCardGenerator(card, definition);
+                  const persistentInputRefs = MEDIA_REFERENCE_FIELDS.flatMap((field) => {
+                    const ids = stringList(data[field.pendingField]);
+                    const slot = field.modality === "model" ? undefined : card.generator!.inputSlots[field.modality];
+                    if (ids.length && !slot) throw new Error(`The Action Card has no native input mapping for ${field.modality}.`);
+                    const port = definition.persistentInputs.find((entry) => entry.slot === slot);
+                    return slot ? ids.map((projectAssetId, index) => ({
+                      slot, ...(port?.cardinality.maxItems !== 1 ? { itemKey: String(index).padStart(10, "0") } : {}),
+                      target: { kind: "media" as const, projectAssetId },
+                    })) : [];
+                  });
+                  const revisionInput = {
+                    state: { ...params, ...(card.input.promptModalities.includes("text") ? { prompt } : {}) },
+                    persistentInputRefs,
+                  };
+                  const canvas = new Canvas(doc, () => {}, typeof node.canvasId === "string" ? node.canvasId : "main", modelCards);
+                  const sources = [...new Set(canvas.listEdges().filter((edge) => edge.target === nodeId)
+                    .map((edge) => edge.source).filter((sourceId) => canvas.readNode(sourceId)?.type === "action-badge"))];
+                  if (sources.length > 1) throw new Error("Canvas output has multiple source Actions; its Generator owner is ambiguous.");
+                  const revisionDigest = createHash("sha256").update(canonicalJson({
+                    definitionRef: { pluginId: definition.pluginId, definitionId: definition.definitionId,
+                      version: definition.version, schemaHash: definition.schemaHash }, ...revisionInput,
+                  })).digest("hex");
+                  const generatorId = `canvas-action:${sources[0] ?? nodeId}:${revisionDigest}`;
+                  const generatorRevisionId = `${generatorId}:revision`;
+                  const actionRunId = `${generatorId}:output:${nodeId}:${action.id}`;
+                  const nativeIdentity = { actionRunId, outputSlot: output.slot };
+                  const product = createLocalGeneratorProductService({
+                    authority: {
+                      inspect: async (_projectId, read) => read(doc),
+                      mutate: async (_projectId, mutate) => mutate(doc, async () => { changed = true; await input.checkpoint!(); }),
+                    },
+                    resolveDefinition: async (pluginId, definitionId) => pluginId === definition.pluginId && definitionId === definition.definitionId
+                      ? definition : options.resolveGeneratorDefinition!(pluginId, definitionId),
+                    ownerId: durableOwnerId, journal: durableJournal, deadlineMs: generationDeadlineMs, actor,
+                    canvasProjection: { nodeId, nodeProjectionRevisionId: projectionRevisionId },
+                    ...(durable?.now ? { now: durable.now } : {}),
+                  });
+                  await product.create(projectId, { generatorId, generatorRevisionId,
+                    pluginId: definition.pluginId, definitionId: definition.definitionId, ...revisionInput,
+                  });
+                  await product.submit(projectId, generatorId, action.id, {
+                    actionRunId, generatorRevisionId, parameters: {}, invocationInputRefs: [],
+                  });
+                  const retired = replaceDraftActionAssetInputBindings(doc, `node:${nodeId}`, []);
+                  if (!retired.ok) throw new Error(retired.error);
+                  nodes.set(nodeId, { ...node, data: durableProviderNodeData(data, {
+                    status: "generating", generatorId, generatorRevisionId, actionRunId,
+                  }) });
+                  changed = true;
+                  await input.checkpoint();
+                  await driveDurableRun(nativeIdentity);
+                  await projectGeneratorRunToCanvas(nativeIdentity);
+                  continue;
+                }
               }
               const createdAt = durable?.now?.() ?? Date.now();
               await coordinator.coordinate({
@@ -2421,6 +2621,58 @@ export function createLocalWorkflowProcessor(
           selectedProviderAccountId = (
             await providerExecutionHandoffs.load(projectId, nodeId)
           )?.accountId;
+          if (data.generatorRevision !== undefined) {
+            if (!input.checkpoint || !options.resolveGeneratorDefinition) {
+              throw new Error("Canvas Generator execution requires the native Project Host authority.");
+            }
+            const ref = GeneratorRevisionRefSchema.parse(data.generatorRevision);
+            const revision = readGeneratorRevision(doc, ref);
+            if (!revision) {
+              throw new Error("Canvas Generator revision is missing or does not match the output kind.");
+            }
+            if (data.generatorActionId !== undefined && (typeof data.generatorActionId !== "string" || !data.generatorActionId.trim())) throw new Error("Canvas Generator Action identity is invalid.");
+            const actionId = typeof data.generatorActionId === "string" ? data.generatorActionId : "generate";
+            const definition = await durableJournal.readGeneratorDefinition?.(revision.definitionRef) ??
+              await options.resolveGeneratorDefinition(revision.definitionRef.pluginId, revision.definitionRef.definitionId);
+            const action = definition.actions.find((entry) => entry.id === actionId);
+            const output = action?.outputs[0];
+            if (definition.pluginId !== revision.definitionRef.pluginId || definition.definitionId !== revision.definitionRef.definitionId ||
+                definition.version !== revision.definitionRef.version || definition.schemaHash !== revision.definitionRef.schemaHash ||
+                action?.outputs.length !== 1 || !output || output.cardinality.minItems !== 1 ||
+                (output.assetType.kind === "media" ? output.assetType.mediaKind !== kind
+                  : kind !== "text" || output.assetType.documentKind !== MODEL_TEXT_DOCUMENT_KIND || output.assetType.schemaVersion !== MODEL_TEXT_DOCUMENT_SCHEMA_VERSION)) {
+              throw new Error("Canvas Generator Action does not match its pinned Definition or output kind.");
+            }
+            const actionRunId = `canvas-output:${nodeId}:${ref.generatorId}:${ref.generatorRevisionId}:${actionId}`;
+            const identity = { actionRunId, outputSlot: output.slot };
+            const product = createLocalGeneratorProductService({
+              authority: {
+                inspect: async (_projectId, read) => read(doc),
+                mutate: async (_projectId, mutate) => mutate(doc, async () => { changed = true; await input.checkpoint!(); }),
+              },
+              resolveDefinition: options.resolveGeneratorDefinition,
+              resolveModelExecution: createLocalModelExecutionPlanner({ aigc, modelCards: async () => modelCards, dataDir: options.dataDir }),
+              ownerId: durableOwnerId, journal: durableJournal, deadlineMs: generationDeadlineMs,
+              actor: data.actorType === "agent"
+                ? { kind: "agent", ...(typeof data.actorAgentId === "string" ? { id: data.actorAgentId } : {}) }
+                : { kind: "user", id: typeof data.actorUserId === "string" ? data.actorUserId : userId },
+              canvasProjection: { nodeId, nodeProjectionRevisionId: currentNodeProjectionRevisionId },
+              ...(durable?.now ? { now: durable.now } : {}),
+            });
+            await product.submit(projectId, ref.generatorId, actionId, {
+              actionRunId, generatorRevisionId: ref.generatorRevisionId, parameters: {}, invocationInputRefs: [],
+              ...(selectedProviderAccountId ? { providerAccountId: selectedProviderAccountId } : {}),
+            });
+            await providerExecutionHandoffs.remove(projectId, nodeId);
+            nodes.set(nodeId, { ...node, data: durableProviderNodeData(data, {
+              status: "generating", generatorId: ref.generatorId, generatorRevisionId: ref.generatorRevisionId, actionRunId,
+            }) });
+            changed = true;
+            await input.checkpoint();
+            await driveDurableRun(identity);
+            await projectGeneratorRunToCanvas(identity);
+            continue;
+          }
           const authoredPrompt = authoredPromptFromData(data, `Mock ${kind}`);
           const parsedPromptParts = parsePromptParts(authoredPrompt);
           const prompt = extractPromptText(parsedPromptParts);
@@ -2515,6 +2767,7 @@ export function createLocalWorkflowProcessor(
               })),
             );
           let references: ExecutablePluginReference[];
+          let contentLabels: string[] | undefined;
           const referenceBindingType = modelCard?.input.referenceBinding?.type;
           // Image is the one modality with a structural exception in
           // start/end-frame models (first ref -> startFrame, second ->
@@ -2541,7 +2794,7 @@ export function createLocalWorkflowProcessor(
             (referenceBindingType === "ordered-content-parts" ||
               referenceBindingType === "positional-tokens")
           ) {
-            references = mixedContentReferences({
+            const mixed = mixedContentReferences({
               nodeId,
               promptParts: parsedPromptParts,
               globalReferences,
@@ -2567,6 +2820,8 @@ export function createLocalWorkflowProcessor(
                 };
               },
             });
+            references = mixed.references;
+            contentLabels = mixed.labels;
           } else {
             references = buildPositionalReferences();
           }
@@ -2616,6 +2871,108 @@ export function createLocalWorkflowProcessor(
                 }
               : {}),
           };
+          if (options.resolveGeneratorDefinition) {
+            const isLocalAgentText = kind === "text" && model === "local-acp";
+            const generatorPluginId = isLocalAgentText ? "clash.agent-text" : "clash.model-generation";
+            const outputSlot = kind === "text" ? "text" : "media";
+            if (!input.checkpoint) throw new Error("Canvas Model admission requires a Project checkpoint.");
+            const revisionInput = isLocalAgentText ? {
+              state: {
+                prompt,
+                ...(commonInput.actorAgentId ? { agentId: commonInput.actorAgentId } : {}),
+                ...(typeof effectiveModelParams.acp_model === "string" && effectiveModelParams.acp_model.trim()
+                  ? { modelId: effectiveModelParams.acp_model.trim() } : {}),
+                ...(typeof effectiveModelParams.system_prompt === "string"
+                  ? { systemPrompt: effectiveModelParams.system_prompt } : {}),
+              },
+              persistentInputRefs: [],
+            } : modelGenerationRevisionFromReferences({
+              modelId: normalizedModel, prompt,
+              params: { ...effectiveModelParams,
+                ...(requestedAspectRatio ? { aspect_ratio: requestedAspectRatio } : {}),
+                ...(requestedDuration !== undefined && modelCard &&
+                  (modelCard.parameters.some((parameter) => parameter.id === "duration") || modelCard.defaultParams.duration !== undefined)
+                  ? { duration: coerceModelParameterInput(modelCard, "duration", requestedDuration) } : {}),
+              }, references, contentLabels,
+            });
+            // A persisted projection may name a Run from an older adapter version.
+            // Reuse it only when the Host-private target guard proves the same request.
+            const cachedRunId = typeof data.actionRunId === "string" ? data.actionRunId : undefined;
+            const cachedTask = cachedRunId ? await durableJournal.load({ actionRunId: cachedRunId, outputSlot }) : undefined;
+            const cachedRun = cachedRunId ? readProjectActionRun(doc, cachedRunId) : undefined;
+            const cachedExecutor = cachedTask ? frozenExecutorInput(cachedTask) : undefined;
+            const reuseCached = cachedRun && cachedExecutor?.targetKind === "generator-action" &&
+              cachedExecutor.nodeId === nodeId && cachedExecutor.nodeProjectionRevisionId === currentNodeProjectionRevisionId;
+            let definition: import("@clash/shared-types").GeneratorDefinition | undefined;
+            let generatorId: string;
+            let generatorRevisionId: string;
+            let actionRunId: string;
+            if (reuseCached) {
+              generatorId = cachedRun.generatorRevision.generatorId;
+              generatorRevisionId = cachedRun.generatorRevision.generatorRevisionId;
+              actionRunId = cachedRun.actionRunId;
+            } else {
+              definition = await options.resolveGeneratorDefinition(generatorPluginId, kind);
+              const canvas = new Canvas(doc, () => {}, typeof node.canvasId === "string" ? node.canvasId : "main", modelCards);
+              const sources = [...new Set(canvas.listEdges().filter((edge) => edge.target === nodeId)
+                .map((edge) => edge.source).filter((sourceId) => canvas.readNode(sourceId)?.type === "action-badge"))];
+              if (sources.length > 1) throw new Error("Canvas Model output has multiple source Actions; its Generator owner is ambiguous.");
+              const sourceId = sources[0] ?? nodeId;
+              const revisionDigest = createHash("sha256").update(canonicalJson({
+                definitionRef: { pluginId: definition.pluginId, definitionId: definition.definitionId,
+                  version: definition.version, schemaHash: definition.schemaHash },
+                ...revisionInput,
+              })).digest("hex");
+              generatorId = `${isLocalAgentText ? "canvas-agent-text" : "canvas-model"}:${sourceId}:${revisionDigest}`;
+              generatorRevisionId = `${generatorId}:revision`;
+              actionRunId = `${generatorId}:output:${nodeId}:generate`;
+            }
+            const identity = { actionRunId, outputSlot };
+            const existingTask = reuseCached ? cachedTask : await durableJournal.load(identity);
+            if (existingTask && readProjectActionRun(doc, actionRunId)) {
+              const frozen = frozenExecutorInput(existingTask);
+              if (selectedProviderAccountId && frozen.providerExecution?.accountId !== selectedProviderAccountId) {
+                throw new Error("The existing Run uses a different frozen Provider account.");
+              }
+              await ensureDurableInputBindings(identity);
+              await driveDurableRun(identity);
+              await projectGeneratorRunToCanvas(identity);
+              await providerExecutionHandoffs.remove(projectId, nodeId);
+              continue;
+            }
+            const product = createLocalGeneratorProductService({
+              authority: {
+                inspect: async (_projectId, read) => read(doc),
+                mutate: async (_projectId, mutate) => mutate(doc, async () => { changed = true; await input.checkpoint!(); }),
+              },
+              resolveDefinition: async (pluginId, definitionId) =>
+                definition?.pluginId === pluginId && definition.definitionId === definitionId
+                  ? definition : options.resolveGeneratorDefinition!(pluginId, definitionId),
+              resolveModelExecution: createLocalModelExecutionPlanner({ aigc, modelCards: async () => modelCards, dataDir: options.dataDir }),
+              ownerId: durableOwnerId, journal: durableJournal, deadlineMs: generationDeadlineMs,
+              actor: { kind: data.actorType === "agent" ? "agent" : "user",
+                ...(data.actorType === "agent"
+                  ? (commonInput.actorAgentId ? { id: commonInput.actorAgentId } : {})
+                  : { id: commonInput.actorUserId }),
+              },
+              canvasProjection: { nodeId, nodeProjectionRevisionId: currentNodeProjectionRevisionId },
+              ...(durable?.now ? { now: durable.now } : {}),
+            });
+            await product.create(projectId, { generatorId, generatorRevisionId,
+              pluginId: generatorPluginId, definitionId: kind, ...revisionInput,
+            });
+            await product.submit(projectId, generatorId, "generate", { actionRunId, generatorRevisionId,
+              parameters: {}, invocationInputRefs: [],
+              ...(selectedProviderAccountId ? { providerAccountId: selectedProviderAccountId } : {}),
+            });
+            await providerExecutionHandoffs.remove(projectId, nodeId);
+            data = durableProviderNodeData(data, { status: "generating", generatorId, generatorRevisionId, actionRunId });
+            nodes.set(nodeId, { ...node, data });
+            changed = true;
+            await input.checkpoint();
+            await driveDurableRun({ actionRunId, outputSlot });
+            continue;
+          }
           const usesLocalTextAgent =
             kind === "text" && model === "local-acp" && !!options.textAgent;
           if (!usesLocalTextAgent && aigc.planProviderPlugin) {

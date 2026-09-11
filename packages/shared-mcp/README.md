@@ -47,6 +47,14 @@ known-name calls, but never expand `tools/list` and are not the model's
 discovery surface. There is deliberately no `clash_menu`,
 `clash_capabilities`, or model-facing `clash_cli_*` wrapper.
 
+`clash_generators` discloses native Generator request schemas from
+`@clash/shared-types`, the same contracts validated by the Local HTTP Host.
+Create requires stable caller-selected Generator and Revision IDs and persists
+draft state only. Submit requires an Action Run ID and exact Revision ID and
+may invoke a paid Provider. Its optional `providerAccountId` is a private
+execution preference. These effects are part of tool disclosure so agents and
+approval review can distinguish draft creation from execution and recovery.
+
 The higher-level Clash skill teaches an agent how to choose either interface;
 it is not part of the protocol boundary, and the runtime does not inject an
 `AGENTS.md` into a user's repository.

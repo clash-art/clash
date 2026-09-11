@@ -8,6 +8,9 @@ import {
   ExecutableDirectorStageCaptureResultSchema,
   ExecutableSpeechTranscriptionResultSchema,
   ExecutableVideoEnhanceResultSchema,
+  ExecutableAgentTextResultSchema,
+  type ExecutableAgentTextOperation,
+  type ExecutableAgentTextResult,
   type ExecutablePluginBrokerResolvedReference,
   type ExecutablePluginReference,
   type ExecutablePluginAssetHandle,
@@ -199,6 +202,7 @@ export type DirectorStageCaptureRequest = Omit<
 export type DirectorStageCaptureResult = ExecutableDirectorStageCaptureResult;
 
 export interface PluginHostTools {
+  agentText(request: Omit<ExecutableAgentTextOperation, "kind">): Promise<ExecutableAgentTextResult>;
   codexImagegen: {
     generate(
       request: CodexImageGenerateRequest,
@@ -572,6 +576,14 @@ export function createExecutorContext(
 
     hostTools: {
       ...merged.hostTools,
+      agentText: merged.hostTools?.agentText ?? (async (request) => {
+        const response = await host({ kind: "agent.text.generate", ...request });
+        try {
+          return ExecutableAgentTextResultSchema.parse(response);
+        } catch (error) {
+          throw new Error("The Host returned an invalid agent text result.", { cause: error });
+        }
+      }),
       codexImagegen: merged.hostTools?.codexImagegen ?? {
         generate: async (request) =>
           assetHandleFromHost(

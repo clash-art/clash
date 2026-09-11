@@ -117,7 +117,7 @@ async function fetchInstalled<T>(path: string): Promise<T[]> {
 }
 
 export async function loadMarketplaceData(options?: {
-  includeSkills?: boolean;
+  includeSkills?: boolean | "official-picks";
 }): Promise<MarketplaceData> {
   const [registry, actions, skills, plugins] = await Promise.all([
     fetchRegistry(),
@@ -130,7 +130,13 @@ export async function loadMarketplaceData(options?: {
     items: [
       ...registry.actions,
       ...registry.plugins,
-      ...(options?.includeSkills === false ? [] : registry.skills),
+      ...(options?.includeSkills === false
+        ? []
+        : options?.includeSkills === "official-picks"
+          ? registry.skills.filter(
+              (skill) => skill.curation?.collection === "official-picks",
+            )
+          : registry.skills),
     ],
     installedActionIds: actions.flatMap((action) =>
       typeof action.actionId === "string" ? [action.actionId] : [],

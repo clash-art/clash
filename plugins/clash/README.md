@@ -65,6 +65,57 @@ The Studio App is the entry surface. Opening Canvas, Timeline, or Director does
 not launch a hidden Desktop window or iframe the web app; each is an MCP App
 backed by the same tools and host state.
 
+## Hosted agent working trees
+
+Clash-hosted sessions seed a short `AGENTS.md` with the assistant's identity,
+project scope, and responsibility. `CLAUDE.md`, `CODEBUDDY.md`, and `GEMINI.md`
+are symlinks to that file. Existing instructions are preserved. Host policy is
+never appended to user messages, including after resume or compaction; native
+harness instruction loading owns that lifecycle.
+
+The hosted policy preserves the user's current task, corrections, and explicit
+planning limits. Multi-step work uses a compact session checkpoint with decisions,
+artifact identities, progress, and the next action. The base Clash skill is a
+task-oriented entry point; workspace setup, tool discovery, generation, plugin
+Views, and creative-method routing live in references read only when needed.
+Standalone and bundled skill entry points share those same operation references.
+
+The Host's existing `config.yaml` owns skill installation scope. The marketplace
+install endpoint accepts either a global scope or selected project IDs; agents
+can also edit this Host configuration directly:
+
+```yaml
+skills:
+  storyboard:
+    scope: projects
+    projectIds: [my-project-id]
+  reference-composition:
+    scope: global
+```
+
+Project creation prepares the agent working tree, instruction files, and native
+skill directories before publishing the project. Workspace preparation mounts
+applicable installed skills from `~/.agents/skills` into `.agents/skills/`;
+`.claude/skills/` and other selected harness directories alias those links. There
+is no project-local enabled-list file. Scope changes do not prune existing
+links: agents remove obsolete links explicitly. A harness may need to reopen its
+session to refresh its skill catalog. The Host does not override a harness's
+separate global discovery settings.
+
+A new hosted workspace starts with the base Clash skill; the full bundled
+catalog is not automatically mounted. Existing files are preserved. Legacy
+native directories are consolidated; conflicting skill names are left intact
+for the agent or user to merge.
+
+Each session gets a temporary working area under
+`sessions/session-<encoded-session-id>/scratchpad`, exposed to the agent as
+`CLASH_SESSION_SCRATCHPAD`. Notes survive session resume; the project root stays
+the working directory. Scratch notes are not appended to user messages.
+
+Standalone CLI initialization, MCP connections, and external repositories do
+not receive hosted instructions or skill setup. Users select the Clash skill
+themselves in those contexts.
+
 ## Development
 
 ```sh
@@ -72,3 +123,14 @@ pnpm test:package clash
 pnpm typecheck:package clash
 pnpm build:package clash
 ```
+
+## Source validation
+
+`pnpm --dir plugins/clash typecheck` and `lint` use the development workspace
+aliases through `tsconfig.typecheck.json`. The bundled runtime is checked with
+Bundler resolution and the Host's Web API types, against current Local API and
+MCP source contracts rather than previously emitted declarations. Strictness
+and source/test coverage are retained. Incremental checker metadata lives in
+the package's ignored `.cache/typecheck.tsbuildinfo`; no JavaScript or
+declarations are emitted and no Node heap override is set. Package-boundary tests that inspect `runtime/`
+remain checks of the built release artifact and require matching build outputs.

@@ -498,6 +498,29 @@ describe("local Workspace transfer authority", () => {
     ).rejects.toMatchObject({ code: "WORKSPACE_EXPORT_FILE_NOT_FOUND" });
   });
 
+  it("preserves the public Asset admission timestamp in an exported Project snapshot", async () => {
+    const { service, doc, projectId } = await fixture();
+    const original = readProjectAsset(doc, "asset-linked")!;
+    const createdAt = Date.now();
+    const created = createProjectAsset(doc, {
+      ...original,
+      id: "asset-timestamped",
+      createdAt,
+    });
+    expect(created.ok).toBe(true);
+    const admitted = readProjectAsset(doc, "asset-timestamped")!;
+    const plan = await service.createExport({
+      projectId,
+      sourceWorkspaceId: "timestamp-source",
+    });
+    const file = plan.files.find((file) => file.role === "project")!;
+    const exported = new LoroDoc();
+    exported.import(await service.readExportFile(plan.exportId, file.fileId));
+    expect(readProjectAsset(exported, admitted.id)?.createdAt).toBe(
+      admitted.createdAt,
+    );
+  });
+
   it("garbage-collects overwritten private Loro history from project.bin", async () => {
     const { service, doc, projectId } = await fixture();
     const sentinel = "WORKSPACE_PRIVATE_HISTORY_SENTINEL";

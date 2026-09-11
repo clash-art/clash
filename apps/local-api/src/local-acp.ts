@@ -1,3 +1,4 @@
+import { supportsAcpMessageFork, type AcpForkPoint } from "@clash/shared-types";
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -72,7 +73,7 @@ export interface SessionStartParamsLike {
   agent_member_id?: string;
   project_id?: string;
   resume?: { acp_session_id: string };
-  fork?: { acp_session_id: string };
+  fork?: { acp_session_id: string; point?: AcpForkPoint };
 }
 
 export interface SessionPromptParamsLike {
@@ -162,6 +163,7 @@ export interface LocalAcpHarness {
 }
 
 export interface LocalAcpHarnessListOptions {
+  checkUpdates?: boolean;
   probe?: boolean | "auth" | "config" | "none";
   refresh?: boolean;
 }
@@ -317,6 +319,7 @@ interface LocalAcpSession {
   harnessLabel: string;
   harnessVersion?: string;
   manager: SessionManagerLike;
+  startPromise?: Promise<void>;
   clients: Set<WebSocket>;
   readyMessage?: unknown;
   configOptionsMessage?: unknown;
@@ -1274,7 +1277,10 @@ function isSessionCancelledMessage(msg: unknown): msg is {
   );
 }
 
-function agentTextFromSessionEvent(event: unknown): string | null {
+function agentTextFromSessionEvent(event: unknown): {
+  text: string;
+  phase?: "commentary" | "final_answer";
+} | null {
   if (!event || typeof event !== "object") return null;
   const raw = event as {
     type?: unknown;
@@ -1282,8 +1288,9 @@ function agentTextFromSessionEvent(event: unknown): string | null {
     sessionUpdate?: unknown;
     content?: unknown;
     update?: unknown;
+    _meta?: { codex?: { phase?: unknown } };
   };
-  if (raw.type === "text" && typeof raw.text === "string") return raw.text;
+  if (raw.type === "text" && typeof raw.text === "string") return { text: raw.text };
   const inner =
     raw.update && typeof raw.update === "object"
       ? (raw.update as typeof raw)
@@ -1295,7 +1302,10 @@ function agentTextFromSessionEvent(event: unknown): string | null {
         ? raw.sessionUpdate
         : "";
   if (update !== "agent_message_chunk") return null;
-  return extractAcpContentText(inner.content);
+  const text = extractAcpContentText(inner.content);
+  if (text === null) return null;
+  const phase = inner._meta?.codex?.phase;
+  return { text, ...(phase === "commentary" || phase === "final_answer" ? { phase } : {}) };
 }
 
 const NON_TRANSCRIPT_SESSION_UPDATES = new Set([
@@ -2352,6 +2362,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       opts.probe === true || opts.probe === "auth" || opts.probe === "config";
     const probeConfigOptions = opts.refresh === true || opts.probe === "config";
     const checksForUpdates =
+      opts.checkUpdates === true ||
       opts.refresh === true ||
       (opts.probe !== undefined &&
         opts.probe !== false &&
@@ -2745,10 +2756,19 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     if (!agent) throw new Error("No enabled local agent harness found");
     const agentIdForConfigUpdates = agent.id;
     const harnessVersion = await this.installedHarnessVersion(agent.id);
+    if (params.forkPoint && !supportsAcpMessageFork(agent.id, harnessVersion)) {
+      throw new Error("This harness version does not support forking at a message. Update the harness first.");
+    }
 
     let entry: LocalAcpSession;
     const send: SessionSender = (msg) => {
       if (isTransportDiagnosticManagerMessage(msg)) return;
+      if (isSessionReadyMessage(msg) && msg.supports_message_fork) {
+        msg.supports_message_fork = supportsAcpMessageFork(
+          agentIdForConfigUpdates,
+          harnessVersion,
+        );
+      }
       const normalizedMsg = normalizeSessionAuthenticationError(
         msg,
         agentIdForConfigUpdates,
@@ -2890,11 +2910,11 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         ? { resume: { acp_session_id: params.resumeAcpSessionId } }
         : {}),
       ...(params.forkFromAcpSessionId
-        ? { fork: { acp_session_id: params.forkFromAcpSessionId } }
+        ? { fork: { acp_session_id: params.forkFromAcpSessionId, point: params.forkPoint } }
         : {}),
     };
 
-    void Promise.resolve(entry.manager.start(startParams)).catch((error) => {
+    entry.startPromise = Promise.resolve(entry.manager.start(startParams)).catch((error) => {
       send({
         type: "session.error",
         session_id: sessionId,
@@ -3070,7 +3090,6 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     await this.startSession(
       {
         runtimeId: DESKTOP_LOCAL_RUNTIME_ID,
-        agentTemplateId: "text-generator",
         agentMemberId: "local-text-generator",
         projectId: params.projectId,
         agentId: params.agentId,
@@ -3079,9 +3098,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     );
     const entry = this.sessions.get(sessionId);
     if (!entry) throw new Error("Local ACP text session failed to start.");
-
     const turnId = `text-gen-${randomUUID().slice(0, 8)}`;
     const chunks: string[] = [];
+    const finalChunks: string[] = [];
     const prompt = [
       params.systemPrompt ? `System instructions:\n${params.systemPrompt}` : "",
       "Generate only the requested text. Do not edit the canvas or call tools unless strictly required for the text.",
@@ -3091,6 +3110,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       .join("\n\n");
 
     return await new Promise((resolve, reject) => {
+      let settled = false;
       const timeout = setTimeout(
         () => {
           cleanup();
@@ -3100,8 +3120,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       );
       const observer = (msg: unknown) => {
         if (isSessionEventMessage(msg) && msg.turn_id === turnId) {
-          const text = agentTextFromSessionEvent(msg.event);
-          if (text) chunks.push(text);
+          const chunk = agentTextFromSessionEvent(msg.event);
+          if (chunk?.phase === "final_answer") finalChunks.push(chunk.text);
+          else if (chunk && chunk.phase !== "commentary") chunks.push(chunk.text);
           return;
         }
         if (
@@ -3114,7 +3135,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         }
         if (isSessionCompleteMessage(msg) && msg.turn_id === turnId) {
           cleanup();
-          const text = chunks.join("").trim();
+          const text = (finalChunks.length ? finalChunks : chunks).join("").trim();
           if (!text) {
             reject(new Error("Local ACP text generation returned no text."));
             return;
@@ -3123,6 +3144,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         }
       };
       const cleanup = () => {
+        settled = true;
         clearTimeout(timeout);
         entry.observers?.delete(observer);
         void this.disposeSession(sessionId);
@@ -3130,17 +3152,25 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       entry.observers ??= new Set();
       entry.observers.add(observer);
       const modelId = params.modelId?.trim();
-      Promise.resolve(
-        modelId
-          ? entry.manager.setConfigOption?.(
+      Promise.resolve(entry.startPromise)
+        .then(() => {
+          if (settled) return;
+          // Startup may have failed before the observer was installed.
+          if (isSessionErrorMessage(entry.errorMessage)) {
+            throw new Error(entry.errorMessage.message);
+          }
+          return modelId ? entry.manager.setConfigOption?.(
               sessionId,
               params.modelConfigId ?? "model",
               modelId,
             )
-          : undefined,
-      )
-        .then(() => this.schedulePrompt(entry, turnId, prompt))
+          : undefined;
+        })
+        .then(() => {
+          if (!settled) return this.schedulePrompt(entry, turnId, prompt);
+        })
         .catch((error) => {
+          if (settled) return;
           cleanup();
           reject(error);
         });

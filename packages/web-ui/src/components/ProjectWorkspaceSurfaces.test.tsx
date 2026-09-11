@@ -7,16 +7,21 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   projectTimelineReadToken,
+  type ProjectTimeline,
   type ResolvedAsset,
 } from "@clash/shared-types";
 import {
   ProjectAssetSurface,
   ProjectTimelineEditorSurface,
 } from "./ProjectWorkspaceSurfaces";
+
+function acknowledgeTimelineSave(id: string, state: Record<string, unknown>): ProjectTimeline {
+  return { id, name: "Saved Timeline", owner: { kind: "project" }, revisionId: crypto.randomUUID(), state };
+}
 
 const assetApi = vi.hoisted(() => ({
   getAsset: vi.fn(),
@@ -27,6 +32,7 @@ const timelineEditorApi = vi.hoisted(() => ({
   exportProgress: undefined as undefined | Array<Record<string, unknown>>,
   previewCacheScope: undefined as string | undefined,
   innerProjectAssetDrop: vi.fn(),
+  mutate: (_duration: number) => {},
 }));
 
 vi.mock("@clash/web-ui/lib/hooks/useAsset", () => ({
@@ -56,7 +62,10 @@ vi.mock("@clash/remotion-ui", () => ({
     timelineEditorApi.onExport = onExport;
     timelineEditorApi.exportProgress = exportProgress;
     timelineEditorApi.previewCacheScope = previewCacheScope;
-    stateRef.current = {
+    const initializedKey = useRef<string | null>(null);
+    if (initializedKey.current !== editorKey) {
+      initializedKey.current = editorKey;
+      stateRef.current = {
       compositionWidth: 1920,
       compositionHeight: 1080,
       fps: 30,
@@ -64,6 +73,11 @@ vi.mock("@clash/remotion-ui", () => ({
       tracks: initialState.tracks,
       primaryTrackId: initialState.primaryTrackId ?? null,
       assetTranscripts: initialState.assetTranscripts ?? {},
+      };
+    }
+    timelineEditorApi.mutate = (duration) => {
+      stateRef.current = { ...stateRef.current, durationInFrames: duration };
+      onStateChange?.(stateRef.current);
     };
     useEffect(() => {
       onStateChange?.(stateRef.current);
@@ -362,7 +376,7 @@ describe("Project workspace surfaces", () => {
   });
 
   it("opens a Project-owned Timeline without inventing a back action or rewriting unchanged state on unmount", async () => {
-    const onSave = vi.fn(() => true);
+    const onSave = vi.fn(acknowledgeTimelineSave);
     const timeline = {
       id: "timeline-1",
       name: "Episode 1",
@@ -432,7 +446,7 @@ describe("Project workspace surfaces", () => {
   });
 
   it("persists editor mutations without requiring export or navigation", async () => {
-    const onSave = vi.fn(() => true);
+    const onSave = vi.fn(acknowledgeTimelineSave);
     const timeline = {
       id: "timeline-autosave",
       name: "Autosave Cut",
@@ -464,11 +478,56 @@ describe("Project workspace surfaces", () => {
     );
   });
 
+  it("waits for native save acknowledgements and drains edits made during a save before export", async () => {
+    const timeline: ProjectTimeline = {
+      id: "native-cut", name: "Native cut", owner: { kind: "project" },
+      revisionId: "native-before", state: { tracks: [], durationInFrames: 90 },
+    };
+    let acknowledge!: (value: ProjectTimeline) => void;
+    const pending = new Promise<ProjectTimeline>((resolve) => { acknowledge = resolve; });
+    const accepted: ProjectTimeline = { ...timeline, revisionId: "host-issued-revision", state: { tracks: [], durationInFrames: 120 } };
+    const onSave = vi.fn().mockReturnValueOnce(pending).mockImplementation(async (_id, state) => ({
+      ...timeline, revisionId: "host-issued-next-revision", state,
+    }));
+    const onExport = vi.fn();
+    render(<ProjectTimelineEditorSurface timeline={timeline} mediaInputs={[]} canvases={[]}
+      onSave={onSave} onExport={onExport} onOpenCanvas={vi.fn()} />);
+    await screen.findByTestId("remotion-editor");
+    act(() => timelineEditorApi.mutate(120));
+    let exporting!: Promise<void>;
+    act(() => { exporting = timelineEditorApi.onExport!(); });
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onExport).not.toHaveBeenCalled();
+    act(() => timelineEditorApi.mutate(150));
+    await act(async () => { acknowledge(accepted); await exporting; });
+    expect(onSave).toHaveBeenLastCalledWith(timeline.id,
+      expect.objectContaining({ durationInFrames: 150 }), projectTimelineReadToken(accepted));
+    expect(onExport).toHaveBeenCalledWith(timeline.id);
+  });
+
+  it("keeps a rejected async save dirty and prevents export", async () => {
+    const timeline: ProjectTimeline = {
+      id: "conflicted-cut", name: "Conflicted", owner: { kind: "project" },
+      revisionId: "before-conflict", state: { tracks: [] },
+    };
+    const onSave = vi.fn(async () => { throw new Error("STALE_READ: Read again"); });
+    const onExport = vi.fn();
+    render(<ProjectTimelineEditorSurface timeline={timeline} mediaInputs={[]} canvases={[]}
+      onSave={onSave} onExport={onExport} onOpenCanvas={vi.fn()} />);
+    await screen.findByTestId("remotion-editor");
+    act(() => timelineEditorApi.mutate(120));
+    await act(async () => {
+      await expect(timelineEditorApi.onExport!()).rejects.toThrow(/save/i);
+    });
+    expect(onExport).not.toHaveBeenCalled();
+    expect(onSave).toHaveBeenCalledWith(timeline.id, expect.anything(), projectTimelineReadToken(timeline));
+  });
+
   it("persists the current Timeline before requesting a backend export", async () => {
     const events: string[] = [];
-    const onSave = vi.fn(() => {
+    const onSave = vi.fn((id: string, state: Record<string, unknown>) => {
       events.push("save");
-      return true;
+      return acknowledgeTimelineSave(id, state);
     });
     const onExport = vi.fn(async () => {
       events.push("export");
@@ -523,7 +582,7 @@ describe("Project workspace surfaces", () => {
         mediaInputs={[]}
         canvases={[]}
         exportProgress={exportProgress}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
       />,
     );
@@ -533,7 +592,7 @@ describe("Project workspace surfaces", () => {
   });
 
   it("reloads a clean editor when an external Timeline revision arrives without writing the stale snapshot", async () => {
-    const onSave = vi.fn(() => true);
+    const onSave = vi.fn(acknowledgeTimelineSave);
     const baseTimeline = {
       id: "timeline-live-revision",
       name: "Live Revision",
@@ -594,7 +653,7 @@ describe("Project workspace surfaces", () => {
         timeline={warmTimeline}
         mediaInputs={[]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
       />,
     );
@@ -621,7 +680,7 @@ describe("Project workspace surfaces", () => {
         }}
         mediaInputs={[]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
       />,
     );
@@ -647,8 +706,8 @@ describe("Project workspace surfaces", () => {
     ).toBe("timeline-after-warmup:timeline-revision-v1:after-warmup");
   });
 
-  it("persists the canonical Canvas placement after a native sidebar drop without moving the clip", async () => {
-    const onSave = vi.fn(() => true);
+  it("resolves Canvas media without saving until a real editor mutation", async () => {
+    const onSave = vi.fn(acknowledgeTimelineSave);
     const timeline = {
       id: "timeline-canvas-drop-save",
       name: "Canvas Drop Save",
@@ -713,6 +772,11 @@ describe("Project workspace surfaces", () => {
       />,
     );
 
+    // Asset discovery is read-only, even if it resolves a different navigation hint.
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    expect(onSave).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Apply editor mutation" }));
+
     await waitFor(() =>
       expect(onSave).toHaveBeenCalledWith(
         "timeline-canvas-drop-save",
@@ -746,7 +810,7 @@ describe("Project workspace surfaces", () => {
       timeline,
       mediaInputs: [],
       canvases: [],
-      onSave: vi.fn(() => true),
+      onSave: vi.fn(acknowledgeTimelineSave),
       onOpenCanvas: vi.fn(),
     };
     const { rerender } = render(
@@ -801,7 +865,7 @@ describe("Project workspace surfaces", () => {
           },
         ]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
       />,
     );
@@ -872,7 +936,7 @@ describe("Project workspace surfaces", () => {
           },
         ]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
       />,
     );
@@ -927,7 +991,7 @@ describe("Project workspace surfaces", () => {
           { id: "main", name: "Main", position: 0 },
           { id: "shots", name: "Shots", position: 1 },
         ]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={onOpenCanvas}
       />,
     );
@@ -953,7 +1017,7 @@ describe("Project workspace surfaces", () => {
         }}
         mediaInputs={[]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
         onProjectAssetDrop={onProjectAssetDrop}
       />,
@@ -1008,7 +1072,7 @@ describe("Project workspace surfaces", () => {
         }}
         mediaInputs={[]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
         onProjectAssetDrop={onProjectAssetDrop}
       />,
@@ -1046,7 +1110,7 @@ describe("Project workspace surfaces", () => {
         }}
         mediaInputs={[]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
         onProjectAssetDrop={onProjectAssetDrop}
       />,
@@ -1090,7 +1154,7 @@ describe("Project workspace surfaces", () => {
         }}
         mediaInputs={[]}
         canvases={[]}
-        onSave={vi.fn(() => true)}
+        onSave={vi.fn(acknowledgeTimelineSave)}
         onOpenCanvas={vi.fn()}
         insertAssetRequest={{
           requestId: "picker-request-1",
@@ -1146,7 +1210,7 @@ describe("Project workspace surfaces", () => {
               }}
               mediaInputs={[]}
               canvases={[]}
-              onSave={vi.fn(() => true)}
+              onSave={vi.fn(acknowledgeTimelineSave)}
               onOpenCanvas={vi.fn()}
               insertAssetRequest={request}
               onInsertAssetRequestHandled={(requestId) => {

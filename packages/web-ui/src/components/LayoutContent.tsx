@@ -57,31 +57,38 @@ export default function LayoutContent({
       return undefined;
     }
 
-    const root = document.documentElement;
-    let hideTimer: number | undefined;
-
-    const markScrolling = () => {
-      root.classList.add("clash-is-scrolling");
-      if (hideTimer !== undefined) {
-        window.clearTimeout(hideTimer);
-      }
-      hideTimer = window.setTimeout(() => {
-        root.classList.remove("clash-is-scrolling");
-        hideTimer = undefined;
-      }, 450);
+    const hideTimers = new Map<Element, number>();
+    const markScrolling = (event: Event) => {
+      const target = event.target;
+      const scroller =
+        target instanceof Element
+          ? target
+          : target === document || target === event.currentTarget
+            ? (document.scrollingElement ?? document.documentElement)
+            : null;
+      if (!scroller) return;
+      scroller.classList.add("clash-is-scrolling");
+      const previous = hideTimers.get(scroller);
+      if (previous !== undefined) window.clearTimeout(previous);
+      hideTimers.set(
+        scroller,
+        window.setTimeout(() => {
+          scroller.classList.remove("clash-is-scrolling");
+          hideTimers.delete(scroller);
+        }, 450),
+      );
     };
 
     const listenerOptions = { capture: true, passive: true };
     window.addEventListener("scroll", markScrolling, listenerOptions);
-    document.addEventListener("scroll", markScrolling, listenerOptions);
 
     return () => {
       window.removeEventListener("scroll", markScrolling, listenerOptions);
-      document.removeEventListener("scroll", markScrolling, listenerOptions);
-      if (hideTimer !== undefined) {
-        window.clearTimeout(hideTimer);
+      for (const [scroller, timer] of hideTimers) {
+        window.clearTimeout(timer);
+        scroller.classList.remove("clash-is-scrolling");
       }
-      root.classList.remove("clash-is-scrolling");
+      hideTimers.clear();
     };
   }, [showsDesktopChrome]);
 

@@ -28,8 +28,8 @@
     "@ai-sdk/react": "^3.0.140",
     "@ariakit/react": "^0.4.31",
     "@clash/asset-sdk": "workspace:*",
-    "@clash/gui": "workspace:*",
     "@clash/director-ui": "workspace:*",
+    "@clash/gui": "workspace:*",
     "@clash/shared-layout": "workspace:^",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
@@ -95,6 +95,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
+    "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.0.2",
     "typescript": "^5.9.0",
     "vitest": "^4.1.4"

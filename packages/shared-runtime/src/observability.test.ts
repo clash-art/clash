@@ -1,14 +1,54 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Console } from "node:console";
+import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import {
   createBoundedJsonlLogSink,
   createDeduplicatedLogEmitter,
   installProcessStdioCapture,
 } from "./observability.js";
+import { createLogRecord } from "./logging.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readdirSync: vi.fn(actual.readdirSync) };
+});
 
 describe("bounded observability", () => {
+  it("does not rescan the directory for each record in an open segment", () => {
+    const directory = mkdtempSync(join(tmpdir(), "clash-log-writes-"));
+    try {
+      const sink = createBoundedJsonlLogSink({
+        directory,
+        filePrefix: "test-host",
+        maxBytes: 1024 * 1024,
+        maxFiles: 5,
+      });
+      sink.write({ event: "first" });
+      const scans = vi.mocked(readdirSync).mock.calls.length;
+      for (let i = 0; i < 30; i++) sink.write({ event: "next", sequence: i });
+      expect(vi.mocked(readdirSync).mock.calls.length - scans).toBe(0);
+      sink.close();
+      const records = readFileSync(
+        join(directory, readdirSync(directory)[0]),
+        "utf8",
+      )
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(records.at(-1)).toMatchObject({
+        event: "next",
+        sequence: 29,
+        pid: process.pid,
+        runId: records[0].runId,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rotates JSONL records and removes files beyond the configured retention", () => {
     const directory = mkdtempSync(join(tmpdir(), "clash-observability-"));
 
@@ -90,18 +130,20 @@ describe("bounded observability", () => {
 
     expect(stdout.write).toHaveBeenCalledWith("ready\n");
     expect(stderr.write).toHaveBeenCalledWith(Buffer.from("failed\n"));
-    expect(records).toEqual([
+    expect(records).toMatchObject([
       {
         timestamp: "1970-01-01T00:00:01.000Z",
         component: "local-api",
         level: "info",
-        message: "ready",
+        event: "process.stdout",
+        context: { message: "ready" },
       },
       {
         timestamp: "1970-01-01T00:00:01.000Z",
         component: "local-api",
-        level: "error",
-        message: "failed",
+        level: "warn",
+        event: "process.stderr",
+        context: { message: "failed" },
       },
       {
         timestamp: "1970-01-01T00:00:01.000Z",
@@ -112,5 +154,138 @@ describe("bounded observability", () => {
       },
     ]);
     expect(sink.close).toHaveBeenCalledOnce();
+  });
+
+  it("frames chunked JSON and preserves console severity without double-encoding", () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const targetConsole = new Console(stdout, stderr);
+    const records: Array<Record<string, unknown>> = [];
+    const capture = installProcessStdioCapture({
+      component: "local-api",
+      stdout,
+      stderr,
+      console: targetConsole,
+      sink: { write: (record) => records.push(record), close() {} },
+      maxEventsPerWindow: 2,
+      windowMs: 1_000,
+    });
+    const record = createLogRecord({
+      component: "local-api",
+      module: "assets",
+      level: "error",
+      event: "asset.failed",
+      context: { assetId: "a" },
+    });
+    const line = JSON.stringify(record);
+    stdout.write(line.slice(0, 25));
+    stdout.write(line.slice(25) + "\nready\n");
+    targetConsole.warn("retry");
+    targetConsole.error("failed after retries");
+    stderr.write("partial final line");
+    capture.close();
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "asset.failed",
+        level: "error",
+        context: { assetId: "a" },
+      }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "process.console",
+        level: "error",
+        context: { message: "failed after retries" },
+      }),
+    );
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "process.stderr",
+        context: { message: "partial final line" },
+      }),
+    );
+  });
+
+  it("keeps distinct errors during an info flood and bounds suppression fingerprints", () => {
+    const emitted: string[] = [];
+    const summaries: unknown[] = [];
+    const emitter = createDeduplicatedLogEmitter<string>({
+      emit: (value) => emitted.push(value),
+      emitSuppressed: (value) => summaries.push(value),
+      keyOf: (value) => value,
+      isCritical: (value) => value.startsWith("error"),
+      maxEventsPerWindow: 2,
+      windowMs: 1_000,
+    });
+    for (let i = 0; i < 100; i++) emitter.emit(`info-${i}`);
+    emitter.emit("error-a");
+    emitter.emit("error-a");
+    emitter.emit("error-b");
+    emitter.flush();
+    expect(emitted).toContain("error-a");
+    expect(emitted).toContain("error-b");
+    expect(emitted.filter((value) => value === "error-a")).toHaveLength(1);
+    expect(summaries).toContainEqual(
+      expect.objectContaining({
+        suppressedCount: 99,
+        distinctCountCapped: true,
+      }),
+    );
+  });
+
+  it("stops growing a detached Host's startup fallback after readiness while retaining runtime records", async () => {
+    const originalWrite = vi.fn((_chunk: unknown) => true);
+    const stdout = { write: originalWrite };
+    const records: Array<Record<string, unknown>> = [];
+    const capture = installProcessStdioCapture({
+      component: "local-api",
+      stdout,
+      stderr: { write: vi.fn(() => true) },
+      sink: { write: (record) => records.push(record), close() {} },
+      maxEventsPerWindow: 10,
+      windowMs: 1_000,
+    });
+    stdout.write("starting\n");
+    capture.stopStdioForwarding();
+    stdout.write("runtime\n");
+    await Promise.resolve();
+    capture.close();
+    expect(originalWrite).toHaveBeenCalledExactlyOnceWith("starting\n");
+    expect(records).toContainEqual(
+      expect.objectContaining({ context: { message: "runtime" } }),
+    );
+    expect(stdout.write).toBe(originalWrite);
+  });
+
+  it("keeps a multiline console Error in one diagnostic with its code and stack", () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const targetConsole = new Console(stdout, stderr);
+    const records: Array<Record<string, unknown>> = [];
+    const capture = installProcessStdioCapture({
+      component: "local-api",
+      stdout,
+      stderr,
+      console: targetConsole,
+      sink: { write: (record) => records.push(record), close() {} },
+      maxEventsPerWindow: 10,
+      windowMs: 1_000,
+    });
+    targetConsole.error(
+      "request failed",
+      Object.assign(new Error("offline"), { code: "ECONNRESET" }),
+    );
+    capture.close();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      level: "error",
+      context: {
+        error: {
+          code: "ECONNRESET",
+          message: "offline",
+          stack: expect.stringContaining("offline"),
+        },
+      },
+    });
   });
 });

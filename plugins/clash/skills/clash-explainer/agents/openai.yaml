@@ -1,0 +1,4 @@
+interface:
+  display_name: "Visual Explanation"
+  short_description: "Explain a mechanism through visible cause and effect"
+  default_prompt: "Use $clash-explainer for the requested creative task, following its scope and the project's existing choices."

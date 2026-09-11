@@ -1,9 +1,58 @@
-import { LoroDoc } from "loro-crdt";
+import { LoroDoc, LoroMap } from "loro-crdt";
 import { describe, expect, it, vi } from "vitest";
 
 import { subscribeProjectAssetProjection } from "./liveProjectAssets";
 
 describe("subscribeProjectAssetProjection", () => {
+  it("does not serialize Project Asset membership on unrelated document commits", () => {
+    const doc = new LoroDoc();
+    const nodes = doc.getMap("nodes");
+    const serialize = vi.spyOn(LoroMap.prototype, "toJSON");
+    const stop = subscribeProjectAssetProjection({
+      doc,
+      projectId: "project-1",
+      readProjection: async () => [],
+      onProjection: () => {},
+    });
+    serialize.mockClear();
+    try {
+      for (let x = 0; x < 60; x++) {
+        nodes.set("node-1", { type: "image", position: { x, y: 0 } });
+        doc.commit();
+      }
+      expect(serialize.mock.calls.length).toBe(0);
+    } finally {
+      stop();
+      serialize.mockRestore();
+    }
+  });
+
+  it("observes remote membership imports and checkout, and stops after cleanup", async () => {
+    const doc = new LoroDoc();
+    doc.getMap("projectAssets").set("asset:one", { id: "asset:one" });
+    doc.commit();
+    const before = doc.frontiers();
+    const remote = new LoroDoc();
+    remote.import(doc.export({ mode: "snapshot" }));
+    const readProjection = vi.fn(async () => []);
+    const stop = subscribeProjectAssetProjection({
+      doc, projectId: "project-1", readProjection, onProjection: () => {},
+    });
+    remote.getMap("projectAssets").set("asset:two", { id: "asset:two" });
+    remote.commit();
+    doc.import(remote.export({ mode: "snapshot" }));
+    expect(readProjection).toHaveBeenCalledTimes(2);
+    doc.checkout(before);
+    expect(readProjection).toHaveBeenCalledTimes(3);
+    doc.attach();
+    expect(readProjection).toHaveBeenCalledTimes(4);
+    stop();
+    doc.getMap("projectAssets").delete("asset:one");
+    doc.commit();
+    await Promise.resolve();
+    expect(readProjection).toHaveBeenCalledTimes(4);
+  });
+
   it("projects the current Loro membership immediately on subscription", async () => {
     const doc = new LoroDoc();
     doc.getMap("projectAssets").set("asset:existing", {

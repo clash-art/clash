@@ -310,6 +310,8 @@ export type ArtifactBenchmarkCase = {
   prompt?: string;
   passScore: number;
   timeoutMs: number;
+  /** Named, task-scoped pack; skills contains its resolved members plus additions. */
+  skillPack?: { path: string; id: string };
   skills: string[];
   inputFixture?: BenchmarkInputFixture;
   execution?: BenchmarkExecution;

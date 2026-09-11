@@ -88,6 +88,14 @@ function hostValue(value: ProjectHostResponse): ProjectHostResponse {
   throw new Error(`${code}${value.error}`);
 }
 
+function publicTimelineEntity(value: Record<string, unknown>): TimelineEntity {
+  const timeline = value.timeline;
+  if (!timeline || typeof timeline !== "object" || Array.isArray(timeline)) {
+    throw new Error("Timeline mutation did not return the persisted Timeline");
+  }
+  return publicProjectHostValue(timeline) as TimelineEntity;
+}
+
 async function writeTimelineProjection(
   path: string,
   content: string,
@@ -272,7 +280,7 @@ export function createTimelineAdapter(
           receipt,
         });
       }
-      return publicProjectHostValue(result.value);
+      return publicTimelineEntity(result.value);
     },
     async save(input) {
       const timelineId = required(input, "timelineId");
@@ -340,14 +348,14 @@ export function createTimelineAdapter(
         canvasId: required(input, "canvasId"),
         ...(input.nodeId?.trim() ? { actionNodeId: input.nodeId.trim() } : {}),
         ...(input.position ? { position: input.position } : {}),
-      });
+      }).then(publicTimelineEntity);
     },
     detach(input) {
       const timelineId = required(input, "timelineId");
       return mutation(input, timelineId, {
         action: "detach_timeline",
         timelineId,
-      });
+      }).then(publicTimelineEntity);
     },
     copy(input) {
       const timelineId = required(input, "timelineId");
@@ -362,7 +370,7 @@ export function createTimelineAdapter(
           ? { newActionNodeId: input.newNodeId.trim() }
           : {}),
         ...(input.position ? { position: input.position } : {}),
-      });
+      }).then(publicTimelineEntity);
     },
     async render(input) {
       const timelineId = required(input, "timelineId");

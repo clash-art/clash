@@ -355,6 +355,8 @@ function runtimeState(
     goal: null,
     transientStatus: null,
     diagnostics: [],
+    modelFallback: null,
+    supportsMessageFork: false,
     agentUIStore: draftStore,
     agentUIState: draftStore.getState(),
     ready: false,
@@ -771,6 +773,32 @@ describe("ChatbotCopilot desktop local mode", () => {
     expect(screen.getByRole("textbox", { name: "chat draft" })).toHaveValue(
       "draft for A",
     );
+  });
+
+
+  it("uses an expiring shared toast for model fallback without repeating on rerender", async () => {
+    vi.useFakeTimers();
+    globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "desktop" };
+    Element.prototype.scrollIntoView = vi.fn();
+    mocks.useClashRuntime.mockReturnValue(runtimeState({
+      sessionId: "fallback-session",
+      selectedRuntimeId: "desktop-local",
+      status: "connected",
+      ready: true,
+      modelFallback: { from: "unknown-model", to: "supported-model" },
+    }));
+    mocks.useAgentCopilot.mockReturnValue(cloudState());
+    try {
+      const view = renderDesktopCopilotWithFeedback();
+      const notice = screen.getByText("已切换至 supported-model");
+      expect(notice.closest('[data-ui="toast-viewport"]')).not.toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+      expect(screen.queryByText("已切换至 supported-model")).toBeNull();
+      view.rerender(copilotWithFeedbackElement());
+      expect(screen.queryByText("已切换至 supported-model")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("restores a composer draft after the chat component remounts", () => {
@@ -1574,7 +1602,7 @@ describe("ChatbotCopilot desktop local mode", () => {
     ).toBeNull();
   });
 
-  it("keeps desktop local startup to one icon-only loading state", () => {
+  it("keeps desktop local session connection silent", () => {
     globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "desktop" };
     vi.stubGlobal(
       "IntersectionObserver",
@@ -1599,10 +1627,10 @@ describe("ChatbotCopilot desktop local mode", () => {
     const { container } = renderDesktopCopilot();
 
     expect(
-      screen.getByRole("status", {
+      screen.queryByRole("status", {
         name: "Connecting to the local agent on this Mac...",
       }),
-    ).toBeTruthy();
+    ).toBeNull();
     expect(
       screen.getByTestId("chat-input").getAttribute("data-processing"),
     ).toBe("false");
@@ -1638,10 +1666,10 @@ describe("ChatbotCopilot desktop local mode", () => {
     renderDesktopCopilot();
 
     expect(
-      screen.getByRole("status", {
+      screen.queryByRole("status", {
         name: "Connecting to the local agent on this Mac...",
       }),
-    ).toBeTruthy();
+    ).toBeNull();
     expect(screen.queryByTestId("chat-input")).toBeNull();
     expect(screen.queryByTestId("session-harness-config-trigger")).toBeNull();
     expect(
@@ -1749,10 +1777,10 @@ describe("ChatbotCopilot desktop local mode", () => {
     const { container } = renderDesktopCopilot();
 
     expect(
-      screen.getByRole("status", {
+      screen.queryByRole("status", {
         name: "Connecting to the local agent on this Mac...",
       }),
-    ).toBeTruthy();
+    ).toBeNull();
     expect(container.textContent).not.toContain(
       "Start the local agent on this Mac.",
     );
@@ -3020,7 +3048,7 @@ describe("ChatbotCopilot desktop local mode", () => {
     });
   });
 
-  it("shows a stable loading state while switching runtime history", async () => {
+  it("shows a quiet placeholder and reveals hydrated history before connection finishes", async () => {
     globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "desktop" };
     vi.stubGlobal(
       "IntersectionObserver",
@@ -3054,11 +3082,11 @@ describe("ChatbotCopilot desktop local mode", () => {
       }),
     );
     mocks.useAgentCopilot.mockReturnValue(cloudState());
-    renderDesktopCopilot({
+    const historyProps: Partial<ComponentProps<typeof ChatbotCopilot>> = {
       sessionHistory: [
         {
           threadId: "next-session",
-          type: "runtime",
+          type: "runtime" as const,
           title: "Next session",
           projectId: "project-one",
           runtimeId: "desktop-local",
@@ -3066,14 +3094,53 @@ describe("ChatbotCopilot desktop local mode", () => {
           status: "active",
         },
       ],
-    });
+    };
+    const { rerender } = renderDesktopCopilot(historyProps);
 
     openSessionHistoryMenu();
     fireEvent.click(screen.getByRole("button", { name: /^Next session / }));
     expect(
       screen.getByRole("status", { name: "Loading session" }),
     ).toBeTruthy();
-    expect(screen.queryByTestId("acp-message-list")).toBeNull();
+    expect(screen.queryByText("Loading session…")).toBeNull();
+    expect(screen.getByTestId("chat-input")).toBeTruthy();
+    mocks.useClashRuntime.mockReturnValue(
+      runtimeState({
+        selectedRuntimeId: "desktop-local",
+        selectedAgentId: "codex-acp",
+        sessionId: "next-session",
+        status: "connecting",
+        ready: false,
+        messages: [
+          {
+            id: "loaded",
+            role: "assistant",
+            parts: [{ type: "text", text: "Loaded history" }],
+          },
+        ],
+        attachSession,
+      }),
+    );
+    rerender(
+      <ChatbotCopilot
+        projectId="project-one"
+        threadId="thread-one"
+        initialMessages={[]}
+        width={420}
+        onWidthChange={() => undefined}
+        isCollapsed={false}
+        onCollapseChange={() => undefined}
+        {...historyProps}
+      />,
+    );
+    expect(
+      screen.queryByRole("status", { name: "Loading session" }),
+    ).toBeNull();
+    expect(screen.getByText("Loaded history")).toBeTruthy();
+    expect(screen.getByTestId("chat-input")).toHaveAttribute(
+      "data-processing",
+      "false",
+    );
 
     finishAttach();
     await waitFor(() =>
@@ -5796,7 +5863,7 @@ describe("ChatbotCopilot desktop local mode", () => {
     expect(sendMessage.mock.calls[0]?.[0]).not.toContain("Selected context:");
   });
 
-  it("keeps active canvas state out of the user turn so the agent can read it through Clash MCP", () => {
+  it("sends the active canvas address with the user turn", () => {
     globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "desktop" };
     vi.stubGlobal(
       "IntersectionObserver",
@@ -5845,12 +5912,15 @@ describe("ChatbotCopilot desktop local mode", () => {
     });
     fireEvent.click(screen.getByTestId("submit-chat-input"));
 
-    expect(sendMessage).toHaveBeenCalledWith(
-      "Run @[Render variants](node:action-1)",
+    const prompt = sendMessage.mock.calls[0]?.[0] as string;
+    expect(prompt.endsWith("Run @[Render variants](node:action-1)")).toBe(true);
+    const payload = JSON.parse(
+      prompt.split("<!-- clash-workspace-context ")[1].split(" -->")[0],
     );
-    expect(sendMessage.mock.calls[0]?.[0]).not.toContain(
-      "clash-workspace-context",
-    );
+    expect(payload.projectId).toBe("project-one");
+    expect(payload.activeSurface).toEqual({
+      kind: "canvas", id: "canvas-main", name: "Main Storyboard",
+    });
   });
 
   it("auto-opens the session update notice from the header and lets the user collapse it", async () => {

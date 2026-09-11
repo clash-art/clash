@@ -59,7 +59,9 @@ export function subscribeProjectAssetProjection({
       });
   };
 
-  const unsubscribe = doc.subscribe(() => {
+  // Only membership changes can invalidate this projection. Listening to the
+  // whole document also serializes every Asset on canvas geometry commits.
+  const unsubscribe = doc.getMap("projectAssets").subscribe(() => {
     const nextFingerprint = projectAssetMembershipFingerprint(doc);
     if (nextFingerprint === fingerprint) return;
     fingerprint = nextFingerprint;

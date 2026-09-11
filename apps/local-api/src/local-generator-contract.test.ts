@@ -141,6 +141,30 @@ function build(
 }
 
 describe("Local Generator contract boundary", () => {
+  it("pins a model Action to the selected Provider while keeping its Generator definition identity", () => {
+    const { executorExportId: _export, ...action } = definition.actions[0]!;
+    const modelDefinition = { ...definition, actions: [{ ...action, modelExecution: true as const }] };
+    const selected = {
+      semanticShape: "image_generation",
+      modelId: "selected-model",
+      route: {
+        upstreamId: "selected-provider",
+        upstreamModel: "upstream-model",
+        apiShape: "provider-native",
+        executorBinding: { pluginId: "provider.image", exportId: "execute", version: "1.0.0",
+          schemaHash: `sha256:${"c".repeat(64)}` },
+      },
+    };
+    const built = build(projectDoc(), { definition: modelDefinition, modelSelection: selected });
+    expect(built.request.executor).toEqual(selected.route.executorBinding);
+    expect(built.revision.definitionRef).toEqual(definitionRef);
+    const moved = build(projectDoc(), { definition: modelDefinition, modelSelection: {
+      ...selected, route: { ...selected.route, executorBinding: { ...selected.route.executorBinding, version: "2.0.0" } },
+    } });
+    expect(moved.request.invocationFingerprint).not.toBe(built.request.invocationFingerprint);
+    expect(() => build(projectDoc(), { definition: modelDefinition })).toThrow(/selected.*Provider/i);
+  });
+
   it("selects the answer output for a prompt-only media analysis and rejects ambiguous inputs", () => {
     const media = JSON.parse(readFileSync(
       new URL("../../../plugins/media-analysis/generators/media-analysis.json", import.meta.url), "utf8",

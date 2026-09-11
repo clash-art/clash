@@ -41,6 +41,7 @@ export default function ProjectRoute() {
   const thread = searchParams.get("thread") ?? undefined;
   return (
     <ProjectEditor
+      key={(project as { id: string }).id}
       project={project as any}
       initialPrompt={prompt}
       initialThreadId={thread}

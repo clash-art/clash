@@ -1,4 +1,5 @@
 
+import { createLogger } from "../../lib/logger";
 import React, { memo, useCallback, useState } from 'react';
 /* eslint-disable @next/next/no-img-element */
 import { Handle, Position, NodeProps, useReactFlow, Node } from '@xyflow/react';
@@ -10,16 +11,19 @@ import { useProject } from '../ProjectContext';
 import { getItemSourceNodeId } from '@clash/remotion-core';
 import { Button } from '../ui/button';
 import { InlineAlert } from '../ui/feedback';
-import { listProjectTimelines, type ProjectTimeline } from '@clash/shared-types';
+import { type ProjectTimeline } from '@clash/shared-types';
 import {
     assetPreviewMedia,
     type AssetPreviewMedia,
 } from '../../features/assets/media-url';
 import betterAuthClient from '../../lib/betterAuthClient';
 
+const mediaLog = createLogger("timeline");
+
 function readTimelineForAction(
     doc: NonNullable<ReturnType<typeof useOptionalLoroSyncContext>>['doc'],
     actionNodeId: string,
+    timelines: ProjectTimeline[],
 ): ProjectTimeline | null {
     if (!doc) return null;
     const actionNode = doc.getMap('nodes').get(actionNodeId) as any;
@@ -27,12 +31,12 @@ function readTimelineForAction(
         ? actionNode.data.timelineId
         : undefined;
     if (!timelineId) return null;
-    return listProjectTimelines(doc).find((timeline) => timeline.id === timelineId) ?? null;
+    return timelines.find((timeline) => timeline.id === timelineId) ?? null;
 }
 
 async function resolveAssetPreview(projectId: string, assetId: string, sourceId: string): Promise<AssetPreviewMedia | null> {
     const asset = await getAsset(projectId, assetId).catch((e) => {
-        console.error('[resolveAssetPreview] getAsset failed', { sourceId, assetId, error: e?.message });
+        mediaLog.warn("timeline.preview_resolve_failed", { projectId, sourceId, assetId, error: e });
         return null;
     });
     return asset ? assetPreviewMedia(asset) : null;
@@ -84,7 +88,7 @@ const VideoEditorNode = ({ data, id }: NodeProps<Node<Record<string, any>>>) => 
         let cancelled = false;
 
         (async () => {
-            const timeline = readTimelineForAction(loroSync?.doc ?? null, id);
+            const timeline = readTimelineForAction(loroSync?.doc ?? null, id, loroSync?.timelines ?? []);
             const timelineDsl = timeline?.state as any;
 
             if (!timelineDsl?.tracks) {
@@ -135,26 +139,26 @@ const VideoEditorNode = ({ data, id }: NodeProps<Node<Record<string, any>>>) => 
         return () => {
             cancelled = true;
         };
-    }, [data.timelineId, id, loroSync?.doc, loroUpdateTrigger, projectId, reactFlow]);
+    }, [data.timelineId, id, loroSync?.doc, loroUpdateTrigger, projectId, reactFlow, loroSync?.timelines]);
 
     const handleOpenEditor = useCallback(() => {
         setRenderError(null);
-        const timeline = readTimelineForAction(loroSync?.doc ?? null, id);
+        const timeline = readTimelineForAction(loroSync?.doc ?? null, id, loroSync?.timelines ?? []);
         if (!timeline) {
-            console.error('[VideoEditorNode] Timeline Action has no Project Timeline');
+            mediaLog.error("timeline.reference_missing", { projectId, nodeId: id });
             return;
         }
         openTimeline(timeline.id);
-    }, [id, loroSync?.doc, openTimeline]);
+    }, [id, loroSync?.doc, loroSync?.timelines, openTimeline]);
 
     const handleRender = useCallback(async () => {
         setRenderError(null);
         if (!loroSync?.doc) {
-            console.error('[VideoEditorNode] LoroSync not connected');
+            mediaLog.warn("timeline.sync_unavailable", { projectId, nodeId: id });
             setRenderError('Canvas is still connecting. Try again in a moment.');
             return;
         }
-        const timeline = readTimelineForAction(loroSync.doc, id);
+        const timeline = readTimelineForAction(loroSync.doc, id, loroSync.timelines);
         const timelineDsl = timeline?.state as any;
         if (!timeline || !timelineDsl || !timelineDsl.tracks || timelineDsl.tracks.length === 0) {
             setRenderError('Open the editor and add content before rendering.');
@@ -163,12 +167,12 @@ const VideoEditorNode = ({ data, id }: NodeProps<Node<Record<string, any>>>) => 
 
         setRendering(true);
         try {
-            const result = loroSync.requestTimelineRender(timeline.id, {
+            const result = await loroSync.requestTimelineRender(timeline.id, {
                 actorUserId: currentUserId,
             });
             if (!result.ok) throw new Error(result.error);
         } catch (error) {
-            console.error('[VideoEditorNode] Failed to trigger render:', error);
+            mediaLog.error("timeline.render_failed", { projectId, nodeId: id, error });
             setRenderError(error instanceof Error ? error.message : 'Render could not be started.');
         } finally {
             setRendering(false);

@@ -220,6 +220,39 @@ describe("LayoutContent desktop chrome", () => {
     ).toBe(true);
   });
 
+  it("reveals only the scrolled panel and expires each panel independently", () => {
+    vi.useFakeTimers();
+    globalThis.__CLASH_DESKTOP__ = { isDesktop: true, newWindow: vi.fn() };
+    const { unmount } = renderAt(
+      "/projects/project-1",
+      <div data-testid="parent">
+        <div data-testid="left" />
+        <div data-testid="right" />
+      </div>,
+    );
+    const left = screen.getByTestId("left");
+    const right = screen.getByTestId("right");
+    act(() => {
+      right.dispatchEvent(new Event("scroll"));
+    });
+    expect(right).toHaveClass("clash-is-scrolling");
+    expect(left).not.toHaveClass("clash-is-scrolling");
+    expect(screen.getByTestId("parent")).not.toHaveClass("clash-is-scrolling");
+    expect(document.documentElement).not.toHaveClass("clash-is-scrolling");
+    act(() => {
+      vi.advanceTimersByTime(300);
+      left.dispatchEvent(new Event("scroll"));
+    });
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+    expect(right).not.toHaveClass("clash-is-scrolling");
+    expect(left).toHaveClass("clash-is-scrolling");
+    unmount();
+    expect(left).not.toHaveClass("clash-is-scrolling");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("marks scrollbars visible only while a scroll is active", async () => {
     vi.useFakeTimers();
     globalThis.__CLASH_DESKTOP__ = {
@@ -230,7 +263,9 @@ describe("LayoutContent desktop chrome", () => {
     renderAt("/projects", <div>Projects index</div>);
 
     expect(
-      document.documentElement.classList.contains("clash-is-scrolling"),
+      (
+        document.scrollingElement ?? document.documentElement
+      ).classList.contains("clash-is-scrolling"),
     ).toBe(false);
 
     act(() => {
@@ -238,7 +273,9 @@ describe("LayoutContent desktop chrome", () => {
     });
 
     expect(
-      document.documentElement.classList.contains("clash-is-scrolling"),
+      (
+        document.scrollingElement ?? document.documentElement
+      ).classList.contains("clash-is-scrolling"),
     ).toBe(true);
 
     act(() => {
@@ -246,7 +283,9 @@ describe("LayoutContent desktop chrome", () => {
     });
 
     expect(
-      document.documentElement.classList.contains("clash-is-scrolling"),
+      (
+        document.scrollingElement ?? document.documentElement
+      ).classList.contains("clash-is-scrolling"),
     ).toBe(false);
   });
 });

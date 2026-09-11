@@ -31,6 +31,27 @@ const legacyCapturedShot = {
 };
 
 describe("Project Director Stage model", () => {
+  it.each([false, true])("publishes complete Stage ownership to live replicas (explicit canvas=%s)", (explicit) => {
+    const doc = new LoroDoc();
+    if (explicit) shared.ensureProjectCanvas(doc);
+    shared.createProjectDirectorStage(doc, { id: "new-stage", name: "Stage", state: emptyStageState });
+    doc.commit();
+    const remote = new LoroDoc();
+    remote.import(doc.export({ mode: "snapshot" }));
+    const removed: string[] = [];
+    const unsubscribe = doc.subscribeLocalUpdates((update) => {
+      remote.import(update);
+      const result = shared.reconcileProjectDirectorStageOwnership(remote);
+      removed.push(...result.removedActionNodeIds, ...result.detachedStageIds);
+      remote.commit();
+    });
+    expect(shared.attachDirectorStageToCanvas(doc, { stageId: "new-stage", canvasId: "main", actionNodeId: "new-director" }).ok).toBe(true);
+    doc.commit();
+    unsubscribe();
+    expect(removed).toEqual([]);
+    expect(new Canvas(remote, () => {}, "main").readNode("new-director")).not.toBeNull();
+  });
+
   it("admits the curated full-body interact action", () => {
     expect((shared as any).DirectorStageActionNameSchema.parse("interact")).toBe("interact");
   });

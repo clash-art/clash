@@ -135,6 +135,38 @@ describe("LoroProtocolServerSession", () => {
 });
 
 describe("LoroProtocolClientSession", () => {
+  it("stops dependent uploads after rejection while preserving local recovery data", async () => {
+    const doc = new LoroDoc();
+    const sent: Uint8Array[] = [];
+    const rejected = vi.fn();
+    const errors = vi.fn();
+    const client = new LoroProtocolClientSession({ roomId: "project", doc,
+      send: frame => { sent.push(frame); }, onUpdateRejected: rejected, onError: errors });
+    const version = doc.version();
+    try {
+      client.join();
+      await client.receive(encode({ type: MessageType.JoinResponseOk, crdt: CrdtType.Loro,
+        roomId: "project", permission: "write", version: version.encode() }));
+      doc.getMap("nodes").set("rejected", { label: "Local draft" });
+      doc.commit();
+      const update = decode(sent.at(-1)!);
+      if (update.type !== MessageType.DocUpdate) throw new Error("Expected local update");
+      await client.receive(encode({ type: MessageType.Ack, crdt: CrdtType.Loro, roomId: "project",
+        refId: update.batchId, status: UpdateStatusCode.AppError }));
+      expect(rejected).toHaveBeenCalledWith(update.batchId, UpdateStatusCode.AppError, update.updates);
+      expect(client.isJoined()).toBe(false);
+      const previousFrames = sent.slice();
+      doc.getMap("nodes").set("later", { label: "Keep for recovery" });
+      doc.commit();
+      expect(client.sendExternalUpdate(doc.export({ mode: "update" }))).toBe(false);
+      client.join();
+      expect(sent).toEqual(previousFrames);
+      expect(errors).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/recover/i) }));
+      expect(doc.getMap("nodes").get("rejected")).toEqual({ label: "Local draft" });
+      expect(doc.getMap("nodes").get("later")).toEqual({ label: "Keep for recovery" });
+    } finally { version.free(); client.destroy(); doc.free(); }
+  });
+
   it("joins from its VersionVector and uploads state missing on the server", async () => {
     const doc = new LoroDoc();
     doc.getMap("nodes").set("offline", { label: "Offline" });

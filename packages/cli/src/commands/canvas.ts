@@ -500,7 +500,7 @@ canvasCommand
   .option("--parent <id>", "Parent group ID")
   .option(
     "--model <id>",
-    "Generation model id (e.g. nano-banana-2, gpt-image-2, veo-3.1-fast). Stored as data.modelId. Required for *_gen action nodes when no marketplace action is installed.",
+    "Generation Model id from the Host catalog. Creates a native Generator draft with a Canvas placement. Omit to use the default Model for the requested output; cannot be combined with --action.",
   )
   .option(
     "--ref <id...>",
@@ -510,7 +510,7 @@ canvasCommand
   )
   .option(
     "--param <key=value...>",
-    "Model parameter (repeatable, stored under data.modelParams). Booleans and integers are coerced; everything else stays a string. Example: --param aspectRatio=16:9 --param seed=42",
+    "Model or Action parameter (repeatable). Saved in the referenced Generator draft for native cards. Booleans and numbers are coerced; other values stay strings. Example: --param aspect_ratio=16:9 --param seed=42",
     (val: string, prev: Array<[string, string]>) => {
       const eq = val.indexOf("=");
       if (eq < 0) throw new Error(`--param expects key=value, got: ${val}`);
@@ -520,7 +520,7 @@ canvasCommand
   )
   .option(
     "--action <id>",
-    "Use an installed executable-plugin action instead of a catalog model. The Host resolves the activated contribution and owns execution. When set, --model is ignored and --param values go into data.customActionParams instead of data.modelParams.",
+    "Select an installed Action Card. Mapped cards create their declared native Generator draft and Canvas placement; the Host owns contract validation and execution. Cannot be combined with --model. Creation does not run the Action.",
   )
   .option("--json", "Output as JSON")
   .action(async (options) => {

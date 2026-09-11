@@ -121,6 +121,7 @@ const SourceHandleMenu = ({ nodeId, sourceType }: SourceHandleMenuProps) => {
             // nodes, group auto-scaling, and chain-reaction collision
             // resolution. Each call sees the prior insertions, so multiple
             // clones in one batch don't stack on top of each other either.
+            const placedNodes: RFNode[] = [];
             for (const n of newNodes) {
                 if (!n.type) continue;
                 const placed = addNodeWithLayout(
@@ -128,13 +129,12 @@ const SourceHandleMenu = ({ nodeId, sourceType }: SourceHandleMenuProps) => {
                     n.position,
                     undefined,
                 );
-                if (placed && loroSync) {
-                    loroSync.addNode(placed.id, placed);
-                }
+                if (placed) placedNodes.push(placed);
             }
-            for (const ed of newEdges) {
-                addEdges(ed);
-                if (loroSync) loroSync.addEdge(ed.id, ed);
+            if (loroSync) {
+                if (!loroSync.addGraph(placedNodes, newEdges)) return;
+            } else {
+                for (const ed of newEdges) addEdges(ed);
             }
             setCloneDialog(null);
         },

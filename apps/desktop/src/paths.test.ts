@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { clashHomeForLocalDataDir } from "@clash/shared-runtime/local-paths";
 import {
   prependPythonPath,
   resolveAcpBinDir,
@@ -16,6 +17,10 @@ import {
 } from "./paths";
 
 describe("desktop paths", () => {
+  it("places logs beside Host logs even with a custom data directory name", () => {
+    const dataDir = "/tmp/custom-host-store";
+    expect(resolveDesktopStatePaths(dataDir).logs).toBe(join(clashHomeForLocalDataDir(dataDir), "logs", "desktop"));
+  });
   it("keeps mutable NLE handoffs under the canonical Clash home", () => {
     const mainSource = readFileSync(
       new URL("./main.ts", import.meta.url),

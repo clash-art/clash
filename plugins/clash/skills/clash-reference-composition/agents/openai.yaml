@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reference Composition"
+  short_description: "Combine references with explicit identity and layout roles"
+  default_prompt: "Use $clash-reference-composition to create this composition while preserving the selected subjects and assigning each reference a clear role."

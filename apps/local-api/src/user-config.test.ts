@@ -5,6 +5,19 @@ import { parse } from "yaml";
 import { describe, expect, it, vi } from "vitest";
 import { createClashUserConfigStore, watchClashUserConfig } from "./user-config";
 
+it("updates separate installation entries under the shared Host configuration lock", async () => {
+  const root = await mkdtemp(join(tmpdir(), "clash-config-skill-scopes-"));
+  try {
+    const one = createClashUserConfigStore(root);
+    const two = createClashUserConfigStore(root);
+    await Promise.all([
+      one.updateSection("skills", (current) => ({ ...(current as object ?? {}), one: { scope: "global" } })),
+      two.updateSection("skills", (current) => ({ ...(current as object ?? {}), two: { scope: "projects", projectIds: ["p"] } })),
+    ]);
+    expect(await one.getSection("skills")).toEqual({ one: { scope: "global" }, two: { scope: "projects", projectIds: ["p"] } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 describe("self-hosted user configuration", () => {
   it("serializes independent writers and preserves unrelated YAML sections", async () => {
     const clashHome = await mkdtemp(join(tmpdir(), "clash-user-config-"));

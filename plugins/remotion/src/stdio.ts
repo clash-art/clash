@@ -16,13 +16,15 @@ import {
   type ExecutablePluginInvocation,
   type ExecutablePluginReference,
 } from "@clash/shared-types/executable-plugin";
-import { ProjectTimelineEnvelopeSchema } from "@clash/shared-types";
+import { ProjectTimelineEnvelopeSchema } from "@clash/shared-types/timeline-envelope";
 import {
   renderMedia as remotionRenderMedia,
   selectComposition as remotionSelectComposition,
 } from "@remotion/renderer";
 
 export const REMOTION_RENDER_ACTION_ID = "render-timeline";
+// Declared by this plugin's shipped generators/timeline.json output contract.
+const REMOTION_RENDER_OUTPUT_SLOT = "render:output";
 
 type RendererApi = {
   selectComposition(options: Record<string, unknown>): Promise<unknown>;
@@ -93,14 +95,6 @@ function frozenTimelineValue(invocation: ExecutablePluginInvocation) {
       "duration",
     ),
   } as Record<string, any>;
-}
-
-function outputSlot(invocation: ExecutablePluginInvocation): string {
-  const value = invocation.input.values.outputSlot;
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error("Remotion render requires a non-empty outputSlot.");
-  }
-  return value.trim();
 }
 
 function referencesBySlot(
@@ -190,7 +184,7 @@ async function renderTimeline(
     return {
       status: "completed" as const,
       media: {
-        [outputSlot(invocation)]: {
+        [REMOTION_RENDER_OUTPUT_SLOT]: {
           bytes: await readFile(outputPath),
           mediaType: "video/mp4",
           kind: "video" as const,

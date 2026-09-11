@@ -35,6 +35,7 @@ function samePins(a: CanvasPin[], b: CanvasPin[]): boolean {
  */
 export function CanvasAnnotationPinLayer({
   annotations,
+  active = true,
   canvasId,
   flowBoundsRef,
   activeId,
@@ -43,6 +44,7 @@ export function CanvasAnnotationPinLayer({
   onRemove,
 }: {
   annotations: readonly AgentAnnotationDraft[];
+  active?: boolean;
   canvasId: string;
   flowBoundsRef: RefObject<HTMLDivElement | null>;
   activeId: string | null;
@@ -72,7 +74,7 @@ export function CanvasAnnotationPinLayer({
   );
 
   useEffect(() => {
-    if (relevant.length === 0) {
+    if (!active || relevant.length === 0) {
       setPins((current) => (current.length > 0 ? [] : current));
       return undefined;
     }
@@ -114,11 +116,11 @@ export function CanvasAnnotationPinLayer({
 
     measure();
     return () => window.cancelAnimationFrame(frame);
-  }, [flowBoundsRef, relevant, viewport.x, viewport.y, viewport.zoom]);
+  }, [active, flowBoundsRef, relevant, viewport.x, viewport.y, viewport.zoom]);
 
   const inverseZoom = 1 / Math.max(viewport.zoom, Number.EPSILON);
 
-  if (relevant.length === 0) return null;
+  if (!active || relevant.length === 0) return null;
 
   return (
     <ViewportPortal>

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { sourceMatches } from "../test-support/source-match";
 
 function projectEditorSource() {
   return readFileSync(new URL("./ProjectEditor.tsx", import.meta.url), "utf8");
@@ -11,6 +12,25 @@ function chatbotCopilotSource() {
 }
 
 describe("ProjectEditor canvas performance", () => {
+  it("keeps synced-node projection free of layout writes", () => {
+    const source = projectEditorSource();
+    const sourceFile = ts.createSourceFile("ProjectEditor.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    let projection: string | undefined;
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "useLoroSync") {
+        const options = node.arguments[0];
+        if (options && ts.isObjectLiteralExpression(options)) {
+          const callback = options.properties.find(property => ts.isPropertyAssignment(property) && property.name.getText(sourceFile) === "onNodesChange");
+          if (callback && ts.isPropertyAssignment(callback)) projection = callback.initializer.getText(sourceFile);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    expect(projection).toBeDefined();
+    expect(sourceMatches(projection!, /loroSyncRef\.current\??\.updateNode\(/)).toBe(false);
+  });
+
   it("keeps ReactFlow viewport virtualization enabled", () => {
     const source = projectEditorSource();
 
@@ -100,10 +120,7 @@ describe("ProjectEditor canvas performance", () => {
   it("dismisses node-owned overlays when a canvas toolbar menu opens", () => {
     const source = projectEditorSource();
 
-    expect(source).toContain("dismissTransientUiOnMenuOpen");
-    expect(source).toMatch(
-      /<DropdownMenu[\s\S]*?key=\{item\.id\}[\s\S]*?onOpenChange=\{\s*dismissTransientUiOnMenuOpen\s*\}/,
-    );
+    expect(sourceMatches(source, /<DropdownMenu onOpenChange=\{dismissTransientUiOnMenuOpen\}/)).toBe(true);
   });
 
   it("does not normalize every node z-index from a nodes-dependent effect", () => {

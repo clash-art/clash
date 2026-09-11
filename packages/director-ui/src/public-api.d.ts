@@ -1,4 +1,9 @@
 import type React from "react";
+
+export function compileDirectorCodeComponent(source: string): React.ComponentType<{
+  parameters: Record<string, unknown>;
+  timeSeconds: number;
+}>;
 import type { AnimationClip, Group, Matrix4, Object3D, Vector3 } from "three";
 import type {
   DirectorStageActionClip,
@@ -147,6 +152,8 @@ export interface DirectorViewportHandle {
 }
 
 export interface DirectorViewportProps {
+  codeSources?: Record<string, string>;
+  onError?: (error: Error) => void;
   state: DirectorStageState;
   selectedObjectId?: string;
   selectedCameraId?: string;

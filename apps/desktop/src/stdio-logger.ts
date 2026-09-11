@@ -1,3 +1,8 @@
+import {
+  createLogRecord,
+  type LogRecord,
+  type LogLevel,
+} from "@clash/shared-runtime/logging";
 import { format } from "node:util";
 import {
   createBoundedJsonlLogSink,
@@ -18,10 +23,11 @@ export interface DesktopLogger {
   warn(...args: unknown[]): void;
   error(...args: unknown[]): void;
   event(
-    level: "info" | "warn" | "error",
+    level: LogLevel,
     event: string,
     context?: Record<string, unknown>,
   ): void;
+  record(record: LogRecord): void;
   close(): void;
 }
 
@@ -86,8 +92,20 @@ export function createDesktopLogger(
     if (fileSinkOpen && options.fileSink) {
       try {
         options.fileSink.write(record);
-      } catch {
+      } catch (error) {
         fileSinkOpen = false;
+        writeStream(
+          "stderr",
+          JSON.stringify(
+            createLogRecord({
+              component: "desktop",
+              module: "logging",
+              level: "error",
+              event: "logs.write_failed",
+              context: { error },
+            }),
+          ),
+        );
       }
     }
   }
@@ -110,16 +128,26 @@ export function createDesktopLogger(
   }
 
   function write(
-    level: "info" | "warn" | "error",
+    level: LogLevel,
     stream: "stdout" | "stderr",
     ...args: unknown[]
   ): void {
     const message = format(...args);
-    persist({
-      timestamp: new Date(now()).toISOString(),
-      level,
-      message,
-    });
+    persist(
+      createLogRecord({
+        timestamp: new Date(now()).toISOString(),
+        component: "desktop",
+        module: "main",
+        level,
+        event: "desktop.console",
+        context: {
+          message,
+          ...(args.some((value) => value instanceof Error)
+            ? { error: args.find((value) => value instanceof Error) }
+            : {}),
+        },
+      }),
+    );
     writeStream(stream, message);
   }
 
@@ -128,15 +156,28 @@ export function createDesktopLogger(
     warn: (...args) => write("warn", "stderr", ...args),
     error: (...args) => write("error", "stderr", ...args),
     event: (level, event, context = {}) => {
-      persist({
+      const record = createLogRecord({
         timestamp: new Date(now()).toISOString(),
+        component: "desktop",
+        module: "main",
         level,
         event,
         context,
       });
+      persist(record);
       writeStream(
-        level === "info" ? "stdout" : "stderr",
-        `[desktop:${event}] ${JSON.stringify(context)}`,
+        level === "warn" || level === "error" ? "stderr" : "stdout",
+        JSON.stringify(record),
+      );
+    },
+    record: (input) => {
+      const record = createLogRecord(input);
+      persist(record);
+      writeStream(
+        record.level === "warn" || record.level === "error"
+          ? "stderr"
+          : "stdout",
+        JSON.stringify(record),
       );
     },
     close: () => {

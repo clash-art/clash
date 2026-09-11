@@ -6,7 +6,6 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   applyPermissionModeToAgentSpec,
-  composeClashPromptContent,
   SessionManager,
   type ManagerOut,
   parseAgentDiagnostic,
@@ -264,20 +263,6 @@ describe("applyPermissionModeToAgentSpec", () => {
   });
 });
 
-describe("composeClashPromptContent", () => {
-  it("sends only the user turn because harness-native startup files own the system contract", async () => {
-    const blocks = await composeClashPromptContent("你是谁？");
-
-    expect(blocks).toEqual([{ type: "text", text: "你是谁？" }]);
-  });
-
-  it("does not duplicate AGENTS.md as an embedded resource", async () => {
-    const blocks = await composeClashPromptContent("开始");
-
-    expect(blocks).toEqual([{ type: "text", text: "开始" }]);
-  });
-});
-
 describe("SessionManager harness prompt contract", () => {
   it("starts a registry agent from the supplied spec and installs its project Skill", async () => {
     const root = await mkdtemp(join(tmpdir(), "clash-dynamic-agent-spec-"));
@@ -458,7 +443,7 @@ describe("SessionManager harness prompt contract", () => {
     }
   });
 
-  it("keeps every registry harness prompt free of repeated system-contract text", async () => {
+  it("preserves the original user prompt for every registry harness", async () => {
     const root = await mkdtemp(join(tmpdir(), "clash-harness-contract-"));
     const binDir = join(root, "bin");
     const captureDir = join(root, "captures");

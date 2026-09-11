@@ -1,14 +1,22 @@
+import { projectLocalModelCopy } from "./local-model-copy-projection.js";
 /**
  * Project command host — local-api's in-process authority for Canvas, Timeline,
  * Director Stage, and projected text commands used by the CLI.
  */
 
+import { updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
 import { createHmac, randomBytes } from "node:crypto";
 import type { LoroDoc } from "loro-crdt";
 import Ajv from "ajv";
 import {
   agentReadReceiptToken,
   AGENT_NODE_TYPE_MAP,
+  Canvas,
+  commitProjectMutation,
+  createProjectGenerator,
+  readProjectGenerator,
+  readGeneratorRevision,
+  canvasModelPlacementData,
   DEFAULT_CANVAS_ID,
   LoroSyncClient,
   PROJECT_ASSET_RENDER_CANVAS_ID,
@@ -58,6 +66,7 @@ import {
   attachLocalTimelineGeneratorToCanvas,
   copyLocalTimelineGeneratorActionToCanvas,
   createLocalTimelineGenerator,
+  deleteLocalTimelineGenerator,
   detachLocalTimelineGeneratorFromCanvas,
   listLocalTimelineGenerators,
   listLocalTimelineGeneratorRuns,
@@ -390,6 +399,8 @@ function generationOutputType(nodeType: string): "image" | "video" | "audio" | "
 export type ProjectCommandHostContext = {
   actorUserId?: string;
   effectiveModelCards?: readonly ModelCard[];
+  canvasGeneratorDefinitions?: readonly GeneratorDefinition[];
+  actionCards?: readonly import("@clash/shared-types").ExecutablePluginCardRegistration[];
   trustedCustomActions?: readonly Record<string, unknown>[];
   /** Host-private pending output identity, preallocated before the Project snapshot commits. */
   generationId?: () => string;
@@ -475,6 +486,7 @@ function handleCommand(
     action === "list_timelines" ||
     action === "validate_timeline" ||
     action === "create_timeline" ||
+    action === "delete_timeline" ||
     action === "update_timeline_state" ||
     action === "attach_timeline" ||
     action === "detach_timeline" ||
@@ -685,12 +697,18 @@ function handleCommand(
     case "create_timeline": {
       const definition = context.timelineGeneratorDefinition;
       if (!definition) return generatorSurfaceNotInstalled();
-      const result = createLocalTimelineGenerator(client.doc, definition, {
-        id: cmd.timelineId,
-        name: cmd.name,
-        owner: { kind: "project" },
-        revisionId: "genesis",
-        state: cmd.state ?? { tracks: [] },
+      const result = commitProjectMutation(client.doc, (draft) => {
+        const created = createLocalTimelineGenerator(draft, definition, {
+          id: cmd.timelineId, name: cmd.name, owner: { kind: "project" },
+          revisionId: "genesis", state: cmd.state ?? { tracks: [] },
+        });
+        if (!created.ok || !cmd.placement) return created;
+        return attachLocalTimelineGeneratorToCanvas(draft, definition, {
+          timelineId: cmd.timelineId,
+          canvasId: cmd.placement.canvasId,
+          actionNodeId: cmd.placement.actionNodeId,
+          position: cmd.placement.position,
+        });
       });
       return result.ok
         ? {
@@ -699,6 +717,31 @@ function handleCommand(
             readToken: projectTimelineReceiptReadToken(result.timeline),
           }
         : generatorProductError(result.error);
+    }
+
+    case "delete_timeline": {
+      const definition = context.timelineGeneratorDefinition;
+      if (!definition) return generatorSurfaceNotInstalled();
+      const read = readLocalTimelineGenerator(client.doc, definition, cmd.timelineId);
+      if (!read.ok) return generatorProductError(read.error);
+      const current = read.timeline;
+      const guard = validateHostProjectTimelineRead({ cmd, operation: "Timeline delete", currentVersion: projectTimelineReadToken(current) });
+      if (!guard.ok) return guardError(guard);
+      const result = commitProjectMutation(client.doc, (draft) => {
+        const owner = current.owner;
+        if (owner.kind === "canvas-action") {
+          const canvas = new Canvas(draft, () => {}, owner.canvasId);
+          const guard = validateCanvasDelete({ nodeId: owner.actionNodeId, edges: canvas.listEdges() });
+          if (!guard.ok) return { ok: false as const, error: { code: "IMMUTABLE_NODE", message: guard.error } };
+          const node = canvas.readNode(owner.actionNodeId);
+          if (node?.data.timelineId === current.id) canvas.deleteNode(owner.actionNodeId);
+        }
+        return deleteLocalTimelineGenerator(draft, definition, {
+          timelineId: current.id, expectedHeadRevisionId: current.revisionId,
+          operationId: crypto.randomUUID(),
+        });
+      });
+      return result.ok ? { deleted: true, timelineId: current.id } : generatorProductError(result.error);
     }
 
     case "update_timeline_state": {
@@ -1106,11 +1149,11 @@ function handleCommand(
           const trustedDefinition = context.trustedCustomActions?.find(
             (candidate) => candidate.id === actionId,
           );
-          const definition = installedDefinition ?? trustedDefinition ?? null;
+          const definition = trustedDefinition ?? installedDefinition ?? null;
           if (!definition) {
             return { code: "UNKNOWN_CUSTOM_ACTION", error: `Custom action not installed: ${actionId}` };
           }
-          if (!installedDefinition && trustedDefinition) trustedActionToRegister = trustedDefinition;
+          if (trustedDefinition) trustedActionToRegister = trustedDefinition;
           data.actionType = `custom:${actionId}`;
           data.customActionId = actionId;
           data.customActionParams = hostModelParams(
@@ -1293,8 +1336,15 @@ function handleCommand(
         fields: Object.keys(updates),
       });
       if (!checkpointGuard.ok) return { error: checkpointGuard.error, mutation: hostMutationRejected(hostMutation.envelope, checkpointGuard.error) };
-      const ok = client.updateNode(cmd.nodeId, updates);
-      if (!ok) return { error: `Node not found: ${cmd.nodeId}` };
+      try {
+        if (!updateLocalCanvasGeneratorNode(client.doc, cmd.nodeId, node.canvas_id, updates, context.canvasGeneratorDefinitions, context.actionCards)) {
+          const ok = client.updateNode(cmd.nodeId, updates);
+          if (!ok) return { error: `Node not found: ${cmd.nodeId}` };
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) };
+      }
       const updatedNode = client.readNode(cmd.nodeId);
       const version = updatedNode ? canvasNodeReadToken(updatedNode) : undefined;
       const afterReadToken = updatedNode ? canvasNodeReceiptReadToken(updatedNode) : undefined;
@@ -1346,6 +1396,11 @@ function handleCommand(
         guard: readProof,
       });
       if (!hostMutation.ok) return { error: hostMutation.error, mutation: hostMutation.mutation };
+      if (isCanvasNodeImmutable({ nodeId: cmd.nodeId, edges: client.canvas.listEdges() })) {
+        const error = "IMMUTABLE_NODE";
+        return { code: error, error, entity: { kind: "canvas-node", id: cmd.nodeId },
+          mutation: hostMutationRejected(hostMutation.envelope, error) };
+      }
       const moved = client.canvas.moveNode(cmd.nodeId, { x, y });
       if (!moved) {
         const error = `Node not found: ${cmd.nodeId}`;
@@ -1412,15 +1467,43 @@ function handleCommand(
       }
 
       try {
-        client.canvas.createLinkedNode({
-          nodeId: newNodeId,
-          nodeType: node.type,
-          data,
-          parentId: node.parent_id ?? null,
-          sourceNodeId: cmd.nodeId,
-          edgeId: `${cmd.nodeId}-${newNodeId}`,
-          edgeType: "copy-on-write",
-        });
+        const placement = {
+          nodeId: newNodeId, nodeType: node.type, data,
+          parentId: node.parent_id ?? null, sourceNodeId: cmd.nodeId,
+          edgeId: `${cmd.nodeId}-${newNodeId}`, edgeType: "copy-on-write",
+        };
+        if (node.type === "action-badge" && typeof node.data.generatorId === "string") {
+          // Copy the immutable authored revision, never its projected fields or
+          // Generator pointer. The new draft and placement publish together.
+          commitProjectMutation(client.doc, (draft) => {
+            const source = readProjectGenerator(draft, node.data.generatorId as string);
+            const revision = source && readGeneratorRevision(draft, { generatorId: source.id, generatorRevisionId: source.headRevisionId });
+            if (!revision) throw new Error("Source Generator is unavailable. Read again.");
+            const generatorId = crypto.randomUUID();
+            const generatorRevisionId = crypto.randomUUID();
+            const created = createProjectGenerator(draft, {
+              head: { id: generatorId, headRevisionId: generatorRevisionId },
+              revision: { id: generatorRevisionId, generatorId,
+                definitionRef: revision.definitionRef, state: revision.state,
+                persistentInputRefs: revision.persistentInputRefs,
+                forkedFrom: { generatorId: revision.generatorId, generatorRevisionId: revision.id },
+              },
+            });
+            if (!created.ok) throw new Error(created.error.message);
+            if (draft.getMap("nodes").get(newNodeId) !== undefined) throw new Error(`Node already exists: ${newNodeId}`);
+            new Canvas(draft, () => {}, node.canvas_id).createLinkedNode({
+              ...placement, data: { ...canvasModelPlacementData(data), generatorId },
+            });
+            projectLocalModelCopy(draft, node.canvas_id, cmd.nodeId, newNodeId, {
+              ...revision, generatorId, id: generatorRevisionId,
+              forkedFrom: { generatorId: revision.generatorId, generatorRevisionId: revision.id },
+            });
+            return { ok: true };
+          });
+        } else {
+          if (client.doc.getMap("nodes").get(newNodeId) !== undefined) throw new Error(`Node already exists: ${newNodeId}`);
+          client.canvas.createLinkedNode(placement);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) };
@@ -1804,15 +1887,39 @@ function handleCommand(
         label: typeof cmd.label === "string" ? cmd.label : undefined,
       });
       try {
-        client.canvas.createLinkedNode({
-          nodeId: newNodeId,
-          nodeType: node.type,
-          data,
-          parentId: node.parent_id ?? null,
-          sourceNodeId: cmd.nodeId,
-          edgeId: `${cmd.nodeId}-${newNodeId}`,
-          edgeType: "copy-on-write",
-        });
+        const placement = {
+          nodeId: newNodeId, nodeType: node.type, data,
+          parentId: node.parent_id ?? null, sourceNodeId: cmd.nodeId,
+          edgeId: `${cmd.nodeId}-${newNodeId}`, edgeType: "copy-on-write",
+        };
+        if (node.type === "action-badge" && typeof node.data.generatorId === "string") {
+          // Copy the immutable authored revision, never its projected fields or
+          // Generator pointer. The new draft and placement publish together.
+          commitProjectMutation(client.doc, (draft) => {
+            const source = readProjectGenerator(draft, node.data.generatorId as string);
+            const revision = source && readGeneratorRevision(draft, { generatorId: source.id, generatorRevisionId: source.headRevisionId });
+            if (!revision) throw new Error("Source Generator is unavailable. Read again.");
+            const generatorId = crypto.randomUUID();
+            const generatorRevisionId = crypto.randomUUID();
+            const created = createProjectGenerator(draft, {
+              head: { id: generatorId, headRevisionId: generatorRevisionId },
+              revision: { id: generatorRevisionId, generatorId,
+                definitionRef: revision.definitionRef, state: revision.state,
+                persistentInputRefs: revision.persistentInputRefs,
+                forkedFrom: { generatorId: revision.generatorId, generatorRevisionId: revision.id },
+              },
+            });
+            if (!created.ok) throw new Error(created.error.message);
+            if (draft.getMap("nodes").get(newNodeId) !== undefined) throw new Error(`Node already exists: ${newNodeId}`);
+            new Canvas(draft, () => {}, node.canvas_id).createLinkedNode({
+              ...placement, data: { ...canvasModelPlacementData(data), generatorId },
+            });
+            return { ok: true };
+          });
+        } else {
+          if (client.doc.getMap("nodes").get(newNodeId) !== undefined) throw new Error(`Node already exists: ${newNodeId}`);
+          client.canvas.createLinkedNode(placement);
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) };
@@ -1876,7 +1983,13 @@ function handleCommand(
       let globalCustomAction:
         | ReturnType<typeof CustomActionDefinitionSchema.parse>
         | undefined;
-      if (customActionId && !client.canvas.getCustomAction(customActionId)) {
+      if (customActionId && typeof nodeData.generatorId === "string") {
+        const trusted = CustomActionDefinitionSchema.safeParse(context.trustedCustomActions?.find(candidate => candidate.id === customActionId));
+        if (!trusted.success || !trusted.data.generator) return { code: "UNKNOWN_CUSTOM_ACTION", error: `Native Action Card is unavailable: ${customActionId}` };
+        // Canvas validates this explicit Host contract against the pinned Revision.
+        // Its replica customActions map is not executable authority.
+        globalCustomAction = trusted.data;
+      } else if (customActionId && !client.canvas.getCustomAction(customActionId)) {
         const trusted = CustomActionDefinitionSchema.safeParse(
           context.trustedCustomActions?.find(
             (candidate) => candidate.id === customActionId,

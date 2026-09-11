@@ -57,7 +57,6 @@ const PromptNode = ({
     );
 
     // Sync to Loro
-    console.log(`[PromptNode] Syncing update to Loro: ${id}`);
     updateNode(id, {
       data: {
         label,

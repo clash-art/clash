@@ -1,12 +1,16 @@
+import { readFile } from "node:fs/promises";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import {
   canvasBatchDeleteReadToken,
   commitActionRunOutcome,
   createProjectAsset,
+  createProjectGenerator,
+  advanceProjectGeneratorHead,
   ensureActionRunRequest,
   ensureOutputCommit,
   GeneratorDefinitionSchema,
+  generatorDefinitionFromExecutablePluginRegistration,
   readProjectGenerator,
   readGeneratorRevision,
   type GeneratorDefinition,
@@ -22,6 +26,43 @@ import {
 } from "@clash/shared-types";
 import { handleCommandForTest } from "./project-command-host.js";
 import { textHash, textReadToken } from "./project-text-projection.js";
+
+test("canvas copy forks native Model state and rolls back a colliding placement", () => {
+  const client = new LoroSyncClient({ serverUrl: "http://localhost:0", projectId: "project-1", token: "test" });
+  const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+  const sourceRevision = { id: "source-revision", generatorId: "source-generator", definitionRef,
+    state: { modelId: "minimax-h3", prompt: "Keep authored text", params: { resolution: "768P" } },
+    persistentInputRefs: [{ slot: "image", itemKey: "subject", target: { kind: "media" as const, projectAssetId: "source-asset" } }] };
+  assert.equal(createProjectGenerator(client.doc, { head: { id: "source-generator", headRevisionId: sourceRevision.id }, revision: sourceRevision }).ok, true);
+  client.canvas.createNode("source-node", "action-badge", { generatorId: "source-generator", label: "Source" });
+  createProjectAsset(client.doc, { id: "source-asset", kind: "image", source: { kind: "owned", resourceId: "source-resource" }, lifecycle: { state: "active" }, metadata: {} });
+  client.canvas.createNode("reference-node", "image", { assetId: "source-asset" });
+  client.canvas.insertEdge("reference-source", "reference-node", "source-node");
+  client.createNode("output", "video", { assetId: "output-asset" });
+  client.canvas.insertEdge("source-output", "source-node", "output");
+  const copyCommand = () => handleCommandForTest(client, { action: "copy_node", nodeId: "source-node", newNodeId: "copy-node", actorClientType: "agent", observedVersion: canvasNodeReadToken(client.readNode("source-node")!) }) as { error?: string; node?: { data: Record<string, unknown> } };
+  const copy = copyCommand();
+  assert.equal(copy.error, undefined);
+  const generatorId = copy.node?.data.generatorId as string;
+  assert.notEqual(generatorId, sourceRevision.generatorId);
+  const head = readProjectGenerator(client.doc, generatorId)!;
+  const revision = readGeneratorRevision(client.doc, { generatorId, generatorRevisionId: head.headRevisionId })!;
+  assert.deepEqual(revision.forkedFrom, { generatorId: sourceRevision.generatorId, generatorRevisionId: sourceRevision.id });
+  assert.deepEqual(revision.state, sourceRevision.state);
+  assert.deepEqual(revision.persistentInputRefs, sourceRevision.persistentInputRefs);
+  assert.ok(client.canvas.listEdges().some(edge => edge.source === "reference-node" && edge.target === "copy-node"));
+  const raw = client.doc.getMap("nodes").get("copy-node") as { data: Record<string, unknown> };
+  assert.equal(raw.data.content, undefined);
+  assert.equal(raw.data.modelParams, undefined);
+  assert.equal(advanceProjectGeneratorHead(client.doc, { generatorId, expectedHeadRevisionId: revision.id, editPolicy: "advance-head",
+    revision: { ...revision, id: "copy-edit", parentRevisionId: revision.id, state: { ...revision.state, prompt: "Edited copy" } } }).ok, true);
+  assert.equal(client.readNode("source-node")?.data.content, sourceRevision.state.prompt);
+  assert.equal(client.readNode("copy-node")?.data.content, "Edited copy");
+  assert.ok(client.canvas.listEdges().some((edge) => edge.source === "source-node" && edge.target === "output"));
+  const beforeCollision = client.doc.toJSON();
+  assert.ok(copyCommand().error);
+  assert.deepEqual(client.doc.toJSON(), beforeCollision);
+});
 
 function timelineGeneratorDefinition(): GeneratorDefinition {
   return GeneratorDefinitionSchema.parse({
@@ -65,6 +106,35 @@ function directorStageGeneratorDefinition(): GeneratorDefinition {
     projectionSurface: { id: "clash.director-stage", stateKey: "stage", mediaInputSlot: "stage:media", primaryActionId: "capture-frame" },
   });
 }
+
+test("Host creates a native Timeline and its Canvas placement atomically", () => {
+  const client = new LoroSyncClient({ serverUrl: "http://localhost:0", projectId: "atomic-timeline", token: "test" });
+  const context = { timelineGeneratorDefinition: timelineGeneratorDefinition() };
+  client.createCanvas({ id: "shots", name: "Shots" });
+  const input = { action: "create_timeline", timelineId: "cut", name: "Cut", state: { tracks: [] },
+    placement: { canvasId: "missing", actionNodeId: "cut-node" } };
+  const rejected = handleCommandForTest(client, input, context) as { error?: string };
+  assert.ok(rejected.error);
+  assert.equal(readProjectGenerator(client.doc, "cut"), null);
+  const created = handleCommandForTest(client, { ...input, placement: { canvasId: "shots", actionNodeId: "cut-node" } }, context) as {
+    timeline: { id: string; owner: unknown }; readToken: string;
+  };
+  assert.deepEqual(created.timeline.owner, { kind: "canvas-action", canvasId: "shots", actionNodeId: "cut-node" });
+  assert.ok(client.doc.getMap("nodes").get("cut-node"));
+  assert.equal(client.doc.getMap("timelines").size, 0);
+  const advanced = handleCommandForTest(client, { action: "update_timeline_state", timelineId: "cut",
+    state: { tracks: [], durationInFrames: 72 }, actorClientType: "browser", ifMatch: created.readToken }, context) as { readToken: string };
+  const staleDelete = handleCommandForTest(client, { action: "delete_timeline", timelineId: "cut",
+    actorClientType: "browser", ifMatch: created.readToken }, context) as { error?: string };
+  assert.ok(staleDelete.error);
+  assert.ok(readProjectGenerator(client.doc, "cut"));
+  assert.ok(client.doc.getMap("nodes").get("cut-node"));
+  const deleted = handleCommandForTest(client, { action: "delete_timeline", timelineId: "cut",
+    actorClientType: "browser", ifMatch: advanced.readToken }, context) as { deleted?: boolean };
+  assert.equal(deleted.deleted, true);
+  assert.equal(readProjectGenerator(client.doc, "cut"), null);
+  assert.equal(client.doc.getMap("nodes").get("cut-node"), undefined);
+});
 
 test("Timeline commands project native Generator facts and fail closed without the Definition", () => {
   const client = new LoroSyncClient({
@@ -425,6 +495,20 @@ test("local-api host moves a node in the requested Canvas without patching node 
     label: "Opening beat",
     content: "Rain",
   });
+});
+
+test("local-api host rejects moving a downstream-referenced node without changing the replica", () => {
+  const client = new LoroSyncClient({ serverUrl: "http://localhost:0", projectId: "immutable-move" });
+  try {
+    client.createNode("source", "text", { content: "Source" });
+    client.createNode("target", "text", { content: "Dependent" });
+    client.canvas.insertEdge("reference", "source", "target");
+    const before = client.doc.toJSON();
+    const result = handleCommandForTest(client, { action: "move", canvasId: "main", nodeId: "source", position: { x: 420, y: 180 } }) as { code?: string; mutation?: { accepted: boolean } };
+    assert.equal(result.code, "IMMUTABLE_NODE");
+    assert.equal(result.mutation?.accepted, false);
+    assert.deepEqual(client.doc.toJSON(), before);
+  } finally { client.doc.free(); }
 });
 
 test("local-api host protects agent moves with host-issued read receipts and returns a fresh receipt", () => {
@@ -1991,4 +2075,37 @@ test("local-api host add rejects model_gen for an unknown modelId", () => {
 
   assert.equal(result.code, "MODEL_NOT_AVAILABLE");
   assert.match(result.error ?? "", /not-a-real-model/);
+});
+
+
+test("native Canvas updates advance the Generator and atomically retain placement metadata", async () => {
+  const definition = generatorDefinitionFromExecutablePluginRegistration({ pluginId: "clash.model-generation", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}`,
+    document: JSON.parse(await readFile(new URL("../../../plugins/model-generation/generators/video.json", import.meta.url), "utf8")) });
+  const { pluginId, definitionId, version, schemaHash } = definition;
+  const client = new LoroSyncClient({ serverUrl: "http://localhost:0", projectId: "project-1", token: "test" });
+  const revision = { id: "initial", generatorId: "draft", definitionRef: { pluginId, definitionId, version, schemaHash }, state: { modelId: "minimax-h3", prompt: "Before", params: {} }, persistentInputRefs: [] };
+  assert.equal(createProjectGenerator(client.doc, { head: { id: "draft", headRevisionId: revision.id }, revision }).ok, true);
+  client.canvas.createNode("placement", "action-badge", { generatorId: "draft", label: "Before" });
+  assert.equal(createProjectGenerator(client.doc, { head: { id: "origin", headRevisionId: "origin-revision" }, revision: { ...revision, id: "origin-revision", generatorId: "origin" } }).ok, true);
+  client.canvas.createNode("origin-node", "action-badge", { generatorId: "origin" });
+  client.canvas.insertEdge("copy-lineage", "origin-node", "placement", "copy-on-write");
+  const observedVersion = canvasNodeReadToken(client.readNode("placement")!);
+  const command = { action: "update", nodeId: "placement", content: "After", label: "Edited label", actorClientType: "agent", observedVersion };
+  const result = handleCommandForTest(client, command, { canvasGeneratorDefinitions: [definition] }) as { error?: string; updated?: boolean };
+  assert.equal(result.error, undefined);
+  assert.equal(result.updated, true);
+  assert.ok(client.canvas.listEdges().some((edge) => edge.id === "copy-lineage"));
+  const head = readProjectGenerator(client.doc, "draft")!;
+  assert.notEqual(head.headRevisionId, revision.id);
+  assert.equal(readGeneratorRevision(client.doc, { generatorId: "draft", generatorRevisionId: head.headRevisionId })?.state.prompt, "After");
+  const raw = client.doc.getMap("nodes").get("placement") as { data: Record<string, unknown> };
+  assert.equal(raw.data.label, "Edited label");
+  assert.equal(raw.data.content, undefined);
+  assert.equal(readGeneratorRevision(client.doc, { generatorId: "draft", generatorRevisionId: revision.id })?.state.prompt, "Before");
+  const before = client.doc.toJSON();
+  assert.ok((handleCommandForTest(client, command, { canvasGeneratorDefinitions: [definition] }) as { error?: string }).error);
+  assert.deepEqual(client.doc.toJSON(), before);
+  const invalid = handleCommandForTest(client, { ...command, observedVersion: canvasNodeReadToken(client.readNode("placement")!), label: "Must roll back", data: { modelParams: [] } }, { canvasGeneratorDefinitions: [definition] }) as { error?: string };
+  assert.ok(invalid.error);
+  assert.deepEqual(client.doc.toJSON(), before);
 });

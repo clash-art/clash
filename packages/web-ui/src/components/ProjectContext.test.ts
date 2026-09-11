@@ -3,7 +3,7 @@ import { MODEL_CARDS, type ModelCard, type ModelCatalogEntry, type ProviderAccou
 import { enabledModelCatalogEntries } from './ProjectContext';
 
 describe('enabledModelCatalogEntries', () => {
-    it('uses canvas model enablement rather than catalog readiness tiers', () => {
+    it('requires both canvas enablement and an executable catalog route', () => {
         const template = MODEL_CARDS.find((model) => model.kind === 'video')!;
         const model = (id: string): ModelCard => ({
             ...template,
@@ -33,6 +33,12 @@ describe('enabledModelCatalogEntries', () => {
             entry(model('disabled-canvas-model'), 'available', { providerId: 'configured' }),
         ], providers);
 
-        expect(enabled.map((candidate) => candidate.model.id)).toEqual(['enabled-canvas-model']);
+        expect(enabled).toEqual([]);
+        expect(enabledModelCatalogEntries([entry(model('enabled-canvas-model'), 'available', { providerId: 'fal' })], providers).map(e => e.model.id)).toEqual(['enabled-canvas-model']);
+        expect(enabledModelCatalogEntries([entry(model('enabled-canvas-model'), 'all', null)], [])).toEqual([]);
+        expect(enabledModelCatalogEntries([{
+            ...entry(model('enabled-canvas-model'), 'available', { providerId: 'fal' }),
+            runtimeReadiness: { capability: 'text-to-speech', model: 'local-test', readiness: 'not-installed', executable: false },
+        }], providers)).toEqual([]);
     });
 });

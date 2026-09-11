@@ -5,6 +5,7 @@
   "invariants": [
     "Timeline media enters as frozen clash-asset handles and is resolved only through ExecutorContext.reference.",
     "Only executor-url delivery is accepted; Host paths and Asset bytes never enter the Timeline invocation.",
-    "Rendered MP4 output is returned through the Action SDK media upload path."
+    "Rendered MP4 output is returned through the Action SDK media upload path at the Generator's declared render:output slot; it is not an extra invocation parameter.",
+    "The executor imports the pure shared-types/timeline-envelope contract, never the shared-types root or collaboration/YAML runtime. Its built ESM payload must load in plain Node without require shims."
   ]
 }

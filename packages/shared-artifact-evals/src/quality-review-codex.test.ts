@@ -205,6 +205,8 @@ describe("Codex content-effect judge", () => {
     expect(invocation.args).toContain("gpt-5.6-sol");
     expect(invocation.args).toContain("--ignore-user-config");
     expect(invocation.args).toContain("--ignore-rules");
+    expect(invocation.args).toContain("skills.include_instructions=false");
+    expect(invocation.args).toContain("features.plugins=false");
     expect(invocation.args).toContain("--image");
     expect(invocation.args).not.toContain(
       "--dangerously-bypass-approvals-and-sandbox",
@@ -243,47 +245,94 @@ describe("Codex content-effect judge", () => {
     expect(prompt).not.toMatch(/\/private\//u);
   });
 
-  it("accepts a schema-valid tool-free Codex response and records provenance", () => {
-    const boundRequest = request();
-    const rawResponse = JSON.stringify({
-      schemaVersion: 1,
-      criteria: [
-        {
-          id: "title-legibility",
-          score: 95,
-          rationale: "The title has strong contrast and clear hierarchy.",
-        },
-      ],
-      overallRationale: "The supplied image clearly meets the criterion.",
-    });
-    const result = parseCodexQualityJudgeResponse({
-      request: boundRequest,
-      reviewer,
-      adapterVersion: "codex-cli 0.147.0",
-      prompt: renderQualityJudgePrompt(boundRequest),
-      rawResponse,
-      rawEvents: [
-        JSON.stringify({ type: "thread.started", thread_id: "private" }),
-        JSON.stringify({
-          type: "item.completed",
-          item: { type: "reasoning", text: "private reasoning" },
-        }),
-        JSON.stringify({
-          type: "item.completed",
-          item: { type: "agent_message", text: rawResponse },
-        }),
-        JSON.stringify({ type: "turn.completed", usage: {} }),
-      ].join("\n"),
-    });
+  it.each([false, true])(
+    "accepts a completed tool-free response with diagnostic=%s",
+    (withDiagnostic) => {
+      const boundRequest = request();
+      const rawResponse = JSON.stringify({
+        schemaVersion: 1,
+        criteria: [
+          {
+            id: "title-legibility",
+            score: 95,
+            rationale: "The title has strong contrast and clear hierarchy.",
+          },
+        ],
+        overallRationale: "The supplied image clearly meets the criterion.",
+      });
+      const result = parseCodexQualityJudgeResponse({
+        request: boundRequest,
+        reviewer,
+        adapterVersion: "codex-cli 0.147.0",
+        prompt: renderQualityJudgePrompt(boundRequest),
+        rawResponse,
+        rawEvents: [
+          JSON.stringify({ type: "thread.started", thread_id: "private" }),
+          ...(withDiagnostic
+            ? [
+                JSON.stringify({
+                  // Captured from codex-cli 0.154.0, product-ad-pack E2E on 2026-09-10.
+                  type: "item.completed",
+                  item: {
+                    id: "item_0",
+                    type: "error",
+                    message:
+                      "Skill descriptions were shortened to fit the skills context budget. Codex can still see every skill, but some descriptions are shorter. Disable unused skills or plugins to leave more room for the rest.",
+                  },
+                }),
+              ]
+            : []),
+          JSON.stringify({
+            type: "item.completed",
+            item: { type: "reasoning", text: "private reasoning" },
+          }),
+          JSON.stringify({
+            type: "item.completed",
+            item: { type: "agent_message", text: rawResponse },
+          }),
+          JSON.stringify({ type: "turn.completed", usage: {} }),
+        ].join("\n"),
+      });
 
-    expect(result.aggregate.status).toBe("pass");
-    expect(result.reviewer).toEqual({
-      kind: "codex",
-      provider: "openai",
-      model: "gpt-5.6-sol",
-      adapterVersion: "codex-cli 0.147.0",
-    });
-  });
+      expect(result.aggregate.status).toBe("pass");
+      expect(result.reviewer).toEqual({
+        kind: "codex",
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        adapterVersion: "codex-cli 0.147.0",
+      });
+    },
+  );
+
+  it.each(["turn.failed", "error"])(
+    "rejects a failed reviewer lifecycle (%s)",
+    (type) => {
+      const boundRequest = request();
+      expect(() =>
+        parseCodexQualityJudgeResponse({
+          request: boundRequest,
+          reviewer,
+          adapterVersion: "codex-cli 0.154.0",
+          prompt: renderQualityJudgePrompt(boundRequest),
+          rawResponse: JSON.stringify({
+            schemaVersion: 1,
+            criteria: [
+              {
+                id: "title-legibility",
+                score: 95,
+                rationale: "Stale response.",
+              },
+            ],
+            overallRationale: "Stale response.",
+          }),
+          rawEvents: JSON.stringify({
+            type,
+            error: { message: "Reviewer turn failed" },
+          }),
+        }),
+      ).toThrow(/reviewer.*failed/i);
+    },
+  );
 
   it("rejects a judge that executes any command or Clash tool", () => {
     const boundRequest = request();

@@ -82,7 +82,7 @@ describe('buildProjectMentionSources', () => {
 });
 
 describe('buildCopilotPrompt', () => {
-  it('keeps workspace state out of the user prompt so the agent reads it through Clash MCP', () => {
+  it('includes the active product surface while preserving the user request', () => {
     const context: CopilotWorkspaceContext = {
       projectId: 'project-7',
       projectName: 'Launch Film',
@@ -115,8 +115,11 @@ describe('buildCopilotPrompt', () => {
       ],
     );
 
-    expect(result).toBe('Use @[Render variants](node:action-1) with @[Logo master](node:asset-1)');
-    expect(result).not.toContain('clash-workspace-context');
+    expect(result.endsWith('Use @[Render variants](node:action-1) with @[Logo master](node:asset-1)')).toBe(true);
+    const payload = JSON.parse(result.split('<!-- clash-workspace-context ')[1].split(' -->')[0]);
+    expect(payload.projectId).toBe(context.projectId);
+    expect(payload.projectName).toBe(context.projectName);
+    expect(payload.activeSurface).toEqual(context.activeSurface);
   });
 
   it('includes the live browser summary because ephemeral browser state is not available through Clash MCP', () => {

@@ -23,7 +23,9 @@ const invocation: ExecutablePluginInvocation = {
   operation: "submit",
   input: {
     values: {
-      outputSlot: "render:output",
+      // Captured native Generator invocations do not carry an outputSlot value.
+      // The output is defined by generators/timeline.json, not user parameters.
+      __generatorActionId: "render",
       timeline: {
         name: "Rough cut",
         owner: { kind: "project" },
@@ -137,7 +139,7 @@ function context(options: {
 }
 
 describe("Remotion bundled Action", () => {
-  it("renders a cloned frozen Timeline with executor URLs and uploads the MP4 to the requested slot", async () => {
+  it("renders a native Generator invocation and uploads the MP4 to its declared output slot", async () => {
     const module = await loadRemotionModule();
     expect(module?.createRemotionPlugin).toBeTypeOf("function");
     if (!module?.createRemotionPlugin) return;

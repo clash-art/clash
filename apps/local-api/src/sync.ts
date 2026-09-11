@@ -1,3 +1,6 @@
+import { hasLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
+import { assertLocalPeerModelProjectionMutation } from "./local-model-peer-guard.js";
+import { LocalProjectUpgradeError, type LocalProjectUpgrade } from "./local-project-upgrade.js";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -13,6 +16,7 @@ import {
   ACTION_ASSET_BINDINGS_CONTAINER,
   ACTION_ASSET_BINDING_SCHEMA_CONTAINER,
   ActionAssetBindingSchema,
+  Canvas,
   DEFAULT_CANVAS_ID,
   DOCUMENT_ASSET_REVISIONS_CONTAINER,
   DOCUMENT_ASSET_SCHEMA_CONTAINER,
@@ -47,7 +51,7 @@ import {
   type ClientType,
   type PresenceClient,
 } from "@clash/shared-types";
-import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { createFileReplicaPorts } from "./loro/replica-ports.js";
 import { LoroCloudReplicaLink } from "./loro/cloud-replica-link.js";
@@ -67,6 +71,7 @@ export interface LocalSyncOptions {
   remotePersistence?: RemoteLoroPersistenceSource;
   workflowProcessor?: LocalWorkflowProcessor | null;
   canvasPreviewCacheEnabled?: boolean;
+  upgradeProject?: LocalProjectUpgrade;
 }
 
 export interface RemoteLoroPersistence {
@@ -447,6 +452,20 @@ export function createRemoteLoroPersistenceFromEnv(
   });
 }
 
+/** Canvas owns geometry; the Host completes pending placement before publication. */
+function completePendingCanvasLayout(doc: LoroDoc): boolean {
+  const canvasIds = new Set<string>();
+  for (const [, raw] of doc.getMap("nodes").entries()) {
+    const node = raw as Record<string, unknown>;
+    canvasIds.add(typeof node.canvasId === "string" ? node.canvasId : DEFAULT_CANVAS_ID);
+  }
+  let changed = false;
+  for (const canvasId of canvasIds) {
+    if (new Canvas(doc, () => {}, canvasId).layoutPendingNodes().length > 0) changed = true;
+  }
+  return changed;
+}
+
 async function loadDoc(options: LocalSyncOptions): Promise<{
   doc: LoroDoc;
   replica: ReplicaEngine<LoroDoc, Uint8Array, Uint8Array>;
@@ -494,7 +513,19 @@ async function loadDoc(options: LocalSyncOptions): Promise<{
   const directorRepair = reconcileProjectDirectorStageOwnership(doc);
   const projectCoverRepair = reconcileProjectCoverBindings(doc);
   const assetBindingRepair = reconcileActionAssetBindingTargets(doc);
+  let projectUpgraded: boolean;
+  try {
+    projectUpgraded = await options.upgradeProject?.({ projectId: options.projectId, doc }) ?? false;
+    projectUpgraded = completePendingCanvasLayout(doc) || projectUpgraded;
+  } catch (error) {
+    // The unpublished clone may contain partial migration work. Its checkpoint
+    // remains untouched and the next open starts from that checkpoint again.
+    durableVersion.free();
+    doc.free();
+    throw error;
+  }
   const workspaceRepaired =
+    projectUpgraded ||
     canvasGraphReconciliationChanged(graphRepair) ||
     timelineRepair.removedActionNodeIds.length > 0 ||
     timelineRepair.detachedTimelineIds.length > 0 ||
@@ -548,6 +579,7 @@ export class LocalLoroRoom {
     private readonly remotePersistence?: RemoteLoroPersistenceSource,
     private readonly workflowProcessor?: LocalWorkflowProcessor,
     private readonly canvasPreviewCacheEnabled = false,
+    private readonly upgradeProject?: LocalProjectUpgrade,
   ) {
     this.checkpointedDoc = this.replica.read((state) => state);
   }
@@ -565,6 +597,7 @@ export class LocalLoroRoom {
       options.remotePersistence,
       options.workflowProcessor ?? undefined,
       options.canvasPreviewCacheEnabled ?? false,
+      options.upgradeProject,
     );
     if (loaded.importedRemoteSnapshot || loaded.workspaceRepaired)
       await room.saveSnapshot();
@@ -595,9 +628,11 @@ export class LocalLoroRoom {
   }
 
   inspectProject<T>(read: (doc: LoroDoc) => T | Promise<T>): Promise<T> {
-    return this.enqueueProjectOperation(() =>
-      read(LoroDoc.fromSnapshot(this.doc.export({ mode: "snapshot" }))),
-    );
+    return this.enqueueProjectOperation(async () => {
+      const snapshot = LoroDoc.fromSnapshot(this.doc.export({ mode: "snapshot" }));
+      try { return await read(snapshot); }
+      finally { snapshot.free(); }
+    });
   }
 
   /**
@@ -606,13 +641,14 @@ export class LocalLoroRoom {
    * A Provider invocation runs while its workflow owns that queue, so an ordinary inspect would
    * wait behind the invocation that is waiting for the inspect. The callback receives a clone so
    * it can neither observe later uncheckpointed work nor mutate the room's committed read view.
+   * Both inspection callbacks borrow their clone until settlement; return plain values or bytes.
    */
   async inspectCheckpointedProject<T>(
     read: (doc: LoroDoc) => T | Promise<T>,
   ): Promise<T> {
-    return await read(
-      LoroDoc.fromSnapshot(this.checkpointedDoc.export({ mode: "snapshot" })),
-    );
+    const snapshot = LoroDoc.fromSnapshot(this.checkpointedDoc.export({ mode: "snapshot" }));
+    try { return await read(snapshot); }
+    finally { snapshot.free(); }
   }
 
   mutateProject<T>(
@@ -804,39 +840,57 @@ export class LocalLoroRoom {
     for (const [id, raw] of nodesMap.entries()) {
       nodesBefore.set(id, raw as Record<string, any>);
     }
+    let admittedUpdate = updateBytes;
+    let upgraded = false;
     const candidate = this.doc.fork();
-    candidate.import(updateBytes);
-    assertLocalPeerHostOwnedAuthorityMutation(
-      this.doc,
-      candidate,
-      "Generator",
-      HOST_OWNED_GENERATOR_AUTHORITY_CONTAINERS,
-    );
-    assertLocalPeerHostOwnedAuthorityMutation(
-      this.doc,
-      candidate,
-      "Document Asset",
-      HOST_OWNED_DOCUMENT_ASSET_AUTHORITY_CONTAINERS,
-    );
-    if (
-      !isDeepStrictEqual(
-        candidate.getMap(PROJECT_ASSETS_CONTAINER).toJSON(),
-        this.doc.getMap(PROJECT_ASSETS_CONTAINER).toJSON(),
-      ) ||
-      !isDeepStrictEqual(
-        candidate.getMap(PROJECT_ASSET_SCHEMA_CONTAINER).toJSON(),
-        this.doc.getMap(PROJECT_ASSET_SCHEMA_CONTAINER).toJSON(),
-      )
-    ) {
-      throw new Error(
-        "Local peer updates cannot mutate Host-owned Project Asset authority; use the Asset SDK/Host publication boundary.",
+    try {
+      candidate.import(updateBytes);
+      assertLocalPeerHostOwnedAuthorityMutation(
+        this.doc,
+        candidate,
+        "Generator",
+        HOST_OWNED_GENERATOR_AUTHORITY_CONTAINERS,
       );
+      assertLocalPeerHostOwnedAuthorityMutation(
+        this.doc,
+        candidate,
+        "Document Asset",
+        HOST_OWNED_DOCUMENT_ASSET_AUTHORITY_CONTAINERS,
+      );
+      if (
+        !isDeepStrictEqual(
+          candidate.getMap(PROJECT_ASSETS_CONTAINER).toJSON(),
+          this.doc.getMap(PROJECT_ASSETS_CONTAINER).toJSON(),
+        ) ||
+        !isDeepStrictEqual(
+          candidate.getMap(PROJECT_ASSET_SCHEMA_CONTAINER).toJSON(),
+          this.doc.getMap(PROJECT_ASSET_SCHEMA_CONTAINER).toJSON(),
+        )
+      ) {
+        throw new Error(
+          "Local peer updates cannot mutate Host-owned Project Asset authority; use the Asset SDK/Host publication boundary.",
+        );
+      }
+      assertLocalPeerActionAssetBindingMutation(this.doc, candidate);
+      assertLocalPeerModelProjectionMutation(this.doc, candidate);
+      if (this.upgradeProject && hasLegacyCanvasGeneratorDrafts(candidate)) {
+        upgraded = await this.upgradeProject({ projectId: this.projectId, doc: candidate });
+      }
+      upgraded = completePendingCanvasLayout(candidate) || upgraded;
+      if (upgraded) {
+        candidate.commit();
+        const from = this.doc.version();
+        try { admittedUpdate = exactBytes(candidate.export({ mode: "update", from })); }
+        finally { from.free(); }
+      }
+    } finally {
+      candidate.free();
     }
-    assertLocalPeerActionAssetBindingMutation(this.doc, candidate);
     // Persist before mutating the live replica. The candidate import above
-    // guarantees the durable record can be replayed successfully.
-    await this.persistUpdate(updateBytes);
-    this.doc.import(updateBytes);
+    // guarantees the durable record can be replayed successfully. A legacy
+    // graph and its Host upgrade enter the journal as one admitted update.
+    await this.persistUpdate(admittedUpdate);
+    this.doc.import(admittedUpdate);
     const repairVersion = this.doc.version();
     const graphRepair = reconcileCanvasGraph(this.doc);
     const timelineRepair = reconcileProjectTimelineOwnership(this.doc);
@@ -854,6 +908,7 @@ export class LocalLoroRoom {
     const repairUpdate = workspaceRepaired
       ? exactBytes(this.doc.export({ mode: "update", from: repairVersion }))
       : null;
+    repairVersion.free();
     if (this.peers.get(sender)?.syncProtocol !== "loro-v1") {
       this.peers.get(sender)?.sendJson?.({
         type: "sync_ack",
@@ -861,9 +916,9 @@ export class LocalLoroRoom {
       });
     }
     for (const [peerId, peer] of this.peers.entries()) {
-      if (peerId !== sender) peer.sendUpdate(updateBytes);
+      if (peerId !== sender || upgraded) peer.sendUpdate(admittedUpdate);
     }
-    this.mirrorRemoteUpdate(updateBytes);
+    this.mirrorRemoteUpdate(admittedUpdate);
     if (repairUpdate?.byteLength) {
       await this.persistUpdate(repairUpdate);
       for (const peer of this.peers.values()) peer.sendUpdate(repairUpdate);
@@ -1210,6 +1265,7 @@ export class LocalLoroRoomHub {
     private readonly dataDir: string,
     private readonly remotePersistence?: RemoteLoroPersistenceSource,
     private readonly workflowProcessor?: LocalWorkflowProcessor | null,
+    private readonly upgradeProject?: LocalProjectUpgrade,
   ) {
     this.replicaStore = new FileReplicaStore(join(dataDir, "projects"));
   }
@@ -1242,6 +1298,7 @@ export class LocalLoroRoomHub {
             remotePersistence: this.remotePersistence,
             workflowProcessor: this.workflowProcessor,
             canvasPreviewCacheEnabled: true,
+            upgradeProject: this.upgradeProject,
           },
           (opened) => {
             this.checkpointReadableRooms.set(projectId, opened);
@@ -1281,7 +1338,8 @@ export class LocalLoroRoomHub {
       return Promise.reject(new LocalProjectRoomBusyError(projectId));
     }
     const snapshotDoc = new LoroDoc();
-    snapshotDoc.import(snapshot);
+    try { snapshotDoc.import(snapshot); }
+    finally { snapshotDoc.free(); }
     const reservation = {
       schemaVersion: 1 as const,
       kind: "clash.workspace.import-reservation" as const,
@@ -1423,6 +1481,7 @@ export function attachLocalSync(
     remotePersistence?: RemoteLoroPersistenceSource;
     workflowProcessor?: LocalWorkflowProcessor | null;
     hub?: LocalLoroRoomHub;
+    upgradeProject?: LocalProjectUpgrade;
   },
 ): LocalLoroRoomHub {
   const hub =
@@ -1431,6 +1490,7 @@ export function attachLocalSync(
       options.dataDir,
       options.remotePersistence,
       options.workflowProcessor,
+      options.upgradeProject,
     );
   const wss = new WebSocketServer({ noServer: true });
 
@@ -1457,7 +1517,13 @@ export function attachLocalSync(
         typeof runtimeId === "string" ? runtimeId : undefined,
         presence,
         syncProtocol,
-      );
+      ).catch((error) => {
+        console.error("[local-sync] failed to open Project socket", error);
+        if (error instanceof LocalProjectUpgradeError && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(error.detail));
+        }
+        ws.close(1011, "Unable to open Project");
+      });
     });
   });
   return hub;

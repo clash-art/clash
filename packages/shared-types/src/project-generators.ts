@@ -412,13 +412,16 @@ export function ensureActionRunRequest(
       },
     };
   }
-  if (
+  const selectedModelExecutor = request.data.modelSelection?.route.executorBinding;
+  const usesSelectedModelExecutor = selectedModelExecutor !== undefined &&
+    sameImmutableFact(request.data.executor, selectedModelExecutor);
+  if (!usesSelectedModelExecutor && (
     request.data.executor.pluginId !==
       generatorRevision.definitionRef.pluginId ||
     request.data.executor.version !== generatorRevision.definitionRef.version ||
     request.data.executor.schemaHash !==
       generatorRevision.definitionRef.schemaHash
-  ) {
+  )) {
     return {
       ok: false,
       error: {

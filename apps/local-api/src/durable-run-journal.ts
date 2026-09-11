@@ -1,3 +1,4 @@
+import { GeneratorDefinitionSchema, type GeneratorDefinition, type GeneratorDefinitionRef } from "@clash/shared-types";
 import { createRequire } from "node:module";
 import { chmod, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -27,6 +28,9 @@ interface SqliteDatabase {
 }
 
 export interface SqliteDurableRunJournal extends DurableRunJournal {
+  /** Validated Host contracts retained for crash recovery across plugin changes. */
+  rememberGeneratorDefinition?(definition: GeneratorDefinition): Promise<void>;
+  readGeneratorDefinition?(ref: GeneratorDefinitionRef): Promise<GeneratorDefinition | undefined>;
   create(run: DurableRunRecord): Promise<void>;
   listRecoverable(ownerId: string, now: number): Promise<DurableRunRecord[]>;
   /** Projects whose non-terminal owner-private work must be reopened after Host restart. */
@@ -62,6 +66,14 @@ function openDatabase(path: string): SqliteDatabase {
 
 function applySchema(database: SqliteDatabase): void {
   database.exec(`
+    CREATE TABLE IF NOT EXISTS generator_definition_archive (
+      plugin_id TEXT NOT NULL,
+      definition_id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      schema_hash TEXT NOT NULL,
+      definition_json TEXT NOT NULL,
+      PRIMARY KEY (plugin_id, definition_id, version, schema_hash)
+    );
     CREATE TABLE IF NOT EXISTS durable_run_journal (
       action_run_id TEXT NOT NULL,
       output_slot TEXT NOT NULL,
@@ -334,6 +346,33 @@ export function createSqliteDurableRunJournal(
   }
 
   return {
+    async rememberGeneratorDefinition(input) {
+      const definition = GeneratorDefinitionSchema.parse(input);
+      await withDatabase(database => {
+        database.prepare("INSERT OR IGNORE INTO generator_definition_archive (plugin_id, definition_id, version, schema_hash, definition_json) VALUES (?, ?, ?, ?, ?)").run(
+          definition.pluginId, definition.definitionId, definition.version, definition.schemaHash, JSON.stringify(definition),
+        );
+        const row = database.prepare("SELECT definition_json FROM generator_definition_archive WHERE plugin_id = ? AND definition_id = ? AND version = ? AND schema_hash = ?").get(
+          definition.pluginId, definition.definitionId, definition.version, definition.schemaHash,
+        );
+        if (!row || !isDeepStrictEqual(GeneratorDefinitionSchema.parse(JSON.parse(String(row.definition_json))), definition)) {
+          throw new Error("Generator Definition identity already has different archived content.");
+        }
+      });
+    },
+    async readGeneratorDefinition(ref) {
+      return withDatabase(database => {
+        const row = database.prepare("SELECT definition_json FROM generator_definition_archive WHERE plugin_id = ? AND definition_id = ? AND version = ? AND schema_hash = ?").get(
+          ref.pluginId, ref.definitionId, ref.version, ref.schemaHash,
+        );
+        if (!row) return undefined;
+        const definition = GeneratorDefinitionSchema.parse(JSON.parse(String(row.definition_json)));
+        if (definition.pluginId !== ref.pluginId || definition.definitionId !== ref.definitionId || definition.version !== ref.version || definition.schemaHash !== ref.schemaHash) {
+          throw new Error("Archived Generator Definition identity is corrupt.");
+        }
+        return definition;
+      });
+    },
     async create(run) {
       const serialized = serializeRecord(run);
       const normalized = serialized.normalized;

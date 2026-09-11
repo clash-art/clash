@@ -178,6 +178,7 @@ export {
   type GeneratorV1CompatOptions,
   type GeneratorV1TextOutputType,
 } from "./generator-v1-compat.js";
+export { appendActionCardInput, createActionCardPromptEdit, reorderActionCardInputs } from "./action-card-draft.js";
 
 export {
   GENERATOR_ACTION_RUNS_CONTAINER,
@@ -364,6 +365,8 @@ export {
   DirectorStageWorkingVolumeSchema,
   applyDirectorStageCommand,
   attachDirectorStageToCanvas,
+  createDirectorStageOnCanvas,
+  type CreateDirectorStageOnCanvasInput,
   createDefaultDirectorStageState,
   directorDefaultAttachmentOffset,
   createProjectDirectorStage,
@@ -503,6 +506,8 @@ export {
   ExecutablePluginViewExportSchema,
   ExecutablePluginActivationReceiptSchema,
   ExecutableActionCardSchema,
+  ExecutableActionCardGeneratorSchema,
+  resolveExecutableActionCardGenerator,
   ExecutableActionPresentationSchema,
   ExecutablePluginCardDocumentSchema,
   ExecutablePluginCardRegistrationSchema,
@@ -532,6 +537,8 @@ export {
   ExecutableVideoEnhanceReferenceSchema,
   ExecutableVideoEnhanceOperationSchema,
   ExecutableVideoEnhanceResultSchema,
+  ExecutableAgentTextOperationSchema,
+  ExecutableAgentTextResultSchema,
   ExecutableSpeechTranscriptionReferenceSchema,
   ExecutableSpeechTranscriptionOperationSchema,
   ExecutableSpeechTranscriptionResultSchema,
@@ -595,6 +602,8 @@ export {
   type ExecutableVideoEnhanceReference,
   type ExecutableVideoEnhanceOperation,
   type ExecutableVideoEnhanceResult,
+  type ExecutableAgentTextOperation,
+  type ExecutableAgentTextResult,
   type ExecutableSpeechTranscriptionReference,
   type ExecutableSpeechTranscriptionOperation,
   type ExecutableSpeechTranscriptionResult,
@@ -1124,6 +1133,7 @@ export {
 
 // Canvas operations class
 export { Canvas, projectVisibleNodeData } from "./canvas-ops.js";
+export { canvasModelGeneratorRevisionData, projectCanvasModelGeneratorData } from "./canvas-model-generator.js";
 export type { ExecuteGenerationResult } from "./canvas-ops.js";
 
 // Re-export types from Canvas for convenience
@@ -1201,6 +1211,8 @@ export {
   renameProjectCanvas,
   resolveTimelineRenderTarget,
   attachTimelineToCanvas,
+  createTimelineOnCanvas,
+  type CreateTimelineOnCanvasInput,
   updateProjectTimelineState,
   type ProjectCanvas,
   type ProjectCanvasDeleteResult,
@@ -1639,3 +1651,24 @@ export {
   type WorkspaceImportTarget,
   type WorkspaceTransferFileCapability,
 } from "./workspace-bundle.js";
+
+export { AcpForkPointSchema, supportsAcpMessageFork, type AcpForkPoint } from "./acp-fork.js";
+
+export * from "./generator-requests.js";
+export { commitProjectMutation } from "./project-mutation.js";
+
+export { createModelMediaInput } from "./model-media-input.js";
+
+export { canvasModelPlacementData } from "./canvas-model-generator.js";
+
+export { canvasActionAssetInputs } from "./canvas-action-asset-inputs.js";
+
+export * from "./model-prompt-content.js";
+export { createModelPromptEdit, createModelTextReferenceEdit } from "./model-prompt-mentions.js";
+export { canvasAssetRevision, assetRevisionKey } from "./canvas-asset-reference.js";
+
+export * from "./model-keyframes.js";
+export * from "./model-output-contract.js";
+export type { McpProjectRequest, McpProjectResponse } from "./mcp-project.js";
+export * from "./director-code.js";
+export { HostInstallScopeSchema, HostSkillInstallationsSchema, type HostInstallScope } from "./host-install-scope.js";

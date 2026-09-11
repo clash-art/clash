@@ -159,6 +159,10 @@ async function startBundledHost(
     env: context.env,
     daemonEnv: {
       CLASH_DAEMON_STARTED_BY: context.startedBy,
+      CLASH_AGENT_RUNTIME: context.env.CLASH_AGENT_RUNTIME ?? (context.startedBy === "plugin" ? "disabled" : "enabled"),
+      CLASH_PROJECT_RENDERER_ROOT: context.env.CLASH_PROJECT_RENDERER_ROOT ?? (layout.source
+        ? resolve(dirname(layout.localApiEntry), "../../../apps/web/dist/client")
+        : join(dirname(layout.localApiEntry), "project-ui")),
       CLASH_NODE_EXEC_PATH: process.execPath,
       CLASH_AGENT_BUNDLE_ROOT: layout.agentBundleRoot,
       CLASH_BUILTIN_PLUGIN_ROOT: layout.builtinPluginRoot,

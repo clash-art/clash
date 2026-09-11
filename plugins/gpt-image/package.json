@@ -1,0 +1,33 @@
+{
+  "name": "@clash-plugin/gpt-image",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "exports": {
+    "./manifest.json": "./manifest.json",
+    "./stdio": "./dist/stdio.mjs"
+  },
+  "files": [
+    "manifest.json",
+    "providers",
+    "contract-tests",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@clash/action-sdk": "workspace:*",
+    "@clash/shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.0"
+  }
+}

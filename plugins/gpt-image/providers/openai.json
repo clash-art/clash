@@ -1,0 +1,27 @@
+{
+  "apiVersion": "clash.provider/v1",
+  "kind": "provider",
+  "spec": {
+    "id": "openai",
+    "name": "OpenAI",
+    "upstreamId": "openai",
+    "apiShape": "openai-images",
+    "executorExportId": "openai-execute",
+    "auth": {
+      "methods": [
+        {
+          "id": "api-key",
+          "label": "API key",
+          "form": [
+            {
+              "kind": "field",
+              "key": "apiKey",
+              "label": "API key",
+              "secret": true
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

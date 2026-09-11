@@ -1,0 +1,4 @@
+interface:
+  display_name: "Shot Continuity"
+  short_description: "Connect shots through coherent action, space, and sound"
+  default_prompt: "Use $clash-shot-continuity to inspect and repair the transition between these shots while preserving the intended event."

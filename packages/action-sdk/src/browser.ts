@@ -127,6 +127,7 @@ function contextFrom(
       remove: async () => unavailable("store"),
     },
     hostTools: {
+      agentText: hostTools.agentText ?? (async () => unavailable("agent text Host tool")),
       codexImagegen: hostTools.codexImagegen ?? {
         generate: async () => unavailable("codex.imagegen Host tool"),
       },

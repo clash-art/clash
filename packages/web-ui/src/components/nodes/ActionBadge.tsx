@@ -1,3 +1,10 @@
+import { createLogger } from "../../lib/logger";
+import { appendActionCardInput, createActionCardPromptEdit, reorderActionCardInputs } from "@clash/shared-types";
+import { editModelKeyframes, evenlySpacedFrameIndices, keyframeFrameIndices, planKeyframeInsertion, KEYFRAME_FRAME_INDICES_PARAM, KEYFRAME_TIMING_CUSTOMIZED_PARAM } from "@clash/shared-types";
+export { planKeyframeInsertion } from "@clash/shared-types";
+import { canvasModelGeneratorRevisionData } from "@clash/shared-types";
+import type { GeneratorDraftEdit } from "../../lib/generatorDraftEditor";
+import { useNativeGeneratorDraft } from "../../hooks/useNativeGeneratorDraft";
 import {
   Fragment,
   memo,
@@ -18,6 +25,7 @@ import {
   NodeProps,
   useReactFlow,
   useNodeConnections,
+  useStoreApi,
 } from "@xyflow/react";
 import {
   VideoCamera,
@@ -49,6 +57,12 @@ import { useLayoutManager } from "@clash/web-ui/lib/layout";
 import { generateSemanticId } from "@clash/web-ui/lib/utils/semanticId";
 import { ProjectedImage } from "../ProjectedMedia";
 import { getAsset, useAsset } from "@clash/web-ui/lib/hooks/useAsset";
+import { NativeMediaReference } from "./NativeMediaReference";
+import { NativeDocumentReference } from "./NativeDocumentReference";
+import { NativeOrderedPrompt } from "./NativeOrderedPrompt";
+import { modelPromptParts, modelPromptPartsWithInputs, withModelPromptParts, removeModelPromptInput, modelInputRefsInPromptOrder, reorderModelMediaInputs } from "../../lib/modelPromptContent";
+import { createModelPromptEdit, createModelTextReferenceEdit } from "../../lib/modelPromptMentions";
+import { createModelMediaInput } from "../../lib/modelMediaInput";
 import { assetThumbnailImageUrl } from "../../features/assets/media-url";
 import { VideoPoster } from "../../features/assets/VideoPoster";
 import {
@@ -69,6 +83,7 @@ import {
   customActionDefaultParams,
   directorReferencePackets,
   referenceAssetId,
+  canvasAssetRevision,
   referenceModality,
   validateReferenceMedia,
   validateRefs,
@@ -136,6 +151,8 @@ import { resolveBuiltInActionKind } from "./generationActionKind";
 
 type ModelParams = Record<string, string | number | boolean>;
 
+const mediaLog = createLogger("actions");
+
 export function normalizeActionAspectRatioOptions(
   parameter: ModelParameter,
 ): AspectRatioOption<string | number>[] {
@@ -169,8 +186,6 @@ const PARAM_BOOLEAN_OPTIONS: SelectOption<boolean>[] = [
   { value: false, label: "Off" },
 ];
 const NODE_INTERACTION_BOUNDARY_CLASS = "nodrag nopan";
-const KEYFRAME_FRAME_INDICES_PARAM = "keyframe_frame_indices";
-const KEYFRAME_TIMING_CUSTOMIZED_PARAM = "keyframe_timing_customized";
 const ACTION_DEFINITION_UPDATED_LABEL = "Action definition updated";
 const ACTION_DEFINITION_UPDATED_RUN_LABEL =
   "Action definition updated. Update before running.";
@@ -187,98 +202,9 @@ function executablePluginBindingsMatch(
   );
 }
 
-function evenlySpacedFrameIndices(count: number, lastFrame: number): number[] {
-  if (count <= 0) return [];
-  if (count === 1) return [0];
-  return Array.from({ length: count }, (_, index) =>
-    Math.round((index * lastFrame) / (count - 1)),
-  );
-}
-
-function keyframeFrameIndices(
-  raw: unknown,
-  count: number,
-  lastFrame: number,
-  customized: boolean,
-): number[] {
-  if (typeof raw !== "string")
-    return evenlySpacedFrameIndices(count, lastFrame);
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length !== count) {
-      return evenlySpacedFrameIndices(count, lastFrame);
-    }
-    const values = parsed.map(Number);
-    const structurallyValid = values.every(
-      (value, index) =>
-        Number.isInteger(value) &&
-        value >= 0 &&
-        (index === 0 || value > values[index - 1]),
-    );
-    if (!structurallyValid) return evenlySpacedFrameIndices(count, lastFrame);
-    if (!customized) return evenlySpacedFrameIndices(count, lastFrame);
-    if (count <= 1) return [0];
-    const previousLastFrame = values[values.length - 1];
-    if (previousLastFrame <= 0)
-      return evenlySpacedFrameIndices(count, lastFrame);
-    const scaled = values.map((value) =>
-      Math.round((value / previousLastFrame) * lastFrame),
-    );
-    scaled[0] = 0;
-    scaled[scaled.length - 1] = lastFrame;
-    for (let index = 1; index < scaled.length; index += 1) {
-      scaled[index] = Math.max(scaled[index], scaled[index - 1] + 1);
-    }
-    for (let index = scaled.length - 2; index >= 0; index -= 1) {
-      scaled[index] = Math.min(scaled[index], scaled[index + 1] - 1);
-    }
-    return scaled;
-  } catch {
-    return evenlySpacedFrameIndices(count, lastFrame);
-  }
-}
-
 function formatFrameTime(frameIndex: number, frameRate: number): string {
   const seconds = frameIndex / frameRate;
   return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(2)}s`;
-}
-
-export function planKeyframeInsertion(
-  currentFrames: number[],
-  lastFrame: number,
-  customized: boolean,
-): { insertionIndex: number; frameIndices: number[] } {
-  const nextCount = currentFrames.length + 1;
-  if (!customized || currentFrames.length < 2) {
-    return {
-      insertionIndex: Math.max(1, currentFrames.length - 1),
-      frameIndices: evenlySpacedFrameIndices(nextCount, lastFrame),
-    };
-  }
-  let insertionIndex = 1;
-  let largestGap = -1;
-  for (let index = 0; index < currentFrames.length - 1; index += 1) {
-    const gap = currentFrames[index + 1] - currentFrames[index];
-    if (gap >= largestGap) {
-      largestGap = gap;
-      insertionIndex = index + 1;
-    }
-  }
-  if (largestGap <= 1) {
-    return {
-      insertionIndex: Math.max(1, currentFrames.length - 1),
-      frameIndices: evenlySpacedFrameIndices(nextCount, lastFrame),
-    };
-  }
-  const frameIndices = [...currentFrames];
-  frameIndices.splice(
-    insertionIndex,
-    0,
-    Math.floor(
-      (currentFrames[insertionIndex - 1] + currentFrames[insertionIndex]) / 2,
-    ),
-  );
-  return { insertionIndex, frameIndices };
 }
 
 function FrameReferenceStrip({
@@ -349,6 +275,7 @@ function FrameReferenceStrip({
 }
 
 function FrameReferenceSlot({
+  assetReference,
   badge,
   emptyControl,
   filled,
@@ -359,6 +286,7 @@ function FrameReferenceSlot({
   timeControl,
   timeLabel,
 }: {
+  assetReference?: { projectId: string; assetId: string };
   badge?: ReactNode;
   emptyControl?: ReactNode;
   filled: boolean;
@@ -369,14 +297,16 @@ function FrameReferenceSlot({
   timeControl?: ReactNode;
   timeLabel?: string;
 }) {
+  const asset = useAsset(assetReference?.projectId ?? "", assetReference?.assetId);
+  const resolvedThumb = thumb ?? (assetReference ? asset?.thumbnailUrl ?? (asset?.kind === "image" ? asset.url : undefined) : undefined);
   return (
     <Tooltip label={label}>
       <div className="group/thumb relative w-10 flex-shrink-0">
         {filled ? (
           <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-warm-border bg-warm-muted shadow-sm">
-            {thumb ? (
+            {resolvedThumb ? (
               <ProjectedImage
-                src={thumb}
+                src={resolvedThumb}
                 alt={label}
                 className="h-full w-full object-cover"
               />
@@ -746,11 +676,13 @@ const extractLabelFromPrompt = (
   return firstLine;
 };
 
+type NativeGeneratorDraft = NonNullable<ReturnType<typeof useNativeGeneratorDraft>>;
 const PromptActionNode = ({
   data,
   selected,
   id,
-}: NodeProps<RFNode<Record<string, any>>>) => {
+  nativeDraft,
+}: NodeProps<RFNode<Record<string, any>>> & { nativeDraft?: NativeGeneratorDraft }) => {
   // `data.openPanel` is a one-shot handoff from `handleCopy` — a freshly
   // cloned node mounts with its config panel already open, then clears the
   // flag in an effect so subsequent loads don't re-open.
@@ -758,8 +690,16 @@ const PromptActionNode = ({
     close: closeActionPanel,
     isOpen: showPanel,
     open: openActionPanel,
-    toggle: toggleActionPanel,
   } = useCanvasTransientUiOwner("action-panel", id);
+  const flowStore = useStoreApi();
+  // Configuration belongs to the real canvas selection, so its highlight
+  // and keyboard deletion always target the same node.
+  const selectAction = () => {
+    if (!selected) flowStore.getState().addSelectedNodes([id]);
+  };
+  useEffect(() => {
+    if (!selected) closeActionPanel();
+  }, [selected, closeActionPanel]);
   const [showModal, setShowModal] = useState(false);
   // Peers (other connected users) who currently have this node selected.
   const peersSelecting = usePeersSelectingNode(id);
@@ -782,7 +722,7 @@ const PromptActionNode = ({
   );
 
   // React Flow hooks
-  const { enabledModelCatalog, projectId } = useProject();
+  const { enabledModelCatalog, projectId, configureModels } = useProject();
   const { getNode, getNodes, getEdges, addEdges, setNodes, setEdges } =
     useReactFlow();
   const loroSync = useOptionalLoroSyncContext();
@@ -915,9 +855,7 @@ const PromptActionNode = ({
           )
         : (data.modelId as string | undefined)) ||
       (enabledModelCatalog.find((entry) => entry.model.kind === actionKind)
-        ?.model.id ??
-        MODEL_CARDS.find((card) => card.kind === actionKind)?.id ??
-        FALLBACK_MODEL_BY_KIND[actionKind]);
+        ?.model.id ?? "");
   const initialModelCard =
     enabledModelCatalog.find((entry) => entry.model.id === initialModelId)
       ?.model ?? MODEL_CARDS.find((card) => card.id === initialModelId);
@@ -998,6 +936,8 @@ const PromptActionNode = ({
         : enabledModelCatalog.find((entry) => entry.model.id === modelId),
     [enabledModelCatalog, isCustom, modelId],
   );
+  const modelUnavailable = !isCustom && !selectedCatalogEntry;
+  const modelUnavailableReason = "No connected provider or executable route for this model. Connect a provider or choose an available model.";
   const unavailableParameterIds = useMemo(
     () => new Set(selectedCatalogEntry?.unavailableParameterIds ?? []),
     [selectedCatalogEntry?.unavailableParameterIds],
@@ -1173,7 +1113,18 @@ const PromptActionNode = ({
 
   // Attached node IDs = incoming edges whose source has a compatible modality,
   // including drafts (empty src, will materialize when Build runs).
+  const nativeInputKey = nativeDraft?.projection ? JSON.stringify([nativeDraft.projection.revision.persistentInputRefs, nativeDraft.projection.revision.state.contentParts]) : null;
   const attachedNodeIds = useMemo(() => {
+    if (nativeDraft?.projection) {
+      const nodes = getNodes();
+      const revision = nativeDraft.projection.revision;
+      return (isCustom ? revision.persistentInputRefs : modelInputRefsInPromptOrder(revision.state, revision.persistentInputRefs)).flatMap((ref) => {
+        if (!("kind" in ref.target) || ref.target.kind !== "media") return [];
+        const assetId = ref.target.projectAssetId;
+        const node = nodes.find((candidate) => referenceAssetId(candidate) === assetId);
+        return node ? [node.id] : [];
+      });
+    }
     return connectedEdges
       .filter((e) => e.target === id)
       .map((e) => getNode(e.source))
@@ -1181,7 +1132,7 @@ const PromptActionNode = ({
         (n): n is NonNullable<typeof n> => !!n && hasCompatibleModality(n),
       )
       .map((n) => n.id);
-  }, [connectedEdges, id, getNode, hasCompatibleModality]);
+  }, [connectedEdges, id, getNode, getNodes, hasCompatibleModality, nativeInputKey, isCustom]);
 
   const refNodeIds = useMemo(() => {
     const order = Array.isArray(data.referenceImageOrder)
@@ -1193,11 +1144,22 @@ const PromptActionNode = ({
     const extras = attachedNodeIds.filter((nid) => !seen.has(nid));
     return [...ordered, ...extras];
   }, [attachedNodeIds, data.referenceImageOrder]);
+  const keyframeInputs = useMemo(() => {
+    const before = nativeDraft?.projection?.revision;
+    return new Map(before && !isCustom ? modelInputRefsInPromptOrder(before.state, before.persistentInputRefs)
+      .filter(ref => ref.slot === "image" && "kind" in ref.target && ref.target.kind === "media")
+      .map(ref => [JSON.stringify([ref.slot, ref.itemKey ?? null]), ref]) : []);
+  }, [nativeInputKey, isCustom]);
+  const keyframeKeys = useMemo(() => nativeDraft ? [...keyframeInputs.keys()] : refNodeIds, [nativeDraft, keyframeInputs, refNodeIds]);
+  const keyframeAssetReference = (key: string) => {
+    const input = keyframeInputs.get(key);
+    return input && "kind" in input.target && input.target.kind === "media" ? { projectId, assetId: input.target.projectAssetId } : undefined;
+  };
   const keyframeFrames = useMemo(
     () =>
       keyframeFrameIndices(
         modelParams[KEYFRAME_FRAME_INDICES_PARAM],
-        refNodeIds.length,
+        keyframeKeys.length,
         keyframeLastFrame,
         keyframeTimingCustomized,
       ),
@@ -1205,7 +1167,7 @@ const PromptActionNode = ({
       keyframeLastFrame,
       keyframeTimingCustomized,
       modelParams,
-      refNodeIds.length,
+      keyframeKeys.length,
     ],
   );
 
@@ -1218,13 +1180,20 @@ const PromptActionNode = ({
       audio: 0,
       model: 0,
     };
+    if (nativeDraft?.projection) {
+      for (const ref of nativeDraft.projection.revision.persistentInputRefs) {
+        const kind = ref.slot === "startFrame" || ref.slot === "endFrame" ? "image" : ref.slot;
+        if ("kind" in ref.target && ref.target.kind === "media" && (kind === "image" || kind === "video" || kind === "audio" || kind === "model")) byKind[kind] += 1;
+      }
+      return byKind;
+    }
     for (const nid of refNodeIds) {
       const n = getNode(nid);
       const t = n ? referenceModality(n) : undefined;
       if (t) byKind[t] += 1;
     }
     return byKind;
-  }, [refNodeIds, getNode]);
+  }, [refNodeIds, getNode, nativeInputKey]);
 
   const referenceValidationError = useMemo(() => {
     if (!cap) return null;
@@ -1290,8 +1259,8 @@ const PromptActionNode = ({
         models: compatibleAvailableModels,
         customActions,
         referenceCounts: refKindCounts,
-      }),
-    [actionKind, compatibleAvailableModels, customActions, refKindCounts],
+      }).filter((choice) => !nativeDraft || (isCustom ? choice.kind === "action" && choice.id === customActionId : choice.kind === "model")),
+    [actionKind, compatibleAvailableModels, customActions, refKindCounts, nativeDraft, isCustom, customActionId],
   );
 
   const clearAllRefs = useCallback(() => {
@@ -1362,6 +1331,14 @@ const PromptActionNode = ({
         seen.add(nid);
         cleaned.push(nid);
       }
+      if (nativeDraft) {
+        const orderedAssets = cleaned.flatMap((nodeId) => { const node = getNode(nodeId); return node ? [referenceAssetId(node)] : []; }).filter(Boolean);
+        void nativeDraft.editDraft((before) => ({
+          state: isCustom ? before.state : reorderModelMediaInputs(before.state, before.persistentInputRefs, orderedAssets as string[]),
+          persistentInputRefs: isCustom ? reorderActionCardInputs(before.persistentInputRefs, (orderedAssets as string[]).map(projectAssetId => ({ kind: "media", projectAssetId }))) : before.persistentInputRefs,
+        })).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       setNodes((nds) =>
         nds.map((n) =>
           n.id === id
@@ -1373,7 +1350,7 @@ const PromptActionNode = ({
         loroSync.updateNode(id, { data: { referenceImageOrder: cleaned } });
       }
     },
-    [id, setNodes, loroSync],
+    [id, setNodes, loroSync, nativeDraft, getNode, isCustom],
   );
 
   const persistKeyframeFrames = useCallback(
@@ -1385,6 +1362,20 @@ const PromptActionNode = ({
         [KEYFRAME_TIMING_CUSTOMIZED_PARAM]: customized,
       };
       setModelParams(nextParams);
+      if (nativeDraft) {
+        const expectedKeys = JSON.stringify(keyframeKeys);
+        void nativeDraft.editDraft(before => {
+          const currentKeys = modelInputRefsInPromptOrder(before.state, before.persistentInputRefs)
+            .filter(ref => ref.slot === "image" && "kind" in ref.target && ref.target.kind === "media")
+            .map(ref => JSON.stringify([ref.slot, ref.itemKey ?? null]));
+          if (JSON.stringify(currentKeys) !== expectedKeys || next.length !== currentKeys.length) throw new Error("The keyframe sequence changed. Read the draft again before editing timing.");
+          return { state: { ...before.state, params: {
+            ...(before.state.params && typeof before.state.params === "object" && !Array.isArray(before.state.params) ? before.state.params : {}),
+            [KEYFRAME_FRAME_INDICES_PARAM]: serialized, [KEYFRAME_TIMING_CUSTOMIZED_PARAM]: customized,
+          } }, persistentInputRefs: before.persistentInputRefs };
+        }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       setNodes((nodes) =>
         nodes.map((node) =>
           node.id === id
@@ -1396,11 +1387,80 @@ const PromptActionNode = ({
         loroSync.updateNode(id, { data: { modelParams: nextParams } });
       }
     },
-    [id, keyframeTimingCustomized, loroSync, modelParams, setNodes],
+    [id, keyframeTimingCustomized, loroSync, modelParams, setNodes, nativeDraft, keyframeKeys],
   );
+
+  const addNativeMediaReference = useCallback((sourceNodeId: string, endpoint?: "start" | "end") => {
+    if (!nativeDraft) return;
+    const node = getNode(sourceNodeId);
+    if (isCustom && customDef?.generator) {
+      if (node?.type === "text" && node.data?.documentRevision === undefined && typeof node.data?.content === "string") {
+        const text = node.data.content;
+        void nativeDraft.edit((state) => ({ ...state, prompt: `${state.prompt ?? ""}\n\n${text}` })).catch((error) => setError(String(error)));
+        return;
+      }
+      try {
+        const asset = canvasAssetRevision(node);
+        const kind = node && referenceModality(node);
+        if (!asset || !kind) throw new Error("This reference needs an applied Asset.");
+        const placement = loroSync?.doc?.getMap("nodes").get(id) as { canvasId?: string } | undefined;
+        void nativeDraft.prepare((before, definition) => ({
+          ...appendActionCardInput(before, customDef.generator!, definition, asset, kind),
+          canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset }],
+        })).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+      } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+      return;
+    }
+    if (node?.type === "text") {
+      try {
+        const edit = createModelTextReferenceEdit(node, typeof node.data?.label === "string" ? node.data.label : "Text");
+        const asset = canvasAssetRevision(node);
+        const placement = loroSync?.doc?.getMap("nodes").get(id) as { canvasId?: string } | undefined;
+        void nativeDraft.editDraft((before) => ({ ...edit(before), ...(asset ? {
+          canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset }],
+        } : {}) })).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+      } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
+      return;
+    }
+    const assetId = node && referenceAssetId(node);
+    const modality = node && referenceModality(node);
+    if (!assetId || !modality || modality === "text") {
+      setError("This reference needs an applied media Asset before it can be attached.");
+      return;
+    }
+    const placement = loroSync?.doc?.getMap("nodes").get(id) as { canvasId?: string } | undefined;
+    void nativeDraft.editDraft((before) => {
+      const model = enabledModelCatalog.find((entry) => entry.model.id === before.state.modelId)?.model;
+      if (model?.input.presentation?.type === "keyframes") {
+        if (modality !== "image") throw new Error("Keyframes require image Assets.");
+        return { ...editModelKeyframes(before, model, { type: "add", projectAssetId: assetId, position: endpoint ?? "append" }),
+          canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset: { kind: "media" as const, projectAssetId: assetId } }] };
+      }
+      const refs = before.persistentInputRefs;
+      const existing = !endpoint && refs.find((ref) => "kind" in ref.target && ref.target.kind === "media" && ref.target.projectAssetId === assetId);
+      const added = existing || createModelMediaInput({
+        modelId: before.state.modelId,
+        model: enabledModelCatalog.find((entry) => entry.model.id === before.state.modelId)?.model,
+        inputs: refs, kind: modality, projectAssetId: assetId, endpoint,
+      });
+      const next = endpoint ? refs.filter((ref) => ref.slot !== added.slot) : refs;
+      const persistentInputRefs = existing ? refs : endpoint === "start" ? [added, ...next] : [...next, added];
+      let state = before.state;
+      {
+        const parts = modelPromptPartsWithInputs(state, refs).filter((part) => !endpoint || part.type !== "input" || part.slot !== added.slot);
+        // Picking an already attached Asset does not invent another occurrence.
+        if (!existing || !parts.some((part) => part.type === "input" && part.slot === added.slot && part.itemKey === added.itemKey)) {
+          parts.push({ type: "input", slot: added.slot, ...(added.itemKey ? { itemKey: added.itemKey } : {}), label: "" });
+        }
+        state = withModelPromptParts(state, parts);
+      }
+      return { state, persistentInputRefs, canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset: { kind: "media" as const, projectAssetId: assetId } }] };
+    }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+  }, [nativeDraft, getNode, loroSync, id, enabledModelCatalog, isCustom, customDef]);
 
   const addRefNode = useCallback(
     (sourceNodeId: string) => {
+      if (nativeDraft) { addNativeMediaReference(sourceNodeId); return; }
       // Deterministic edgeId means re-adding the same source is a no-op
       // *iff* we early-return when the edge already exists. Without this
       // guard reactflow's setEdges still grows the array (it dedups on
@@ -1423,11 +1483,20 @@ const PromptActionNode = ({
         });
       }
     },
-    [id, connectedEdges, addEdges, loroSync],
+    [id, connectedEdges, addEdges, loroSync, nativeDraft, addNativeMediaReference],
   );
 
   const removeRefNode = useCallback(
-    (sourceNodeId: string) => {
+    (sourceNodeId: string, endpointSlot?: string) => {
+      if (nativeDraft) {
+        const source = getNode(sourceNodeId);
+        const assetId = source && referenceAssetId(source);
+        if (!assetId) return;
+        const removed = nativeDraft.projection?.revision.persistentInputRefs.filter((ref) => (!endpointSlot || ref.slot === endpointSlot) && "kind" in ref.target && ref.target.kind === "media" && ref.target.projectAssetId === assetId) ?? [];
+        void nativeDraft.edit((state) => isCustom ? state : removed.reduce((next, ref) => removeModelPromptInput(next, ref), state), (refs) => refs.filter((ref) => !removed.some((item) => item.slot === ref.slot && item.itemKey === ref.itemKey)))
+          .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       const edgeIds = connectedEdges
         .filter((e) => e.target === id && e.source === sourceNodeId)
         .map((e) => e.id);
@@ -1437,7 +1506,7 @@ const PromptActionNode = ({
         edgeIds.forEach((eid) => loroSync.removeEdge(eid));
       }
     },
-    [id, connectedEdges, setEdges, loroSync],
+    [id, connectedEdges, setEdges, loroSync, nativeDraft, getNode, isCustom],
   );
 
   const removeContinuationRef = useCallback(
@@ -1450,6 +1519,17 @@ const PromptActionNode = ({
 
   const removeKeyframeRef = useCallback(
     (sourceNodeId: string) => {
+      if (nativeDraft) {
+        const input = keyframeInputs.get(sourceNodeId);
+        const projectAssetId = input && "kind" in input.target && input.target.kind === "media" ? input.target.projectAssetId : undefined;
+        if (!projectAssetId) return;
+        void nativeDraft.editDraft(before => {
+          const model = enabledModelCatalog.find(entry => entry.model.id === before.state.modelId)?.model;
+          if (!model) throw new Error("The Model is unavailable. Read the draft again.");
+          return editModelKeyframes(before, model, { type: "remove", projectAssetId, input });
+        }).catch(error => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       const removedIndex = refNodeIds.indexOf(sourceNodeId);
       if (removedIndex < 0) return;
       const nextOrder = refNodeIds.filter((nodeId) => nodeId !== sourceNodeId);
@@ -1471,6 +1551,7 @@ const PromptActionNode = ({
       removeRefNode(sourceNodeId);
     },
     [
+      nativeDraft, keyframeInputs, enabledModelCatalog,
       keyframeFrames,
       keyframeLastFrame,
       keyframeTimingCustomized,
@@ -1552,7 +1633,14 @@ const PromptActionNode = ({
       if (downstream.has(n.id)) return false;
       const t = referenceModality(n);
       if (attached.has(n.id)) return false;
-      if (t === "text") return acceptsTextRef;
+      if (t === "text") {
+        const reference = n.data?.documentRevision as { documentAssetId?: unknown; revisionId?: unknown } | undefined;
+        if (reference && isCustom && !customDef?.generator?.inputSlots.text) return false;
+        const alreadyAttached = reference && nativeDraft?.projection?.revision.persistentInputRefs.some(ref =>
+          "kind" in ref.target && ref.target.kind === "document" &&
+          ref.target.documentAssetId === reference.documentAssetId && ref.target.revisionId === reference.revisionId);
+        return acceptsTextRef && !alreadyAttached;
+      }
       if (t === "image") return acceptsImageRef;
       if (t === "video") return acceptsVideoRef;
       if (t === "audio") return acceptsAudioRef;
@@ -1560,6 +1648,9 @@ const PromptActionNode = ({
     });
   }, [
     shouldComputeRefPickerCandidates,
+    isCustom,
+    customDef,
+    nativeInputKey,
     refNodeIds,
     getNodes,
     getEdges,
@@ -1578,7 +1669,7 @@ const PromptActionNode = ({
       if (
         target === "append" &&
         isKeyframePresentation &&
-        refNodeIds.length >= keyframeLimit
+        keyframeKeys.length >= keyframeLimit
       )
         return;
       if (
@@ -1587,6 +1678,10 @@ const PromptActionNode = ({
         refNodeIds.length >= continuationVideoLimit
       )
         return;
+      if (nativeDraft) {
+        addNativeMediaReference(sourceNodeId, target === "append" ? undefined : target);
+        return;
+      }
       addRefNode(sourceNodeId);
       const existing = Array.isArray(data.referenceImageOrder)
         ? [...(data.referenceImageOrder as string[])]
@@ -1630,11 +1725,13 @@ const PromptActionNode = ({
       isKeyframePresentation,
       keyframeFrames,
       keyframeLastFrame,
-      keyframeLimit,
+      keyframeLimit, keyframeKeys.length,
       keyframeTimingCustomized,
       persistKeyframeFrames,
       refNodeIds,
       persistRefOrder,
+      nativeDraft,
+      addNativeMediaReference,
     ],
   );
 
@@ -1785,6 +1882,12 @@ const PromptActionNode = ({
   }, [showPanel]);
 
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveNativePrompt = useCallback(async (raw: string) => {
+    if (!nativeDraft) throw new Error("Native draft is unavailable.");
+    return isCustom && customDef?.generator
+      ? nativeDraft.prepare(createActionCardPromptEdit(raw, customDef.generator, getNode))
+      : nativeDraft.editDraft(createModelPromptEdit(raw, getNode));
+  }, [nativeDraft, getNode, isCustom, customDef]);
 
   const handleEditorInput = useCallback(() => {
     const el = editorRef.current;
@@ -1796,6 +1899,10 @@ const PromptActionNode = ({
     // Debounce sync to Loro (300ms)
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => {
+      if (nativeDraft) {
+        void saveNativePrompt(raw).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       setNodes((nds) =>
         nds.map((node) =>
           node.id === id
@@ -1826,7 +1933,7 @@ const PromptActionNode = ({
     } else {
       setShowMentionMenu(false);
     }
-  }, [htmlToContent, id, setNodes, loroSync]);
+  }, [htmlToContent, id, setNodes, loroSync, nativeDraft, saveNativePrompt]);
 
   const insertMention = useCallback(
     (node: { id: string; label: string; src?: string }) => {
@@ -1867,6 +1974,11 @@ const PromptActionNode = ({
       lastContentRef.current = raw;
       setContent(raw);
       setShowMentionMenu(false);
+      if (nativeDraft) {
+        if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null; }
+        void saveNativePrompt(raw).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       const edgeId = `${node.id}-${id}`;
       addEdges({ id: edgeId, source: node.id, target: id, type: "default" });
       if (loroSync) {
@@ -1878,7 +1990,7 @@ const PromptActionNode = ({
         });
       }
     },
-    [contentToHtml, htmlToContent, id, addEdges, loroSync],
+    [contentToHtml, htmlToContent, id, addEdges, loroSync, nativeDraft, saveNativePrompt],
   );
 
   const mentionCombobox = useComboboxStore({
@@ -1927,6 +2039,10 @@ const PromptActionNode = ({
       nextPluginBinding:
         ExecutablePluginBinding | undefined = effectivePluginBinding,
     ) => {
+      if (nativeDraft) {
+        void nativeDraft.edit({ modelId: nextModelId, params: nextParams }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       setNodes((nds) =>
         nds.map((node) => {
           if (node.id === id) {
@@ -1955,11 +2071,13 @@ const PromptActionNode = ({
         });
       }
     },
-    [effectivePluginBinding, id, loroSync, setNodes],
+    [effectivePluginBinding, id, loroSync, setNodes, nativeDraft],
   );
 
   const syncActionState = useCallback(
     (nextData: Record<string, unknown>) => {
+      // Native placements keep their Definition; model state is saved above.
+      if (nativeDraft) return;
       setNodes((nodes) =>
         nodes.map((node) =>
           node.id === id
@@ -1971,11 +2089,11 @@ const PromptActionNode = ({
         loroSync.updateNode(id, { data: nextData });
       }
     },
-    [id, loroSync, setNodes],
+    [id, loroSync, setNodes, nativeDraft],
   );
 
   useEffect(() => {
-    if (!routePluginBinding || !resolvedPluginBinding.persistRouteBinding)
+    if (nativeDraft || !routePluginBinding || !resolvedPluginBinding.persistRouteBinding)
       return;
     syncModelState(modelId, modelParams, routePluginBinding);
   }, [
@@ -1984,6 +2102,7 @@ const PromptActionNode = ({
     resolvedPluginBinding.persistRouteBinding,
     routePluginBinding,
     syncModelState,
+    nativeDraft,
   ]);
 
   const handleModelChange = useCallback(
@@ -2082,6 +2201,10 @@ const PromptActionNode = ({
             )
           : { ...customActionParams, [paramId]: value };
         setCustomActionParams(next);
+        if (nativeDraft) {
+          void nativeDraft.edit(next).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+          return;
+        }
         syncActionState({ customActionParams: next });
         return;
       }
@@ -2119,12 +2242,17 @@ const PromptActionNode = ({
       selectedModel,
       syncActionState,
       syncModelState,
+      nativeDraft,
     ],
   );
 
   const updateLyrics = useCallback(
     (nextLyrics: string) => {
       setLyrics(nextLyrics);
+      if (nativeDraft) {
+        void nativeDraft.edit({ lyrics: nextLyrics }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        return;
+      }
       setNodes((nodes) =>
         nodes.map((node) =>
           node.id === id
@@ -2136,7 +2264,7 @@ const PromptActionNode = ({
         loroSync.updateNode(id, { data: { lyrics: nextLyrics } });
       }
     },
-    [id, setNodes, loroSync],
+    [id, setNodes, loroSync, nativeDraft],
   );
 
   // Sync content and label when data changes (from Loro or other sources)
@@ -2179,6 +2307,7 @@ const PromptActionNode = ({
   // re-hydrating from Loro doesn't force the panel open on every mount.
   useEffect(() => {
     if (!data.openPanel) return;
+    selectAction();
     openActionPanel();
     setNodes((nds) =>
       nds.map((n) =>
@@ -2268,7 +2397,7 @@ const PromptActionNode = ({
     // is still undefined because isCustom is true, fallback fires
     // again — infinite update loop. The fallback only makes sense
     // for built-in gens that lost their model card (legacy data).
-    if (isCustom) return;
+    if (isCustom || nativeDraft) return;
     if (!selectedModel && availableModels[0]) {
       const fallback = availableModels[0];
       const nextParams = { ...(fallback.defaultParams ?? {}) } as ModelParams;
@@ -2276,10 +2405,15 @@ const PromptActionNode = ({
       setModelParams(nextParams);
       syncModelState(fallback.id, nextParams);
     }
-  }, [availableModels, selectedModel, syncModelState, isCustom]);
+  }, [availableModels, selectedModel, syncModelState, isCustom, nativeDraft]);
 
   const handleSave = useCallback(() => {
     setShowModal(false);
+    if (nativeDraft) {
+      void (isCustom || nativeDraft.projection?.revision.state.contentParts === undefined ? saveNativePrompt(content) : nativeDraft.flush()).then(() => loroSync?.updateNode(id, { data: { label } }))
+        .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
     setNodes((nds) =>
       nds.map((node) => {
         if (node.id === id) {
@@ -2291,7 +2425,7 @@ const PromptActionNode = ({
     if (loroSync) {
       loroSync.updateNode(id, { data: { label, content } });
     }
-  }, [id, label, content, setNodes, loroSync]);
+  }, [id, label, content, setNodes, loroSync, nativeDraft, saveNativePrompt, isCustom]);
 
   const handleCancel = useCallback(() => {
     setShowModal(false);
@@ -2300,6 +2434,20 @@ const PromptActionNode = ({
   }, [data.label, data.content]);
 
   const handleCopy = useCallback(async () => {
+    if (nativeDraft) {
+      try {
+        if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null; }
+        await nativeDraft.copy({ sourceNodeId: id, nodeId: await generateSemanticId(projectId), label,
+          ...(isCustom && customDef?.generator ? { draftEdit: createActionCardPromptEdit(content, customDef.generator, getNode) }
+            : nativeDraft.projection?.revision.state.contentParts === undefined ? { draftEdit: createModelPromptEdit(content, getNode) } : {}),
+          statePatch: isCustom ? customActionParams : { modelId, params: modelParams, ...(isMusicModel ? { lyrics } : {}) } });
+        setShowModal(false);
+        closeActionPanel();
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     const newId = await generateSemanticId(projectId);
     const currentNode = getNode(id);
     const pos = currentNode?.position ?? { x: 0, y: 0 };
@@ -2357,9 +2505,11 @@ const PromptActionNode = ({
     modelId,
     modelParams,
     isCustom,
+    isMusicModel,
     customActionId,
     customActionParams,
     currentCustomPluginBinding,
+    customDef,
     storedPluginBinding,
     refNodeIds,
     projectId,
@@ -2368,10 +2518,16 @@ const PromptActionNode = ({
     addEdges,
     loroSync,
     closeActionPanel,
+    nativeDraft,
   ]);
 
   const handleUpdateCustomAction = useCallback(() => {
     if (!currentCustomPluginBinding || isCheckpointLocked) return;
+    if (nativeDraft) {
+      void nativeDraft.prepare((before) => before).then(() => setError(null))
+        .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
     setNodes((nodes) =>
       nodes.map((node) =>
         node.id === id
@@ -2389,18 +2545,31 @@ const PromptActionNode = ({
       data: { pluginBinding: currentCustomPluginBinding },
     });
     setError(null);
-  }, [currentCustomPluginBinding, id, isCheckpointLocked, loroSync, setNodes]);
+  }, [currentCustomPluginBinding, id, isCheckpointLocked, loroSync, setNodes, nativeDraft]);
 
   const handleLabelChange = (evt: React.ChangeEvent<HTMLInputElement>) => {
     const newLabel = evt.target.value;
     setLabel(newLabel);
   };
 
+  const prepareNativeRevision = useCallback(async () => {
+    if (!nativeDraft) throw new Error("Native Generator draft is unavailable.");
+    if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null; }
+    const updatePrompt: GeneratorDraftEdit | null = isCustom && customDef?.generator ? createActionCardPromptEdit(content, customDef.generator, getNode)
+      : nativeDraft.projection?.revision.state.contentParts === undefined ? createModelPromptEdit(content, getNode) : null;
+    const accepted = await nativeDraft.prepare((before, definition) => {
+      const next = updatePrompt ? updatePrompt(before, definition) : before;
+      return { state: { ...next.state, ...(isCustom ? customActionParams : { modelId, params: modelParams, ...(isMusicModel ? { lyrics } : {}) }) }, persistentInputRefs: next.persistentInputRefs };
+    });
+    return { generatorId: accepted.generator.id, generatorRevisionId: accepted.revision.id };
+  }, [nativeDraft, modelId, content, modelParams, getNode, isMusicModel, lyrics, isCustom, customDef, customActionParams]);
+
   // Shared pending-asset primitives. Run always creates a fresh pending
   // output; only a draft node's Build action may adopt that draft.
   const { spawnPending, spawnDraft, canSpawn, disabledReason, outputKind } =
     useSpawnPendingAsset({
       actionBadgeId: id,
+      resolveGeneratorRevision: nativeDraft ? prepareNativeRevision : undefined,
       actionType,
       isCustom,
       customDef,
@@ -2428,10 +2597,15 @@ const PromptActionNode = ({
     setError(null);
 
     try {
+      if (modelUnavailable) throw new Error(modelUnavailableReason);
       if (customActionDefinitionUpdated) {
         throw new Error(ACTION_DEFINITION_UPDATED_RUN_LABEL);
       }
-      if (referenceValidationError) throw new Error(referenceValidationError);
+      if (!nativeDraft && referenceValidationError) throw new Error(referenceValidationError);
+      let generatorRevision: { generatorId: string; generatorRevisionId: string } | undefined;
+      if (nativeDraft) {
+        generatorRevision = await prepareNativeRevision();
+      }
       // Capture and clear pre-allocated asset ID (provided by backend; treat as single-use)
       const preAllocatedAssetId = data.preAllocatedAssetId as
         string | undefined;
@@ -2476,7 +2650,7 @@ const PromptActionNode = ({
       }
 
       const directorShotItems =
-        actionType === "video-gen"
+        !nativeDraft && actionType === "video-gen"
           ? refNodeIds.flatMap((nodeId) => {
               const node = getNode(nodeId);
               if (!node) return [];
@@ -2554,7 +2728,7 @@ const PromptActionNode = ({
           const labelOverride =
             batchCount > 1 ? `${baseLabel} (${i + 1})` : baseLabel;
           const assetId = i === 0 ? preAllocatedAssetId : undefined;
-          const created = await spawnPending({ assetId, labelOverride });
+          const created = await spawnPending({ assetId, labelOverride, ...(generatorRevision ? { generatorRevision } : {}) });
           if (!created && i === 0) {
             throw new Error("Failed to create pending node.");
           }
@@ -2581,7 +2755,7 @@ const PromptActionNode = ({
       }
     } catch (err: any) {
       setError(err.message);
-      console.error("Execution error:", err);
+      mediaLog.error("action.execution_failed", { nodeId: id, error: err });
     } finally {
       setIsExecuting(false);
     }
@@ -2604,7 +2778,10 @@ const PromptActionNode = ({
     addNodeWithAutoLayout,
     cap,
     customActionDefinitionUpdated,
+    modelUnavailable,
     referenceValidationError,
+    nativeDraft,
+    prepareNativeRevision,
   ]);
 
   // Helper to extract meaningful label from prompt content (already moved outside)
@@ -2893,7 +3070,7 @@ const PromptActionNode = ({
             shape="rounded"
             onClick={() =>
               persistKeyframeFrames(
-                evenlySpacedFrameIndices(refNodeIds.length, keyframeLastFrame),
+                evenlySpacedFrameIndices(keyframeKeys.length, keyframeLastFrame),
                 false,
               )
             }
@@ -2930,10 +3107,10 @@ const PromptActionNode = ({
               aria-hidden
               className="absolute right-0 top-0 h-3 w-px bg-content-secondary/60"
             />
-            {refNodeIds.map((nodeId, index) => {
+            {keyframeKeys.map((nodeId, index) => {
               const isStart = index === 0;
               const isEnd =
-                index === refNodeIds.length - 1 && refNodeIds.length > 1;
+                index === keyframeKeys.length - 1 && keyframeKeys.length > 1;
               const frameIndex = keyframeFrames[index] ?? 0;
               const minFrame = isStart
                 ? 0
@@ -2973,6 +3150,7 @@ const PromptActionNode = ({
                         filled
                         label={label}
                         thumb={refThumbByNodeId.get(nodeId)}
+                        assetReference={keyframeAssetReference(nodeId)}
                         timeControl={
                           isStart || isEnd ? (
                             <div
@@ -3133,15 +3311,52 @@ const PromptActionNode = ({
       {/* Reference images strip above the prompt panel.
                         - startEnd models: two labeled Start/End slots joined by ⇌, always visible.
                         - Other models: Reorder.Group of numbered thumbs (drag to reorder, × to detach). */}
+      {nativeDraft?.projection && (() => {
+        const revision = nativeDraft.projection.revision;
+        const inputs = revision.persistentInputRefs.filter(input => "kind" in input.target && input.target.kind === "document");
+        if (inputs.length === 0) return null;
+        const parts = !isCustom && revision.state.contentParts !== undefined ? modelPromptParts(revision.state) : [];
+        return <ul aria-label="Text references" className="mb-2 flex w-full flex-col gap-1">
+          {inputs.map(input => {
+            const part = parts.find(part => part.type === "input" && part.slot === input.slot && part.itemKey === input.itemKey);
+            const label = part?.type === "input" && part.label ? part.label : "Text";
+            return <NativeDocumentReference key={JSON.stringify([input.slot, input.itemKey ?? null])} projectId={projectId} input={input} label={label}
+              onRemove={isCheckpointLocked ? undefined : removed => {
+                void nativeDraft.editDraft(before => ({
+                  state: isCustom ? before.state : removeModelPromptInput(before.state, removed),
+                  persistentInputRefs: before.persistentInputRefs.filter(ref => ref.slot !== removed.slot || ref.itemKey !== removed.itemKey),
+                })).catch(error => setError(error instanceof Error ? error.message : String(error)));
+              }} />;
+          })}
+        </ul>;
+      })()}
+      {nativeDraft?.projection && (() => {
+        const placedAssets = new Set(getNodes().flatMap((node) => { const assetId = referenceAssetId(node); return assetId ? [assetId] : []; }));
+        const revision = nativeDraft.projection.revision;
+        const inputs = (isCustom ? revision.persistentInputRefs : modelInputRefsInPromptOrder(revision.state, revision.persistentInputRefs)).filter((input) => "kind" in input.target && input.target.kind === "media" && !placedAssets.has(input.target.projectAssetId) && !(isKeyframePresentation && input.slot === "image"));
+        if (inputs.length === 0) return null;
+        return <ul aria-label="Media references" className="mb-2 flex w-full flex-col gap-1">
+          {inputs.map((input) => <NativeMediaReference key={JSON.stringify([input.slot, input.itemKey ?? null])} projectId={projectId} input={input}
+            onRemove={isCheckpointLocked ? undefined : (removed) => {
+              void nativeDraft.editDraft(before => {
+                const model = isCustom ? undefined : enabledModelCatalog.find(entry => entry.model.id === before.state.modelId)?.model;
+                if (model?.input.presentation?.type === "keyframes" && removed.slot === "image" && "kind" in removed.target && removed.target.kind === "media") {
+                  return editModelKeyframes(before, model, { type: "remove", projectAssetId: removed.target.projectAssetId, input: removed });
+                }
+                return { state: isCustom ? before.state : removeModelPromptInput(before.state, removed), persistentInputRefs: before.persistentInputRefs.filter(ref => ref.slot !== removed.slot || ref.itemKey !== removed.itemKey) };
+              }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+            }} />)}
+        </ul>;
+      })()}
       {isKeyframePresentation ? (
         (() => {
-          const startNodeId = refNodeIds[0];
+          const startNodeId = keyframeKeys[0];
           const endNodeId =
-            refNodeIds.length >= 2
-              ? refNodeIds[refNodeIds.length - 1]
+            keyframeKeys.length >= 2
+              ? keyframeKeys[keyframeKeys.length - 1]
               : undefined;
           const middleNodeIds =
-            refNodeIds.length > 2 ? refNodeIds.slice(1, -1) : [];
+            keyframeKeys.length > 2 ? keyframeKeys.slice(1, -1) : [];
           const pickerSlot = (
             slot: "start" | "end",
             label: string,
@@ -3197,7 +3412,7 @@ const PromptActionNode = ({
               ariaLabel="FLUX 3 keyframes"
               layout="scroll"
               trailingControl={
-                refNodeIds.length >= 2 ? (
+                keyframeKeys.length >= 2 ? (
                   <IconButton
                     label="Edit keyframe timing"
                     title="Edit keyframe timing"
@@ -3226,6 +3441,7 @@ const PromptActionNode = ({
                     filled
                     label="Start"
                     thumb={refThumbByNodeId.get(startNodeId)}
+                    assetReference={keyframeAssetReference(startNodeId)}
                     timeLabel="0s"
                     onRemove={
                       isCheckpointLocked
@@ -3251,6 +3467,7 @@ const PromptActionNode = ({
                       filled
                       label={`Frame ${sequenceIndex + 1}`}
                       thumb={refThumbByNodeId.get(nodeId)}
+                    assetReference={keyframeAssetReference(nodeId)}
                       timeLabel={formatFrameTime(
                         keyframeFrames[sequenceIndex],
                         keyframeFrameRate,
@@ -3268,7 +3485,7 @@ const PromptActionNode = ({
 
               {!isCheckpointLocked &&
                 endNodeId &&
-                refNodeIds.length < keyframeLimit && (
+                keyframeKeys.length < keyframeLimit && (
                   <div role="listitem" className="w-10 flex-shrink-0">
                     <Popover
                       open={refPickerTarget === "append"}
@@ -3316,6 +3533,7 @@ const PromptActionNode = ({
                     filled
                     label="End"
                     thumb={refThumbByNodeId.get(endNodeId)}
+                    assetReference={keyframeAssetReference(endNodeId)}
                     timeLabel={formatFrameTime(
                       keyframeLastFrame,
                       keyframeFrameRate,
@@ -3456,7 +3674,10 @@ const PromptActionNode = ({
           }
         >
           {(["start", "end"] as const).map((slot, slotIdx) => {
-            const nodeId = refNodeIds[slotIdx];
+            const endpointSlot = slot === "start" ? "startFrame" : "endFrame";
+            const input = nativeDraft?.projection?.revision.persistentInputRefs.find((ref) => ref.slot === endpointSlot);
+            const assetId = input && "kind" in input.target && input.target.kind === "media" ? input.target.projectAssetId : null;
+            const nodeId = nativeDraft ? getNodes().find((node) => assetId && referenceAssetId(node) === assetId)?.id : refNodeIds[slotIdx];
             const node = nodeId ? getNode(nodeId) : undefined;
             const thumb = nodeId ? refThumbByNodeId.get(nodeId) : undefined;
             const badge = slot === "start" ? "S" : "E";
@@ -3480,7 +3701,7 @@ const PromptActionNode = ({
                     thumb={thumb}
                     onRemove={
                       !isCheckpointLocked && nodeId
-                        ? () => removeRefNode(nodeId)
+                        ? () => removeRefNode(nodeId, nativeDraft ? endpointSlot : undefined)
                         : undefined
                     }
                     removeLabel={`Clear ${fullLabel} frame`}
@@ -3651,7 +3872,9 @@ const PromptActionNode = ({
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-content-secondary">
             Prompt
           </div>
-          <div
+          {!isCustom && nativeDraft?.projection?.revision.state.contentParts !== undefined ? <NativeOrderedPrompt
+            state={nativeDraft.projection.revision.state} disabled={isCheckpointLocked} edit={nativeDraft.edit}
+          /> : <div
             ref={editorRef}
             aria-label="Prompt"
             contentEditable={!isCheckpointLocked}
@@ -3665,7 +3888,7 @@ const PromptActionNode = ({
             data-placeholder="Describe anything you want to generate... (@ to ref assets)"
             onInput={isCheckpointLocked ? undefined : handleEditorInput}
             onKeyDown={isCheckpointLocked ? undefined : handleEditorKeyDown}
-          />
+          />}
           {showMentionMenu && filteredMentionNodes.length > 0 && (
             <ActionMentionPicker
               nodes={filteredMentionNodes}
@@ -3705,7 +3928,9 @@ const PromptActionNode = ({
             className="relative"
             style={customActionOffline ? { opacity: 0.5 } : undefined}
           >
-            <Tooltip label={modelPickerLabel}>
+            {modelUnavailable && availableModels.length === 0 && configureModels ? (
+              <Button size="sm" shape="pill" onClick={(event) => { event.stopPropagation(); configureModels(); }}>Configure models in Settings</Button>
+            ) : <Tooltip label={modelPickerLabel}>
               <span className="inline-flex min-w-0">
                 <SelectMenu<string>
                   className="relative"
@@ -3739,7 +3964,7 @@ const PromptActionNode = ({
                   stopPropagation
                 />
               </span>
-            </Tooltip>
+            </Tooltip>}
             {customActionOffline && (
               <span className="ml-2 text-[10px] text-slate-700 dark:text-slate-300 align-middle">
                 {RUNTIME_OFFLINE_LABEL}
@@ -3750,7 +3975,7 @@ const PromptActionNode = ({
           {/* Aspect ratio is a first-class toolbar control. It opens
                             its own secondary panel instead of hiding inside the
                             generic parameter accordion. */}
-          {aspectRatioParameter && (
+          {!modelUnavailable && aspectRatioParameter && (
             <Popover
               open={aspectRatioPopoverOpen}
               onOpenChange={(nextOpen) => {
@@ -3817,7 +4042,7 @@ const PromptActionNode = ({
           )}
 
           {/* Remaining parameters share the compact generic panel. */}
-          {secondaryParamChips.length > 0 && (
+          {!modelUnavailable && secondaryParameters.length > 0 && (
             <Popover
               open={paramsPopoverOpen}
               onOpenChange={(nextOpen) => {
@@ -3827,6 +4052,7 @@ const PromptActionNode = ({
             >
               <PopoverTrigger asChild>
                 <Button
+                  aria-label="Parameters"
                   className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors ${
                     paramsPopoverOpen
                       ? "bg-warm-hover text-slate-900 dark:text-slate-50"
@@ -3835,7 +4061,10 @@ const PromptActionNode = ({
                   onClick={(e) => e.stopPropagation()}
                 >
                   <span className="font-medium text-current">
-                    {secondaryParamChips.map((c) => c.value).join(" · ")}
+                    {secondaryParamChips
+                      .map((c) => c.value)
+                      .filter(Boolean)
+                      .join(" · ") || "Parameters"}
                   </span>
                   <CaretDown
                     size={10}
@@ -3867,7 +4096,9 @@ const PromptActionNode = ({
                           ? currentVal
                             ? "On"
                             : "Off"
-                          : String(currentVal);
+                          : currentVal === undefined || currentVal === ""
+                            ? "Default"
+                            : String(currentVal);
                     const sliderValue =
                       p.type === "slider"
                         ? normalizeSliderValue(currentVal, p.min ?? 0)
@@ -4007,7 +4238,7 @@ const PromptActionNode = ({
 
           {/* Batch count chip (xN). Stays interactive even when checkpoint-locked —
                             user can bump the count and then Run to spawn more siblings. */}
-          {!isCustom && (
+          {!isCustom && !modelUnavailable && (
             <SelectMenu<number>
               ariaLabel="Batch count"
               value={countValue}
@@ -4031,7 +4262,7 @@ const PromptActionNode = ({
           {/* Materialized-checkpoint lock: Run again or copy into a fresh revision. */}
           {isCheckpointLocked && (
             <>
-              <Tooltip label="Duplicate this panel and open the copy">
+              <Tooltip label={nativeDraft ? "Create an independent Generator copy" : "Duplicate this panel and open the copy"}>
                 <Button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4042,18 +4273,19 @@ const PromptActionNode = ({
                   size="sm"
                   shape="pill"
                   className="h-7 min-h-7 flex-shrink-0 border-0 bg-warm-muted px-2.5 text-xs font-medium text-stone-800 shadow-none hover:bg-warm-hover dark:text-stone-200"
-                  aria-label="Duplicate this panel and open the copy"
+                  aria-label={nativeDraft ? "Create an independent Generator copy" : "Duplicate this panel and open the copy"}
                 >
-                  Copy & open
+                  {nativeDraft ? "Copy" : "Copy & open"}
                 </Button>
               </Tooltip>
-              <Tooltip label={checkpointRunLabel}>
+              <Tooltip label={modelUnavailable ? modelUnavailableReason : checkpointRunLabel}>
                 <span className="inline-flex flex-shrink-0">
                   <Button
                     onClick={(e) => {
                       e.stopPropagation();
                       if (
-                        customActionOffline ||
+                        modelUnavailable ||
+                      customActionOffline ||
                         customActionDefinitionUpdated
                       )
                         return;
@@ -4061,6 +4293,7 @@ const PromptActionNode = ({
                     }}
                     disabled={
                       isExecuting ||
+                      modelUnavailable ||
                       customActionOffline ||
                       customActionDefinitionUpdated ||
                       !!referenceValidationError
@@ -4081,6 +4314,7 @@ const PromptActionNode = ({
                     className="clash-node-primary h-7 min-h-7 flex-shrink-0 px-3 text-xs font-semibold"
                     aria-label={checkpointRunLabel}
                     aria-disabled={
+                      modelUnavailable ||
                       customActionOffline ||
                       customActionDefinitionUpdated ||
                       !!referenceValidationError ||
@@ -4123,7 +4357,8 @@ const PromptActionNode = ({
               shape="rounded"
               onClick={(event) => {
                 event.stopPropagation();
-                toggleActionPanel();
+                selectAction();
+                openActionPanel();
               }}
               className="h-auto min-h-0 min-w-0 flex-1 cursor-pointer justify-start gap-2.5 rounded-none border-0 bg-transparent px-3.5 py-4 text-left shadow-none hover:bg-transparent focus-visible:ring-inset"
             >
@@ -4137,8 +4372,9 @@ const PromptActionNode = ({
                   {label || "Action"}
                 </span>
                 <span className="text-[10px] text-slate-700 dark:text-slate-300 truncate leading-none">
-                  {badgeDisplayName}
+                  {modelUnavailable ? "No available model selected" : badgeDisplayName}
                 </span>
+
                 {/* Phase 0 attribution — only renders when actor info is populated. */}
                 <AttributionLine
                   actorType={data.actorType as "user" | "agent" | undefined}
@@ -4149,14 +4385,15 @@ const PromptActionNode = ({
             </Button>
             <div className="flex flex-shrink-0 items-center pr-3.5">
               {/* Run button — separate click target */}
-              <Tooltip label={panelRunLabel}>
+              <Tooltip label={modelUnavailable ? modelUnavailableReason : panelRunLabel}>
                 <span className="inline-flex flex-shrink-0">
                   <Button
                     className={`nodrag h-7 min-h-7 flex-shrink-0 rounded-lg px-3 text-xs font-semibold text-white transition-transform hover:scale-[1.02] active:scale-95 ${btnClass}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       if (
-                        customActionOffline ||
+                        modelUnavailable ||
+                      customActionOffline ||
                         customActionDefinitionUpdated
                       )
                         return;
@@ -4164,12 +4401,14 @@ const PromptActionNode = ({
                     }}
                     disabled={
                       isExecuting ||
+                      modelUnavailable ||
                       customActionOffline ||
                       customActionDefinitionUpdated ||
                       !!referenceValidationError
                     }
                     aria-label={panelRunLabel}
                     aria-disabled={
+                      modelUnavailable ||
                       customActionOffline ||
                       customActionDefinitionUpdated ||
                       !!referenceValidationError ||
@@ -4382,4 +4621,25 @@ function RefPickerOptionButton({
   );
 }
 
-export default memo(PromptActionNode);
+function ActionBadgeNode(props: NodeProps<RFNode<Record<string, any>>>) {
+  const { projectId } = useProject();
+  const cards = useProjectCustomActions();
+  const loroSync = useOptionalLoroSyncContext();
+  const native = useNativeGeneratorDraft({ projectId, doc: loroSync?.doc ?? null,
+    generatorId: typeof props.data.generatorId === "string" ? props.data.generatorId : null });
+  if (!native) return <PromptActionNode {...props} />;
+  if (native.error || !native.projection) return <div role="alert" className="rounded-xl border border-red-300 bg-warm-surface p-4 text-sm text-red-600">{native.error}</div>;
+  let data: Record<string, unknown>;
+  try {
+    data = canvasModelGeneratorRevisionData(props.data, native.projection.revision);
+    if (typeof props.data.actionCardId === "string") {
+      const card = cards.find((entry) => entry.id === props.data.actionCardId);
+      const ref = native.projection.revision.definitionRef;
+      if (!card?.generator || card.pluginBinding?.pluginId !== ref.pluginId || card.generator.definitionId !== ref.definitionId) throw new Error("The Action Card for this Generator is unavailable.");
+      data.pluginBinding = { pluginId: ref.pluginId, version: ref.version, schemaHash: ref.schemaHash, exportId: card.pluginBinding.exportId };
+    }
+  }
+  catch (error) { return <div role="alert" className="rounded-xl border border-red-300 bg-warm-surface p-4 text-sm text-red-600">{error instanceof Error ? error.message : String(error)}</div>; }
+  return <PromptActionNode {...props} data={data} nativeDraft={native} />;
+}
+export default memo(ActionBadgeNode);

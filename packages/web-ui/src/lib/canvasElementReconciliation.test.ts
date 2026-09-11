@@ -1,5 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
+import { ACTION_BADGE_NODE_SIZE } from "@clash/shared-layout";
 import {
   reconcileSyncedCanvasEdges,
   reconcileSyncedCanvasNodes,
@@ -18,6 +19,18 @@ function createNode(index: number): Node {
 }
 
 describe("reconcileSyncedCanvasNodes", () => {
+  it("projects fixed Action bounds without rewriting the received node", () => {
+    const stored: Node = { id: "native", type: "action-badge", position: { x: 10, y: 20 },
+      width: 320, height: 220, style: { width: 320, height: 220, opacity: 0.8 },
+      data: { generatorId: "draft", actionCardId: "agent-text" } };
+    const before = structuredClone(stored);
+    const view = reconcileSyncedCanvasNodes<Node>([], [stored]);
+    expect(view[0]).toMatchObject({ ...ACTION_BADGE_NODE_SIZE, style: { ...ACTION_BADGE_NODE_SIZE, opacity: 0.8 } });
+    expect(stored).toEqual(before);
+    expect(view[0].data).toBe(stored.data);
+    expect(reconcileSyncedCanvasNodes(view, [stored])).toBe(view);
+  });
+
   it("reuses the array when an incoming snapshot is structurally unchanged", () => {
     const current = Array.from({ length: 20 }, (_, index) => createNode(index));
     const synced = structuredClone(current);
@@ -30,8 +43,8 @@ describe("reconcileSyncedCanvasNodes", () => {
       createNode(index),
     );
     current[500] = { ...current[500], selected: true };
-    const synced = structuredClone(current).map(({ selected: _selected, ...node }) =>
-      node,
+    const synced = structuredClone(current).map(
+      ({ selected: _selected, ...node }) => node,
     );
     synced[500] = {
       ...synced[500],
@@ -89,5 +102,20 @@ describe("reconcileSyncedCanvasEdges", () => {
     expect(result[0].selected).toBe(true);
     expect(result[1]).not.toBe(current[1]);
     expect(result[1].label).toBe("Changed");
+  });
+});
+
+describe("geometry-only synchronization", () => {
+  it("keeps node data and measurements stable when only position changes", () => {
+    const current = [
+      { ...createNode(0), measured: { width: 300, height: 400 } },
+    ];
+    const synced = [
+      { ...structuredClone(createNode(0)), position: { x: 500, y: 200 } },
+    ];
+    const [next] = reconcileSyncedCanvasNodes(current, synced);
+    expect(next.position).toEqual({ x: 500, y: 200 });
+    expect(next.data).toBe(current[0].data);
+    expect(next.measured).toBe(current[0].measured);
   });
 });

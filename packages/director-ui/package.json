@@ -33,6 +33,7 @@
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.6.1",
     "framer-motion": "^12.23.24",
+    "typescript": "^5.9.3",
     "three": "^0.185.1"
   },
   "peerDependencies": {
@@ -45,7 +46,6 @@
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "tsup": "^8.5.1",
-    "typescript": "^5.9.3",
     "vitest": "^4.1.0"
   }
 }

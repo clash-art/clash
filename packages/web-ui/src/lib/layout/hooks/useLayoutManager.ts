@@ -1,5 +1,5 @@
 import { useCallback, useMemo } from 'react';
-import { useReactFlow, Node, Edge } from '@xyflow/react';
+import { useReactFlow, Node } from '@xyflow/react';
 import type {
     Point,
     Size,
@@ -19,9 +19,6 @@ import {
     applyGroupScales,
     resolveCollisions,
     applyResolution,
-    needsAutoLayout,
-    autoInsertNode,
-    applyAutoInsertResult,
 } from '@clash/shared-layout';
 import type { LayoutManagerConfig } from '../types';
 
@@ -146,9 +143,6 @@ export interface UseLayoutManagerReturn {
         parentNodeId: string,
         offset?: { x: number; y: number }
     ) => Node | null;
-
-    // Auto-insert for nodes with special placeholder position
-    handleAutoInsertNodes: (edges: Edge[]) => string[];
 
     // Mesh instance
     mesh: Mesh;
@@ -407,63 +401,6 @@ export function useLayoutManager(
         return addNodeWithLayout(newNode, absTargetPos, undefined);
     }, [getNodes, addNodeWithLayout]);
 
-    const handleAutoInsertNodes = useCallback((edges: Edge[]): string[] => {
-        const processed: string[] = [];
-
-        setNodes((nodes) => {
-            const nodesToLayout = nodes.filter(needsAutoLayout);
-
-            if (nodesToLayout.length === 0) {
-                return nodes;
-            }
-
-            console.log(`[LayoutManager] Auto-inserting ${nodesToLayout.length} node(s)`);
-
-            let updatedNodes: Node[] = [...nodes];
-
-            for (const node of nodesToLayout) {
-                const result = autoInsertNode(node.id, updatedNodes, edges);
-
-                console.log(
-                    `[LayoutManager] Auto-inserted ${node.id}: ` +
-                    `position=(${result.position.x}, ${result.position.y}), ` +
-                    `hasReference=${result.hasReference}, ` +
-                    `pushed=${result.pushedNodes.size} node(s)`
-                );
-
-                updatedNodes = applyAutoInsertResult(updatedNodes, node.id, result) as Node[];
-                processed.push(node.id);
-
-                if (finalConfig.autoScale && node.parentId) {
-                    const scales = recursiveGroupScale(node.id, updatedNodes);
-                    if (scales.size > 0) {
-                        console.log(`[LayoutManager] Scaled ${scales.size} group(s) for ${node.id}`);
-                        updatedNodes = applyGroupScales(updatedNodes, scales) as Node[];
-
-                        if (finalConfig.autoResolveCollisions) {
-                            for (const groupId of scales.keys()) {
-                                const collisionResult = resolveCollisions(updatedNodes, groupId, mesh, {
-                                    maxIterations: finalConfig.maxChainReactionIterations,
-                                });
-                                if (collisionResult.steps.length > 0) {
-                                    updatedNodes = applyResolution(updatedNodes, collisionResult) as Node[];
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (updatedNodes !== nodes) {
-                finalConfig.onNodesMutated?.(nodes, updatedNodes);
-            }
-
-            return updatedNodes;
-        });
-
-        return processed;
-    }, [setNodes, mesh, finalConfig]);
-
     return {
         checkGroupOwnership,
         applyOwnershipChange,
@@ -475,7 +412,6 @@ export function useLayoutManager(
         findNonOverlappingPosition,
         addNodeWithLayout,
         addNodeWithAutoLayout,
-        handleAutoInsertNodes,
         mesh,
     };
 }

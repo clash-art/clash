@@ -192,10 +192,12 @@ export function VideoPoster({
           preload="metadata"
           crossOrigin="anonymous"
           onLoadedData={(event) => {
-            if (event.currentTarget.currentTime <= 0.01) {
-              capture(event.currentTarget);
-            }
+            // Chromium may report loadeddata before drawImage can access the
+            // decoded frame. An explicit seek to the start completes decoding
+            // without changing which frame is used as the cover.
+            event.currentTarget.currentTime = 0;
           }}
+          onSeeked={(event) => capture(event.currentTarget)}
           onError={() => {
             if (playback) setFailedCapture(playback);
           }}

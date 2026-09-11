@@ -331,6 +331,7 @@ function applyDocumentSuccess(
 }
 
 export function createLocalGeneratorRunBridge(options: {
+  now?: () => number;
   ownerId: string;
   journal: SqliteDurableRunJournal;
 }): LocalGeneratorRunBridge {
@@ -369,7 +370,7 @@ export function createLocalGeneratorRunBridge(options: {
         if (existing) {
           // This path performs the coordinator's canonical frozen-input
           // compatibility check; because the identity exists it cannot write.
-          await createLocalDurableRun({ ownerId: options.ownerId, journal: options.journal, command: entry.command });
+          await createLocalDurableRun({ ownerId: options.ownerId, journal: options.journal, ...(options.now ? { clock: { now: options.now } } : {}), command: entry.command });
         }
       }
 
@@ -386,7 +387,7 @@ export function createLocalGeneratorRunBridge(options: {
       // Do not project any Run as running until every private task is durable.
       // A retry reuses compatible tasks and repairs only the missing suffix.
       for (const entry of admitted) {
-        await createLocalDurableRun({ ownerId: options.ownerId, journal: options.journal, command: entry.command });
+        await createLocalDurableRun({ ownerId: options.ownerId, journal: options.journal, ...(options.now ? { clock: { now: options.now } } : {}), command: entry.command });
       }
       let runningChanged = false;
       for (const entry of admitted) {

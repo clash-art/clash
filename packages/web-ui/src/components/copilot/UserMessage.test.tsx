@@ -24,6 +24,17 @@ afterEach(() => {
 });
 
 describe("UserMessage", () => {
+  it("does not render host-injected context in a replayed user message", () => {
+    render(<UserMessage content={[
+      "[Clash host context — supplied by the application, not written by the user]",
+      'Session binding: {"projectId":"private-project"}',
+      "[/Clash host context]",
+      "看看我打开了",
+    ].join("\n")} />);
+    expect(screen.getByText("看看我打开了")).toBeTruthy();
+    expect(screen.queryByText(/private-project|Clash host context/)).toBeNull();
+  });
+
   it("uses the compact workspace message surface instead of a floating card", () => {
     const { container } = render(<UserMessage content="hi" />);
     const bubble = container.querySelector(".clash-user-message-bubble");

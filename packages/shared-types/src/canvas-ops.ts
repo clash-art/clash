@@ -6,8 +6,9 @@
  * and exposes clean business-level methods.
  */
 import type { LoroDoc } from "loro-crdt";
+import { readGeneratorRevision } from "./project-generators.js";
 import type { LayoutNode, LayoutEdge } from "@clash/shared-layout";
-import { NEEDS_LAYOUT_POSITION, autoInsertNode } from "@clash/shared-layout";
+import { NEEDS_LAYOUT_POSITION, autoInsertNode, processAutoLayoutNodes } from "@clash/shared-layout";
 import {
   AGENT_NODE_TYPE_MAP,
   NodeType,
@@ -47,7 +48,8 @@ import {
   isCanvasManagedAssetAction,
 } from "./canvas-action-asset-inputs.js";
 import { readProjectAsset } from "./project-assets.js";
-import { ProjectTimelineEnvelopeSchema } from "./timeline-generator-projection.js";
+import { ProjectTimelineEnvelopeSchema } from "./timeline-envelope.js";
+import { projectCanvasModelGeneratorData, assertCanvasModelGeneratorPatch } from "./canvas-model-generator.js";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -288,7 +290,7 @@ export class Canvas {
         raw as Record<string, any>,
         readNodeUpstreamRefs(this.doc, id, raw),
       );
-      if (node.canvas_id === this.canvasId) nodes.push(node);
+      if (node.canvas_id === this.canvasId) nodes.push({ ...node, data: projectCanvasModelGeneratorData(this.doc, node.type, node.data) });
     }
     if (nodeType) nodes = nodes.filter((n) => n.type === nodeType);
     if (parentId) nodes = nodes.filter((n) => n.parent_id === parentId);
@@ -304,7 +306,7 @@ export class Canvas {
       raw,
       readNodeUpstreamRefs(this.doc, nodeId, raw),
     );
-    return node.canvas_id === this.canvasId ? node : null;
+    return node.canvas_id === this.canvasId ? { ...node, data: projectCanvasModelGeneratorData(this.doc, node.type, node.data) } : null;
   }
 
   searchNodes(query: string, nodeTypes?: string[] | null): NodeInfo[] {
@@ -359,6 +361,27 @@ export class Canvas {
   }
 
   // ── Write ────────────────────────────────────────────
+
+  /** Complete legacy placement before Host publication, preserving referenced nodes. */
+  layoutPendingNodes(): string[] {
+    const records = this.doc.getMap("nodes");
+    const nodes = this.listNodes().map(node => {
+      const raw = records.get(node.id) as Record<string, unknown>;
+      return { ...toLayoutNode(node), position: raw.position ? node.position : NEEDS_LAYOUT_POSITION };
+    });
+    const result = processAutoLayoutNodes(nodes, listNodeOwnedEdges(this.doc));
+    if (result.processed.length === 0) return [];
+    const previousPositions = new Map(nodes.map(node => [node.id, node.position]));
+    const updates = new Map<string, { x: number; y: number }>();
+    for (const node of result.nodes) {
+      const before = previousPositions.get(node.id)!;
+      if (before.x !== node.position.x || before.y !== node.position.y) {
+        updates.set(node.id, node.position);
+      }
+    }
+    this.batchUpdatePositions(updates);
+    return result.processed;
+  }
 
   insertNode(
     nodeId: string,
@@ -581,6 +604,7 @@ export class Canvas {
       patch.data && typeof patch.data === "object" && !Array.isArray(patch.data)
         ? (patch.data as Record<string, unknown>)
         : {};
+    assertCanvasModelGeneratorPatch(currentNode.type, raw.data ?? {}, patchData);
     const nextData = projectVisibleNodeData({
       ...(raw.data ?? {}),
       ...patchData,
@@ -816,7 +840,7 @@ export class Canvas {
       const result = autoInsertNode(
         nodeId,
         [...existingNodes, virtualNode],
-        this.listEdges(),
+        listNodeOwnedEdges(this.doc),
       );
       finalPos = result.position;
 
@@ -889,7 +913,7 @@ export class Canvas {
     const result = autoInsertNode(
       nodeId,
       [...existingNodes, virtualNode],
-      [...this.listEdges(), { source: sourceNodeId, target: nodeId }],
+      [...listNodeOwnedEdges(this.doc), { source: sourceNodeId, target: nodeId }],
     );
 
     // The downstream node owns the relationship, so it must exist before
@@ -1039,6 +1063,35 @@ export class Canvas {
         position: { x: 0, y: 0 },
         error: `Node ${nodeId} is not a generation node`,
       };
+    }
+
+    // Native placements pin one immutable draft. Host admission validates its
+    // Model Card and inputs; Canvas never recompiles the draft from view fields.
+    if (typeof nodeData.generatorId === "string" && typeof nodeData.generatorRevisionId === "string") {
+      const assetNodeId = generateId();
+      if (this.readNode(assetNodeId)) return { assetNodeId: "", assetNodeType: "", position: { x: 0, y: 0 }, error: `Node ${assetNodeId} already exists` };
+      const nativeAction = isCustomGen ? customActionDefinition?.generator : undefined;
+      if (isCustomGen && (!nativeAction || customActionDefinition?.id !== nodeData.actionCardId)) {
+        return { assetNodeId: "", assetNodeType: "", position: { x: 0, y: 0 }, error: "Read the Action Card's native Generator contract before executing it." };
+      }
+      if (nativeAction) {
+        const revision = readGeneratorRevision(this.doc, { generatorId: nodeData.generatorId, generatorRevisionId: nodeData.generatorRevisionId });
+        const binding = customActionDefinition?.pluginBinding;
+        const ref = revision?.definitionRef;
+        if (!binding || ref?.pluginId !== binding.pluginId || ref.definitionId !== nativeAction.definitionId || ref.version !== binding.version || ref.schemaHash !== binding.schemaHash) {
+          return { assetNodeId: "", assetNodeType: "", position: { x: 0, y: 0 }, error: "The Action Card changed. Prepare the native Generator draft before executing it." };
+        }
+      }
+      const assetNodeType = isCustomGen ? customActionDefinition!.outputType : actionType.replace(/-gen$/, "");
+      const linked = this.createLinkedNode({
+        nodeId: assetNodeId, nodeType: assetNodeType, parentId: node.parent_id, sourceNodeId: nodeId,
+        data: { status: "pending", label: nodeData.label ?? "Generated media",
+          generatorRevision: { generatorId: nodeData.generatorId, generatorRevisionId: nodeData.generatorRevisionId },
+          ...(nativeAction ? { generatorActionId: nativeAction.actionId } : {}),
+          ...Object.fromEntries(["actorType", "actorUserId", "actorAgentId"].flatMap((key) => nodeData[key] === undefined ? [] : [[key, nodeData[key]]])),
+        },
+      });
+      return { assetNodeId, assetNodeType, position: linked.position, error: null };
     }
 
     // Extract prompt

@@ -4,6 +4,250 @@
   "title": "Clash content-effect benchmark v2 — multi-category product-rendered cases",
   "cases": [
     {
+      "id": "product-ad-director-to-video-v1",
+      "title": "Product ad from Director references through video generation and edit",
+      "category": "mixed",
+      "tags": ["content-effect", "content-ad-product-showcase"],
+      "outcome": {
+        "objective": "Make a 6-second square advertisement for one original unbranded desk gadget. Use a Director Stage to prepare a silhouette reveal, material-detail move, and final hero shot. Capture the planned views, refine unfinished proxy appearance through image generation if needed, and use the selected images as actual inputs to a video model through Clash. Generate the moving shots, select and trim the takes in an editable Timeline, and deliver the final 1080x1080 video. Keep the product's geometry, controls, finish, and accent color consistent. Preserve the source Stage, reference images, generated takes, and the complete reference-to-video-to-edit lineage. A Stage, three PNGs, a slideshow, or a direct Stage render alone does not fulfill this video-generation task.",
+        "acceptanceCriteria": [
+          "The editable Stage and its exact revision remain available, and the opening, detail, and closing captures are immutable Project image Assets produced by the Director renderer.",
+          "Each selected video take comes from a completed Clash video-model Action whose frozen inputs include the corresponding capture or a refined keyframe derived from it. Preserve capture-to-keyframe lineage when refinement is used; a filename in prompt prose is not a bound image input.",
+          "Choose supported reference roles, source durations, and output parameters from the live Model Card and configured Provider. Trim the generated source clips to the requested edit duration instead of assuming the video model accepts arbitrary shot lengths.",
+          "The canonical editable Timeline uses the selected generated video Assets in the planned order. The final MP4 is rendered from that exact Timeline revision, is decodable at 1080x1080, and lasts 6 seconds within one frame at 30fps.",
+          "Review the full moving shots and final edit for stable product identity, intended subject and camera motion, material flicker, plausible contact, cut continuity, and a readable final hero hold. Inspecting only reference images cannot establish motion quality.",
+          "Retain exact Asset identities, Generator revisions, ActionRuns, OutputCommits, Timeline revision, and final-render provenance for independent Host readback. Do not substitute agent-authored success claims for that evidence."
+        ],
+        "deliverables": [
+          {
+            "artifactId": "stage",
+            "kind": "director-stage",
+            "description": "Editable source Director Stage"
+          },
+          {
+            "artifactId": "reference-opening",
+            "kind": "image",
+            "description": "Director opening capture before any optional refinement"
+          },
+          {
+            "artifactId": "reference-detail",
+            "kind": "image",
+            "description": "Director detail capture before any optional refinement"
+          },
+          {
+            "artifactId": "reference-closing",
+            "kind": "image",
+            "description": "Director closing capture before any optional refinement"
+          },
+          {
+            "artifactId": "take-opening",
+            "kind": "video",
+            "description": "Actual video-model opening take, before Timeline trimming"
+          },
+          {
+            "artifactId": "take-detail",
+            "kind": "video",
+            "description": "Actual video-model detail take, before Timeline trimming"
+          },
+          {
+            "artifactId": "take-closing",
+            "kind": "video",
+            "description": "Actual video-model closing take, before Timeline trimming"
+          },
+          {
+            "artifactId": "timeline",
+            "kind": "timeline",
+            "description": "Canonical editable Timeline referencing the selected video Assets"
+          },
+          {
+            "artifactId": "final-video",
+            "kind": "video",
+            "description": "Six-second square advertisement rendered from the persisted Timeline"
+          },
+          {
+            "artifactId": "lineage-report",
+            "kind": "report",
+            "description": "Index of exact reference, optional refined keyframe, generated take, Timeline and render identities; this index is not trusted provenance by itself"
+          }
+        ]
+      },
+      "qualityCriteria": [
+        {
+          "id": "product-identity-and-motion",
+          "description": "Across each full generated take, the gadget retains its geometry, controls, finish, and accent color from the corresponding reference, with coherent subject and camera motion, stable materials, and plausible contact.",
+          "weight": 1,
+          "evidenceArtifactIds": [
+            "reference-opening",
+            "reference-detail",
+            "reference-closing",
+            "take-opening",
+            "take-detail",
+            "take-closing"
+          ]
+        },
+        {
+          "id": "advertising-edit",
+          "description": "The complete video progresses clearly from recognition through a useful material detail to a readable hero hold. Cuts connect the generated motion without identity jumps, frozen placeholder frames, or error screens.",
+          "weight": 1,
+          "evidenceArtifactIds": ["final-video"]
+        }
+      ],
+      "passScore": 85,
+      "timeoutMs": 1800000,
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "product-ad"
+      },
+      "skills": [
+        "../../../plugins/clash/skills/clash-director-production",
+        "../../../plugins/clash/skills/clash-timeline-production",
+        "../../../plugins/clash/skills/clash-video-finishing"
+      ],
+      "execution": {
+        "profile": "clash-host",
+        "lane": "blocked-contract",
+        "requiredProductOperations": [
+          "director.create",
+          "director.get",
+          "director.capture",
+          "timeline.create",
+          "timeline.get",
+          "timeline.validate",
+          "timeline.save",
+          "timeline.render"
+        ],
+        "requiredCapabilities": ["director-video-edit-lineage-readback"],
+        "preflight": {
+          "status": "blocked",
+          "checks": [
+            {
+              "capability": "director-video-edit-lineage-readback",
+              "status": "missing",
+              "detail": "Clash exposes Director capture and native model-generation Actions, but this benchmark runner does not yet independently verify capture/refined-keyframe Asset inputs through video-model Generator revisions, ActionRuns and OutputCommits into the selected Timeline and final render. Existing Stage-only or Remotion readback cannot certify this chain."
+            }
+          ]
+        },
+        "evidence": { "traceRequired": true, "submissionRequired": true },
+        "productReadback": {
+          "required": true,
+          "mechanism": "director-video-edit-lineage",
+          "artifactIds": [
+            "stage",
+            "reference-opening",
+            "reference-detail",
+            "reference-closing",
+            "take-opening",
+            "take-detail",
+            "take-closing",
+            "timeline",
+            "final-video"
+          ],
+          "description": "Required future trusted readback: verify exact Director capture provenance, any intervening image-model revisions, image inputs to successful video-model Actions, exact committed take bytes, selected video Asset references in the persisted Timeline, and final-render bytes bound to that Timeline revision."
+        },
+        "environment": {
+          "profile": "clash-agent-environment-v1",
+          "track": "content-effect",
+          "initialState": {
+            "workspace": {
+              "format": "clash-workspace-v1",
+              "path": "environments/base-workspace-v1",
+              "bundleDigest": "44942cda6371beb8cba8c41d521ffdf055ce2015f0535be500b789e79d38903f"
+            }
+          },
+          "outputs": {
+            "modifiedWorkspace": true,
+            "rawTrajectory": true,
+            "normalizedTrajectory": "clash-normalized-v1",
+            "atifTrajectory": "ATIF-v1.7-when-supported",
+            "otlpTrace": "otlp-json",
+            "attempt": "clash-attempt-v1"
+          }
+        }
+      },
+      "rubric": [
+        {
+          "id": "stage",
+          "type": "director-stage",
+          "artifactId": "stage",
+          "weight": 10,
+          "required": true
+        },
+        {
+          "id": "opening-reference",
+          "type": "media",
+          "artifactId": "reference-opening",
+          "weight": 5,
+          "required": true
+        },
+        {
+          "id": "detail-reference",
+          "type": "media",
+          "artifactId": "reference-detail",
+          "weight": 5,
+          "required": true
+        },
+        {
+          "id": "closing-reference",
+          "type": "media",
+          "artifactId": "reference-closing",
+          "weight": 5,
+          "required": true
+        },
+        {
+          "id": "opening-take",
+          "type": "media",
+          "artifactId": "take-opening",
+          "requireVideo": true,
+          "weight": 10,
+          "required": true
+        },
+        {
+          "id": "detail-take",
+          "type": "media",
+          "artifactId": "take-detail",
+          "requireVideo": true,
+          "weight": 10,
+          "required": true
+        },
+        {
+          "id": "closing-take",
+          "type": "media",
+          "artifactId": "take-closing",
+          "requireVideo": true,
+          "weight": 10,
+          "required": true
+        },
+        {
+          "id": "editable-timeline",
+          "type": "timeline",
+          "artifactId": "timeline",
+          "requiredItemTypes": ["video"],
+          "weight": 15,
+          "required": true
+        },
+        {
+          "id": "final-video",
+          "type": "media",
+          "artifactId": "final-video",
+          "requireVideo": true,
+          "width": 1080,
+          "height": 1080,
+          "minDurationSeconds": 5.966,
+          "maxDurationSeconds": 6.034,
+          "weight": 25,
+          "required": true
+        },
+        {
+          "id": "lineage-index",
+          "type": "artifact-exists",
+          "artifactId": "lineage-report",
+          "kind": "report",
+          "weight": 5,
+          "required": true
+        }
+      ]
+    },
+    {
       "id": "director-street-vlog-cold-open-v2",
       "title": "Director street-vlog cold open",
       "qualityCriteria": [
@@ -60,10 +304,7 @@
       },
       "passScore": 85,
       "timeoutMs": 900000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -156,7 +397,11 @@
           "weight": 10,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "narrative"
+      }
     },
     {
       "id": "director-challenge-arena-countdown-v2",
@@ -215,10 +460,7 @@
       },
       "passScore": 85,
       "timeoutMs": 900000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -311,7 +553,11 @@
           "weight": 10,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "narrative"
+      }
     },
     {
       "id": "director-premium-gadget-hero-v2",
@@ -370,10 +616,7 @@
       },
       "passScore": 85,
       "timeoutMs": 900000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -466,7 +709,11 @@
           "weight": 10,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "product-ad"
+      }
     },
     {
       "id": "director-future-lab-walkthrough-v2",
@@ -525,10 +772,7 @@
       },
       "passScore": 85,
       "timeoutMs": 900000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -621,7 +865,11 @@
           "weight": 10,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "director-investigation-evidence-wall-v2",
@@ -680,10 +928,7 @@
       },
       "passScore": 85,
       "timeoutMs": 900000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-director-production"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-director-production"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -776,7 +1021,11 @@
           "weight": 10,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "timeline-vertical-retention-hook-v2",
@@ -837,7 +1086,6 @@
       "passScore": 82,
       "timeoutMs": 1200000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
       ],
@@ -957,7 +1205,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "product-ad"
+      }
     },
     {
       "id": "timeline-talking-head-tech-review-v2",
@@ -1024,7 +1276,6 @@
         "manifestSha256": "9888a35c35b548ec996f4b53813483185fff909de2e0aab8c26a3b9157a132ce"
       },
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
       ],
@@ -1145,7 +1396,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "talking-head"
+      }
     },
     {
       "id": "timeline-productivity-tip-cutdown-v2",
@@ -1206,7 +1461,6 @@
       "passScore": 82,
       "timeoutMs": 1200000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
       ],
@@ -1326,7 +1580,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "timeline-map-investigation-explainer-v2",
@@ -1387,7 +1645,6 @@
       "passScore": 82,
       "timeoutMs": 1200000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
       ],
@@ -1507,7 +1764,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "timeline-street-vlog-mini-story-v2",
@@ -1568,7 +1829,6 @@
       "passScore": 82,
       "timeoutMs": 1200000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
       ],
@@ -1689,7 +1949,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "narrative"
+      }
     },
     {
       "id": "remotion-character-cosmic-question-host-v2",
@@ -1755,7 +2019,7 @@
       },
       "passScore": 82,
       "timeoutMs": 1200000,
-      "skills": ["../../../plugins/clash/skills/clash"],
+      "skills": ["../../../plugins/clash/skills/clash-mg-character"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -1913,7 +2177,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "remotion-character-task-juggler-v2",
@@ -1979,10 +2247,7 @@
       },
       "passScore": 82,
       "timeoutMs": 1200000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-mg-character"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-mg-character"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -2140,7 +2405,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "brand-motion"
+      }
     },
     {
       "id": "remotion-character-hot-take-reaction-v2",
@@ -2206,10 +2475,7 @@
       },
       "passScore": 82,
       "timeoutMs": 1200000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-mg-character"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-mg-character"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -2372,7 +2638,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "talking-head"
+      }
     },
     {
       "id": "remotion-character-claim-evidence-synthesis-v2",
@@ -2438,10 +2708,7 @@
       },
       "passScore": 82,
       "timeoutMs": 1200000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-mg-character"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-mg-character"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -2604,7 +2871,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "remotion-character-channel-sting-v2",
@@ -2670,10 +2941,7 @@
       },
       "passScore": 82,
       "timeoutMs": 1200000,
-      "skills": [
-        "../../../plugins/clash/skills/clash",
-        "../../../plugins/clash/skills/clash-mg-character"
-      ],
+      "skills": ["../../../plugins/clash/skills/clash-mg-character"],
       "execution": {
         "profile": "clash-host",
         "requiredCapabilities": [
@@ -2836,7 +3104,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "brand-motion"
+      }
     },
     {
       "id": "mixed-productivity-mythbust-short-v2",
@@ -2918,7 +3190,6 @@
       "passScore": 85,
       "timeoutMs": 1500000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-director-production",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-mg-character",
@@ -3125,7 +3396,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "mixed-challenge-cold-open-v2",
@@ -3207,7 +3482,6 @@
       "passScore": 85,
       "timeoutMs": 1500000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-director-production",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-mg-character",
@@ -3419,7 +3693,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "narrative"
+      }
     },
     {
       "id": "mixed-premium-gadget-mini-review-v2",
@@ -3504,7 +3782,6 @@
       "passScore": 85,
       "timeoutMs": 1500000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-director-production",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-mg-character",
@@ -3716,7 +3993,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "product-ad"
+      }
     },
     {
       "id": "mixed-map-investigation-story-v2",
@@ -3798,7 +4079,6 @@
       "passScore": 85,
       "timeoutMs": 1500000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-director-production",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-mg-character",
@@ -4010,7 +4290,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "mixed-future-tech-optimist-short-v2",
@@ -4092,7 +4376,6 @@
       "passScore": 85,
       "timeoutMs": 1500000,
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-director-production",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-mg-character",
@@ -4304,7 +4587,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "explainer"
+      }
     },
     {
       "id": "remotion-rhythm-mascot-mv-v2",
@@ -4390,7 +4677,6 @@
         "manifestSha256": "bf7e10885652564cf761bc6b3dbdf3e42cf37037a0ab2cfc35cfd5988c8e70fa"
       },
       "skills": [
-        "../../../plugins/clash/skills/clash",
         "../../../plugins/clash/skills/clash-mg-character",
         "../../../plugins/clash/skills/clash-timeline-production",
         "../../../plugins/clash/skills/clash-video-finishing"
@@ -4575,7 +4861,11 @@
           "weight": 5,
           "required": true
         }
-      ]
+      ],
+      "skillPack": {
+        "path": "../../../plugins/clash/skill-packs.json",
+        "id": "music-video"
+      }
     }
   ]
 }

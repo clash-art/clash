@@ -1146,6 +1146,7 @@ function validateAndCollectProject(doc: LoroDoc): ExportClosure {
         "source",
         "metadata",
         "lifecycleState",
+        "createdAt",
         "name",
         "provenance",
         "deleteOperationId",

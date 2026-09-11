@@ -16,7 +16,7 @@ interface Props {
   installedSkillIds: string[];
   installedPluginIds?: string[];
   mode?: "public" | "manage";
-  catalogScope?: "all" | "plugins-and-actions";
+  catalogScope?: "all" | "plugins-and-actions" | "official-picks";
   canAddReference?: boolean;
   onAddReference?: AddMarketplaceSkillReference;
 }
@@ -54,7 +54,13 @@ export default function MarketplaceClient({
     let result =
       catalogScope === "plugins-and-actions"
         ? items.filter((item) => item.type !== "skill")
-        : items;
+        : catalogScope === "official-picks"
+          ? items.filter(
+              (item) =>
+                item.type !== "skill" ||
+                item.curation?.collection === "official-picks",
+            )
+          : items;
     if (typeFilters.length > 0) {
       result = result.filter((item) =>
         typeFilters.every((typeFilter) => item.type === typeFilter),
@@ -76,15 +82,17 @@ export default function MarketplaceClient({
   const typeFilterOptions: Array<{
     value: MarketplaceTypeFilter;
     label: string;
-  }> = catalogScope === "plugins-and-actions"
-    ? [
-        { value: "plugin", label: "Plugins" },
-        { value: "action", label: "Actions" },
-      ]
-    : [
-        { value: "action", label: "Actions" },
-        { value: "skill", label: "Skills" },
-      ];
+  }> =
+    catalogScope === "plugins-and-actions"
+      ? [
+          { value: "plugin", label: "Plugins" },
+          { value: "action", label: "Actions" },
+        ]
+      : [
+          { value: "plugin", label: "Plugins" },
+          { value: "action", label: "Actions" },
+          { value: "skill", label: "Skills" },
+        ];
   const emptyMessage = query.trim()
     ? `No results for "${query}"`
     : typeFilters.length > 0
@@ -93,17 +101,21 @@ export default function MarketplaceClient({
 
   return (
     <div className="min-h-screen">
-      <AppPage width="narrow">
+      <AppPage width="wide">
         <AppPageHeader
-          title="Marketplace"
+          title={
+            catalogScope === "official-picks" ? "Official Picks" : "Marketplace"
+          }
           description={
-            canManage
-              ? catalogScope === "plugins-and-actions"
-                ? "Install Clash plugins and actions for your workspace"
-                : "Install actions and skills for your workspace"
-              : catalogScope === "plugins-and-actions"
-                ? "Plugins and actions for Clash projects"
-                : "Actions and skills for Clash agents"
+            catalogScope === "official-picks"
+              ? "Creative tools and skills selected by Clash, with original sources credited"
+              : canManage
+                ? catalogScope === "plugins-and-actions"
+                  ? "Install Clash plugins and actions for your workspace"
+                  : "Install actions and skills for your workspace"
+                : catalogScope === "plugins-and-actions"
+                  ? "Plugins and actions for Clash projects"
+                  : "Actions and skills for Clash agents"
           }
         />
 

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import {
   lstat,
   mkdir,
@@ -32,6 +33,7 @@ import {
 
 import {
   createExecutablePluginActivationReceipt,
+  executablePluginDirectoryContentHash,
   executablePluginActivationReceiptPath,
   runExecutablePluginContractTests,
   type ExecutablePluginContractTestRun,
@@ -169,8 +171,12 @@ async function contractTestHostPackage(
 async function writeActivationReceipt(
   actionsRoot: string,
   pluginDir: string,
+  expectedContentHash?: string,
 ): Promise<void> {
   const receipt = await createExecutablePluginActivationReceipt(pluginDir);
+  if (expectedContentHash && receipt.contentHash !== expectedContentHash) {
+    throw new Error("Active plugin changed during revalidation; activate a new version.");
+  }
   const target = executablePluginActivationReceiptPath(
     actionsRoot,
     receipt.pluginId,
@@ -332,15 +338,19 @@ export async function activateOrUpdateHostExecutablePluginPackage(
 ): Promise<UpdatedHostExecutablePluginPackage> {
   const manifest = validateHostExecutablePluginPackage(input);
   const targetDir = join(actionsRoot, manifest.id);
+  let sameVersion = false;
+  let unchangedManifest: string | undefined;
   if (existsSync(join(targetDir, "manifest.json"))) {
+    const manifestBytes = await readFile(join(targetDir, "manifest.json"), "utf8");
     const existing = ExecutablePluginManifestSchema.parse(
-      JSON.parse(await readFile(join(targetDir, "manifest.json"), "utf8")),
+      JSON.parse(manifestBytes),
     );
     if (existing.version === manifest.version) {
-      throw new Error(
-        `Executable plugin ${manifest.id} version ${manifest.version} is already active; ` +
-          "bump the version before changing or reactivating executable code.",
-      );
+      if (!isDeepStrictEqual(existing, manifest)) {
+        throw new Error(`Executable plugin ${manifest.id} version ${manifest.version} is already active; bump the version before changing its manifest.`);
+      }
+      sameVersion = true;
+      unchangedManifest = manifestBytes;
     }
   }
 
@@ -349,6 +359,26 @@ export async function activateOrUpdateHostExecutablePluginPackage(
   let rollbackDir: string | undefined;
   try {
     await writeHostPackageDirectory(stagingDir, input);
+    if (sameVersion) {
+      // Host schema defaults and JSON formatting must not rewrite an unchanged
+      // artifact during explicit revalidation of an older activation.
+      await writeFile(join(stagingDir, "manifest.json"), unchangedManifest!);
+      const stored = ExecutablePluginActivationReceiptSchema.parse(JSON.parse(await readFile(
+        executablePluginActivationReceiptPath(actionsRoot, manifest.id), "utf8",
+      )));
+      const [activeHash, stagedHash] = await Promise.all([
+        executablePluginDirectoryContentHash(targetDir),
+        executablePluginDirectoryContentHash(stagingDir),
+      ]);
+      if (stored.pluginId !== manifest.id || stored.version !== manifest.version ||
+        stored.contentHash !== activeHash || stored.contentHash !== stagedHash) {
+        throw new Error(`Executable plugin ${manifest.id} version ${manifest.version} is already active; bump the version before changing executable code.`);
+      }
+      const contractTests = await contractTestHostPackage(stagingDir, input);
+      await writeActivationReceipt(actionsRoot, targetDir, stored.contentHash);
+      await rm(stagingDir, { recursive: true, force: true });
+      return { id: manifest.id, version: manifest.version, targetDir, ...(contractTests ? { contractTests } : {}) };
+    }
     const contractTests = await contractTestHostPackage(stagingDir, input);
     if (existsSync(targetDir)) {
       const rollbackRoot = join(actionsRoot, ".rollback", manifest.id);

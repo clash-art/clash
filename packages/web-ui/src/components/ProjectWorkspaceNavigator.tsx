@@ -20,9 +20,17 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
+  type ComponentProps,
 } from "react";
 import { Link } from "react-router";
+import { motion, useReducedMotion } from "framer-motion";
+import {
+  Collapsible,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "./ui/collapsible";
 import type {
   AgentAnnotationTarget,
   ProjectCanvas,
@@ -103,6 +111,7 @@ interface ProjectWorkspaceNavigatorProps {
   footer?: ReactNode;
   canvases: ProjectCanvas[];
   timelines: ProjectTimeline[];
+  timelineError?: string | null;
   directorStages?: ProjectDirectorStage[];
   assets: ResolvedAsset[];
   textAssets?: ProjectTextAsset[];
@@ -140,7 +149,7 @@ interface ProjectWorkspaceNavigatorProps {
 }
 
 const sectionHeaderClass =
-  "flex h-[var(--clash-project-control-rhythm,2rem)] items-center justify-between px-1";
+  "flex h-[var(--clash-project-control-rhythm,2rem)] items-center justify-between pr-1";
 const sectionHeadingClass =
   "font-display text-[11px] font-semibold text-stone-500";
 const sidebarActionSlotClass =
@@ -160,6 +169,24 @@ interface ProjectFolderSectionProps {
   children: ReactNode;
 }
 
+function NavigatorTab(props: ComponentProps<typeof Tab>) {
+  const reducedMotion = useReducedMotion();
+  return (
+    <motion.div
+      className="min-w-0"
+      layout={reducedMotion ? false : "position"}
+      initial={reducedMotion ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{
+        duration: reducedMotion ? 0 : 0.18,
+        ease: [0.22, 1, 0.36, 1],
+      }}
+    >
+      <Tab {...props} />
+    </motion.div>
+  );
+}
+
 function ProjectFolderSection({
   id,
   label,
@@ -174,52 +201,57 @@ function ProjectFolderSection({
   const contentId = `project-${id}-list`;
 
   return (
-    <section
-      data-project-folder={id}
-      aria-labelledby={headingId}
-      className="mt-[var(--clash-project-action-phase,0.5rem)] first:mt-0"
-    >
-      <div data-project-folder-header className={sectionHeaderClass}>
-        <h2 className="min-w-0 flex-1">
-          <Button
-            aria-label={label}
-            aria-expanded={open}
-            aria-controls={contentId}
-            variant={null}
-            size={null}
-            shape={null}
-            onClick={onToggle}
-            className="flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center justify-start gap-1.5 rounded-md bg-transparent px-1 text-left shadow-none hover:bg-warm-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
-          >
-            <CaretRight
-              className={`h-3 w-3 shrink-0 text-stone-400 transition-transform ${open ? "rotate-90" : ""}`}
-              weight="bold"
-            />
-            <span id={headingId} className={sectionHeadingClass}>
-              {label}
-            </span>
-          </Button>
-        </h2>
-        {addControl ??
-          (addLabel && onAdd ? (
-            <Tooltip label={addLabel}>
-              <IconButton
-                label={addLabel}
-                icon={<Plus className="h-3 w-3" weight="bold" />}
-                size="sm"
-                shape="rounded"
-                onClick={onAdd}
-                className={`${sidebarActionSlotClass} rounded-md bg-transparent text-content-muted hover:bg-warm-hover hover:text-content-primary`}
-              />
-            </Tooltip>
-          ) : null)}
-      </div>
-      {open ? (
-        <div id={contentId} data-project-folder-content className="space-y-0">
-          {children}
+    <Collapsible open={open} onOpenChange={onToggle} asChild>
+      <section
+        data-project-folder={id}
+        aria-labelledby={headingId}
+        className="mt-[var(--clash-project-action-phase,0.5rem)] first:mt-0"
+      >
+        <div data-project-folder-header className={sectionHeaderClass}>
+          <h2 className="min-w-0 flex-1">
+            <CollapsibleTrigger asChild>
+              <Button
+                aria-label={label}
+                aria-expanded={open}
+                aria-controls={contentId}
+                variant={null}
+                size={null}
+                shape={null}
+                className="flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center justify-start gap-1.5 rounded-md bg-transparent pl-2 pr-1 text-left shadow-none hover:bg-warm-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
+              >
+                <CaretRight
+                  className={`h-3 w-3 shrink-0 text-stone-400 transition-transform ${open ? "rotate-90" : ""}`}
+                  weight="bold"
+                />
+                <span id={headingId} className={sectionHeadingClass}>
+                  {label}
+                </span>
+              </Button>
+            </CollapsibleTrigger>
+          </h2>
+          {addControl ??
+            (addLabel && onAdd ? (
+              <Tooltip label={addLabel}>
+                <IconButton
+                  label={addLabel}
+                  icon={<Plus className="h-3 w-3" weight="bold" />}
+                  size="sm"
+                  shape="rounded"
+                  onClick={onAdd}
+                  className={`${sidebarActionSlotClass} rounded-md bg-transparent text-content-muted hover:bg-warm-hover hover:text-content-primary`}
+                />
+              </Tooltip>
+            ) : null)}
         </div>
-      ) : null}
-    </section>
+        <CollapsibleContent
+          id={contentId}
+          data-project-folder-content
+          className="overflow-hidden"
+        >
+          <div className="space-y-0 pt-1">{children}</div>
+        </CollapsibleContent>
+      </section>
+    </Collapsible>
   );
 }
 
@@ -304,7 +336,7 @@ type ProjectSearchResult =
 
 function rowClass(active: boolean): string {
   return [
-    "group/menu-button relative flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-[13px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+    "group/menu-button relative grid grid-cols-[1.25rem_minmax(0,1fr)] [&>svg]:justify-self-center h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-[13px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
     active
       ? "bg-brand/[0.09] font-semibold text-slate-950 dark:text-neutral-100"
       : "text-stone-600 hover:bg-black/[0.035] hover:text-slate-950 dark:text-neutral-400 dark:hover:bg-white/[0.045] dark:hover:text-neutral-100",
@@ -441,6 +473,7 @@ export default function ProjectWorkspaceNavigator({
   footer,
   canvases,
   timelines,
+  timelineError,
   directorStages = [],
   assets,
   textAssets = [],
@@ -652,12 +685,88 @@ export default function ProjectWorkspaceNavigator({
     );
   }, [surface]);
 
-  const toggleFolder = useCallback((folderId: ProjectFolderId) => {
-    setOpenFolders((current) => ({
-      ...current,
-      [folderId]: !current[folderId],
-    }));
+  const surfacesRef = useRef<HTMLDivElement>(null);
+  const pendingInset = useRef<{
+    base: number;
+    original: string;
+    limit: number;
+    ceiling: number;
+    extra: number;
+  } | null>(null);
+
+  const consumePendingInset = useCallback(() => {
+    const scroller = surfacesRef.current;
+    const pending = pendingInset.current;
+    if (!scroller || !pending) return;
+    const offset = Math.min(scroller.scrollTop, pending.ceiling);
+    if (scroller.scrollTop > offset) scroller.scrollTop = offset;
+    pending.ceiling = offset;
+    if (offset <= Math.max(0, pending.limit)) {
+      scroller.style.paddingBottom = pending.original;
+      pendingInset.current = null;
+    } else {
+      pending.extra = offset - pending.limit;
+      scroller.style.paddingBottom = `${pending.base + pending.extra}px`;
+    }
   }, []);
+
+  const toggleFolder = useCallback(
+    (folderId: ProjectFolderId) => {
+      const scroller = surfacesRef.current;
+      const content = scroller?.querySelector<HTMLElement>(
+        `[data-project-folder="${folderId}"] [data-project-folder-content]`,
+      );
+      if (openFolders[folderId] && scroller && content) {
+        const currentPadding =
+          parseFloat(getComputedStyle(scroller).paddingBottom) || 0;
+        const base = pendingInset.current?.base ?? currentPadding;
+        const previousExtra = currentPadding - base;
+        // Keep a negative limit: content shorter than the viewport needs that
+        // additional space too, otherwise the browser immediately clamps to zero.
+        const limit =
+          scroller.scrollHeight -
+          previousExtra -
+          content.offsetHeight -
+          scroller.clientHeight;
+        if (scroller.scrollTop > Math.max(0, limit)) {
+          const extra = scroller.scrollTop - limit;
+          pendingInset.current = {
+            base,
+            original:
+              pendingInset.current?.original ?? scroller.style.paddingBottom,
+            limit,
+            ceiling: scroller.scrollTop,
+            extra,
+          };
+          scroller.style.paddingBottom = `${base + extra}px`;
+        }
+      }
+      setOpenFolders((current) => ({
+        ...current,
+        [folderId]: !current[folderId],
+      }));
+    },
+    [openFolders],
+  );
+
+  const releaseInsetAfterExpansion = useCallback(() => {
+    const scroller = surfacesRef.current;
+    const pending = pendingInset.current;
+    if (!scroller || !pending) return;
+    pending.limit =
+      scroller.scrollHeight - pending.extra - scroller.clientHeight;
+    consumePendingInset();
+  }, [consumePendingInset]);
+
+  const reducedMotion = useReducedMotion();
+  const previousFolders = useRef(openFolders);
+  useEffect(() => {
+    const expanded = (Object.keys(openFolders) as ProjectFolderId[]).some(
+      (id) => openFolders[id] && !previousFolders.current[id],
+    );
+    previousFolders.current = openFolders;
+    if (expanded && reducedMotion) releaseInsetAfterExpansion();
+  }, [openFolders, reducedMotion, releaseInsetAfterExpansion]);
 
   const handleSelectedTabChange = (tabId: string | null | undefined) => {
     if (!tabId) return;
@@ -747,8 +856,16 @@ export default function ProjectWorkspaceNavigator({
         focusLoop
       >
         <TabList
+          ref={surfacesRef}
+          onScroll={consumePendingInset}
+          onAnimationEnd={(event) => {
+            const target = event.target as HTMLElement;
+            if (target.hasAttribute("data-project-folder-content") && target.dataset.state === "open") {
+              releaseInsetAfterExpansion();
+            }
+          }}
           aria-label="Project surfaces"
-          className="min-h-0 flex-1 overflow-y-auto px-2 pb-4 pt-[var(--clash-project-action-phase,0.5rem)]"
+          className="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none] [scrollbar-gutter:stable] px-2 pb-4 pt-[var(--clash-project-action-phase,0.5rem)]"
         >
           <ProjectFolderSection
             id="canvases"
@@ -762,7 +879,7 @@ export default function ProjectWorkspaceNavigator({
               const active =
                 surface.kind === "canvas" && surface.canvasId === canvas.id;
               const tab = (
-                <Tab
+                <NavigatorTab
                   id={canvasTabId(canvas.id)}
                   aria-label={canvas.name}
                   className={rowClass(active)}
@@ -776,7 +893,7 @@ export default function ProjectWorkspaceNavigator({
                     weight={active ? "fill" : "regular"}
                   />
                   <span className="truncate">{canvas.name}</span>
-                </Tab>
+                </NavigatorTab>
               );
               return (
                 <SidebarItemContextMenu
@@ -894,7 +1011,7 @@ export default function ProjectWorkspaceNavigator({
                   }] : []}
                 >
                   <div className="group/menu-item relative min-w-0">
-                    <Tab
+                    <NavigatorTab
                       id={pluginViewTabId(view.nodeId)}
                       aria-label={view.label}
                       className={rowClass(active)}
@@ -904,7 +1021,7 @@ export default function ProjectWorkspaceNavigator({
                         weight={active ? "fill" : "regular"}
                       />
                       <span className="truncate">{view.label}</span>
-                    </Tab>
+                    </NavigatorTab>
                     {onDeletePluginView ? (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -943,7 +1060,7 @@ export default function ProjectWorkspaceNavigator({
                   surface.kind === "browser" &&
                   surface.browserId === browser.id;
                 const tab = (
-                  <Tab
+                  <NavigatorTab
                     id={browserTabId(browser.id)}
                     aria-label={browser.title}
                     title={browser.url}
@@ -958,7 +1075,7 @@ export default function ProjectWorkspaceNavigator({
                       weight={active ? "fill" : "regular"}
                     />
                     <span className="truncate">{browser.title}</span>
-                  </Tab>
+                  </NavigatorTab>
                 );
                 const closeAction: SidebarContextAction[] = onCloseBrowser
                   ? [
@@ -1018,6 +1135,7 @@ export default function ProjectWorkspaceNavigator({
             onToggle={() => toggleFolder("timelines")}
             onAdd={onCreateTimeline}
           >
+            {timelineError ? <p role="alert" className="px-3 py-2 text-xs text-red-600">{timelineError}</p> : null}
             {timelines.map((timeline) => {
               const active =
                 surface.kind === "timeline" &&
@@ -1027,7 +1145,7 @@ export default function ProjectWorkspaceNavigator({
                 activeAssetsById,
               );
               const tab = (
-                <Tab
+                <NavigatorTab
                   id={timelineTabId(timeline.id)}
                   aria-label={timeline.name}
                   className={rowClass(active)}
@@ -1038,7 +1156,7 @@ export default function ProjectWorkspaceNavigator({
                     active={active}
                   />
                   <span className="truncate">{timeline.name}</span>
-                </Tab>
+                </NavigatorTab>
               );
               return (
                 <SidebarItemContextMenu
@@ -1129,7 +1247,7 @@ export default function ProjectWorkspaceNavigator({
                 surface.kind === "director-stage" &&
                 surface.stageId === stage.id;
               const tab = (
-                <Tab
+                <NavigatorTab
                   id={directorStageTabId(stage.id)}
                   aria-label={stage.name}
                   className={rowClass(active)}
@@ -1143,7 +1261,7 @@ export default function ProjectWorkspaceNavigator({
                     weight={active ? "fill" : "regular"}
                   />
                   <span className="truncate">{stage.name}</span>
-                </Tab>
+                </NavigatorTab>
               );
               return (
                 <SidebarItemContextMenu
@@ -1250,7 +1368,7 @@ export default function ProjectWorkspaceNavigator({
                     surface.kind === "text-asset" &&
                     surface.nodeId === asset.id;
                   const tab = (
-                    <Tab
+                    <NavigatorTab
                       id={textAssetTabId(asset.id)}
                       aria-label={asset.label}
                       title={asset.label}
@@ -1268,7 +1386,7 @@ export default function ProjectWorkspaceNavigator({
                       <span className="min-w-0 flex-1 truncate">
                         {asset.label}
                       </span>
-                    </Tab>
+                    </NavigatorTab>
                   );
                   return (
                     <SidebarItemContextMenu
@@ -1308,7 +1426,7 @@ export default function ProjectWorkspaceNavigator({
                   const active =
                     surface.kind === "asset" && surface.assetId === asset.id;
                   const tab = (
-                    <Tab
+                    <NavigatorTab
                       id={assetTabId(asset.id)}
                       aria-label={label}
                       title={label}
@@ -1327,7 +1445,7 @@ export default function ProjectWorkspaceNavigator({
                         active={active}
                       />
                       <span className="min-w-0 flex-1 truncate">{label}</span>
-                    </Tab>
+                    </NavigatorTab>
                   );
                   const assetRowId = asset.id;
                   const canAddToLibrary = Boolean(onAddAssetToLibrary);

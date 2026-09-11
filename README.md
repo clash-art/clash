@@ -296,6 +296,22 @@ pnpm test          # unit (vitest)
 pnpm typecheck     # tsc --noEmit across all packages
 ```
 
+For the source development checks, run the package command directly:
+
+```bash
+pnpm --dir packages/web-ui typecheck
+pnpm --dir apps/local-api typecheck
+pnpm --dir plugins/clash typecheck
+```
+
+These checks retain strict source and test validation and cache TypeScript's
+incremental state in each package's ignored `.cache/typecheck.tsbuildinfo`.
+Repeated checks reuse unchanged diagnostics; edits to an imported source
+contract invalidate its consumers. The Local API command uses the development
+workspace aliases so it checks current source contracts. No JavaScript or
+declarations are emitted. Removing the package's cache file requests a fresh
+full check; caches are optional and are not release artifacts.
+
 ---
 
 ## License

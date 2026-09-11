@@ -1,6 +1,7 @@
 import { LoroMap, type LoroDoc } from "loro-crdt";
 import { agentReadToken } from "./agent-read-proof.js";
 import { Canvas } from "./canvas-ops.js";
+import { commitProjectMutation } from "./project-mutation.js";
 import {
   ExecutablePluginJsonValueSchema,
   ExecutablePluginViewReferenceSchema,
@@ -583,7 +584,41 @@ export function deleteProjectTimeline(
   return { ok: true, timelineId };
 }
 
+export type CreateTimelineOnCanvasInput = {
+  id: string;
+  name: string;
+  state: unknown;
+  canvasId: string;
+  actionNodeId: string;
+  position?: { x: number; y: number };
+};
+
+export function createTimelineOnCanvas(doc: LoroDoc, input: CreateTimelineOnCanvasInput): ProjectTimelineMutationResult {
+  return commitProjectMutation(doc, (draft) => {
+    const created = createProjectTimeline(draft, input);
+    if (!created.ok) return created;
+    return attachTimelineInDraft(draft, {
+      timelineId: input.id,
+      canvasId: input.canvasId,
+      actionNodeId: input.actionNodeId,
+      position: input.position,
+    });
+  });
+}
+
 export function attachTimelineToCanvas(
+  doc: LoroDoc,
+  input: {
+    timelineId: string;
+    canvasId: string;
+    actionNodeId: string;
+    position?: { x: number; y: number };
+  },
+): ProjectTimelineMutationResult {
+  return commitProjectMutation(doc, (draft) => attachTimelineInDraft(draft, input));
+}
+
+function attachTimelineInDraft(
   doc: LoroDoc,
   input: {
     timelineId: string;

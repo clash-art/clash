@@ -867,11 +867,13 @@ describe("useClashRuntime", () => {
           type: "session.ready",
           session_id: "local-session-draft",
           acp_session_id: "acp-draft-one",
+          model_fallback: { from: "future", to: "supported" },
           supports_session_fork: true,
         }),
       });
     });
 
+    expect(result.current.modelFallback).toEqual({ from: "future", to: "supported" });
     expect(JSON.parse(ws.sent.at(-1)!)).toEqual({
       type: "prompt",
       turn_id: expect.stringMatching(/^t-/),
@@ -3196,7 +3198,7 @@ describe("useClashRuntime", () => {
     expect(second.result.current.messages).toEqual([]);
   });
 
-  it("creates an ACP fork on the first prompt and keeps that prompt visible", async () => {
+  it.each([undefined, { messageId: "previous-answer", messageText: "Earlier answer", messageOccurrence: 1 }])("creates an ACP fork with boundary %j on the first prompt and keeps that prompt visible", async (forkPoint) => {
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -3229,6 +3231,7 @@ describe("useClashRuntime", () => {
         projectId: "project-one",
         permissionModeId: "codex:full-access",
         forkFromAcpSessionId: "acp-source",
+        forkPoint,
       });
       result.current.sendMessage("Continue from the source session");
     });
@@ -3245,6 +3248,7 @@ describe("useClashRuntime", () => {
       permission_mode: "codex:full-access",
       fork_session_id: "acp-source",
     });
+    expect(JSON.parse(String(post[1]?.body)).fork_point).toEqual(forkPoint);
     await waitFor(() => {
       expect(result.current.messages).toEqual([
         expect.objectContaining({

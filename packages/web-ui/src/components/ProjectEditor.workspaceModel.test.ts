@@ -89,14 +89,14 @@ describe("ProjectEditor workspace model", () => {
     expect(
       sourceMatches(
         source,
-        /const createTimelineFromNavigator[\s\S]{0,1600}attachTimeline\(\{[\s\S]{0,300}canvasId:\s*DEFAULT_CANVAS_ID/,
+        /const createTimelineFromNavigator[\s\S]{0,1600}createTimelineOnCanvas\(\{[\s\S]{0,300}canvasId:\s*DEFAULT_CANVAS_ID/,
       ),
       "Timeline direct-add must target Main",
     ).toBe(true);
     expect(
       sourceMatches(
         source,
-        /const createDirectorStageFromNavigator[\s\S]{0,1600}attachDirectorStage\(\{[\s\S]{0,300}canvasId:\s*DEFAULT_CANVAS_ID/,
+        /const createDirectorStageFromNavigator[\s\S]{0,1600}createDirectorStageOnCanvas\(\{[\s\S]{0,300}canvasId:\s*DEFAULT_CANVAS_ID/,
       ),
       "Director Stage direct-add must target Main",
     ).toBe(true);
@@ -257,16 +257,16 @@ describe("ProjectEditor workspace model", () => {
 
   it("creates Timeline Actions through Timeline ownership primitives", () => {
     expect(source).toMatch(
-      /type === ["']video-editor["'][\s\S]*createTimeline\([\s\S]*attachTimeline\(/,
+      /type === ["']video-editor["'][\s\S]*createTimelineOnCanvas\(/,
     );
   });
 
   it("creates Director Stage Actions through independent Stage ownership primitives", () => {
     expect(source).toMatch(
-      /type === ["']director-stage["'][\s\S]*createDirectorStage\([\s\S]*attachDirectorStage\(/,
+      /type === ["']director-stage["'][\s\S]*createDirectorStageOnCanvas\(/,
     );
     expect(
-      sourceContains(source, "onDoubleClick={createDirectorStageFromPane}"),
+      sourceContains(source, "onDoubleClick={openCreateMenuFromPane}"),
       `mechanism missing`,
     ).toBe(true);
     expect(
@@ -532,7 +532,7 @@ describe("ProjectEditor workspace model", () => {
     expect(
       sourceContains(
         source,
-        'setAssetPickerTarget({ kind: "canvas", canvasId: activeCanvasId })',
+        'setAssetPickerTarget({ kind: "canvas", canvasId: activeCanvasId, position })',
       ),
       "mechanism missing",
     ).toBe(true);

@@ -38,7 +38,7 @@ const PROJECT_EDITOR_SESSION_VERSION = 1;
 const CANVAS_PREFERENCES_STORAGE_KEY = "clash:canvas-preferences:v1";
 
 const DEFAULT_CANVAS_PREFERENCES: CanvasPreferences = {
-  mode: "select",
+  mode: "hand",
   minimapCollapsed: false,
   minimapSize: DEFAULT_MINIMAP_SIZE,
 };

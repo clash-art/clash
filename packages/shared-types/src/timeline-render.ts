@@ -2,7 +2,7 @@ import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { Canvas } from "./canvas-ops.js";
 import { PROJECT_ASSET_RENDER_CANVAS_ID } from "./timeline-contract.js";
-import { ProjectTimelineEnvelopeSchema } from "./timeline-generator-projection.js";
+import { ProjectTimelineEnvelopeSchema } from "./timeline-envelope.js";
 import {
   freezeProjectTimelineRunAssetInputs,
   projectTimelineRenderActionRunId,

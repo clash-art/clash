@@ -5,6 +5,7 @@ import {
   readFile,
   readlink,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,6 +21,34 @@ import {
 async function expectDirectory(path: string): Promise<void> {
   expect((await stat(path)).isDirectory()).toBe(true);
 }
+
+it("links native harness filenames to one hosted AGENTS.md and preserves existing files", async () => {
+  const previous = process.env.CLASH_HOME;
+  process.env.CLASH_HOME = await mkdtemp(
+    join(tmpdir(), "clash-native-instructions-"),
+  );
+  try {
+    const cwd = await ensureAgentCwd("clash", "native-instructions", {
+      harnessId: "claude-acp",
+    });
+    const instructions = await readFile(join(cwd, "AGENTS.md"), "utf8");
+    expect(await readlink(join(cwd, "CLAUDE.md"))).toBe("AGENTS.md");
+    expect(await readFile(join(cwd, "CLAUDE.md"), "utf8")).toBe(instructions);
+    expect(await readlink(join(cwd, "CODEBUDDY.md"))).toBe("AGENTS.md");
+    expect(await readlink(join(cwd, "GEMINI.md"))).toBe("AGENTS.md");
+    const customGemini =
+      "# My project\nKeep the existing Gemini instructions.\n";
+    await unlink(join(cwd, "GEMINI.md"));
+    await writeFile(join(cwd, "GEMINI.md"), customGemini);
+    await ensureAgentCwd("clash", "native-instructions", {
+      harnessId: "gemini",
+    });
+    expect(await readFile(join(cwd, "GEMINI.md"), "utf8")).toBe(customGemini);
+  } finally {
+    if (previous === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = previous;
+  }
+});
 
 it("prefers an explicit packaged agent bundle root", async () => {
   const bundleRoot = await mkdtemp(join(tmpdir(), "clash-packaged-agents-"));
@@ -174,7 +203,7 @@ it("ensureAgentCwd honors CLASH_HOME for managed project cwd", async () => {
   }
 });
 
-it("ensureAgentCwd links the canonical Clash skill without injecting repository instructions", async () => {
+it("ensureAgentCwd seeds native project instructions once and links the canonical Clash skill", async () => {
   const originalHome = process.env.HOME;
   const home = await mkdtemp(join(tmpdir(), "clash-session-cwd-"));
   process.env.HOME = home;
@@ -194,24 +223,38 @@ it("ensureAgentCwd links the canonical Clash skill without injecting repository 
       "utf-8",
     );
 
-    await expect(
-      readFile(join(cwd, "AGENTS.md"), "utf-8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(
-      readFile(join(cwd, "CLAUDE.md"), "utf-8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(
-      readFile(join(cwd, "GEMINI.md"), "utf-8"),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    expect(clashSkill).toContain("# Use Clash");
-    expect(clashSkill).toContain("clash --help");
-    expect(clashSkill).toContain("root `clash` tool");
+    const instructionsPath = join(cwd, "AGENTS.md");
+    const instructions = await readFile(instructionsPath, "utf8");
+    expect(instructions.trim()).not.toBe("");
+    const originalStat = await stat(instructionsPath);
+    await ensureAgentCwd("clash", "proj_setup_guidance", {
+      harnessId: "codex-acp",
+    });
+    expect((await stat(instructionsPath)).mtimeMs).toBe(originalStat.mtimeMs);
+    const userInstructions = instructions + "\nPrefer Chinese subtitles.\n";
+    await writeFile(instructionsPath, userInstructions);
+    await ensureAgentCwd("clash", "proj_setup_guidance", {
+      harnessId: "codex-acp",
+    });
+    expect(await readFile(instructionsPath, "utf8")).toBe(userInstructions);
+    for (const filename of ["CLAUDE.md", "CODEBUDDY.md", "GEMINI.md"]) {
+      expect(await readlink(join(cwd, filename))).toBe("AGENTS.md");
+      expect(await readFile(join(cwd, filename), "utf8")).toBe(
+        userInstructions,
+      );
+    }
+    expect(clashSkill).toBe(
+      await readFile(join(bundledSkillDir, "SKILL.md"), "utf8"),
+    );
     const codexSkill = join(cwd, ".agents", "skills", "clash");
     expect((await lstat(codexSkill)).isSymbolicLink()).toBe(true);
     expect(await readlink(codexSkill)).toBe(bundledSkillDir);
-    expect(await readFile(join(codexSkill, "SKILL.md"), "utf8")).toContain(
-      "# Use Clash",
-    );
+    expect(await readFile(join(codexSkill, "SKILL.md"), "utf8")).toBe(clashSkill);
+    for (const [, reference] of clashSkill.matchAll(/\]\((references\/[^)]+)\)/g)) {
+      expect(await readFile(join(codexSkill, reference!), "utf8")).toBe(
+        await readFile(join(bundledSkillDir, reference!), "utf8"),
+      );
+    }
 
     const nativePaths = [
       ["claude-acp", ".claude/skills"],
@@ -329,11 +372,7 @@ it("ensureAgentCwd does not guess a Skill directory or overwrite a user's worksp
     await mkdir(existingSkill, { recursive: true });
     await writeFile(join(existingSkill, "SKILL.md"), "user-owned\n", "utf8");
 
-    await expect(
-      ensureAgentCwd("clash", projectId, {
-        harnessId: "codex-acp",
-      }),
-    ).rejects.toThrow(/existing workspace entry/i);
+    await ensureAgentCwd("clash", projectId, { harnessId: "codex-acp" });
     await expect(
       readFile(join(existingSkill, "SKILL.md"), "utf8"),
     ).resolves.toBe("user-owned\n");
@@ -422,10 +461,9 @@ it("injects the host-owned Clash MCP when the agent runtime does not declare plu
   process.env.CLASH_BUILTIN_PLUGIN_ROOT = pluginRoot;
 
   try {
-    const [server] = await resolveAgentMcpServers(
-      "clash",
-      { CLASH_PROJECT_ID: "project-host-root" },
-    );
+    const [server] = await resolveAgentMcpServers("clash", {
+      CLASH_PROJECT_ID: "project-host-root",
+    });
 
     expect(server).toMatchObject({
       name: "clash",

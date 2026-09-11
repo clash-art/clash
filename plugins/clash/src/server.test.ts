@@ -5,6 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 function projectHostClient() {
   return {
+    resolveConnection: async () => ({ endpoint: "http://127.0.0.1:49321" }),
     resolveContext: async ({
       projectId,
       cwd,
@@ -52,7 +53,7 @@ function unsupportedTuplePaths(value: unknown, path = "$"): string[] {
   ];
 }
 
-test("one Clash plugin server quarantines every MCP App while keeping headless tools", async (t) => {
+test("one Clash plugin server exposes only the full project App alongside headless tools", async (t) => {
   let module: Record<string, unknown> = {};
   try {
     module = (await import("./server.js")) as Record<string, unknown>;
@@ -72,6 +73,7 @@ test("one Clash plugin server quarantines every MCP App while keeping headless t
     appBundles: {
       canvas: "window.__CANVAS__ = true;",
       studio: "window.__STUDIO__ = true;",
+      project: "window.__PROJECT__ = true;",
       timeline: "window.__TIMELINE__ = true;",
       director: "window.__DIRECTOR__ = true;",
     },
@@ -97,11 +99,12 @@ test("one Clash plugin server quarantines every MCP App while keeping headless t
     "clash_assets",
     "clash_canvas",
     "clash_composition",
+    "clash_generators",
     "clash_plugin",
+    "clash_project_open",
     "clash_workspace_init",
   ];
   assert.deepEqual(rootTools.map(({ name }) => name).sort(), fixedToolNames);
-  assert.equal(rootTools.length, fixedToolNames.length);
   const operations: Array<any> = [];
   for (const command of ["plugin", "canvas", "timeline", "director"] as const) {
     const selected = await client.callTool({
@@ -250,11 +253,27 @@ test("one Clash plugin server quarantines every MCP App while keeping headless t
     );
   }
 
-  await assert.rejects(
-    client.listResources(),
-    (error: unknown) => (error as { code?: number }).code === -32601,
-    "quarantined plugin must not advertise MCP App resources",
+  const projectTool = rootTools.find(
+    ({ name }) => name === "clash_project_open",
+  )!;
+  const projectUri = (projectTool._meta?.ui as { resourceUri: string })
+    .resourceUri;
+  const resources = (await client.listResources()).resources;
+  assert.deepEqual(
+    resources.map(({ uri }) => uri),
+    [projectUri],
   );
+  const opened = await client.callTool({
+    name: projectTool.name,
+    arguments: { projectId: "project-test" },
+  });
+  assert.equal(
+    (opened.structuredContent as Record<string, unknown> | undefined)
+      ?.projectId,
+    "project-test",
+  );
+  const resource = await client.readResource({ uri: projectUri });
+  assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
 });
 
 test("plugin runtime closes the host manager exactly once", async () => {
@@ -280,6 +299,7 @@ test("plugin runtime closes the host manager exactly once", async () => {
     appBundles: {
       canvas: "window.__CANVAS__ = true;",
       studio: "window.__STUDIO__ = true;",
+      project: "window.__PROJECT__ = true;",
       timeline: "window.__TIMELINE__ = true;",
       director: "window.__DIRECTOR__ = true;",
     },
@@ -288,4 +308,24 @@ test("plugin runtime closes the host manager exactly once", async () => {
   await runtime.close();
   await runtime.server.close();
   assert.equal(closes, 1);
+});
+
+test("project App is advertised with a resource served from the discovered daemon", async (t) => {
+  const { createClashPluginServer } = await import("./server.js");
+  const server = createClashPluginServer({
+    client: projectHostClient() as never,
+    appBundles: { project: "/* project client */", studio: "", canvas: "", timeline: "", director: "" },
+  });
+  const [a,b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "project-app-integration", version: "1" });
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(b); await client.connect(a);
+  const tool = (await client.listTools()).tools.find(({name})=>name === "clash_project_open");
+  assert.ok(tool);
+  const result = await client.callTool({ name: tool.name, arguments: { projectId: "project-test" } });
+  assert.equal((result.structuredContent as Record<string,unknown>).projectUrl, "http://127.0.0.1:49321/projects/project-test");
+  const uri = (tool._meta?.ui as {resourceUri:string}).resourceUri;
+  const resource = await client.readResource({uri});
+  assert.equal(resource.contents[0].mimeType, "text/html;profile=mcp-app");
+  assert.deepEqual((resource.contents[0]._meta?.ui as {csp:unknown}).csp, {frameDomains:["http://127.0.0.1:49321"]});
 });

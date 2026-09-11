@@ -141,6 +141,15 @@ export interface RegistryItem {
   packageId?: string;
   source?: string;
   sourceVersion?: string;
+  curation?: { collection: "official-picks"; curator: string };
+  attribution?: {
+    sourceUrl: string;
+    license?: string;
+    licenseUrl?: string;
+    repositoryStars?: number;
+    checkedAt?: string;
+    notes?: string;
+  };
   kind?: string;
   executionContract?: string;
   inputs?: unknown[];

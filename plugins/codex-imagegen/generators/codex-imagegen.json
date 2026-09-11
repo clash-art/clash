@@ -6,10 +6,28 @@
     "stateSchema": {
       "type": "object",
       "properties": {
-        "prompt": { "type": "string", "minLength": 1 },
+        "prompt": {
+          "type": "string"
+        },
         "aspect_ratio": {
           "type": "string",
           "pattern": "^[1-9][0-9]*:[1-9][0-9]*$"
+        },
+        "image_model": {
+          "type": "string",
+          "enum": ["auto", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"]
+        },
+        "quality": {
+          "type": "string",
+          "enum": ["auto", "low", "medium", "high", "xhigh", "max"]
+        },
+        "resolution": {
+          "type": "string",
+          "pattern": "^(auto|[1-9][0-9]*x[1-9][0-9]*)$"
+        },
+        "background": {
+          "type": "string",
+          "enum": ["auto", "opaque", "transparent"]
         }
       },
       "required": ["prompt"],
@@ -19,8 +37,16 @@
     "persistentInputs": [
       {
         "slot": "image",
-        "accepts": [{ "kind": "media", "mediaKind": "image" }],
-        "cardinality": { "minItems": 0, "maxItems": 5 }
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "image"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": 5
+        }
       }
     ],
     "actions": [
@@ -35,8 +61,14 @@
         "outputs": [
           {
             "slot": "image",
-            "assetType": { "kind": "media", "mediaKind": "image" },
-            "cardinality": { "minItems": 1, "maxItems": 1 }
+            "assetType": {
+              "kind": "media",
+              "mediaKind": "image"
+            },
+            "cardinality": {
+              "minItems": 1,
+              "maxItems": 1
+            }
           }
         ]
       }

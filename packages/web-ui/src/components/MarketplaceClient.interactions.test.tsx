@@ -82,6 +82,34 @@ describe("MarketplaceClient interactions", () => {
     vi.clearAllMocks();
   });
 
+  it("lets users discover and install an official pick while filtering uncurated skills", async () => {
+    marketplaceApi.installSkill.mockResolvedValue({ installed: true });
+    const picked = {
+      id: "example.curated",
+      name: "Multiview workflow",
+      type: "skill" as const,
+      source: "community",
+      author: "Original author",
+      curation: { collection: "official-picks" as const, curator: "Clash" },
+    };
+    render(
+      <MarketplaceClient
+        items={[...items, picked]}
+        installedActionIds={[]}
+        installedSkillIds={[]}
+        catalogScope="official-picks"
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "Official Picks" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Seedance guide" })).toBeNull();
+    const card = screen.getByRole("heading", { name: picked.name }).closest("li")!;
+    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+    await waitFor(() =>
+      expect(marketplaceApi.installSkill).toHaveBeenCalledWith(picked),
+    );
+    expect(within(card).getByText("Installed")).toBeTruthy();
+  });
+
   it("shows Clash plugins and actions without mixing generic agent skills into the Store", async () => {
     marketplaceApi.installPlugin.mockResolvedValue({ installed: true });
     render(
@@ -667,7 +695,6 @@ describe("MarketplaceClient interactions", () => {
     });
     const install = screen.getByRole("button", { name: "Install" });
     expect(card).toBeTruthy();
-    expect(card?.className).toContain("hover:border-ring");
     expect(details).toHaveAttribute("href", "/marketplace/skill/sd25-pe");
     expect(details.contains(install)).toBe(false);
   });

@@ -421,6 +421,46 @@ const HOST_OWNED_AUTHORITY_CONTAINER_CASES = [
 ] satisfies HostOwnedAuthorityContainerCase[];
 
 describe("LocalLoroRoom", () => {
+  it.each([
+    { method: "inspectProject", fail: false },
+    { method: "inspectProject", fail: true },
+    { method: "inspectCheckpointedProject", fail: false },
+    { method: "inspectCheckpointedProject", fail: true },
+  ] as const)("releases the temporary $method document after the async reader settles (fail=$fail)", async ({ method, fail }) => {
+    const room = await LocalLoroRoom.open({ dataDir, projectId: "read-lifetime" });
+    let readDoc: LoroDoc | undefined;
+    try {
+      const reading = room[method](async (doc) => {
+        readDoc = doc;
+        await Promise.resolve();
+        // The isolated clone stays valid until the callback settles.
+        doc.getMap("scratch").set("text", "reader-local");
+        if (fail) throw new Error("read failed");
+        return doc.getMap("scratch").get("text");
+      });
+      if (fail) await expect(reading).rejects.toThrow("read failed");
+      else await expect(reading).resolves.toBe("reader-local");
+      expect(readDoc).toBeDefined();
+      expect(() => readDoc!.toJSON()).toThrow();
+      expect(room.protocolDocument().getMap("scratch").get("text")).toBeUndefined();
+    } finally { await room.close(); }
+  });
+
+  it.each([false, true])("releases imported snapshot validation memory (malformed=%s)", async (malformed) => {
+    const source = new LoroDoc();
+    const snapshot = malformed ? new Uint8Array([1, 2, 3]) : source.export({ mode: "snapshot" });
+    source.free();
+    const imports = vi.spyOn(LoroDoc.prototype, "import");
+    const hub = new LocalLoroRoomHub(dataDir, undefined, null);
+    try {
+      if (malformed) expect(() => hub.installImportedProject("import-lifetime", "reservation", snapshot, async () => undefined)).toThrow();
+      else await hub.installImportedProject("import-lifetime", "reservation", snapshot, async () => undefined);
+      const validationDoc = imports.mock.contexts[0] as LoroDoc;
+      expect(validationDoc).toBeDefined();
+      expect(() => validationDoc.toJSON()).toThrow();
+    } finally { imports.mockRestore(); await hub.close(); }
+  });
+
   /**
    * A generator the test names, rather than one the host falls into.
    *
@@ -895,6 +935,90 @@ describe("LocalLoroRoom", () => {
     expect(sideband).not.toContainEqual(
       expect.objectContaining({ type: "sync_ack" }),
     );
+  });
+
+  it.each([
+    ["shadow prompt", (doc: LoroDoc) => { const node = doc.getMap("nodes").get("native") as any; doc.getMap("nodes").set("native", { ...node, data: { ...node.data, content: "Peer rewrite" } }); }],
+    ["Generator pointer", (doc: LoroDoc) => { const node = doc.getMap("nodes").get("native") as any; doc.getMap("nodes").set("native", { ...node, data: { ...node.data, generatorId: "another" } }); }],
+    ["immutable deletion", (doc: LoroDoc) => { doc.getMap("nodes").delete("native"); }],
+    ["immutable label", (doc: LoroDoc) => { const node = doc.getMap("nodes").get("native") as any; doc.getMap("nodes").set("native", { ...node, data: { ...node.data, label: "Rewritten checkpoint" } }); }],
+    ["immutable position", (doc: LoroDoc) => { const node = doc.getMap("nodes").get("native") as any; doc.getMap("nodes").set("native", { ...node, position: { x: 900, y: 900 } }); }],
+    ["native copy", (doc: LoroDoc) => { doc.getMap("nodes").set("peer-copy", doc.getMap("nodes").get("native")); }],
+    ["media add", (doc: LoroDoc) => { new Canvas(doc, () => {}).insertEdge("new-input", "b", "native"); }],
+    ["media removal", (doc: LoroDoc) => { new Canvas(doc, () => {}).deleteEdge("input"); }],
+    ["connected Asset replacement", (doc: LoroDoc) => { const node = doc.getMap("nodes").get("a") as any; doc.getMap("nodes").set("a", { ...node, data: { ...node.data, assetId: "b" } }); }],
+    ["Document add", (doc: LoroDoc) => { new Canvas(doc, () => {}).insertEdge("document-added", "script", "native"); }],
+    ["Document removal", (doc: LoroDoc) => { new Canvas(doc, () => {}).deleteEdge("document-input"); }],
+    ["Document revision replacement", (doc: LoroDoc) => { const node = doc.getMap("nodes").get("script") as any; doc.getMap("nodes").set("script", { ...node, data: { documentRevision: { ...node.data.documentRevision, revisionId: "new" } } }); }],
+  ] as const)("rejects raw peer %s while allowing native placement presentation edits", async (_name, forge) => {
+    const projectId = `project/native-peer-${encodeURIComponent(_name)}`;
+    const room = await LocalLoroRoom.open({ dataDir, projectId, workflowProcessor: null });
+    try {
+      await room.mutateProject((doc) => {
+        createProjectGenerator(doc, { head: { id: "model", headRevisionId: "model-initial" }, revision: { id: "model-initial", generatorId: "model",
+          definitionRef: { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` },
+          state: { modelId: "minimax-h3", prompt: "Authored", params: {} }, persistentInputRefs: [{ slot: "image", itemKey: "a", target: { kind: "media", projectAssetId: "a" } }, ...(_name.startsWith("Document") && _name !== "Document add" ? [{ slot: "text", itemKey: "script", target: { kind: "document" as const, documentAssetId: "script", revisionId: "saved" } }] : [])],
+        } });
+        const canvas = new Canvas(doc, () => {});
+        for (const id of ["a", "b"]) {
+          createProjectAsset(doc, { id, kind: "image", source: { kind: "owned", resourceId: id }, lifecycle: { state: "active" }, metadata: {} });
+          canvas.createNode(id, "image", { assetId: id });
+        }
+        canvas.createNode("native", "action-badge", { generatorId: "model", label: "Before" });
+        canvas.insertEdge("input", "a", "native");
+        if (_name.startsWith("Document")) {
+          expect(createProjectDocumentAsset(doc, {
+            id: "saved", documentAssetId: "script", documentKind: "text.plain", schemaVersion: 1, mutability: "versioned",
+            body: { digest: `sha256:${"a".repeat(64)}`, byteLength: 1, contentType: "application/json" },
+            producer: { kind: "actor", actor: { kind: "user" } }, sourceRefs: [],
+          }).ok).toBe(true);
+          canvas.createNode("script", "text", { documentRevision: { kind: "document", documentAssetId: "script", revisionId: "saved" } });
+          if (_name !== "Document add") canvas.insertEdge("document-input", "script", "native");
+        }
+        return { value: undefined };
+      });
+      const peer = room.addPeer(() => {});
+      const client = LoroDoc.fromSnapshot(room.snapshot());
+      try {
+        let version = client.version();
+        new Canvas(client, () => {}).updateNode("native", { label: "Presentation edit" });
+        if (_name.startsWith("immutable")) new Canvas(client, () => {}).executeGeneration("native", () => "existing-output");
+        await room.receive(peer, client.export({ mode: "update", from: version }));
+        version.free();
+        const baseline = LoroDoc.fromSnapshot(room.snapshot());
+        const before = baseline.toJSON();
+        baseline.free();
+        version = client.version();
+        forge(client);
+        await expect(room.receive(peer, client.export({ mode: "update", from: version }))).rejects.toThrow(/Model.*Host|Host.*Model/);
+        version.free();
+        const snapshot = LoroDoc.fromSnapshot(room.snapshot());
+        try { expect(snapshot.toJSON()).toEqual(before); } finally { snapshot.free(); }
+      } finally { client.free(); }
+      const pending = LoroDoc.fromSnapshot(room.snapshot());
+      const pendingVersion = pending.version();
+      try {
+        expect(new Canvas(pending, () => {}).executeGeneration("native", () => "pending-output").error).toBeFalsy();
+        await expect(room.receive(peer, pending.export({ mode: "update", from: pendingVersion }))).resolves.toBeUndefined();
+      } finally { pendingVersion.free(); pending.free(); }
+    } finally { await room.close(); }
+    const reopened = await LocalLoroRoom.open({ dataDir, projectId, workflowProcessor: null });
+    try {
+      const snapshot = LoroDoc.fromSnapshot(reopened.snapshot());
+      try {
+        expect(new Canvas(snapshot, () => {}).readNode("native")?.data).toMatchObject({ content: "Authored", label: "Presentation edit", generatorId: "model" });
+        expect(new Canvas(snapshot, () => {}).listEdges()).toContainEqual(expect.objectContaining({ id: "input" }));
+        expect(snapshot.getMap("nodes").get("peer-copy")).toBeUndefined();
+        if (_name === "immutable deletion") {
+          const peer = reopened.addPeer(() => {});
+          const version = snapshot.version();
+          try {
+            new Canvas(snapshot, () => {}).deleteNodes([...snapshot.getMap("nodes").keys()]);
+            await expect(reopened.receive(peer, snapshot.export({ mode: "update", from: version }))).resolves.toBeUndefined();
+          } finally { version.free(); }
+        }
+      } finally { snapshot.free(); }
+    } finally { await reopened.close(); }
   });
 
   describe.each(HOST_OWNED_AUTHORITY_CONTAINER_CASES)(
@@ -3177,7 +3301,7 @@ describe("LocalLoroRoom", () => {
     );
   });
 
-  it("mirrors received updates to optional remote persistence", async () => {
+  it.each([false, true])("mirrors admitted updates to optional remote persistence (pending layout=%s)", async (pendingLayout) => {
     const appendUpdate = vi.fn(
       async (_projectId: string, _update: Uint8Array) => {},
     );
@@ -3192,7 +3316,7 @@ describe("LocalLoroRoom", () => {
     const clientDoc = new LoroDoc();
     clientDoc
       .getMap("nodes")
-      .set("node-remote", { type: "text", data: { label: "Mirror" } });
+      .set("node-remote", { type: "text", data: { label: "Mirror" }, ...(!pendingLayout ? { position: { x: 0, y: 0 } } : {}) });
     const update = clientDoc.export({ mode: "snapshot" });
 
     await room.receive(peer, update);
@@ -3202,9 +3326,19 @@ describe("LocalLoroRoom", () => {
       "project/remote",
       expect.any(Uint8Array),
     );
-    expect(Array.from(appendUpdate.mock.calls[0][1])).toEqual(
-      Array.from(update),
-    );
+    if (!pendingLayout) {
+      expect(Array.from(appendUpdate.mock.calls[0][1])).toEqual(Array.from(update));
+    }
+    const mirrored = new LoroDoc();
+    const admitted = LoroDoc.fromSnapshot(room.snapshot());
+    try {
+      mirrored.import(appendUpdate.mock.calls[0][1]);
+      expect(mirrored.getMap("nodes").toJSON()).toEqual(admitted.getMap("nodes").toJSON());
+      expect(mirrored.getMap("nodes").get("node-remote")).toMatchObject({
+        data: { label: "Mirror" },
+        position: { x: expect.any(Number), y: expect.any(Number) },
+      });
+    } finally { mirrored.free(); admitted.free(); clientDoc.free(); }
   });
 
   it("attaches a server-to-server replica link and durably imports cloud updates", async () => {

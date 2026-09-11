@@ -96,8 +96,43 @@ contracts teach live product operation; the benchmark runner owns isolation and
 hidden transport/readback checks. No benchmark guidance is injected through a
 repository instruction file.
 
-Version 2 contains 21 cases: five each for Director, Timeline/editor, Remotion
-character, and mixed workflows, plus a music/rhythm/MV content-effect case.
+## Skills mounted per task
+
+Each case selects a named `skillPack` from
+[`plugins/clash/skill-packs.json`](../../plugins/clash/skill-packs.json).
+The six content categories select product-ad, talking-head, explainer, narrative,
+music-video, or brand-motion. Case-level `skills` adds only the required product
+media operations, such as Director, Timeline, or Remotion construction.
+
+The suite loader expands that one pack, resolves members relative to its catalog,
+and deduplicates additions. The runner copies the resolved set into the fresh
+task workspace's native skill directories. It does not mount the entire plugin
+skill tree or install anything globally. Task evidence retains the selected
+pack and expanded paths; the Environment lock hashes each installed skill and
+checks its content before and after execution. Editing a task copy cannot alter
+another task or the source pack.
+
+Codex's `--ignore-user-config` still discovers user skills. The adapter therefore
+sets `skills.include_instructions=false` and provides only the mounted Task's
+name/description/path catalog through native `developer_instructions`. It keeps
+skill bodies lazy and records the supplied catalog in `logs/task-skills.md`.
+This changes the run's prompt context, not filesystem permissions. Global skill
+files remain untouched. The independent image judge has no creative skill
+catalog or plugins injected. These switches use the
+[upstream Codex configuration contract](https://developers.openai.com/codex/config-schema.json).
+
+This is the benchmark Task mounting contract. Ordinary Desktop sessions still
+use their existing project-scoped skill discovery; this change does not claim
+per-session isolation of skill discovery inside a shared project cwd.
+
+Catalog coverage and mounting tests do not establish a content-effect pass.
+Inspect each Attempt and independent Evaluation: missing audio review remains
+pending, and a stale packaged runtime is an infrastructure issue to resolve.
+
+The original Version 2 set contains 21 cases: five each for Director,
+Timeline/editor, Remotion character, and mixed workflows, plus a music/rhythm/MV
+content-effect case. The catalog also includes the separate
+`product-ad-director-to-video-v1` contract described below.
 Director outcomes require exact-time PNGs from
 `clash_director_capture`. Remotion characters are editable TSX components
 persisted as Canvas `remotion-component` nodes; the stable Canvas node ID is
@@ -120,6 +155,24 @@ evaluation concerns only the enumerated, observable framing, pacing, narrative,
 typographic, and animation traits.
 
 ## Version 2 case catalog
+
+`director-premium-gadget-hero-v2` ends at a Stage and three PNGs. It measures
+Director staging, not a completed generated advertisement. Its historical
+scores remain scoped to those artifacts.
+
+`product-ad-director-to-video-v1` adds the complete advertising workflow:
+Director captures → optional refined image keyframes → video-model takes →
+editable Timeline → rendered ad. The Task requires actual image Asset bindings
+in video generation and preserves the complete provenance chain; a slideshow
+or a direct Stage render does not satisfy the outcome. Its task-specific
+mounts add Director, Timeline, and finishing to the product-ad pack.
+
+The new contract is currently in `blocked-contract`: the runner does not yet
+independently read back that capture/keyframe-to-video-to-edit lineage. This
+does not mean the product lacks video generation. The semantic criteria also
+include full video evidence, so the current image-only judge leaves review
+pending rather than inferring motion quality from stills. Do not mark this
+contract ready or reuse the old three-PNG score as its result.
 
 | Category           | Case ID                                          | Editorial challenge                                                                                             |
 | ------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |

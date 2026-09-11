@@ -59,7 +59,7 @@ process.once("SIGTERM", () => {
 process.once("uncaughtExceptionMonitor", (error, origin) => {
   observability.event("error", "process.uncaught_exception", {
     origin,
-    error: error.stack ?? error.message,
+    error,
   });
 });
 
@@ -77,9 +77,7 @@ async function main(): Promise<void> {
       })
     : undefined;
   if (pluginDevelopment && pluginDevelopment.rebuilt.length > 0) {
-    process.stderr.write(
-      `[local-api] rebuilt first-party module payloads: ${pluginDevelopment.rebuilt.join(", ")}\n`,
-    );
+    observability.event("info", "plugins.rebuilt", { pluginIds: pluginDevelopment.rebuilt });
   }
   const configuredDirectorBundle =
     process.env.CLASH_DIRECTOR_BUNDLE_PATH?.trim();
@@ -119,6 +117,8 @@ async function main(): Promise<void> {
   server = await startLocalApiServer({
     port: Number(process.env.PORT ?? 0),
     dataDir,
+    agentRuntime: process.env.CLASH_AGENT_RUNTIME === "disabled" ? "disabled" : "enabled",
+    projectRendererRoot: process.env.CLASH_PROJECT_RENDERER_ROOT,
     directorStageRenderer,
     discovery: {
       enabled: true,
@@ -131,16 +131,16 @@ async function main(): Promise<void> {
     pid: process.pid,
     startedBy,
   });
+  if (process.env.CLASH_LOCAL_API_WRAPPER_ENTRY === "1") {
+    observability.stopStdioForwarding();
+  }
 }
 
 void main().catch((error) => {
   observability.event("error", "process.failed", {
-    error:
-      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    error,
   });
-  console.error(
-    error instanceof Error ? (error.stack ?? error.message) : String(error),
-  );
   observability.close();
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exit(1);
 });

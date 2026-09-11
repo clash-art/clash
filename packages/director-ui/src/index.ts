@@ -132,3 +132,4 @@ export {
   type DirectorShotCompositionIssue,
   type DirectorShotCompositionIssueCode,
 } from "@clash/director-core";
+export { compileDirectorCodeComponent } from "./code-components";

@@ -10,6 +10,7 @@ import {
   ClashMcpServer,
   describeClashTool,
   registerGeneratorTools,
+  registerDocumentTools,
 } from "@clash/shared-mcp";
 import type { GeneratorRequest } from "@clash/shared-runtime/generator-client";
 import { initializeClashWorkspace } from "@clash/shared-runtime";
@@ -1163,8 +1164,10 @@ export function createClashMcpServer(
           });
         }
       : undefined);
-  if (generatorRequest)
+  if (generatorRequest) {
     registerGeneratorTools(server, { request: generatorRequest });
+    registerDocumentTools(server, { request: generatorRequest });
+  }
   registerClashCanvasMcp(
     server,
     options.gateway ??

@@ -82,7 +82,7 @@ function definitionRef(definition: GeneratorDefinition) {
   };
 }
 
-function canonicalInputRefs(
+export function canonicalInputRefs(
   input: readonly GeneratorInputRef[],
 ): GeneratorInputRef[] {
   return input
@@ -242,9 +242,12 @@ export interface BuiltLocalGeneratorActionRun {
  * immutable public Run request. Callers provide no output contract, executor,
  * or fingerprint; all three are derived from the installed definition.
  */
-export function buildLocalGeneratorActionRun(
+export function prepareLocalGeneratorActionRun(
   input: BuildLocalGeneratorActionRunInput,
-): BuiltLocalGeneratorActionRun {
+): Pick<BuiltLocalGeneratorActionRun, "definition" | "revision" | "action"> & {
+  invocationInputRefs: GeneratorInputRef[];
+  outputContract: ActionRunRequest["outputContract"];
+} {
   const definition = GeneratorDefinitionSchema.parse(input.definition);
   const revision = readGeneratorRevision(input.doc, input.generatorRevision);
   if (!revision) {
@@ -334,10 +337,21 @@ export function buildLocalGeneratorActionRun(
       };
     });
   })();
-  const executor = {
+  return { definition, revision, action, invocationInputRefs, outputContract };
+}
+
+export function buildLocalGeneratorActionRun(
+  input: BuildLocalGeneratorActionRunInput,
+): BuiltLocalGeneratorActionRun {
+  const { definition, revision, action, invocationInputRefs, outputContract } =
+    prepareLocalGeneratorActionRun(input);
+  if (action.modelExecution && !input.modelSelection?.route.executorBinding) {
+    contractError("A model Action requires a Host-selected, pinned Provider executor.");
+  }
+  const executor = action.modelExecution ? input.modelSelection!.route.executorBinding! : {
     pluginId: definition.pluginId,
     version: definition.version,
-    exportId: action.executorExportId,
+    exportId: action.executorExportId!,
     schemaHash: definition.schemaHash,
   };
   const semanticInvocation = {

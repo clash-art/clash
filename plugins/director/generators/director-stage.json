@@ -22,6 +22,10 @@
     },
     "editPolicy": "advance-head",
     "persistentInputs": [{
+      "slot": "stage:code",
+      "accepts": [{ "kind": "document", "documentKind": "text.plain", "schemaVersion": 1 }],
+      "cardinality": { "minItems": 0, "maxItems": null }
+    }, {
       "slot": "stage:media",
       "accepts": [{ "kind": "media", "mediaKind": "image" }, { "kind": "media", "mediaKind": "video" }, { "kind": "media", "mediaKind": "model" }],
       "cardinality": { "minItems": 0, "maxItems": null }

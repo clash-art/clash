@@ -1,0 +1,39 @@
+{
+  "apiVersion": "clash.plugin.contract-test/v1",
+  "id": "openai-requires-key",
+  "description": "Missing credentials fail before submitting a request.",
+  "target": {
+    "exportId": "openai-execute",
+    "kind": "provider-executor"
+  },
+  "operation": "submit",
+  "input": {
+    "values": {
+      "kind": "image",
+      "upstreamModel": "gpt-image-2.5-flare",
+      "prompt": "A small red robot"
+    },
+    "references": []
+  },
+  "expect": {
+    "status": "failed",
+    "error": {
+      "code": "authentication_failed",
+      "message": "This image provider account has no apiKey stored.",
+      "retryable": false,
+      "requestState": "rejected"
+    }
+  },
+  "brokerFixtures": [
+    {
+      "operation": {
+        "kind": "store.get",
+        "key": "apiKey"
+      },
+      "response": {
+        "status": "ok",
+        "result": {}
+      }
+    }
+  ]
+}

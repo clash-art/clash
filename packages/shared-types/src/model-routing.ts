@@ -197,6 +197,14 @@ export type ModelProviderRouteQuery = ModelUpstreamRouteQuery;
 export type ModelCatalogTier = "available" | "configured-provider" | "all";
 
 export interface ModelCatalogEntry {
+  /** Host-installed local speech runtime readiness, when applicable. */
+  runtimeReadiness?: {
+    capability: "speech-to-text" | "text-to-speech";
+    model: string;
+    readiness: "ready" | "not-installed";
+    executable: boolean;
+    message?: string;
+  };
   model: ModelCard;
   tier: ModelCatalogTier;
   routes: ModelUpstreamRoute[];

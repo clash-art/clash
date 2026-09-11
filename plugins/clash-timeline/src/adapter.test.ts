@@ -40,6 +40,23 @@ const timeline = {
   state: { tracks: [] },
 };
 
+for (const operation of ["create", "attach", "detach", "copy"] as const) test(`Timeline ${operation} exposes the persisted entity from the Host receipt`, async () => {
+  const { createTimelineAdapter } = await import("./adapter.js");
+  const { TIMELINE_MCP_EXECUTORS } = await import("./timeline-mcp-executors.js");
+  const calls: ProjectHostRequest[] = [];
+  const adapter = createTimelineAdapter({
+    // create_timeline's shipped Host response is an envelope; MCP declares the entity.
+    client: hostClient(calls, ({command}) => command.action === "list_timelines"
+      ? {timelines: [timeline], versions: {[timeline.id]: "host-read-receipt"}}
+      : {timeline, readToken: "host-create-receipt"}),
+  });
+  await adapter.get({timelineId: timeline.id});
+  const executor = TIMELINE_MCP_EXECUTORS[`timeline.${operation}`];
+  const result = await executor.execute({id: timeline.id, name: timeline.name, timelineId: timeline.id, sourceTimelineId: timeline.id, canvasId: "main", targetCanvasId: "main"}, adapter);
+  assert.deepEqual(result, timeline);
+  assert.equal(executor.outputSchema.safeParse(result).success, true);
+});
+
 test("Timeline schema adapter exposes the same compact default and legacy full view as shared-types", async () => {
   const { createTimelineAdapter } = await import("./adapter.js");
   const adapter = createTimelineAdapter();

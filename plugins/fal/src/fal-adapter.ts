@@ -310,6 +310,8 @@ function imageRequest(
   const images = references.images;
   const editEndpoints: Record<string, string> = {
     "gpt-image-2": "openai/gpt-image-2/edit",
+    "gpt-image-2.5-flare": "openai/gpt-image-2.5/flare/edit",
+    "gpt-image-2.5-sunburst": "openai/gpt-image-2.5/sunburst/edit",
     "nano-banana-2": "fal-ai/nano-banana-2/edit",
     "seedream-4.5": "fal-ai/bytedance/seedream/v4.5/edit",
     "flux-2-pro": "fal-ai/flux-2-pro/edit",
@@ -321,7 +323,11 @@ function imageRequest(
     );
   }
 
-  if (modelId === "gpt-image-2") {
+  if (
+    ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].includes(
+      modelId,
+    )
+  ) {
     const params = record(values.modelParams);
     return {
       endpoint,
@@ -340,6 +346,9 @@ function imageRequest(
                   : undefined,
               ),
         quality: stringParam(values, "quality", "high"),
+        ...(modelId !== "gpt-image-2"
+          ? { background: stringParam(values, "background", "auto") }
+          : {}),
         num_images: numberParam(values, "count", 1),
         output_format: stringParam(values, "output_format", "png"),
         ...(images.length ? { image_urls: images } : {}),

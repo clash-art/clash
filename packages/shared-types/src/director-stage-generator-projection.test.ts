@@ -15,6 +15,25 @@ import {
 
 const HASH = `sha256:${"4".repeat(64)}`;
 
+it("pins registered code Documents through state edits and rejects dangling component uses", () => {
+  const source = { kind: "document" as const, documentAssetId: "light-source", revisionId: "source-before-edit" };
+  const original = stage();
+  const input = { ...original, state: { ...original.state,
+    codeComponents: [{ id: "window-light", name: "Window light", source }],
+    objects: [{ id: "light-use", name: "Light", kind: "code", visible: true,
+      transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: [1, 1, 1] },
+      code: { componentId: "window-light", parameters: { power: 3 } },
+    }],
+  } } as unknown as ProjectDirectorStage;
+  const output = projectDirectorStageToGeneratorRevisionState(input, definition());
+  expect(output.ok).toBe(true);
+  if (!output.ok) return;
+  expect(output.persistentInputRefs.some(ref => JSON.stringify(ref.target) === JSON.stringify(source))).toBe(true);
+  expect((output.state.stage as any).state.objects[0].code.parameters.power).toBe(3);
+  const dangling = projectDirectorStageToGeneratorRevisionState({ ...input, state: { ...input.state, codeComponents: [] } } as any, definition());
+  expect(dangling.ok).toBe(false);
+});
+
 function definition(
   overrides: Record<string, unknown> = {},
 ): GeneratorDefinition {

@@ -81,6 +81,65 @@ function context(
 }
 
 describe("fal executor", () => {
+  // Endpoint/parameter contract: fal.ai/models/openai/gpt-image-2.5/flare/text-to-image/api
+  it.each(["flare", "sunburst"])(
+    "routes GPT Image 2.5 %s edits and preserves quality, size and alpha",
+    async (variant) => {
+      const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        expect(url).toBe(
+          `https://queue.fal.test/openai/gpt-image-2.5/${variant}/edit`,
+        );
+        expect(JSON.parse(String(init?.body))).toMatchObject({
+          image_size: { width: 3840, height: 2160 },
+          quality: "max",
+          background: "transparent",
+          output_format: "webp",
+          num_images: 1,
+          image_urls: ["https://assets.example.test/pose.png"],
+        });
+        return jsonResponse({ request_id: "gpt25" });
+      });
+      vi.stubGlobal("fetch", fetch);
+      const result = await falAdapter.submit(
+        invocation(
+          {
+            modelId: `gpt-image-2.5-${variant}`,
+            upstreamModel: `openai/gpt-image-2.5/${variant}/text-to-image`,
+            kind: "image",
+            prompt: "keep the pose",
+            aspectRatio: "16:9",
+            modelParams: {
+              resolution: "3840x2160",
+              quality: "max",
+              background: "transparent",
+              output_format: "webp",
+            },
+          },
+          {
+            references: [
+              {
+                slot: "image",
+                index: 0,
+                asset: {
+                  assetId: "image-1",
+                  uri: "clash-asset://image-1",
+                  kind: "image",
+                },
+              },
+            ],
+          },
+        ),
+        context(async () => ({
+          form: "provider-url",
+          providerUrl: "https://assets.example.test/pose.png",
+          kind: "image",
+          mediaType: "image/png",
+        })),
+      );
+      expect(result.status).toBe("accepted");
+    },
+  );
+
   it("translates Director quality into the upstream Hunyuan3D request", () => {
     expect(
       buildFalDirectorModelInput({

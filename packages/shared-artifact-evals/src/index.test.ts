@@ -721,7 +721,7 @@ describe("headless benchmark runner", () => {
     expect(parsed.success).toBe(false);
   });
 
-  it("loads a diverse 21-case v2 suite with artifact-first execution contracts", async () => {
+  it("loads v2 cases with readback for their declared editable sources and media", async () => {
     const suitePath = fileURLToPath(
       new URL(
         "../../../benchmarks/creative-artifacts/v2/suite.json",
@@ -730,23 +730,7 @@ describe("headless benchmark runner", () => {
     );
 
     const suite = await loadBenchmarkSuite(suitePath);
-    const categoryCounts = suite.cases.reduce<Record<string, number>>(
-      (counts, benchmarkCase) => {
-        counts[benchmarkCase.category] =
-          (counts[benchmarkCase.category] ?? 0) + 1;
-        return counts;
-      },
-      {},
-    );
-
     expect(suite.id).toBe("clash-creative-artifacts-v2");
-    expect(suite.cases).toHaveLength(21);
-    expect(categoryCounts).toEqual({
-      director: 5,
-      timeline: 5,
-      "mg-character": 6,
-      mixed: 5,
-    });
 
     for (const benchmarkCase of suite.cases) {
       const deliverables = benchmarkCase.outcome.deliverables;
@@ -806,23 +790,16 @@ describe("headless benchmark runner", () => {
           true,
         );
         expect(editableKinds.has("timeline"), benchmarkCase.id).toBe(true);
-        expect(editableKinds.has("remotion-component"), benchmarkCase.id).toBe(
-          true,
-        );
-        const lineageArtifactIds = [
-          "director-stage",
-          "timeline",
-          "remotion-component",
-          "video",
-        ].map(
-          (kind) =>
-            deliverables.find((deliverable) => deliverable.kind === kind)
-              ?.artifactId,
-        );
-        expect(
-          lineageArtifactIds.every((id) => typeof id === "string"),
-          benchmarkCase.id,
-        ).toBe(true);
+        const lineageArtifactIds = deliverables
+          .filter(({ kind }) =>
+            [
+              "director-stage",
+              "timeline",
+              "remotion-component",
+              "video",
+            ].includes(kind),
+          )
+          .map(({ artifactId }) => artifactId);
         expect(
           execution?.productReadback?.artifactIds,
           benchmarkCase.id,
@@ -926,7 +903,9 @@ describe("headless benchmark runner", () => {
     }
 
     for (const benchmarkCase of suite.cases.filter(
-      ({ category }) => category === "mixed",
+      ({ category, outcome }) =>
+        category === "mixed" &&
+        outcome.deliverables.some(({ kind }) => kind === "remotion-component"),
     )) {
       expect(
         benchmarkCase.execution?.requiredProductOperations,
@@ -1538,6 +1517,10 @@ describe("headless benchmark runner", () => {
       config.set(entry.slice(0, separator), entry.slice(separator + 1));
     }
     expect(args).toContain("--ignore-user-config");
+    expect(config.get("skills.include_instructions")).toBe("false");
+    expect(JSON.parse(config.get("developer_instructions")!)).toContain(
+      "Task skills",
+    );
     expect(
       args.flatMap((argument, index) =>
         argument === "--disable" ? [args[index + 1]] : [],

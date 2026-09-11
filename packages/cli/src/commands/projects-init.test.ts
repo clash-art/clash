@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, realpath } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -56,6 +56,11 @@ test("clash init human output distinguishes a created project from a reused proj
     `Marker: ${join(canonicalWorkspace, ".clash", "project.toml")}`,
   ]);
   assert.equal(await readFile(join(workspace, ".clash", "project.toml"), "utf8"), markerBeforeReuse);
+  // CLI users opt into skills; binding an external workspace must not install
+  // the focused policy reserved for Clash-hosted agent sessions.
+  for (const filename of ["AGENTS.md", "CLAUDE.md", "CODEBUDDY.md", "GEMINI.md"]) {
+    await assert.rejects(access(join(workspace, filename)), { code: "ENOENT" });
+  }
 });
 
 test("clash init JSON output remains compatible and includes reused", async () => {

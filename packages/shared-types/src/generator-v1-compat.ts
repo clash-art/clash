@@ -262,6 +262,9 @@ export function generatorDefinitionFromExecutableActionCard(
     );
   }
   const card = registration.document.spec;
+  if (card.generator) {
+    throw new Error("This Action Card projects a native Generator. Resolve its declared Definition instead of synthesizing a second one.");
+  }
   const binding = ExecutablePluginBindingSchema.parse({
     pluginId: registration.pluginId,
     version: registration.version,
@@ -281,6 +284,9 @@ export function generatorDefinitionFromCustomActionDefinition(
 ): GeneratorDefinition {
   const definition: CustomActionDefinition =
     CustomActionDefinitionSchema.parse(definitionInput);
+  if (definition.generator) {
+    throw new Error("This Custom Action projects a native Generator. Resolve its declared Definition instead of synthesizing a second one.");
+  }
   if (!definition.pluginBinding) {
     throw new Error(
       `Custom Action ${definition.id} requires pluginBinding before Generator migration.`,

@@ -68,6 +68,16 @@ export function selectClashEntrypoint(
   return "cli";
 }
 
+export function shouldStartCliHost(argv: readonly string[] = process.argv): boolean {
+  const args = normalizeClashArgv(argv).slice(2);
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--profile") { index++; continue; }
+    if (args[index]?.startsWith("--profile=")) continue;
+    return args[index] !== "logs";
+  }
+  return true;
+}
+
 function useSourceRuntime(): boolean {
   return (
     process.env.CLASH_SOURCE_RUNTIME === "1" ||
@@ -78,13 +88,13 @@ function useSourceRuntime(): boolean {
 const runtimeLoaders: ClashEntrypointLoaders = {
   cli: async () => {
     if (useSourceRuntime()) {
-      const { createPluginHostManager } = (await import(
-        new URL("./plugin-host.ts", import.meta.url).href
-      )) as typeof import("./plugin-host.js");
-      const host = await createPluginHostManager({
-        startedBy: "cli",
-      }).ensureHost();
-      process.env.CLASH_API_URL = host.endpoint;
+      if (shouldStartCliHost()) {
+        const { createPluginHostManager } = (await import(
+          new URL("./plugin-host.ts", import.meta.url).href
+        )) as typeof import("./plugin-host.js");
+        const host = await createPluginHostManager({ startedBy: "cli" }).ensureHost();
+        process.env.CLASH_API_URL = host.endpoint;
+      }
       await import(
         new URL("../../../packages/cli/src/index.ts", import.meta.url).href
       );
@@ -99,15 +109,27 @@ const runtimeLoaders: ClashEntrypointLoaders = {
     )) as {
       serveClashPluginStdio(options?: {
         appBundles?: Record<
-          "studio" | "canvas" | "timeline" | "director",
+          "project" | "studio" | "canvas" | "timeline" | "director",
           string
         >;
       }): Promise<void>;
     };
+    const projectBundle = sourceRuntime
+      ? (await (await import("esbuild")).build({
+          entryPoints: [fileURLToPath(new URL("../../../packages/mcp-server/src/project-app-client.ts", import.meta.url))],
+          bundle: true,
+          write: false,
+          format: "esm",
+          platform: "browser",
+          target: "es2022",
+          minify: true,
+        })).outputFiles[0]!.text
+      : undefined;
     await runtime.serveClashPluginStdio(
       sourceRuntime
         ? {
             appBundles: {
+              project: projectBundle!,
               studio: "",
               canvas: "",
               timeline: "",

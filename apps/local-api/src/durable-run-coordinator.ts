@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isModelGenerationOutputType, MODEL_TEXT_DOCUMENT_KIND, MODEL_TEXT_DOCUMENT_SCHEMA_VERSION, parseDocumentBody } from "@clash/shared-types";
 
 import {
   DurableRunEngine,
@@ -45,6 +46,17 @@ import type {
 
 type ProviderKind = ProviderPluginExecutorRequest["kind"];
 
+/** Host-private execution route; the Generator's semantic executor remains unchanged. */
+export interface FrozenGeneratorProviderExecution {
+  binding: ExecutablePluginBinding;
+  accountId?: string;
+  assetInputs: ProviderAssetInput[];
+  input: {
+    values: Record<string, ExecutablePluginJsonValue>;
+    references: ExecutablePluginReference[];
+  };
+}
+
 /** One Host policy shared by every local Provider-backed product surface. */
 export const DEFAULT_LOCAL_PROVIDER_RUN_DEADLINE_MS = 30 * 60_000;
 
@@ -79,6 +91,8 @@ export interface FrozenLocalProviderExecutorInput {
   actionId?: string;
   /** Exact public ActionRun output contract, frozen only for native Generator Actions. */
   generatorOutputContract?: GeneratorActionOutputContract;
+  /** Model execution selected at admission, dispatched by the same native Run engine. */
+  providerExecution?: FrozenGeneratorProviderExecution;
   /** User/agent attribution is frozen with a custom Action revision. */
   actor?: ExecutablePluginInvocation["actor"];
   /** Exact synchronized Action owner used by non-Canvas products such as Timeline render. */
@@ -255,16 +269,23 @@ function parseFrozenExecutorInputUnchecked(
         "Frozen Provider executor delivery kind is not recognized.",
       );
     }
+    // Prompt requirements belong to the Model Card. Delivery records preserve
+    // provenance verbatim, including an empty prompt for reference-only models.
+    if (delivery.prompt !== undefined && typeof delivery.prompt !== "string") {
+      throw new FrozenExecutorInputError("Frozen Provider executor delivery.prompt must be a string.");
+    }
     parsedDelivery = {
       kind: "project-asset",
       actionId: nonEmptyString(delivery.actionId, "delivery.actionId"),
       name: nonEmptyString(delivery.name, "delivery.name"),
       ...(delivery.prompt === undefined
         ? {}
-        : { prompt: nonEmptyString(delivery.prompt, "delivery.prompt") }),
+        : { prompt: delivery.prompt }),
     };
   }
-  if (nodeId !== undefined && parsedDelivery) {
+  // Native Generator delivery owns the Asset; a Canvas node is only an
+  // optional guarded projection of that same output, not a second destination.
+  if (nodeId !== undefined && parsedDelivery && targetKind !== "generator-action") {
     throw new FrozenExecutorInputError(
       "Frozen Provider executor cannot target both a Canvas node and a direct Project Asset delivery.",
     );
@@ -345,6 +366,19 @@ function parseFrozenExecutorInputUnchecked(
     );
   }
   const generatorOutput = parsedGeneratorOutputContract?.[0];
+  const providerExecution =
+    json.providerExecution === undefined
+      ? undefined
+      : parseGeneratorProviderExecution(json.providerExecution, json.projectId, json.kind);
+  if (
+    providerExecution &&
+    (targetKind !== "generator-action" ||
+      parsedGeneratorOutputContract?.some((port) => !isModelGenerationOutputType(port.assetType)))
+  ) {
+    throw new FrozenExecutorInputError(
+      "A frozen Generator Provider route requires a native media or plain-text Document output contract.",
+    );
+  }
   if (
     generatorOutput?.assetType.kind === "media" &&
     generatorOutput.assetType.mediaKind !== json.kind
@@ -362,6 +396,7 @@ function parseFrozenExecutorInputUnchecked(
     schemaVersion: 1,
     ...(targetKind === "provider-executor" ? {} : { targetKind }),
     binding,
+    ...(providerExecution ? { providerExecution } : {}),
     ...(actionId === undefined
       ? {}
       : { actionId: nonEmptyString(actionId, "actionId") }),
@@ -411,7 +446,36 @@ function parseFrozenExecutorInputUnchecked(
   };
 }
 
-function parseFrozenExecutorInput(
+function parseGeneratorProviderExecution(
+  value: ExecutablePluginJsonValue,
+  projectId: ExecutablePluginJsonValue | undefined,
+  kind: ExecutablePluginJsonValue,
+): FrozenGeneratorProviderExecution {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new FrozenExecutorInputError("Frozen Generator Provider execution must be an object.");
+  }
+  // Reuse the Provider boundary's leaf validators. Do not compose schemas from
+  // different Zod installations: structural comparison expands recursive JSON types.
+  // Pick only route fields, so nested providerExecution can never recurse here.
+  const parsed = parseFrozenExecutorInputUnchecked({
+    schemaVersion: 1,
+    targetKind: "provider-executor",
+    projectId,
+    kind,
+    binding: value.binding,
+    ...(value.accountId === undefined ? {} : { accountId: value.accountId }),
+    ...(value.assetInputs === undefined ? {} : { assetInputs: value.assetInputs }),
+    input: value.input,
+  });
+  return {
+    binding: parsed.binding,
+    ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
+    assetInputs: parsed.assetInputs ?? [],
+    input: parsed.input,
+  };
+}
+
+export function parseFrozenExecutorInput(
   input: unknown,
 ): FrozenLocalProviderExecutorInput {
   try {
@@ -454,7 +518,10 @@ function providerStep(
   response: ProviderPluginExecutorResponse,
 ): DurableProviderStep {
   const frozen = parseFrozenExecutorInput(run.executorInput);
-  assertSameBinding(frozen.binding, response.binding);
+  assertSameBinding(
+    frozen.providerExecution?.binding ?? frozen.binding,
+    response.binding,
+  );
   if (response.status === "failed") {
     return { status: "failed", error: response.error };
   }
@@ -478,6 +545,23 @@ function providerStep(
           kind: "asset" as const,
           asset: response.media,
         };
+  if (frozen.targetKind === "generator-action") {
+    const port = frozen.generatorOutputContract?.find((candidate) => candidate.slot === run.outputSlot);
+    const normalized = frozen.kind === "text" && port?.assetType.kind === "document" &&
+      port.assetType.documentKind === MODEL_TEXT_DOCUMENT_KIND &&
+      port.assetType.schemaVersion === MODEL_TEXT_DOCUMENT_SCHEMA_VERSION &&
+      output.kind === "value" && typeof output.value === "string"
+      ? { slot: run.outputSlot, kind: "document" as const, document: {
+          documentKind: MODEL_TEXT_DOCUMENT_KIND, schemaVersion: MODEL_TEXT_DOCUMENT_SCHEMA_VERSION, body: output.value,
+        } }
+      : output;
+    return generatorActionStep(run, {
+      protocol: "clash.plugin.result/v1",
+      invocationId: durableRunIdempotencyKey(run),
+      status: "completed",
+      outputs: [ExecutablePluginOutputSchema.parse(normalized)],
+    });
+  }
   return {
     status: "completed",
     outputs: [ExecutablePluginOutputSchema.parse(output)],
@@ -718,6 +802,16 @@ function generatorActionStep(
       };
     }
   }
+  if (output.kind === "document") {
+    try {
+      parseDocumentBody(output.document.documentKind, output.document.schemaVersion, output.document.body);
+    } catch (error) {
+      return { status: "failed", error: {
+        code: "contract_violation", message: error instanceof Error ? error.message : String(error),
+        retryable: false, requestState: "accepted",
+      } };
+    }
+  }
   return { status: "completed", outputs: [output] };
 }
 
@@ -750,18 +844,19 @@ function providerRequest(
 ): ProviderPluginExecutorRequest {
   const frozen = parseFrozenExecutorInput(run.executorInput);
   const timeoutMs = remainingAttemptTimeoutMs(run, now);
+  const execution = frozen.providerExecution ?? frozen;
   return {
-    pluginId: frozen.binding.pluginId,
-    exportId: frozen.binding.exportId,
-    binding: frozen.binding,
-    ...(frozen.accountId ? { accountId: frozen.accountId } : {}),
+    pluginId: execution.binding.pluginId,
+    exportId: execution.binding.exportId,
+    binding: execution.binding,
+    ...(execution.accountId ? { accountId: execution.accountId } : {}),
     kind: frozen.kind,
     taskId: idempotencyKey,
     timeoutMs,
     projectId: frozen.projectId,
     ...(frozen.nodeId ? { nodeId: frozen.nodeId } : {}),
-    assetInputs: frozen.assetInputs ?? [],
-    input: frozen.input,
+    assetInputs: execution.assetInputs ?? [],
+    input: execution.input,
     ...(pollState === undefined ? {} : { pollState }),
   };
 }
@@ -957,7 +1052,7 @@ export function createLocalDurableRunCoordinator(
             ),
           );
         }
-        if (frozen.targetKind === "generator-action") {
+        if (frozen.targetKind === "generator-action" && !frozen.providerExecution) {
           if (!options.executablePluginAction) {
             throw new ProviderPluginHostUnavailableError(
               "Executable Generator Action runtime is unavailable.",
@@ -977,7 +1072,7 @@ export function createLocalDurableRunCoordinator(
       },
       async poll({ run, pollState }) {
         const frozen = parseFrozenExecutorInput(run.executorInput);
-        if (frozen.targetKind === "generator-action") {
+        if (frozen.targetKind === "generator-action" && !frozen.providerExecution) {
           if (!options.executablePluginAction) {
             throw new ProviderPluginHostUnavailableError(
               "Executable Generator Action runtime is unavailable.",

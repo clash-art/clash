@@ -2,7 +2,13 @@ import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { ProjectHostCommand } from "@clash/shared-types";
 
-export type ProjectHostResponse = Record<string, unknown> & { error?: string };
+import { sendProjectHostCommand, type ProjectHostResponse } from "./project-host-http.js";
+export {
+  sendProjectHostCommand,
+  projectHostCommandUrl,
+  ProjectHostHttpError,
+  type ProjectHostResponse,
+} from "./project-host-http.js";
 
 export type ResolvedProjectHostContext = {
   projectId: string;
@@ -96,38 +102,6 @@ function sanitizeProjectHostValue(
       return [[key, sanitizeProjectHostValue(child, childContext)]];
     }),
   );
-}
-
-export class ProjectHostHttpError extends Error {
-  constructor(
-    readonly status: number,
-    readonly body: unknown,
-  ) {
-    const record =
-      body !== null && typeof body === "object"
-        ? (body as Record<string, unknown>)
-        : undefined;
-    const code = cleanErrorField(record?.code);
-    const detail = cleanErrorField(record?.error);
-    const reason = [code, detail].filter(Boolean).join(": ");
-    super(
-      reason
-        ? `${reason} (Project host HTTP ${status})`
-        : `Project host request failed with HTTP ${status}`,
-    );
-    this.name = "ProjectHostHttpError";
-  }
-}
-
-function cleanErrorField(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-export function projectHostCommandUrl(
-  endpoint: string,
-  projectId: string,
-): string {
-  return `${endpoint.replace(/\/+$/, "")}/api/v1/projects/${encodeURIComponent(projectId)}/host-command`;
 }
 
 const PROJECT_MARKER = join(".clash", "project.toml");
@@ -224,32 +198,6 @@ export async function resolveProjectHostContext(
   throw new Error(
     "No Clash project context found. Run clash init, pass projectId, or set CLASH_PROJECT_ID.",
   );
-}
-
-/** Neutral local-api client shared by peer frontends such as CLI and MCP. */
-export async function sendProjectHostCommand<
-  T extends ProjectHostResponse = ProjectHostResponse,
->(options: {
-  endpoint: string;
-  projectId: string;
-  command: ProjectHostCommand;
-  token?: string;
-  fetch?: typeof globalThis.fetch;
-}): Promise<T> {
-  const response = await (options.fetch ?? globalThis.fetch)(
-    projectHostCommandUrl(options.endpoint, options.projectId),
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
-      },
-      body: JSON.stringify(options.command),
-    },
-  );
-  const body = (await response.json().catch(() => undefined)) as unknown;
-  if (!response.ok) throw new ProjectHostHttpError(response.status, body);
-  return body as T;
 }
 
 /**

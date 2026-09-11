@@ -1,0 +1,197 @@
+{
+  "apiVersion": "clash.generator/v1",
+  "kind": "generator",
+  "spec": {
+    "definitionId": "image",
+    "editPolicy": "fork-when-materialized",
+    "stateSchema": {
+      "type": "object",
+      "properties": {
+        "modelId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "provider_id": false,
+            "require_real_provider": false
+          }
+        },
+        "contentParts": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "text"
+                  },
+                  "text": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "text"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "const": "input"
+                  },
+                  "slot": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "itemKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "slot"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "modelId",
+        "prompt"
+      ],
+      "additionalProperties": false
+    },
+    "persistentInputs": [
+      {
+        "slot": "image",
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "image"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": null
+        }
+      },
+      {
+        "slot": "video",
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "video"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": null
+        }
+      },
+      {
+        "slot": "audio",
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "audio"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": null
+        }
+      },
+      {
+        "slot": "model",
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "model"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": null
+        }
+      },
+      {
+        "slot": "startFrame",
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "image"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": 1
+        }
+      },
+      {
+        "slot": "endFrame",
+        "accepts": [
+          {
+            "kind": "media",
+            "mediaKind": "image"
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": 1
+        }
+      },
+      {
+        "slot": "text",
+        "accepts": [
+          {
+            "kind": "document",
+            "documentKind": "text.plain",
+            "schemaVersion": 1
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": null
+        }
+      }
+    ],
+    "actions": [
+      {
+        "id": "generate",
+        "modelExecution": true,
+        "parametersSchema": {
+          "type": "object",
+          "additionalProperties": false
+        },
+        "invocationInputs": [],
+        "outputs": [
+          {
+            "slot": "media",
+            "assetType": {
+              "kind": "media",
+              "mediaKind": "image"
+            },
+            "cardinality": {
+              "minItems": 1,
+              "maxItems": 1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

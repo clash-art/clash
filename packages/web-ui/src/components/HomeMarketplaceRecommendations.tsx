@@ -1,7 +1,8 @@
-import { Check } from "@phosphor-icons/react";
+import { ArrowUpRight, Check } from "@phosphor-icons/react";
 import type { RegistryItem } from "@clash/web-ui/lib/clientActions";
 import { Link } from "react-router";
 
+import { Card } from "./ui/card";
 import { MarketplaceItemArtwork } from "./MarketplaceItemCard";
 import { marketplacePluginPath } from "./marketplaceRouting";
 import { HomeSectionActionLink, HomeSectionHeader } from "./HomeSectionHeader";
@@ -30,7 +31,7 @@ export default function HomeMarketplaceRecommendations({
     >
       <HomeSectionHeader
         id="home-marketplace-heading"
-        title="From Marketplace"
+        title="Official Picks"
         action={
           <HomeSectionActionLink to="/marketplace/manage">
             View Marketplace
@@ -38,7 +39,7 @@ export default function HomeMarketplaceRecommendations({
         }
       />
 
-      <ul className="grid grid-cols-1 gap-x-8 sm:grid-cols-2 xl:grid-cols-4">
+      <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {featuredPlugins.map((item) => {
           const installed =
             item.type === "action"
@@ -51,41 +52,49 @@ export default function HomeMarketplaceRecommendations({
             <li
               key={`${item.type}-${item.id}`}
               data-slot="home-marketplace-item"
-              className="min-w-0 border-t border-border"
+              className="min-w-0"
             >
-              <Link
-                to={marketplacePluginPath(item)}
-                aria-label={`View ${item.name} details`}
-                className="flex min-w-0 items-center gap-3 rounded-md py-3.5 outline-none transition-colors hover:bg-accent/35 focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <MarketplaceItemArtwork item={item} context="preview" />
-                <div className="min-w-0 flex-1">
-                  <h3 className="truncate text-sm font-semibold text-content-primary">
-                    {item.name}
-                  </h3>
-                  {item.description ? (
-                    <p className="mt-0.5 truncate text-xs text-content-secondary">
-                      {item.description}
-                    </p>
-                  ) : null}
-                  <span className="mt-1 flex items-center gap-1 text-xs text-content-muted">
-                    {installed ? (
-                      <Check
-                        className="size-3"
-                        weight="bold"
-                        aria-hidden="true"
-                      />
+              <Card asChild interaction="surface" padding="sm">
+                <Link
+                  to={marketplacePluginPath(item)}
+                  aria-label={`View ${item.name} details`}
+                  className="flex h-full min-w-0 flex-col gap-3"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <MarketplaceItemArtwork item={item} context="preview" />
+                    <ArrowUpRight
+                      className="size-4 text-content-muted"
+                      aria-hidden="true"
+                    />
+                  </div>
+                  <div className="flex min-w-0 flex-1 flex-col">
+                    <h3 className="truncate text-sm font-semibold text-content-primary">
+                      {item.name}
+                    </h3>
+                    {item.description ? (
+                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-content-secondary">
+                        {item.description}
+                      </p>
                     ) : null}
-                    {installed
-                      ? "Installed"
-                      : item.type === "action"
-                      ? "Action"
-                      : item.type === "plugin"
-                        ? "Plugin"
-                        : "Skill"}
-                  </span>
-                </div>
-              </Link>
+                    <span className="mt-auto flex items-center gap-1 pt-4 text-xs text-content-muted">
+                      {installed ? (
+                        <Check
+                          className="size-3"
+                          weight="bold"
+                          aria-hidden="true"
+                        />
+                      ) : null}
+                      {installed
+                        ? "Installed"
+                        : item.type === "action"
+                          ? "Action"
+                          : item.type === "plugin"
+                            ? "Plugin"
+                            : "Skill"}
+                    </span>
+                  </div>
+                </Link>
+              </Card>
             </li>
           );
         })}

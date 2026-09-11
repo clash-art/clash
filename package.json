@@ -30,7 +30,7 @@
     "test:e2e:agent-first-local-v1": "pnpm build:package @clash/desktop && pnpm --filter @clash/desktop test:e2e:agent-first-local-v1",
     "test:e2e:short-drama-timeline": "pnpm build:package @clash/desktop && pnpm --filter @clash/desktop test:e2e:short-drama-timeline",
     "test:e2e:agent-first-cas": "pnpm build:package @clash/desktop && pnpm --filter @clash/desktop test:e2e:agent-first-cas",
-    "test:skills": "node --test skills/skill-market.test.mjs",
+    "test:skills": "node --test skills/skill-market.test.ts",
     "test:agent:real-codex": "pnpm build:package @clash/desktop && pnpm --filter @clash/desktop test:agent:real-codex",
     "test:startup": "turbo run build --filter=@clash/web --filter=@clash/desktop && pnpm test:startup:api && pnpm --filter @clash/desktop test:startup",
     "test:startup:api": "pnpm --filter @clash/local-api test:e2e",

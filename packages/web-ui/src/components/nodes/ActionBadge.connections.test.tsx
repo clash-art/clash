@@ -1,6 +1,8 @@
+import { LoroDoc } from "loro-crdt";
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -8,8 +10,12 @@ import {
   waitFor,
 } from "@testing-library/react";
 import {
+  createProjectGenerator,
+  generatorDefinitionFromExecutablePluginRegistration,
+  ExecutablePluginGeneratorDocumentSchema,
   CustomActionDefinitionSchema,
   MODEL_CARDS,
+  type GeneratorRevision,
   type ModelCatalogEntry,
   type ModelUpstreamRoute,
 } from "@clash/shared-types";
@@ -20,11 +26,14 @@ import PromptActionNode, {
 } from "./ActionBadge";
 import { CanvasTransientUiProvider } from "../CanvasTransientUiContext";
 import { CustomActionsProvider } from "../CustomActionsContext";
+import agentTextGenerator from "../../../../../plugins/agent-text/generators/text.json";
+import agentTextCard from "../../../../../plugins/agent-text/cards/agent-text.json";
 
 const reactFlowMock = vi.hoisted(() => {
   const nodeConnections: any[] = [];
   return {
     addEdges: vi.fn(),
+    addSelectedNodes: vi.fn(),
     getEdges: vi.fn(() => []),
     getNode: vi.fn((_id: string): any => undefined),
     getNodes: vi.fn((): any[] => []),
@@ -77,6 +86,7 @@ vi.mock("@xyflow/react", () => ({
   NodeToolbar: ({ children, isVisible }: any) =>
     isVisible ? <div data-testid="node-toolbar">{children}</div> : null,
   useNodeConnections: () => reactFlowMock.nodeConnections,
+  useStoreApi: () => ({ getState: () => reactFlowMock }),
   useReactFlow: () => ({
     addEdges: reactFlowMock.addEdges,
     getEdges: reactFlowMock.getEdges,
@@ -102,11 +112,13 @@ vi.mock("framer-motion", () => ({
   },
 }));
 
+const configureModelsMock = vi.hoisted(() => vi.fn());
 vi.mock("../ProjectContext", async () => {
   const { MODEL_CARDS } = await import("@clash/shared-types");
   return {
     useProject: () => ({
       projectId: "project-1",
+      configureModels: configureModelsMock,
       modelCatalogReady: true,
       enabledModelCatalog:
         projectContextMock.enabledModelCatalog ??
@@ -119,8 +131,9 @@ vi.mock("../ProjectContext", async () => {
   };
 });
 
+const nativeLoroMock = vi.hoisted(() => ({ value: null as any }));
 vi.mock("../LoroSyncContext", () => ({
-  useOptionalLoroSyncContext: () => null,
+  useOptionalLoroSyncContext: () => nativeLoroMock.value,
 }));
 
 vi.mock("../PresenceAwarenessContext", () => ({
@@ -228,7 +241,9 @@ describe("ActionBadge canvas subscriptions", () => {
     });
   });
 
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
+    nativeLoroMock.value = null;
     cleanup();
     Element.prototype.scrollIntoView = vi.fn();
     reactFlowMock.nodeConnections.splice(0);
@@ -239,6 +254,7 @@ describe("ActionBadge canvas subscriptions", () => {
     reactFlowMock.getNodes.mockReset();
     reactFlowMock.getNodes.mockReturnValue([]);
     reactFlowMock.addEdges.mockReset();
+    reactFlowMock.addSelectedNodes.mockReset();
     reactFlowMock.setNodes.mockReset();
     spawnAssetMock.adoptDraft.mockReset();
     spawnAssetMock.latestInput = null;
@@ -320,7 +336,7 @@ describe("ActionBadge canvas subscriptions", () => {
       );
     const openParameters = () => {
       fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
-      fireEvent.click(screen.getByRole("button", { name: /WAV/ }));
+      fireEvent.click(screen.getByRole("button", { name: "Parameters" }));
     };
 
     projectContextMock.enabledModelCatalog = [
@@ -348,6 +364,31 @@ describe("ActionBadge canvas subscriptions", () => {
     });
   });
 
+  it("offers Settings for an unconfigured draft without inventing a model or showing an error", () => {
+    projectContextMock.enabledModelCatalog = [];
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps}
+      id="empty-model" type="action-badge" data={{ actionType: "image-gen", content: "" }}
+    /></CanvasTransientUiProvider>);
+    expect(screen.queryByText(/No connected provider or executable route/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Configure models in Settings" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Configure models in Settings" }));
+    expect(configureModelsMock).toHaveBeenCalled();
+  });
+
+  it("blocks an existing model node when no provider route is available", () => {
+    projectContextMock.enabledModelCatalog = [];
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps}
+      id="unavailable-model" type="action-badge"
+      data={{ actionType: "image-gen", modelId: "unconnected-model", content: "A landscape" }}
+    /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    expect(screen.getByRole("button", { name: "Run action" })).toBeDisabled();
+    expect(screen.getByText("No available model selected")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Parameters" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Batch count" })).not.toBeInTheDocument();
+  });
+
   it("mounts from node-scoped connections without subscribing to every edge", () => {
     const { getByText } = render(
       <CanvasTransientUiProvider>
@@ -366,6 +407,65 @@ describe("ActionBadge canvas subscriptions", () => {
     );
 
     expect(getByText("Generate")).not.toBeNull();
+  });
+
+  it.each([false, true])("configuring a badge selects it without replacing an existing selection (selected=%s)", (selected) => {
+    render(
+      <CanvasTransientUiProvider>
+        <PromptActionNode
+          {...baseNodeProps}
+          selected={selected}
+          id="action-1"
+          type="action-badge"
+          data={{ actionType: "text-gen", content: "Write a brief", modelId: "gpt-5.4" }}
+        />
+      </CanvasTransientUiProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+
+    expect(screen.getByTestId("node-toolbar")).toBeTruthy();
+    if (selected) {
+      expect(reactFlowMock.addSelectedNodes).not.toHaveBeenCalled();
+    } else {
+      expect(reactFlowMock.addSelectedNodes).toHaveBeenCalledWith(["action-1"]);
+    }
+  });
+
+  it("selects a copied badge when its configuration opens automatically", () => {
+    render(
+      <CanvasTransientUiProvider>
+        <PromptActionNode
+          {...baseNodeProps}
+          id="action-copy"
+          type="action-badge"
+          data={{ actionType: "text-gen", content: "Write a brief", modelId: "gpt-5.4", openPanel: true }}
+        />
+      </CanvasTransientUiProvider>,
+    );
+    expect(screen.getByTestId("node-toolbar")).toBeTruthy();
+    expect(reactFlowMock.addSelectedNodes).toHaveBeenCalledWith(["action-copy"]);
+  });
+
+  it("keeps configuration open on repeated clicks and closes it when the node loses selection", () => {
+    const node = (selected: boolean) => (
+      <CanvasTransientUiProvider>
+        <PromptActionNode
+          {...baseNodeProps}
+          selected={selected}
+          id="action-1"
+          type="action-badge"
+          data={{ actionType: "text-gen", content: "Write a brief", modelId: "gpt-5.4" }}
+        />
+      </CanvasTransientUiProvider>
+    );
+    const { rerender } = render(node(true));
+    const configure = screen.getByRole("button", { name: "Configure action" });
+    fireEvent.click(configure);
+    fireEvent.click(configure);
+    expect(screen.getByTestId("node-toolbar")).toBeTruthy();
+    rerender(node(false));
+    expect(screen.queryByTestId("node-toolbar")).toBeNull();
   });
 
   it("keeps the selected capsule fill uniform while the configure half is hovered", () => {
@@ -1390,6 +1490,444 @@ describe("ActionBadge canvas subscriptions", () => {
     ).not.toBeNull();
   });
 
+  it.each(["placed", "unplaced", "timing"])("edits native keyframes in one revision request (%s)", async (mode) => {
+    const placed = mode === "placed";
+    const doc = new LoroDoc();
+    const nodes = ["start", "middle", "end"].map(id => ({ id, type: "image", data: { assetId: id, src: `https://example.test/${id}.png` } }));
+    reactFlowMock.getNodes.mockReturnValue(placed ? nodes : mode === "timing" ? [] : nodes.filter(node => node.id !== "middle"));
+    reactFlowMock.getNode.mockImplementation(id => nodes.find(node => node.id === id));
+    const refs = nodes.map(node => ({ slot: "image", itemKey: node.id, target: { kind: "media" as const, projectAssetId: node.id } }));
+    const revision: GeneratorRevision = { id: "before", generatorId: "native", definitionRef: {
+      pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` },
+      state: { modelId: "flux-3-video-keyframes", prompt: "Animate", params: { duration: 5, keyframe_frame_indices: "[0,24,120]", keyframe_timing_customized: true },
+        contentParts: [{ type: "text", text: "Animate" }, ...refs.map(ref => ({ type: "input", slot: ref.slot, itemKey: ref.itemKey, label: "" }))] }, persistentInputRefs: refs };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs,
+      } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge" data={{ generatorId: "native", label: "Keyframes" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    if (mode === "timing") {
+      fireEvent.click(screen.getByRole("button", { name: "Edit keyframe timing" }));
+      const input = screen.getByRole("spinbutton", { name: "Frame 2 time in seconds" });
+      fireEvent.change(input, { target: { value: "2" } });
+      fireEvent.blur(input);
+    } else {
+    fireEvent.click(screen.getByRole("button", { name: "Remove frame 2 keyframe" }));
+    }
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    const input = JSON.parse(request.mock.calls[0][1]!.body as string);
+    expect(input.state.params.keyframe_frame_indices).toBe(mode === "timing" ? "[0,48,120]" : "[0,120]");
+    expect(input.state.params.keyframe_timing_customized).toBe(true);
+    expect(input.persistentInputRefs.map((ref: any) => ref.target.projectAssetId).sort()).toEqual(mode === "timing" ? ["end", "middle", "start"] : ["end", "start"]);
+    expect(input.state.contentParts.filter((part: any) => part.type === "input").map((part: any) => part.itemKey)).toEqual(mode === "timing" ? ["start", "middle", "end"] : ["start", "end"]);
+    expect(nativeLoroMock.value.updateNode).not.toHaveBeenCalled();
+    cleanup();
+    doc.free();
+  });
+
+  it("removes an unplaced input by identity while retaining another reference to the same Asset", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const refs = ["opening", "closing"].map((itemKey) => ({ slot: "video", itemKey, target: { kind: "media" as const, projectAssetId: "shared-asset" } }));
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "openingclosing", contentParts: refs.map((ref) => ({ type: "input", slot: ref.slot, itemKey: ref.itemKey, label: ref.itemKey })), params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: refs };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      if (_path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs,
+      } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", label: "Unplaced references" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    expect(screen.getByRole("list", { name: "Media references" })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove Media reference" })[0]!);
+    await waitFor(() => expect(request).toHaveBeenCalled());
+    const input = JSON.parse(request.mock.calls.find((call) => call[1]?.body)![1]!.body as string);
+    expect(input.persistentInputRefs).toEqual([refs[1]]);
+    expect(input.state.prompt).toBe("closing");
+    expect(input.state.contentParts).toEqual([revision.state.contentParts[1]]);
+  });
+
+  it("waits for ordered text edits before Run without replacing them with the old flat prompt", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "Before", contentParts: [{ type: "text", text: "Before" }], params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    let release!: () => void;
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      if (_path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      const input = JSON.parse(init!.body as string);
+      if (request.mock.calls.length === 1) await new Promise<void>((resolve) => { release = resolve; });
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs,
+      } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge" data={{ generatorId: "native", label: "Ordered prompt" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt text 1" }), { target: { value: "After" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Run action" }).at(-1)!);
+    await waitFor(() => expect(request.mock.calls.some((call) => call[1]?.body)).toBe(true));
+    expect(spawnAssetMock.spawnPending).not.toHaveBeenCalled();
+    await act(async () => { release(); });
+    await waitFor(() => expect(spawnAssetMock.spawnPending).toHaveBeenCalled());
+    for (const [, init] of request.mock.calls.filter((call) => call[1]?.body)) {
+      const input = JSON.parse(init!.body as string);
+      expect(input.state.prompt).toBe("After");
+      expect(input.state.contentParts).toEqual([{ type: "text", text: "After" }]);
+    }
+  });
+
+  it("renders a native end-only reference in the End slot", () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3-startend", prompt: "Move", params: {} },
+      persistentInputRefs: [{ slot: "endFrame", target: { kind: "media" as const, projectAssetId: "end-image" } }] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    const source = { id: "reference", type: "image", data: { assetId: "end-image", label: "End image" } };
+    reactFlowMock.getNodes.mockReturnValue([source]);
+    reactFlowMock.getNode.mockImplementation((id: string) => id === source.id ? source : undefined);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", label: "End only" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    expect(screen.getByRole("button", { name: "Pick Start frame" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Clear End frame" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Clear Start frame" })).toBeNull();
+  });
+
+  it.each([{ kind: "image", attached: false }, { kind: "image", attached: true }, { kind: "text", attached: false }, { kind: "document", attached: false }] as const)("saves a picked $kind reference (attached=$attached) through the native revision", async ({ kind, attached }) => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision: import("@clash/shared-types").GeneratorRevision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "Native prompt", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" }, ...(attached ? { contentParts: [{ type: "text", text: "Native prompt" }, { type: "input", slot: "image", itemKey: "existing", label: "" }] } : {}) }, persistentInputRefs: attached ? [{ slot: "image", itemKey: "existing", target: { kind: "media" as const, projectAssetId: "image-asset" } }] : [] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    const documentRevision = { kind: "document" as const, documentAssetId: "script", revisionId: "saved-script" };
+    const source = { id: "reference", type: kind === "document" ? "text" : kind, data: { assetId: "image-asset", label: "Reference image", content: "Snapshot text", ...(kind === "document" ? { documentRevision } : {}) } };
+    reactFlowMock.getNodes.mockReturnValue([source]);
+    reactFlowMock.getNode.mockImplementation((id: string) => id === source.id ? source : undefined);
+    nativeLoroMock.value = { doc, updateNode: vi.fn(), addEdge: vi.fn() };
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      if (_path.includes("/documents/")) return Response.json({
+        revision: { id: documentRevision.revisionId, documentAssetId: documentRevision.documentAssetId,
+          documentKind: "text.plain", schemaVersion: 1, mutability: "versioned",
+          body: { digest: `sha256:${"a".repeat(64)}`, byteLength: 1, contentType: "application/json" },
+          producer: { kind: "actor", actor: { kind: "user" } }, sourceRefs: [] },
+        body: "The saved script body",
+      });
+      if (_path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId },
+        revision: { ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId,
+          state: input.state, persistentInputRefs: input.persistentInputRefs } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", label: "Native draft" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add reference from canvas" }));
+    if (attached) {
+      expect(screen.queryByRole("button", { name: "Reference image" })).toBeNull();
+      expect(request).not.toHaveBeenCalled();
+      return;
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Reference image" }));
+    await waitFor(() => expect(request).toHaveBeenCalled());
+    const input = JSON.parse(request.mock.calls.find((call) => call[1]?.body)![1]!.body as string);
+    if (kind === "image") {
+      expect(input.persistentInputRefs).toEqual([{ slot: "image", itemKey: expect.any(String), target: { kind: "media", projectAssetId: "image-asset" } }]);
+      expect(input.canvasInputConnections).toEqual([{ canvasId: "main", sourceNodeId: "reference", targetNodeId: "placement", asset: { kind: "media" as const, projectAssetId: "image-asset" } }]);
+    } else if (kind === "document") {
+      expect(input.persistentInputRefs).toEqual([{ slot: "text", itemKey: expect.any(String), target: documentRevision }]);
+      expect(input.canvasInputConnections).toEqual([{ canvasId: "main", sourceNodeId: "reference", targetNodeId: "placement", asset: documentRevision }]);
+      expect(input.state.prompt).not.toContain("Snapshot text");
+      await screen.findByText("The saved script body");
+      expect(request.mock.calls.some(([path]) => path.endsWith("/documents/script/revisions/saved-script"))).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Add reference from canvas" }));
+      expect(screen.queryByRole("button", { name: "Reference image" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Add reference from canvas" }));
+      fireEvent.click(screen.getByRole("button", { name: "Remove Reference image text reference" }));
+      await waitFor(() => {
+        const last = request.mock.calls.filter(call => call[1]?.body).at(-1)!;
+        const removed = JSON.parse(last[1]!.body as string);
+        expect(removed.persistentInputRefs).toEqual([]);
+        expect(removed.state.contentParts.some((part: any) => part.type === "input")).toBe(false);
+      });
+    } else {
+      expect(input.persistentInputRefs).toEqual([]);
+      expect(input.state.prompt).toBe("Native prompt\n\nSnapshot text");
+      expect(input.state.contentParts).toEqual([{ type: "text", text: "Native prompt" }, { type: "text", text: "\n\nSnapshot text" }]);
+    }
+    expect(reactFlowMock.addEdges).not.toHaveBeenCalled();
+    expect(nativeLoroMock.value.addEdge).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("offers exact Document inputs only for mapped Action ports (mapped=%s)", async (mapped) => {
+    const doc = new LoroDoc();
+    const definition = generatorDefinitionFromExecutablePluginRegistration({ pluginId: "clash.agent-text", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}`, document: ExecutablePluginGeneratorDocumentSchema.parse(agentTextGenerator) });
+    const definitionRef = { pluginId: definition.pluginId, definitionId: definition.definitionId, version: definition.version, schemaHash: definition.schemaHash };
+    const card = { ...agentTextCard.spec, generator: { ...agentTextCard.spec.generator, inputSlots: mapped ? agentTextCard.spec.generator.inputSlots : {} } };
+    const action = CustomActionDefinitionSchema.parse({ ...card, pluginBinding: { pluginId: definitionRef.pluginId, version: definitionRef.version, schemaHash: definitionRef.schemaHash, exportId: card.functionExportId } });
+    const revision: GeneratorRevision = { id: "before", generatorId: "agent-draft", definitionRef, state: { prompt: "Rewrite the source", modelId: "chosen-agent-model", systemPrompt: "Keep the meaning." }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: revision.generatorId, headRevisionId: revision.id }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    const asset = { kind: "document" as const, documentAssetId: "script", revisionId: "saved" };
+    const source = { id: "source", type: "text", data: { label: "Source document", documentRevision: asset, content: "Stale Canvas text" } };
+    reactFlowMock.getNode.mockImplementation(id => id === source.id ? source : undefined);
+    reactFlowMock.getNodes.mockReturnValue([source, { id: "draft-text", type: "text", data: { label: "Draft text", content: "Ordinary authored text" } }]);
+    nativeLoroMock.value = { doc, updateNode: vi.fn(), addEdge: vi.fn() };
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path.includes("/generator-definitions/")) return Response.json({ definition });
+      if (path.includes("/documents/")) return Response.json({ revision: { id: asset.revisionId, documentAssetId: asset.documentAssetId, documentKind: "text.plain", schemaVersion: 1, mutability: "versioned",
+        body: { digest: `sha256:${"a".repeat(64)}`, byteLength: 1, contentType: "application/json" }, producer: { kind: "actor", actor: { kind: "user" } }, sourceRefs: [] }, body: "The saved source text" });
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: { ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><CustomActionsProvider actions={[action]}><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: revision.generatorId, actionCardId: card.id, label: card.name }} /></CustomActionsProvider></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add reference from canvas" }));
+    if (!mapped) {
+      expect(screen.queryByRole("button", { name: "Source document" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Draft text" })).toBeTruthy();
+      expect(request).not.toHaveBeenCalled();
+      return;
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Source document" }));
+    await screen.findByText("The saved source text");
+    const added = JSON.parse(request.mock.calls.find(call => call[1]?.body)![1]!.body as string);
+    expect(added.state).toEqual(revision.state);
+    expect(added.persistentInputRefs.map((ref: any) => ref.target)).toEqual([asset]);
+    expect(added.canvasInputConnections).toEqual([{ canvasId: "main", sourceNodeId: source.id, targetNodeId: "placement", asset }]);
+    fireEvent.click(screen.getByRole("button", { name: "Remove Text text reference" }));
+    await waitFor(() => {
+      const removed = JSON.parse(request.mock.calls.filter(call => call[1]?.body).at(-1)![1]!.body as string);
+      expect(removed.persistentInputRefs).toEqual([]);
+      expect(removed.state).toEqual(revision.state);
+    });
+    expect(nativeLoroMock.value.updateNode).not.toHaveBeenCalled();
+    expect(nativeLoroMock.value.addEdge).not.toHaveBeenCalled();
+  });
+
+  it("edits optional Agent Text settings even when the draft has no parameter values yet", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.agent-text", definitionId: "text", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const card = agentTextCard.spec;
+    const action = CustomActionDefinitionSchema.parse({ ...card, pluginBinding: { pluginId: definitionRef.pluginId, version: definitionRef.version, schemaHash: definitionRef.schemaHash, exportId: card.functionExportId } });
+    const revision: GeneratorRevision = { id: "before", generatorId: "agent-draft", definitionRef, state: { prompt: "Write a scene" }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: revision.generatorId, headRevisionId: revision.id }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs,
+      } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><CustomActionsProvider actions={[action]}><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: revision.generatorId, actionCardId: card.id, label: card.name }} /></CustomActionsProvider></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Parameters" }));
+    expect(screen.queryByText("undefined")).toBeNull();
+    for (const [label, key, value] of [["Agent", "agentId", "chosen-harness"], ["Agent model", "modelId", "chosen-agent-model"], ["Instructions", "systemPrompt", "Be concise."]]) {
+      fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}\\s*Default$`) }));
+      fireEvent.change(screen.getByRole("textbox", { name: label }), { target: { value } });
+      await waitFor(() => expect(JSON.parse(request.mock.calls.at(-1)![1]!.body as string).state[key]).toBe(value));
+    }
+    fireEvent.click(screen.getByRole("button", { name: /^Agent\s*chosen-harness$/ }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Agent" }), { target: { value: "" } });
+    await waitFor(() => expect(JSON.parse(request.mock.calls.at(-1)![1]!.body as string).state).toEqual({ prompt: "Write a scene", agentId: "", modelId: "chosen-agent-model", systemPrompt: "Be concise." }));
+    expect(nativeLoroMock.value.updateNode).not.toHaveBeenCalled();
+  });
+
+  it("removes an unplaced native Action reference while preserving its plugin-owned state", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "test.paint", definitionId: "paint", version: "1.0.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const action = CustomActionDefinitionSchema.parse({ id: "paint", name: "Paint", presentation: { type: "form" }, outputType: "image",
+      input: { inputMode: { images: { max: 5 } }, promptModalities: ["text", "image"] }, parameters: [],
+      pluginBinding: { pluginId: definitionRef.pluginId, version: definitionRef.version, schemaHash: definitionRef.schemaHash, exportId: "paint" },
+      generator: { definitionId: "paint", actionId: "generate", inputSlots: { image: "image" } } });
+    const revision: GeneratorRevision = { id: "before", generatorId: "native", definitionRef,
+      state: { prompt: "Paint", modelId: "flux-3-video-keyframes", contentParts: [{ type: "input", slot: "image", itemKey: "ref", label: "Plugin-owned label" }] },
+      persistentInputRefs: [{ slot: "image", itemKey: "ref", target: { kind: "media", projectAssetId: "reference" } }] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: revision.id }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs,
+      } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><CustomActionsProvider actions={[action]}><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", actionCardId: action.id, label: "Paint" }} /></CustomActionsProvider></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Media reference" }));
+    await waitFor(() => expect(request).toHaveBeenCalled());
+    const input = JSON.parse(request.mock.calls[0]![1]!.body as string);
+    expect(input.state).toEqual(revision.state);
+    expect(input.persistentInputRefs).toEqual([]);
+    expect(nativeLoroMock.value.updateNode).not.toHaveBeenCalled();
+  });
+
+  it("copies a native checkpoint through Host creation without a legacy Canvas clone", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "Native prompt", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    doc.getMap("nodes").set("placement", { type: "action-badge", canvasId: "main", data: { generatorId: "native" } });
+    const addNode = vi.fn();
+    nativeLoroMock.value = { doc, updateNode: vi.fn(), addNode };
+    reactFlowMock.getEdges.mockImplementation(() => [{ id: "output-edge", source: "placement", target: "output" }] as any);
+    reactFlowMock.getNode.mockImplementation((nodeId: string) => nodeId === "output"
+      ? { id: "output", type: "video", data: { status: "ready", assetId: "output-asset" } } : undefined);
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      if (_path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { id: input.generatorId, headRevisionId: input.generatorRevisionId, definitionRef },
+        revision: { ...revision, id: input.generatorRevisionId, generatorId: input.generatorId, state: input.state, forkedFrom: input.forkedFrom } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", hasRun: true, label: "Native checkpoint" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create an independent Generator copy" }));
+    await waitFor(() => expect(request).toHaveBeenCalled());
+    const input = JSON.parse(request.mock.calls.find((call) => call[1]?.body)![1]!.body as string);
+    expect(input.forkedFrom).toEqual({ generatorId: "native", generatorRevisionId: "before" });
+    expect(input.state).toEqual(revision.state);
+    expect(addNode).not.toHaveBeenCalled();
+    expect(spawnAssetMock.spawnPending).not.toHaveBeenCalled();
+  });
+
+  it.each(["media", "document"])("converts a plain editor mention into immutable inputs before Run (%s)", async (kind) => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "Before", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    const target = kind === "media" ? { kind: "media", projectAssetId: "subject-asset" }
+      : { kind: "document", documentAssetId: "script", revisionId: "saved-script" };
+    const slot = kind === "media" ? "image" : "text";
+    reactFlowMock.getNode.mockImplementation((id: string) => id === "subject" ? { id, type: kind === "media" ? "image" : "text", data: kind === "media" ? { assetId: "subject-asset" } : { documentRevision: target } } : undefined);
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      if (_path.includes("/documents/")) return Response.json({
+        revision: { id: "saved-script", documentAssetId: "script", documentKind: "text.plain", schemaVersion: 1, mutability: "versioned",
+          body: { digest: `sha256:${"a".repeat(64)}`, byteLength: 1, contentType: "application/json" },
+          producer: { kind: "actor", actor: { kind: "user" } }, sourceRefs: [] }, body: "Saved script",
+      });
+      if (_path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs,
+      } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge" data={{ generatorId: "native", label: "Mention" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    const prompt = screen.getByLabelText("Prompt");
+    prompt.textContent = "Use @[subject](node:subject)";
+    fireEvent.input(prompt);
+    fireEvent.click(screen.getAllByRole("button", { name: "Run action" }).at(-1)!);
+    await waitFor(() => expect(spawnAssetMock.spawnPending).toHaveBeenCalled());
+    const input = JSON.parse(request.mock.calls.find((call) => call[1]?.body)![1]!.body as string);
+    expect(input.state.prompt).toBe("Use subject");
+    expect(input.persistentInputRefs).toEqual([{ slot, itemKey: expect.any(String), target }]);
+    expect(input.state.contentParts).toEqual([{ type: "text", text: "Use " }, { type: "input", slot, itemKey: input.persistentInputRefs[0].itemKey, label: "subject" }]);
+    expect(spawnAssetMock.spawnPending).toHaveBeenCalledWith(expect.objectContaining({ generatorRevision: {
+      generatorId: "native", generatorRevisionId: input.generatorRevisionId,
+    } }));
+    expect(reactFlowMock.addEdges).not.toHaveBeenCalled();
+  });
+
+  it("saves native Lyrics independently and pins the latest edit when Run follows immediately", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "audio", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "song", definitionRef, state: { modelId: "minimax-music-3", prompt: "Gentle piano", lyrics: "Morning light", params: {} }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: "song", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    const request = vi.fn(async (_path: string, init?: RequestInit) => {
+      if (_path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      const input = JSON.parse(init!.body as string);
+      return Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: { ...revision, id: input.generatorRevisionId, parentRevisionId: input.expectedHeadRevisionId, state: input.state, persistentInputRefs: input.persistentInputRefs } });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge" data={{ generatorId: "song", label: "Song" }} /></CanvasTransientUiProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    const lyrics = screen.getByRole("textbox", { name: "Lyrics" });
+    expect((lyrics as HTMLTextAreaElement).value).toBe("Morning light");
+    fireEvent.change(lyrics, { target: { value: "Evening glow" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Run action" }).at(-1)!);
+    await waitFor(() => expect(spawnAssetMock.spawnPending).toHaveBeenCalled());
+    const input = JSON.parse(request.mock.calls.filter((call) => call[1]?.body).at(-1)![1]!.body as string);
+    expect(input.state).toMatchObject({ prompt: "Gentle piano", lyrics: "Evening glow" });
+    expect(spawnAssetMock.spawnPending).toHaveBeenCalledWith(expect.objectContaining({ generatorRevision: { generatorId: "song", generatorRevisionId: input.generatorRevisionId } }));
+    for (const [, patch] of nativeLoroMock.value.updateNode.mock.calls) expect(patch.data).not.toHaveProperty("lyrics");
+  });
+
+  it("waits for the native draft save before pinning the Run revision", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "Native prompt", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    let release!: (value: Response) => void;
+    const request = vi.fn(async (path: string, _init?: RequestInit) => {
+      if (path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      return new Promise<Response>((resolve) => { release = resolve; });
+    });
+    vi.stubGlobal("fetch", request);
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", content: "Stale Canvas prompt", label: "Native draft" }} /></CanvasTransientUiProvider>);
+    expect(spawnAssetMock.latestInput.content).toBe(revision.state.prompt);
+    fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
+    const prompt = screen.getByLabelText("Prompt");
+    prompt.textContent = "Edited immediately before Run";
+    fireEvent.input(prompt);
+    fireEvent.click(screen.getAllByRole("button", { name: "Run action" }).at(-1)!);
+    await waitFor(() => expect(request.mock.calls.some((call) => call[1]?.body)).toBe(true));
+    expect(spawnAssetMock.spawnPending).not.toHaveBeenCalled();
+    const input = JSON.parse((request.mock.calls.find((call) => call[1]?.body) as unknown as [string, RequestInit])[1].body as string);
+    expect(input.state.prompt).toBe("Edited immediately before Run");
+    await act(async () => {
+      release(Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: "before", state: input.state,
+      } }));
+    });
+    await waitFor(() => expect(spawnAssetMock.spawnPending).toHaveBeenCalledWith(expect.objectContaining({
+      generatorRevision: { generatorId: "native", generatorRevisionId: input.generatorRevisionId },
+    })));
+  });
+
   it("Run creates a fresh pending output instead of adopting a downstream draft", async () => {
     reactFlowMock.nodeConnections.push({
       edgeId: "action-1-draft-1",
@@ -1587,7 +2125,7 @@ describe("ActionBadge canvas subscriptions", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Configure action" }));
     fireEvent.click(
-      screen.getByRole("button", { name: /5s .* 720p .* On .* Off/i }),
+      screen.getByRole("button", { name: "Parameters" }),
     );
     fireEvent.click(
       screen.getByRole("button", { name: /Edit referenced video.*Off/i }),

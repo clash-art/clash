@@ -1,3 +1,4 @@
+import { createLogRecord, parseLogRecord } from "@clash/shared-runtime/logging";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, relative } from "node:path";
 
@@ -117,17 +118,17 @@ export function createDesktopWindowController({
   }
 
   async function logRendererState(label: string, window: BrowserWindow): Promise<void> {
+    log.event?.("info", "renderer.ready", { windowId: window.id, phase: label });
+    if (!process.env.CLASH_DESKTOP_CAPTURE_DIR && process.env.CLASH_LOG_LEVEL !== "debug") return;
     try {
       const state = await window.webContents.executeJavaScript(`
         ({
           href: location.href,
           title: document.title,
-          rootChildren: document.querySelector('#root')?.children.length ?? null,
-          bodyText: document.body?.innerText?.slice(0, 500) ?? '',
-          runtime: window.__CLASH_RUNTIME_CONFIG__ ?? null
+          rootChildren: document.querySelector('#root')?.children.length ?? null
         })
       `);
-      log.info(`[desktop:${label}] ${JSON.stringify(state)}`);
+      log.event?.("debug", "renderer.inspect", { windowId: window.id, phase: label, state });
       await captureRenderer(label, window);
     } catch (error) {
       if (window.isDestroyed() || String(error).includes("Object has been destroyed")) return;
@@ -144,12 +145,20 @@ export function createDesktopWindowController({
     const rendererConsole = createDeduplicatedLogEmitter<{
       level: WebContentsConsoleMessageEventParams["level"];
       message: string;
+      sourceId?: string;
+      lineNumber?: number;
     }>({
-      emit: ({ level, message }) => {
+      emit: ({ level, message, sourceId, lineNumber }) => {
         const output = `[desktop:renderer:${window.id}:${level}] ${message}`;
         const logLevel =
           level === "error" ? "error" : level === "warning" ? "warn" : "info";
-        if (log.event) {
+        const structured = parseLogRecord(message);
+        if (log.record) {
+          log.record(createLogRecord({
+            ...(structured ?? { component: "renderer", module: "console", level: logLevel, event: "renderer.console" }),
+            context: { ...(structured?.context ?? { message }), windowId: window.id, sourceId, lineNumber },
+          }));
+        } else if (log.event) {
           log.event(logLevel, "renderer.console", {
             windowId: window.id,
             consoleLevel: level,
@@ -159,12 +168,13 @@ export function createDesktopWindowController({
           log[logLevel](output);
         }
       },
-      emitSuppressed: ({ suppressedCount, distinctCount }) => {
+      emitSuppressed: ({ suppressedCount, distinctCount, distinctCountCapped }) => {
         if (log.event) {
           log.event("warn", "renderer.console_suppressed", {
             windowId: window.id,
             suppressedCount,
             distinctCount,
+            ...(distinctCountCapped ? { distinctCountCapped } : {}),
           });
         } else {
           log.warn(
@@ -172,14 +182,17 @@ export function createDesktopWindowController({
           );
         }
       },
-      keyOf: ({ level, message }) => `${level}:${message}`,
+      keyOf: ({ level, message, sourceId, lineNumber }) => `${level}:${sourceId}:${lineNumber}:${message}`,
+      isCritical: ({ level }) => level === "error" || level === "warning",
       maxEventsPerWindow: 100,
       windowMs: 10_000,
     });
     let recoveringRenderer = false;
 
-    window.webContents.on("console-message", ({ level, message }) => {
-      rendererConsole.emit({ level, message });
+    window.webContents.on("console-message", ({ level, message, sourceId, lineNumber }) => {
+      // HMR chatter is development detail, not a product operation or failure.
+      if (process.env.CLASH_LOG_LEVEL !== "debug" && level !== "error" && level !== "warning" && message.startsWith("[vite]")) return;
+      rendererConsole.emit({ level, message, sourceId, lineNumber });
     });
     window.webContents.on("dom-ready", () => {
       void logRendererState(`window-${window.id}-dom-ready`, window);

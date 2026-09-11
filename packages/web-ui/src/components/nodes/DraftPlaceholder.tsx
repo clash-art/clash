@@ -1,4 +1,4 @@
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { useReactFlow, useStore, type ReactFlowState } from '@xyflow/react';
 import { Play, Image as ImageIcon, VideoCamera, TextT, SpeakerHigh } from '@phosphor-icons/react';
 import { useOptionalLoroSyncContext } from '../LoroSyncContext';
@@ -126,10 +126,23 @@ const DraftPlaceholder = ({ nodeId, modality, width, height, compact = false }: 
 
     const Icon = MODALITY_ICON[modality];
 
-    const plan = useStore(
-        useCallback((state) => selectBuildPlan(state, nodeId), [nodeId]),
-        buildPlansEqual,
-    );
+    const selectPlan = useMemo(() => {
+        let previousNodes: ReactFlowState['nodes'] | undefined;
+        let previousEdges: ReactFlowState['edges'] | undefined;
+        let previousPlan: BuildPlan | undefined;
+        return (state: ReactFlowState) => {
+            // React Flow mutates its lookup Maps in place but publishes new
+            // node/edge arrays for graph edits. Key on those arrays so pan,
+            // zoom and pointer updates do not walk the dependency graph.
+            if (!previousPlan || previousNodes !== state.nodes || previousEdges !== state.edges) {
+                previousPlan = selectBuildPlan(state, nodeId);
+                previousNodes = state.nodes;
+                previousEdges = state.edges;
+            }
+            return previousPlan;
+        };
+    }, [nodeId]);
+    const plan = useStore(selectPlan, buildPlansEqual);
 
     const ancestorCount = Math.max(0, plan.entries.length - 1);
     const totalCalls = plan.estimatedInvocations.reduce((total, estimate) => total + estimate.count, 0);

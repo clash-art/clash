@@ -1,4 +1,8 @@
+import { createLogger } from "../lib/logger";
+import { TextDocumentReadSurface } from "./TextDocumentReadSurface";
 import {
+  lazy,
+  Suspense,
   useCallback,
   useState,
   useEffect,
@@ -48,24 +52,21 @@ import {
   FilmSlate,
   TextT,
   Image as ImageIcon,
-  SpeakerHigh,
   MagicWand,
-  Sparkle,
   ArrowLeft,
   ArrowCounterClockwise,
   ArrowClockwise,
-  UploadSimple,
   Square,
   CursorClick,
   HandGrabbing,
   FolderSimple,
+  Gear,
   X,
   ArrowsInSimple,
   Crosshair,
   MapTrifold,
   MagnifyingGlass,
-  Cube,
-  Code,
+  Plus,
 } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -74,11 +75,14 @@ import {
   hasProjectAssetDragData,
   readProjectAssetDrag,
 } from "@clash/web-ui/lib/projectAssetDrag";
-import ChatbotCopilot from "./ChatbotCopilot";
+import { useAppFeedback } from "./AppFeedback";
+import { isMcpProjectApp, sendMcpProjectRequest } from "../lib/mcpProject";
+import { McpProjectContext } from "./McpProjectContext";
+const ChatbotCopilot = lazy(() => import("./ChatbotCopilot"));
 import type { ClashProjectEntity } from "./copilot/AcpInlineRenderers";
 import { clampCopilotPanelWidthForViewport } from "./copilotPanelLayout";
 import { useSessionHistory } from "@clash/web-ui/hooks/useSessionHistory";
-import { updateProjectName } from "@clash/web-ui/lib/clientActions";
+import { listModelCatalog, listModelProviders, updateProjectName } from "@clash/web-ui/lib/clientActions";
 import { deriveRemotionComponentConnectionUpdate } from "@clash/web-ui/lib/remotionComponentTimeline";
 import { withProjectSessionSearch } from "@clash/web-ui/lib/projectSessionRoute";
 import VideoNode from "./nodes/VideoNode";
@@ -98,7 +102,7 @@ import DirectorStageNode from "./nodes/DirectorStageNode";
 import PluginViewNode from "./nodes/PluginViewNode";
 import { generationConnectionAcceptsSource } from "./nodes/generationConnectionCompatibility";
 import { MediaViewerProvider } from "./MediaViewerContext";
-import { ProjectProvider } from "./ProjectContext";
+import { enabledModelCatalogEntries, ProjectProvider } from "./ProjectContext";
 import { VideoEditorProvider } from "./VideoEditorContext";
 import { DirectorStageProvider } from "./DirectorStageContext";
 import { PluginViewProvider } from "./PluginViewContext";
@@ -123,9 +127,6 @@ import {
   getNestingDepth,
   isDescendant,
   relayoutToGrid,
-  needsAutoLayout,
-  autoInsertNode,
-  applyAutoInsertResult,
   shrinkGroupsToFit,
   ACTION_BADGE_NODE_SIZE,
 } from "@clash/web-ui/lib/layout";
@@ -179,6 +180,9 @@ import {
   type ExecutablePluginViewDefinition,
 } from "@clash/web-ui/hooks/useExecutablePluginViews";
 import { createGeneratorClient } from "@clash/shared-runtime/generator-client";
+import { createCanvasModelDraft, createCanvasActionDraft } from "../lib/createCanvasModelDraft";
+import { connectNativeModelInput } from "../lib/connectNativeModelInput";
+import { projectCanvasModelGeneratorData, canvasAssetRevision, referenceModality } from "@clash/shared-types";
 import {
   runStoryboardMaterialGenerator,
   storyboardGeneratorChoices,
@@ -200,7 +204,6 @@ import {
   listPersonalGlobalAssets,
   publishDirectorStageOutputFile as publishDirectorStageOutputBytes,
   publishProjectAssetToPersonalLibrary,
-  watchAssetProjection,
   restoreProjectAsset as restoreProjectAssetThroughHost,
   trashProjectAsset as trashProjectAssetThroughHost,
   useAsset,
@@ -219,6 +222,7 @@ import {
   type ProjectNavigatorVisibilityDetail,
 } from "@clash/web-ui/lib/projectNavigatorChrome";
 import { dispatchHostMutationEvent } from "@clash/web-ui/lib/hostMutationEvents";
+import { SyncRecoveryDialog } from "./SyncRecoveryDialog";
 import {
   averageRectCenters,
   collapseVelocityFromPointer,
@@ -232,6 +236,7 @@ import {
 import {
   nodeChangesRequireZIndexNormalization,
   nodeChangesRequireStructuralSanitize,
+  isUserResizeChange,
   normalizeCanvasNodeZIndex,
   sanitizeNodesForReactFlow,
 } from "@clash/web-ui/lib/canvasNodeOrder";
@@ -240,10 +245,10 @@ import {
   reconcileSyncedCanvasNodes,
 } from "@clash/web-ui/lib/canvasElementReconciliation";
 import UserControls from "./UserControls";
+import { CanvasCreateMenuItems } from "./CanvasCreateMenuItems";
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { Button } from "./ui/button";
@@ -307,9 +312,9 @@ import {
 import type { EditApplyResult } from "../features/assets/action-client";
 import { EditableProjectAssetSurface } from "../features/assets/AssetWorkspace";
 import { AssetThumbnail } from "../features/assets/AssetThumbnail";
+import { useProjectAssetHydration } from "../features/assets/useProjectAssetHydration";
 import {
   canvasNodeAssetDisplayName,
-  mergeResolvedAssetProjection,
   projectAssetDisplayName,
   resolveCanvasNodeProjectAsset,
 } from "../features/assets/projectAssetPresentation";
@@ -774,13 +779,16 @@ export const projectCanvasEdgeTypes: EdgeTypes = {
   reference: BezierEdge,
 };
 
+const editorLog = createLogger("canvas");
+
 export function createProjectCanvasErrorHandler(
-  log: (message: string) => void = console.warn,
+  log: (message: string) => void = (message) => editorLog.warn("canvas.reactflow_warning", { message }),
 ): OnError {
   const seen = new Set<string>();
   return (id, message) => {
     const key = `${id}:${message}`;
     if (seen.has(key)) return;
+    if (seen.size >= 256) seen.delete(seen.values().next().value!);
     seen.add(key);
     log(`[React Flow ${id}] ${message}`);
   };
@@ -788,6 +796,7 @@ export function createProjectCanvasErrorHandler(
 
 const projectCanvasOnError = createProjectCanvasErrorHandler();
 
+const ProjectSettingsDialog = lazy(() => import("./SettingsDialog").then((module) => ({ default: module.SettingsDialog })));
 const defaultImageModel = MODEL_CARDS.find((card) => card.kind === "image");
 const directorPanoramaModel = MODEL_CARDS.find(
   (card) => card.id === "gpt-image-2",
@@ -799,9 +808,7 @@ const defaultTextModel = MODEL_CARDS.find((card) => card.kind === "text");
 const sanitizeNodes = (nodes: AppNode[]): AppNode[] => {
   return sanitizeNodesForReactFlow(nodes, {
     onInvalidParent: (node, parentId) => {
-      console.warn(
-        `[Sanitize] Removing invalid parentId ${parentId} from node ${node.id}`,
-      );
+      editorLog.warn("canvas.parent_repaired", { nodeId: node.id, parentId });
     },
   });
 };
@@ -953,9 +960,13 @@ export default function ProjectEditor({
   initialPrompt,
   initialThreadId,
 }: ProjectEditorProps) {
+  const nativeAgent = isMcpProjectApp();
+  const { notify } = useAppFeedback();
   const session = betterAuthClient.useSession();
   const timelineExportActorUserId = session.data?.user?.id || project.ownerId;
   const transientUiStore = useMemo(() => createCanvasTransientUiStore(), []);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
+  const [modelCatalogVersion, setModelCatalogVersion] = useState(0);
   const [activeCanvasId, setActiveCanvasId] = useState("main");
   const [workspaceSurface, setWorkspaceSurface] =
     useState<ProjectWorkspaceSurface>({
@@ -1185,6 +1196,12 @@ export default function ProjectEditor({
   // a recovery bootstrap for old projects whose Loro document is empty while
   // the project still owns media assets.
   const [nodes, setNodesInternal] = useNodesState<AppNode>([]);
+  // Keep visible object identity available to browser accessibility/annotation
+  // tools; these are the same IDs accepted by Canvas tools, not DOM indices.
+  const readableNodes = useMemo(() => nodes.map((node) => ({
+    ...node,
+    ariaLabel: `${typeof node.data.label === "string" ? node.data.label : node.type ?? "Node"} (${node.type ?? "node"}, node ${node.id})`,
+  })), [nodes]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const nodesRef = useRef<AppNode[]>(nodes);
   const edgesRef = useRef<Edge[]>(edges);
@@ -1219,9 +1236,9 @@ export default function ProjectEditor({
   const projectTitleInputRef = useRef<HTMLInputElement>(null);
   const location = useLocation();
   const [showDebugIds, setShowDebugIds] = useState(false);
-  const [canvasMode, setCanvasMode] = useState<CanvasMode>("select");
+  const [canvasMode, setCanvasMode] = useState<CanvasMode>("hand");
   const [preferredCanvasMode, setPreferredCanvasMode] =
-    useState<CanvasMode>("select");
+    useState<CanvasMode>("hand");
   const [canvasPreferencesHydrated, setCanvasPreferencesHydrated] =
     useState(false);
   const [canvasFoldersOpen, setCanvasFoldersOpen] = useState(false);
@@ -1358,11 +1375,6 @@ export default function ProjectEditor({
       // Selection is UI-only and should NOT block remote/local layout updates.
       const currentNodes = nodesRef.current;
       const currentNodesMap = new Map(currentNodes.map((n) => [n.id, n]));
-      const actionBadgeSizeRepairs = new Map<
-        string,
-        { width: number; height: number; style: Record<string, unknown> }
-      >();
-
       let processedNodes = syncedNodes.map((syncedNode) => {
         const currentNode = currentNodesMap.get(syncedNode.id);
 
@@ -1384,35 +1396,6 @@ export default function ProjectEditor({
                 height: 400,
               },
             };
-          }
-        }
-
-        // Action badges are fixed-size capsules. Older layout code persisted
-        // the size of the former editor card (320x220), which makes React
-        // Flow anchor NodeToolbar hundreds of pixels below the visible node.
-        if (syncedNode.type === "action-badge") {
-          const storedWidth = syncedNode.width || syncedNode.style?.width;
-          const storedHeight = syncedNode.height || syncedNode.style?.height;
-          if (
-            Number(storedWidth) !== ACTION_BADGE_NODE_SIZE.width ||
-            Number(storedHeight) !== ACTION_BADGE_NODE_SIZE.height
-          ) {
-            const repairedStyle = {
-              ...correctedNode.style,
-              width: ACTION_BADGE_NODE_SIZE.width,
-              height: ACTION_BADGE_NODE_SIZE.height,
-            };
-            correctedNode = {
-              ...correctedNode,
-              width: ACTION_BADGE_NODE_SIZE.width,
-              height: ACTION_BADGE_NODE_SIZE.height,
-              style: repairedStyle,
-            };
-            actionBadgeSizeRepairs.set(syncedNode.id, {
-              width: ACTION_BADGE_NODE_SIZE.width,
-              height: ACTION_BADGE_NODE_SIZE.height,
-              style: repairedStyle,
-            });
           }
         }
 
@@ -1443,92 +1426,6 @@ export default function ProjectEditor({
       );
       processedNodes = reconcileSyncedCanvasNodes(currentNodes, processedNodes);
 
-      // Auto-layout nodes with placeholder position (from backend or programmatic creation)
-      const nodesToLayout = processedNodes.filter(needsAutoLayout);
-      if (nodesToLayout.length > 0) {
-        console.log(
-          `[ProjectEditor] Auto-laying out ${nodesToLayout.length} node(s)`,
-        );
-
-        // Get current edges for reference detection
-        // Note: We use the current edges state since onEdgesChange may have already updated them
-        const currentEdges = edgesRef.current;
-
-        for (const node of nodesToLayout) {
-          const result = autoInsertNode(node.id, processedNodes, currentEdges);
-          processedNodes = applyAutoInsertResult(
-            processedNodes,
-            node.id,
-            result,
-          );
-
-          console.log(
-            `[ProjectEditor] Auto-inserted ${node.id}: ` +
-              `pos=(${result.position.x}, ${result.position.y}), ` +
-              `ref=${result.referenceNodeId || "none"}, ` +
-              `pushed=${result.pushedNodes.size}`,
-          );
-
-          // Auto-scale parent groups
-          if (node.parentId) {
-            const scales = recursiveGroupScale(node.id, processedNodes);
-            if (scales.size > 0) {
-              processedNodes = applyGroupScales(processedNodes, scales);
-            }
-          }
-        }
-
-        // Sync layout changes back to Loro (after a microtask to avoid loops)
-        queueMicrotask(() => {
-          if (!loroSyncRef.current) return;
-
-          for (const node of nodesToLayout) {
-            const layoutedNode = processedNodes.find((n) => n.id === node.id);
-            if (layoutedNode && !needsAutoLayout(layoutedNode)) {
-              loroSyncRef.current.updateNode(node.id, {
-                position: layoutedNode.position,
-              });
-            }
-          }
-
-          // Also sync pushed nodes positions
-          for (const node of processedNodes) {
-            const original = syncedNodes.find((n) => n.id === node.id);
-            if (original && !nodesToLayout.some((n) => n.id === node.id)) {
-              if (
-                node.position.x !== original.position.x ||
-                node.position.y !== original.position.y
-              ) {
-                loroSyncRef.current?.updateNode(node.id, {
-                  position: node.position,
-                });
-              }
-            }
-          }
-
-          // Sync group size changes
-          for (const node of processedNodes) {
-            const original = syncedNodes.find((n) => n.id === node.id);
-            if (original && node.type === "group") {
-              if (
-                node.width !== original.width ||
-                node.height !== original.height
-              ) {
-                loroSyncRef.current?.updateNode(node.id, {
-                  width: node.width,
-                  height: node.height,
-                  style: node.style,
-                });
-              }
-            }
-          }
-        });
-      }
-
-      processedNodes = normalizeCanvasNodeZIndex(
-        processedNodes as AppNode[],
-        CHILD_NODE_Z_INDEX_BASE,
-      );
       const currentCanvasId = activeCanvasIdRef.current;
       if (canvasSelectionRestorePendingRef.current.delete(currentCanvasId)) {
         const selectedNodeIds = new Set(
@@ -1551,15 +1448,7 @@ export default function ProjectEditor({
         restoreCanvasViewport(currentCanvasId);
       }
 
-      // Persist the one-time repair after the read projection has settled so
-      // future clients and NodeToolbar calculations see the same bounds.
-      if (actionBadgeSizeRepairs.size > 0) {
-        queueMicrotask(() => {
-          for (const [nodeId, patch] of actionBadgeSizeRepairs) {
-            loroSyncRef.current?.updateNode(nodeId, patch);
-          }
-        });
-      }
+
     },
     onEdgesChange: (syncedEdges) => {
       let processedEdges = reconcileSyncedCanvasEdges(
@@ -1679,12 +1568,11 @@ export default function ProjectEditor({
   const [globalProjectAssets, setGlobalProjectAssets] = useState<
     ResolvedAsset[]
   >([]);
-  const hydratingProjectAssetIdsRef = useRef(new Set<string>());
   const activeProjectAssetProjectIdRef = useRef(project.id);
-  const canvasModeBeforeSpace = useRef<CanvasMode>("select");
+  const canvasModeBeforeSpace = useRef<CanvasMode>("hand");
   const [pendingNodeType, setPendingNodeType] = useState<string | null>(null);
   const [assetPickerTarget, setAssetPickerTarget] =
-    useState<AssetScopeTarget | null>(null);
+    useState<(AssetScopeTarget & { position?: { x: number; y: number } }) | null>(null);
   const [assetPickerBusy, setAssetPickerBusy] = useState(false);
   const [timelineInsertRequest, setTimelineInsertRequest] = useState<{
     timelineId: string;
@@ -1696,7 +1584,6 @@ export default function ProjectEditor({
   useEffect(() => {
     setLocallyAddedProjectAssets([]);
     setSyncedProjectAssets(project.assets ?? []);
-    hydratingProjectAssetIdsRef.current.clear();
     activeProjectAssetProjectIdRef.current = project.id;
   }, [project.assets, project.id]);
 
@@ -1711,7 +1598,7 @@ export default function ProjectEditor({
         setLocallyAddedProjectAssets([]);
       },
       onError: (error) =>
-        console.warn("[Project assets] live projection refresh failed", error),
+        editorLog.warn("asset.projection_refresh_failed", { projectId: project.id, error }),
     });
   }, [loroSync.doc, project.id]);
 
@@ -1729,7 +1616,7 @@ export default function ProjectEditor({
           ),
         );
       })
-      .catch((error) => console.warn("[Global assets] load failed", error));
+      .catch((error) => editorLog.warn("asset.catalog_load_failed", { error }));
     return () => {
       cancelled = true;
     };
@@ -1756,12 +1643,12 @@ export default function ProjectEditor({
     useState(false);
   const [sidebarHydrated, setSidebarHydrated] = useState(false);
   const shouldReserveCopilotSpace =
-    workspaceSurface.kind !== "canvas" && !isSidebarCollapsed;
+    !nativeAgent && workspaceSurface.kind !== "canvas" && !isSidebarCollapsed;
   const copilotWorkspaceRight = shouldReserveCopilotSpace
     ? sidebarWidth + COPILOT_PANEL_GUTTER_PX * 2
     : 0;
   const copilotHeaderInset =
-    isSidebarCollapsed && workspaceSurface.kind !== "canvas" ? 40 : 0;
+    !nativeAgent && isSidebarCollapsed && workspaceSurface.kind !== "canvas" ? 40 : 0;
   const handleCopilotWidthPreview = useCallback(
     (width: number) => {
       const nextWidth = clampCopilotPanelWidth(width);
@@ -1971,7 +1858,7 @@ export default function ProjectEditor({
     upsertSession,
     archiveSession,
     renameSession,
-  } = useSessionHistory(project.id);
+  } = useSessionHistory(project.id, { loadActive: !nativeAgent });
 
   useEffect(() => {
     if (routedThreadIdRef.current !== initialThreadId) {
@@ -2026,8 +1913,14 @@ export default function ProjectEditor({
   );
 
   const handleReturnToProjects = useCallback(() => {
+    if (nativeAgent) {
+      void sendMcpProjectRequest(project.id, "close", "").catch((error) => {
+        notify({ title: "Could not return to the conversation", message: error instanceof Error ? error.message : String(error), variant: "error" });
+      });
+      return;
+    }
     editorRouter("/projects");
-  }, [editorRouter]);
+  }, [editorRouter, nativeAgent, project.id, notify]);
 
   const handleCreateSession = useCallback(
     async (
@@ -2048,7 +1941,7 @@ export default function ProjectEditor({
         // Don't update any state here — caller batches all state updates together
         return { threadId: data.threadId as string, title };
       } catch (err) {
-        console.error("Failed to create session:", err);
+        editorLog.error("session.create_failed", { projectId: project.id, error: err });
         return null;
       }
     },
@@ -2144,7 +2037,7 @@ export default function ProjectEditor({
       );
 
       // Check for dimension changes (resizing)
-      const resizeChanges = changes.filter((c) => c.type === "dimensions");
+      const resizeChanges = changes.filter(isUserResizeChange);
       if (resizeChanges.length > 0) {
         let hasUpdates = false;
 
@@ -2621,6 +2514,17 @@ export default function ProjectEditor({
     };
   }, []);
 
+  const generatorClient = useMemo(
+    () =>
+      createGeneratorClient((path, init) =>
+        globalThis.fetch(runtimeApiUrl(path), {
+          ...init,
+          credentials: "include",
+        }),
+      ),
+    [],
+  );
+
   // Custom handleEdgesChange to sync edge deletions to Loro
   const handleEdgesChange = useCallback(
     (changes: import("@xyflow/react").EdgeChange[]) => {
@@ -2639,8 +2543,11 @@ export default function ProjectEditor({
     [onEdgesChange, loroSync],
   );
 
+  const executablePluginActions = useExecutablePluginActions();
+  const customActions = executablePluginActions;
+
   const onConnect = useCallback(
-    (params: Connection | Edge) => {
+    async (params: Connection | Edge) => {
       // Reject invalid connections (e.g. video → image-gen ActionBadge can't use video as reference image)
       const srcId = (params as Connection).source;
       const tgtId = (params as Connection).target;
@@ -2660,21 +2567,29 @@ export default function ProjectEditor({
             edges: currentEdges,
           })
         ) {
-          console.warn(
-            `[onConnect] rejected: target action-badge is a materialized checkpoint`,
-          );
+          editorLog.warn("canvas.connection_rejected", { sourceId: srcId, targetId: tgtId, reason: "immutable_checkpoint" });
           return;
         }
         if (
           tgt?.type === "action-badge" &&
           !generationConnectionAcceptsSource({
             sourceType: src?.type,
-            targetData: tgt.data,
+            targetData: loroSync.doc ? projectCanvasModelGeneratorData(loroSync.doc, tgt.type, tgt.data) : tgt.data,
           })
         ) {
-          console.warn(
-            `[onConnect] rejected: ${src?.type} is not accepted by the selected generation model`,
-          );
+          editorLog.warn("canvas.connection_rejected", { sourceId: srcId, targetId: tgtId, reason: "incompatible_source", sourceType: src?.type });
+          return;
+        }
+        if (src && tgt?.type === "action-badge" && typeof tgt.data.generatorId === "string") {
+          try {
+            const asset = canvasAssetRevision(src);
+            const kind = referenceModality(src);
+            if (!asset || !kind) throw new Error("Connect an applied Asset. Draft text can be added through the prompt editor.");
+            await connectNativeModelInput({ client: generatorClient, projectId: project.id,
+              generatorId: tgt.data.generatorId, canvasId: activeCanvasIdRef.current,
+              actionCard: customActions.find((card) => card.id === tgt.data.actionCardId)?.generator,
+              sourceNodeId: src.id, targetNodeId: tgt.id, asset, kind });
+          } catch (error) { window.alert(error instanceof Error ? error.message : String(error)); }
           return;
         }
       }
@@ -2707,10 +2622,10 @@ export default function ProjectEditor({
         if (!loroSync.addEdge(addedEdge.id, addedEdge)) return;
         if (
           remotionTimelineUpdate &&
-          !loroSync.applyTimelineState(
+          !(await loroSync.applyTimelineState(
             remotionTimelineUpdate.timelineId,
             remotionTimelineUpdate.state,
-          )
+          ))
         ) {
           loroSync.removeEdge(addedEdge.id);
           return;
@@ -2719,7 +2634,7 @@ export default function ProjectEditor({
       edgesRef.current = nextEdges;
       setEdges(nextEdges);
     },
-    [setEdges, loroSync],
+    [setEdges, loroSync, generatorClient, project.id, customActions],
   );
 
   const handleGlobalHotkey = useCallback(
@@ -2832,19 +2747,7 @@ export default function ProjectEditor({
 
   // Activated executable plugin Cards are the only Action catalog. Runtime registrations in
   // Project Loro belonged to the retired ClashAgent websocket protocol.
-  const executablePluginActions = useExecutablePluginActions();
   const executablePluginViews = useExecutablePluginViews();
-  const customActions = executablePluginActions;
-  const generatorClient = useMemo(
-    () =>
-      createGeneratorClient((path, init) =>
-        globalThis.fetch(runtimeApiUrl(path), {
-          ...init,
-          credentials: "include",
-        }),
-      ),
-    [],
-  );
   const [nativeGeneratorDefinitions, setNativeGeneratorDefinitions] = useState<
     GeneratorDefinition[]
   >([]);
@@ -2876,32 +2779,9 @@ export default function ProjectEditor({
     [nativeGeneratorDefinitions],
   );
 
-  const toolbarMenu = [
-    {
-      id: "assets",
-      label: "Assets",
-      icon: UploadSimple,
-    },
-    {
-      id: "actions",
-      label: "Actions",
-      icon: Sparkle,
-      items: [
-        { id: "action-badge-image", label: "Image Gen", icon: ImageIcon },
-        { id: "action-badge-video", label: "Video Gen", icon: FilmSlate },
-        { id: "action-badge-audio", label: "Audio Gen", icon: SpeakerHigh },
-        { id: "action-badge-text", label: "Text Gen", icon: TextT },
-      ],
-    },
-    { id: "video-editor", label: "Editor", icon: FilmSlate },
-    { id: "director-stage", label: "Director Stage", icon: Cube },
-    { id: "remotion-component", label: "Remotion Component", icon: Code },
-    { id: "group", label: "Group", icon: Square },
-    { id: "text", label: "Text", icon: TextT },
-  ];
 
   const addNode = useCallback(
-    (type: string, extraData: any = {}) => {
+    async (type: string, extraData: any = {}) => {
       if (type === "video-editor") {
         const actionNodeId = extraData.id || `timeline-action-${Date.now()}`;
         const timelineId = extraData.timelineId || `timeline-${Date.now()}`;
@@ -2909,22 +2789,16 @@ export default function ProjectEditor({
           typeof extraData.label === "string" && extraData.label.trim()
             ? extraData.label.trim()
             : "Untitled Timeline";
-        const created = loroSync.createTimeline({
+        const created = await loroSync.createTimelineOnCanvas({
           id: timelineId,
           name,
           state: { tracks: [] },
-        });
-        if (!created.ok) {
-          console.error(`[ProjectEditor] ${created.error}`);
-          return "";
-        }
-        const attached = loroSync.attachTimeline({
-          timelineId,
           actionNodeId,
+          canvasId: activeCanvasIdRef.current,
           ...(extraData.position ? { position: extraData.position } : {}),
         });
-        if (!attached.ok) {
-          console.error(`[ProjectEditor] ${attached.error}`);
+        if (!created.ok) {
+          window.alert(created.error);
           return "";
         }
         return actionNodeId;
@@ -2938,22 +2812,16 @@ export default function ProjectEditor({
           typeof extraData.label === "string" && extraData.label.trim()
             ? extraData.label.trim()
             : "Untitled Director Stage";
-        const created = loroSync.createDirectorStage({
+        const created = loroSync.createDirectorStageOnCanvas({
           id: stageId,
           name,
           state: createDefaultDirectorStageState(),
-        });
-        if (!created.ok) {
-          console.error(`[ProjectEditor] ${created.error}`);
-          return "";
-        }
-        const attached = loroSync.attachDirectorStage({
-          stageId,
           actionNodeId,
+          canvasId: activeCanvasIdRef.current,
           ...(extraData.position ? { position: extraData.position } : {}),
         });
-        if (!attached.ok) {
-          console.error(`[ProjectEditor] ${attached.error}`);
+        if (!created.ok) {
+          window.alert(created.error);
           return "";
         }
         return actionNodeId;
@@ -3023,13 +2891,13 @@ export default function ProjectEditor({
         const def = customActions.find((a) => a.id === customId);
         nodeType = "action-badge";
         nodeData = {
-          label: def?.name || "Custom Action",
           actionType: `custom:${customId}`,
           customActionId: customId,
           customActionParams: def ? customActionDefaultParams(def) : {},
           ...(def?.pluginBinding ? { pluginBinding: def.pluginBinding } : {}),
           content: "# Prompt\nEnter your prompt here...",
           ...nodeData,
+          label: typeof extraData.label === "string" ? extraData.label : def?.name || "Custom Action",
         };
       } else if (type === "text") {
         nodeData = {
@@ -3111,6 +2979,56 @@ export default function ProjectEditor({
 
       const newNodeId = extraData.id || `${nds.length + 1}-${Date.now()}`;
       if (nds.some((node) => node.id === newNodeId)) return newNodeId;
+
+      const nativeAction = nodeType === "action-badge" ? customActions.find((card) => card.id === nodeData.customActionId && card.generator) : undefined;
+      if (nativeAction) {
+        try {
+          const prompt = typeof nodeData.content === "string" ? nodeData.content : "";
+          await createCanvasActionDraft({
+            projectId: project.id, client: generatorClient, card: nativeAction,
+            params: nodeData.customActionParams ?? {}, prompt: prompt.trim() === "# Prompt\nEnter your prompt here..." ? "" : prompt,
+            placement: { canvasId: activeCanvasIdRef.current, nodeId: newNodeId, label: nodeData.label,
+              ...(insertionParentId ? { parentId: insertionParentId } : {}),
+              ...(extraData.position ? { position: extraData.position } : {}),
+            },
+          });
+          return newNodeId;
+        } catch (error) {
+          window.alert(error instanceof Error ? error.message : String(error));
+          return "";
+        }
+      }
+
+      if (nodeType === "action-badge" && nodeData.modelId !== "local-acp" && ["image-gen", "video-gen", "audio-gen", "model-gen", "text-gen"].includes(nodeData.actionType)) {
+        try {
+          const [catalog, providers] = await Promise.all([listModelCatalog(), listModelProviders()]);
+          const kind = nodeData.actionType.replace(/-gen$/, "");
+          const available = enabledModelCatalogEntries(catalog, providers).filter(entry => entry.model.kind === kind);
+          if (!available.length) {
+            setModelSettingsOpen(true);
+            return "";
+          }
+          const model = available.find(entry => entry.model.id === extraData.modelId)?.model ?? available[0].model;
+          nodeData.modelId = model.id;
+          nodeData.modelParams = { ...model.defaultParams, ...(extraData.modelParams ?? {}) };
+          const prompt = typeof nodeData.content === "string" ? nodeData.content : "";
+          await createCanvasModelDraft({
+            projectId: project.id, client: generatorClient,
+            kind: nodeData.actionType.replace(/-gen$/, "") as "image" | "video" | "audio" | "model" | "text",
+            modelId: nodeData.modelId, params: nodeData.modelParams ?? {},
+            prompt: prompt.trim() === "# Prompt\nEnter your prompt here..." ? "" : prompt,
+            placement: { canvasId: activeCanvasIdRef.current, nodeId: newNodeId,
+              label: nodeData.label,
+              ...(insertionParentId ? { parentId: insertionParentId } : {}),
+              ...(extraData.position ? { position: extraData.position } : {}),
+            },
+          });
+          return newNodeId;
+        } catch (error) {
+          window.alert(error instanceof Error ? error.message : String(error));
+          return "";
+        }
+      }
 
       // 1. Determine Dimensions FIRST
       let defaultWidth: number | undefined = 300;
@@ -3201,9 +3119,7 @@ export default function ProjectEditor({
       if (parentId) {
         const parentExists = nds.find((n) => n.id === parentId);
         if (!parentExists) {
-          console.warn(
-            `Parent node ${parentId} not found in current nodes list (size: ${nds.length}), creating node at root level`,
-          );
+          editorLog.warn("canvas.parent_missing", { parentId, nodeCount: nds.length });
           parentId = undefined;
         }
       }
@@ -3457,27 +3373,53 @@ export default function ProjectEditor({
 
       return newNodeId;
     },
-    [setNodes, loroSync, applyAutoZIndex, customActions],
+    [setNodes, loroSync, applyAutoZIndex, customActions, generatorClient, project.id,
+      defaultImageModel, defaultVideoModel, defaultAudioModel, defaultTextModel],
   );
 
-  const createDirectorStageFromPane = useCallback(
-    (event: ReactMouseEvent) => {
-      if (
-        !(event.target instanceof Element) ||
-        !event.target.classList.contains("react-flow__pane")
-      )
-        return;
-      const position = reactFlowInstanceRef.current?.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      }) ?? { x: 100, y: 100 };
-      const actionNodeId = addNode("director-stage", { position });
-      if (!actionNodeId) return;
-      stopFollowingAgent();
-      transientUiStore.dismiss();
-    },
-    [addNode, stopFollowingAgent, transientUiStore],
-  );
+  const [canvasCreateMenu, setCanvasCreateMenu] = useState<{
+    anchor: { x: number; y: number };
+    position: { x: number; y: number };
+  } | null>(null);
+  const [createdNodeTarget, setCreatedNodeTarget] = useState<AgentFollowTarget | null>(null);
+
+  const openCreateMenuFromPane = (event: ReactMouseEvent) => {
+    if (!(event.target instanceof Element) || !event.target.classList.contains("react-flow__pane")) return;
+    const instance = reactFlowInstanceRef.current;
+    if (!instance) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    stopFollowingAgent();
+    transientUiStore.dismiss();
+    setCanvasCreateMenu({
+      anchor: { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+      position: instance.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+    });
+  };
+
+  useEffect(() => {
+    if (!createdNodeTarget) return;
+    if (createdNodeTarget.canvasId !== activeCanvasId || workspaceSurface.kind !== "canvas") {
+      setCreatedNodeTarget(null);
+      return;
+    }
+    const instance = reactFlowInstanceRef.current;
+    const node = nodes.find((candidate) => candidate.id === createdNodeTarget.nodeId);
+    if (!instance || !node) return;
+    // Offscreen nodes are virtualized. Bring the layout bounds into view so
+    // ReactFlow can mount and measure the node before the final fit.
+    if (!node.measured?.width || !node.measured.height) {
+      const bounds = getAbsoluteRect(node, nodes);
+      void instance.setCenter(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2, {
+        zoom: Math.min(instance.getZoom(), 1.2),
+        duration: 0,
+      });
+      return;
+    }
+    setNodesInternal((current) => current.map((candidate) => ({ ...candidate, selected: candidate.id === node.id })));
+    setEdges((current) => current.map((edge) => edge.selected ? { ...edge, selected: false } : edge));
+    void instance.fitView({ nodes: [{ id: node.id }], padding: 0.22, duration: 240, maxZoom: 1.2 });
+    setCreatedNodeTarget(null);
+  }, [createdNodeTarget, activeCanvasId, workspaceSurface.kind, nodes, setNodesInternal, setEdges]);
 
   const removeCanvasNodeFromCopilot = useCallback(
     (nodeId: string, options?: AgentMutationOptions) => {
@@ -3555,33 +3497,20 @@ export default function ProjectEditor({
   );
 
   const applyCanvasTimelineFromCopilot = useCallback(
-    (nodeId: string, timelineDsl: unknown, options?: AgentMutationOptions) => {
-      if (!loroSyncRef.current.applyTimelineDsl(nodeId, timelineDsl, options))
-        return;
-
-      const nextNodes = nodesRef.current.map((node) =>
-        node.id === nodeId
-          ? {
-              ...node,
-              data: {
-                ...(node.data || {}),
-                timelineDsl,
-              },
-            }
-          : node,
-      );
-      nodesRef.current = nextNodes;
-      setNodes(nextNodes);
+    async (nodeId: string, timelineDsl: unknown, options?: AgentMutationOptions) => {
+      await loroSyncRef.current.applyTimelineDsl(nodeId, timelineDsl, options);
     },
-    [setNodes],
+    [],
   );
 
-  const handleToolClick = (type: string) => {
+  const handleToolClick = async (type: string, position?: { x: number; y: number }) => {
+    stopFollowingAgent();
     transientUiStore.dismiss();
     if (type === "assets" || ["image", "video", "audio"].includes(type)) {
-      setAssetPickerTarget({ kind: "canvas", canvasId: activeCanvasId });
+      setAssetPickerTarget({ kind: "canvas", canvasId: activeCanvasId, position });
     } else {
-      addNode(type);
+      const nodeId = await addNode(type, position ? { position } : {});
+      if (nodeId) setCreatedNodeTarget({ canvasId: activeCanvasId, nodeId });
     }
   };
 
@@ -3709,7 +3638,7 @@ export default function ProjectEditor({
       try {
         for (const file of files) await importProjectAssetFile(file);
       } catch (error) {
-        console.error("[Project assets] import failed", error);
+        editorLog.error("asset.import_failed", { projectId: project.id, error });
       } finally {
         input.value = "";
       }
@@ -3758,7 +3687,7 @@ export default function ProjectEditor({
           probedW = dims.width;
           probedH = dims.height;
         } catch (err) {
-          console.warn("[Upload] image preview probe failed", err);
+          editorLog.warn("asset.image_probe_failed", { projectId: project.id, error: err });
         }
       } else if (file.type.startsWith("video/")) {
         try {
@@ -3779,7 +3708,7 @@ export default function ProjectEditor({
           probedW = info.width;
           probedH = info.height;
         } catch (err) {
-          console.warn("[Upload] video preview probe failed", err);
+          editorLog.warn("asset.video_probe_failed", { projectId: project.id, error: err });
         }
       }
 
@@ -3879,7 +3808,7 @@ export default function ProjectEditor({
           createdAt: Date.now(),
         };
       } catch (err) {
-        console.error("Failed to upload file to R2", err);
+        editorLog.error("asset.upload_failed", { projectId: project.id, error: err });
         setNodes((nds) =>
           nds.map((node) =>
             node.id === placeholderId
@@ -3994,12 +3923,16 @@ export default function ProjectEditor({
     (parentId: string | undefined) => {
       const currentNodes = nodesRef.current;
       const updated = applyRelayout(currentNodes, edgesRef.current, parentId);
-      nodesRef.current = updated;
-      setNodes(updated);
-      applyLayoutPatchesToLoro(
+      const applied = applyLayoutPatchesToLoro(
         loroSync,
         collectLayoutNodePatches(currentNodes, updated),
       );
+      if (!applied) {
+        window.alert("Auto Layout could not be applied. The previous layout is retained. Nodes with downstream references must be copied before moving them.");
+        return;
+      }
+      nodesRef.current = updated;
+      setNodes(updated);
     },
     [setNodes, applyRelayout, loroSync],
   );
@@ -4331,94 +4264,13 @@ export default function ProjectEditor({
     nodes,
   ]);
 
-  useEffect(() => {
-    const assetsToHydrate = new Map<string, ResolvedAsset | undefined>();
-    for (const asset of projectAssets) {
-      if (asset.status !== "ready" || !asset.url) {
-        assetsToHydrate.set(asset.id, asset);
-      }
-    }
-    for (const node of nodes) {
-      if (node.data?.status !== "completed") continue;
-      const assetId = node.data?.assetId;
-      if (
-        typeof assetId === "string" &&
-        assetId &&
-        !assetsToHydrate.has(assetId) &&
-        !projectAssets.some((asset) => asset.id === assetId)
-      ) {
-        assetsToHydrate.set(assetId, undefined);
-      }
-    }
-    if (loroSync.doc) {
-      for (const [, raw] of loroSync.doc.getMap("nodes").entries()) {
-        if (!raw || typeof raw !== "object") continue;
-        const data = (raw as { data?: Record<string, unknown> }).data;
-        if (data?.status !== "completed" || typeof data.assetId !== "string")
-          continue;
-        if (
-          !assetsToHydrate.has(data.assetId) &&
-          !projectAssets.some((asset) => asset.id === data.assetId)
-        ) {
-          assetsToHydrate.set(data.assetId, undefined);
-        }
-      }
-    }
-
-    const stopWatching: Array<() => void> = [];
-    for (const [assetId, fallback] of assetsToHydrate) {
-      if (hydratingProjectAssetIdsRef.current.has(assetId)) continue;
-      hydratingProjectAssetIdsRef.current.add(assetId);
-      stopWatching.push(
-        watchAssetProjection({
-          projectId: project.id,
-          assetId,
-          onProjection: (asset) => {
-            if (activeProjectAssetProjectIdRef.current !== project.id) return;
-            if (
-              asset.kind !== "image" &&
-              asset.kind !== "video" &&
-              asset.kind !== "audio"
-            )
-              return;
-            const projectAsset = mergeResolvedAssetProjection(asset, fallback);
-            if (JSON.stringify(projectAsset) === JSON.stringify(fallback))
-              return;
-            setLocallyAddedProjectAssets((current) => {
-              const existing = current.find(
-                (candidate) => candidate.id === projectAsset.id,
-              );
-              return JSON.stringify(existing) === JSON.stringify(projectAsset)
-                ? current
-                : [
-                    projectAsset,
-                    ...current.filter(
-                      (candidate) => candidate.id !== projectAsset.id,
-                    ),
-                  ];
-            });
-            if (asset.status === "ready" || asset.status === "failed") {
-              hydratingProjectAssetIdsRef.current.delete(assetId);
-            }
-          },
-          onError: (error) => {
-            hydratingProjectAssetIdsRef.current.delete(assetId);
-            console.warn(
-              "[Project assets] generated asset hydration failed",
-              assetId,
-              error,
-            );
-          },
-        }),
-      );
-    }
-    return () => {
-      for (const stop of stopWatching) stop();
-      for (const assetId of assetsToHydrate.keys()) {
-        hydratingProjectAssetIdsRef.current.delete(assetId);
-      }
-    };
-  }, [loroSync.doc, nodes, project.id, projectAssets]);
+  useProjectAssetHydration({
+    doc: loroSync.doc,
+    nodes,
+    projectId: project.id,
+    projectAssets,
+    onAssetsChange: setLocallyAddedProjectAssets,
+  });
   const selectedAsset =
     workspaceSurface.kind === "asset"
       ? projectAssets.find((asset) => asset.id === workspaceSurface.assetId)
@@ -4553,7 +4405,7 @@ export default function ProjectEditor({
   const applyScopedAssetSelection = useCallback(
     async (
       option: ScopedAssetOption,
-      target: AssetScopeTarget,
+      target: AssetScopeTarget & { position?: { x: number; y: number } },
       behavior: { insertIntoTimeline?: boolean } = {},
     ): Promise<void> => {
       setAssetPickerBusy(true);
@@ -4578,7 +4430,10 @@ export default function ProjectEditor({
                       node.type === "video" ||
                       node.type === "audio"),
                 );
-                if (existing) return existing.id;
+                if (existing) {
+                  if (target.kind === "canvas") setCreatedNodeTarget({ canvasId, nodeId: existing.id });
+                  return existing.id;
+                }
                 const nodeId = `asset-placement-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
                 const canvasNodeCount = assetRelationGraph.nodes.filter(
                   (node) => node.canvasId === canvasId,
@@ -4586,7 +4441,7 @@ export default function ProjectEditor({
                 const node = {
                   id: nodeId,
                   type: option.type,
-                  position: {
+                  position: target.position ?? {
                     x: 120 + (canvasNodeCount % 5) * 36,
                     y: 120 + (canvasNodeCount % 7) * 36,
                   },
@@ -4606,6 +4461,7 @@ export default function ProjectEditor({
                       : [...current, node as AppNode],
                   );
                 }
+                if (target.kind === "canvas") setCreatedNodeTarget({ canvasId, nodeId });
                 return nodeId;
               },
             },
@@ -4862,7 +4718,6 @@ export default function ProjectEditor({
         ? selectTimelineMediaInputs({
             timeline: selectedTimeline,
             assets: projectAssets,
-            bindings: loroSync.doc ? listActionAssetBindings(loroSync.doc) : [],
             nodes: assetRelationGraph.nodes,
             edges: assetRelationGraph.edges,
           })
@@ -5194,10 +5049,14 @@ export default function ProjectEditor({
   );
   const openCanvasTextPreview = useCallback(
     (nodeId: string) => {
+      if (nodesRef.current.find((node) => node.id === nodeId)?.data.documentRevision !== undefined) {
+        openCanvasTextEditor(nodeId);
+        return;
+      }
       stopFollowingAgent();
       setPreviewTextNodeId(nodeId);
     },
-    [stopFollowingAgent],
+    [stopFollowingAgent, openCanvasTextEditor],
   );
   const closeTextEditor = useCallback(() => {
     const surface = workspaceSurfaceRef.current;
@@ -5712,13 +5571,15 @@ export default function ProjectEditor({
     [activeCanvasId, loroSync, selectCanvas, stopFollowingAgent],
   );
 
-  const createTimelineFromNavigator = useCallback(() => {
+  const createTimelineFromNavigator = useCallback(async () => {
     stopFollowingAgent();
     const name = window.prompt("Timeline name")?.trim();
     if (!name) return;
     const timelineId = `timeline-${Date.now().toString(36)}`;
-    const result = loroSync.createTimeline({
+    const result = await loroSync.createTimelineOnCanvas({
       id: timelineId,
+      actionNodeId: `timeline-action-${Date.now().toString(36)}`,
+      canvasId: DEFAULT_CANVAS_ID,
       name,
       state: { tracks: [] },
     });
@@ -5726,28 +5587,16 @@ export default function ProjectEditor({
       window.alert(result.error);
       return;
     }
-    const attached = loroSync.attachTimeline({
-      timelineId,
-      actionNodeId: `timeline-action-${Date.now().toString(36)}`,
-      canvasId: DEFAULT_CANVAS_ID,
-    });
-    if (!attached.ok) {
-      loroSync.deleteTimeline(
-        timelineId,
-        projectTimelineReadToken(result.timeline),
-      );
-      window.alert(attached.error);
-      return;
-    }
+
     void preloadTimelineEditor();
     setWorkspaceSurface({ kind: "timeline", timelineId });
   }, [loroSync, stopFollowingAgent]);
 
   const attachTimelineFromNavigator = useCallback(
-    (timeline: ProjectTimeline) => {
+    async (timeline: ProjectTimeline) => {
       stopFollowingAgent();
       const actionNodeId = `timeline-action-${Date.now().toString(36)}`;
-      const result = loroSync.attachTimeline({
+      const result = await loroSync.attachTimeline({
         timelineId: timeline.id,
         actionNodeId,
       });
@@ -5761,13 +5610,13 @@ export default function ProjectEditor({
   );
 
   const deleteTimelineFromNavigator = useCallback(
-    (timeline: ProjectTimeline) => {
+    async (timeline: ProjectTimeline) => {
       stopFollowingAgent();
       if (!window.confirm(`Delete Timeline "${timeline.name}"?`)) return;
       const fallback = loroSync.timelines.find(
         (candidate) => candidate.id !== timeline.id,
       );
-      const result = loroSync.deleteTimeline(
+      const result = await loroSync.deleteTimeline(
         timeline.id,
         projectTimelineReadToken(timeline),
       );
@@ -5800,7 +5649,7 @@ export default function ProjectEditor({
 
   const exportTimelineFromNavigator = useCallback(
     async (timelineId: string) => {
-      const result = loroSync.requestTimelineRender(timelineId, {
+      const result = await loroSync.requestTimelineRender(timelineId, {
         actorUserId: timelineExportActorUserId,
       });
       if (!result.ok) throw new Error(result.error);
@@ -5813,8 +5662,10 @@ export default function ProjectEditor({
     const name = window.prompt("Director Stage name")?.trim();
     if (!name) return;
     const stageId = `director-stage-${Date.now().toString(36)}`;
-    const result = loroSync.createDirectorStage({
+    const result = loroSync.createDirectorStageOnCanvas({
       id: stageId,
+      actionNodeId: `director-stage-action-${Date.now().toString(36)}`,
+      canvasId: DEFAULT_CANVAS_ID,
       name,
       state: createDefaultDirectorStageState(),
     });
@@ -5822,15 +5673,7 @@ export default function ProjectEditor({
       window.alert(result.error);
       return;
     }
-    const attached = loroSync.attachDirectorStage({
-      stageId,
-      actionNodeId: `director-stage-action-${Date.now().toString(36)}`,
-      canvasId: DEFAULT_CANVAS_ID,
-    });
-    if (!attached.ok) {
-      window.alert(attached.error);
-      return;
-    }
+
     setWorkspaceSurface({ kind: "director-stage", stageId });
   }, [loroSync, stopFollowingAgent]);
 
@@ -6514,10 +6357,7 @@ export default function ProjectEditor({
       }
       const animationMetadataPromise = inspectDirectorModelFile(file).catch(
         (error) => {
-          console.warn(
-            "[Director Stage] Could not inspect uploaded model animations",
-            error,
-          );
+          editorLog.warn("director.model_inspect_failed", { projectId: project.id, error });
           return undefined;
         },
       );
@@ -6639,11 +6479,7 @@ export default function ProjectEditor({
           const sourceUrl = asset.url;
           return [object.model.assetId, sourceUrl] as const;
         } catch (error) {
-          console.warn(
-            "[Director Stage] model hydration failed",
-            object.model.assetId,
-            error,
-          );
+          editorLog.warn("director.model_hydration_failed", { projectId: project.id, assetId: object.model.assetId, error });
           return null;
         }
       }),
@@ -6740,11 +6576,7 @@ export default function ProjectEditor({
             ...current.filter((candidate) => candidate.id !== asset.id),
           ]);
         } catch (error) {
-          console.warn(
-            "[Project assets] preview hydration failed",
-            assetId,
-            error,
-          );
+          editorLog.warn("asset.preview_hydration_failed", { projectId: project.id, assetId: assetId, error });
           return;
         }
       }
@@ -6818,7 +6650,9 @@ export default function ProjectEditor({
   }, [clearAnnotationContextTarget, project.id]);
 
   return (
-    <ProjectProvider projectId={project.id}>
+    <ProjectProvider projectId={project.id} catalogVersion={modelCatalogVersion} onConfigureModels={() => setModelSettingsOpen(true)}>
+      {modelSettingsOpen && <Suspense fallback={null}><ProjectSettingsDialog open initialSection="models" onClose={() => { setModelSettingsOpen(false); setModelCatalogVersion(value => value + 1); }} /></Suspense>}
+      <SyncRecoveryDialog rejected={loroSync.syncRejected} backup={loroSync.recoveryDraft} onRecover={loroSync.prepareSyncRecovery} loadError={loroSync.projectLoadError} onRetryLoad={loroSync.retryProjectLoad} />
       <CanvasTransientUiProvider store={transientUiStore}>
         <LoroSyncProvider loroSync={loroSync}>
           <CustomActionsProvider actions={customActions}>
@@ -6871,15 +6705,18 @@ export default function ProjectEditor({
                                   }
                                 }}
                               />
-                              <AgentAnnotationEditor
+                              {!nativeAgent && <AgentAnnotationEditor
                                 annotations={pendingAgentAnnotations}
                                 activeId={activeAnnotationId}
                                 onClose={() => setActiveAnnotationId(null)}
                                 onChange={changeAgentAnnotation}
                                 onRemove={removeAgentAnnotation}
                                 onLocate={locateAgentAnnotation}
-                              />
+                              />}
                               <div
+                                data-clash-project-id={project.id}
+                                data-clash-canvas-id={activeCanvasId}
+                                data-clash-surface={workspaceSurface}
                                 data-project-loro-connected={
                                   loroSync.connected ? "true" : "false"
                                 }
@@ -6966,9 +6803,9 @@ export default function ProjectEditor({
                                             id="editor-header"
                                             className="clash-project-sidebar-header-content clash-project-chrome-header-content flex min-w-0 flex-1 items-center gap-1.5 pointer-events-auto"
                                           >
-                                            <Tooltip label="Return to projects">
+                                            <Tooltip label={nativeAgent ? "Return to conversation" : "Return to projects"}>
                                               <IconButton
-                                                label="Return to projects"
+                                                label={nativeAgent ? "Return to conversation" : "Return to projects"}
                                                 onClick={handleReturnToProjects}
                                                 icon={
                                                   <ArrowLeft
@@ -7018,9 +6855,10 @@ export default function ProjectEditor({
                                             />
                                           </div>
                                         }
-                                        footer={<UserControls compact />}
+                                        footer={<div className="flex flex-col gap-1 p-2"><Button size="sm" className="w-full justify-start" leftIcon={<Gear size={16} />} onClick={() => setModelSettingsOpen(true)}>Settings</Button>{!nativeAgent && <UserControls compact />}</div>}
                                         canvases={loroSync.canvases}
                                         timelines={loroSync.timelines}
+                                        timelineError={loroSync.timelineError}
                                         directorStages={loroSync.directorStages}
                                         assets={allProjectAssets}
                                         textAssets={projectTextAssets}
@@ -7119,7 +6957,7 @@ export default function ProjectEditor({
                                         onRestoreAsset={
                                           restoreProjectAssetFromNavigator
                                         }
-                                        onAnnotate={(target) =>
+                                        onAnnotate={nativeAgent ? undefined : (target) =>
                                           queueAgentAnnotation({
                                             ...target,
                                             projectId: project.id,
@@ -7143,7 +6981,7 @@ export default function ProjectEditor({
                                           );
                                         }}
                                       >
-                                        {workspaceSurface.kind !==
+                                        {!nativeAgent && workspaceSurface.kind !==
                                           "text-asset" &&
                                         workspaceSurface.kind !== "browser" &&
                                         workspaceSurface.kind !==
@@ -7166,7 +7004,7 @@ export default function ProjectEditor({
                                             onRemove={removeAgentAnnotation}
                                           />
                                         ) : null}
-                                        {workspaceSurface.kind !== "canvas" &&
+                                        {!nativeAgent && workspaceSurface.kind !== "canvas" &&
                                         workspaceSurface.kind !==
                                           "text-asset" &&
                                         workspaceSurface.kind !== "browser" &&
@@ -7219,7 +7057,12 @@ export default function ProjectEditor({
                                         {workspaceSurface.kind ===
                                         "text-asset" ? (
                                           selectedTextNode ? (
-                                            <TextDocumentEditorSurface
+                                            selectedTextNode.data.documentRevision !== undefined ? <TextDocumentReadSurface
+                                              projectId={project.id}
+                                              reference={selectedTextNode.data.documentRevision}
+                                              label={typeof selectedTextNode.data.label === "string" ? selectedTextNode.data.label : "Text result"}
+                                              onClose={closeTextEditor}
+                                            /> : <TextDocumentEditorSurface
                                               key={workspaceSurface.nodeId}
                                               projectId={project.id}
                                               nodeId={workspaceSurface.nodeId}
@@ -7389,6 +7232,7 @@ export default function ProjectEditor({
                                         {selectedDirectorStage && (
                                           <ProjectDirectorStageSurface
                                             key={selectedDirectorStage.id}
+                                            projectId={project.id}
                                             stage={selectedDirectorStage}
                                             canvases={loroSync.canvases}
                                             headerEndInset={copilotHeaderInset}
@@ -7439,7 +7283,7 @@ export default function ProjectEditor({
                                           }
                                           onDropCapture={handleCanvasAssetDrop}
                                           onDoubleClick={
-                                            createDirectorStageFromPane
+                                            openCreateMenuFromPane
                                           }
                                           className={`absolute inset-0 z-0 ${workspaceSurface.kind === "canvas" ? "" : "hidden"} ${canvasMode === "hand" ? "[&_.react-flow__pane]:cursor-grab [&_.react-flow__pane:active]:cursor-grabbing" : ""}`}
                                         >
@@ -7451,7 +7295,8 @@ export default function ProjectEditor({
                                             />
                                           ) : null}
                                           <ReactFlow
-                                            nodes={nodes}
+                                            zoomOnDoubleClick={false}
+                                            nodes={readableNodes}
                                             edges={edges}
                                             edgeTypes={projectCanvasEdgeTypes}
                                             onError={projectCanvasOnError}
@@ -7582,9 +7427,10 @@ export default function ProjectEditor({
                                                   "var(--canvas-bg)",
                                               }}
                                             />
-                                            {workspaceSurface.kind ===
+                                            {!nativeAgent && workspaceSurface.kind ===
                                             "canvas" ? (
                                               <CanvasAnnotationPinLayer
+                                                active={workspaceSurface.kind === "canvas"}
                                                 annotations={
                                                   pendingAgentAnnotations
                                                 }
@@ -7806,6 +7652,14 @@ export default function ProjectEditor({
                                               customActions={customActions}
                                             />
                                           </ReactFlow>
+                                          <DropdownMenu open={canvasCreateMenu !== null} onOpenChange={(open) => { if (!open) setCanvasCreateMenu(null); }}>
+                                            <DropdownMenuTrigger asChild>
+                                              <button type="button" aria-label="Create node here" aria-hidden="true" tabIndex={-1} className="pointer-events-none absolute h-px w-px opacity-0" style={{ left: canvasCreateMenu?.anchor.x ?? 0, top: canvasCreateMenu?.anchor.y ?? 0 }} />
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent aria-label="Create node" side="right" align="start" sideOffset={0} onCloseAutoFocus={(event) => event.preventDefault()} className="clash-canvas-menu-surface min-w-48">
+                                              <CanvasCreateMenuItems customActions={customActions} onSelect={(type) => handleToolClick(type, canvasCreateMenu?.position)} />
+                                            </DropdownMenuContent>
+                                          </DropdownMenu>
                                         </div>
 
                                         {workspaceSurface.kind === "canvas" ? (
@@ -8064,122 +7918,18 @@ export default function ProjectEditor({
                                                 />
                                               </div>
 
-                                              <div className="flex w-full flex-none flex-col items-center gap-0">
-                                                {toolbarMenu.map((item) => {
-                                                  const Icon = item.icon;
-                                                  const submenuItems =
-                                                    "items" in item
-                                                      ? item.items
-                                                      : undefined;
-                                                  const sectionSpacing =
-                                                    item.id === "actions"
-                                                      ? "mt-[var(--clash-toolbar-section-gap)]"
-                                                      : "";
-                                                  if (submenuItems) {
-                                                    return (
-                                                      <DropdownMenu
-                                                        key={item.id}
-                                                        onOpenChange={
-                                                          dismissTransientUiOnMenuOpen
-                                                        }
-                                                      >
-                                                        <Tooltip
-                                                          label={item.label}
-                                                          placement="right"
-                                                        >
-                                                          <DropdownMenuTrigger
-                                                            asChild
-                                                          >
-                                                            <Toolbar.Button
-                                                              asChild
-                                                            >
-                                                              <IconButton
-                                                                label={
-                                                                  item.label
-                                                                }
-                                                                icon={
-                                                                  <Icon
-                                                                    className="h-[18px] w-[18px]"
-                                                                    weight="regular"
-                                                                  />
-                                                                }
-                                                                size="sm"
-                                                                shape="rounded"
-                                                                className={`${sectionSpacing} clash-workspace-icon-control clash-toolbar-button text-content-muted hover:text-content-primary`}
-                                                              />
-                                                            </Toolbar.Button>
-                                                          </DropdownMenuTrigger>
-                                                        </Tooltip>
-                                                        <DropdownMenuContent
-                                                          aria-label={`${item.label} tools`}
-                                                          side="right"
-                                                          align="start"
-                                                          sideOffset={10}
-                                                          className="clash-canvas-menu-surface flex min-w-[140px] flex-col gap-0.5 rounded-lg p-1.5"
-                                                        >
-                                                          <div className="px-2 py-1 text-xs font-semibold text-content-muted">
-                                                            {item.label}
-                                                          </div>
-                                                          {submenuItems.map(
-                                                            (subItem) => {
-                                                              const SubIcon =
-                                                                subItem.icon;
-                                                              return (
-                                                                <DropdownMenuItem
-                                                                  key={
-                                                                    subItem.id
-                                                                  }
-                                                                  onSelect={() => {
-                                                                    handleToolClick(
-                                                                      subItem.id,
-                                                                    );
-                                                                  }}
-                                                                  className="clash-input-icon-button gap-2.5 rounded-md px-2.5 py-2 text-sm text-content-secondary transition-colors hover:text-content-primary"
-                                                                >
-                                                                  <SubIcon className="h-4 w-4" />
-                                                                  <span className="whitespace-nowrap">
-                                                                    {
-                                                                      subItem.label
-                                                                    }
-                                                                  </span>
-                                                                </DropdownMenuItem>
-                                                              );
-                                                            },
-                                                          )}
-                                                        </DropdownMenuContent>
-                                                      </DropdownMenu>
-                                                    );
-                                                  }
-
-                                                  return (
-                                                    <Tooltip
-                                                      key={item.id}
-                                                      label={item.label}
-                                                      placement="right"
-                                                    >
-                                                      <Toolbar.Button asChild>
-                                                        <IconButton
-                                                          label={item.label}
-                                                          icon={
-                                                            <Icon
-                                                              className="h-[18px] w-[18px]"
-                                                              weight="regular"
-                                                            />
-                                                          }
-                                                          size="sm"
-                                                          shape="rounded"
-                                                          onClick={() =>
-                                                            handleToolClick(
-                                                              item.id,
-                                                            )
-                                                          }
-                                                          className={`${sectionSpacing} clash-workspace-icon-control clash-toolbar-button text-content-muted hover:text-content-primary`}
-                                                        />
-                                                      </Toolbar.Button>
-                                                    </Tooltip>
-                                                  );
-                                                })}
-                                              </div>
+                                              <DropdownMenu onOpenChange={dismissTransientUiOnMenuOpen}>
+                                                <Tooltip label="Create node" placement="right">
+                                                  <DropdownMenuTrigger asChild>
+                                                    <Toolbar.Button asChild>
+                                                      <IconButton label="Create node" icon={<Plus className="h-[18px] w-[18px]" weight="regular" />} size="sm" shape="rounded" className="clash-workspace-icon-control clash-toolbar-button text-content-muted hover:text-content-primary" />
+                                                    </Toolbar.Button>
+                                                  </DropdownMenuTrigger>
+                                                </Tooltip>
+                                                <DropdownMenuContent aria-label="Create node" side="right" align="start" sideOffset={10} className="clash-canvas-menu-surface min-w-48">
+                                                  <CanvasCreateMenuItems customActions={customActions} onSelect={handleToolClick} />
+                                                </DropdownMenuContent>
+                                              </DropdownMenu>
 
                                               <div className="flex h-[var(--clash-toolbar-section-gap)] w-full shrink-0 items-center justify-center">
                                                 <Toolbar.Separator
@@ -8299,7 +8049,21 @@ export default function ProjectEditor({
                                       </div>
                                     </AgentAnnotationContextMenu>
 
-                                    <div
+                                    {nativeAgent ? (
+                                      <McpProjectContext
+                                        projectId={project.id}
+                                        context={JSON.stringify({
+                                          projectId: project.id,
+                                          canvasId: activeCanvasId,
+                                          surface: workspaceSurface,
+                                          selectedNodeIds: selectedNodes.map(({ id }) => id),
+                                          selectedNodes: selectedNodes.map(({ id, type, data }) => ({
+                                            id, type,
+                                            label: typeof data.label === "string" ? data.label : undefined,
+                                          })),
+                                        })}
+                                      />
+                                    ) : <Suspense fallback={null}><div
                                       id="copilot-container"
                                       className="fixed bottom-2 right-2 z-40 pointer-events-none"
                                       style={{
@@ -8399,7 +8163,7 @@ export default function ProjectEditor({
                                           }
                                         />
                                       </div>
-                                    </div>
+                                    </div></Suspense>}
                                   </div>
                                 </div>
                               </div>

@@ -1,5 +1,8 @@
+import { LoroDoc, UndoManager } from "loro-crdt";
+import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 // @vitest-environment jsdom
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { StrictMode, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,16 +15,17 @@ import {
   canvasBatchDeleteReadToken,
   canvasNodeReadToken,
   createProjectAsset,
+  createProjectDocumentAsset,
+  createProjectGenerator,
   listActionAssetBindings,
   markActionAssetBindingAuthority,
-  projectTimelineReadToken,
   projectDirectorStageReadToken,
-  readProjectTimeline,
   type HostMutationRecord,
 } from "@clash/shared-types";
 import {
   CrdtType,
   MessageType,
+  UpdateStatusCode,
   decode,
   encode,
 } from "@clash/replica/loro-protocol";
@@ -91,6 +95,7 @@ describe("useLoroSync guardrails", () => {
   });
 
   beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ timelines: [], versions: {} }), { headers: { "content-type": "application/json" } })));
     FakeWebSocket.instances = [];
     setRuntimeConfigOverride(undefined);
     globalThis.__CLASH_RUNTIME_CONFIG__ = undefined;
@@ -108,6 +113,283 @@ describe("useLoroSync guardrails", () => {
     globalThis.__CLASH_RUNTIME_CONFIG__ = undefined;
     delete globalThis.__CLASH_DESKTOP__;
     window.localStorage.clear();
+  });
+
+  it.each([false, true])("releases the mounted replica and undo history after final unmount (StrictMode=%s)", async (strict) => {
+    const freeUndo = vi.spyOn(UndoManager.prototype, "free");
+    const { result, rerender, unmount } = renderHook(
+      ({ canvasId }) => useLoroSync({ projectId: "replica-lifetime", canvasId }),
+      { initialProps: { canvasId: "main" }, wrapper: ({ children }: { children: ReactNode }) => strict ? <StrictMode>{children}</StrictMode> : children },
+    );
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const doc = result.current.doc!;
+    const freeDoc = vi.spyOn(doc, "free");
+    act(() => { doc.getMap("draft").set("text", "keep editing"); doc.commit(); });
+    await waitFor(() => expect(result.current.canUndo).toBe(true));
+    act(() => { result.current.undo(); });
+    expect(doc.getMap("draft").get("text")).toBeUndefined();
+    act(() => { result.current.redo(); });
+    expect(doc.getMap("draft").get("text")).toBe("keep editing");
+    rerender({ canvasId: "another-canvas" });
+    await act(async () => {});
+    expect(result.current.doc).toBe(doc);
+    expect(freeDoc).not.toHaveBeenCalled();
+    expect(freeUndo).not.toHaveBeenCalled();
+
+    // A commit may queue an undo refresh immediately before the component leaves.
+    act(() => { doc.getMap("draft").set("text", "last edit"); doc.commit(); unmount(); });
+    await act(async () => {});
+    expect(freeDoc).toHaveBeenCalledOnce();
+    expect(freeUndo).toHaveBeenCalledOnce();
+    expect(() => doc.toJSON()).toThrow();
+    expect(() => (freeUndo.mock.contexts[0] as UndoManager).canUndo()).toThrow();
+  });
+
+  it("closes every snapshot database connection and retains the final edit after remount", async () => {
+    const factory = new IDBFactory();
+    const open = factory.open.bind(factory);
+    const databases: IDBDatabase[] = [];
+    vi.spyOn(factory, "open").mockImplementation((...args) => {
+      const request = open(...args);
+      request.addEventListener("success", () => databases.push(request.result));
+      return request;
+    });
+    const close = vi.spyOn(IDBDatabase.prototype, "close");
+    vi.stubGlobal("indexedDB", factory);
+    const mounted = renderHook(() => useLoroSync({ projectId: "database-lifetime" }));
+    await waitFor(() => expect(mounted.result.current.connected).toBe(true));
+    try {
+      await waitFor(() => {
+        expect(databases.length).toBeGreaterThan(0);
+        expect(new Set(close.mock.contexts)).toEqual(new Set(databases));
+      });
+      act(() => { const doc = mounted.result.current.doc!; doc.getMap("draft").set("text", "last edit"); doc.commit(); });
+      mounted.unmount();
+      await waitFor(() => expect(new Set(close.mock.contexts)).toEqual(new Set(databases)));
+      const fresh = renderHook(() => useLoroSync({ projectId: "database-lifetime" }));
+      try {
+        await waitFor(() => expect(fresh.result.current.connected).toBe(true));
+        expect(fresh.result.current.doc!.getMap("draft").get("text")).toBe("last edit");
+      } finally { fresh.unmount(); }
+      await waitFor(() => expect(new Set(close.mock.contexts)).toEqual(new Set(databases)));
+    } finally { mounted.unmount(); }
+  });
+
+  it("releases every owned replica, history and socket across repeated project opens", async () => {
+    const histories = vi.spyOn(UndoManager.prototype, "free");
+    const documents: LoroDoc[] = [];
+    for (let cycle = 0; cycle < 50; cycle++) {
+      const mounted = renderHook(() => useLoroSync({ projectId: `reopen-${cycle % 2}` }));
+      try {
+        await waitFor(() => expect(mounted.result.current.connected).toBe(true));
+        const doc = mounted.result.current.doc!;
+        documents.push(doc);
+        act(() => { doc.getMap("draft").set("cycle", cycle); doc.commit(); });
+      } finally { mounted.unmount(); }
+      await act(async () => {});
+    }
+    expect(histories.mock.contexts).toHaveLength(documents.length);
+    for (const doc of documents) expect(() => doc.toJSON()).toThrow();
+    for (const history of histories.mock.contexts) expect(() => (history as UndoManager).canUndo()).toThrow();
+    for (const socket of FakeWebSocket.instances) {
+      expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+      expect(socket.onmessage).toBeNull();
+      expect(socket.onclose).toBeNull();
+    }
+  });
+
+  it.each(["get", "put"] as const)("closes snapshot database handles when a %s transaction aborts", async (operation) => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const close = vi.spyOn(IDBDatabase.prototype, "close");
+    const original = IDBObjectStore.prototype[operation];
+    let aborted: IDBDatabase | undefined;
+    vi.spyOn(IDBObjectStore.prototype, operation).mockImplementationOnce(function (this: IDBObjectStore, ...args: Parameters<typeof original>) {
+      const request = Reflect.apply(original, this, args);
+      aborted = this.transaction.db;
+      this.transaction.abort();
+      return request;
+    });
+    const mounted = renderHook(() => useLoroSync({ projectId: `database-abort-${operation}` }));
+    try {
+      await waitFor(() => expect(mounted.result.current.connected).toBe(true));
+      if (operation === "put") {
+        act(() => { const doc = mounted.result.current.doc!; doc.getMap("draft").set("text", "save"); doc.commit(); });
+        mounted.unmount();
+      }
+      await waitFor(() => {
+        expect(aborted).toBeDefined();
+        expect(close.mock.contexts).toContain(aborted);
+      });
+    } finally { mounted.unmount(); }
+  });
+
+  it("detaches closed socket callbacks and ignores events queued before unmount", async () => {
+    const onPresenceChange = vi.fn();
+    const mounted = renderHook(() => useLoroSync({ projectId: "socket-lifetime", onPresenceChange }));
+    await waitFor(() => expect(mounted.result.current.connected).toBe(true));
+    const socket = FakeWebSocket.instances.at(-1)!;
+    const lateOpen = socket.onopen!;
+    const lateMessage = socket.onmessage!;
+    const lateClose = socket.onclose!;
+    const sent = [...socket.sent];
+    mounted.unmount();
+    await act(async () => {
+      lateOpen({});
+      await lateMessage({ data: JSON.stringify({ type: "presence", clients: [] }) });
+      lateClose({ code: 1006, reason: "queued close", wasClean: false });
+    });
+    expect(onPresenceChange).not.toHaveBeenCalled();
+    expect(socket.sent).toEqual(sent);
+    expect(socket.onopen).toBeNull();
+    expect(socket.onmessage).toBeNull();
+    expect(socket.onerror).toBeNull();
+    expect(socket.onclose).toBeNull();
+  });
+
+  it("pauses failed project loading, preserves local edits and retries only when requested", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "load-recovery" }));
+    try {
+      await waitFor(() => expect(result.current.connected).toBe(true));
+      const socket = FakeWebSocket.instances.at(-1)!;
+      const doc = result.current.doc!;
+      doc.getMap("draft-test").set("text", "Keep local edits");
+      const problem = { type: "project.load-error", projectId: "load-recovery", code: "PROJECT_UPGRADE_FAILED", nodeId: "draft", message: "Restore the original plugin package, then retry." };
+      for (const malformed of [{ ...problem, message: null }, { ...problem, nodeId: 3 }, { ...problem, code: "unknown" }]) {
+        await act(async () => { await socket.onmessage?.({ data: JSON.stringify(malformed) }); });
+        expect(result.current.projectLoadError).toBeUndefined();
+      }
+      await act(async () => { await socket.onmessage?.({ data: JSON.stringify({ ...problem, projectId: "other" }) }); });
+      expect(result.current.projectLoadError).toBeUndefined();
+      await act(async () => { await socket.onmessage?.({ data: JSON.stringify(problem) }); });
+      expect(result.current.projectLoadError).toEqual(problem);
+      expect(result.current.connected).toBe(false);
+      expect(result.current.syncRejected).toBe(false);
+      vi.useFakeTimers();
+      await act(async () => { socket.close(1011, "Unable to open Project"); await vi.advanceTimersByTimeAsync(6000); });
+      expect(FakeWebSocket.instances).toEqual([socket]);
+      vi.useRealTimers();
+      await act(async () => { result.current.retryProjectLoad(); });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+      expect(result.current.projectLoadError).toBeUndefined();
+      expect(result.current.doc).toBe(doc);
+      expect(doc.getMap("draft-test").get("text")).toBe("Keep local edits");
+      expect(FakeWebSocket.instances[1]?.sent.map(frame => decode(frame as Uint8Array).type)).toContain(MessageType.JoinRequest);
+      await act(async () => { socket.close(1011, "Late close from the first attempt"); });
+      expect(result.current.connected).toBe(true);
+    } finally { vi.useRealTimers(); unmount(); }
+  });
+
+  it.each([false, true])("reports a rejected sync and keeps its local draft without reconnecting it (leave during recovery=%s)", async (leave) => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const onMutation = vi.fn();
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "rejected-sync", onMutation }));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const socket = FakeWebSocket.instances.at(-1)!;
+    const doc = result.current.doc!;
+    const version = doc.version();
+    try {
+      await act(async () => {
+        await socket.onmessage?.({ data: encode({ type: MessageType.JoinResponseOk, crdt: CrdtType.Loro,
+          roomId: "rejected-sync", permission: "write", version: version.encode() }) });
+        doc.getMap("draft-test").set("text", "Keep this edit");
+        doc.commit();
+      });
+      const message = decode(socket.sent.at(-1) as Uint8Array);
+      if (message.type !== MessageType.DocUpdate) throw new Error("Expected draft update");
+      await act(async () => {
+        await socket.onmessage?.({ data: encode({ type: MessageType.Ack, crdt: CrdtType.Loro,
+          roomId: "rejected-sync", refId: message.batchId, status: UpdateStatusCode.AppError }) });
+      });
+      expect(result.current.connected).toBe(false);
+      expect(onMutation).toHaveBeenCalledWith(expect.objectContaining({ accepted: false, operation: "project_sync", error: expect.stringMatching(/not saved/i) }));
+      expect(doc.getMap("draft-test").get("text")).toBe("Keep this edit");
+      vi.useFakeTimers();
+      await act(async () => { socket.drop(); await vi.advanceTimersByTimeAsync(6000); });
+      expect(FakeWebSocket.instances).toEqual([socket]);
+      vi.useRealTimers();
+      await act(async () => {
+        doc.getMap("draft-test").set("latest", "Pending autosave");
+        doc.commit();
+        const recovery = result.current.prepareSyncRecovery();
+        if (leave) unmount();
+        await recovery;
+      });
+      if (!leave) expect(result.current.recoveryDraft?.snapshot).toBeInstanceOf(Uint8Array);
+      unmount();
+      const fresh = renderHook(() => useLoroSync({ projectId: "rejected-sync" }));
+      try {
+        await waitFor(() => expect(fresh.result.current.isInitialized).toBe(true));
+        expect(fresh.result.current.doc!.getMap("draft-test").get("text")).toBeUndefined();
+        expect(fresh.result.current.recoveryDraft).toBeDefined();
+        const backup = new LoroDoc();
+        try {
+          backup.import(new Uint8Array(fresh.result.current.recoveryDraft!.snapshot));
+          expect(backup.getMap("draft-test").get("text")).toBe("Keep this edit");
+          expect(backup.getMap("draft-test").get("latest")).toBe("Pending autosave");
+        } finally { backup.free(); }
+      } finally { fresh.unmount(); }
+    } finally { version.free(); unmount(); vi.useRealTimers(); }
+  });
+
+  it("debounces snapshot serialization itself and flushes pending changes on unmount", async () => {
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "snapshot-batching" }));
+    await waitFor(() => expect(result.current.isInitialized).toBe(true));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const doc = result.current.doc!;
+    const exports = vi.spyOn(doc, "export");
+    vi.useFakeTimers();
+    try {
+      for (const text of ["first", "second", "latest"]) {
+        await act(async () => {
+          doc.getMap("performance-test").set("text", text);
+          doc.commit();
+        });
+      }
+      const snapshots = () => exports.mock.calls.filter(([options]) => options.mode === "snapshot");
+      expect(snapshots()).toHaveLength(0);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(snapshots()).toHaveLength(1);
+      await act(async () => {
+        doc.getMap("performance-test").set("text", "before-switch");
+        doc.commit();
+      });
+      unmount();
+      expect(snapshots()).toHaveLength(2);
+      const lastSnapshotIndex = exports.mock.calls.map(([options]) => options.mode === "snapshot").lastIndexOf(true);
+      const restored = new LoroDoc();
+      try {
+        restored.import(exports.mock.results[lastSnapshotIndex].value);
+        expect(restored.getMap("performance-test").get("text")).toBe("before-switch");
+      } finally { restored.free(); }
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(snapshots()).toHaveLength(2);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps pending snapshot saves independent across mounted projects", async () => {
+    const first = renderHook(() => useLoroSync({ projectId: "snapshot-first" }));
+    const second = renderHook(() => useLoroSync({ projectId: "snapshot-second" }));
+    await waitFor(() => expect(first.result.current.connected && second.result.current.connected).toBe(true));
+    const firstDoc = first.result.current.doc!;
+    const secondDoc = second.result.current.doc!;
+    const firstExports = vi.spyOn(firstDoc, "export");
+    const secondExports = vi.spyOn(secondDoc, "export");
+    vi.useFakeTimers();
+    try {
+      await act(async () => { firstDoc.getMap("performance-test").set("text", "first"); firstDoc.commit(); });
+      await act(async () => { secondDoc.getMap("performance-test").set("text", "second"); secondDoc.commit(); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(firstExports.mock.calls.filter(([options]) => options.mode === "snapshot")).toHaveLength(1);
+      expect(secondExports.mock.calls.filter(([options]) => options.mode === "snapshot")).toHaveLength(1);
+    } finally {
+      first.unmount();
+      second.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes a replaced Desktop Host before reconnecting the Project Loro socket", async () => {
@@ -325,6 +607,21 @@ describe("useLoroSync guardrails", () => {
     );
   });
 
+  it("hides an unavailable parent in the view without rewriting the received project", async () => {
+    const onNodesChange = vi.fn();
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "missing-parent-projection", onNodesChange }));
+    const remote = new LoroDoc();
+    try {
+      await waitFor(() => expect(result.current.isInitialized).toBe(true));
+      remote.getMap("nodes").set("child", { type: "text", canvasId: "main", parentId: "missing", extent: "parent", position: { x: 12, y: 34 }, data: { content: "Retain this text" } });
+      remote.commit();
+      const raw = remote.getMap("nodes").get("child");
+      await act(async () => { result.current.doc!.import(remote.export({ mode: "snapshot" })); });
+      expect(onNodesChange).toHaveBeenLastCalledWith(expect.arrayContaining([expect.objectContaining({ id: "child", parentId: undefined, extent: undefined })]));
+      expect(result.current.doc!.getMap("nodes").get("child")).toEqual(raw);
+    } finally { unmount(); remote.free(); }
+  });
+
   it("keeps its public API object stable across parent-only renders", async () => {
     const { result, rerender } = renderHook(
       ({ renderToken }) => {
@@ -468,58 +765,6 @@ describe("useLoroSync guardrails", () => {
     expect(result.current.doc?.getMap("canvases").get("shots")).toBeTruthy();
   });
 
-  it("can attach a directly added plugin surface to Main while another Canvas is selected", async () => {
-    const { result } = renderHook(() =>
-      useLoroSync({
-        projectId: "direct-plugin-main-hook",
-        canvasId: "shots",
-        syncServerUrl: "ws://localhost:7777",
-      }),
-    );
-
-    await waitFor(() => expect(result.current.isInitialized).toBe(true));
-    act(() => {
-      expect(
-        result.current.createCanvas({ id: "shots", name: "Shots" }).ok,
-      ).toBe(true);
-      expect(
-        result.current.createTimeline({
-          id: "timeline-direct",
-          name: "Direct Timeline",
-          state: { tracks: [] },
-        }).ok,
-      ).toBe(true);
-      expect(
-        result.current.attachTimeline({
-          timelineId: "timeline-direct",
-          canvasId: "main",
-          actionNodeId: "timeline-direct-view",
-          position: { x: 0, y: 0 },
-        }).ok,
-      ).toBe(true);
-    });
-
-    expect(
-      readProjectTimeline(result.current.doc!, "timeline-direct"),
-    ).toMatchObject({
-      owner: {
-        kind: "canvas-action",
-        canvasId: "main",
-        actionNodeId: "timeline-direct-view",
-      },
-    });
-    expect(
-      new Canvas(result.current.doc!, () => {}, "main").readNode(
-        "timeline-direct-view",
-      ),
-    ).toBeTruthy();
-    expect(
-      new Canvas(result.current.doc!, () => {}, "shots").readNode(
-        "timeline-direct-view",
-      ),
-    ).toBeNull();
-  });
-
   it("adds a project asset node to an explicit Canvas without changing the selected Canvas", async () => {
     const { result } = renderHook(() =>
       useLoroSync({
@@ -591,6 +836,69 @@ describe("useLoroSync guardrails", () => {
       accepted: false,
       error: "Canvas typo not found",
     });
+  });
+
+  it("restores the Canvas projection after rejecting an entire layout", async () => {
+    const onNodesChange = vi.fn();
+    const onMutation = vi.fn();
+    const { result } = renderHook(() => useLoroSync({
+      projectId: "layout-rejection-projection",
+      syncServerUrl: "ws://localhost:7777",
+      onNodesChange,
+      onMutation,
+    }));
+    await waitFor(() => expect(result.current.isInitialized).toBe(true));
+    act(() => {
+      for (const id of ["editable", "source", "target"])
+        result.current.addNode(id, { id, type: "text", position: { x: 0, y: 0 }, data: { content: id } });
+      result.current.addEdge("reference", { id: "reference", source: "source", target: "target" });
+    });
+    const before = result.current.doc?.toJSON();
+    onNodesChange.mockClear();
+    act(() => {
+      expect(result.current.applyLayout([
+        { id: "editable", patch: { position: { x: 100, y: 100 } } },
+        { id: "source", patch: { position: { x: 200, y: 100 } } },
+      ])).toBe(false);
+    });
+    expect(result.current.doc?.toJSON()).toEqual(before);
+    expect(onNodesChange.mock.lastCall?.[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "editable", position: { x: 0, y: 0 } }),
+      expect.objectContaining({ id: "source", position: { x: 0, y: 0 } }),
+    ]));
+    expect(onMutation).toHaveBeenLastCalledWith(expect.objectContaining({ accepted: false, error: expect.stringContaining("IMMUTABLE_NODE") }));
+    expect(result.current.syncRejected).toBe(false);
+  });
+
+  it.each([
+    { position: { x: 55, y: 90 } },
+    { width: 260, height: 58, style: { width: 260, height: 58 } },
+    { data: { label: "Changed" } },
+  ])("rejects a referenced node patch locally without changing its replica: %j", async (patch) => {
+    const onMutation = vi.fn();
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "referenced-patch", onMutation }));
+    try {
+      await waitFor(() => expect(result.current.isInitialized).toBe(true));
+      const doc = result.current.doc!;
+      act(() => {
+        const created = createProjectGenerator(doc, { head: { id: "native-draft", headRevisionId: "initial" }, revision: {
+          id: "initial", generatorId: "native-draft", definitionRef: { pluginId: "clash.agent-text", definitionId: "text", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` },
+          state: { prompt: "Existing brief" }, persistentInputRefs: [],
+        } });
+        if (!created.ok) throw new Error(created.error.message);
+        const canvas = new Canvas(doc, () => {});
+        canvas.createNode("source", "action-badge", { generatorId: "native-draft", actionCardId: "agent-text", label: "Source" });
+        canvas.createNode("output", "text", { content: "Existing result" });
+        canvas.insertEdge("output-edge", "source", "output");
+      });
+      const before = doc.toJSON();
+      let updated: unknown;
+      act(() => { updated = result.current.updateNode("source", patch); });
+      expect(updated).toBe(false);
+      expect(doc.toJSON()).toEqual(before);
+      expect(onMutation).toHaveBeenLastCalledWith(expect.objectContaining({ accepted: false, error: expect.stringContaining("IMMUTABLE_NODE") }));
+      expect(result.current.syncRejected).toBe(false);
+    } finally { unmount(); }
   });
 
   it("does not turn updateNode into an implicit create", async () => {
@@ -722,6 +1030,66 @@ describe("useLoroSync guardrails", () => {
     ).toMatchObject({ upstream: [] });
   });
 
+  it.each([
+    { document: true, action: false, reject: false },
+    { document: false, action: false, reject: false },
+    { document: false, action: true, reject: false },
+    { document: true, action: false, reject: true },
+    { document: false, action: false, reject: true, leave: true },
+    { document: false, action: false, reject: false, leave: true },
+  ])("deletes only the selected native edge through the Host (Document=$document, Action=$action, rejected=$reject, leave=$leave)", async ({ document, action, reject, leave }) => {
+    const onMutation = vi.fn();
+    const projectId = `native-edge/${document}-${action}-${reject}`;
+    const edgeId = "selected/edge";
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId, onMutation }));
+    try {
+      await waitFor(() => expect(result.current.isInitialized).toBe(true));
+      const doc = result.current.doc!;
+      const target = document
+        ? { kind: "document" as const, documentAssetId: "script", revisionId: "saved" }
+        : { kind: "media" as const, projectAssetId: "asset" };
+      act(() => {
+        if (document) expect(createProjectDocumentAsset(doc, {
+          id: "saved", documentAssetId: "script", documentKind: "text.plain", schemaVersion: 1, mutability: "versioned",
+          body: { digest: `sha256:${"a".repeat(64)}`, byteLength: 1, contentType: "application/json" },
+          producer: { kind: "actor", actor: { kind: "user" } }, sourceRefs: [],
+        }).ok).toBe(true);
+        else expect(createProjectAsset(doc, { id: "asset", kind: "image", source: { kind: "owned", resourceId: "asset" }, lifecycle: { state: "active" }, metadata: {} }).ok).toBe(true);
+        expect(createProjectGenerator(doc, { head: { id: "generator", headRevisionId: "initial" }, revision: {
+          id: "initial", generatorId: "generator", definitionRef: { pluginId: action ? "example.action" : "clash.model-generation", definitionId: "image", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` },
+          state: { prompt: "Existing input", ...(!action ? { modelId: "minimax-h3", params: {} } : {}) }, persistentInputRefs: [{ slot: document ? "text" : "image", itemKey: "input", target }],
+        } }).ok).toBe(true);
+        const canvas = new Canvas(doc, () => {});
+        for (const id of ["source", "other-source"]) canvas.createNode(id, document ? "text" : "image", document ? { documentRevision: target } : { assetId: "asset" });
+        canvas.createNode("placement", "action-badge", { generatorId: "generator", ...(action ? { actionCardId: "action" } : {}) });
+        canvas.insertEdge(edgeId, "source", "placement");
+        canvas.insertEdge("retained-edge", "other-source", "placement");
+        doc.commit();
+      });
+      const before = doc.toJSON();
+      const request = vi.fn(async (_path: string, _init?: RequestInit) => reject
+        ? Response.json({ error: "The target was referenced. Copy it before editing." }, { status: 409 })
+        : Response.json({ deleted: true, edgeId }));
+      vi.stubGlobal("fetch", request);
+      act(() => { expect(result.current.removeEdge(edgeId)).toBe(false); });
+      if (leave) {
+        onMutation.mockClear();
+        unmount();
+        await act(async () => {});
+        expect(onMutation).not.toHaveBeenCalled();
+        return;
+      }
+      await waitFor(() => expect(request).toHaveBeenCalledWith(
+        expect.stringContaining(`/api/v1/projects/${encodeURIComponent(projectId)}/canvas/edges/${encodeURIComponent(edgeId)}`),
+        expect.objectContaining({ method: "DELETE" }),
+      ));
+      await waitFor(() => expect(onMutation).toHaveBeenLastCalledWith(expect.objectContaining({ accepted: !reject, operation: "canvas_delete_edge", entity: { kind: "canvas-edge", id: edgeId } })));
+      // Only the Host publishes the updated graph and native revision over sync.
+      expect(doc.toJSON()).toEqual(before);
+      if (reject) expect(onMutation).toHaveBeenLastCalledWith(expect.objectContaining({ error: expect.stringContaining("referenced") }));
+    } finally { unmount(); }
+  });
+
   it("keeps GUI node edits and Canvas Action Asset bindings in one mutation path", async () => {
     const { result } = renderHook(() =>
       useLoroSync({
@@ -818,143 +1186,6 @@ describe("useLoroSync guardrails", () => {
     expect((result.current as any).canvases).toEqual([
       { id: "main", name: "Main", position: 0 },
     ]);
-  });
-
-  it("exposes standalone and Canvas-owned Timeline lifecycle operations", async () => {
-    const { result } = renderHook(() =>
-      useLoroSync({
-        projectId: "timeline-registry-hook",
-        canvasId: "main",
-        syncServerUrl: "ws://localhost:7777",
-      }),
-    );
-    await waitFor(() => expect(result.current.isInitialized).toBe(true));
-
-    expect((result.current as any).createTimeline).toBeTypeOf("function");
-    expect((result.current as any).attachTimeline).toBeTypeOf("function");
-    expect((result.current as any).detachTimeline).toBeTypeOf("function");
-    act(() => {
-      expect(
-        (result.current as any).createTimeline({
-          id: "timeline-1",
-          name: "Episode 1",
-          state: { tracks: [] },
-        }).ok,
-      ).toBe(true);
-    });
-    expect((result.current as any).standaloneTimelines).toEqual([
-      expect.objectContaining({ id: "timeline-1", owner: { kind: "project" } }),
-    ]);
-
-    act(() => {
-      expect(
-        (result.current as any).attachTimeline({
-          timelineId: "timeline-1",
-          actionNodeId: "timeline-action-1",
-          position: { x: 0, y: 0 },
-        }).ok,
-      ).toBe(true);
-    });
-    expect((result.current as any).standaloneTimelines).toEqual([]);
-    expect(
-      result.current.doc?.getMap("nodes").get("timeline-action-1"),
-    ).toMatchObject({
-      canvasId: "main",
-      data: { timelineId: "timeline-1" },
-    });
-
-    act(() => {
-      expect((result.current as any).detachTimeline("timeline-1").ok).toBe(
-        true,
-      );
-    });
-    expect((result.current as any).standaloneTimelines).toEqual([
-      expect.objectContaining({ id: "timeline-1", owner: { kind: "project" } }),
-    ]);
-  });
-
-  it("applies Timeline edits to the Timeline entity instead of duplicating DSL on its ActionNode", async () => {
-    const { result } = renderHook(() =>
-      useLoroSync({
-        projectId: "timeline-entity-apply",
-        canvasId: "main",
-        syncServerUrl: "ws://localhost:7777",
-      }),
-    );
-    await waitFor(() => expect(result.current.isInitialized).toBe(true));
-    act(() => {
-      (result.current as any).createTimeline({
-        id: "timeline-1",
-        name: "Episode 1",
-        state: { tracks: [] },
-      });
-      (result.current as any).attachTimeline({
-        timelineId: "timeline-1",
-        actionNodeId: "timeline-action-1",
-        position: { x: 0, y: 0 },
-      });
-    });
-
-    act(() => {
-      expect(
-        result.current.applyTimelineDsl("timeline-action-1", {
-          tracks: [{ id: "dialogue", items: [] }],
-        }),
-      ).toBe(true);
-    });
-
-    expect(
-      readProjectTimeline(result.current.doc!, "timeline-1"),
-    ).toMatchObject({
-      state: { tracks: [{ id: "dialogue", items: [] }] },
-    });
-    expect(
-      result.current.doc?.getMap("nodes").get("timeline-action-1"),
-    ).toMatchObject({
-      data: { timelineId: "timeline-1" },
-    });
-    expect(
-      (result.current.doc?.getMap("nodes").get("timeline-action-1") as any)
-        ?.data?.timelineDsl,
-    ).toBeUndefined();
-  });
-
-  it("applies Project Timeline edits directly without fabricating a Canvas Action node", async () => {
-    const { result } = renderHook(() =>
-      useLoroSync({
-        projectId: "project-timeline-direct-apply",
-        canvasId: "main",
-        syncServerUrl: "ws://localhost:7777",
-      }),
-    );
-    await waitFor(() => expect(result.current.isInitialized).toBe(true));
-
-    act(() => {
-      expect(
-        result.current.createTimeline({
-          id: "timeline-1",
-          name: "Episode 1",
-          state: { tracks: [] },
-        }).ok,
-      ).toBe(true);
-    });
-
-    expect(result.current.applyTimelineState).toBeTypeOf("function");
-    act(() => {
-      expect(
-        result.current.applyTimelineState("timeline-1", {
-          tracks: [{ id: "picture", items: [] }],
-        }),
-      ).toBe(true);
-    });
-
-    expect(
-      readProjectTimeline(result.current.doc!, "timeline-1"),
-    ).toMatchObject({
-      state: { tracks: [{ id: "picture", items: [] }] },
-      owner: { kind: "project" },
-    });
-    expect(result.current.doc?.getMap("nodes").size).toBe(0);
   });
 
   it("does not let addNode overwrite an existing canvas node", async () => {
@@ -1239,7 +1470,7 @@ describe("useLoroSync guardrails", () => {
     });
   });
 
-  it("emits mutation envelopes for timeline apply and guarded deletes", async () => {
+  it("emits a rejection envelope when deleting a referenced node", async () => {
     const mutations: HostMutationRecord[] = [];
     const { result } = renderHook(() =>
       useLoroSync({
@@ -1252,16 +1483,7 @@ describe("useLoroSync guardrails", () => {
     await waitFor(() => expect(result.current.isInitialized).toBe(true));
 
     act(() => {
-      result.current.createTimeline({
-        id: "timeline-1",
-        name: "Timeline",
-        state: { tracks: [] },
-      });
-      result.current.attachTimeline({
-        timelineId: "timeline-1",
-        actionNodeId: "editor-1",
-        position: { x: 0, y: 0 },
-      });
+      result.current.addNode("editor-1", { type: "text", position: { x: 0, y: 0 }, data: { label: "Source", content: "Source" } });
       result.current.addNode("render-1", {
         id: "render-1",
         type: "video",
@@ -1282,47 +1504,6 @@ describe("useLoroSync guardrails", () => {
       data?: Record<string, unknown>;
     };
     const beforeReadToken = canvasNodeReadToken({ id: "editor-1", ...before });
-    const timelineBefore = result.current.timelines.find(
-      (timeline) => timeline.id === "timeline-1",
-    )!;
-    const timelineBeforeReadToken = projectTimelineReadToken(timelineBefore);
-
-    let timelineAccepted: unknown;
-    act(() => {
-      timelineAccepted = result.current.applyTimelineDsl("editor-1", {
-        tracks: [{ id: "main", items: [] }],
-      });
-    });
-
-    expect(timelineAccepted).toBe(true);
-    const timelineAfter = result.current.timelines.find(
-      (timeline) => timeline.id === "timeline-1",
-    )!;
-    expect(timelineAfter.revisionId).not.toBe(timelineBefore.revisionId);
-    expect(mutations).toContainEqual(
-      expect.objectContaining({
-        operation: "timeline_apply",
-        entity: { kind: "timeline", id: "timeline-1" },
-        beforeReadToken: timelineBeforeReadToken,
-        afterReadToken: projectTimelineReadToken(timelineAfter),
-        resultEntityId: "timeline-1",
-        accepted: true,
-      }),
-    );
-    const afterTimeline = result.current.doc
-      ?.getMap("nodes")
-      .get("editor-1") as {
-      id?: string;
-      type?: string;
-      position?: unknown;
-      data?: Record<string, unknown>;
-    };
-    const afterReadToken = canvasNodeReadToken({
-      id: "editor-1",
-      ...afterTimeline,
-    });
-    expect(afterReadToken).toBe(beforeReadToken);
-
     let deleteRejected: unknown;
     act(() => {
       deleteRejected = result.current.removeNode("editor-1");
@@ -1331,7 +1512,7 @@ describe("useLoroSync guardrails", () => {
     expect(mutations).toContainEqual({
       operation: "canvas_delete",
       entity: { kind: "canvas-node", id: "editor-1" },
-      beforeReadToken: afterReadToken,
+      beforeReadToken,
       accepted: false,
       error:
         "Refusing to delete referenced node editor-1. It has downstream node(s): render-1. Remove or rewire those references first.",
@@ -1351,16 +1532,6 @@ describe("useLoroSync guardrails", () => {
     await waitFor(() => expect(result.current.isInitialized).toBe(true));
 
     act(() => {
-      result.current.createTimeline({
-        id: "timeline-1",
-        name: "Timeline",
-        state: { tracks: [] },
-      });
-      result.current.attachTimeline({
-        timelineId: "timeline-1",
-        actionNodeId: "editor-1",
-        position: { x: 0, y: 0 },
-      });
       result.current.addNode("scratch-1", {
         id: "scratch-1",
         type: "text",
@@ -1369,55 +1540,6 @@ describe("useLoroSync guardrails", () => {
       });
     });
     mutations.length = 0;
-
-    const timelineReadToken = projectTimelineReadToken(
-      result.current.timelines.find(
-        (timeline) => timeline.id === "timeline-1",
-      )!,
-    );
-
-    let missingTimelineProof: unknown;
-    act(() => {
-      missingTimelineProof = result.current.applyTimelineDsl(
-        "editor-1",
-        { tracks: [{ id: "main", items: [] }] },
-        { actorClientType: "agent" },
-      );
-    });
-
-    expect(missingTimelineProof).toBe(false);
-    expect(
-      readProjectTimeline(result.current.doc!, "timeline-1"),
-    ).toMatchObject({
-      state: { tracks: [] },
-    });
-    expect(mutations).toContainEqual({
-      operation: "timeline_apply",
-      entity: { kind: "timeline", id: "timeline-1" },
-      beforeReadToken: timelineReadToken,
-      accepted: false,
-      error: "READ_REQUIRED: Read the target before applying Timeline state.",
-    });
-
-    let acceptedTimelineProof: unknown;
-    act(() => {
-      acceptedTimelineProof = result.current.applyTimelineDsl(
-        "editor-1",
-        { tracks: [{ id: "main", items: [] }] },
-        { actorClientType: "agent", ifMatch: timelineReadToken },
-      );
-    });
-    expect(acceptedTimelineProof).toBe(true);
-    expect(mutations).toContainEqual(
-      expect.objectContaining({
-        operation: "timeline_apply",
-        entity: { kind: "timeline", id: "timeline-1" },
-        expectedReadToken: timelineReadToken,
-        beforeReadToken: timelineReadToken,
-        resultEntityId: "timeline-1",
-        accepted: true,
-      }),
-    );
 
     const scratchBefore = result.current.doc
       ?.getMap("nodes")
@@ -1470,68 +1592,6 @@ describe("useLoroSync guardrails", () => {
       resultEntityId: "scratch-1",
       accepted: true,
     });
-  });
-
-  it("rejects a stale desktop Timeline autosave instead of overwriting a newer Agent revision", async () => {
-    const mutations: HostMutationRecord[] = [];
-    const { result } = renderHook(() =>
-      useLoroSync({
-        projectId: "guardrail-desktop-timeline-cas",
-        syncServerUrl: "ws://localhost:7777",
-        onMutation: (mutation) => mutations.push(mutation),
-      }),
-    );
-
-    await waitFor(() => expect(result.current.isInitialized).toBe(true));
-
-    act(() => {
-      result.current.createTimeline({
-        id: "timeline-cas",
-        name: "Timeline CAS",
-        state: { tracks: [], durationInFrames: 90 },
-      });
-    });
-    const desktopReadToken = projectTimelineReadToken(
-      result.current.timelines.find(
-        (timeline) => timeline.id === "timeline-cas",
-      )!,
-    );
-
-    act(() => {
-      result.current.applyTimelineState("timeline-cas", {
-        tracks: [],
-        durationInFrames: 980,
-      });
-    });
-    const agentState = readProjectTimeline(
-      result.current.doc!,
-      "timeline-cas",
-    )!.state;
-    mutations.length = 0;
-
-    let accepted: unknown;
-    act(() => {
-      accepted = result.current.applyTimelineState(
-        "timeline-cas",
-        { tracks: [], durationInFrames: 120 },
-        { actorClientType: "desktop", ifMatch: desktopReadToken },
-      );
-    });
-
-    expect(accepted).toBe(false);
-    expect(
-      readProjectTimeline(result.current.doc!, "timeline-cas")!.state,
-    ).toEqual(agentState);
-    expect(mutations).toContainEqual(
-      expect.objectContaining({
-        operation: "timeline_apply",
-        entity: { kind: "timeline", id: "timeline-cas" },
-        expectedReadToken: desktopReadToken,
-        accepted: false,
-        error:
-          "STALE_READ: The target changed after it was read. Read it again before applying Timeline state.",
-      }),
-    );
   });
 
   it("requires agent runtime edge mutations to carry matching read tokens", async () => {

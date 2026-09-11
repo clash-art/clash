@@ -620,3 +620,58 @@ describe("AcpSessionImpl resume", () => {
     });
   });
 });
+
+it("preserves the legacy model catalog before SDK decoding strips unknown response fields", async () => {
+  const pair = makeStreamPair();
+  const wire = ndJsonStream(pair.agentOutput, pair.agentInput);
+  const reader = wire.readable.getReader();
+  const writer = wire.writable.getWriter();
+  const models = { currentModelId: "future[medium]", availableModels: [{ modelId: "known[medium]", name: "Known" }] };
+  void (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const request = value as { id?: number; method?: string };
+      if (request.id === undefined) continue;
+      await writer.write({ jsonrpc: "2.0", id: request.id, result: request.method === "initialize"
+        ? { protocolVersion: PROTOCOL_VERSION, agentCapabilities: {} }
+        : { sessionId: "test-session", models, configOptions: [] } });
+    }
+  })();
+  const runtime = new AcpRuntimeImpl({ spawn: async () => pair.child });
+  const session = await runtime.start({ agent: { command: "test", args: [] } });
+  expect(session.models).toEqual(models);
+  await reader.cancel();
+  await session.dispose();
+});
+
+it("sends the inclusive message boundary on the fork request", async () => {
+  const pair = makeStreamPair();
+  const wire = ndJsonStream(pair.agentOutput, pair.agentInput);
+  const reader = wire.readable.getReader();
+  const writer = wire.writable.getWriter();
+  let forkParams: unknown;
+  void (async () => {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const request = value as { id?: number; method?: string; params?: unknown };
+      if (request.id === undefined) continue;
+      if (request.method === "session/fork") forkParams = request.params;
+      await writer.write({ jsonrpc: "2.0", id: request.id, result: request.method === "initialize"
+        ? { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { sessionCapabilities: { fork: {} } } }
+        : { sessionId: "forked-session", configOptions: [] } });
+    }
+  })();
+  const runtime = new AcpRuntimeImpl({ spawn: async () => pair.child });
+  const session = await runtime.start({ agent: { command: "test", args: [] }, forkFromAcpSessionId: "source",
+    forkPoint: { messageId: "answer-old", messageText: "abc", messageOccurrence: 2 } });
+  expect(forkParams).toMatchObject({ sessionId: "source", _meta: { jetbrains: { air: { fork: {
+    version: 1, messageId: "answer-old", messageOccurrence: 2,
+    // SHA-256 standard test vector for UTF-8 "abc".
+    messageFingerprint: "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  } } } } });
+  expect(session.acpSessionId).toBe("forked-session");
+  await reader.cancel();
+  await session.dispose();
+});

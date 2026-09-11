@@ -10,8 +10,16 @@ import {
   resolveClashDistributionVersion,
   runClashEntrypoint,
   selectClashEntrypoint,
+  shouldStartCliHost,
   type ClashEntrypoint,
 } from "./dispatcher.js";
+
+test("log queries work when the local Host is unavailable", () => {
+  assert.equal(shouldStartCliHost(["node", "clash", "logs"]), false);
+  assert.equal(shouldStartCliHost(["node", "clash", "--profile", "dev", "logs", "--json"]), false);
+  assert.equal(shouldStartCliHost(["node", "clash", "--profile=dev", "logs"]), false);
+  assert.equal(shouldStartCliHost(["node", "clash", "canvas", "list"]), true);
+});
 
 test("the dispatcher reads the public version from the distribution manifest", async () => {
   const packageJson = JSON.parse(

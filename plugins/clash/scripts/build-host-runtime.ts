@@ -28,6 +28,12 @@ assertDependencyDistIsFresh([
 ]);
 
 await mkdir(runtimeDir, { recursive: true });
+// One shipped renderer, served by local-api. No Vite or Electron process is
+// needed when the npm distribution is used as an MCP App.
+const projectRendererRoot = resolve(repoRoot, "apps/web/dist/client");
+await readFile(resolve(projectRendererRoot, "index.html"));
+await rm(resolve(runtimeDir, "project-ui"), { recursive: true, force: true });
+await cp(projectRendererRoot, resolve(runtimeDir, "project-ui"), { recursive: true });
 // A core build must never let a stale agent tree leak into the host bundle.
 // Agent metadata is installed after the host runtime is fresh.
 await rm(resolve(runtimeDir, "agents"), { recursive: true, force: true });

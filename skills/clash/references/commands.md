@@ -1,17 +1,18 @@
 # Command Reference
 
-Always use `--json` for machine-readable output. Run `clash <command> -h` for the latest options.
+Use `--json` when supported; Generator commands already return JSON. Read the
+narrowest unfamiliar command help for its current options. Examples show
+`--project` explicitly; omit it in a workspace already bound to that Project.
 
-## local setup
+## Local workspace
 
-```bash
-clash host status --json
-clash init --project <project-id> --json
-```
+Use the existing `.clash/project.toml` binding. Normal CLI or MCP startup owns
+Host discovery; no connection or status preflight is required. Only run
+`clash init --project <project-id> --json` when the user requests a binding and
+the marker is absent. See [setup.md](setup.md) for runtime recovery.
 
 Cloud OAuth is optional: `clash auth login` only enables product-managed
-remote sync. Local project, canvas, Timeline, text, and asset commands do not
-require it.
+remote sync. Local Project operations do not require it.
 
 ## projects
 
@@ -30,20 +31,10 @@ clash project restore <project-id> --json
 Local project delete is a recoverable soft-delete. Read the project first;
 the CLI records its version in `.clash/observed.json`. Read it again with
 `--include-deleted` before restore. Missing or stale observations are rejected.
-`doctor storage` is read-only by default. It validates editable/protected path
-boundaries, project asset links, and local SQLite asset reference index
-readiness before an agent relies on project projections. `--repair` explicitly
-creates the standard workspace roots and repairs the local SQLite asset
-reference index schema; it does not delete legacy or canonical files.
+`project status` and `doctor storage` are diagnostics, not prerequisites for
+normal reads or writes. Storage repair is an explicit recovery operation.
 
 ## canvas
-
-### Connection management
-
-```bash
-clash canvas connect --project <id>     # Start daemon (persistent WebSocket)
-clash canvas disconnect --project <id>  # Stop daemon
-```
 
 ### Reading
 
@@ -54,7 +45,7 @@ clash canvas get --project <id> --node <node-id> --json  # Single node
 clash canvas edges --project <id> --json                 # Edge graph
 clash canvas delete-plan --project <id> --node <id> --node <id> --json
 clash canvas search --project <id> --query "sunset" --json
-clash canvas search --project <id> --query "hero" --type image_gen,video_gen --json
+clash canvas search --project <id> --query "hero" --type action-badge --json
 ```
 
 `get --json` records the node version in `.clash/observed.json` and reports
@@ -69,7 +60,6 @@ implicitly. If the target changed after the read, the host returns `STALE_READ`.
 clash canvas add --project <id> --type text --label "Script" --content "..." --json
 clash canvas add --project <id> --type group --label "Scene 1" --json
 clash canvas add --project <id> --type text --label "Prompt" --content "..." --parent <group-id> --json
-clash canvas add --project <id> --type image_gen --label "Hero Shot" --parent <group-id> --json
 
 # Update
 clash canvas update --project <id> --node <id> --label "New Label" --content "New content" --json
@@ -85,8 +75,6 @@ clash canvas delete --project <id> --node <id> --yes --json
 clash canvas delete-batch --project <id> --node <id> --node <id> --yes --json
 # Referenced nodes must be rewired first; batch deletes must describe a closed subgraph.
 
-# Execute generation
-clash canvas execute --project <id> --node <action-badge-id> --json
 ```
 
 For agents, `canvas update`, `canvas delete`, and `canvas delete-batch` are
@@ -135,27 +123,20 @@ Markdown file; no lock sidecar is created.
 ## assets
 
 ```bash
-clash asset get --asset <asset-id> --json
-clash asset cover set --asset <asset-id> --cover-key <storage-key> --json
-clash asset link --project <id> --asset <asset-id> --json
-clash asset link --project <id> --asset <asset-id> --name hero.png --json
-clash asset ref get --asset <asset-id> --project <project-id> --json
-clash asset ref delete --asset <asset-id> --project <project-id> --yes --json
-clash asset refs --asset <asset-id> --json
-clash asset refs --asset <asset-id> --project <project-id> --json
-clash asset refs --asset <asset-id> --project <project-id> --refresh --json
+clash assets list --project <id> --json
+clash assets get --project <id> --asset <asset-id> --json
+clash assets import --project <id> --file ./hero.png --json
+clash assets link --project <id> --asset <asset-id> --name hero.png --json
+clash assets refs --project <id> --asset <asset-id> --json
+clash assets documents get <documentAssetId> --revision <revisionId>
 ```
 
-`get` reads an asset row and records its version for metadata updates such as
-`cover set`. `link` creates an agent-readable file under the project's `assets/links/`
-directory, backed by the immutable asset cache. Treat it as read-only
-inspection input; editing the linked file does not apply changes to canvas.
-`refs` shows indexed project/node/field references and first-pass reference
-roles for an asset through the local host API. Use it instead of reading SQLite
-or `snapshot.bin` directly. Add `--refresh` when the index may be stale; this
-updates the projection without running asset GC deletion.
-`ref get` records the project membership relation version in cwd state;
-`ref delete` consumes it implicitly and still requires `--yes`.
+Project Asset identity is distinct from a file path or Provider task token.
+`import` registers a native source file as a Project Asset. `link` materializes
+read-only media under `assets/links/`; editing that file does not apply changes
+to Canvas. `refs` reads downstream references through the Host. For a generated
+Document, use its exact Output Commit reference to read the body and provenance;
+do not replace that reference with a copied Canvas text node.
 
 ## asset metadata
 
@@ -165,7 +146,7 @@ clash assets metadata list --asset <asset-id> --json
 clash assets metadata get --asset <asset-id> --kind media.transcript --json
 clash assets metadata get --asset <asset-id> --kind media.transcript --body --json
 clash assets metadata set --asset <asset-id> --kind media.transcript --metadata meta.json --body words.json --json
-clash assets metadata apply --file projections/metadata/<asset>.<kind>.json --expect-version <token> --json
+clash assets metadata apply --file projections/metadata/<asset>.<kind>.json --json
 clash assets metadata validate --kind <kind> --metadata meta.json --json
 ```
 
@@ -175,16 +156,13 @@ any workspace kind declared under `.clash/metadata-kinds/*.json`. An undeclared
 kind is refused everywhere.
 
 `set` attaches the identity to the asset and stores any `--body` as an immutable
-content-addressed blob, deduplicated by hash; it also materializes an editable
-projection under `projections/metadata/` and returns its CAS token.
+content-addressed blob, deduplicated by hash. It also materializes an editable
+projection under `projections/metadata/` and records an implicit observation.
 
-After editing that JSON, `apply` refuses to write unless it can prove you edited
-what you read. Inside a cwd linked through `.clash/project.toml` the read is
-recorded implicitly and no token is needed. Anywhere else, spend the token from
-`set` with `--expect-version`; the option is not spelled `--version`, which the
-global version flag would swallow. A token is single-use: replaying a spent one
-is rejected as stale, and an apply with no token at all fails `READ_REQUIRED`
-rather than forcing the write.
+After editing that JSON, `apply` consumes the linked workspace's observation.
+An apply without a prior read fails `READ_REQUIRED`; a changed source is
+rejected as stale. Re-read, reconcile the edit, and apply again. The CLI does
+not accept a caller-authored version token or a mutation bypass.
 
 `get --body` returns the stored blob
 verbatim and fails loudly if the blob no longer hashes to its recorded address.
@@ -193,16 +171,42 @@ Attaching does not require an action file — the fill envelope is synthesized
 internally, and every attach appends to the asset's `metadataFills` provenance
 ledger.
 
-## execution status
+## Generator authoring and execution
 
 ```bash
-clash canvas execute --project <id> --node <action-badge-id> --json
-clash canvas get --project <id> --node <child-node-id> --json
+clash generators definitions
+clash generators definition <pluginId> <definitionId>
+clash generators contract create
+clash generators contract advance
+clash generators contract submit
+clash generators create --project <id> --input '<request JSON>'
+clash generators get <generatorId> --project <id>
+clash generators advance <generatorId> --project <id> --input '<request JSON>'
+clash generators runs submit <generatorId> <actionId> --project <id> --input '<request JSON>'
+clash generators runs get <actionRunId> --project <id>
+clash generators runs output <actionRunId> <outputSlot> --project <id>
 ```
 
-Use the `childNodeId` returned by `canvas execute` for observation. Raw hosted
-task polling is not a public CLI command, and Provider/storage outputs are not
-Project Asset identities.
+Contract disclosure needs no Project setup. Fill request JSON from the live
+contract and preserve returned IDs and revisions. For a Model, choose the
+`clash.model-generation` Definition for its output kind, then author `modelId`,
+`prompt`, `params`, and explicit inputs according to the Model Card. A Provider
+such as Hilo supplies execution routing; a requested `providerAccountId` goes
+in Action submission input, never into Generator state or Model parameters.
+
+A new Generator can include `placement` to create its Canvas card atomically.
+For an existing card, read its `generatorId` and edit that Generator. Copying
+retains `forkedFrom` and uses `placement.sourceNodeId`; downstream output stays
+pinned to its source. Groups and neighboring text do not implicitly become inputs.
+
+Submission starts a background Run. Poll the returned Run until terminal and
+read the persisted Output Commit before claiming completion. A successful
+output supplies an immutable media Asset or exact Document revision for the
+next operation. Pending nodes and Provider task IDs are not finished Assets.
+
+For a configured local agent's text, use `clash.agent-text` / `text` and its
+`generate` Action, with the live Agent Text Card mapping for Canvas placement.
+This uses the same Generator lifecycle and does not select a Model Provider.
 
 ## actions
 

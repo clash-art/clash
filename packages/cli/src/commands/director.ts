@@ -7,6 +7,11 @@ import {
   createDefaultDirectorStageState,
   directorDefaultAttachmentOffset,
   directorStageJsonSchema,
+  DirectorStageAuthoringStateSchema,
+  directorCodeDocumentBody,
+  directorCodeRegistryError,
+  type DocumentAssetRevisionRef,
+  type DirectorStageState,
   projectDirectorStageReadToken,
   type DirectorStageCameraPatch,
   type DirectorStageCommand,
@@ -16,6 +21,7 @@ import {
   type ProjectDirectorStage,
 } from "@clash/shared-types";
 import { isJsonMode, printJson, printTable } from "../lib/output";
+import { apiJson } from "../lib/api";
 import { createGeneratorClient } from "@clash/shared-runtime/generator-client";
 import { readNativeMediaActionRun } from "@clash/shared-runtime/generator-readback";
 import { createCliProjectAssetHostClient, resolveCliProjectHostConnection, sendProjectCommand } from "../lib/project-host-client";
@@ -449,9 +455,83 @@ export async function captureDirectorStageWithReadback(options: {
   return receipt;
 }
 
+export async function registerDirectorComponentSource(options: {
+  stage: ProjectDirectorStage;
+  componentId: string;
+  name: string;
+  source: string;
+  createDocument: (source: string) => Promise<DocumentAssetRevisionRef>;
+  apply: (state: DirectorStageState) => Promise<ProjectDirectorStage>;
+}): Promise<ProjectDirectorStage> {
+  if (!options.componentId.trim() || !options.name.trim() || !options.source.trim()) {
+    throw new Error("Director component ID, name, and source must be non-empty");
+  }
+  const source = await options.createDocument(options.source);
+  const components = [...(options.stage.state.codeComponents ?? [])];
+  const component = { id: options.componentId.trim(), name: options.name, source };
+  const index = components.findIndex(item => item.id === component.id);
+  if (index < 0) components.push(component);
+  else components[index] = component;
+  const state = DirectorStageAuthoringStateSchema.parse({ ...options.stage.state, codeComponents: components });
+  const error = directorCodeRegistryError(state);
+  if (error) throw new Error(error);
+  return options.apply(state);
+}
+
 export const directorCommand = new Command("director").description(
   "Author Project Director Stage scenes through deterministic agent commands and JSON projections",
 );
+
+directorCommand.command("components")
+  .description("Manage this Generator's reusable single-file TSX components")
+  .command("register")
+  .requiredOption("--stage <id>", "Director Stage ID")
+  .requiredOption("--component <id>", "Component ID within this Stage")
+  .requiredOption("--file <path>", "Single TS or TSX source file")
+  .option("--name <name>", "Display name (defaults to component ID)")
+  .option("--project <id>", "Project ID")
+  .option("--json", "Output accepted Stage and pinned source reference")
+  .addHelpText("after", `
+Source contract: default-export a React function receiving { parameters, timeSeconds }
+and returning React Three Fiber JSX. Imports may use react or three only.
+Register stores a text.plain Document and pins its revision in this Generator.
+Re-registering an ID preserves instances and updates this state's source reference.
+Use director pull/apply to edit code objects and their JSON parameters.
+Compilation happens during preview/capture; register does not execute source.`)
+  .action(async options => {
+    if (!/\.tsx?$/i.test(options.file)) throw new Error("Director component source must be a .ts or .tsx file");
+    const context = await resolveCanvasProjectContext(options);
+    const stage = await readDirectorStage(context, options.stage);
+    const observedVersion = (await requireDirectorStageObservation(context, stage.id)) ?? projectDirectorStageReadToken(stage);
+    const accepted = await registerDirectorComponentSource({
+      stage, componentId: options.component, name: options.name ?? options.component,
+      source: readFileSync(resolve(options.file), "utf8"),
+      createDocument: async body => {
+        const documentAssetId = randomUUID();
+        const revisionId = randomUUID();
+        const source: DocumentAssetRevisionRef = { kind: "document", documentAssetId, revisionId };
+        const result = await apiJson(`/api/v1/projects/${encodeURIComponent(context.projectId)}/documents`, {
+          method: "POST",
+          headers: { "x-clash-client-type": resolveCanvasPresenceOptions().clientType },
+          body: JSON.stringify({ documentAssetId, revisionId, documentKind: "text.plain", schemaVersion: 1, body, sourceRefs: [] }),
+        });
+        directorCodeDocumentBody(source, result);
+        return source;
+      },
+      apply: async state => {
+        const result = await sendProjectCommand<DirectorStageWorkspaceResult>(context.projectId, {
+          action: "update_director_stage_state", stageId: stage.id, state,
+          actorClientType: resolveCanvasPresenceOptions().clientType,
+          observedVersion, ifMatch: observedVersion,
+        });
+        if (result.error || !result.stage) throw new Error(result.error ?? "Director component registration failed");
+        await recordDirectorStageObservation(context, stage.id, result.readToken ?? result.version ?? projectDirectorStageReadToken(result.stage));
+        return result.stage;
+      },
+    });
+    if (isJsonMode(options)) printJson(accepted);
+    else console.log(`Registered ${options.component} in Director Stage ${accepted.id} (${accepted.revisionId})`);
+  });
 
 directorCommand
   .command("schema")

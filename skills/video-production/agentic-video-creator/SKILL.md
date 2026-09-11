@@ -24,16 +24,19 @@ Read these references from this skill directory:
 - `references/quality-gates.md` before selecting candidates, asking the user to
   choose, applying the Timeline, or claiming completion.
 
-When the brief clearly belongs to a specialist workflow, also read the matching
-sibling skill instead of recreating its domain rules:
+When the brief belongs to a specialist workflow, use the matching skill from
+the task's mounted pack. These maintained skills are bundled with Clash; do not
+follow retired sibling-directory paths or load every category for one task:
 
-| Brief | Additional skill |
-| --- | --- |
-| vertical drama or serialized story | `../short-drama-production/SKILL.md` |
-| MV, lyric video, beat-driven edit | `../music-video-beat-editing/SKILL.md` |
-| talking head, interview, podcast | `../talking-head-text-cut/SKILL.md` |
-| TVC, branded ad, reference remix | `../tvc-reference-remix/SKILL.md` |
-| character or storyboard image pack | `../image-storyboard-consistency/SKILL.md` |
+| Brief                              | Additional skill                                                 |
+| ---------------------------------- | ---------------------------------------------------------------- |
+| vertical drama or serialized story | `clash-narrative`; `clash-film-production` for a full production |
+| MV, lyric video, beat-driven edit  | `clash-music-video`                                              |
+| talking head, interview, podcast   | `clash-talking-head`                                             |
+| TVC, branded ad, reference remix   | `clash-product-ad`                                               |
+| tutorial or visual explanation     | `clash-explainer`                                                |
+| motion identity or brand sting     | `clash-brand-motion`                                             |
+| character or storyboard image pack | `clash-multiview-consistency` and `clash-reference-composition`  |
 
 ## Creative Contract
 

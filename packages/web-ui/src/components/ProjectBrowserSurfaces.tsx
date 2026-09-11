@@ -1,3 +1,4 @@
+import { memo, useCallback, type ComponentProps } from "react";
 import type {
   AgentAnnotationDraft,
   AgentAnnotationTarget,
@@ -5,6 +6,30 @@ import type {
 import type { BrowserAgentContext } from "../lib/copilotWorkspaceContext";
 import { BrowserSurface } from "./BrowserSurface";
 import type { ProjectBrowserTab } from "./ProjectWorkspaceNavigator";
+
+type BrowserSurfaceProps = ComponentProps<typeof BrowserSurface>;
+
+type RetainedBrowserSurfaceProps = Omit<BrowserSurfaceProps, "onTabChange"> & {
+  onTabChange: (
+    browserId: string,
+    patch: Parameters<BrowserSurfaceProps["onTabChange"]>[0],
+  ) => void;
+};
+
+// Keep each webview and its React state alive, without re-rendering/rebinding
+// all pages when the surrounding workspace changes or another tab is selected.
+const RetainedBrowserSurface = memo(function RetainedBrowserSurface({
+  onTabChange,
+  ...props
+}: RetainedBrowserSurfaceProps) {
+  const browserId = props.tab.id;
+  const handleTabChange = useCallback(
+    (patch: Parameters<BrowserSurfaceProps["onTabChange"]>[0]) =>
+      onTabChange(browserId, patch),
+    [browserId, onTabChange],
+  );
+  return <BrowserSurface {...props} onTabChange={handleTabChange} />;
+});
 
 export function ProjectBrowserSurfaces({
   projectId,
@@ -47,13 +72,13 @@ export function ProjectBrowserSurfaces({
           active ? "visible" : "invisible pointer-events-none"
         }`}
       >
-        <BrowserSurface
+        <RetainedBrowserSurface
           projectId={projectId}
           tab={tab}
           headerEndInset={headerEndInset}
           annotations={annotations}
           activeAnnotationId={activeAnnotationId}
-          onTabChange={(patch) => onTabChange(tab.id, patch)}
+          onTabChange={onTabChange}
           onCreateAnnotation={onCreateAnnotation}
           onSelectAnnotation={onSelectAnnotation}
           onAgentContextChange={onAgentContextChange}

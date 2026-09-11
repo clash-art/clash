@@ -523,7 +523,7 @@ export function ProjectTimelineEditorSurface({
     timelineId: string,
     state: ProjectTimelineEditorState,
     expectedReadToken: string,
-  ) => boolean;
+  ) => ProjectTimeline | false | Promise<ProjectTimeline | false>;
   onExport?: (timelineId: string) => Promise<void> | void;
   exportProgress?: readonly TimelineExportProgress[];
   onOpenCanvas: (canvasId: string) => void;
@@ -554,9 +554,11 @@ export function ProjectTimelineEditorSurface({
   >(null);
   const editorStateRef = useRef<EditorState | null>(null);
   const editorBaseRevisionRef = useRef(timeline.revisionId);
+  const lastIncomingRevisionRef = useRef(timeline.revisionId);
   const editorBaseReadTokenRef = useRef(projectTimelineReadToken(timeline));
   const lastObservedProjectionRef = useRef<string | null>(null);
   const hasLocalTimelineChangesRef = useRef(false);
+  const saveInFlightRef = useRef<Promise<boolean> | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(
     null,
   );
@@ -645,9 +647,9 @@ export function ProjectTimelineEditorSurface({
   }, [mediaInputs, projectId, seededEditorAssets]);
 
   const persistedTimelineState = useCallback(
-    (state: EditorState): ProjectTimelineEditorState => ({
+    (state: EditorState, resolveMedia = true): ProjectTimelineEditorState => ({
       tracks: stripSrcFromTracks(
-        canonicalizeTimelineItemScopeRefs(state.tracks, mediaInputs),
+        resolveMedia ? canonicalizeTimelineItemScopeRefs(state.tracks, mediaInputs) : state.tracks,
       ),
       primaryTrackId: state.primaryTrackId,
       compositionWidth: state.compositionWidth,
@@ -659,39 +661,52 @@ export function ProjectTimelineEditorSurface({
     [mediaInputs],
   );
 
-  const persistCurrentState = useCallback(() => {
-    const state = editorStateRef.current;
-    if (!state || !hasLocalTimelineChangesRef.current) return true;
-    const persistedState = persistedTimelineState(state);
-    const persisted = onSave(
-      timeline.id,
-      persistedState,
-      editorBaseReadTokenRef.current,
-    );
-    if (!persisted) return false;
-
-    const revisionId = projectTimelineRevisionId(timeline.id, persistedState);
-    editorBaseRevisionRef.current = revisionId;
-    editorBaseReadTokenRef.current = projectTimelineReadToken({
-      ...timeline,
-      revisionId,
-      state: persistedState,
+  const persistCurrentState = useCallback((): Promise<boolean> => {
+    if (saveInFlightRef.current) return saveInFlightRef.current;
+    // Install the shared promise before invoking the callback. Autosave, export,
+    // and teardown must all wait for the same write, never submit it twice.
+    const pending = Promise.resolve().then(async () => {
+      try {
+        while (editorStateRef.current && hasLocalTimelineChangesRef.current) {
+          const persistedState = persistedTimelineState(editorStateRef.current);
+          // Media discovery is not an edit. Compare the editor content before resolving
+          // navigation hints, both here and when observing subsequent changes.
+          const submittedProjection = projectTimelineRevisionId(timeline.id, persistedTimelineState(editorStateRef.current, false));
+          const accepted = await onSave(timeline.id, persistedState, editorBaseReadTokenRef.current);
+          if (!accepted) throw new Error("Timeline save was rejected. Read the latest Timeline before saving again.");
+          if (accepted.id !== timeline.id || !accepted.revisionId) {
+            throw new Error("Timeline save did not return its accepted revision.");
+          }
+          editorBaseRevisionRef.current = accepted.revisionId;
+          editorBaseReadTokenRef.current = projectTimelineReadToken(accepted);
+          // This fingerprint only detects local edits. It is never a Generator revision.
+          hasLocalTimelineChangesRef.current = submittedProjection !== lastObservedProjectionRef.current;
+        }
+        return true;
+      } catch (error) {
+        window.dispatchEvent(new CustomEvent<string>("clash:timeline-notice", {
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+        return false;
+      } finally {
+        saveInFlightRef.current = null;
+      }
     });
-    lastObservedProjectionRef.current = revisionId;
-    hasLocalTimelineChangesRef.current = false;
-    return true;
+    saveInFlightRef.current = pending;
+    return pending;
   }, [onSave, persistedTimelineState, timeline.id]);
 
   const scheduleStatePersist = useCallback(
     (state: EditorState) => {
-      if (
-        timeline.revisionId !== editorBaseRevisionRef.current &&
-        !hasLocalTimelineChangesRef.current
-      ) {
+      // A child editor can emit its initial projection before our parent effect.
+      // Recognize a genuinely new incoming revision, not an old prop left behind
+      // briefly after our own asynchronous save acknowledgement.
+      if (timeline.revisionId !== lastIncomingRevisionRef.current && !hasLocalTimelineChangesRef.current) {
         if (saveTimerRef.current !== null) {
           globalThis.clearTimeout(saveTimerRef.current);
           saveTimerRef.current = null;
         }
+        lastIncomingRevisionRef.current = timeline.revisionId;
         editorBaseRevisionRef.current = timeline.revisionId;
         editorBaseReadTokenRef.current = projectTimelineReadToken(timeline);
         lastObservedProjectionRef.current = null;
@@ -700,7 +715,7 @@ export function ProjectTimelineEditorSurface({
       editorStateRef.current = state;
       const projectionRevision = projectTimelineRevisionId(
         timeline.id,
-        persistedTimelineState(state),
+        persistedTimelineState(state, false),
       );
       if (lastObservedProjectionRef.current === null) {
         lastObservedProjectionRef.current = projectionRevision;
@@ -714,7 +729,7 @@ export function ProjectTimelineEditorSurface({
       }
       saveTimerRef.current = globalThis.setTimeout(() => {
         saveTimerRef.current = null;
-        persistCurrentState();
+        void persistCurrentState();
       }, 180);
     },
     [persistCurrentState, persistedTimelineState, timeline],
@@ -723,15 +738,18 @@ export function ProjectTimelineEditorSurface({
   useEffect(() => {
     const incomingReadToken = projectTimelineReadToken(timeline);
     if (timeline.revisionId === editorBaseRevisionRef.current) {
+      lastIncomingRevisionRef.current = timeline.revisionId;
       editorBaseReadTokenRef.current = incomingReadToken;
       return;
     }
     if (hasLocalTimelineChangesRef.current) return;
+    if (timeline.revisionId === lastIncomingRevisionRef.current) return;
 
     if (saveTimerRef.current !== null) {
       globalThis.clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
+    lastIncomingRevisionRef.current = timeline.revisionId;
     editorBaseRevisionRef.current = timeline.revisionId;
     editorBaseReadTokenRef.current = incomingReadToken;
     lastObservedProjectionRef.current = null;
@@ -768,13 +786,12 @@ export function ProjectTimelineEditorSurface({
       const desktop = globalThis.__CLASH_DESKTOP__;
       if (!desktop?.openInNle)
         throw new Error("Open in is available in the Clash desktop app.");
-      const state = editorStateRef.current;
-      if (!state) throw new Error("Timeline is still loading.");
-      const persistedState = persistedTimelineState(state);
-      if (!persistCurrentState())
+      if (!(await persistCurrentState()))
         throw new Error(
           "Save the Timeline before opening it in another editor.",
         );
+      const state = editorStateRef.current;
+      if (!state) throw new Error("Timeline is still loading.");
       const handoffTimeline: TimelineDsl = {
         tracks: hydrateTimelineTracksForNle(state.tracks, state.assets),
         primaryTrackId: state.primaryTrackId,
@@ -783,7 +800,7 @@ export function ProjectTimelineEditorSurface({
         fps: state.fps,
         durationInFrames: state.durationInFrames,
       };
-      const revisionId = projectTimelineRevisionId(timeline.id, persistedState);
+      const revisionId = editorBaseRevisionRef.current;
       const handoff = buildNleHandoff({
         target,
         timelineName: timeline.name,
@@ -803,7 +820,7 @@ export function ProjectTimelineEditorSurface({
   );
 
   const exportTimelineVideo = useCallback(async () => {
-    if (!persistCurrentState())
+    if (!(await persistCurrentState()))
       throw new Error("Save the Timeline before exporting it.");
     if (!onExport)
       throw new Error("The Timeline render backend is unavailable.");
@@ -872,7 +889,7 @@ export function ProjectTimelineEditorSurface({
         globalThis.clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
       }
-      persistRef.current();
+      void persistRef.current();
     },
     [timeline.id],
   );

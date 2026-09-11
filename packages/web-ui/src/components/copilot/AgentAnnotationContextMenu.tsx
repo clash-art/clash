@@ -1,3 +1,4 @@
+import { isMcpProjectApp } from "../../lib/mcpProject";
 import { ChatCenteredDots } from "@phosphor-icons/react";
 import type { AgentAnnotationTarget } from "@clash/shared-types";
 import {
@@ -17,6 +18,7 @@ export function AgentAnnotationContextMenu({
   onAnnotate: (target: AgentAnnotationTarget) => void;
   children: React.ReactNode;
 }) {
+  if (isMcpProjectApp()) return <>{children}</>;
   return (
     <ContextMenu modal={false}>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>

@@ -13,7 +13,7 @@ describe("project editor persistence", () => {
     if (!persistence) return;
 
     expect(persistence.loadCanvasPreferences(localStorage)).toEqual({
-      mode: "select",
+      mode: "hand",
       minimapCollapsed: false,
       minimapSize: { width: 160, height: 112 },
     });
@@ -101,7 +101,7 @@ describe("project editor persistence", () => {
     localStorage.setItem("clash:project:broken:editor-session:v1", "not-json");
 
     expect(persistence.loadCanvasPreferences(localStorage)).toEqual({
-      mode: "select",
+      mode: "hand",
       minimapCollapsed: false,
       minimapSize: { width: 160, height: 112 },
     });

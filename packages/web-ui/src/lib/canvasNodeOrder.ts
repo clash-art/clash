@@ -158,3 +158,7 @@ export function sanitizeNodesForReactFlow<T extends ParentableNode>(
 
   return sortNodesParentFirst(cleanedNodes ?? nodes);
 }
+/** ReactFlow measurements have no resizing flag; gestures include start/end. */
+export function isUserResizeChange(change: { type: string; resizing?: boolean }): boolean {
+  return change.type === "dimensions" && typeof change.resizing === "boolean";
+}

@@ -250,7 +250,28 @@ export function resolveGptImageSize(
 
   const declaredRatio =
     typeof params.aspect_ratio === 'string' ? params.aspect_ratio : aspectRatio;
+  const concrete = typeof params.resolution === "string" ? /^(\d+)x(\d+)$/.exec(params.resolution) : null;
+  if (concrete) {
+    const width = Number(concrete[1]);
+    const height = Number(concrete[2]);
+    const ratio = declaredRatio && declaredRatio !== "auto" ? parseAspectRatio(declaredRatio) : undefined;
+    if (ratio !== undefined && Math.abs(width / height - ratio) > 1e-9) {
+      throw new Error("Resolution does not match the requested aspect ratio. Choose matching dimensions or Auto aspect ratio.");
+    }
+    return { width, height };
+  }
   if (!declaredRatio || declaredRatio === 'auto') return 'auto';
+  if (params.resolution === "auto") {
+    // Documented native sizes; this is ratio spelling, never a fabricated resolution tier.
+    const native: Record<string, GptImageSize> = {
+      "1:1": { width: 1024, height: 1024 }, "3:2": { width: 1536, height: 1024 },
+      "2:3": { width: 1024, height: 1536 }, "4:3": { width: 1536, height: 1152 },
+      "3:4": { width: 1152, height: 1536 }, "16:9": { width: 2048, height: 1152 },
+      "9:16": { width: 1152, height: 2048 },
+    };
+    if (!native[declaredRatio]) throw new Error("Unsupported automatic GPT Image aspect ratio.");
+    return native[declaredRatio]!;
+  }
 
   const tier =
     typeof params.resolution === 'string' &&

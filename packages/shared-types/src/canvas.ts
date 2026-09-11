@@ -51,6 +51,7 @@ import {
 import {
   ExecutablePluginBindingSchema,
   ExecutableActionPresentationSchema,
+  ExecutableActionCardGeneratorSchema,
   type ExecutablePluginBinding,
 } from './executable-plugin.js';
 
@@ -1127,6 +1128,8 @@ const CustomActionDefinitionBaseSchema = z.object({
   secrets: z.array(CustomActionSecretSchema).default([]),
   /** Exact hosted/local executable plugin version represented by this action. */
   pluginBinding: ExecutablePluginBindingSchema.optional(),
+  /** Explicit native Definition/Action behind this legacy form. */
+  generator: ExecutableActionCardGeneratorSchema.optional(),
   /** Provider/model binding used by MaaS-compatible actions. */
   model: CustomActionModelSchema.optional(),
   /** Discovery tags */

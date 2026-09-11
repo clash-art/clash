@@ -23,12 +23,10 @@ import {
   mkdir,
   readFile,
   readdir,
-  readlink,
-  symlink,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServer } from "@agentclientprotocol/sdk";
@@ -38,6 +36,9 @@ import {
 } from "@clash/shared-runtime";
 import { resolveHarnessProjectSkillDirectory } from "./agent-skills.js";
 import { paths } from "./platform.js";
+import { ensureProjectAgentInstructions } from "./project-agent-instructions.js";
+import { ensureProjectSkillLinks } from "./project-skill-links.js";
+import { resolveHostProjectSkills } from "../../../host-skill-config.js";
 
 /** Used when the caller doesn't supply a project id (e.g. Quick connect). */
 const DEFAULT_PROJECT = "_default";
@@ -305,6 +306,7 @@ export async function resolveAgentMcpServers(
  * Layout:
  *   ~/.clash/projects/<encoded-project-id>/
  *     .clash/project.toml
+ *     AGENTS.md (seeded once; user edits are preserved)
  *     harness-native Skill links when explicitly supported
  */
 export async function ensureAgentCwd(
@@ -325,8 +327,10 @@ export async function ensureAgentCwd(
     resolveHarnessProjectSkillDirectory(capabilities.harnessId ?? ""),
     cwd,
     { ...process.env, ...runtimeEnv },
+    canonicalProjectId,
   );
   await writeProjectMarker(cwd, canonicalProjectId);
+  await ensureProjectAgentInstructions(cwd);
   return cwd;
 }
 
@@ -357,6 +361,13 @@ function resolveAgentPluginRoot(
 ): string {
   const packaged = join(agentRoot, "plugins", sanitize(pluginId));
   if (pluginId !== "clash") return packaged;
+  return resolveBuiltinClashPluginRoot(runtimeEnv);
+}
+
+/** The same shipped skill source is used by agent workspaces and Marketplace. */
+export function resolveBuiltinClashPluginRoot(
+  runtimeEnv: Record<string, string | undefined> = process.env,
+): string {
   if (runtimeEnv.CLASH_BUILTIN_PLUGIN_ROOT) {
     return resolve(runtimeEnv.CLASH_BUILTIN_PLUGIN_ROOT);
   }
@@ -422,37 +433,18 @@ function resolveWorkspaceSkillRoot(
   return root;
 }
 
-async function replaceManagedSkillLink(
-  target: string,
-  source: string,
-): Promise<void> {
-  const current = await lstat(target).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return null;
-    throw error;
-  });
-  if (current) {
-    if (!current.isSymbolicLink()) {
-      throw new Error(
-        `Cannot install bundled Clash skill over an existing workspace entry: ${target}`,
-      );
-    }
-    if ((await readlink(target)) === source) return;
-    await unlink(target);
-  }
-  await symlink(source, target, "dir");
-}
-
 async function installNativeAgentSkills(
   agentTemplateId: string,
   workspaceSkillDirectory: string | undefined,
   cwd: string,
   runtimeEnv: Record<string, string | undefined>,
+  projectId: string,
 ): Promise<void> {
   const root = resolveWorkspaceSkillRoot(cwd, workspaceSkillDirectory);
   if (!root) return;
   const runtime = await readAgentRuntime(agentTemplateId);
   if (!runtime?.plugins?.length) return;
-  await mkdir(root, { recursive: true });
+  const initialSkills = new Map<string, string>();
 
   for (const pluginId of runtime.plugins) {
     const agentRoot = join(bundledAgentsDir(), sanitize(agentTemplateId));
@@ -476,14 +468,20 @@ async function installNativeAgentSkills(
       );
       const entries = await readdir(skillRoot, { withFileTypes: true });
       for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        await replaceManagedSkillLink(
-          join(root, sanitize(entry.name)),
-          join(skillRoot, entry.name),
-        );
+        if (!entry.isDirectory() || entry.name !== "clash") continue;
+        const globalSource = join(homedir(), ".agents", "skills", entry.name);
+        initialSkills.set(entry.name, existsSync(join(globalSource, "SKILL.md"))
+          ? globalSource
+          : join(skillRoot, entry.name));
       }
     }
   }
+  await ensureProjectSkillLinks({
+    cwd,
+    nativeDirectories: [".claude/skills", workspaceSkillDirectory!],
+    initialSkills,
+    installedSkills: await resolveHostProjectSkills(projectId, runtimeEnv),
+  });
 }
 
 async function writeProjectMarker(

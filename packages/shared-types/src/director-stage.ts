@@ -1,8 +1,11 @@
 import { LoroMap, type LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { ExecutablePluginJsonValueSchema } from "./plugin-json-value.js";
+import { directorCodeRegistryError, DirectorCodeComponentRegistrySchema } from "./director-code.js";
 import { agentReadToken } from "./agent-read-proof.js";
 import { Canvas } from "./canvas-ops.js";
+import { commitProjectMutation } from "./project-mutation.js";
 import {
   replaceDraftActionAssetInputBindings,
   type DraftActionAssetInput,
@@ -94,6 +97,13 @@ export const DirectorStageLightTypeSchema = z.enum([
 ]);
 
 export const DirectorStageObjectSchema = z.discriminatedUnion("kind", [
+  DirectorStageObjectBaseSchema.extend({
+    kind: z.literal("code"),
+    code: z.object({
+      componentId: z.string().trim().min(1),
+      parameters: z.record(ExecutablePluginJsonValueSchema),
+    }).strict(),
+  }),
   DirectorStageObjectBaseSchema.extend({
     kind: z.literal("mannequin"),
     mannequin: z.object({
@@ -471,6 +481,8 @@ export const DirectorStageStateSchema = z.object({
   schemaVersion: z.literal(1),
   scene: z.object({
     backgroundColor: z.string().min(1),
+    /** Omission preserves existing scenes; false gives authored lights full control. */
+    defaultLighting: z.boolean().optional(),
     environmentAssetId: z.string().min(1).optional(),
     environmentRotation: DirectorStageVector3Schema.optional(),
     environmentCalibration: DirectorStageEnvironmentCalibrationSchema.optional(),
@@ -481,6 +493,8 @@ export const DirectorStageStateSchema = z.object({
     }),
   }),
   objects: z.array(DirectorStageObjectSchema),
+  /** Director-owned registry. Bodies stay in exact text.plain Document revisions. */
+  codeComponents: DirectorCodeComponentRegistrySchema.optional(),
   cameras: z.array(DirectorStageCameraSchema),
   shots: z.array(DirectorStageShotSchema),
   shotSequence: z.array(DirectorStageSequenceShotSchema).optional(),
@@ -965,7 +979,41 @@ export function updateProjectDirectorStageState(
   return { ok: true, stage: next };
 }
 
+export type CreateDirectorStageOnCanvasInput = {
+  id: string;
+  name: string;
+  state: unknown;
+  canvasId: string;
+  actionNodeId: string;
+  position?: { x: number; y: number };
+};
+
+export function createDirectorStageOnCanvas(doc: LoroDoc, input: CreateDirectorStageOnCanvasInput): ProjectDirectorStageMutationResult {
+  return commitProjectMutation(doc, (draft) => {
+    const created = createProjectDirectorStage(draft, input);
+    if (!created.ok) return created;
+    return attachDirectorStageInDraft(draft, {
+      stageId: input.id,
+      canvasId: input.canvasId,
+      actionNodeId: input.actionNodeId,
+      position: input.position,
+    });
+  });
+}
+
 export function attachDirectorStageToCanvas(
+  doc: LoroDoc,
+  input: {
+    stageId: string;
+    canvasId: string;
+    actionNodeId: string;
+    position?: { x: number; y: number };
+  },
+): ProjectDirectorStageMutationResult {
+  return commitProjectMutation(doc, (draft) => attachDirectorStageInDraft(draft, input));
+}
+
+function attachDirectorStageInDraft(
   doc: LoroDoc,
   input: {
     stageId: string;
@@ -1608,6 +1656,8 @@ export function applyDirectorStageCommand(
   if (!validated.success) {
     return { ok: false, error: validated.error.issues[0]?.message ?? "Invalid Director Stage command result" };
   }
+  const registryError = directorCodeRegistryError(validated.data);
+  if (registryError) return { ok: false, error: registryError };
   return { ok: true, state: validated.data };
 }
 

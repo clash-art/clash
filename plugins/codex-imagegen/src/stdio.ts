@@ -28,12 +28,49 @@ function promptValue(invocation: ExecutablePluginInvocation): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error("Codex ImageGen requires a non-empty prompt.");
   }
-  return value.trim();
+  const preferences: string[] = [];
+  const labels: Record<string, string> = {
+    image_model: "Requested image model (not the Codex text model)",
+    quality: "Requested image rendering quality",
+    resolution: "Target native image dimensions",
+    background: "Requested background",
+  };
+  for (const [key, label] of Object.entries(labels)) {
+    const selection = invocation.input.values[key];
+    if (
+      typeof selection === "string" &&
+      selection.trim() &&
+      selection !== "auto"
+    ) {
+      preferences.push(`${label}: ${selection.trim()}.`);
+    }
+  }
+  if (!preferences.length) return value.trim();
+  if (invocation.input.values.background === "transparent") {
+    preferences.push(
+      "Generate a truly transparent background with an alpha channel, not a checkerboard illustration.",
+    );
+  }
+  if (
+    invocation.input.values.resolution &&
+    invocation.input.values.resolution !== "auto"
+  ) {
+    preferences.push(
+      "Prioritize the requested aspect ratio if it differs from the target dimensions. Approximate native dimensions are acceptable; preserve the generated image without resizing.",
+    );
+  }
+  return [
+    value.trim(),
+    "",
+    "Apply these image generation preferences through the image_gen prompt:",
+    ...preferences,
+  ].join("\n");
 }
 
 function aspectRatioValue(invocation: ExecutablePluginInvocation) {
   const value = invocation.input.values.aspect_ratio;
-  const parsed = typeof value === "string" ? parseAspectRatio(value) : undefined;
+  const parsed =
+    typeof value === "string" ? parseAspectRatio(value) : undefined;
   if (!parsed) {
     throw new Error("Codex ImageGen requires a positive W:H aspect ratio.");
   }

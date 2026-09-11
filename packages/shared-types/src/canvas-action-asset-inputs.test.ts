@@ -6,6 +6,13 @@ import {
 } from "./canvas-action-asset-inputs.js";
 
 describe("canvasActionAssetInputs", () => {
+  it("does not compile legacy draft bindings for a native Generator placement", () => {
+    const node = { id: "placement", type: "action-badge", data: {
+      generatorId: "draft", actionType: "video-gen", referenceImageAssetIds: ["source-image"],
+    } };
+    expect(canvasActionAssetInputs({ node, nodes: [node], edges: [] })).toBeNull();
+  });
+
   it("freezes Director packet Assets from the referenced output node", () => {
     const output = {
       id: "director-output",

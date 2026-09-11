@@ -11,6 +11,7 @@ interface ProjectContextType {
     projectId: string;
     enabledModelCatalog: ModelCatalogEntry[];
     modelCatalogReady: boolean;
+    configureModels?: () => void;
 }
 
 const ProjectContext = createContext<ProjectContextType | undefined>(undefined);
@@ -23,17 +24,23 @@ export function enabledModelCatalogEntries(
         models: entries.map((entry) => entry.model),
         configuredProviders: providers,
     }));
-    return entries.filter((entry) => enabledIds.has(entry.model.id));
+    return entries.filter((entry) => enabledIds.has(entry.model.id)
+        && entry.tier === 'available' && entry.selectedRoute !== null
+        && entry.runtimeReadiness?.executable !== false);
 }
 
 export function ProjectProvider({
     projectId,
     children,
     initialModelCatalog,
+    catalogVersion = 0,
+    onConfigureModels,
 }: {
     projectId: string;
     children: ReactNode;
     initialModelCatalog?: ModelCatalogEntry[];
+    catalogVersion?: number;
+    onConfigureModels?: () => void;
 }) {
     const [enabledModelCatalog, setEnabledModelCatalog] = useState<ModelCatalogEntry[]>(initialModelCatalog ?? []);
     const [modelCatalogReady, setModelCatalogReady] = useState(initialModelCatalog !== undefined);
@@ -53,11 +60,11 @@ export function ProjectProvider({
                 if (!cancelled) setModelCatalogReady(true);
             });
         return () => { cancelled = true; };
-    }, [initialModelCatalog, projectId]);
+    }, [initialModelCatalog, projectId, catalogVersion]);
 
     const value = useMemo(
-        () => ({ projectId, enabledModelCatalog, modelCatalogReady }),
-        [enabledModelCatalog, modelCatalogReady, projectId],
+        () => ({ projectId, enabledModelCatalog, modelCatalogReady, configureModels: onConfigureModels }),
+        [enabledModelCatalog, modelCatalogReady, projectId, onConfigureModels],
     );
     return (
         <ProjectContext.Provider value={value}>

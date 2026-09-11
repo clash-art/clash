@@ -190,14 +190,38 @@ async function writeExecutableShim(
   await chmod(shimPath, 0o755);
 }
 
+/** Retry only idempotent download requests; installation itself is never replayed. */
+async function fetchDownload(url: string, fetchImpl: typeof fetch): Promise<Response> {
+  const hostname = new URL(url).hostname;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let response: Response;
+    try {
+      response = await fetchImpl(url, { signal: AbortSignal.timeout(15_000) });
+    } catch (cause) {
+      if (attempt === 2) {
+        throw new Error(`无法连接更新服务 ${hostname}，请检查网络或代理后重试。`, { cause });
+      }
+      await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+      continue;
+    }
+    if (response.status >= 500 && attempt < 2) {
+      await response.body?.cancel();
+      await new Promise(resolve => setTimeout(resolve, 300 * (attempt + 1)));
+      continue;
+    }
+    return response;
+  }
+  throw new Error(`无法连接更新服务 ${hostname}。`);
+}
+
 async function fetchBytes(url: string, fetchImpl: typeof fetch): Promise<Buffer> {
-  const response = await fetchImpl(url);
+  const response = await fetchDownload(url, fetchImpl);
   if (!response.ok) throw new Error(`Install download failed: HTTP ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
 }
 
 async function fetchRegistry(fetchImpl: typeof fetch): Promise<AcpRegistryResponse> {
-  const response = await fetchImpl(ACP_REGISTRY_URL);
+  const response = await fetchDownload(ACP_REGISTRY_URL, fetchImpl);
   if (!response.ok) throw new Error(`ACP registry unavailable: HTTP ${response.status}`);
   return await response.json() as AcpRegistryResponse;
 }

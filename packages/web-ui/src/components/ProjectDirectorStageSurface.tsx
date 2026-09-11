@@ -7,6 +7,7 @@ import {
   type ChangeEvent,
   type ReactNode,
 } from "react";
+import { useDirectorCodeSources } from "../lib/useDirectorCodeSources";
 import {
   ArrowCounterClockwise,
   ArrowsClockwise,
@@ -249,6 +250,7 @@ export interface DirectorStageReferenceFrameCapture
 }
 
 export interface ProjectDirectorStageSurfaceProps {
+  projectId?: string;
   stage: ProjectDirectorStage;
   canvases: ProjectCanvas[];
   rightInset?: number;
@@ -1960,6 +1962,7 @@ function DirectorModelLibrary({
 }
 
 export function ProjectDirectorStageSurface({
+  projectId,
   stage,
   canvases,
   rightInset = 0,
@@ -1978,8 +1981,10 @@ export function ProjectDirectorStageSurface({
   onUploadPanorama,
   onGeneratePanorama,
 }: ProjectDirectorStageSurfaceProps) {
+  const code = useDirectorCodeSources(projectId, stage.state.codeComponents);
   const viewportRef = useRef<DirectorViewportHandle>(null);
   const [viewportReady, setViewportReady] = useState(false);
+  useEffect(() => { if (!code.ready) setViewportReady(false); }, [code.ready]);
   const modelInputRef = useRef<HTMLInputElement>(null);
   const panoramaInputRef = useRef<HTMLInputElement>(null);
   const timelineRef = useRef<HTMLElement>(null);
@@ -4932,7 +4937,8 @@ export function ProjectDirectorStageSurface({
           </aside>
 
           <section className="relative min-h-0 min-w-0 overflow-hidden bg-[var(--clash-director-viewport)]">
-            <DirectorViewport
+            {!code.ready && <div role={code.error ? "alert" : "status"}>{code.error ?? "Loading Director source…"}</div>}
+            {code.ready && <DirectorViewport
               ref={viewportRef}
               state={state}
               selectedObjectId={selectedObjectId}
@@ -4947,8 +4953,10 @@ export function ProjectDirectorStageSurface({
               showEnvironmentBackground={showPanoramaBackground}
               showSelectedSkeleton={showSkeleton}
               assetUrls={modelAssetUrls}
+              codeSources={code.sources}
               renderPalette={panoramaCalibrationPalette}
               onReady={() => setViewportReady(true)}
+              onError={() => setViewportReady(false)}
               onSelectionChange={(objectId) => objectId ? selectObject(objectId) : setSelectedObjectIds([])}
               onObjectContextMenu={(objectId) => {
                 const object = state.objects.find((candidate) => candidate.id === objectId);
@@ -4960,7 +4968,7 @@ export function ProjectDirectorStageSurface({
                 });
               }}
               onTransformCommit={(objectId, transform) => apply({ op: "object.update", objectId, patch: { transform } })}
-            />
+            />}
             <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-[var(--clash-director-control-border)] bg-[var(--clash-director-control)] p-1 shadow-lg backdrop-blur">
               {([
                 ["translate", <ArrowsOutCardinal className="h-4 w-4" />, "Move (V)"],

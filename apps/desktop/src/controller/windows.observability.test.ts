@@ -135,6 +135,16 @@ describe("desktop window observability", () => {
     );
   });
 
+  it("forwards structured renderer errors with identity and source after an info flood", async () => {
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), event: vi.fn(), record: vi.fn() };
+    const controller = createDesktopWindowController({ moduleDir: "/app/dist", dataDir: "/tmp/clash-observability-test", currentRuntime: runtime, refreshRuntime: vi.fn(), log });
+    await controller.createWindow();
+    const listener = electron.windows[0]?.webContents.listeners.get("console-message")?.[0];
+    for (let i = 0; i < 120; i++) listener?.({ level: "info", message: `info-${i}` });
+    listener?.({ level: "error", message: JSON.stringify({ schemaVersion: 1, timestamp: new Date().toISOString(), component: "renderer", module: "sync", level: "error", event: "sync.update_rejected", context: { projectId: "p", batchId: "b", error: { code: "STALE" } } }), sourceId: "https://clash.test/app.ts?token=secret", lineNumber: 42 });
+    expect(log.record).toHaveBeenCalledWith(expect.objectContaining({ event: "sync.update_rejected", component: "renderer", module: "sync", context: expect.objectContaining({ projectId: "p", batchId: "b", windowId: 1, lineNumber: 42, sourceId: "https://clash.test/app.ts", error: { code: "STALE" } }) }));
+  });
+
   it("reloads a crashed renderer and restores the maximized window", async () => {
     const log = {
       info: vi.fn(),

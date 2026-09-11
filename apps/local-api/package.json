@@ -23,8 +23,8 @@
   "scripts": {
     "dev": "tsx watch --tsconfig tsconfig.dev.json src/dev.ts",
     "start": "tsx --tsconfig tsconfig.dev.json src/server.ts",
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --noEmit --project tsconfig.dev.json",
     "test": "vitest run src",
     "test:sync-chaos": "vitest run src/loro/cloud-replication.chaos.test.ts",
     "test:e2e": "tsx --tsconfig tsconfig.dev.json e2e/daemon-smoke.ts",
@@ -41,6 +41,8 @@
     "@clash-plugin/asset-edit": "workspace:*",
     "@clash-plugin/asr": "workspace:*",
     "@clash-plugin/media-analysis": "workspace:*",
+    "@clash-plugin/model-generation": "workspace:*",
+    "@clash-plugin/agent-text": "workspace:*",
     "@clash-plugin/codex-imagegen": "workspace:*",
     "@clash-plugin/fal": "workspace:*",
     "@clash-plugin/google": "workspace:*",
@@ -68,7 +70,8 @@
     "saxes": "6.0.0",
     "sharp": "^0.34.5",
     "ws": "^8.18.0",
-    "yaml": "^2.6.0"
+    "yaml": "^2.6.0",
+    "@clash-plugin/gpt-image": "workspace:*"
   },
   "devDependencies": {
     "@mswjs/interceptors": "^0.42.3",

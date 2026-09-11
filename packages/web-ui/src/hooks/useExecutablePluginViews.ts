@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ExecutablePluginViewDocumentSchema,
   ExecutablePluginViewReferenceSchema,
@@ -47,7 +47,9 @@ export async function loadExecutablePluginViews(
       spec: {
         definitionId: raw.definitionId,
         name: raw.name,
-        ...(raw.description === undefined ? {} : { description: raw.description }),
+        ...(raw.description === undefined
+          ? {}
+          : { description: raw.description }),
         presentation: raw.presentation,
         initialState: raw.initialState,
       },
@@ -61,6 +63,7 @@ export function useExecutablePluginViews(
   refreshIntervalMs = 2_000,
 ): ExecutablePluginViewDefinition[] {
   const [views, setViews] = useState<ExecutablePluginViewDefinition[]>([]);
+  const snapshotRef = useRef("[]");
   useEffect(() => {
     let active = true;
     let controller: AbortController | null = null;
@@ -68,14 +71,25 @@ export function useExecutablePluginViews(
       controller?.abort();
       controller = new AbortController();
       try {
-        const next = await loadExecutablePluginViews(globalThis.fetch, controller.signal);
-        if (active) setViews(next);
+        const next = await loadExecutablePluginViews(
+          globalThis.fetch,
+          controller.signal,
+        );
+        const snapshot = JSON.stringify(next);
+        if (active && snapshot !== snapshotRef.current) {
+          snapshotRef.current = snapshot;
+          setViews(next);
+        }
       } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
       }
     };
     void refresh();
-    const interval = globalThis.setInterval(() => void refresh(), refreshIntervalMs);
+    const interval = globalThis.setInterval(
+      () => void refresh(),
+      refreshIntervalMs,
+    );
     return () => {
       active = false;
       controller?.abort();

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODEL_TEXT_DOCUMENT_KIND, MODEL_TEXT_DOCUMENT_SCHEMA_VERSION } from "./model-output-contract.js";
 
 import {
   MediaDescriptionMetadataSchema,
@@ -109,6 +110,18 @@ export function parseDocumentBody(
   }
   return declaration.schema.parse(value);
 }
+
+registerDocumentKind({
+  definition: {
+    kind: MODEL_TEXT_DOCUMENT_KIND,
+    schemaVersion: MODEL_TEXT_DOCUMENT_SCHEMA_VERSION,
+    mutability: "versioned",
+    projection: { format: "text", editable: true },
+    allowedAttachmentTargets: ["generator-revision", "action-run"],
+    productConsumers: [],
+  },
+  schema: z.string().refine((value) => value.trim().length > 0, "Generated text must not be empty."),
+});
 
 registerDocumentKind({
   definition: {

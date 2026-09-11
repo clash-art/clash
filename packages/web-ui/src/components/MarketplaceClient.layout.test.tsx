@@ -19,7 +19,7 @@ function render(ui: ReactElement) {
 describe("MarketplaceClient layout", () => {
   afterEach(cleanup);
 
-  it("uses the shared narrow app-page contract", () => {
+  it("uses the shared wide catalog page contract", () => {
     const { container } = render(
       <MarketplaceClient
         items={[]}
@@ -30,7 +30,7 @@ describe("MarketplaceClient layout", () => {
 
     expect(screen.getByRole("heading", { name: "Marketplace" })).toBeTruthy();
     const page = container.querySelector('[data-slot="app-page"]');
-    expect(page).toHaveAttribute("data-width", "narrow");
+    expect(page).toHaveAttribute("data-width", "wide");
     expect(page).toHaveClass(
       "px-[var(--app-page-inline-inset)]",
       "pt-[var(--app-page-block-start)]",
@@ -80,7 +80,7 @@ describe("MarketplaceClient layout", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
   });
 
-  it("uses the same framed card surface contract as Model cards", () => {
+  it("uses the shared product card surface contract", () => {
     const { container } = render(
       <MarketplaceClient
         items={[
@@ -106,10 +106,7 @@ describe("MarketplaceClient layout", () => {
     expect(catalog.className).toContain("gap-[var(--settings-row-gap)]");
     expect(catalog.className).not.toContain("border-t");
     expect(card.getAttribute("data-layout")).toBe("model-card");
-    expect(card.className).toContain("rounded-[var(--settings-row-radius)]");
-    expect(card.className).toContain("border-border");
-    expect(card.className).toContain("bg-card");
-    expect(card.className).toContain("min-h-[148px]");
-    expect(card.className.split(/\s+/)).not.toContain("border-b");
+    expect(card).toHaveAttribute("data-ui", "card");
+    expect(card).toHaveAttribute("data-interaction", "surface");
   });
 });

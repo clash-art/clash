@@ -1,0 +1,70 @@
+{
+  "apiVersion": "clash.generator/v1",
+  "kind": "generator",
+  "spec": {
+    "definitionId": "text",
+    "editPolicy": "fork-when-materialized",
+    "stateSchema": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string"
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "modelId": {
+          "type": "string"
+        },
+        "systemPrompt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prompt"
+      ],
+      "additionalProperties": false
+    },
+    "persistentInputs": [
+      {
+        "slot": "text",
+        "accepts": [
+          {
+            "kind": "document",
+            "documentKind": "text.plain",
+            "schemaVersion": 1
+          }
+        ],
+        "cardinality": {
+          "minItems": 0,
+          "maxItems": null
+        }
+      }
+    ],
+    "actions": [
+      {
+        "id": "generate",
+        "executorExportId": "generate-text",
+        "parametersSchema": {
+          "type": "object",
+          "additionalProperties": false
+        },
+        "invocationInputs": [],
+        "outputs": [
+          {
+            "slot": "text",
+            "assetType": {
+              "kind": "document",
+              "documentKind": "text.plain",
+              "schemaVersion": 1
+            },
+            "cardinality": {
+              "minItems": 1,
+              "maxItems": 1
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,16 +1,56 @@
 # Clash Skill Marketplace
 
-This folder contains first-party Clash skills that can be installed or loaded by
-agent runtimes. The registry is intentionally checked into the repository so the
+This folder contains Clash's skill registry, including **Official Picks** curated
+by Clash from both its own skills and upstream authors. Curation does not change
+authorship: `source` remains `first-party`, `provider-official`, or `community`.
+The registry is intentionally checked into the repository so the
 marketplace can be reviewed, versioned, and tested like product code.
 
 ## Files
 
 - `registry.json`: first-party marketplace entries.
 - `registry.schema.json`: JSON schema for registry shape.
-- `skill-market.test.mjs`: local integrity test for registry and `SKILL.md`
+- `skill-market.test.ts`: local integrity test for registry and `SKILL.md`
   files.
+- `curation-review.md`: content review, adaptation decisions, pinned sources,
+  and validation limits for the creative collection.
 - `video-production/`: production skills for common video and image workflows.
+- `../plugins/clash/skills/`: shipped native creative skills, including reusable
+  multiview consistency, reference composition, and shot continuity. Film
+  production composes these atomic skills instead of owning duplicate recipes.
+
+## Official Picks and source attribution
+
+`curation.collection: official-picks` selects a skill for the Store and home
+feed. Each upstream pick keeps its author, repository, exact reviewed commit,
+original SKILL.md URL, license URL, and dated repository star count. Repository
+popularity helps discover candidates; inclusion requires a content and execution
+review. Stars are not an individual skill rating or a quality guarantee. The
+details page exposes these source links and adaptation notes.
+
+Unmodified upstream skills install through `npx-skills` from their reviewed
+source. Clash-maintained adaptations use distinct skill names and ship with
+the original license, pinned source, and a NOTICE describing changes. They keep
+`source: community` and the upstream author; `attribution.notes` identifies
+Clash's adaptation and distinguishes upstream version/stars from the installed
+copy. Do not label a derivative as an unmodified upstream release.
+
+`bundled-skill` describes where the installer gets a skill, independently of its
+authorship. Both native skills and reviewed adaptations use the same installer
+against their shipped directory, resolved from the canonical plugin root used
+by native agent workspaces. This path does not fetch the upstream workflow.
+
+The current collection has three reusable creative atoms (multiview, reference
+composition, continuity), a film orchestration skill, and adapted cover,
+infographic, and comic workflows. The latter are task-specific compositions,
+not new atomic operations. The maintained category workflows also cover product
+advertising, speech editing, explanation, narrative scenes, music/MV, and brand
+motion. [Task packs](../plugins/clash/skill-packs.json) compose these with relevant
+atoms; E2E cases mount one pack plus output-specific skills in each isolated
+Task workspace. See the [review](curation-review.md) for their scope.
+
+Content/license review and installer discovery do not establish generated-media
+quality. A selected workflow may still need its stated image or export tools.
 
 ## Design Rules
 

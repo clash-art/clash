@@ -263,12 +263,19 @@ export function autoInsertNode(
   }
 
   const referenceNode = findReferenceNode(nodeId, nodes, edges);
-  const position = calculateInsertPosition(node, referenceNode, nodes, edges);
+  let position = calculateInsertPosition(node, referenceNode, nodes, edges);
 
   const nodesWithPosition = nodes.map(n =>
     n.id === nodeId ? { ...n, position } : n,
   );
   const pushedNodes = chainPushDown(nodeId, nodesWithPosition);
+
+  // A downstream reference freezes the whole source node, including geometry.
+  // If the push chain reaches one, place the new node below its siblings instead.
+  if (edges.some(edge => pushedNodes.has(edge.source))) {
+    position = { ...position, y: findBottomY(node.parentId, nodes.filter(n => n.id !== nodeId)) };
+    pushedNodes.clear();
+  }
 
   return {
     position,
@@ -295,7 +302,8 @@ export function processAutoLayoutNodes(
   nodes: LayoutNode[],
   edges: LayoutEdge[],
 ): { nodes: LayoutNode[]; processed: string[] } {
-  const nodesToLayout = nodes.filter(needsAutoLayout);
+  const referencedIds = new Set(edges.map(edge => edge.source));
+  const nodesToLayout = nodes.filter(node => needsAutoLayout(node) && !referencedIds.has(node.id));
   const processed: string[] = [];
   if (nodesToLayout.length === 0) return { nodes, processed };
 

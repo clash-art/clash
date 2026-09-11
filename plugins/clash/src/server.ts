@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { createClashMcpServer } from "@clash/mcp-server/server";
-import type { PluginMcpGateway } from "@clash/mcp-server";
+import { registerProjectApp, type PluginMcpGateway } from "@clash/mcp-server";
 import { createTimelineAdapter } from "@clash/timeline-plugin/adapter";
 import { registerTimelinePluginMcp } from "@clash/timeline-plugin/server";
 import { createDirectorAdapter } from "@clash/director-plugin/adapter";
@@ -16,6 +16,7 @@ import {
 import { createPluginMcpGateway } from "./plugin-mcp-gateway.js";
 
 export type ClashPluginAppBundles = {
+  project: string;
   studio: string;
   canvas: string;
   timeline: string;
@@ -36,9 +37,8 @@ export type ClashPluginServerOptions = {
   pluginGateway?: PluginMcpGateway;
 };
 
-// Temporary quarantine: keep the MCP App implementations in-tree, but do not
-// register any App-opening tools or ui:// resources until the surfaces are
-// ready to return as a coherent product experience.
+// Legacy miniature Apps remain quarantined. The project App below reuses
+// the complete existing editor as the single interactive surface.
 const MCP_APP_SURFACES_ENABLED = false;
 
 function composeClashPluginServer(
@@ -52,6 +52,18 @@ function composeClashPluginServer(
     bundledStudioAppJavascript: bundles.studio,
     appSurfaces: MCP_APP_SURFACES_ENABLED,
     pluginGateway,
+  });
+  registerProjectApp(server, client, {
+    webUrl: async () => {
+      const explicit = process.env.CLASH_WEB_URL?.trim();
+      if (explicit) return explicit;
+      if (!client.resolveConnection)
+        throw new Error(
+          "The project App requires a discoverable local daemon.",
+        );
+      return (await client.resolveConnection()).endpoint;
+    },
+    bundledJavascript: bundles.project,
   });
   registerTimelinePluginMcp(
     server,
@@ -81,6 +93,7 @@ export function createClashPluginRuntime(
     (options.client ? undefined : createPluginHostManager());
   const client = options.client ?? createMcpProjectHostClient({ hostManager });
   const bundles = options.appBundles ?? {
+    project: bundledApp("project"),
     studio: bundledApp("studio"),
     canvas: bundledApp("canvas"),
     timeline: bundledApp("timeline"),

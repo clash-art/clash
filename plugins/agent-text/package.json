@@ -1,0 +1,29 @@
+{
+  "name": "@clash-plugin/agent-text",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./manifest.json": "./manifest.json",
+    "./stdio": "./dist/stdio.mjs"
+  },
+  "files": [
+    "manifest.json",
+    "generators",
+    "cards",
+    "dist",
+    "agents.json"
+  ],
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@clash/action-sdk": "workspace:*",
+    "@clash/shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.0"
+  }
+}

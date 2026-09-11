@@ -54,7 +54,9 @@ export const ProjectHostCommandSchema = z.discriminatedUnion("action", [
     timelineId: id,
     name: id,
     state: z.unknown().optional(),
+    placement: z.object({ canvasId: id, actionNodeId: id, position: position.optional() }).optional(),
   }),
+  command("delete_timeline", { timelineId: id, ...observed }),
   command("update_timeline_state", {
     timelineId: id,
     state: z.unknown(),

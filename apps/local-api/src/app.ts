@@ -1,3 +1,11 @@
+import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
+import { readGeneratorRevision } from "@clash/shared-types";
+import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.js";
+import { commitProjectMutation } from "@clash/shared-types";
+import { migrateLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
+import { migrateLegacyProjectTimelines } from "./local-timeline-migration.js";
+import { AcpForkPointSchema, type AcpForkPoint } from "@clash/shared-types";
+import { HostInstallScopeSchema, type HostInstallScope } from "@clash/shared-types";
 import {
   mkdtemp,
   mkdir,
@@ -327,6 +335,7 @@ export interface ProviderOAuthDriver {
 }
 
 export interface LocalApiOptions {
+  prepareProjectWorkspace?: (projectId: string) => Promise<void>;
   dataDir: string;
   /** Canonical loopback origin used in Project-scoped ResolvedAsset projections. */
   projectAssetProjectionOrigin?: string | (() => string);
@@ -393,6 +402,7 @@ export interface LocalApiOptions {
     pluginId: string,
     definitionId: string,
   ) => Promise<GeneratorDefinition>;
+  resolveGeneratorModelExecution?: Parameters<typeof createLocalGeneratorProductService>[0]["resolveModelExecution"];
   /** Resolve a declared semantic model consumer from Host-owned Settings/catalog authority. */
   resolveGeneratorModelConsumer?: (input: {
     projectId: string;
@@ -430,6 +440,7 @@ export interface LocalApiOptions {
   >;
   installMarketplaceSkill?: (
     skillId: string,
+    installation?: HostInstallScope,
   ) => Promise<Record<string, unknown>>;
   uninstallMarketplaceSkill?: (skillId: string) => Promise<void>;
   marketplacePlugins?: Array<
@@ -605,6 +616,7 @@ export interface LocalAcpCreateSessionParams {
   projectId?: string;
   resumeAcpSessionId?: string;
   forkFromAcpSessionId?: string;
+  forkPoint?: AcpForkPoint;
   onReady?: (event: {
     sessionId: string;
     acpSessionId?: string;
@@ -648,6 +660,7 @@ export interface LocalAcpAdapter {
     runtimeId: string,
   ): Promise<{ sessions: LocalAcpResumeSession[] }>;
   listHarnesses?(opts?: {
+    checkUpdates?: boolean;
     probe?: boolean | "auth" | "config" | "none";
     refresh?: boolean;
   }): Promise<{ harnesses: LocalAcpHarness[] }>;
@@ -3442,6 +3455,7 @@ function executablePluginActionDefinitions(
       input: card.input,
       constraints: card.constraints ?? [],
       presentation: card.presentation,
+      ...(card.generator ? { generator: card.generator } : {}),
       ...(card.maxRuntimeMs ? { maxRuntimeMs: card.maxRuntimeMs } : {}),
       runtime: registration.runtime.kind === "hosted" ? "worker" : "local",
       version: registration.version,
@@ -3641,6 +3655,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       mutate: (projectId, mutation) =>
         replicaStore.updateSnapshotAtomic(projectId, mutation),
     };
+  const resolveCanvasGeneratorDefinition = async (pluginId: string, definitionId: string) => {
+    const resolve = options.resolveGeneratorDefinition ?? (async (pluginId: string, definitionId: string) => {
+      const registration = (await options.listPluginGenerators?.() ?? []).find((item) => item.pluginId === pluginId && item.document.spec.definitionId === definitionId);
+      if (!registration) throw new Error("Generator Definition is unavailable.");
+      return generatorDefinitionFromExecutablePluginRegistration(registration);
+    });
+    const definition = await resolve(pluginId, definitionId);
+    await durableRunJournal.rememberGeneratorDefinition?.(definition);
+    return definition;
+  };
+  const mutateCanvasEdges = (doc: LoroDoc, endpoints: Array<{ source: string; target: string }>, mutate: (draft: LoroDoc) => void) => mutateLocalCanvasGeneratorEdges({
+    doc, endpoints, mutate,
+    resolveDefinition: resolveCanvasGeneratorDefinition,
+    listActionCards: options.listPluginCards,
+    modelCards: async () => effectiveModelCards(await db.load(), userId, options.listPluginCards, options.listPluginModelBindings),
+  });
   const projectCanvasPreviewEntryFor = (projectId: string) =>
     readThroughProjectCanvasPreviewEntry({
       projectId,
@@ -3984,9 +4014,13 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       ? createLocalGeneratorProductService({
           authority: options.generatorProjectAuthority,
           resolveDefinition: options.resolveGeneratorDefinition,
+          listPluginCards: options.listPluginCards,
           ownerId: localDurableRunOwnerId(options.hostIdentity?.hostId),
           journal: durableRunJournal,
           actor: { kind: "user", id: userId },
+          ...(options.resolveGeneratorModelExecution
+            ? { resolveModelExecution: options.resolveGeneratorModelExecution }
+            : {}),
           ...(options.resolveGeneratorModelConsumer
             ? { resolveModelConsumer: options.resolveGeneratorModelConsumer }
             : {}),
@@ -7440,7 +7474,13 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       );
       if (!item)
         return c.json({ error: "Unknown local marketplace skill" }, 404);
-      return c.json(await options.installMarketplaceSkill!(skillId));
+      const raw = await c.req.text();
+      if (!raw.trim()) return c.json(await options.installMarketplaceSkill!(skillId));
+      let value: unknown;
+      try { value = JSON.parse(raw); } catch { return c.json({ error: "Invalid installation scope" }, 400); }
+      const scope = HostInstallScopeSchema.safeParse(value);
+      if (!scope.success) return c.json({ error: "Invalid installation scope", details: scope.error.issues }, 400);
+      return c.json(await options.installMarketplaceSkill!(skillId, scope.data));
     });
   }
   if (options.uninstallMarketplaceSkill) {
@@ -8400,7 +8440,11 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           : false;
     const refresh =
       c.req.query("refresh") === "1" || c.req.query("refresh") === "true";
-    const result = await options.localAcp.listHarnesses({ probe, refresh });
+    const result = await options.localAcp.listHarnesses({
+      probe,
+      refresh,
+      checkUpdates: c.req.query("updates") === "1",
+    });
     return c.json({
       ...result,
       readToken: localHarnessesReceiptReadToken(result),
@@ -9111,6 +9155,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       project_id?: string;
       resume_session_id?: string;
       fork_session_id?: string;
+      fork_point?: unknown;
     } & ProjectWriteBody;
     const preconditions = requestProjectWritePreconditions(c, body);
     let agentTemplateId = body.agent_template_id?.trim() || undefined;
@@ -9124,6 +9169,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         },
         400,
       );
+    }
+    const forkPoint = body.fork_point === undefined ? undefined : AcpForkPointSchema.safeParse(body.fork_point);
+    if (forkPoint && (!forkPoint.success || !body.fork_session_id)) {
+      return c.json({ error: "A valid fork_point requires fork_session_id" }, 400);
     }
     const configValues =
       body.config_values &&
@@ -9239,7 +9288,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           ? { resumeAcpSessionId: body.resume_session_id }
           : {}),
         ...(body.fork_session_id
-          ? { forkFromAcpSessionId: body.fork_session_id }
+          ? { forkFromAcpSessionId: body.fork_session_id, ...(forkPoint?.success ? { forkPoint: forkPoint.data } : {}) }
           : {}),
         ...(body.project_id
           ? {
@@ -9703,10 +9752,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const name = body.name?.trim();
     if (!name) return c.json({ error: "name is required" }, 400);
 
+    const projectId = crypto.randomUUID();
+    await options.prepareProjectWorkspace?.(projectId);
     const project = await db.update((state) => {
       const createdAt = nowIso();
       const next: LocalProject = {
-        id: crypto.randomUUID(),
+        id: projectId,
         ownerId: userId,
         name,
         description: body.description?.trim() || null,
@@ -10365,6 +10416,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const timelineDefinitionActions = new Set([
       "list_timelines",
       "create_timeline",
+      "delete_timeline",
       "update_timeline_state",
       "attach_timeline",
       "detach_timeline",
@@ -10480,6 +10532,21 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         pluginCards,
       ) as Record<string, unknown>[];
     }
+    const nativeGeneratorAdd =
+      action === "add" &&
+      ["image_gen", "video_gen", "audio_gen", "model_gen", "text_gen"].includes(body.type) &&
+      body.modelId !== "local-acp";
+    let canvasMigrationDefinitions: GeneratorDefinition[] = [];
+    if ((nativeGeneratorAdd || ["list", "get", "edges", "search", "execute", "update", "copy_node", "ensure_edge"].includes(action)) && options.listPluginGenerators) {
+      canvasMigrationDefinitions = (await options.listPluginGenerators())
+        .map(generatorDefinitionFromExecutablePluginRegistration);
+      for (const definition of canvasMigrationDefinitions) await durableRunJournal.rememberGeneratorDefinition?.(definition);
+      hostContext.actionCards = await options.listPluginCards?.() ?? [];
+      if (canvasMigrationDefinitions.length && !hostContext.effectiveModelCards) {
+        hostContext.effectiveModelCards = await effectiveModelCards(await db.load(), userId, options.listPluginCards, options.listPluginModelBindings);
+      }
+    }
+    hostContext.canvasGeneratorDefinitions = canvasMigrationDefinitions;
     const selectedAccountId =
       action === "execute" && typeof body.providerAccountId === "string"
         ? body.providerAccountId
@@ -10500,17 +10567,68 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       hostContext.generationId = () => handoffNodeId;
     }
     let result: object;
+    let migrationFailure: { error: string; code: string; generatorId?: string; nodeId?: string } | undefined;
     try {
       const mutatesProject = projectCommandMutates(action);
-      result = mutatesProject
+      // Schema migration shares the Host's serialized replica authority. A
+      // Timeline read can perform a one-time upgrade, but never a second CRUD path.
+      result = mutatesProject || hostContext.timelineGeneratorDefinition || canvasMigrationDefinitions.length > 0
         ? await projectCommandReplica.mutate(projectId, async (doc) => {
-            await projectAssetServiceAt(requestOrigin(c)).materializeDoc(
-              projectId,
-              doc,
-            );
+            const hasLegacyTimelines = Boolean(hostContext.timelineGeneratorDefinition) && doc.getMap("timelines").size > 0;
+            if (mutatesProject || hasLegacyTimelines || canvasMigrationDefinitions.length > 0) {
+              await projectAssetServiceAt(requestOrigin(c)).materializeDoc(projectId, doc);
+            }
+            let migrated = false;
+            if (hasLegacyTimelines && hostContext.timelineGeneratorDefinition) {
+              const migration = migrateLegacyProjectTimelines(doc, hostContext.timelineGeneratorDefinition);
+              if (!migration.ok) {
+                migrationFailure = { error: migration.error.message, code: migration.error.code, generatorId: migration.error.generatorId };
+                return { value: migrationFailure, save: false };
+              }
+              migrated = migration.migratedIds.length > 0;
+            }
+            if (canvasMigrationDefinitions.length > 0) {
+              const migration = migrateLegacyCanvasGeneratorDrafts(doc, canvasMigrationDefinitions, hostContext.effectiveModelCards ?? MODEL_CARDS, hostContext.actionCards);
+              if (!migration.ok) {
+                migrationFailure = { error: migration.error.message, code: migration.error.code, nodeId: migration.error.nodeId };
+                return { value: migrationFailure, save: false };
+              }
+              migrated = migrated || migration.migratedNodeIds.length > 0;
+            }
+            if (nativeGeneratorAdd && canvasMigrationDefinitions.length > 0) {
+              // The legacy-shaped command is only an input adapter. Its node and
+              // native draft are committed together; no peer observes a legacy card.
+              const added = commitProjectMutation(doc, (draft) => {
+                const value = handleProjectCommand(projectId, draft, body, hostContext) as Record<string, unknown>;
+                if (value.error || typeof value.node_id !== "string") return { ok: false, value };
+                const migration = migrateLegacyCanvasGeneratorDrafts(draft, canvasMigrationDefinitions, hostContext.effectiveModelCards ?? MODEL_CARDS, hostContext.actionCards);
+                if (!migration.ok) {
+                  migrationFailure = { error: migration.error.message, code: migration.error.code, nodeId: migration.error.nodeId };
+                  return { ok: false, value: migrationFailure };
+                }
+                const readback = handleProjectCommand(projectId, draft, { action: "get", nodeId: value.node_id, canvasId: body.canvasId }, hostContext);
+                return { ok: true, value: { ...value, ...readback, proposal: null } };
+              });
+              return { value: added.value, save: added.ok || migrated };
+            }
+            if (action === "ensure_edge") {
+              try {
+                const source = body.source;
+                const target = body.target;
+                if (typeof source !== "string" || typeof target !== "string") throw new Error("Edge source and target are required.");
+                let value: Record<string, unknown> = {};
+                await mutateCanvasEdges(doc, [{ source, target }], (draft) => {
+                  value = handleProjectCommand(projectId, draft, body, hostContext) as Record<string, unknown>;
+                  if (value.error) throw new Error(String(value.error));
+                });
+                return { value, save: true };
+              } catch (error) {
+                return { value: { error: error instanceof Error ? error.message : String(error) }, save: migrated };
+              }
+            }
             return {
               value: handleProjectCommand(projectId, doc, body, hostContext),
-              save: true,
+              save: mutatesProject || migrated,
             };
           })
         : await projectCommandReplica.inspect(projectId, (doc) =>
@@ -10522,6 +10640,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       }
       throw error;
     }
+    if (migrationFailure) return c.json(migrationFailure, 409);
     if (
       handoffNodeId &&
       ((result as { error?: unknown }).error ||
@@ -10662,16 +10781,17 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   app.get("/api/v1/projects/:projectId/canvas/nodes/:nodeId", async (c) => {
     const projectId = c.req.param("projectId");
     const nodeId = c.req.param("nodeId");
-    const doc = await replicaStore.recover(projectId);
-    const canvas = new Canvas(doc, () => {});
-    const node = canvas.readNode(nodeId);
-    if (!node) {
-      return c.json({ error: `Node not found: ${nodeId}` }, 404);
-    }
-    return c.json({
-      projectId,
-      node,
-      readToken: canvasNodeReceiptReadToken(node),
+    return projectCommandReplica.inspect(projectId, (doc) => {
+      const canvas = new Canvas(doc, () => {});
+      const node = canvas.readNode(nodeId);
+      if (!node) {
+        return c.json({ error: `Node not found: ${nodeId}` }, 404);
+      }
+      return c.json({
+        projectId,
+        node,
+        readToken: canvasNodeReceiptReadToken(node),
+      });
     });
   });
 
@@ -10712,7 +10832,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
 
     const result =
-      await replicaStore.updateSnapshotAtomic<SnapshotWriteRouteResult>(
+      await projectCommandReplica.mutate<SnapshotWriteRouteResult>(
         projectId,
         async (doc) => {
           const canvas = new Canvas(doc, () => {});
@@ -10771,7 +10891,20 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             };
           }
 
-          const ok = canvas.updateNode(nodeId, patch);
+          let ok: boolean;
+          try {
+            if (isCanvasGeneratorAuthoringPatch(node, patch)) {
+              const revision = readGeneratorRevision(doc, { generatorId: node.data.generatorId as string, generatorRevisionId: node.data.generatorRevisionId as string });
+              if (!revision) throw new Error("Model Generator is unavailable. Read again.");
+              const definition = await resolveCanvasGeneratorDefinition(revision.definitionRef.pluginId, revision.definitionRef.definitionId);
+              ok = updateLocalCanvasGeneratorNode(doc, nodeId, node.canvas_id, patch, [definition], await options.listPluginCards?.() ?? []);
+            } else {
+              ok = canvas.updateNode(nodeId, patch);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { save: false, value: { status: 409 as const, body: { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) } } };
+          }
           if (!ok) {
             const message = `Node not found: ${nodeId}`;
             return {
@@ -10835,7 +10968,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       expectedReadToken: preconditions.expectedReadToken,
     };
     const result =
-      await replicaStore.updateSnapshotAtomic<SnapshotWriteRouteResult>(
+      await projectCommandReplica.mutate<SnapshotWriteRouteResult>(
         projectId,
         async (doc) => {
           const canvas = new Canvas(doc, () => {});
@@ -10942,15 +11075,16 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       unknown
     >;
     const nodeIds = stringArray(body.nodeIds);
-    const doc = await replicaStore.recover(projectId);
-    const plan = readCanvasBatchDeletePlan(doc, nodeIds);
-    if (!plan.ok) return c.json({ error: plan.error }, plan.status);
-    return c.json({
-      projectId,
-      nodeIds: plan.nodeIds,
-      nodes: plan.nodes,
-      edges: plan.edges,
-      readToken: plan.readToken,
+    return projectCommandReplica.inspect(projectId, (doc) => {
+      const plan = readCanvasBatchDeletePlan(doc, nodeIds);
+      if (!plan.ok) return c.json({ error: plan.error }, plan.status);
+      return c.json({
+        projectId,
+        nodeIds: plan.nodeIds,
+        nodes: plan.nodes,
+        edges: plan.edges,
+        readToken: plan.readToken,
+      });
     });
   });
 
@@ -10983,7 +11117,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
 
     const result =
-      await replicaStore.updateSnapshotAtomic<SnapshotWriteRouteResult>(
+      await projectCommandReplica.mutate<SnapshotWriteRouteResult>(
         projectId,
         async (doc) => {
           const plan = readCanvasBatchDeletePlan(doc, nodeIds);
@@ -11088,10 +11222,11 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
 
   app.get("/api/v1/projects/:projectId/canvas/edges", async (c) => {
     const projectId = c.req.param("projectId");
-    const doc = await replicaStore.recover(projectId);
-    return c.json({
-      projectId,
-      ...listCanvasEdgesWithReadReceipts(doc),
+    return projectCommandReplica.inspect(projectId, (doc) => {
+      return c.json({
+        projectId,
+        ...listCanvasEdgesWithReadReceipts(doc),
+      });
     });
   });
 
@@ -11126,7 +11261,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
 
     const result =
-      await replicaStore.updateSnapshotAtomic<SnapshotWriteRouteResult>(
+      await projectCommandReplica.mutate<SnapshotWriteRouteResult>(
         projectId,
         async (doc) => {
           const existing = readCanvasEdge(doc, edgeId);
@@ -11185,19 +11320,26 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             };
           }
 
-          const canvas = edgeCanvas(doc, { id: edgeId, source, target });
-          canvas.insertEdge(
-            edgeId,
-            source,
-            target,
-            typeof patch.type === "string" ? patch.type : "default",
-            typeof patch.sourceHandle === "string"
-              ? patch.sourceHandle
-              : undefined,
-            typeof patch.targetHandle === "string"
-              ? patch.targetHandle
-              : undefined,
-          );
+          try {
+            await mutateCanvasEdges(doc, [{ source, target }], (draft) => {
+              const canvas = edgeCanvas(draft, { id: edgeId, source, target });
+              canvas.insertEdge(
+                edgeId,
+                source,
+                target,
+                typeof patch.type === "string" ? patch.type : "default",
+                typeof patch.sourceHandle === "string"
+                  ? patch.sourceHandle
+                  : undefined,
+                typeof patch.targetHandle === "string"
+                  ? patch.targetHandle
+                  : undefined,
+              );
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { save: false, value: { status: 409 as const, body: { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) } } };
+          }
           const edge = readCanvasEdge(doc, edgeId);
           const afterReadToken = canvasEdgesReceiptReadToken(
             listCanvasReadProofEdges(doc),
@@ -11273,7 +11415,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
 
     const result =
-      await replicaStore.updateSnapshotAtomic<SnapshotWriteRouteResult>(
+      await projectCommandReplica.mutate<SnapshotWriteRouteResult>(
         projectId,
         async (doc) => {
           const existing = readCanvasEdge(doc, edgeId);
@@ -11331,23 +11473,30 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             };
           }
 
-          ensureCanvasGraphIdentity(doc);
-          const canvas = edgeCanvas(doc, existing);
-          canvas.updateEdge(edgeId, {
-            ...(Object.prototype.hasOwnProperty.call(patch, "source")
-              ? { source: normalizeString(patch.source) }
-              : {}),
-            ...(Object.prototype.hasOwnProperty.call(patch, "target")
-              ? { target: normalizeString(patch.target) }
-              : {}),
-            ...(typeof patch.type === "string" ? { type: patch.type } : {}),
-            ...(typeof patch.sourceHandle === "string"
-              ? { sourceHandle: patch.sourceHandle }
-              : {}),
-            ...(typeof patch.targetHandle === "string"
-              ? { targetHandle: patch.targetHandle }
-              : {}),
-          });
+          try {
+            await mutateCanvasEdges(doc, existingEndpoint ? [existingEndpoint, { source: normalizeString(patch.source) ?? existingEndpoint.source, target: normalizeString(patch.target) ?? existingEndpoint.target }] : [], (draft) => {
+              ensureCanvasGraphIdentity(draft);
+              const canvas = edgeCanvas(draft, existing);
+              canvas.updateEdge(edgeId, {
+                ...(Object.prototype.hasOwnProperty.call(patch, "source")
+                  ? { source: normalizeString(patch.source) }
+                  : {}),
+                ...(Object.prototype.hasOwnProperty.call(patch, "target")
+                  ? { target: normalizeString(patch.target) }
+                  : {}),
+                ...(typeof patch.type === "string" ? { type: patch.type } : {}),
+                ...(typeof patch.sourceHandle === "string"
+                  ? { sourceHandle: patch.sourceHandle }
+                  : {}),
+                ...(typeof patch.targetHandle === "string"
+                  ? { targetHandle: patch.targetHandle }
+                  : {}),
+              });
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { save: false, value: { status: 409 as const, body: { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) } } };
+          }
           const updated = readCanvasEdge(doc, edgeId);
           const afterReadToken = updated
             ? canvasEdgeReceiptReadToken(updated)
@@ -11393,7 +11542,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       expectedReadToken: preconditions.expectedReadToken,
     };
     const result =
-      await replicaStore.updateSnapshotAtomic<SnapshotWriteRouteResult>(
+      await projectCommandReplica.mutate<SnapshotWriteRouteResult>(
         projectId,
         async (doc) => {
           const existing = readCanvasEdge(doc, edgeId);
@@ -11451,9 +11600,16 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             };
           }
 
-          ensureCanvasGraphIdentity(doc);
-          const canvas = edgeCanvas(doc, existing);
-          canvas.deleteEdge(edgeId);
+          try {
+            await mutateCanvasEdges(doc, [existingEndpoint], (draft) => {
+              ensureCanvasGraphIdentity(draft);
+              const canvas = edgeCanvas(draft, existing);
+              canvas.deleteEdge(edgeId);
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            return { save: false, value: { status: 409 as const, body: { error: message, mutation: hostMutationRejected(hostMutation.envelope, message) } } };
+          }
           const afterReadToken = canvasEdgesReceiptReadToken(
             listCanvasReadProofEdges(doc),
           );

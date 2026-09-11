@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import {
   cleanup,
+  act,
   fireEvent,
   render,
   screen,
@@ -97,24 +98,20 @@ describe("HarnessUpdateNotifier", () => {
       name: "2 ACP updates available",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringMatching(/\/api\/v1\/local\/harnesses$/),
+      expect.stringMatching(/\/api\/v1\/local\/harnesses\?updates=1$/),
       { credentials: "include" },
     );
     expect(screen.queryByText("Codex update available")).toBeNull();
 
     fireEvent.click(trigger);
 
-    expect(
-      await screen.findByRole("heading", { name: "ACP updates" }),
-    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "ACP updates" })).toBeNull();
     expect(screen.getByText("Codex")).toBeTruthy();
     expect(screen.getByText("1.0.1 → 1.1.5")).toBeTruthy();
     expect(screen.getByText("Claude")).toBeTruthy();
     expect(screen.getByText("0.18.0 → 0.19.0")).toBeTruthy();
     expect(screen.queryByText("Gemini")).toBeNull();
-    expect(
-      screen.getByText(/Running sessions keep their current version\./),
-    ).toBeTruthy();
+    expect(screen.queryByText(/New sessions use the updated runtime\./)).toBeNull();
   });
 
   it("upgrades one ACP in place and keeps the remaining update discoverable", async () => {
@@ -252,7 +249,7 @@ describe("HarnessUpdateNotifier", () => {
     ).toHaveLength(2);
   });
 
-  it("keeps an upgrade failure inside the expanded ACP list and allows retry", async () => {
+  it("shows upgrade failures in shared feedback and keeps the retry action", async () => {
     const fetchMock = vi.fn(async (_input: string, init?: RequestInit) => {
       if (init?.method === "POST") {
         return new Response(JSON.stringify({ error: "Registry unavailable" }), {
@@ -274,7 +271,7 @@ describe("HarnessUpdateNotifier", () => {
       await screen.findByRole("button", { name: "Update Codex" }),
     );
 
-    expect(await screen.findByText("Registry unavailable")).toBeTruthy();
+    expect((await screen.findByText("Registry unavailable")).closest('[data-ui="toast-viewport"]')).not.toBeNull();
     expect(
       screen.getByRole("button", { name: "Retry Codex update" }),
     ).toBeTruthy();
@@ -303,4 +300,20 @@ describe("HarnessUpdateNotifier", () => {
     ).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+  it("retries a failed initial check while the window remains focused", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockRejectedValueOnce(new Error("Host starting"))
+      .mockResolvedValue(new Response(JSON.stringify({ harnesses: [availableHarnesses[0]] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await act(async () => { renderNotifier(); });
+      expect(screen.queryByRole("button", { name: "1 ACP update available" })).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(screen.getByRole("button", { name: "1 ACP update available" })).toBeTruthy();
+      cleanup();
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
 });

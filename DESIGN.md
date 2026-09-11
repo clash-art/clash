@@ -24,7 +24,7 @@ Authenticated desktop UI uses the native system stack (`-apple-system`, `BlinkMa
 - Global pages use a compact Clash home lockup, real product navigation, global `⌘K` search, and Settings at the bottom. The lockup disappears with the labels in the collapsed rail.
 - Project detail reuses the same sidebar footprint for the current project: return/project identity, project `⌘K` search, real project surfaces, and Settings. Never stack a global sidebar beside a project sidebar.
 - Authenticated content pages use one `AppPage` inset contract: `--app-page-block-start` aligns the first content row to the sidebar's first control, `--app-page-inline-inset` supplies the shared responsive gutter, and `--app-page-block-end` reserves the scroll tail.
-- Content width is semantic rather than page-specific arithmetic: narrow (64rem) for Marketplace and Billing, standard (76rem) for Home and Settings content, and wide (100rem) for Projects and Assets. Width may vary with the task; top and side insets may not.
+- Content width is semantic rather than page-specific arithmetic: narrow (64rem) for Billing, standard (76rem) for Home and Settings content, and wide (100rem) for Projects, Assets, and Marketplace. Width may vary with the task; top and side insets may not.
 - Settings keeps its full-height secondary sidebar and applies `AppPage` only to the scrollable content pane. Project detail and editor surfaces are full-bleed workspaces and are explicit exceptions to the content-page inset.
 - Rhythm: 8–12px within groups, 24–32px between related blocks, and 40–48px between major sections.
 - Recent projects use a responsive three-column grid at desktop widths.

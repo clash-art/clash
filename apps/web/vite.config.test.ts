@@ -169,6 +169,25 @@ describe("Vite workspace source routing", () => {
     }
   });
 
+  it("resolves the virtualizer's transitive dependency from the linked common package", async () => {
+    const server = await createServer({
+      configFile: resolve(testDirectory, "vite.config.ts"),
+      mode: "development",
+      resolve: { preserveSymlinks: true },
+      optimizeDeps: { noDiscovery: true, include: [] },
+      server: { middlewareMode: true },
+    });
+    try {
+      const importer = resolve(testDirectory, "../../../openma-common/src/chat-ui/components.tsx");
+      const entry = await server.pluginContainer.resolveId("@tanstack/react-virtual", importer);
+      expect(entry).not.toBeNull();
+      const core = await server.pluginContainer.resolveId("@tanstack/virtual-core", entry!.id);
+      expect(core).not.toBeNull();
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
   it("canonicalizes Remotion UI imports to one source identity for HMR", async () => {
     const server = await createServer({
       configFile: resolve(testDirectory, "vite.config.ts"),

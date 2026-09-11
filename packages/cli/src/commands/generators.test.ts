@@ -76,3 +76,19 @@ test("generators preserves structured HTTP errors", async () => {
       error.body.expected === "r2",
   );
 });
+
+test("generators reveals input contracts without contacting or binding a project", async () => {
+  const h = harness();
+  await h.command.parseAsync(["node", "generators", "contract", "create"]);
+  assert.deepEqual(h.calls, []);
+  const contract = h.output[0] as { operation: string; inputSchema: { properties: Record<string, unknown>; required: string[] } };
+  assert.equal(contract.operation, "create");
+  assert.ok(contract.inputSchema.properties.placement);
+  assert.ok(contract.inputSchema.required.includes("generatorRevisionId"));
+  const submit = harness();
+  await submit.command.parseAsync(["node", "generators", "contract", "submit"]);
+  const schema = (submit.output[0] as typeof contract).inputSchema;
+  assert.ok(schema.properties.providerAccountId);
+  assert.ok(schema.required.includes("generatorRevisionId"));
+  assert.deepEqual(submit.calls, []);
+});

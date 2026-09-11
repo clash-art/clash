@@ -40,6 +40,10 @@ export default withMermaid(defineConfig({
               text: "Director Stage for Beginners",
               link: "/guide/director-stage-for-beginners",
             },
+            {
+              text: "Reusable Generator Code · Director",
+              link: "/guide/reusable-plugin-content",
+            },
             { text: "What a Test May Assert", link: "/guide/testing-rules" },
           ],
         },

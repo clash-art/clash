@@ -9,6 +9,30 @@ afterEach(() => {
 });
 
 describe("Marketplace manage loader", () => {
+  it("makes official picks discoverable without mixing in uncurated generic skills", async () => {
+    const picked = {
+      id: "example.pick",
+      name: "Community creation skill",
+      type: "skill",
+      source: "community",
+      curation: { collection: "official-picks", curator: "Clash" },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        const pathname = new URL(String(input), "http://clash.local").pathname;
+        if (pathname === "/api/marketplace/registry")
+          return Response.json({
+            version: 1,
+            plugins: [],
+            actions: [],
+            skills: [picked, { id: "generic", name: "Generic", type: "skill" }],
+          });
+        return Response.json([]);
+      }),
+    );
+    expect((await loader()).items).toEqual([picked]);
+  });
   it("loads official plugins and actions while excluding generic skills from the Store", async () => {
     const storyboard = {
       id: "clash.storyboard",
@@ -31,7 +55,11 @@ describe("Marketplace manage loader", () => {
             actions: [action],
             plugins: [storyboard],
             skills: [
-              { id: "clash.openai.define-goal", type: "skill", name: "Define goal" },
+              {
+                id: "clash.openai.define-goal",
+                type: "skill",
+                name: "Define goal",
+              },
             ],
           });
         }

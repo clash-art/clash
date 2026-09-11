@@ -6,13 +6,14 @@ import {
   DownloadSimple,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { runtimeFetch } from "../lib/runtimeConfig";
 import {
   clearHarnessOperation,
   setHarnessOperation,
   useHarnessOperations,
 } from "../lib/harnessOperations";
 import { HARNESS_UPDATED_EVENT } from "../lib/sessionRuntime";
+import { useAppFeedback } from "./AppFeedback";
 import { Button } from "./ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 
@@ -22,10 +23,13 @@ type HarnessUpdate = {
   installedVersion?: string;
   latestVersion?: string;
   updateAvailable?: boolean;
+  installed?: boolean;
+  installSource?: string;
 };
 
 const MIN_PROGRESS_VISIBLE_MS = 560;
 const COMPLETE_VISIBLE_MS = 2_400;
+const DISCOVERY_INTERVAL_MS = 30_000;
 
 function updateDescription(harness: HarnessUpdate): string {
   if (harness.installedVersion && harness.latestVersion) {
@@ -45,6 +49,9 @@ function availableUpdateLabel(count: number): string {
  * current child process until the next session starts.
  */
 export function HarnessUpdateNotifier() {
+  const { notify } = useAppFeedback();
+  const [checkFailed, setCheckFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [harnesses, setHarnesses] = useState<HarnessUpdate[]>([]);
   const harnessOperations = useHarnessOperations();
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -56,20 +63,36 @@ export function HarnessUpdateNotifier() {
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     const discoverUpdates = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const response = await fetch(
-          runtimeApiUrl("/api/v1/local/harnesses"),
+        const response = await runtimeFetch(
+          "/api/v1/local/harnesses?updates=1",
           { credentials: "include" },
         );
-        if (!response.ok) return;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const result = (await response.json()) as {
           harnesses?: HarnessUpdate[];
         };
-        if (!cancelled) setHarnesses(result.harnesses ?? []);
+        if (!cancelled) {
+          setHarnesses(result.harnesses ?? []);
+          setCheckFailed(
+            (result.harnesses ?? []).some(
+              (harness) =>
+                harness.installed &&
+                harness.installSource === "registry" &&
+                !harness.latestVersion,
+            ),
+          );
+        }
       } catch {
-        // Update discovery stays quiet when the local host is unavailable.
+        if (!cancelled) setCheckFailed(true);
+        // Retry on the next tick when the host was not ready at mount.
+      } finally {
+        inFlight = false;
       }
     };
 
@@ -79,12 +102,16 @@ export function HarnessUpdateNotifier() {
 
     void discoverUpdates();
     window.addEventListener("focus", handleWindowFocus);
+    window.addEventListener("online", handleWindowFocus);
+    const timer = window.setInterval(handleWindowFocus, DISCOVERY_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.removeEventListener("focus", handleWindowFocus);
+      window.removeEventListener("online", handleWindowFocus);
+      window.clearInterval(timer);
     };
-  }, []);
+  }, [retry]);
 
   useEffect(
     () => () => {
@@ -164,10 +191,8 @@ export function HarnessUpdateNotifier() {
     const startedAt = Date.now();
 
     try {
-      const response = await fetch(
-        runtimeApiUrl(
-          `/api/v1/local/harnesses/${encodeURIComponent(harness.id)}/upgrade`,
-        ),
+      const response = await runtimeFetch(
+        `/api/v1/local/harnesses/${encodeURIComponent(harness.id)}/upgrade`,
         { method: "POST", credentials: "include" },
       );
       if (!response.ok) {
@@ -223,13 +248,31 @@ export function HarnessUpdateNotifier() {
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Please try again.";
-      setErrors((current) => ({ ...current, [harness.id]: message }));
+      const description = /^(fetch failed|Failed to fetch|Load failed)$/i.test(message)
+        ? "无法连接更新服务，请检查网络或代理后重试。"
+        : message;
+      setErrors((current) => ({ ...current, [harness.id]: description }));
+      notify({ variant: "warning", title: `${harness.label} 更新失败`, message: description });
     } finally {
       clearHarnessOperation(harness.id, "upgrade");
     }
   };
 
-  if (availableHarnesses.length === 0 && !recentlyUpdated) return null;
+  if (availableHarnesses.length === 0 && !recentlyUpdated) {
+    if (!checkFailed) return null;
+    return (
+      <Button
+        aria-label="Retry ACP update check"
+        title="Could not check ACP updates. Click to retry."
+        onClick={() => setRetry((value) => value + 1)}
+        className="desktop-no-drag ml-auto h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+        variant="default"
+      >
+        <WarningCircle className="h-3.5 w-3.5" />
+        检查更新失败 · 重试
+      </Button>
+    );
+  }
 
   const triggerLabel =
     availableHarnesses.length > 0
@@ -282,29 +325,13 @@ export function HarnessUpdateNotifier() {
         side="bottom"
         sideOffset={6}
         aria-label="ACP updates"
-        className="desktop-no-drag w-[min(22rem,calc(100vw-1.5rem))] overflow-hidden p-0"
+        className="desktop-no-drag w-max max-w-[calc(100vw-1.5rem)] overflow-hidden p-1"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-warm-border px-4 py-3.5">
-          <div>
-            <h2 className="text-sm font-semibold tracking-tight text-slate-950 dark:text-slate-50">
-              ACP updates
-            </h2>
-            <p className="mt-0.5 text-xs leading-5 text-stone-600 dark:text-stone-400">
-              Managed runtimes ready on this Mac
-            </p>
-          </div>
-          {availableHarnesses.length > 0 ? (
-            <span className="mt-0.5 shrink-0 text-[11px] font-semibold tabular-nums text-brand">
-              {availableHarnesses.length} ready
-            </span>
-          ) : null}
-        </div>
-
         <div className="max-h-[min(24rem,calc(100vh-6rem))] overflow-y-auto">
           {recentlyUpdated ? (
             <div
               role="status"
-              className="flex items-center gap-2 border-b border-emerald-200/70 bg-emerald-50/70 px-4 py-2.5 text-xs font-medium text-emerald-800 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-emerald-200"
+              className="flex items-center gap-2 border-b border-emerald-200/70 bg-emerald-50/70 px-3 py-2 text-xs font-medium text-emerald-800 dark:border-emerald-400/20 dark:bg-emerald-500/10 dark:text-emerald-200"
             >
               <Check
                 className="h-4 w-4 shrink-0"
@@ -323,25 +350,18 @@ export function HarnessUpdateNotifier() {
               return (
                 <div
                   key={harness.id}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-4 py-3.5"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-2 py-1"
                 >
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-semibold text-slate-950 dark:text-slate-50">
-                      {harness.label}
-                    </p>
-                    <p className="mt-0.5 text-xs tabular-nums text-stone-600 dark:text-stone-400">
-                      {updateDescription(harness)}
-                    </p>
-                    {error ? (
-                      <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-5 text-red-600 dark:text-red-300">
-                        <WarningCircle
-                          className="mt-0.5 h-3.5 w-3.5 shrink-0"
-                          weight="fill"
-                          aria-hidden="true"
-                        />
-                        <span>{error}</span>
-                      </p>
-                    ) : null}
+                    <div className="flex items-center gap-2">
+                      <span className="max-w-32 truncate text-xs font-medium text-content-primary">
+                        {harness.label}
+                      </span>
+                      <span className="whitespace-nowrap text-xs tabular-nums text-content-muted">
+                        {updateDescription(harness)}
+                      </span>
+                    </div>
+
                   </div>
                   <Button
                     aria-label={
@@ -355,7 +375,7 @@ export function HarnessUpdateNotifier() {
                     onClick={() => void startUpgrade(harness)}
                     size={null}
                     shape={null}
-                    className="mt-0.5 h-8 min-h-0 rounded-lg px-2.5 text-xs shadow-none"
+                    className="h-6 min-h-0 rounded-md px-2 py-0 text-xs leading-5 shadow-none"
                   >
                     {updating ? (
                       <>
@@ -378,10 +398,6 @@ export function HarnessUpdateNotifier() {
           </div>
         </div>
 
-        <p className="border-t border-warm-border bg-warm-muted/55 px-4 py-2.5 text-[11px] leading-4 text-stone-600 dark:text-stone-400">
-          Running sessions keep their current version. New sessions use the
-          updated runtime.
-        </p>
       </PopoverContent>
     </Popover>
   );

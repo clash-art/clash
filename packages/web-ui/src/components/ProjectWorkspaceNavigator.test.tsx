@@ -795,7 +795,7 @@ describe("ProjectWorkspaceNavigator", () => {
     expect(onSelectAsset).toHaveBeenCalledWith("asset-1");
   });
 
-  it("uses the same collapsible folder contract for Canvases, Timelines, and Assets", () => {
+  it("uses the same collapsible folder contract for Canvases, Timelines, and Assets", async () => {
     const onCreateCanvas = vi.fn();
     const onCreateTimeline = vi.fn();
     const onAddAsset = vi.fn();
@@ -885,9 +885,46 @@ describe("ProjectWorkspaceNavigator", () => {
     expect(screen.queryByRole("tab", { name: "Episode 1" })).toBeNull();
     expect(screen.getByRole("tab", { name: "asset-1.png" })).toBeTruthy();
 
+    const scroller = screen.getByRole("tablist", { name: "Project surfaces" });
+    const content = document.getElementById(
+      folders[2].getAttribute("aria-controls")!,
+    )!;
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      value: 1200,
+    });
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: 600,
+    });
+    Object.defineProperty(content, "offsetHeight", {
+      configurable: true,
+      value: 900,
+    });
+    scroller.scrollTop = 200;
     fireEvent.click(folders[2]);
     expect(folders[2].getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByRole("tab", { name: "asset-1.png" })).toBeNull();
+    expect(parseFloat(scroller.style.paddingBottom)).toBeGreaterThan(0);
+    expect(scroller.scrollTop).toBe(200);
+    const heldPadding = scroller.style.paddingBottom;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(scroller.style.paddingBottom).toBe(heldPadding);
+    scroller.scrollTop = 250;
+    fireEvent.scroll(scroller);
+    expect(scroller.scrollTop).toBe(200);
+    scroller.scrollTop = 100;
+    fireEvent.scroll(scroller);
+    expect(parseFloat(scroller.style.paddingBottom)).toBeLessThan(parseFloat(heldPadding));
+    scroller.scrollTop = 150;
+    fireEvent.scroll(scroller);
+    expect(scroller.scrollTop).toBe(100);
+    scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
+    expect(scroller.style.paddingBottom).toBe("");
+    scroller.scrollTop = 50;
+    fireEvent.scroll(scroller);
+    expect(scroller.scrollTop).toBe(50);
   });
 
   it("lists every project asset beneath Assets and makes each item selectable and draggable", () => {

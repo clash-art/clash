@@ -31,6 +31,16 @@
       "import": "./dist/timeline-library.js",
       "default": "./dist/timeline-library.js"
     },
+    "./timeline-envelope": {
+      "types": "./dist/timeline-envelope.d.ts",
+      "import": "./dist/timeline-envelope.js",
+      "default": "./dist/timeline-envelope.js"
+    },
+    "./model-output-contract": {
+      "types": "./dist/model-output-contract.d.ts",
+      "import": "./dist/model-output-contract.js",
+      "default": "./dist/model-output-contract.js"
+    },
     "./timeline-contract": {
       "types": "./dist/timeline-contract.d.ts",
       "import": "./dist/timeline-contract.js",
@@ -45,10 +55,15 @@
       "types": "./dist/gpt-image-size.d.ts",
       "import": "./dist/gpt-image-size.js",
       "default": "./dist/gpt-image-size.js"
+    },
+    "./director-code": {
+      "types": "./dist/director-code.d.ts",
+      "import": "./dist/director-code.js",
+      "default": "./dist/director-code.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/executable-plugin.ts src/gpt-image-size.ts --format esm --dts --clean --target es2020",
+    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts --format esm --dts --clean --target es2020",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",

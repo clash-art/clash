@@ -132,6 +132,14 @@ export function buildCodexQualityJudgeInvocation(input: {
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",
+    "-c",
+    "skills.include_instructions=false",
+    "-c",
+    "features.plugins=false",
+    "-c",
+    "features.remote_plugin=false",
+    "-c",
+    "features.recommended_plugins=false",
     "--skip-git-repo-check",
     "--sandbox",
     "read-only",
@@ -198,6 +206,9 @@ function assertToolFreeCodexEvents(rawEvents: string): void {
       );
     }
     const record = event as { type?: unknown; item?: unknown };
+    if (record.type === "error" || record.type === "turn.failed") {
+      throw new Error("Codex quality reviewer lifecycle failed");
+    }
     if (
       (record.type === "item.started" || record.type === "item.completed") &&
       record.item &&
@@ -208,7 +219,9 @@ function assertToolFreeCodexEvents(rawEvents: string): void {
       if (
         typeof itemType === "string" &&
         (TOOL_ITEM_TYPES.has(itemType) ||
-          (itemType !== "reasoning" && itemType !== "agent_message"))
+          (itemType !== "reasoning" &&
+            itemType !== "agent_message" &&
+            itemType !== "error"))
       ) {
         throw new Error(
           `The read-only evidence judge attempted a tool operation (${itemType})`,

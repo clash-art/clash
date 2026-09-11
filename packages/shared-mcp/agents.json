@@ -1,0 +1,9 @@
+{
+  "summary": "Shared MCP registration, command dispatch, and schema compatibility boundary. Tool families describe product entities; leaf adapters call the existing Host authority.",
+  "key_files": {
+    "src/server.ts": "Clash command dispatchers, including Assets and Generators, with live contract disclosure.",
+    "src/generator-tools.ts": "Generator, Revision, Action Run, and Output Commit HTTP operations.",
+    "src/document-tools.ts": "Read-only Assets operation for exact Document revision bodies and provenance. Registered by the production MCP server using its authenticated Host request transport.",
+    "src/document-tools.test.ts": "Checks exact HTTP identities, error propagation, contract disclosure, and execution through the actual Assets dispatcher."
+  }
+}

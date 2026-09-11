@@ -1,0 +1,27 @@
+{
+  "name": "@clash-plugin/model-generation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./manifest.json": "./manifest.json",
+    "./stdio": "./dist/stdio.mjs"
+  },
+  "files": [
+    "manifest.json",
+    "generators",
+    "dist",
+    "agents.json"
+  ],
+  "scripts": {
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@clash/action-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.0"
+  }
+}

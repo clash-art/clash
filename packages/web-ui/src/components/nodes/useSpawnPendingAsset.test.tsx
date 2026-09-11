@@ -12,6 +12,26 @@ vi.mock("@clash/web-ui/lib/betterAuthClient", () => ({
 }));
 
 describe("useSpawnPendingAsset", () => {
+  it("waits for a native draft acknowledgement and persists only the pinned revision", async () => {
+    let accept!: (value: { generatorId: string; generatorRevisionId: string }) => void;
+    const resolveGeneratorRevision = vi.fn(() => new Promise<{ generatorId: string; generatorRevisionId: string }>((resolve) => { accept = resolve; }));
+    const addNode = vi.fn((node: any) => ({ ...node, position: { x: 0, y: 0 } }));
+    const { result } = renderHook(() => useSpawnPendingAsset({
+      actionBadgeId: "placement", actionType: "video-gen", isCustom: false, customDef: undefined,
+      customActionParams: {}, modelId: "stale-model", modelParams: {}, selectedModel: undefined,
+      content: "Stale Canvas prompt", lyrics: "", dataPrompt: undefined, projectId: "project", refNodeIds: [],
+      getNodes: () => [], addNodeWithAutoLayout: addNode, addNodeWithLayout: addNode,
+      addEdges: vi.fn(), setNodes: vi.fn(), loroSync: null, resolveGeneratorRevision,
+    }));
+    const pending = result.current.spawnPending({ assetId: "output" });
+    expect(addNode).not.toHaveBeenCalled();
+    accept({ generatorId: "native", generatorRevisionId: "accepted" });
+    const output = await pending;
+    expect(output?.data.generatorRevision).toEqual({ generatorId: "native", generatorRevisionId: "accepted" });
+    expect(output?.data).not.toHaveProperty("prompt");
+    expect(output?.data).not.toHaveProperty("modelParams");
+  });
+
   it("uses an upgraded Custom Action binding when the next output is created", async () => {
     const oldBinding = {
       pluginId: "clash.codex-imagegen",

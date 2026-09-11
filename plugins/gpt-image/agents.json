@@ -1,0 +1,18 @@
+{
+  "summary": "OpenAI Images and Replicate execution for GPT Image 2.5, bundled into the local Host.",
+  "context_hints": [
+    "Provider account credentials come only from context.store.",
+    "OpenAI generation/editing completes with immutable image bytes; Replicate persists only a prediction id for polling.",
+    "Keep exact resolution dimensions intact. Never rename them into K tiers.",
+    "Contract sources: apps/docs/guide/gpt-image-25.md."
+  ],
+  "subdirectories": {
+    "src": "Transport-neutral executors, package entrypoint, and behavior tests.",
+    "providers": "Account configuration for OpenAI and Replicate.",
+    "contract-tests": "Activation tests that reject submissions without credentials."
+  },
+  "verification": [
+    "pnpm --filter @clash-plugin/gpt-image test",
+    "pnpm --filter @clash-plugin/gpt-image exec tsc --noEmit"
+  ]
+}

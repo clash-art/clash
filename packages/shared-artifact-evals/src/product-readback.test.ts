@@ -504,37 +504,68 @@ async function withProductHost<T>(
         request.url ===
         `/api/v1/projects/${projectId}/assets/${encodeURIComponent(asset.id)}`,
     );
-    const directorProjectAssetReferences =
-      options.director?.projectAssets?.find(
-        (asset) =>
-          request.url ===
-          `/api/v1/projects/${projectId}/assets/${encodeURIComponent(asset.id)}/references`,
-      );
-    if (request.method === "GET" && directorProjectAssetReferences) {
+    const capturedAssetIndex = options.director?.projectAssets?.findIndex(
+      (asset) =>
+        request.url?.startsWith(
+          `/api/v1/projects/${projectId}/generator-runs/${encodeURIComponent("capture:" + asset.id)}`,
+        ),
+    );
+    if (
+      request.method === "GET" &&
+      capturedAssetIndex !== undefined &&
+      capturedAssetIndex >= 0
+    ) {
+      const asset = options.director!.projectAssets![capturedAssetIndex]!;
+      const frame = options.director!.frame;
+      const stage = options.director!.stage;
+      const actionRunId = "capture:" + asset.id;
       response.setHeader("content-type", "application/json");
-      response.setHeader(
-        "x-clash-read-receipt",
-        "receipt:director-capture-output-binding",
-      );
       response.end(
-        JSON.stringify({
-          projectAssetId: directorProjectAssetReferences.id,
-          references: [
-            {
-              id: `action-asset:${directorProjectAssetReferences.id}:output`,
-              owner: {
-                kind: "run",
-                actionId: `director:${options.director!.stage.id}`,
-                actionRevisionId: options.director!.stage.revisionId,
-                actionRunId: `capture:${directorProjectAssetReferences.id}`,
+        JSON.stringify(
+          request.url!.endsWith("/outputs/frame")
+            ? {
+                commit: {
+                  actionRunId,
+                  outputSlot: "frame",
+                  asset: { kind: "media", projectAssetId: asset.id },
+                },
+              }
+            : {
+                run: {
+                  actionRunId,
+                  generatorRevision: {
+                    generatorId: stage.id,
+                    generatorRevisionId: stage.revisionId,
+                  },
+                  actionId: "capture-frame",
+                  executor: {
+                    pluginId: "clash.director",
+                    version: "0.1.0",
+                    exportId: "capture-frame",
+                    schemaHash: "sha256:" + sha256("executor"),
+                  },
+                  invocationFingerprint: "sha256:" + sha256("invocation"),
+                  parameters: {
+                label:
+                  capturedAssetIndex === 0
+                    ? frame.artifactId
+                    : `${frame.artifactId}-${capturedAssetIndex + 1}`,
+                timeSeconds: capturedAssetIndex,
+                    aspectRatio: frame.aspectRatio,
+                    longEdge: Math.max(frame.width, frame.height),
+                  },
+                  invocationInputRefs: [],
+                  outputContract: [
+                    {
+                      slot: "frame",
+                      assetType: { kind: "media", mediaKind: "image" },
+                      cardinality: { minItems: 1, maxItems: 1 },
+                    },
+                  ],
+                  status: "succeeded",
+                },
               },
-              direction: "output",
-              slot: "director:capture",
-              projectAssetId: directorProjectAssetReferences.id,
-              role: "primary",
-            },
-          ],
-        }),
+        ),
       );
       return;
     }
@@ -560,8 +591,7 @@ async function withProductHost<T>(
       return;
     }
     const directorMediaAsset = options.director?.projectAssets?.find(
-      (asset) =>
-        request.url === `/assets/${encodeURIComponent(asset.id)}`,
+      (asset) => request.url === `/assets/${encodeURIComponent(asset.id)}`,
     );
     if (request.method === "GET" && directorMediaAsset) {
       response.setHeader("content-type", "image/png");
@@ -806,6 +836,7 @@ async function captureMixedFixtureReadback(input: {
           stageId: directorStage.id,
           sourceStageRevisionId: directorStage.revisionId,
           verifiedStageRevisionId: directorStage.revisionId,
+          actionRunIds: captureProjectAssetIds.map((id) => "capture:" + id),
           renderer: {
             id: "clash-director-viewport-webgl",
             contractVersion: 1,

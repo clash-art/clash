@@ -1,0 +1,8 @@
+{
+  "summary": "React Three Fiber Director viewport and exact-time headless capture.",
+  "key_files": {
+    "src/code-components.tsx": "Browser compilation and rendering of trusted single-file Director TSX with react/three imports. This is not a sandbox.",
+    "src/DirectorViewport.tsx": "Shared interactive and headless scene, including code instances and optional default lighting.",
+    "src/headless-entry.tsx": "Exact-time capture entry; component errors reject capture."
+  }
+}

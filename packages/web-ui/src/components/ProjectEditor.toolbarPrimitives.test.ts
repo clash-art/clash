@@ -59,7 +59,7 @@ describe("ProjectEditor toolbar primitives", () => {
 
     expect(sourceMatches(toolbarSource, /<Tooltip label="Select mode \(V\)" placement="right">/)).toBe(true);
     expect(sourceMatches(toolbarSource, /<Tooltip label="Hand mode \(H\)" placement="right">/)).toBe(true);
-    expect(sourceMatches(toolbarSource, /<Tooltip\s+key=\{item\.id\}\s+label=\{item\.label\}\s+placement="right"/)).toBe(true);
+    expect(sourceMatches(toolbarSource, /<Tooltip label="Create node" placement="right">/)).toBe(true);
     expect(sourceMatches(toolbarSource, /<Tooltip label="Auto Layout" placement="right">/)).toBe(true);
     expect(sourceMatches(toolbarSource, /<Tooltip label="Undo" placement="right">/)).toBe(true);
     expect(sourceMatches(toolbarSource, /<Tooltip label="Redo" placement="right">/)).toBe(true);

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Narrative Scenes"
+  short_description: "Stage clear intentions, actions, reactions, and change"
+  default_prompt: "Use $clash-narrative for the requested creative task, following its scope and the project's existing choices."

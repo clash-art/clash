@@ -897,8 +897,7 @@ html.clash-desktop-route[data-clash-sidebar-collapsed="true"] {
   scrollbar-color: transparent transparent;
 }
 
-html.clash-is-scrolling,
-html.clash-is-scrolling * {
+.clash-is-scrolling {
   scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
 
@@ -913,24 +912,22 @@ html.clash-is-scrolling * {
   background: transparent;
   border-radius: 4px;
 }
-html.clash-is-scrolling::-webkit-scrollbar-thumb,
-html.clash-is-scrolling ::-webkit-scrollbar-thumb {
+.clash-is-scrolling::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.2);
 }
-html.clash-is-scrolling::-webkit-scrollbar-thumb:hover,
-html.clash-is-scrolling ::-webkit-scrollbar-thumb:hover {
+.clash-is-scrolling::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.3);
 }
 html.dark.clash-is-scrolling,
-html.dark.clash-is-scrolling * {
+html.dark .clash-is-scrolling {
   scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
 }
 html.dark.clash-is-scrolling::-webkit-scrollbar-thumb,
-html.dark.clash-is-scrolling ::-webkit-scrollbar-thumb {
+html.dark .clash-is-scrolling::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.2);
 }
 html.dark.clash-is-scrolling::-webkit-scrollbar-thumb:hover,
-html.dark.clash-is-scrolling ::-webkit-scrollbar-thumb:hover {
+html.dark .clash-is-scrolling::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.3);
 }
 
@@ -5073,6 +5070,7 @@ html.dark .clash-download-card {
 }
 
 [data-chat-surface="main"] {
+  --composer-frame-padding-bottom: 10px;
   --surface-panel: var(--clash-warm-surface);
   --chat-fg: var(--clash-content-primary);
   --chat-fg-muted: var(--clash-content-muted);
@@ -5245,6 +5243,20 @@ html.dark .clash-download-card {
   font-family: var(--font-chat);
   font-size: 14px;
   line-height: 1.75rem;
+}
+
+/* The editable node must use the same typography as the chat surface;
+   its generic Milkdown styles otherwise override the composer wrapper. */
+[data-chat-surface="main"] .composer-card .clash-chat-input-editor .ProseMirror {
+  font-family: var(--font-chat);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+/* Nord assigns text-base directly to paragraphs, bypassing the editor size. */
+[data-chat-surface="main"] .composer-card .clash-chat-input-editor .ProseMirror p {
+  font-size: inherit;
+  font-family: inherit;
 }
 
 /* Backchat's textarea starts on the composer's shared body inset. Milkdown's

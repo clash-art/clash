@@ -12,7 +12,7 @@
   "key_files": {
     "src/schemas.ts": "Versioned benchmark, outcome, submission, and rubric schemas.",
     "src/evaluator.ts": "Director, Timeline, MG, media, artifact-set, and mixed-lineage grading.",
-    "src/runner.ts": "Isolated workspace provisioning, native Agent execution, product-operation gates, trusted readback dispatch, logs, resume, and outcome generation.",
+    "src/runner.ts": "Isolated workspace provisioning, native Agent execution, product-operation gates, trusted readback dispatch, logs, resume, and outcome generation. Director frame origin uses native Action Run plus Output Commit and exact Asset bytes, not legacy ActionAssetBinding.",
     "src/product-readback.ts": "Independent Asset, Timeline, and Remotion readback matched to submitted bytes or canonical product state.",
     "src/fixture.ts": "Fixture manifest creation, safe installation, provenance receipt, and post-Agent integrity verification.",
     "src/environment.ts": "Score-free functional/content-effect Attempt capture, runner-scaffold separation, modified Workspace capture, and OTLP receipts.",
@@ -26,6 +26,8 @@
     "src/otel.ts": "Score-free OTLP/JSON Attempt trace from normalized Agent actions, sealed runner CLI evidence, and fingerprinted trusted Host readback.",
     "src/cli.ts": "CLI entry point for real Codex, Claude Code, and Pi benchmark runs with explicit ready-Environment model/provider selection; command agents remain portable-only.",
     "src/claude-adapter.test.ts": "Claude print-mode arguments, Project Host readiness before stdio MCP binding, skills, stream-json trajectory, and error contracts.",
-    "src/index.test.ts": "Artifact security, hard-gate, mixed-source, suite, and real child-process runner contracts."
+    "src/index.test.ts": "Artifact security, hard-gate, mixed-source, suite, and real child-process runner contracts.",
+    "src/task-skill-pack.ts": "Resolve a named task pack into the exact per-Task skill set before installation and Environment content locking.",
+    "src/codex-task-skills.ts": "Provide only mounted skill metadata through Codex native developer instructions; automatic global skill instructions are disabled without modifying user configuration."
   }
 }

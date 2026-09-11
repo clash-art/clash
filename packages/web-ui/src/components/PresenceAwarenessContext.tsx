@@ -1,30 +1,79 @@
-/**
- * Surfaces peer-selection info to node components without coupling every
- * leaf node to the awareness hook. ProjectEditor owns the awareness hook
- * and feeds the peer list in here; child node components call
- * `usePeersSelectingNode(id)` for the cheap derived slice.
- *
- * The context value updates on every peer broadcast — but since memoised
- * node components only re-render when THEIR peers list changes (we return
- * a referentially stable empty array when no peer selects this node), the
- * common case is no extra renders.
- */
-import { createContext, useContext, useMemo, type ReactNode } from 'react';
-import type { Peer } from '@clash/web-ui/hooks/usePresenceAwareness';
-
-interface PresenceAwarenessContextValue {
-  /** All peers (everyone except local user). */
-  peers: Peer[];
-  /** Pre-indexed: nodeId → peers selecting that node. */
-  peersByNodeId: Map<string, Peer[]>;
-}
-
-const Ctx = createContext<PresenceAwarenessContextValue>({
-  peers: [],
-  peersByNodeId: new Map(),
-});
+/** Presence updates are independent of the node tree. A cursor broadcast should
+ * only render consumers whose selected slice changed, not every canvas card. */
+import {
+  createContext,
+  useContext,
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
+import type { Peer } from "@clash/web-ui/hooks/usePresenceAwareness";
 
 const EMPTY_PEERS: Peer[] = [];
+
+function samePeer(left: Peer, right: Peer): boolean {
+  return (
+    left === right ||
+    (left.userId === right.userId &&
+      left.userName === right.userName &&
+      left.userAvatar === right.userAvatar &&
+      left.color === right.color &&
+      left.cursor?.x === right.cursor?.x &&
+      left.cursor?.y === right.cursor?.y &&
+      left.selectedNodeIds.length === right.selectedNodeIds.length &&
+      left.selectedNodeIds.every(
+        (id, index) => id === right.selectedNodeIds[index],
+      ))
+  );
+}
+
+function samePeers(left: Peer[], right: Peer[]): boolean {
+  return (
+    left === right ||
+    (left.length === right.length &&
+      left.every((peer, index) => samePeer(peer, right[index])))
+  );
+}
+
+function createPresenceStore(initialPeers: Peer[]) {
+  let peers: Peer[] = EMPTY_PEERS;
+  let peersByNodeId = new Map<string, Peer[]>();
+  const listeners = new Set<() => void>();
+  const store = {
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    getPeers: () => peers,
+    getSelecting: (nodeId: string) => peersByNodeId.get(nodeId) ?? EMPTY_PEERS,
+    update(nextPeers: Peer[]) {
+      if (samePeers(peers, nextPeers)) return;
+      const nextByNodeId = new Map<string, Peer[]>();
+      for (const peer of nextPeers) {
+        for (const nodeId of peer.selectedNodeIds) {
+          const selecting = nextByNodeId.get(nodeId);
+          if (selecting) selecting.push(peer);
+          else nextByNodeId.set(nodeId, [peer]);
+        }
+      }
+      for (const [nodeId, selecting] of nextByNodeId) {
+        const previous = peersByNodeId.get(nodeId);
+        if (previous && samePeers(previous, selecting))
+          nextByNodeId.set(nodeId, previous);
+      }
+      peers = nextPeers;
+      peersByNodeId = nextByNodeId;
+      listeners.forEach((listener) => listener());
+    },
+  };
+  store.update(initialPeers);
+  return store;
+}
+
+const Ctx = createContext(createPresenceStore(EMPTY_PEERS));
 
 export function PresenceAwarenessProvider({
   peers,
@@ -33,29 +82,28 @@ export function PresenceAwarenessProvider({
   peers: Peer[];
   children: ReactNode;
 }) {
-  const value = useMemo<PresenceAwarenessContextValue>(() => {
-    const idx = new Map<string, Peer[]>();
-    for (const peer of peers) {
-      for (const nodeId of peer.selectedNodeIds) {
-        const existing = idx.get(nodeId);
-        if (existing) existing.push(peer);
-        else idx.set(nodeId, [peer]);
-      }
-    }
-    return { peers, peersByNodeId: idx };
-  }, [peers]);
-
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  const [store] = useState(() => createPresenceStore(peers));
+  // Publish after commit, before paint; never mutate an external store during render.
+  useLayoutEffect(() => store.update(peers), [peers, store]);
+  return <Ctx.Provider value={store}>{children}</Ctx.Provider>;
 }
 
 export function usePeersSelectingNode(nodeId: string): Peer[] {
-  const ctx = useContext(Ctx);
-  return ctx.peersByNodeId.get(nodeId) ?? EMPTY_PEERS;
+  const store = useContext(Ctx);
+  const snapshot = () => store.getSelecting(nodeId);
+  return useSyncExternalStore(store.subscribe, snapshot, snapshot);
 }
 
-/** All peers currently broadcasting awareness in this project — used
- *  by attribution UI to resolve userId → userName cheaply without an
- *  API round-trip when the actor is also a live participant. */
+/** Full awareness state, including cursor coordinates. */
 export function useAllPeers(): Peer[] {
-  return useContext(Ctx).peers;
+  const store = useContext(Ctx);
+  return useSyncExternalStore(store.subscribe, store.getPeers, store.getPeers);
+}
+
+/** Resolve attribution independently of cursor/selection updates. */
+export function usePeerName(userId: string | undefined): string | undefined {
+  const store = useContext(Ctx);
+  const snapshot = () =>
+    store.getPeers().find((peer) => peer.userId === userId)?.userName;
+  return useSyncExternalStore(store.subscribe, snapshot, snapshot);
 }

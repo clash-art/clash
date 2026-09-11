@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clash Film Production"
+  short_description: "Build consistent characters, sets, and connected scenes"
+  default_prompt: "Use $clash-film-production to create a coherent AI film with reusable character and set references, continuous performances, and editable scene coverage."

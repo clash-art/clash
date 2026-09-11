@@ -1,112 +1,59 @@
-# Canvas: Nodes, Structures & Generation
+# Canvas and generation
 
-## Node JSON Structure
+Canvas arranges Project content. A Model or Action card is a placement of a
+Project Generator; its `generatorId` selects the same authored Revision used by
+the Generator API. Canvas is not a separate generation authority.
 
-Every node from `clash canvas list/get --json`:
-
-```json
-{
-  "id": "8550f3e5",
-  "type": "text",
-  "data": {
-    "label": "Scene Description",
-    "content": "A cat wearing shoes..."
-  },
-  "parent_id": null,
-  "position": { "x": 60, "y": 30 },
-  "width": 300,
-  "height": 400
-}
-```
-
-## Node Types
-
-### text
-
-Content node. Use for scripts, descriptions, prompts, style guides.
-
-Key fields: `data.label`, `data.content`
-
-### group
-
-Container. Nodes inside a group share context for generation.
-
-Key fields: `data.label`
-
-Children reference the group via `parent_id`.
-
-### image_gen / video_gen
-
-Generation trigger. When added or executed, the platform generates media.
-
-Key fields: `data.actionType`, `data.modelId`, `data.prompt`, `data.modelParams`
-
-### image / video
-
-Asset node. Created automatically when generation completes.
-
-Key fields: `data.status` (`"pending"` → `"completed"` / `"failed"`), `data.src`, `data.prompt`, `data.modelId`
-
-### action-badge
-
-Internal ReactFlow type for generation nodes. You'll see this in `canvas list` output — it's the same as `image_gen`/`video_gen` but rendered differently in the UI.
-
-## Generation Pipeline
+## Read the current placement
 
 ```bash
-# 1. Create a group
-clash canvas add --project <id> --type group --label "Scene 1" --json
-# → {"node_id": "a1b2c3d4", ...}
-
-# 2. Add text context (inside group)
-clash canvas add --project <id> --type text --label "Prompt" \
-  --content "Cinematic sunset over mountains, golden hour, 4K" \
-  --parent a1b2c3d4 --json
-
-# 3. Add generation node (inside same group)
-clash canvas add --project <id> --type image_gen --label "Sunset" \
-  --parent a1b2c3d4 --json
-
-# 4. Platform auto-processes. Or trigger manually:
-clash canvas execute --project <id> --node <action-badge-id> --json
-
-# 5. Check result
-clash canvas list --project <id> --type image --json
+clash canvas list --project <id> --json
+clash canvas get --project <id> --node <node-id> --json
+clash canvas edges --project <id> --json
 ```
 
-The generation system reads text nodes in the same group as context. Always add text nodes before generation nodes.
+Read before changing an existing node. The CLI records observations implicitly.
+A referenced node is immutable as a whole: use `clash canvas copy` to preserve
+existing downstream references, then explicitly rewire the intended consumers.
+Groups organize drafts; membership alone does not supply a generation input.
 
-## Structuring a Project
+| Project content | Canvas relationship |
+| --- | --- |
+| Generator | A card places its identity; edits advance the same Generator Revision. |
+| Media Asset | Image, video, audio or model nodes reference the immutable Project Asset. |
+| Text Document | Applied text references an exact Document Asset revision; editable draft text must be applied before it is used as that reference. |
+| Timeline | The editor operates the Project Timeline; rendered output pins its revision. |
+| Group | An organizational container, not an implicit prompt or an execution engine. |
 
-### Simple (flat)
+## Author and execute the same Generator
 
-Text + generation nodes at top level. Quick for single-shot generation.
+1. Read the live Generator Definition and the selected Model Card. For a
+   Model, `clash.model-generation` supplies the Definition for the output kind;
+   the Model supplies capabilities, supported inputs and parameter values.
+2. For an existing card, read its `generatorId` and advance that Generator.
+   For a new draft, create a Generator with `placement` to create the card
+   atomically. Consult `clash generators contract create` or `advance` for the
+   request shape. Do not write a second prompt/model/parameter state into Canvas.
+3. Provide explicit input references and ordered content parts. Preserve each
+   input's slot, occurrence and exact Asset revision. An existing Document
+   reference includes `documentAssetId` and `revisionId`; use its saved revision
+   even if the Document head later advances. Image reorder changes which image
+   occupies a time position; it must not reset custom keyframe timing. Replacing
+   a reference in place retains its role and timing.
+4. Submit the Action against the exact Revision. If the user selected Hilo or
+   another Provider, pass its configured `providerAccountId` in submission
+   input. Provider routing does not belong in authored Model state.
+5. Poll the returned Action Run until terminal, then read its Output Commit.
+   Use the committed Asset for subsequent generation or Timeline editing.
 
-### Grouped (recommended)
+The command sequence is documented in [commands.md](commands.md). CLI and MCP
+operate these same facts. Adding a group, prompt or card is not evidence of a
+finished generation. A pending Canvas result is a projection of the background
+Run, not a completed Asset. An existing output placement may be deleted or
+rewired without changing the immutable Run and Output Commit.
 
-```
-Scene 1 (group)
-├── Text: "Script: Dawn breaks over the city..."
-├── Text: "Style: Cinematic, warm colors, shallow DOF"
-└── image_gen: "Hero Shot"
-
-Scene 2 (group)
-├── Text: "Script: The protagonist enters..."
-└── video_gen: "Scene 2 Animation"
-```
-
-### Multi-scene storyboard
-
-Create one group per scene. Each group contains text nodes for script/style and generation nodes for visuals. This maps naturally to a video timeline.
-
-## Execution observation
-
-`canvas execute --json` returns `childNodeId`. The child starts with
-`"status": "pending"`; observe that Project node until it completes or fails:
-
-```bash
-clash canvas get --project <id> --node <child-node-id> --json
-```
-
-On completion, read the node's stable Asset identity. Never treat a Provider
-task token or hosted storage result as the media identity.
+For local-agent text, use the shipped `clash.agent-text` / `text` Definition and
+its Agent Text Action Card. This is a configured agent session, not a Model
+Provider route. It commits an exact text Document revision through the same
+Generator lifecycle. Read that body with `clash assets documents get
+<documentAssetId> --revision <revisionId>`.

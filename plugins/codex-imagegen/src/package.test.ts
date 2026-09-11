@@ -167,8 +167,27 @@ describe("Codex ImageGen executable action package", () => {
     });
   });
 
-  it("forwards a reduced arbitrary ratio to the Codex host tool", async () => {
-    const generate = vi.fn(async () => ({
+  it.each([
+    {
+      image_model: "gpt-image-2.5-flare",
+      quality: "low",
+      resolution: "1536x1024",
+      background: "transparent",
+    },
+    {
+      image_model: "gpt-image-2.5-sunburst",
+      quality: "max",
+      resolution: "1280x720",
+      background: "opaque",
+    },
+    {
+      image_model: "auto",
+      quality: "auto",
+      resolution: "auto",
+      background: "auto",
+    },
+  ])("forwards ratio and prompt preferences %j", async (preferences) => {
+    const generate = vi.fn(async (_input: { prompt: string }) => ({
       assetId: "generated-free-ratio",
       uri: "clash-asset://generated-free-ratio",
       kind: "image" as const,
@@ -189,7 +208,11 @@ describe("Codex ImageGen executable action package", () => {
           kind: "action",
         },
         input: {
-          values: { prompt: "A paper-cut moon", aspect_ratio: "14:10" },
+          values: {
+            prompt: "A paper-cut moon",
+            aspect_ratio: "14:10",
+            ...preferences,
+          },
           references: [],
         },
         actor: { kind: "user", id: "user-1" },
@@ -200,6 +223,18 @@ describe("Codex ImageGen executable action package", () => {
     expect(generate).toHaveBeenCalledWith(
       expect.objectContaining({ aspectRatio: "7:5" }),
     );
+    const request = generate.mock.calls[0]?.[0] as unknown as {
+      prompt: string;
+    };
+    expect(request.prompt).toContain("A paper-cut moon");
+    for (const value of Object.values(preferences)) {
+      if (value !== "auto") expect(request.prompt).toContain(value);
+    }
+    if (preferences.background === "transparent")
+      expect(request.prompt).toMatch(/alpha/i);
+    if (preferences.image_model === "auto")
+      expect(request.prompt).toBe("A paper-cut moon");
+    expect(generate).toHaveBeenCalledTimes(1);
   });
 
   it("exports the same action as an inert transport-neutral plugin module", async () => {

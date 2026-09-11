@@ -1313,7 +1313,117 @@ const PIKA_2026_TEXT_MODEL_CARDS = (
   maxRuntimeMs: 5 * 60 * 1000,
 }));
 
+// Sources and provider differences: apps/docs/guide/gpt-image-25.md.
+const GPT_IMAGE_25_CARDS = ["flare", "sunburst"].map((variant) => ({
+  constraints: [],
+  id: `gpt-image-2.5-${variant}`,
+  name: `GPT Image 2.5 ${variant === "flare" ? "Flare" : "Sunburst"}`,
+  provider: "OpenAI",
+  kind: "image",
+  availableProviders: ["openai", "official", "pika", "replicate"],
+  defaultProvider: "official",
+  defaultAspectRatio: "1:1",
+  description:
+    variant === "flare"
+      ? "Fast, high-quality everyday image generation and editing."
+      : "Precision image generation and editing for intricate detail.",
+  parameters: [
+    {
+      id: "aspect_ratio",
+      label: "Aspect Ratio",
+      type: "select",
+      options: ["auto", "1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16"].map(
+        (value) => ({ label: value, value }),
+      ),
+      defaultValue: "auto",
+    },
+    {
+      id: "resolution",
+      label: "Resolution",
+      type: "select",
+      description:
+        "Exact output dimensions. Select Auto aspect ratio or a ratio matching these dimensions.",
+      options: [
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "1536x1152",
+        "1152x1536",
+        "2048x2048",
+        "2048x1152",
+        "1152x2048",
+        "3840x2160",
+        "2160x3840",
+      ].map((value) => ({ label: value, value })),
+      defaultValue: "auto",
+    },
+    {
+      id: "quality",
+      label: "Quality",
+      type: "select",
+      options: ["auto", "low", "medium", "high", "xhigh", "max"].map(
+        (value) => ({ label: value, value }),
+      ),
+      defaultValue: "auto",
+    },
+    {
+      id: "background",
+      label: "Background",
+      type: "select",
+      options: ["auto", "opaque", "transparent"].map((value) => ({
+        label: value,
+        value,
+      })),
+      defaultValue: "auto",
+    },
+    {
+      id: "output_format",
+      label: "Format",
+      type: "select",
+      options: ["png", "jpeg", "webp"].map((value) => ({
+        label: value,
+        value,
+      })),
+      defaultValue: "png",
+    },
+    {
+      id: "moderation",
+      label: "Moderation",
+      type: "select",
+      options: ["auto", "low"].map((value) => ({ label: value, value })),
+      defaultValue: "auto",
+    },
+    {
+      id: "count",
+      label: "Count",
+      type: "number",
+      min: 1,
+      max: 1,
+      step: 1,
+      defaultValue: 1,
+    },
+  ],
+  defaultParams: {
+    aspect_ratio: "auto",
+    resolution: "auto",
+    quality: "auto",
+    background: "auto",
+    output_format: "png",
+    moderation: "auto",
+    count: 1,
+  },
+  input: {
+    requiresPrompt: true,
+    inputMode: { images: { max: 16 } },
+    promptModalities: ["text", "image"],
+    referenceBinding: GROUPED_REFERENCE_BINDING,
+  },
+  maxRuntimeMs: 10 * 60 * 1000,
+}));
+
 const MODEL_CARD_DEFINITIONS = [
+  ...GPT_IMAGE_25_CARDS,
   ...PIKA_2026_TEXT_MODEL_CARDS,
   {
     id: 'seedream-5-pro',
@@ -4956,6 +5066,163 @@ const SEEDANCE_2_5_VOLCENGINE_COMMON_PARAMETER_OVERRIDES: ModelParameter[] = [
 
 const MODEL_PROVIDER_IMPLEMENTATION_ROWS: ModelProviderImplementationRow[] = [
   [
+    "gpt-image-2.5-flare",
+    "openai",
+    "openai",
+    "openai-images",
+    "gpt-image-2.5-flare",
+    10,
+    {
+      region: "global",
+      credentials: ["apiKey"],
+      executorPluginId: "clash.gpt-image",
+      executorExportId: "openai-execute",
+      assetInputs: IMAGE_PROVIDER_ASSET_INPUTS,
+    },
+  ],
+  [
+    "gpt-image-2.5-sunburst",
+    "openai",
+    "openai",
+    "openai-images",
+    "gpt-image-2.5-sunburst",
+    10,
+    {
+      region: "global",
+      credentials: ["apiKey"],
+      executorPluginId: "clash.gpt-image",
+      executorExportId: "openai-execute",
+      assetInputs: IMAGE_PROVIDER_ASSET_INPUTS,
+    },
+  ],
+  [
+    "gpt-image-2.5-flare",
+    "official",
+    "openai",
+    "openai-images",
+    "gpt-image-2.5-flare",
+    10,
+    {
+      region: "global",
+      credentials: ["apiKey"],
+      executorPluginId: "clash.gpt-image",
+      executorExportId: "openai-execute",
+      assetInputs: IMAGE_PROVIDER_ASSET_INPUTS,
+    },
+  ],
+  [
+    "gpt-image-2.5-flare",
+    "replicate",
+    "replicate",
+    "replicate",
+    "openai/gpt-image-2.5-flare",
+    25,
+    {
+      credentials: ["apiKey"],
+      executorPluginId: "clash.gpt-image",
+      executorExportId: "replicate-execute",
+      assetInputs: IMAGE_PROVIDER_ASSET_INPUTS,
+    },
+  ],
+  [
+    "gpt-image-2.5-flare",
+    "pika",
+    "pika",
+    "pika",
+    "openai/gpt-image-2.5-flare/text-to-image",
+    18,
+    {
+      credentials: ["apiKey"],
+      ...PIKA_EXECUTOR_OPTIONS,
+      parameterOverrides: PIKA_GPT_IMAGE_PARAMETER_OVERRIDES.filter(
+        (parameter) => parameter.id !== "quality" && parameter.id !== "count",
+      ).concat([
+        {
+          id: "quality",
+          label: "Quality",
+          type: "select",
+          required: false,
+          options: ["low", "medium", "high", "xhigh", "max"].map((value) => ({
+            label: value,
+            value,
+          })),
+          defaultValue: "medium",
+        },
+      ]),
+      defaultParamOverrides: {
+        aspect_ratio: "1:1",
+        resolution: "1K",
+        quality: "medium",
+        count: 1,
+      },
+      excludedParameterIds: ["moderation"],
+    },
+  ],
+
+  [
+    "gpt-image-2.5-sunburst",
+    "official",
+    "openai",
+    "openai-images",
+    "gpt-image-2.5-sunburst",
+    10,
+    {
+      region: "global",
+      credentials: ["apiKey"],
+      executorPluginId: "clash.gpt-image",
+      executorExportId: "openai-execute",
+      assetInputs: IMAGE_PROVIDER_ASSET_INPUTS,
+    },
+  ],
+  [
+    "gpt-image-2.5-sunburst",
+    "replicate",
+    "replicate",
+    "replicate",
+    "openai/gpt-image-2.5-sunburst",
+    25,
+    {
+      credentials: ["apiKey"],
+      executorPluginId: "clash.gpt-image",
+      executorExportId: "replicate-execute",
+      assetInputs: IMAGE_PROVIDER_ASSET_INPUTS,
+    },
+  ],
+  [
+    "gpt-image-2.5-sunburst",
+    "pika",
+    "pika",
+    "pika",
+    "openai/gpt-image-2.5-sunburst/text-to-image",
+    18,
+    {
+      credentials: ["apiKey"],
+      ...PIKA_EXECUTOR_OPTIONS,
+      parameterOverrides: PIKA_GPT_IMAGE_PARAMETER_OVERRIDES.filter(
+        (parameter) => parameter.id !== "quality" && parameter.id !== "count",
+      ).concat([
+        {
+          id: "quality",
+          label: "Quality",
+          type: "select",
+          required: false,
+          options: ["low", "medium", "high", "xhigh", "max"].map((value) => ({
+            label: value,
+            value,
+          })),
+          defaultValue: "medium",
+        },
+      ]),
+      defaultParamOverrides: {
+        aspect_ratio: "1:1",
+        resolution: "1K",
+        quality: "medium",
+        count: 1,
+      },
+      excludedParameterIds: ["moderation"],
+    },
+  ],
+  [
     "sensevoice-small-asr",
     "local",
     "local",
@@ -5979,7 +6246,7 @@ const MODEL_PROVIDER_IMPLEMENTATIONS_BY_ID = modelProviderImplementationsById(MO
 
 const MODEL_CARD_DEFINITIONS_WITH_PROVIDER_IMPLEMENTATIONS = MODEL_CARD_DEFINITIONS.map((model) => ({
   ...model,
-  constraints: model.constraints ?? [],
+  constraints: "constraints" in model ? model.constraints ?? [] : [],
   ...(MODEL_PROVIDER_IMPLEMENTATIONS_BY_ID[model.id]
     ? { providerImplementations: MODEL_PROVIDER_IMPLEMENTATIONS_BY_ID[model.id] }
     : {}),

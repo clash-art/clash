@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DIRECTOR_CODE_INPUT_SLOT, directorCodeRegistryError } from "./director-code.js";
 
 import {
   DirectorStageStateSchema,
@@ -103,7 +104,12 @@ export function projectDirectorStageToGeneratorRevisionState(
       message: parsed.error.message,
     };
   const slot = definition.projectionSurface!.mediaInputSlot!;
+  const registryError = directorCodeRegistryError(parsed.data);
+  if (registryError) return { ok: false, code: "DIRECTOR_CODE_REGISTRY_INVALID", message: registryError };
   const refs: GeneratorInputRef[] = [];
+  for (const component of parsed.data.codeComponents ?? []) {
+    refs.push({ slot: DIRECTOR_CODE_INPUT_SLOT, itemKey: component.id, target: component.source });
+  }
   const add = (itemKey: string, projectAssetId: string | undefined) => {
     if (projectAssetId && !projectAssetId.startsWith("builtin:"))
       refs.push({ slot, itemKey, target: { kind: "media", projectAssetId } });
@@ -159,6 +165,7 @@ export function projectDirectorStageFromGeneratorRevision(
     revision.state[definition.projectionSurface!.stateKey],
   );
   if (!parsed.success) return fail("GENERATOR_PROJECTION_ENVELOPE_INVALID");
+  if (directorCodeRegistryError(parsed.data.state)) return fail("DIRECTOR_CODE_REGISTRY_INVALID");
   return {
     ok: true,
     stage: {

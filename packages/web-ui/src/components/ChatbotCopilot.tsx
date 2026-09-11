@@ -1,3 +1,4 @@
+import type { AcpForkPoint } from "@clash/shared-types";
 import {
   memo,
   useState,
@@ -193,7 +194,7 @@ interface ChatbotCopilotProps {
   onFollowingAgentChange?: (following: boolean) => void;
   onAgentCanvasTarget?: (nodeId: string) => void;
   onOpenClashEntity?: (entity: ClashProjectEntity) => void;
-  onAddNode?: (type: string, extraData?: any) => string;
+  onAddNode?: (type: string, extraData?: any) => string | Promise<string>;
   onRemoveNode?: (
     nodeId: string,
     options?: { actorClientType?: string; ifMatch?: string },
@@ -846,6 +847,20 @@ function ChatbotCopilot({
   /** When set, the runtime picker dialog is open for this runtime. */
   const [runtimePicker, setRuntimePicker] = useState<Runtime | null>(null);
   const clashRt = useClashRuntime();
+  const notifiedModelFallbacks = useRef(new Set<string>());
+  useEffect(() => {
+    const fallback = clashRt.modelFallback;
+    if (chatMode !== "runtime" || !fallback || !clashRt.sessionId) return;
+    const key = JSON.stringify([clashRt.sessionId, fallback.from, fallback.to]);
+    if (notifiedModelFallbacks.current.has(key)) return;
+    notifiedModelFallbacks.current.add(key);
+    feedback.notify({
+      variant: "warning",
+      title: `已切换至 ${fallback.to}`,
+      message: `当前运行时无法识别 ${fallback.from}。可在窗口右上角更新 ACP。`,
+    });
+  }, [chatMode, clashRt.sessionId, clashRt.modelFallback, feedback]);
+
   const slashCommandQuery = useMemo(() => {
     if (chatMode === "cloud") return null;
     const draft = input.replace(/[\r\n]+$/g, "");
@@ -1559,18 +1574,19 @@ function ChatbotCopilot({
   ]);
 
   const cloudIsProcessing = status === "submitted" || status === "streaming";
-  const runtimeIsConnecting = clashRt.status === "connecting";
+  const runtimeHistoryPending =
+    !!switchingRuntimeSessionId &&
+    (clashRt.agentUIState.sessionId !== switchingRuntimeSessionId ||
+      clashRt.agentUIState.turnOrder.length === 0);
   const runtimeTranscriptHasTurns = clashRt.agentUIState.turnOrder.some(
     (turnId) => clashRt.agentUIState.turns[turnId]?.status !== "queued",
   );
   const runtimeTurnIsProcessing =
     clashRt.status === "sending" ||
     clashRt.status === "streaming" ||
-    (clashRt.status === "connecting" && runtimeTranscriptHasTurns);
+    (clashRt.status === "connecting" && !!clashRt.agentUIState.activeTurnId);
   const isProcessing =
     chatMode === "runtime" ? runtimeTurnIsProcessing : cloudIsProcessing;
-  const showRuntimeConnectingStatus =
-    chatMode === "runtime" && runtimeIsConnecting && !isDesktopLocalMode;
   const showProcessingIndicator =
     chatMode === "runtime"
       ? runtimeTranscriptHasTurns && runtimeTurnIsProcessing
@@ -1747,6 +1763,7 @@ function ChatbotCopilot({
     )
       return;
 
+    const pendingCreates: Promise<unknown>[] = [];
     const pendingNodeDeletes: Array<{
       nodeId: string;
       ifMatch?: string;
@@ -1883,7 +1900,8 @@ function ChatbotCopilot({
               : {}),
             ...(patchNode.style ? { style: patchNode.style } : {}),
           });
-          onAgentCanvasTarget?.(createdNodeId || patchNode.id);
+          if (createdNodeId && typeof createdNodeId !== "string") pendingCreates.push(createdNodeId.then((id) => onAgentCanvasTarget?.(id || patchNode.id)));
+          else onAgentCanvasTarget?.(createdNodeId || patchNode.id);
         }
       }
     }
@@ -1895,7 +1913,7 @@ function ChatbotCopilot({
       (pendingEdgeDeletes.length > 0 && onRemoveEdge) ||
       (pendingTimelineApplies.length > 0 && onApplyTimeline)
     ) {
-      window.setTimeout(() => {
+      const applyPending = () => window.setTimeout(async () => {
         if (onRemoveNode) {
           for (const deletion of pendingNodeDeletes) {
             onRemoveNode(
@@ -1956,7 +1974,7 @@ function ChatbotCopilot({
         }
         if (onApplyTimeline) {
           for (const apply of pendingTimelineApplies) {
-            onApplyTimeline(
+            await onApplyTimeline(
               apply.nodeId,
               apply.dsl,
               apply.requiresReadProof
@@ -1969,6 +1987,10 @@ function ChatbotCopilot({
           }
         }
       }, 0);
+      if (pendingCreates.length) void Promise.all(pendingCreates).then(applyPending).catch((error) => console.error("Canvas patch could not be applied", error));
+      else applyPending();
+    } else if (pendingCreates.length) {
+      void Promise.all(pendingCreates).catch((error) => console.error("Canvas creation failed", error));
     }
   }, [
     actorUserId,
@@ -2060,7 +2082,7 @@ function ChatbotCopilot({
   ]);
 
   const forkRuntimeSession = useCallback(
-    (item: CopilotSessionHistoryItem) => {
+    (item: CopilotSessionHistoryItem, forkPoint?: AcpForkPoint) => {
       if (!item.runtimeId || !item.acpSessionId) return;
       const nextAgentId =
         item.agentId ?? effectiveSessionHarnessId ?? undefined;
@@ -2076,6 +2098,7 @@ function ChatbotCopilot({
           ? { permissionModeId: item.permissionMode }
           : {}),
         forkFromAcpSessionId: item.acpSessionId,
+        ...(forkPoint ? { forkPoint } : {}),
       });
     },
     [
@@ -2087,9 +2110,9 @@ function ChatbotCopilot({
     ],
   );
 
-  const forkCurrentRuntimeSession = useCallback(() => {
+  const forkCurrentRuntimeSession = useCallback((point?: AcpForkPoint) => {
     if (!runtimeHistoryItem?.supportsSessionFork) return;
-    forkRuntimeSession(runtimeHistoryItem);
+    forkRuntimeSession(runtimeHistoryItem, point);
   }, [forkRuntimeSession, runtimeHistoryItem]);
 
   const handleStop = async () => {
@@ -3004,6 +3027,7 @@ function ChatbotCopilot({
                         </div>
                       </div>
 
+
                       {chatMode === "runtime" && (
                         <RuntimeSessionTimeline
                           className="flex-1 min-h-0"
@@ -3013,9 +3037,10 @@ function ChatbotCopilot({
                           mentionableNodes={mentionableNodes}
                           clashEntities={clashProjectEntities}
                           onOpenClashEntity={onOpenClashEntity}
+                          onForkAtMessage={clashRt.supportsMessageFork ? forkCurrentRuntimeSession : undefined}
                           onFork={
                             runtimeHistoryItem?.supportsSessionFork
-                              ? forkCurrentRuntimeSession
+                              ? () => forkCurrentRuntimeSession()
                               : undefined
                           }
                           slots={{
@@ -3305,15 +3330,6 @@ function ChatbotCopilot({
                             ) : null,
                             wrapConversationContent: (children) => (
                               <>
-                                {showRuntimeConnectingStatus && (
-                                  <div
-                                    role="status"
-                                    aria-live="polite"
-                                    className="chat-turn-frame mx-auto w-full max-w-3xl text-xs italic text-stone-600 dark:text-stone-300"
-                                  >
-                                    {t("copilot.status.connecting")}
-                                  </div>
-                                )}
                                 {runtimeAlertMessage && (
                                   <div className="chat-turn-frame mx-auto w-full max-w-3xl">
                                     <InlineAlert
@@ -3349,15 +3365,28 @@ function ChatbotCopilot({
                                       />
                                     </div>
                                   )}
-                                {switchingRuntimeSessionId ? (
-                                  <div
+                                {runtimeHistoryPending ? (
+                                  <motion.div
                                     role="status"
                                     aria-label="Loading session"
                                     aria-live="polite"
-                                    className="flex min-h-40 items-center justify-center text-sm text-content-secondary"
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    transition={{ delay: 0.15, duration: 0.15 }}
+                                    className="chat-turn-frame mx-auto w-full max-w-3xl py-6"
                                   >
-                                    Loading session…
-                                  </div>
+                                    <div
+                                      aria-hidden="true"
+                                      className="space-y-6 motion-safe:animate-pulse"
+                                    >
+                                      <div className="ml-auto h-9 w-2/5 rounded-xl bg-current/[0.05]" />
+                                      <div className="space-y-3">
+                                        <div className="h-3 w-4/5 rounded-full bg-current/[0.05]" />
+                                        <div className="h-3 w-3/5 rounded-full bg-current/[0.05]" />
+                                        <div className="h-3 w-2/5 rounded-full bg-current/[0.05]" />
+                                      </div>
+                                    </div>
+                                  </motion.div>
                                 ) : (
                                   children
                                 )}
@@ -5264,9 +5293,7 @@ function RuntimeEmptyState({
 }) {
   const { t } = useTranslation();
   if (startupPending) {
-    return (
-      <RuntimeLoadingStatus label={t("copilot.status.desktopLocalStarting")} />
-    );
+    return null;
   }
   const hasLocalAgent =
     !!localRuntime &&
@@ -5297,9 +5324,7 @@ function RuntimeEmptyState({
     (status === "idle" || status === "connecting") &&
     (!localRuntime || hasLocalAgent)
   ) {
-    return (
-      <RuntimeLoadingStatus label={t("copilot.status.desktopLocalStarting")} />
-    );
+    return null;
   }
   if (!renderEmptyActivity) return null;
   if (desktopLocalMode && (status === "draft" || ready)) return activitySlot;
@@ -5517,33 +5542,6 @@ function AgentStatusLine({ label }: { label: string }) {
         </motion.span>
       </AnimatePresence>
     </motion.div>
-  );
-}
-
-function RuntimeLoadingStatus({ label }: { label: string }) {
-  return (
-    <div
-      role="status"
-      aria-label={label}
-      aria-live="polite"
-      className="flex min-h-[calc(100dvh-6.5rem)] items-center justify-center"
-    >
-      <span aria-hidden="true" className="flex items-center gap-1.5">
-        {[0, 1, 2].map((index) => (
-          <motion.span
-            key={index}
-            className="h-2 w-2 rounded-full bg-brand"
-            animate={{ opacity: [0.3, 1, 0.3], scale: [0.82, 1, 0.82] }}
-            transition={{
-              duration: 1.05,
-              repeat: Infinity,
-              ease: "easeInOut",
-              delay: index * 0.14,
-            }}
-          />
-        ))}
-      </span>
-    </div>
   );
 }
 

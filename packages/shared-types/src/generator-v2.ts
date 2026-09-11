@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isModelGenerationOutputType } from "./model-output-contract.js";
 
 import { AssetKindSchema } from "./assets.js";
 import { ExecutablePluginJsonValueSchema } from "./plugin-json-value.js";
@@ -228,7 +229,9 @@ export type GeneratorActionOutputContract = z.infer<
 export const GeneratorActionDefinitionSchema = z
   .object({
     id: nonEmptyIdSchema,
-    executorExportId: nonEmptyIdSchema,
+    executorExportId: nonEmptyIdSchema.optional(),
+    /** Host selects and freezes the Model's Provider; no plugin Action function is invoked. */
+    modelExecution: z.literal(true).optional(),
     parametersSchema: jsonObjectSchema,
     selectOutputsByParameter: nonEmptyIdSchema.optional(),
     /** Provider-independent model consumption contract resolved by the Host. */
@@ -243,7 +246,15 @@ export const GeneratorActionDefinitionSchema = z
     outputs: GeneratorActionOutputContractSchema,
   })
   .strict()
-  .superRefine(({ invocationInputs, modelConsumer }, context) => {
+  .superRefine(({ invocationInputs, modelConsumer, modelExecution, executorExportId, outputs }, context) => {
+    if (Boolean(executorExportId) === Boolean(modelExecution)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["executorExportId"],
+        message: "An Action requires exactly one plugin executor or Host model execution declaration." });
+    }
+    if (modelExecution && (modelConsumer || outputs.length !== 1 || !outputs[0] || !isModelGenerationOutputType(outputs[0].assetType))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["modelExecution"],
+        message: "Host model execution requires one media or plain-text Document output and cannot also delegate to a model-consumer Action plugin." });
+    }
     const seen = new Set<string>();
     invocationInputs.forEach((input, index) => {
       if (seen.has(input.slot)) {

@@ -1,0 +1,23 @@
+{
+  "apiVersion": "clash.plugin/v1",
+  "id": "clash.agent-text",
+  "version": "0.1.0",
+  "name": "Agent Text",
+  "description": "Generate a text Document through a configured local agent.",
+  "author": "Clash",
+  "runtime": {
+    "kind": "local",
+    "transport": "stdio",
+    "entrypoint": "dist/stdio.mjs"
+  },
+  "contributes": {
+    "cards": [
+      { "id": "agent-text", "kind": "action-card", "path": "cards/agent-text.json" }
+    ],
+    "generators": [
+      { "id": "text", "kind": "generator", "path": "generators/text.json" }
+    ],
+    "functions": [{ "id": "generate-text", "kind": "action" }],
+    "hostTools": ["agent.text"]
+  }
+}

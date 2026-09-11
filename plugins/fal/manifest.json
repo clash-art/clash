@@ -15,7 +15,10 @@
       {
         "id": "fal-execute",
         "kind": "provider-executor",
-        "operations": ["submit", "poll"]
+        "operations": [
+          "submit",
+          "poll"
+        ]
       }
     ],
     "providers": [
@@ -115,6 +118,16 @@
         "id": "minimax-h3-startend",
         "kind": "model-provider-binding",
         "path": "bindings/minimax-h3-startend.json"
+      },
+      {
+        "id": "gpt-image-2.5-flare",
+        "kind": "model-provider-binding",
+        "path": "bindings/gpt-image-2.5-flare.json"
+      },
+      {
+        "id": "gpt-image-2.5-sunburst",
+        "kind": "model-provider-binding",
+        "path": "bindings/gpt-image-2.5-sunburst.json"
       }
     ]
   },

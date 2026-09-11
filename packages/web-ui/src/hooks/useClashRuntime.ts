@@ -1,3 +1,4 @@
+import type { AcpForkPoint } from "@clash/shared-types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { visibleUserPromptText } from "@clash/shared-runtime";
 import {
@@ -169,6 +170,7 @@ export interface ClashRuntimeSelectOptions {
   projectId?: string;
   resumeAcpSessionId?: string;
   forkFromAcpSessionId?: string;
+  forkPoint?: AcpForkPoint;
   freshSession?: boolean;
   agentId?: string;
   permissionModeId?: string;
@@ -304,6 +306,8 @@ export interface UseClashRuntimeReturn {
   errorMessage: string | null;
   transientStatus: RuntimeTransientStatus | null;
   diagnostics: RuntimeDiagnostic[];
+  modelFallback: { from: string; to: string } | null;
+  supportsMessageFork: boolean;
   /** Shared canonical state machine used by Backchat and Clash. */
   agentUIStore: AgentUIStore;
   agentUIState: AgentUIState;
@@ -1224,6 +1228,11 @@ export function useClashRuntime(): UseClashRuntimeReturn {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [transientStatus, setTransientStatus] =
     useState<RuntimeTransientStatus | null>(null);
+  const [modelFallback, setModelFallback] = useState<{
+    from: string;
+    to: string;
+  } | null>(null);
+  const [supportsMessageFork, setSupportsMessageFork] = useState(false);
   const [diagnostics, setDiagnostics] = useState<RuntimeDiagnostic[]>([]);
   const [agentUISessions] = useState(() => createAgentUISessionRegistry());
   const [agentUIStore, setAgentUIStoreState] = useState<AgentUIStore>(() =>
@@ -1762,6 +1771,8 @@ export function useClashRuntime(): UseClashRuntimeReturn {
       setErrorMessage(null);
       setTransientStatus(null);
       setDiagnostics([]);
+      setModelFallback(null);
+      setSupportsMessageFork(false);
     },
     [closeSessionSocket, replaceAgentUIStore, replacePromptQueue],
   );
@@ -1773,9 +1784,11 @@ export function useClashRuntime(): UseClashRuntimeReturn {
         session_id?: string;
         acp_session_id?: string;
         supports_session_fork?: boolean;
+        supports_message_fork?: boolean;
         turn_id?: string;
         event?: unknown;
         config_options?: unknown;
+        model_fallback?: { from: string; to: string };
         modes?: unknown;
         message?: string;
         detail?: string;
@@ -1813,6 +1826,8 @@ export function useClashRuntime(): UseClashRuntimeReturn {
           return;
         case "session.ready":
           {
+            setModelFallback(msg.model_fallback ?? null);
+            setSupportsMessageFork(msg.supports_message_fork === true);
             const configOptions = normalizeSessionConfigOptions(
               msg.config_options,
             );
@@ -2385,7 +2400,7 @@ export function useClashRuntime(): UseClashRuntimeReturn {
                 ? { resume_session_id: resumeAcpSessionId }
                 : {}),
               ...(forkFromAcpSessionId
-                ? { fork_session_id: forkFromAcpSessionId }
+                ? { fork_session_id: forkFromAcpSessionId, ...(resolvedOpts?.forkPoint ? { fork_point: resolvedOpts.forkPoint } : {}) }
                 : {}),
             }),
           },
@@ -2910,6 +2925,8 @@ export function useClashRuntime(): UseClashRuntimeReturn {
     errorMessage,
     transientStatus,
     diagnostics,
+    modelFallback,
+    supportsMessageFork,
     agentUIStore,
     agentUIState,
     messages,

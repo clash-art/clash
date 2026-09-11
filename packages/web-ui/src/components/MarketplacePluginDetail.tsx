@@ -1,3 +1,6 @@
+import { useNavigate } from "react-router";
+import { isDesktopRuntime } from "../lib/runtimeConfig";
+import { usePageHistorySwipe } from "./usePageHistorySwipe";
 import { Check } from "@phosphor-icons/react";
 import type { RegistryItem } from "@clash/web-ui/lib/clientActions";
 
@@ -15,8 +18,13 @@ export default function MarketplacePluginDetail({
   installed: boolean;
   item: RegistryItem;
 }) {
+  const navigate = useNavigate();
+  const historySwipe = usePageHistorySwipe(
+    () => navigate(-1),
+    isDesktopRuntime(),
+  );
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen" {...historySwipe()}>
       <AppPageHeaderBand width="narrow">
         <AppBreadcrumb
           className="mb-0 w-full"

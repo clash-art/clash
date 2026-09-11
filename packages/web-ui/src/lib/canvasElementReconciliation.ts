@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import { ACTION_BADGE_NODE_SIZE } from "@clash/shared-layout";
 
 const TRANSIENT_NODE_KEYS = new Set([
   "dragging",
@@ -79,18 +80,20 @@ export function reconcileSyncedCanvasNodes<T extends Node>(
   const currentById = new Map(currentNodes.map((node) => [node.id, node]));
   let changed = currentNodes.length !== syncedNodes.length;
 
-  const nextNodes = syncedNodes.map((syncedNode, index) => {
+  const nextNodes = syncedNodes.map((storedNode, index) => {
+    // Capsule bounds are renderer geometry, including for historical nodes.
+    // Reading an immutable placement must not turn into a project mutation.
+    const syncedNode = storedNode.type === "action-badge"
+      ? { ...storedNode, ...ACTION_BADGE_NODE_SIZE, style: { ...storedNode.style, ...ACTION_BADGE_NODE_SIZE } }
+      : storedNode;
     const currentNode = currentById.get(syncedNode.id) as
-      | (T & RuntimeNode)
-      | undefined;
+      (T & RuntimeNode) | undefined;
     if (!currentNode) {
       changed = true;
       return syncedNode as T;
     }
 
-    const isInteracting = Boolean(
-      currentNode.dragging || currentNode.resizing,
-    );
+    const isInteracting = Boolean(currentNode.dragging || currentNode.resizing);
     const unchanged = recordsEqualExcept(
       currentNode as Record<string, unknown>,
       syncedNode as Record<string, unknown>,
@@ -103,6 +106,10 @@ export function reconcileSyncedCanvasNodes<T extends Node>(
 
     const nextNode = {
       ...syncedNode,
+      data: valuesEqual(currentNode.data, syncedNode.data)
+        ? currentNode.data
+        : syncedNode.data,
+      measured: currentNode.measured,
       position: isInteracting ? currentNode.position : syncedNode.position,
       parentId: isInteracting ? currentNode.parentId : syncedNode.parentId,
       width: isInteracting ? currentNode.width : syncedNode.width,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { GeneratorHttpError } from "@clash/shared-runtime/generator-client";
 import { registerGeneratorTools } from "./generator-tools.js";
 
@@ -25,16 +26,37 @@ test("Generator leaves preserve routes, bodies, results, annotations, and errors
   );
 
   const create = tools.get("clash_generators_create")!;
-  const created = await create.call({
-    projectId: "project/a",
-    input: { definitionId: "gen" },
+  // Regression from the real Hilo session: disclosure accepted a body without
+  // the IDs required by the existing HTTP creation contract.
+  assert.equal(create.config.inputSchema.input.safeParse({
+    pluginId: "clash.model-generation", definitionId: "video", state: {},
+  }).success, false);
+  assert.equal(create.config.inputSchema.input.safeParse({
+    generatorId: "draft", generatorRevisionId: "draft-r1",
+    pluginId: "clash.model-generation", definitionId: "video", state: {},
+  }).success, true);
+  const disclosed = toJsonSchemaCompat(create.config.inputSchema.input, { pipeStrategy: "input" });
+  assert.ok(Array.isArray(disclosed.required));
+  assert.ok(disclosed.required.includes("generatorId"));
+  assert.ok(disclosed.required.includes("generatorRevisionId"));
+  const submit = tools.get("clash_generators_action_run_submit")!;
+  assert.equal(submit.config.inputSchema.input.safeParse({ generatorRevisionId: "draft-r1" }).success, false);
+  const submitted = submit.config.inputSchema.input.parse({
+    actionRunId: "run", generatorRevisionId: "draft-r1", providerAccountId: "hilo-hub-primary",
   });
+  assert.equal(submitted.providerAccountId, "hilo-hub-primary");
+  const creationInput = {
+    generatorId: "draft", generatorRevisionId: "draft-r1", pluginId: "clash.model-generation", definitionId: "video",
+    state: { modelId: "minimax-h3", prompt: "A paper city" }, persistentInputRefs: [],
+    placement: { canvasId: "main", nodeId: "placement", position: { x: 70, y: 40 } },
+  };
+  const created = await create.call({ projectId: "project/a", input: creationInput });
   assert.deepEqual(calls[0], {
     path: "/api/v1/projects/project%2Fa/generators",
     init: {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: '{"definitionId":"gen"}',
+      body: JSON.stringify(creationInput),
     },
   });
   assert.deepEqual(created.structuredContent, { result: { id: "result-1" } });

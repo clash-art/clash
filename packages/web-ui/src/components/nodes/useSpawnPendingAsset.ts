@@ -1,6 +1,8 @@
 import { useCallback, useMemo } from 'react';
 import type { Node as RFNode } from '@xyflow/react';
 import {
+    GeneratorRevisionRefSchema,
+    type GeneratorRevisionRef,
     buildGenerationPayload,
     buildPendingAssetNode,
     type DirectorReferencePacket,
@@ -41,9 +43,12 @@ export interface UseSpawnPendingAssetInput {
     addEdges: (edge: { id: string; source: string; target: string; type: string }) => void;
     setNodes: (updater: (nds: RFNode[]) => RFNode[]) => void;
     loroSync: LoroSync;
+    resolveGeneratorRevision?: () => Promise<GeneratorRevisionRef>;
 }
 
 export interface SpawnOpts {
+    /** Host-acknowledged native revision, shared by one batch. */
+    generatorRevision?: GeneratorRevisionRef;
     /** If provided, use this as the new node ID. Otherwise, generate a fresh semantic ID. */
     assetId?: string;
     /** Override the extracted label. Run uses this to append `(N)` for batch siblings. */
@@ -160,6 +165,13 @@ export function useSpawnPendingAsset(input: UseSpawnPendingAssetInput): UseSpawn
      */
     const buildShape = useCallback(
         (status: 'draft' | 'pending', opts?: SpawnOpts): Pick<PendingAssetNode, 'type' | 'data'> => {
+            if (opts?.generatorRevision) {
+                return { type: outputKind, data: {
+                    status, generatorRevision: GeneratorRevisionRefSchema.parse(opts.generatorRevision),
+                    ...(isCustom && customDef?.generator ? { generatorActionId: customDef.generator.actionId } : {}),
+                    label: opts.labelOverride ?? 'Generated media', actorType: 'user', actorUserId: currentUserId,
+                } };
+            }
             const refNodes = refNodeIds
                 .map((nid) => getNodes().find((n) => n.id === nid))
                 .filter((n): n is NonNullable<typeof n> => !!n);
@@ -241,6 +253,7 @@ export function useSpawnPendingAsset(input: UseSpawnPendingAssetInput): UseSpawn
         },
         [
             actionType,
+            outputKind,
             isCustom,
             customDef,
             customActionParams,
@@ -259,7 +272,8 @@ export function useSpawnPendingAsset(input: UseSpawnPendingAssetInput): UseSpawn
 
     const createAndWire = useCallback(
         async (status: 'draft' | 'pending', opts?: SpawnOpts): Promise<RFNode | null> => {
-            const { type, data } = buildShape(status, opts);
+            const generatorRevision = opts?.generatorRevision ?? await input.resolveGeneratorRevision?.();
+            const { type, data } = buildShape(status, { ...opts, ...(generatorRevision ? { generatorRevision } : {}) });
             const newId = opts?.assetId ?? (await generateSemanticId(projectId));
 
             // Offset from the action-badge's actual width + a consistent gap,
@@ -294,7 +308,7 @@ export function useSpawnPendingAsset(input: UseSpawnPendingAssetInput): UseSpawn
 
             return newNode;
         },
-        [actionBadgeId, buildShape, projectId, addNodeWithAutoLayout, addNodeWithLayout, addEdges, loroSync, getNodes],
+        [actionBadgeId, buildShape, projectId, addNodeWithAutoLayout, addNodeWithLayout, addEdges, loroSync, getNodes, input.resolveGeneratorRevision],
     );
 
     const spawnPending = useCallback(
@@ -309,7 +323,9 @@ export function useSpawnPendingAsset(input: UseSpawnPendingAssetInput): UseSpawn
 
     const adoptDraft = useCallback(
         async (draftId: string, opts?: AdoptOpts): Promise<RFNode | null> => {
+            const generatorRevision = await input.resolveGeneratorRevision?.();
             const { data: nextData } = buildShape('pending', {
+                ...(generatorRevision ? { generatorRevision } : {}),
                 labelOverride: opts?.labelOverride,
             });
             const payload: Record<string, unknown> = { ...nextData };
@@ -331,7 +347,7 @@ export function useSpawnPendingAsset(input: UseSpawnPendingAssetInput): UseSpawn
 
             return updated;
         },
-        [buildShape, setNodes, loroSync],
+        [buildShape, setNodes, loroSync, input.resolveGeneratorRevision],
     );
 
     return { spawnPending, spawnDraft, adoptDraft, canSpawn, disabledReason, outputKind };

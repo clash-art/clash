@@ -25,6 +25,7 @@ import {
   useTexture,
 } from "@react-three/drei";
 import * as THREE from "three";
+import { DirectorCodeInstance, DirectorCodeRenderBoundary, DirectorCodeSourcesContext } from "./code-components";
 import * as SkeletonUtils from "three/examples/jsm/utils/SkeletonUtils.js";
 import type {
   DirectorStageObject,
@@ -157,6 +158,9 @@ export interface DirectorViewportProps {
   showEnvironmentBackground?: boolean;
   showSelectedSkeleton?: boolean;
   assetUrls?: Record<string, string>;
+  /** Resolved exact Document bodies; runtime-only, never persisted in Stage. */
+  codeSources?: Record<string, string>;
+  onError?: (error: Error) => void;
   onSelectionChange?: (objectId?: string) => void;
   onObjectContextMenu?: (objectId: string) => void;
   onTransformCommit?: (objectId: string, transform: DirectorStageTransform) => void;
@@ -922,6 +926,7 @@ function ObjectVisual({ object, palette, assetUrls, showSkeleton, showEditorHelp
   locomotionDistance: number;
 }) {
   switch (object.kind) {
+    case "code": return <DirectorCodeInstance componentId={object.code.componentId} parameters={object.code.parameters} timeSeconds={timeSeconds} />;
     case "mannequin": return (
       <MannequinMesh
         object={object}
@@ -1619,8 +1624,10 @@ function DirectorScene({
           />
         </Suspense>
       )}
-      <ambientLight intensity={0.65} />
-      <directionalLight castShadow intensity={1.7} position={[5, 9, 6]} shadow-mapSize={[2048, 2048]} />
+      {state.scene.defaultLighting !== false && <>
+        <ambientLight intensity={0.65} />
+        <directionalLight castShadow intensity={1.7} position={[5, 9, 6]} shadow-mapSize={[2048, 2048]} />
+      </>}
       <CameraRig
         state={state}
         viewMode={viewMode}
@@ -1852,6 +1859,8 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
     showEnvironmentBackground = false,
     showSelectedSkeleton = true,
     assetUrls,
+    codeSources,
+    onError,
     renderPalette: renderPaletteOverride,
     onSelectionChange,
     onObjectContextMenu,
@@ -1862,6 +1871,7 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
     className,
   }, ref) {
     const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+    const renderError = useRef<Error | null>(null);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const [resolvedPalette, setResolvedPalette] = useState<DirectorRenderPalette>(
       directorRenderPaletteFallback,
@@ -1899,6 +1909,7 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
         return cameraAccessorRef.current();
       },
       capture: async (options) => {
+        if (renderError.current) throw renderError.current;
         if (!canvas) throw new Error("Director Stage renderer is not ready");
         return captureCanvas(
           canvas,
@@ -1908,6 +1919,7 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
         );
       },
       record: async (options) => {
+        if (renderError.current) throw renderError.current;
         if (!canvas) throw new Error("Director Stage renderer is not ready");
         return recordCanvasVideo(canvas, options);
       },
@@ -1925,6 +1937,10 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
         className={className}
         style={{ width: "100%", height: "100%", minWidth: 0, minHeight: 0, background: directorTokens.viewport }}
       >
+        <DirectorCodeRenderBoundary revision={state} sources={codeSources} onError={(error) => {
+          renderError.current = error;
+          if (error) onError?.(error);
+        }}>
         <Canvas
           shadows={{ type: THREE.PCFShadowMap }}
           dpr={[1, 2]}
@@ -1936,6 +1952,7 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
             onReady?.(gl.domElement);
           }}
         >
+          <DirectorCodeSourcesContext.Provider value={codeSources ?? {}}>
           <DirectorScene
             state={evaluated}
             selectedObjectId={selectedObjectId}
@@ -1957,7 +1974,9 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
             onCameraAccessor={setCameraAccessor}
             onFrameRendered={onFrameRendered}
           />
+          </DirectorCodeSourcesContext.Provider>
         </Canvas>
+        </DirectorCodeRenderBoundary>
       </div>
     );
   },

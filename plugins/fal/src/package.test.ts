@@ -33,6 +33,8 @@ const FAL_BINDINGS = [
   ["minimax-music-3", "fal-ai/minimax-music/v3"],
   ["minimax-h3", "minimax/h3/reference-to-video"],
   ["minimax-h3-startend", "minimax/h3/image-to-video"],
+  ["gpt-image-2.5-flare", "openai/gpt-image-2.5/flare/text-to-image"],
+  ["gpt-image-2.5-sunburst", "openai/gpt-image-2.5/sunburst/text-to-image"],
 ] as const;
 
 describe("fal Provider package", () => {

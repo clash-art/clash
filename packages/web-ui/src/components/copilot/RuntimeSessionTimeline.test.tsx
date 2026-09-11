@@ -81,6 +81,104 @@ describe("RuntimeSessionTimeline", () => {
     Element.prototype.scrollTo = vi.fn();
   });
 
+  it("shows thought elapsed time from the event clock", () => {
+    const store = createAgentUIStore("session-timing");
+    for (const [id, type, time, data] of [
+      ["start", "session.running", "01", {}],
+      [
+        "thought",
+        "agent.thinking",
+        "02",
+        { message_id: "thought", text: "Plan" },
+      ],
+      [
+        "answer",
+        "agent.message_chunk",
+        "07",
+        { text: "Done", phase: "final_answer" },
+      ],
+      ["end", "turn.completed", "10", {}],
+    ] as const) {
+      store.dispatch(
+        createOpenMAEvent({
+          event_id: id,
+          type,
+          session_id: "session-timing",
+          turn_id: "turn-1",
+          source: { kind: "harness", harness: "codex-acp" },
+          occurred_at: `2026-09-09T00:00:${time}.000Z`,
+          data,
+        }) as OpenMAEvent,
+      );
+    }
+    render(
+      <RuntimeSessionTimeline
+        store={store}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
+    expect(screen.getByRole("button", { name: "已思考 5 秒" })).toBeVisible();
+  });
+
+  it("renders Markdown in both live thought summaries when grouped with a tool", () => {
+    const store = createAgentUIStore("session-markdown");
+    dispatch(store, "user", "user.message", {
+      message_id: "user",
+      text: "Inspect",
+    });
+    dispatch(store, "running", "session.running", {});
+    dispatch(store, "tool", "tool.started", {
+      tool_call_id: "tool",
+      name: "read",
+      title: "Read file",
+    });
+    dispatch(store, "thought", "agent.thinking", {
+      message_id: "thought",
+      text: "**Searching ALL_TOOLS**",
+    });
+    const { container } = render(
+      <RuntimeSessionTimeline
+        store={store}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+    const summaries = container.querySelectorAll(".activity-disclosure-row");
+    const thoughtSummaries = [...summaries].filter((row) =>
+      row.textContent?.includes("Searching ALL_TOOLS"),
+    );
+    expect(thoughtSummaries.length).toBeGreaterThan(0);
+    for (const row of thoughtSummaries) {
+      expect(row.querySelector("strong")).toHaveTextContent(
+        "Searching ALL_TOOLS",
+      );
+      expect(row.textContent).not.toContain("**");
+    }
+  });
+
+  it("shows restored text immediately instead of replaying it as new tokens", () => {
+    const store = createAgentUIStore("restored-session");
+    dispatch(store, "user", "user.message", { text: "Continue" });
+    dispatch(store, "running", "session.running", {});
+    dispatch(store, "answer", "agent.message_chunk", {
+      text: "Already received history",
+      phase: "final_answer",
+    });
+    const { container, unmount } = render(
+      <RuntimeSessionTimeline
+        store={store}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+    expect(
+      container.querySelector('[data-agent-ui-streaming-markdown="assistant"]'),
+    ).toHaveTextContent("Already received history");
+    unmount();
+  });
+
   it("opts the Clash side panel into the shared compact density", () => {
     render(
       <RuntimeSessionTimeline
@@ -186,6 +284,57 @@ describe("RuntimeSessionTimeline", () => {
 
     fireEvent.click(forkActions[0]!);
     expect(onFork).toHaveBeenCalledTimes(1);
+  });
+
+  it("forks each completed turn at its own assistant message when supported", () => {
+    const store = createAgentUIStore("session-two-turns");
+    for (const [index, turnId] of ["turn-old", "turn-latest"].entries()) {
+      dispatch(
+        store,
+        `user-${turnId}`,
+        "user.message",
+        {
+          message_id: `user-${turnId}`,
+          text: `Prompt ${index + 1}`,
+        },
+        turnId,
+      );
+      dispatch(store, `running-${turnId}`, "session.running", {}, turnId);
+      dispatch(
+        store,
+        `answer-${turnId}`,
+        "agent.message_chunk",
+        {
+          message_id: `answer-${turnId}`,
+          text: `Answer ${index + 1}`,
+          phase: "final_answer",
+        },
+        turnId,
+      );
+      dispatch(store, `complete-${turnId}`, "turn.completed", {}, turnId);
+    }
+    const onFork = vi.fn();
+
+    render(
+      <RuntimeSessionTimeline
+        store={store}
+        agentId="codex-acp"
+        mentionableNodes={[]}
+        clashEntities={[]}
+        onForkAtMessage={onFork}
+      />,
+    );
+
+    const forkActions = document.querySelectorAll(
+      "[data-turn-fork-action='true']",
+    );
+    expect(forkActions).toHaveLength(2);
+    expect(
+      forkActions[0]?.closest("[data-turn-id]")?.getAttribute("data-turn-id"),
+    ).toBe("turn-old");
+
+    fireEvent.click(forkActions[0]!);
+    expect(onFork).toHaveBeenCalledWith({ messageId: "answer-turn-old", messageText: "Answer 1", messageOccurrence: 1 });
   });
 
   it("withholds fork while another turn is active", () => {
@@ -400,7 +549,7 @@ describe("RuntimeSessionTimeline", () => {
     );
     expect(screen.getByText("Hi! What can I help you with?")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
-    fireEvent.click(screen.getByRole("button", { name: /已思考 0 秒/ }));
+    fireEvent.click(screen.getByRole("button", { name: /已思考/ }));
     expect(screen.getByText("Preparing simple hello response")).toBeVisible();
     expect(document.querySelector('[data-thought-block="true"]')).toBeTruthy();
   });
@@ -473,7 +622,7 @@ describe("RuntimeSessionTimeline", () => {
     expect(
       document.querySelector('[data-assistant-section="answer"]'),
     ).toHaveTextContent("Done");
-    fireEvent.click(screen.getByRole("button", { name: /已思考 0 秒/ }));
+    fireEvent.click(screen.getByRole("button", { name: /已思考/ }));
     expect(screen.getByText("Checking the runtime")).toBeVisible();
     expect(
       document.querySelector('[data-testid="acp-message-list"]'),

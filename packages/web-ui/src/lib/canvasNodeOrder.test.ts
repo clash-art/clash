@@ -2,9 +2,19 @@ import { describe, expect, it, vi } from "vitest";
 import {
   nodeChangesRequireZIndexNormalization,
   nodeChangesRequireStructuralSanitize,
+  isUserResizeChange,
   normalizeCanvasNodeZIndex,
   sanitizeNodesForReactFlow,
 } from "./canvasNodeOrder";
+
+it("separates ResizeObserver measurements from user resize changes", () => {
+  // ReactFlow's ResizeObserver omits resizing; NodeResizeControl supplies
+  // true during the gesture and false on its final dimension change.
+  expect(isUserResizeChange({ type: "dimensions" })).toBe(false);
+  expect(isUserResizeChange({ type: "dimensions", resizing: true })).toBe(true);
+  expect(isUserResizeChange({ type: "dimensions", resizing: false })).toBe(true);
+  expect(isUserResizeChange({ type: "position" })).toBe(false);
+});
 
 describe("sanitizeNodesForReactFlow", () => {
   it("keeps an already valid parent-first node array by reference", () => {

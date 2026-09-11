@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clash Cover Image"
+  short_description: "Create covers from selected images, title, and topic"
+  default_prompt: "Use $clash-cover-image to create cover artwork with a clear visual idea, selected references, readable title, and the intended crop."

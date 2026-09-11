@@ -3,6 +3,41 @@ import { describe, expect, it } from "vitest";
 import { buildPikaMediaRequest } from "./pika-request.js";
 
 describe("Pika media request projection", () => {
+  // dev.pika.art/llms/openai/gpt-image-2.5-flare/image-to-image
+  it.each(["flare", "sunburst"])(
+    "passes GPT Image 2.5 %s controls through the edit route",
+    (variant) => {
+      expect(
+        buildPikaMediaRequest({
+          modelId: `gpt-image-2.5-${variant}`,
+          upstreamModel: `openai/gpt-image-2.5-${variant}/text-to-image`,
+          kind: "image",
+          prompt: "edit",
+          aspectRatio: "16:9",
+          modelParams: {
+            resolution: "4K",
+            quality: "xhigh",
+            background: "transparent",
+            count: 2,
+          },
+          referenceImageUrls: ["https://example.test/ref.png"],
+        }),
+      ).toEqual({
+        operation: `openai/gpt-image-2.5-${variant}/image-to-image`,
+        body: {
+          prompt: "edit",
+          aspect_ratio: "16:9",
+          resolution: "4K",
+          quality: "xhigh",
+          background: "transparent",
+          num_images: 2,
+          output_format: "png",
+          image_urls: ["https://example.test/ref.png"],
+        },
+      });
+    },
+  );
+
   it("projects Nano Banana 2 text generation onto the live catalog schema", () => {
     expect(
       buildPikaMediaRequest({

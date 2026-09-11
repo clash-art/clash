@@ -53,18 +53,8 @@
       "kind": "architecture",
       "source": "first-party",
       "path": "skills/video-production/agentic-video-architecture",
-      "tags": [
-        "architecture",
-        "video",
-        "agent-first",
-        "pipeline",
-        "qa"
-      ],
-      "inputs": [
-        "creative brief",
-        "reference video",
-        "project folder"
-      ],
+      "tags": ["architecture", "video", "agent-first", "pipeline", "qa"],
+      "inputs": ["creative brief", "reference video", "project folder"],
       "outputs": [
         "pipeline manifest",
         "stage outputs",
@@ -78,11 +68,7 @@
         "render.export-validation",
         "legal.oss-license-ledger"
       ],
-      "researchSources": [
-        "OpenMontage",
-        "HyperFrames",
-        "Montage AI"
-      ],
+      "researchSources": ["OpenMontage", "HyperFrames", "Montage AI"],
       "status": "blocked-by-system-gap",
       "systemGaps": [
         {
@@ -112,11 +98,7 @@
         "human-in-the-loop",
         "timeline"
       ],
-      "inputs": [
-        "creative brief",
-        "reference assets",
-        "project constraints"
-      ],
+      "inputs": ["creative brief", "reference assets", "project constraints"],
       "outputs": [
         "draft Canvas generation paths",
         "candidate and selects records",
@@ -235,9 +217,7 @@
         "media.asset-registry",
         "timeline.cas-projection"
       ],
-      "researchSources": [
-        "Remotion"
-      ],
+      "researchSources": ["Remotion"],
       "status": "ready",
       "systemGaps": []
     },
@@ -249,30 +229,15 @@
       "kind": "architecture",
       "source": "first-party",
       "path": "skills/video-production/project-file-contract",
-      "tags": [
-        "architecture",
-        "project-files",
-        "agent-first"
-      ],
-      "inputs": [
-        "project files",
-        "brief",
-        "source assets"
-      ],
-      "outputs": [
-        "structured artifacts",
-        "validation report"
-      ],
+      "tags": ["architecture", "project-files", "agent-first"],
+      "inputs": ["project files", "brief", "source assets"],
+      "outputs": ["structured artifacts", "validation report"],
       "requiredSystemCapabilities": [
         "media.asset-registry",
         "media.analysis-store",
         "timeline.cas-projection"
       ],
-      "researchSources": [
-        "VibeFrame",
-        "Vex",
-        "Montage AI"
-      ],
+      "researchSources": ["VibeFrame", "Vex", "Montage AI"],
       "status": "blocked-by-system-gap",
       "systemGaps": [
         {
@@ -300,31 +265,15 @@
       "kind": "architecture",
       "source": "first-party",
       "path": "skills/video-production/copy-on-write-lineage",
-      "tags": [
-        "architecture",
-        "copy-on-write",
-        "lineage",
-        "assets"
-      ],
-      "inputs": [
-        "project files",
-        "brief",
-        "source assets"
-      ],
-      "outputs": [
-        "structured artifacts",
-        "validation report"
-      ],
+      "tags": ["architecture", "copy-on-write", "lineage", "assets"],
+      "inputs": ["project files", "brief", "source assets"],
+      "outputs": ["structured artifacts", "validation report"],
       "requiredSystemCapabilities": [
         "media.copy-on-write",
         "media.asset-registry",
         "media.rights-ledger"
       ],
-      "researchSources": [
-        "Vex",
-        "Montage AI",
-        "auto-editor"
-      ],
+      "researchSources": ["Vex", "Montage AI", "auto-editor"],
       "status": "blocked-by-system-gap",
       "systemGaps": [
         {
@@ -352,18 +301,8 @@
       "kind": "architecture",
       "source": "first-party",
       "path": "skills/video-production/composition-runtime-router",
-      "tags": [
-        "architecture",
-        "render",
-        "remotion",
-        "canvas",
-        "timeline"
-      ],
-      "inputs": [
-        "motion brief",
-        "component source",
-        "target Timeline"
-      ],
+      "tags": ["architecture", "render", "remotion", "canvas", "timeline"],
+      "inputs": ["motion brief", "component source", "target Timeline"],
       "outputs": [
         "Canvas remotion-component",
         "live sourceNodeId Timeline binding",
@@ -375,9 +314,7 @@
         "media.asset-registry",
         "timeline.cas-projection"
       ],
-      "researchSources": [
-        "Remotion"
-      ],
+      "researchSources": ["Remotion"],
       "status": "ready",
       "systemGaps": []
     },
@@ -389,30 +326,14 @@
       "kind": "architecture",
       "source": "first-party",
       "path": "skills/video-production/provider-budget-capability",
-      "tags": [
-        "architecture",
-        "provider",
-        "budget",
-        "dry-run"
-      ],
-      "inputs": [
-        "project files",
-        "brief",
-        "source assets"
-      ],
-      "outputs": [
-        "structured artifacts",
-        "validation report"
-      ],
+      "tags": ["architecture", "provider", "budget", "dry-run"],
+      "inputs": ["project files", "brief", "source assets"],
+      "outputs": ["structured artifacts", "validation report"],
       "requiredSystemCapabilities": [
         "media.asset-registry",
         "legal.oss-license-ledger"
       ],
-      "researchSources": [
-        "VibeFrame",
-        "OpenMontage",
-        "Remotion"
-      ],
+      "researchSources": ["VibeFrame", "OpenMontage", "Remotion"],
       "status": "blocked-by-system-gap",
       "systemGaps": [
         {
@@ -442,19 +363,9 @@
         "skill": "sd25-pe",
         "scope": "global"
       },
-      "tags": [
-        "seedance",
-        "prompt-engineering",
-        "video",
-        "volcengine"
-      ],
-      "inputs": [
-        "video generation brief",
-        "reference media intent"
-      ],
-      "outputs": [
-        "Seedance 2.5 prompt"
-      ],
+      "tags": ["seedance", "prompt-engineering", "video", "volcengine"],
+      "inputs": ["video generation brief", "reference media intent"],
+      "outputs": ["Seedance 2.5 prompt"],
       "executionContract": "prompt-compiler",
       "requiredSystemCapabilities": [],
       "status": "ready",
@@ -499,7 +410,11 @@
         "scope": "global"
       },
       "tags": ["openai", "developer-tools", "cli"],
-      "inputs": ["API documentation", "OpenAPI specification", "existing integration"],
+      "inputs": [
+        "API documentation",
+        "OpenAPI specification",
+        "existing integration"
+      ],
       "outputs": ["composable CLI design", "implementation workflow"],
       "executionContract": "prompt-compiler",
       "requiredSystemCapabilities": [],
@@ -594,6 +509,455 @@
       "inputs": ["Workers source", "Wrangler configuration"],
       "outputs": ["implementation guidance", "review findings"],
       "executionContract": "prompt-compiler",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.multiview-consistency",
+      "name": "clash-multiview-consistency",
+      "title": "Multiview Consistency",
+      "description": "Derive and review consistent views of one character, product, prop, creature, vehicle, or environment.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-multiview-consistency",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-multiview-consistency",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Authored by Clash and shipped with the installed package. Research references are listed in SKILL.md."
+      },
+      "tags": ["images", "multiview", "reference", "三视图"],
+      "inputs": ["selected subject references", "requested views"],
+      "outputs": ["reviewed views", "reference prompts"],
+      "executionContract": "prompt-compiler",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.reference-composition",
+      "name": "clash-reference-composition",
+      "title": "Reference Composition",
+      "description": "Combine identity, environment, style, and layout references into a coherent image for any creative category.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-reference-composition",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-reference-composition",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Authored by Clash and shipped with the installed package. Research references are listed in SKILL.md."
+      },
+      "tags": ["images", "composition", "reference"],
+      "inputs": ["selected references", "target composition"],
+      "outputs": ["composed image", "reference role mapping"],
+      "executionContract": "prompt-compiler",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.shot-continuity",
+      "name": "clash-shot-continuity",
+      "title": "Shot Continuity",
+      "description": "Plan and repair adjacent shots through coherent state, action, geography, gaze, and sound.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-shot-continuity",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-shot-continuity",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Authored by Clash and shipped with the installed package. Research references are listed in SKILL.md."
+      },
+      "tags": ["video", "continuity", "editing"],
+      "inputs": ["neighboring shots", "intended transition"],
+      "outputs": ["cut decisions", "targeted repair prompts"],
+      "executionContract": "prompt-compiler",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.film-production",
+      "name": "clash-film-production",
+      "title": "Film Production",
+      "description": "Coordinate narrative film production by composing reference, continuity, Timeline, and finishing skills.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-film-production",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-film-production",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Authored by Clash and shipped with the installed package. Research references are listed in SKILL.md."
+      },
+      "tags": ["video", "film", "story"],
+      "inputs": ["film brief", "selected production material"],
+      "outputs": ["scene coverage", "editable Timeline", "reviewed render"],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.baoyu-cover-image",
+      "name": "clash-cover-image",
+      "title": "Clash Cover Image",
+      "description": "Create cover artwork with a clear visual idea, selected references, readable title, and the intended crop.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "community",
+      "author": "Jim Liu",
+      "repository": "https://github.com/JimLiu/baoyu-skills",
+      "sourceVersion": "8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-cover-image",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/skills/baoyu-cover-image/SKILL.md",
+        "license": "MIT",
+        "licenseUrl": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/LICENSE",
+        "repositoryStars": 25801,
+        "checkedAt": "2026-09-10",
+        "notes": "Clash-maintained adaptation of Jim Liu's baoyu-cover-image; installs the bundled Clash version, not the original upstream workflow. Creative methods retain upstream credit and MIT notices. Execution uses Clash Generator/Asset contracts with conversation preferences; fixed setup/confirmation and reference-dropping fallbacks are removed. Source version and repository stars refer to upstream. Generation quality has not been benchmarked."
+      },
+      "tags": ["images", "cover", "prompt"],
+      "inputs": ["article or brief"],
+      "outputs": ["cover prompt", "cover image"],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": [],
+      "path": "plugins/clash/skills/clash-cover-image"
+    },
+    {
+      "id": "clash.creative.baoyu-infographic",
+      "name": "clash-infographic",
+      "title": "Clash Infographic",
+      "description": "Match information structure to source facts and create a readable infographic with verified labels and relationships.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "community",
+      "author": "Jim Liu",
+      "repository": "https://github.com/JimLiu/baoyu-skills",
+      "sourceVersion": "8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-infographic",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/skills/baoyu-infographic/SKILL.md",
+        "license": "MIT",
+        "licenseUrl": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/LICENSE",
+        "repositoryStars": 25801,
+        "checkedAt": "2026-09-10",
+        "notes": "Clash-maintained adaptation of Jim Liu's baoyu-infographic; installs the bundled Clash version, not the original upstream workflow. Creative methods retain upstream credit and MIT notices. Execution uses Clash Generator/Asset contracts with conversation preferences; fixed setup/confirmation and reference-dropping fallbacks are removed. Source version and repository stars refer to upstream. Generation quality has not been benchmarked."
+      },
+      "tags": ["images", "infographic", "layout"],
+      "inputs": ["source content"],
+      "outputs": ["layout and style plan", "infographic"],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": [],
+      "path": "plugins/clash/skills/clash-infographic"
+    },
+    {
+      "id": "clash.creative.baoyu-comic",
+      "name": "clash-comic",
+      "title": "Clash Comic",
+      "description": "Create sequential comics with selected character references, readable panels, and continuity across pages.",
+      "type": "skill",
+      "kind": "detail",
+      "source": "community",
+      "author": "Jim Liu",
+      "repository": "https://github.com/JimLiu/baoyu-skills",
+      "sourceVersion": "8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-comic",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/skills/baoyu-comic/SKILL.md",
+        "license": "MIT",
+        "licenseUrl": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/LICENSE",
+        "repositoryStars": 25801,
+        "checkedAt": "2026-09-10",
+        "notes": "Clash-maintained adaptation of Jim Liu's baoyu-comic; installs the bundled Clash version, not the original upstream workflow. Creative methods retain upstream credit and MIT notices. Execution uses Clash Generator/Asset contracts with conversation preferences; fixed setup/confirmation and reference-dropping fallbacks are removed. Source version and repository stars refer to upstream. Generation quality has not been benchmarked."
+      },
+      "tags": ["images", "comic", "storyboard"],
+      "inputs": ["educational story or content"],
+      "outputs": ["storyboard", "character references", "comic pages"],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": [],
+      "path": "plugins/clash/skills/clash-comic"
+    },
+    {
+      "id": "clash.creative.product-ad",
+      "name": "clash-product-ad",
+      "title": "Product Advertising",
+      "description": "Develop product ads with faithful references and claims",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-product-ad",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-product-ad",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Clash-authored creative workflow; composes bounded atomic skills and public Project contracts. Creative quality is evaluated separately from installation."
+      },
+      "tags": ["product-ad", "creative"],
+      "inputs": ["creative brief", "selected source material"],
+      "outputs": [
+        "requested creative artifact",
+        "review and selected source identities"
+      ],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.talking-head",
+      "name": "clash-talking-head",
+      "title": "Talking Head Editing",
+      "description": "Edit speech with accurate words and continuous sound",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-talking-head",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-talking-head",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Clash-authored creative workflow; composes bounded atomic skills and public Project contracts. Creative quality is evaluated separately from installation."
+      },
+      "tags": ["talking-head", "creative"],
+      "inputs": ["creative brief", "selected source material"],
+      "outputs": [
+        "requested creative artifact",
+        "review and selected source identities"
+      ],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.explainer",
+      "name": "clash-explainer",
+      "title": "Visual Explanation",
+      "description": "Explain a mechanism through visible cause and effect",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-explainer",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-explainer",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Clash-authored creative workflow; composes bounded atomic skills and public Project contracts. Creative quality is evaluated separately from installation."
+      },
+      "tags": ["explainer", "creative"],
+      "inputs": ["creative brief", "selected source material"],
+      "outputs": [
+        "requested creative artifact",
+        "review and selected source identities"
+      ],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.narrative",
+      "name": "clash-narrative",
+      "title": "Narrative Scenes",
+      "description": "Stage clear intentions, actions, reactions, and change",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-narrative",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-narrative",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Clash-authored creative workflow; composes bounded atomic skills and public Project contracts. Creative quality is evaluated separately from installation."
+      },
+      "tags": ["narrative", "creative"],
+      "inputs": ["creative brief", "selected source material"],
+      "outputs": [
+        "requested creative artifact",
+        "review and selected source identities"
+      ],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.music-video",
+      "name": "clash-music-video",
+      "title": "Music Video Editing",
+      "description": "Shape visual phrases around real music and accents",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-music-video",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-music-video",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Clash-authored creative workflow; composes bounded atomic skills and public Project contracts. Creative quality is evaluated separately from installation."
+      },
+      "tags": ["music-video", "creative"],
+      "inputs": ["creative brief", "selected source material"],
+      "outputs": [
+        "requested creative artifact",
+        "review and selected source identities"
+      ],
+      "executionContract": "native-cli-mcp",
+      "requiredSystemCapabilities": [],
+      "status": "ready",
+      "systemGaps": []
+    },
+    {
+      "id": "clash.creative.brand-motion",
+      "name": "clash-brand-motion",
+      "title": "Brand Motion",
+      "description": "Animate supplied identity with coherent timing and form",
+      "type": "skill",
+      "kind": "detail",
+      "source": "first-party",
+      "author": "Clash",
+      "repository": "https://github.com/clash-space/clash",
+      "path": "plugins/clash/skills/clash-brand-motion",
+      "install": {
+        "kind": "bundled-skill",
+        "skill": "clash-brand-motion",
+        "scope": "global"
+      },
+      "curation": {
+        "collection": "official-picks",
+        "curator": "Clash"
+      },
+      "attribution": {
+        "sourceUrl": "https://github.com/clash-space/clash",
+        "notes": "Clash-authored creative workflow; composes bounded atomic skills and public Project contracts. Creative quality is evaluated separately from installation."
+      },
+      "tags": ["brand-motion", "creative"],
+      "inputs": ["creative brief", "selected source material"],
+      "outputs": [
+        "requested creative artifact",
+        "review and selected source identities"
+      ],
+      "executionContract": "native-cli-mcp",
       "requiredSystemCapabilities": [],
       "status": "ready",
       "systemGaps": []
@@ -815,6 +1179,30 @@
       "licenseSource": "https://www.remotion.dev/docs/license",
       "usage": "existing-runtime-with-license-check",
       "integrationPolicy": "Keep runtime use explicit and check whether a company license is required before commercial deployment."
+    },
+    {
+      "name": "Jim Liu: baoyu-cover-image",
+      "url": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/skills/baoyu-cover-image/SKILL.md",
+      "license": "MIT",
+      "licenseSource": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/LICENSE",
+      "usage": "reference-or-integration-with-notice",
+      "integrationPolicy": "Clash-maintained skill adaptation at plugins/clash/skills/clash-cover-image; retain Jim Liu's copyright, full MIT LICENSE, pinned source, and NOTICE describing modifications. No upstream runtime scripts are bundled. Do not present this adaptation as an upstream release."
+    },
+    {
+      "name": "Jim Liu: baoyu-infographic",
+      "url": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/skills/baoyu-infographic/SKILL.md",
+      "license": "MIT",
+      "licenseSource": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/LICENSE",
+      "usage": "reference-or-integration-with-notice",
+      "integrationPolicy": "Clash-maintained skill adaptation at plugins/clash/skills/clash-infographic; retain Jim Liu's copyright, full MIT LICENSE, pinned source, and NOTICE describing modifications. No upstream runtime scripts are bundled. Do not present this adaptation as an upstream release."
+    },
+    {
+      "name": "Jim Liu: baoyu-comic",
+      "url": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/skills/baoyu-comic/SKILL.md",
+      "license": "MIT",
+      "licenseSource": "https://github.com/JimLiu/baoyu-skills/blob/8ae8c33a8d7c8c7c6de291b2c91ba1debe1d2766/LICENSE",
+      "usage": "reference-or-integration-with-notice",
+      "integrationPolicy": "Clash-maintained skill adaptation at plugins/clash/skills/clash-comic; retain Jim Liu's copyright, full MIT LICENSE, pinned source, and NOTICE describing modifications. No upstream runtime scripts are bundled. Do not present this adaptation as an upstream release."
     }
   ]
 }

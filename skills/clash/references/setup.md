@@ -1,46 +1,44 @@
-# Local Setup
+# Local setup
 
-## Installation
+Use the existing Clash CLI or MCP when present. Its normal bootstrap discovers
+or starts the compatible local Host. In an already bound workspace, start with
+the relevant product read, for example `clash canvas list --json`; neither
+cloud authentication nor a status preflight is required.
+
+## Installation and binding
+
+For a standalone CLI installation, use `npm install -g clash` and consult
+`clash --help`. The Clash plugin includes its own runtime. Do not manually
+launch internal runtime entrypoints or create a second daemon.
+
+`.clash/project.toml` identifies the workspace's Project. Preserve an existing
+marker and any runner-provided ready receipt. Only when the user requests a
+new workspace or binding and the marker is absent, run:
 
 ```bash
-npm install -g clash
-clash --version
-```
-
-## Local host and project marker
-
-Open Clash Desktop, then run:
-
-```bash
-clash host status --json
+clash init --json
+# Or, when the requested Project identity is known:
 clash init --project <project-id> --json
 ```
 
-The marker at `.clash/project.toml` links this cwd to the local Project Loro
-replica. Local commands do not require a cloud credential.
+Initialization is not a repair for transport errors. A conflicting Project
+identity must fail instead of overwriting the existing binding.
 
-### Optional cloud sync
+## Optional cloud sync
 
-```bash
-clash auth login
-```
+`clash auth login` supplies cloud authentication for product-managed remote
+synchronization. Local reads, editing and generation use the same local
+Project and do not require cloud login. A Model Provider account is separate
+execution configuration; inspect the available accounts when choosing a route.
 
-OAuth is only for product-managed remote synchronization. It is not a local
-setup step.
+## Diagnostics
 
-## Environment Variables
+Use `clash host status --json` or `clash project status --json` only to diagnose
+a reported problem. A failed normal bootstrap is an infrastructure failure;
+preserve the workspace and report the error. If CLI or MCP is unavailable,
+the other interface may operate the same Project. Do not create substitute
+Project state or rerun initialization after a connection failure.
 
-| Variable        | Description                                                             | Default                 |
-| --------------- | ----------------------------------------------------------------------- | ----------------------- |
-| `CLASH_API_KEY` | Optional remote/cloud credential override                               | unset                   |
-| `CLASH_API_URL` | Local or cloud API URL                                                  | `http://localhost:8788` |
-| `CLASH_HOME`    | Local Clash root for config, project workspaces, and local API defaults | `~/.clash`              |
-
-## Troubleshooting
-
-| Error                      | Fix                                                                 |
-| -------------------------- | ------------------------------------------------------------------- |
-| `Host: inactive`           | Open Clash Desktop or start the local-api host                      |
-| Project cannot be resolved | Run `clash init --project <id>` in the cwd                          |
-| Remote sync returns 401    | Run the optional `clash auth login` flow again                      |
-| `ECONNREFUSED`             | Check that the local host is running and `CLASH_API_URL` is correct |
+For an intentionally configured endpoint, `CLASH_API_URL` overrides discovery.
+`CLASH_HOME` selects the local Clash root; normally retain the host's supplied
+profile and configuration. These settings do not grant cloud permissions.

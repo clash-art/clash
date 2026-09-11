@@ -3,6 +3,25 @@ import { describe, expect, it } from "vitest";
 import { selectMarketplaceFeed } from "./marketplace-feed";
 
 describe("Marketplace feed selection", () => {
+  it("includes curated community skills once while retaining their original source", () => {
+    const picked = {
+      id: "example.pick",
+      type: "skill",
+      source: "community",
+      curation: { collection: "official-picks", curator: "Clash" },
+    };
+    const other = { id: "example.other", type: "skill", source: "community" };
+    expect(
+      selectMarketplaceFeed({ plugins: [], skills: [picked, other] }),
+    ).toEqual([picked]);
+    expect(
+      selectMarketplaceFeed({
+        plugins: [],
+        skills: [picked, other],
+        featuredPluginIds: [picked.id],
+      }),
+    ).toEqual([picked]);
+  });
   it("selects the Clash-relevant mixed feed from the shared catalogs without generic Skills", () => {
     const orphanAction = {
       id: "action.orphan",

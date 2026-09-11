@@ -1,0 +1,8 @@
+{
+  "summary": "Native Generator Action for text produced by a configured local ACP agent. It is an agent executor, not a Model Provider.",
+  "key_files": {
+    "cards/agent-text.json": "Canvas Action Card with an explicit text-to-Document port mapping. Prompt/parameter/reference edits use the native Generator draft editor; empty optional settings select configured defaults at execution.",
+    "generators/text.json": "Pinned prompt, harness, optional harness model and system instructions; an optional plain-text Document input collection and one plain-text Document output.",
+    "src/stdio.ts": "Reads exact Document bodies through the SDK/Broker and presents them as source material distinct from the request. Calls the invocation-scoped agent.text Host capability and returns a typed Document through the shared SDK. The Host owns sessions, Run admission, output provenance and publication; source heads and Canvas text shadows are never read as substitutes."
+  }
+}

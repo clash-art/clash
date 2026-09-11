@@ -1,20 +1,24 @@
+import { projectLocalModelCopy } from "./local-model-copy-projection.js";
 import type { LoroDoc } from "loro-crdt";
-import { z } from "zod";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   advanceProjectGeneratorHead,
+  Canvas,
+  commitProjectMutation,
   createProjectGenerator as createProjectGeneratorFact,
-  ExecutablePluginJsonValueSchema,
   ensureActionRunRequest,
   GeneratorDefinitionSchema,
-  GeneratorInputRefSchema,
-  GeneratorRevisionRefSchema,
   readGeneratorRevision,
   readDocumentAssetRevision,
   readOutputCommit,
   readProjectActionRun,
   readProjectAsset,
   readProjectGenerator,
+  canvasAssetRevision,
+  assetRevisionKey,
+  resolveExecutableActionCardGenerator,
+  isCanvasNodeImmutable,
   type ActionRunModelRoute,
   type ActionRunModelSelection,
   type ActionRunRequest,
@@ -30,11 +34,16 @@ import {
 
 import {
   buildLocalGeneratorActionRun,
+  canonicalInputRefs,
+  prepareLocalGeneratorActionRun,
+  type BuildLocalGeneratorActionRunInput,
   validateLocalGeneratorRevisionContract,
   type BuiltLocalGeneratorActionRun,
 } from "./local-generator-contract.js";
 import {
   DEFAULT_LOCAL_PROVIDER_RUN_DEADLINE_MS,
+  parseFrozenExecutorInput,
+  type FrozenGeneratorProviderExecution,
   type LocalDurableRunCreateCommand,
 } from "./durable-run-coordinator.js";
 import type { SqliteDurableRunJournal } from "./durable-run-journal.js";
@@ -62,96 +71,20 @@ export class LocalGeneratorProductError extends Error {
   }
 }
 
-const jsonObjectSchema = z
-  .record(z.string(), z.unknown())
-  .transform((value, context): Record<string, ExecutablePluginJsonValue> => {
-    const parsed: Record<string, ExecutablePluginJsonValue> = {};
-    for (const [key, entry] of Object.entries(value)) {
-      const result = ExecutablePluginJsonValueSchema.safeParse(entry);
-      if (!result.success) {
-        context.addIssue({
-          code: "custom",
-          path: [key],
-          message:
-            result.error.issues[0]?.message ?? "Invalid plugin JSON value.",
-        });
-        return z.NEVER;
-      }
-      parsed[key] = result.data;
-    }
-    return parsed;
-  });
-
-const generatorInputRefsSchema = z
-  .array(z.unknown())
-  .transform((value, context): GeneratorInputRef[] => {
-    const result = GeneratorInputRefSchema.array().safeParse(value);
-    if (!result.success) {
-      const issue = result.error.issues[0];
-      context.addIssue({
-        code: "custom",
-        path: issue?.path ?? [],
-        message: issue?.message ?? "Invalid Generator input reference.",
-      });
-      return z.NEVER;
-    }
-    return result.data;
-  });
-
-const generatorRevisionRefSchema = z
-  .unknown()
-  .transform((value, context): GeneratorRevisionRef => {
-    const result = GeneratorRevisionRefSchema.safeParse(value);
-    if (!result.success) {
-      const issue = result.error.issues[0];
-      context.addIssue({
-        code: "custom",
-        path: issue?.path ?? [],
-        message: issue?.message ?? "Invalid Generator revision reference.",
-      });
-      return z.NEVER;
-    }
-    return result.data;
-  });
-
-export const CreateLocalProjectGeneratorInputSchema = z
-  .object({
-    generatorId: z.string().trim().min(1),
-    generatorRevisionId: z.string().trim().min(1),
-    pluginId: z.string().trim().min(1),
-    definitionId: z.string().trim().min(1),
-    state: jsonObjectSchema,
-    persistentInputRefs: generatorInputRefsSchema.default([]),
-    forkedFrom: generatorRevisionRefSchema.optional(),
-  })
-  .strict();
-export type CreateLocalProjectGeneratorInput = z.infer<
-  typeof CreateLocalProjectGeneratorInputSchema
->;
-
-export const SubmitLocalGeneratorActionInputSchema = z
-  .object({
-    actionRunId: z.string().trim().min(1),
-    generatorRevisionId: z.string().trim().min(1),
-    parameters: jsonObjectSchema.default({}),
-    invocationInputRefs: generatorInputRefsSchema.default([]),
-  })
-  .strict();
-export type SubmitLocalGeneratorActionInput = z.infer<
-  typeof SubmitLocalGeneratorActionInputSchema
->;
-
-export const AdvanceLocalProjectGeneratorInputSchema = z
-  .object({
-    expectedHeadRevisionId: z.string().trim().min(1),
-    generatorRevisionId: z.string().trim().min(1),
-    state: jsonObjectSchema,
-    persistentInputRefs: generatorInputRefsSchema.default([]),
-  })
-  .strict();
-export type AdvanceLocalProjectGeneratorInput = z.infer<
-  typeof AdvanceLocalProjectGeneratorInputSchema
->;
+export {
+  CreateProjectGeneratorRequestSchema as CreateLocalProjectGeneratorInputSchema,
+  SubmitGeneratorActionRequestSchema as SubmitLocalGeneratorActionInputSchema,
+  AdvanceProjectGeneratorRequestSchema as AdvanceLocalProjectGeneratorInputSchema,
+} from "@clash/shared-types";
+import {
+  CreateProjectGeneratorRequestSchema as CreateLocalProjectGeneratorInputSchema,
+  SubmitGeneratorActionRequestSchema as SubmitLocalGeneratorActionInputSchema,
+  AdvanceProjectGeneratorRequestSchema as AdvanceLocalProjectGeneratorInputSchema,
+  type CreateProjectGeneratorRequest as CreateLocalProjectGeneratorInput,
+  type SubmitGeneratorActionRequest as SubmitLocalGeneratorActionInput,
+  type AdvanceProjectGeneratorRequest as AdvanceLocalProjectGeneratorInput,
+} from "@clash/shared-types";
+export type { CreateLocalProjectGeneratorInput, SubmitLocalGeneratorActionInput, AdvanceLocalProjectGeneratorInput };
 
 export interface LocalProjectGeneratorProjection {
   generator: ProjectGenerator;
@@ -269,6 +202,8 @@ export function buildLocalGeneratorDurableRunCommand(input: {
   outputSlot?: string;
   /** Host-selected Card id for a declared model consumer; never caller parameters. */
   modelId?: string;
+  providerExecution?: FrozenGeneratorProviderExecution;
+  canvasProjection?: { nodeId: string; nodeProjectionRevisionId: string };
 }): LocalDurableRunCreateCommand {
   const outputContract = input.built.request.outputContract;
   const output = outputContract.find(
@@ -304,6 +239,11 @@ export function buildLocalGeneratorDurableRunCommand(input: {
       : undefined;
   const resolvedModelId = input.built.request.modelSelection?.modelId ?? input.modelId;
   const frozenModelRoute = input.built.request.modelSelection?.route;
+  if (input.built.action.modelExecution && (!input.providerExecution ||
+    !isDeepStrictEqual(input.providerExecution.binding, input.built.request.executor))) {
+    throw new LocalGeneratorProductError("GENERATOR_MODEL_EXECUTION_UNRESOLVED",
+      "Model execution requires the private plan for the frozen Provider executor.");
+  }
   if (modelConsumer && (!resolvedModelId || !modelSourceAsset || !modelSourceAssetId)) {
     throw new LocalGeneratorProductError(
       "GENERATOR_MODEL_CONSUMER_UNRESOLVED",
@@ -359,7 +299,9 @@ export function buildLocalGeneratorDurableRunCommand(input: {
     deadlineAt: input.deadlineAt,
     executor: {
       targetKind: "generator-action",
+      ...(input.canvasProjection ?? {}),
       binding: input.built.request.executor,
+      ...(input.providerExecution ? { providerExecution: input.providerExecution } : {}),
       actionId: input.built.action.id,
       actor: input.actor,
       publicOwner: {
@@ -405,6 +347,8 @@ export function buildLocalGeneratorDurableRunCommands(input: {
   actor: ExecutablePluginInvocation["actor"];
   deadlineAt: number;
   modelId?: string;
+  providerExecution?: FrozenGeneratorProviderExecution;
+  canvasProjection?: { nodeId: string; nodeProjectionRevisionId: string };
 }): LocalDurableRunCreateCommand[] {
   return input.built.request.outputContract.map((output) =>
     buildLocalGeneratorDurableRunCommand({ ...input, outputSlot: output.slot }),
@@ -413,13 +357,23 @@ export function buildLocalGeneratorDurableRunCommands(input: {
 
 export function createLocalGeneratorProductService(options: {
   authority: LocalGeneratorProjectAuthority;
+  /** Host-owned presentation target; never part of the public Run contract. */
+  canvasProjection?: { nodeId: string; nodeProjectionRevisionId: string };
   resolveDefinition: (
     pluginId: string,
     definitionId: string,
   ) => Promise<GeneratorDefinition>;
+  listPluginCards?: () => Promise<import("@clash/shared-types").ExecutablePluginCardRegistration[]>;
   ownerId: string;
   journal: SqliteDurableRunJournal;
   actor: ExecutablePluginInvocation["actor"];
+  resolveModelExecution?: (input: {
+    projectId: string;
+    doc: LoroDoc;
+    prepared: ReturnType<typeof prepareLocalGeneratorActionRun>;
+    pinnedSelection?: ActionRunModelSelection;
+    providerAccountId?: string;
+  }) => Promise<{ selection: ActionRunModelSelection; execution: FrozenGeneratorProviderExecution }>;
   resolveModelConsumer?: (input: {
     projectId: string;
     consumer: { pluginId: string; definitionId: string; actionId: string };
@@ -432,6 +386,7 @@ export function createLocalGeneratorProductService(options: {
   const bridge = createLocalGeneratorRunBridge({
     ownerId: options.ownerId,
     journal: options.journal,
+    now: options.now,
   });
   const deadlineMs =
     options.deadlineMs ?? DEFAULT_LOCAL_PROVIDER_RUN_DEADLINE_MS;
@@ -481,6 +436,83 @@ export function createLocalGeneratorProductService(options: {
       route: selected.route,
     };
   };
+  const resolvePinnedDefinition = async (ref: GeneratorRevision["definitionRef"]) => {
+    const archived = await options.journal.readGeneratorDefinition?.(ref);
+    if (archived) return archived;
+    const definition = requireResolvedDefinition(ref, await options.resolveDefinition(ref.pluginId, ref.definitionId));
+    if (!isDeepStrictEqual(semanticDefinitionRef(definition), ref)) {
+      throw new LocalGeneratorProductError("GENERATOR_DEFINITION_MISMATCH", "The exact historical Generator Definition is unavailable.");
+    }
+    await options.journal.rememberGeneratorDefinition?.(definition);
+    return definition;
+  };
+  const replayEntries = async (projectId: string, doc: LoroDoc, generatorId: string, actionId: string, input: SubmitLocalGeneratorActionInput) => {
+    const existing = readProjectActionRun(doc, input.actionRunId);
+    if (!existing) return null;
+    if (existing.generatorRevision.generatorId !== generatorId || existing.generatorRevision.generatorRevisionId !== input.generatorRevisionId ||
+        existing.actionId !== actionId || !isDeepStrictEqual(existing.parameters, input.parameters) ||
+        !isDeepStrictEqual(canonicalInputRefs(existing.invocationInputRefs), canonicalInputRefs(input.invocationInputRefs))) {
+      throw new LocalGeneratorProductError("ACTION_RUN_REQUEST_CONFLICT", "The existing Action Run belongs to a different request.");
+    }
+    const { status: _status, ...request } = existing;
+    const entries: Array<{ request: ActionRunRequest; command: LocalDurableRunCreateCommand }> = [];
+    for (const output of existing.outputContract) {
+      const task = await options.journal.load({ actionRunId: input.actionRunId, outputSlot: output.slot });
+      // A crash before private admission still needs the original Definition to
+      // reconstruct missing tasks; never invent execution from public state.
+      if (!task) return null;
+      const executor = parseFrozenExecutorInput(task.executorInput);
+      if (executor.projectId !== projectId || task.owner.realm !== "local" || task.owner.id !== options.ownerId ||
+          (options.canvasProjection && (executor.nodeId !== options.canvasProjection.nodeId || executor.nodeProjectionRevisionId !== options.canvasProjection.nodeProjectionRevisionId))) {
+        throw new LocalGeneratorProductError("ACTION_RUN_REQUEST_CONFLICT", "The existing Action Run belongs to a different request owner or projection.");
+      }
+      if (input.providerAccountId && executor.providerExecution?.accountId !== input.providerAccountId) {
+        throw new LocalGeneratorProductError("GENERATOR_PROVIDER_SELECTION_CONFLICT", "The frozen execution does not use the requested Provider account.");
+      }
+      entries.push({ request, command: { type: "create", actionRunId: input.actionRunId, outputSlot: output.slot, deadlineAt: task.deadlineAt, executor } });
+    }
+    return entries;
+  };
+  const prepareInvocation = async (
+    projectId: string,
+    input: BuildLocalGeneratorActionRunInput,
+    providerAccountId?: string,
+  ): Promise<{ built: BuiltLocalGeneratorActionRun; providerExecution?: FrozenGeneratorProviderExecution }> => {
+    const prepared = prepareLocalGeneratorActionRun(input);
+    const existing = readProjectActionRun(input.doc, input.actionRunId);
+    if (!prepared.action.modelExecution) {
+      if (providerAccountId) throw new LocalGeneratorProductError("GENERATOR_PROVIDER_SELECTION_UNSUPPORTED",
+        "An explicit Provider account is supported only by model execution Actions.");
+      const initial = buildLocalGeneratorActionRun(input);
+      const selection = existing?.modelSelection ?? await resolveModelSelection(projectId, input.doc, initial);
+      return { built: selection ? buildLocalGeneratorActionRun({ ...input, modelSelection: selection }) : initial };
+    }
+    const task = await options.journal.load({ actionRunId: input.actionRunId, outputSlot: prepared.outputContract[0]!.slot });
+    let selection = existing?.modelSelection;
+    let execution = task ? parseFrozenExecutorInput(task.executorInput).providerExecution : undefined;
+    if (task && (!selection || !execution)) {
+      throw new LocalGeneratorProductError("GENERATOR_MODEL_EXECUTION_CONFLICT",
+        "The existing task does not belong to a frozen model Action Run.");
+    }
+    if (!execution) {
+      if (!options.resolveModelExecution) {
+        throw new LocalGeneratorProductError("GENERATOR_MODEL_RESOLVER_UNAVAILABLE",
+          "Host model execution planning is unavailable.");
+      }
+      const planned = await options.resolveModelExecution({ projectId, doc: input.doc, prepared, pinnedSelection: selection, providerAccountId });
+      if (selection && !isDeepStrictEqual(selection, planned.selection)) {
+        throw new LocalGeneratorProductError("GENERATOR_MODEL_EXECUTION_CONFLICT",
+          "Recovery must use the Provider selection frozen in the public Run.");
+      }
+      selection = planned.selection;
+      execution = planned.execution;
+    }
+    if (providerAccountId && execution.accountId !== providerAccountId) {
+      throw new LocalGeneratorProductError("GENERATOR_PROVIDER_SELECTION_CONFLICT",
+        "The frozen execution does not use the requested Provider account.");
+    }
+    return { built: buildLocalGeneratorActionRun({ ...input, modelSelection: selection }), providerExecution: execution };
+  };
   return {
     async create(
       projectId: string,
@@ -491,6 +523,15 @@ export function createLocalGeneratorProductService(options: {
         input,
         await options.resolveDefinition(input.pluginId, input.definitionId),
       );
+      await options.journal.rememberGeneratorDefinition?.(definition);
+      if (input.placement?.actionCardId) {
+        const registration = (await options.listPluginCards?.() ?? []).find((entry) =>
+          entry.pluginId === definition.pluginId && entry.document.kind === "action-card" && entry.document.spec.id === input.placement!.actionCardId);
+        if (!registration || registration.document.kind !== "action-card" || registration.version !== definition.version || registration.schemaHash !== definition.schemaHash) {
+          throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_UNSUPPORTED", "The requested Action Card must belong to this exact Generator package.");
+        }
+        resolveExecutableActionCardGenerator(registration.document.spec, definition);
+      }
       const revision: GeneratorRevision = {
         id: input.generatorRevisionId,
         generatorId: input.generatorId,
@@ -500,24 +541,46 @@ export function createLocalGeneratorProductService(options: {
         ...(input.forkedFrom ? { forkedFrom: input.forkedFrom } : {}),
       };
       return options.authority.mutate(projectId, async (doc, checkpoint) => {
-        const validatedRevision = validateLocalGeneratorRevisionContract({
-          doc,
-          definition,
-          revision,
+        const result = commitProjectMutation(doc, (draft) => {
+          const validatedRevision = validateLocalGeneratorRevisionContract({ doc: draft, definition, revision });
+          const created = createProjectGeneratorFact(draft, {
+            head: { id: input.generatorId, headRevisionId: input.generatorRevisionId }, revision: validatedRevision,
+          });
+          if (!created.ok) throw new LocalGeneratorProductError(created.error.code, created.error.message);
+          if (!input.placement) return created;
+          if (!input.placement.actionCardId && (definition.pluginId !== "clash.model-generation" || !["image", "video", "audio", "model", "text"].includes(definition.definitionId))) {
+            throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_UNSUPPORTED", "Canvas Model placement requires a Model Generator Definition.");
+          }
+          const { nodeId, canvasId, label, position, parentId, actionCardId } = input.placement;
+          const existing = draft.getMap("nodes").get(nodeId) as { type?: string; canvasId?: string; data?: { generatorId?: string; actionCardId?: string } } | undefined;
+          if (existing) {
+            if (existing.type !== "action-badge" || (existing.canvasId ?? "main") !== canvasId || existing.data?.generatorId !== input.generatorId || existing.data?.actionCardId !== actionCardId) {
+              throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_CONFLICT", `Canvas node ${nodeId} already belongs to another placement.`);
+            }
+            // Creation replay acknowledges the existing placement without resetting
+            // presentation edits made since the original request.
+            return created;
+          }
+          const canvas = new Canvas(draft, () => {}, canvasId);
+          if (parentId && canvas.readNode(parentId)?.type !== "group") {
+            throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_REJECTED", "The placement parent must be an existing group in the same Canvas.");
+          }
+          const placement = canvas.createNode(nodeId, "action-badge", {
+            generatorId: input.generatorId, ...(label === undefined ? {} : { label }),
+            ...(actionCardId ? { actionCardId } : {}),
+          }, position, parentId);
+          if (placement.error || placement.node_id !== nodeId) {
+            throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_REJECTED", placement.error ?? "Canvas did not create the requested placement.");
+          }
+          if (input.placement.sourceNodeId) {
+            try {
+              projectLocalModelCopy(draft, canvasId, input.placement.sourceNodeId, nodeId, validatedRevision);
+            } catch (error) {
+              throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_CONFLICT", error instanceof Error ? error.message : String(error));
+            }
+          }
+          return { ...created, changed: true };
         });
-        const result = createProjectGeneratorFact(doc, {
-          head: {
-            id: input.generatorId,
-            headRevisionId: input.generatorRevisionId,
-          },
-          revision: validatedRevision,
-        });
-        if (!result.ok) {
-          throw new LocalGeneratorProductError(
-            result.error.code,
-            result.error.message,
-          );
-        }
         if (result.changed) await checkpoint();
         return result;
       });
@@ -571,6 +634,14 @@ export function createLocalGeneratorProductService(options: {
             `Generator revision ${generatorId}/${generator.headRevisionId} not found.`,
           );
         }
+        // An accepted plain edit is an immutable receipt, even if the installed
+        // Model contract has changed since then. No fresh mutation is requested.
+        if (generator.headRevisionId === input.generatorRevisionId && !input.canvasInputConnections?.length) {
+          if (currentRevision.parentRevisionId !== input.expectedHeadRevisionId || !isDeepStrictEqual(currentRevision.state, input.state) || !isDeepStrictEqual(currentRevision.persistentInputRefs, canonicalInputRefs(input.persistentInputRefs))) {
+            throw new LocalGeneratorProductError("GENERATOR_REVISION_ID_COLLISION", "This revision already identifies a different edit.");
+          }
+          return { generator, revision: currentRevision, changed: false };
+        }
         const definition = requireResolvedDefinition(
           currentRevision.definitionRef,
           await options.resolveDefinition(
@@ -578,30 +649,8 @@ export function createLocalGeneratorProductService(options: {
             currentRevision.definitionRef.definitionId,
           ),
         );
-        const revision = validateLocalGeneratorRevisionContract({
-          doc,
-          definition,
-          revision: {
-            id: input.generatorRevisionId,
-            generatorId,
-            definitionRef: currentRevision.definitionRef,
-            parentRevisionId: input.expectedHeadRevisionId,
-            state: input.state,
-            persistentInputRefs: input.persistentInputRefs,
-          },
-        });
-        const result = advanceProjectGeneratorHead(doc, {
-          generatorId,
-          expectedHeadRevisionId: input.expectedHeadRevisionId,
-          revision,
-          editPolicy: definition.editPolicy,
-        });
-        if (!result.ok) {
-          throw new LocalGeneratorProductError(
-            result.error.code,
-            result.error.message,
-          );
-        }
+        await options.journal.rememberGeneratorDefinition?.(definition);
+        const result = advanceLocalGeneratorRevision(doc, definition, generatorId, input);
         if (result.changed) await checkpoint();
         return result;
       });
@@ -623,28 +672,22 @@ export function createLocalGeneratorProductService(options: {
         input: SubmitLocalGeneratorActionInputSchema.parse(proposal.input),
       }));
       return options.authority.mutate(projectId, async (doc, checkpoint) => {
-        const planned: Array<{ built: BuiltLocalGeneratorActionRun; command: LocalDurableRunCreateCommand }> = [];
+        const planned: Array<{ request: ActionRunRequest; command: LocalDurableRunCreateCommand }> = [];
         const validationDoc = doc.fork();
+        try {
         for (const proposal of parsed) {
           const generator = readProjectGenerator(validationDoc, proposal.generatorId);
           if (!generator) throw new LocalGeneratorProductError("PROJECT_GENERATOR_NOT_FOUND", `Project Generator ${proposal.generatorId} not found.`);
           const revision = readGeneratorRevision(validationDoc, { generatorId: proposal.generatorId, generatorRevisionId: proposal.input.generatorRevisionId });
           if (!revision) throw new LocalGeneratorProductError("GENERATOR_REVISION_NOT_FOUND", `Generator revision ${proposal.generatorId}/${proposal.input.generatorRevisionId} not found.`);
-          const definition = requireResolvedDefinition(revision.definitionRef, await options.resolveDefinition(revision.definitionRef.pluginId, revision.definitionRef.definitionId));
-          const initial = buildLocalGeneratorActionRun({ doc: validationDoc, definition, actionRunId: proposal.input.actionRunId, generatorRevision: { generatorId: proposal.generatorId, generatorRevisionId: proposal.input.generatorRevisionId }, actionId: proposal.actionId, parameters: proposal.input.parameters, invocationInputRefs: proposal.input.invocationInputRefs });
-          const modelSelection = await resolveModelSelection(projectId, validationDoc, initial);
-          const built = modelSelection
-            ? buildLocalGeneratorActionRun({
-                doc: validationDoc,
-                definition,
-                actionRunId: proposal.input.actionRunId,
-                generatorRevision: { generatorId: proposal.generatorId, generatorRevisionId: proposal.input.generatorRevisionId },
-                actionId: proposal.actionId,
-                parameters: proposal.input.parameters,
-                modelSelection,
-                invocationInputRefs: proposal.input.invocationInputRefs,
-              })
-            : initial;
+          const replay = await replayEntries(projectId, validationDoc, proposal.generatorId, proposal.actionId, proposal.input);
+          if (replay) { planned.push(...replay); continue; }
+          const definition = await resolvePinnedDefinition(revision.definitionRef);
+          const { built, providerExecution } = await prepareInvocation(projectId, {
+            doc: validationDoc, definition, actionRunId: proposal.input.actionRunId,
+            generatorRevision: { generatorId: proposal.generatorId, generatorRevisionId: proposal.input.generatorRevisionId },
+            actionId: proposal.actionId, parameters: proposal.input.parameters, invocationInputRefs: proposal.input.invocationInputRefs,
+          }, proposal.input.providerAccountId);
           // Validate all public identities against each other and existing facts before touching authority.
           const validation = ensureActionRunRequest(validationDoc, built.request);
           if (!validation.ok) throw new LocalGeneratorProductError(validation.error.code, validation.error.message);
@@ -660,16 +703,19 @@ export function createLocalGeneratorProductService(options: {
                 projectId,
                 built,
                 actor: options.actor,
+                providerExecution,
+                canvasProjection: options.canvasProjection,
                 deadlineAt: existingTask?.deadlineAt ?? now() + deadlineMs,
                 outputSlot: output.slot,
               }),
             );
           }
-          planned.push(...commands.map((command) => ({ built, command })));
+          planned.push(...commands.map((command) => ({ request: built.request, command })));
         }
+        } finally { validationDoc.free(); }
         const runs = await bridge.enqueueBatch({
           doc,
-          entries: planned.map((item) => ({ request: item.built.request, command: item.command })),
+          entries: planned,
           checkpoint,
         });
         return parsed.map((proposal) =>
@@ -703,41 +749,17 @@ export function createLocalGeneratorProductService(options: {
             `Generator revision ${generatorId}/${input.generatorRevisionId} not found.`,
           );
         }
-        const definition = requireResolvedDefinition(
-          frozenRevision.definitionRef,
-          await options.resolveDefinition(
-            frozenRevision.definitionRef.pluginId,
-            frozenRevision.definitionRef.definitionId,
-          ),
-        );
-        const initial = buildLocalGeneratorActionRun({
-          doc,
-          definition,
-          actionRunId: input.actionRunId,
-          generatorRevision: {
-            generatorId,
-            generatorRevisionId: input.generatorRevisionId,
-          },
-          actionId,
-          parameters: input.parameters,
-          invocationInputRefs: input.invocationInputRefs,
-        });
-        const modelSelection = await resolveModelSelection(projectId, doc, initial);
-        const built = modelSelection
-          ? buildLocalGeneratorActionRun({
-              doc,
-              definition,
-              actionRunId: input.actionRunId,
-              generatorRevision: {
-                generatorId,
-                generatorRevisionId: input.generatorRevisionId,
-              },
-              actionId,
-              parameters: input.parameters,
-              modelSelection,
-              invocationInputRefs: input.invocationInputRefs,
-            })
-          : initial;
+        const replay = await replayEntries(projectId, doc, generatorId, actionId, input);
+        if (replay) {
+          const runs = await bridge.enqueueBatch({ doc, entries: replay, checkpoint });
+          return runs[0]!;
+        }
+        const definition = await resolvePinnedDefinition(frozenRevision.definitionRef);
+        const { built, providerExecution } = await prepareInvocation(projectId, {
+          doc, definition, actionRunId: input.actionRunId,
+          generatorRevision: { generatorId, generatorRevisionId: input.generatorRevisionId },
+          actionId, parameters: input.parameters, invocationInputRefs: input.invocationInputRefs,
+        }, input.providerAccountId);
         const entries: Array<{
           request: ActionRunRequest;
           command: LocalDurableRunCreateCommand;
@@ -754,6 +776,8 @@ export function createLocalGeneratorProductService(options: {
               projectId,
               built,
               actor: options.actor,
+              providerExecution,
+              canvasProjection: options.canvasProjection,
               deadlineAt: existingTask?.deadlineAt ?? now() + deadlineMs,
               outputSlot: output.slot,
             }),
@@ -787,3 +811,86 @@ export function createLocalGeneratorProductService(options: {
 export type LocalGeneratorProductService = ReturnType<
   typeof createLocalGeneratorProductService
 >;
+
+
+/** Shared Host mutation used by the Generator API and Canvas command adapter. */
+export function advanceLocalGeneratorRevision(doc: LoroDoc, definition: GeneratorDefinition, generatorId: string, input: AdvanceLocalProjectGeneratorInput) {
+  const generator = readProjectGenerator(doc, generatorId);
+  const currentRevision = generator && readGeneratorRevision(doc, { generatorId, generatorRevisionId: generator.headRevisionId });
+  if (!generator || !currentRevision) throw new LocalGeneratorProductError("GENERATOR_REVISION_NOT_FOUND", "Generator revision is unavailable. Read again.");
+  if (generator.headRevisionId !== input.generatorRevisionId) {
+    for (const [nodeId, raw] of doc.getMap("nodes").entries()) {
+      const placement = raw as { type?: string; canvasId?: string; data?: { generatorId?: string } };
+      if (placement.type !== "action-badge" || placement.data?.generatorId !== generatorId) continue;
+      const canvas = new Canvas(doc, () => {}, placement.canvasId ?? "main");
+      if (isCanvasNodeImmutable({ nodeId, edges: canvas.listEdges() })) {
+        throw new LocalGeneratorProductError("IMMUTABLE_NODE", `Canvas placement ${nodeId} has downstream references. Copy the Generator draft before editing it.`);
+      }
+    }
+  }
+  const result = commitProjectMutation(doc, (draft) => {
+    const revision = validateLocalGeneratorRevisionContract({
+      doc: draft,
+      definition,
+      revision: {
+        id: input.generatorRevisionId,
+        generatorId,
+        // New edits bind the currently installed contract; historical
+        // revisions and their frozen Runs retain their original provenance.
+        definitionRef: semanticDefinitionRef(definition),
+        parentRevisionId: input.expectedHeadRevisionId,
+        state: input.state,
+        persistentInputRefs: input.persistentInputRefs,
+      },
+    });
+    const advanced = advanceProjectGeneratorHead(draft, {
+      generatorId,
+      expectedHeadRevisionId: input.expectedHeadRevisionId,
+      revision,
+      editPolicy: definition.editPolicy,
+    });
+    if (!advanced.ok) {
+      throw new LocalGeneratorProductError(
+        advanced.error.code,
+        advanced.error.message,
+      );
+    }
+    let changed = advanced.changed;
+    {
+      const assets = new Set(revision.persistentInputRefs.map(ref => assetRevisionKey(ref.target)).filter(key => key !== null));
+      const placements = new Map<string, string>();
+      for (const [nodeId, raw] of draft.getMap("nodes").entries()) {
+        const node = raw as { type?: string; canvasId?: string; data?: { generatorId?: string } };
+        if (node.type === "action-badge" && node.data?.generatorId === generatorId) placements.set(nodeId, node.canvasId ?? "main");
+      }
+      for (const canvasId of new Set(placements.values())) {
+        const canvas = new Canvas(draft, () => {}, canvasId);
+        for (const edge of canvas.listEdges()) {
+          if (!placements.has(edge.target) || edge.type === "copy-on-write") continue;
+          const source = canvas.readNode(edge.source);
+          const key = assetRevisionKey(canvasAssetRevision(source));
+          if (!key || !assets.has(key)) changed = canvas.deleteEdge(edge.id) || changed;
+        }
+      }
+      for (const connection of input.canvasInputConnections ?? []) {
+        const canvas = new Canvas(draft, () => {}, connection.canvasId);
+        const source = canvas.readNode(connection.sourceNodeId);
+        const key = assetRevisionKey(connection.asset)!;
+        if (placements.get(connection.targetNodeId) !== connection.canvasId || !source || assetRevisionKey(canvasAssetRevision(source)) !== key || (connection.disconnect ? assets.has(key) : !assets.has(key))) {
+          throw new LocalGeneratorProductError("GENERATOR_CANVAS_CONNECTION_CONFLICT", "The Canvas source, target, or native input changed. Read them again.");
+        }
+        if (connection.disconnect) continue;
+        const edgeId = `${connection.sourceNodeId}-${connection.targetNodeId}`;
+        const existing = canvas.listEdges().find((edge) => edge.id === edgeId);
+        if (existing) {
+          if (existing.source !== connection.sourceNodeId || existing.target !== connection.targetNodeId) throw new LocalGeneratorProductError("GENERATOR_CANVAS_CONNECTION_CONFLICT", "The Canvas edge belongs to another connection.");
+          continue;
+        }
+        canvas.insertEdge(edgeId, connection.sourceNodeId, connection.targetNodeId);
+        changed = true;
+      }
+    }
+    return { ...advanced, changed };
+  });
+  return result;
+}

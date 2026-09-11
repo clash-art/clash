@@ -3,13 +3,28 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
-    "types": ["node"],
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
-    "outDir": "runtime"
+    "outDir": "runtime",
+    "baseUrl": ".",
+    "paths": {
+      "@clash/shared-types": [
+        "../../packages/shared-types/src/index.ts"
+      ],
+      "@clash/shared-types/*": [
+        "../../packages/shared-types/src/*.ts"
+      ]
+    }
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ]
 }

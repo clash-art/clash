@@ -9,7 +9,10 @@
     "outDir": "./dist",
     "rootDir": "..",
     "paths": {
-      "@clash/shared-mcp": ["../shared-mcp/src/index.ts"]
+      "@clash/shared-mcp": ["../shared-mcp/src/index.ts"],
+      "@clash/shared-types": ["../shared-types/src/index.ts"],
+      "@clash/shared-types/*": ["../shared-types/src/*.ts"],
+      "@clash/shared-layout": ["../shared-layout/src/index.ts"]
     },
     "skipLibCheck": true,
     "esModuleInterop": true

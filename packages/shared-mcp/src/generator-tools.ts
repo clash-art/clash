@@ -1,12 +1,15 @@
-import { z } from "zod";
+import { z } from "zod/v3";
+import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import {
   createGeneratorClient,
+  CreateProjectGeneratorRequestSchema,
+  SubmitGeneratorActionRequestSchema,
+  AdvanceProjectGeneratorRequestSchema,
   type GeneratorRequest,
 } from "@clash/shared-runtime/generator-client";
 import { describeClashTool } from "./tool-guidance.js";
 import type { ClashMcpServer } from "./server.js";
 
-const jsonObject = z.record(z.string(), z.unknown());
 const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
   structuredContent: { result: value },
@@ -23,8 +26,12 @@ export function registerGeneratorTools(
     title: string,
     useWhen: string,
     readOnly: boolean,
-    inputSchema: Record<string, z.ZodType>,
+    // Schemas come from the shared contract's Zod installation. The SDK accepts
+    // both versions at runtime; avoid structural comparison of recursive JSON
+    // validators across separate Zod installations at this registration boundary.
+    inputSchema: Record<string, unknown>,
     call: (args: Record<string, unknown>) => Promise<unknown>,
+    effect = "calls the native generic Generator HTTP authority exactly once",
   ) => {
     server.registerTool(
       name,
@@ -32,12 +39,11 @@ export function registerGeneratorTools(
         title,
         description: describeClashTool({
           useWhen,
-          effect:
-            "calls the native generic Generator HTTP authority exactly once",
+          effect,
           returns: "the exact JSON response from the Generator API",
           next: "inspect the returned Generator, Revision, Action Run, or Output Commit",
         }),
-        inputSchema,
+        inputSchema: inputSchema as ZodRawShapeCompat,
         annotations: { readOnlyHint: readOnly, destructiveHint: false },
       },
       async (args) => result(await call(args as Record<string, unknown>)),
@@ -64,8 +70,9 @@ export function registerGeneratorTools(
     "Create ProjectGenerator",
     "a ProjectGenerator and initial immutable Revision must be created",
     false,
-    { projectId: z.string().min(1), input: jsonObject },
+    { projectId: z.string().min(1), input: CreateProjectGeneratorRequestSchema },
     (a) => client.createGenerator(a.projectId as string, a.input),
+    "creates a Project Generator and initial Revision, optionally with an atomic Model Canvas placement; does not submit an Action Run or call a paid generation provider. Supply new stable generatorId and generatorRevisionId values",
   );
   tool(
     "clash_generators_get",
@@ -83,7 +90,7 @@ export function registerGeneratorTools(
     {
       projectId: z.string().min(1),
       generatorId: z.string().min(1),
-      input: jsonObject,
+      input: AdvanceProjectGeneratorRequestSchema,
     },
     (a) =>
       client.advanceGenerator(
@@ -101,7 +108,7 @@ export function registerGeneratorTools(
       projectId: z.string().min(1),
       generatorId: z.string().min(1),
       actionId: z.string().min(1),
-      input: jsonObject,
+      input: SubmitGeneratorActionRequestSchema,
     },
     (a) =>
       client.submitActionRun(
@@ -110,6 +117,7 @@ export function registerGeneratorTools(
         a.actionId as string,
         a.input,
       ),
+    "submits an Action Run for execution and may incur provider charges; reuse the same actionRunId when inspecting or recovering an existing submission",
   );
   tool(
     "clash_generators_action_run_get",

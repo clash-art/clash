@@ -4,6 +4,16 @@
 // Worker/browser bundlers resolve @clash/shared-runtime here via the "browser"
 // condition, so every Worker-safe API the root entry publishes must be listed
 // below with the same explicit export blocks as index.ts.
+export { createTimelineClient, type ObservedProjectTimeline } from "./timeline-client.js";
+
+export {
+  sendProjectHostCommand,
+  projectHostCommandUrl,
+  ProjectHostHttpError,
+  type ProjectHostResponse,
+  type ProjectHostHttpRequest,
+} from "./project-host-http.js";
+
 export {
   apiUrl,
   defaultRuntimeCapabilities,

@@ -304,7 +304,33 @@
           "description": { "type": "string" },
           "type": { "const": "skill" },
           "kind": { "enum": ["architecture", "detail"] },
-          "source": { "enum": ["first-party", "provider-official"] },
+          "source": {
+            "enum": ["first-party", "provider-official", "community"]
+          },
+          "author": { "type": "string" },
+          "repository": { "type": "string", "format": "uri" },
+          "curation": {
+            "type": "object",
+            "required": ["collection", "curator"],
+            "properties": {
+              "collection": { "const": "official-picks" },
+              "curator": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "attribution": {
+            "type": "object",
+            "required": ["sourceUrl"],
+            "properties": {
+              "sourceUrl": { "type": "string", "format": "uri" },
+              "license": { "type": "string" },
+              "licenseUrl": { "type": "string", "format": "uri" },
+              "repositoryStars": { "type": "integer", "minimum": 0 },
+              "checkedAt": { "type": "string", "format": "date" },
+              "notes": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
           "sourceVersion": { "type": "string" },
           "path": { "type": "string" },
           "cover": {
@@ -318,9 +344,9 @@
           },
           "install": {
             "type": "object",
-            "required": ["kind", "source", "skill", "scope"],
+            "required": ["kind", "skill", "scope"],
             "properties": {
-              "kind": { "const": "npx-skills" },
+              "kind": { "enum": ["npx-skills", "bundled-skill"] },
               "source": { "type": "string", "pattern": "^https://" },
               "skill": {
                 "type": "string",
@@ -328,7 +354,14 @@
               },
               "scope": { "const": "global" }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": { "properties": { "kind": { "const": "npx-skills" } } },
+                "then": { "required": ["source"] },
+                "else": { "not": { "required": ["source"] } }
+              }
+            ]
           },
           "tags": { "type": "array", "items": { "type": "string" } },
           "inputs": { "type": "array", "items": { "type": "string" } },
@@ -376,14 +409,40 @@
           {
             "if": {
               "properties": {
-                "source": { "const": "provider-official" }
+                "source": { "enum": ["provider-official", "community"] }
               },
               "required": ["source"]
             },
             "then": {
-              "required": ["sourceVersion", "install", "executionContract"],
+              "required": ["sourceVersion", "install", "executionContract"]
+            }
+          },
+          {
+            "if": {
+              "required": ["install"],
               "properties": {
-                "executionContract": { "const": "prompt-compiler" }
+                "install": {
+                  "properties": { "kind": { "const": "bundled-skill" } }
+                }
+              }
+            },
+            "then": {
+              "required": ["path"]
+            }
+          },
+          {
+            "if": {
+              "required": ["curation"],
+              "properties": {
+                "source": { "enum": ["provider-official", "community"] }
+              }
+            },
+            "then": {
+              "required": ["author", "repository", "attribution"],
+              "properties": {
+                "attribution": {
+                  "required": ["license", "licenseUrl", "checkedAt"]
+                }
               }
             }
           },

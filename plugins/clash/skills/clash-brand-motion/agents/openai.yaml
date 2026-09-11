@@ -1,0 +1,4 @@
+interface:
+  display_name: "Brand Motion"
+  short_description: "Animate supplied identity with coherent timing and form"
+  default_prompt: "Use $clash-brand-motion for the requested creative task, following its scope and the project's existing choices."

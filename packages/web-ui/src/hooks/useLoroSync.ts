@@ -1,41 +1,43 @@
+import { createLogger } from "../lib/logger";
+import { addCanvasGraph } from "../lib/addCanvasGraph";
+import { applyCanvasLayout, type NodePatch } from "../lib/loroNodeSync";
+import { useHostTimelines } from "./useHostTimelines";
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { LoroDoc, UndoManager } from "loro-crdt";
+import { archiveRejectedSync, readLatestSyncRecovery, type SyncRecoveryDraft } from "../lib/syncRecovery";
 import { Node, Edge } from "@xyflow/react";
 import {
   refreshRuntimeConfig,
   runtimeSyncWebSocketUrl,
+  runtimeApiUrl,
 } from "../lib/runtimeConfig";
 import type {
   PresenceClient,
   ActivityMessage,
   AwarenessBroadcastMessage,
+  ProjectLoadErrorMessage,
 } from "@clash/shared-types";
 import {
   Canvas,
+  isCanvasNodeImmutable,
   projectVisibleNodeData,
   canvasGraphReconciliationChanged,
   DEFAULT_CANVAS_ID,
   createProjectCanvas,
   createProjectPluginView,
-  createProjectTimeline,
+  type CreateTimelineOnCanvasInput,
   deleteProjectCanvas,
-  deleteProjectTimeline,
-  detachTimelineFromCanvas,
   ensureProjectCanvas,
-  attachTimelineToCanvas,
   attachDirectorStageToCanvas,
   createProjectDirectorStage,
+  createDirectorStageOnCanvas as createDirectorStageOnCanvasMutation,
+  type CreateDirectorStageOnCanvasInput,
   listProjectCanvases,
   listProjectDirectorStages,
-  listProjectTimelines,
   projectDirectorStageReadToken,
-  projectTimelineReadToken,
   reconcileCanvasGraph,
-  reconcileProjectTimelineOwnership,
   reconcileProjectDirectorStageOwnership,
-  requestTimelineRender as createTimelineRenderRequest,
   renameProjectCanvas,
-  updateProjectTimelineState,
   updateProjectDirectorStageState,
   detachDirectorStageFromCanvas,
   canvasBatchDeleteReadToken,
@@ -68,7 +70,6 @@ import {
   type ProjectTimeline,
   type ProjectTimelineDeleteResult,
   type ProjectTimelineMutationResult,
-  type TimelineRenderRequestResult,
   type ProjectDirectorStage,
   type ProjectDirectorStageMutationResult,
 } from "@clash/shared-types";
@@ -79,14 +80,13 @@ function officialLoroProtocolUrl(url: string): string {
   return `${url}${url.includes("?") ? "&" : "?"}protocol=loro-v1`;
 }
 
+const syncLog = createLogger("sync");
+
 function reconcileImportedWorkspace(doc: LoroDoc): void {
   const graph = reconcileCanvasGraph(doc);
-  const timelines = reconcileProjectTimelineOwnership(doc);
   const directorStages = reconcileProjectDirectorStageOwnership(doc);
   if (
     canvasGraphReconciliationChanged(graph) ||
-    timelines.removedActionNodeIds.length > 0 ||
-    timelines.detachedTimelineIds.length > 0 ||
     directorStages.removedActionNodeIds.length > 0 ||
     directorStages.detachedStageIds.length > 0
   ) {
@@ -124,6 +124,11 @@ export interface UseLoroSyncReturn {
   projectId: string;
   doc: LoroDoc | null;
   connected: boolean;
+  syncRejected: boolean;
+  projectLoadError: ProjectLoadErrorMessage | undefined;
+  retryProjectLoad: () => void;
+  recoveryDraft: SyncRecoveryDraft | undefined;
+  prepareSyncRecovery: () => Promise<void>;
   /** Whether initial load from IndexedDB is complete */
   isInitialized: boolean;
   canvases: ProjectCanvas[];
@@ -141,25 +146,28 @@ export interface UseLoroSyncReturn {
   renameCanvas: (canvasId: string, name: string) => ProjectCanvasMutationResult;
   deleteCanvas: (canvasId: string) => ProjectCanvasDeleteResult;
   timelines: ProjectTimeline[];
+  timelineError: string | null;
   standaloneTimelines: ProjectTimeline[];
+  createTimelineOnCanvas: (input: Omit<CreateTimelineOnCanvasInput, "canvasId"> & { canvasId?: string }) => Promise<ProjectTimelineMutationResult>;
   createTimeline: (input: {
     id: string;
     name: string;
     state: unknown;
-  }) => ProjectTimelineMutationResult;
+  }) => Promise<ProjectTimelineMutationResult>;
   deleteTimeline: (
     timelineId: string,
     expectedReadToken?: string,
-  ) => ProjectTimelineDeleteResult;
+  ) => Promise<ProjectTimelineDeleteResult>;
   attachTimeline: (input: {
     timelineId: string;
     canvasId?: string;
     actionNodeId: string;
     position?: { x: number; y: number };
-  }) => ProjectTimelineMutationResult;
-  detachTimeline: (timelineId: string) => ProjectTimelineMutationResult;
+  }) => Promise<ProjectTimelineMutationResult>;
+  detachTimeline: (timelineId: string) => Promise<ProjectTimelineMutationResult>;
   directorStages: ProjectDirectorStage[];
   standaloneDirectorStages: ProjectDirectorStage[];
+  createDirectorStageOnCanvas: (input: Omit<CreateDirectorStageOnCanvasInput, "canvasId"> & { canvasId?: string }) => ProjectDirectorStageMutationResult;
   createDirectorStage: (input: {
     id: string;
     name: string;
@@ -179,6 +187,7 @@ export interface UseLoroSyncReturn {
   ) => boolean;
   addNodeToCanvas: (canvasId: string, nodeId: string, nodeData: any) => boolean;
   addNode: (nodeId: string, nodeData: any) => boolean;
+  addGraph: (nodes: Node[], edges: Edge[]) => boolean;
   createLinkedNode: (input: {
     nodeId: string;
     nodeType: string;
@@ -194,20 +203,21 @@ export interface UseLoroSyncReturn {
     nodeData: any,
     options?: LoroHostWriteOptions,
   ) => boolean;
+  applyLayout: (patches: NodePatch[]) => boolean;
   applyTimelineState: (
     timelineId: string,
     timelineDsl: unknown,
     options?: LoroHostWriteOptions,
-  ) => boolean;
+  ) => Promise<ProjectTimeline | false>;
   applyTimelineDsl: (
     nodeId: string,
     timelineDsl: unknown,
     options?: LoroHostWriteOptions,
-  ) => boolean;
+  ) => Promise<boolean>;
   requestTimelineRender: (
     timelineId: string,
     options: { actorUserId: string; actorAgentId?: string },
-  ) => TimelineRenderRequestResult;
+  ) => ReturnType<ReturnType<typeof useHostTimelines>["requestTimelineRender"]>;
   removeNode: (nodeId: string, options?: LoroHostWriteOptions) => boolean;
   removeNodes: (nodeIds: string[], options?: LoroHostWriteOptions) => boolean;
   addEdge: (
@@ -381,15 +391,17 @@ const saveToDB = async (
 ): Promise<void> => {
   try {
     const db = await initDB();
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, "readwrite");
-      const store = transaction.objectStore(STORE_NAME);
-      const request = store.put(snapshot, projectId);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, "readwrite");
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(transaction.error ?? new Error("Snapshot save aborted"));
+        transaction.onerror = () => reject(transaction.error);
+        transaction.objectStore(STORE_NAME).put(snapshot, projectId);
+      });
+    } finally { db.close(); }
   } catch (err) {
-    console.error("[useLoroSync] Failed to save to IndexedDB:", err);
+    syncLog.error("sync.snapshot_save_failed", { projectId, error: err });
     if (isCorruptionError(err)) await wipeDB();
   }
 };
@@ -399,15 +411,17 @@ const loadFromDB = async (
 ): Promise<Uint8Array | undefined> => {
   try {
     const db = await initDB();
-    return await new Promise<Uint8Array | undefined>((resolve, reject) => {
-      const transaction = db.transaction(STORE_NAME, "readonly");
-      const store = transaction.objectStore(STORE_NAME);
-      const request = store.get(projectId);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-    });
+    try {
+      return await new Promise<Uint8Array | undefined>((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, "readonly");
+        const request = transaction.objectStore(STORE_NAME).get(projectId);
+        transaction.oncomplete = () => resolve(request.result);
+        transaction.onabort = () => reject(transaction.error ?? new Error("Snapshot load aborted"));
+        transaction.onerror = () => reject(transaction.error);
+      });
+    } finally { db.close(); }
   } catch (err) {
-    console.error("[useLoroSync] Failed to load from IndexedDB:", err);
+    syncLog.error("sync.snapshot_load_failed", { projectId, error: err });
     if (isCorruptionError(err)) await wipeDB();
     return undefined;
   }
@@ -437,27 +451,40 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     onAwareness,
   } = options;
 
-  const [doc] = useState(() => new LoroDoc());
-  // Explicit config per Loro docs:
-  // - mergeInterval 300ms: tight enough that each user action is its own step,
-  //   loose enough that React's batched commits within a single handler merge.
-  // - excludeOriginPrefixes ["sys:"]: commits tagged `sys:<thing>` (internal
-  //   repairs like the parentId sanitizer) are kept OUT of the user undo stack.
+  const [replica] = useState(() => {
+    const doc = new LoroDoc();
+    try {
+      return {
+        doc,
+        // Group batched commits; keep internal repairs out of user history.
+        undoManager: new UndoManager(doc, {
+          mergeInterval: 300,
+          maxUndoSteps: 200,
+          excludeOriginPrefixes: ["sys:"],
+        }),
+        active: false,
+        disposed: false,
+      };
+    } catch (error) { doc.free(); throw error; }
+  });
+  const { doc, undoManager } = replica;
+  useEffect(() => {
+    replica.active = true;
+    return () => {
+      replica.active = false;
+      // Let all subscriptions detach and capture the final snapshot first.
+      // StrictMode replays effects synchronously using the same replica, so a
+      // reacquired owner cancels disposal. A final unmount frees native memory.
+      queueMicrotask(() => {
+        if (replica.active || replica.disposed) return;
+        replica.disposed = true;
+        try { undoManager.free(); } finally { doc.free(); }
+      });
+    };
+  }, [replica, doc, undoManager]);
+
   const canvasIdRef = useRef(canvasId);
   canvasIdRef.current = canvasId;
-  // Explicit config per Loro docs:
-  // - mergeInterval 300ms: tight enough that each user action is its own step,
-  //   loose enough that React's batched commits within a single handler merge.
-  // - excludeOriginPrefixes ["sys:"]: commits tagged `sys:<thing>` (internal
-  //   repairs like the parentId sanitizer) are kept OUT of the user undo stack.
-  const [undoManager] = useState(
-    () =>
-      new UndoManager(doc, {
-        mergeInterval: 300,
-        maxUndoSteps: 200,
-        excludeOriginPrefixes: ["sys:"],
-      }),
-  );
 
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -465,12 +492,21 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const protocolSessionRef = useRef<LoroProtocolClientSession | null>(null);
   const [connected, setConnected] = useState(false);
+  const [syncRejected, setSyncRejected] = useState(false);
+  const [projectLoadError, setProjectLoadError] = useState<ProjectLoadErrorMessage>();
+  const projectLoadFailedRef = useRef(false);
+  const [recoveryDraft, setRecoveryDraft] = useState<SyncRecoveryDraft>();
+  const recoveryPreparedRef = useRef(false);
+  const pendingSnapshotSaveRef = useRef(Promise.resolve());
   const [isInitialized, setIsInitialized] = useState(false);
 
   // Stash callbacks in a ref so init / subscribe effects don't re-run when the caller
   // passes inline closures (which get a new reference on every parent render).
   const [canvases, setCanvases] = useState<ProjectCanvas[]>([]);
-  const [timelines, setTimelines] = useState<ProjectTimeline[]>([]);
+  const {
+    timelines, timelineError, createTimeline, createTimelineOnCanvas,
+    deleteTimeline, attachTimeline, detachTimeline, applyTimelineState, requestTimelineRender,
+  } = useHostTimelines({ projectId, doc, canvasId, connected, onMutation });
   const [directorStages, setDirectorStages] = useState<ProjectDirectorStage[]>(
     [],
   );
@@ -481,7 +517,6 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       doc.commit({ origin: "sys:canvas-registry" });
     }
     setCanvases(listProjectCanvases(doc));
-    setTimelines(listProjectTimelines(doc));
     setDirectorStages(listProjectDirectorStages(doc));
   }, [doc]);
 
@@ -526,10 +561,11 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   // `false`. Defer one microtask so every subscriber has drained.
   const updateUndoRedoState = useCallback(() => {
     queueMicrotask(() => {
+      if (!replica.active) return;
       setCanUndo(undoManager.canUndo());
       setCanRedo(undoManager.canRedo());
     });
-  }, [undoManager]);
+  }, [replica, undoManager]);
 
   // Helper to read current state from Loro doc
   const readStateFromLoro = useCallback(() => {
@@ -545,7 +581,6 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     }
 
     const nodes: Node[] = [];
-    const nodesToFix: Array<{ key: string; cleanedData: any }> = [];
 
     for (const [key, value] of nodesMap.entries()) {
       const nodeData = value as any;
@@ -553,29 +588,12 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       if (!nodeIds.has(key)) continue;
       // Validate parentId - remove if parent doesn't exist to prevent ReactFlow errors
       if (nodeData.parentId && !nodeIds.has(nodeData.parentId)) {
-        console.warn(
-          `[useLoroSync] Removing invalid parentId ${nodeData.parentId} from node ${key}`,
-        );
         const { parentId: _parentId, extent: _extent, ...rest } = nodeData;
         const cleanedData = { ...rest, parentId: undefined, extent: undefined };
         nodes.push({ id: key, ...cleanedData });
-        // Mark for permanent fix in Loro doc
-        nodesToFix.push({ key, cleanedData });
       } else {
         nodes.push({ id: key, ...nodeData });
       }
-    }
-
-    // Permanently fix invalid parentIds in Loro doc (deferred to avoid triggering loops).
-    // Tagged `sys:parent-fix` so the UndoManager's excludeOriginPrefixes keeps it
-    // out of the user's undo stack — repairs aren't something the user asked for.
-    if (nodesToFix.length > 0) {
-      queueMicrotask(() => {
-        for (const { key, cleanedData } of nodesToFix) {
-          nodesMap.set(key, cleanedData);
-        }
-        doc.commit({ origin: "sys:parent-fix" });
-      });
     }
 
     const sortedNodes = sanitizeNodesForReactFlow(nodes);
@@ -620,15 +638,18 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       const currentVersion = localStorage.getItem(versionKey);
 
       if (currentVersion !== LORO_SCHEMA_VERSION) {
-        console.log(
-          `[useLoroSync] Schema version mismatch for project ${projectId}, migrating local snapshot`,
-          { currentVersion, expected: LORO_SCHEMA_VERSION },
-        );
+        syncLog.info("sync.snapshot_migrating", { projectId, currentVersion, expected: LORO_SCHEMA_VERSION });
         localStorage.setItem(versionKey, LORO_SCHEMA_VERSION);
       }
 
       // Step 1: Load from IndexedDB
       const snapshot = await loadFromDB(projectId);
+      if (!mounted) return;
+      try {
+        const db = await initDB();
+        try { const backup = await readLatestSyncRecovery(db, projectId); if (mounted) setRecoveryDraft(backup); }
+        finally { db.close(); }
+      } catch (error) { syncLog.error("sync.recovery_read_failed", { projectId, error }); }
       if (!mounted) return;
 
       if (snapshot) {
@@ -636,7 +657,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
           doc.import(snapshot);
           reconcileImportedWorkspace(doc);
         } catch (err) {
-          console.error("[useLoroSync] Failed to import local snapshot:", err);
+          syncLog.error("sync.snapshot_import_failed", { projectId, error: err });
         }
       }
 
@@ -655,8 +676,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
       updateUndoRedoState();
       setCanvases(listProjectCanvases(doc));
-      setTimelines(listProjectTimelines(doc));
-      setDirectorStages(listProjectDirectorStages(doc));
+        setDirectorStages(listProjectDirectorStages(doc));
       setIsInitialized(true);
     };
 
@@ -670,25 +690,26 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   useEffect(() => {
     if (!isInitialized) return;
 
+    // Each document owns its save timer. Coalesce serialization as well as I/O;
+    // a different project must never cancel this document's pending save.
+    let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushSnapshot = () => {
+      if (saveTimer === undefined) return;
+      clearTimeout(saveTimer);
+      saveTimer = undefined;
+      if (recoveryPreparedRef.current) return;
+      const snapshot = doc.export({ mode: "snapshot" });
+      pendingSnapshotSaveRef.current = pendingSnapshotSaveRef.current.then(() => saveToDB(projectId, snapshot));
+    };
     const unsubscribe = doc.subscribe((event: any) => {
       // event.by: "local" | "import" | "checkout"
-
-      // Save to local storage (debounced) for ALL changes
-      const snapshot = doc.export({ mode: "snapshot" });
-      if ((window as any)._loroSaveTimeout) {
-        clearTimeout((window as any)._loroSaveTimeout);
-      }
-      (window as any)._loroSaveTimeout = setTimeout(() => {
-        saveToDB(projectId, snapshot).catch((err) =>
-          console.error("Failed to save local snapshot:", err),
-        );
-      }, 1000);
+      if (saveTimer !== undefined) clearTimeout(saveTimer);
+      saveTimer = setTimeout(flushSnapshot, 1000);
 
       // Update undo/redo state
       updateUndoRedoState();
       setCanvases(listProjectCanvases(doc));
-      setTimelines(listProjectTimelines(doc));
-      setDirectorStages(listProjectDirectorStages(doc));
+        setDirectorStages(listProjectDirectorStages(doc));
 
       // CRITICAL: Only update React state for REMOTE changes
       // Local changes are already in React state - updating would cause loops/overwrites
@@ -713,14 +734,46 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
     return () => {
       unsubscribe();
+      // Capture pending edits before switching project/canvas or unmounting.
+      flushSnapshot();
     };
   }, [doc, isInitialized, projectId, readStateFromLoro, updateUndoRedoState]);
 
   // WebSocket connection state
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const retryCountRef = useRef(0);
   const isUnmountingRef = useRef(false);
+  const rejectedSyncRef = useRef(false);
+  const prepareSyncRecovery = useCallback(async () => {
+    if (!rejectedSyncRef.current) throw new Error("Sync has not been rejected.");
+    if (recoveryPreparedRef.current) throw new Error("Recovery is already prepared. Reload the project.");
+    recoveryPreparedRef.current = true;
+    try {
+      // Capture while the editor still owns the document. Queued writes must
+      // finish before archiving, but navigation need not retain native memory.
+      const snapshot = doc.export({ mode: "snapshot" });
+      await pendingSnapshotSaveRef.current;
+      const db = await initDB();
+      try {
+        const draft = await archiveRejectedSync(db, projectId, snapshot);
+        if (replica.active) setRecoveryDraft(draft);
+      }
+      finally { db.close(); }
+    } catch (error) { recoveryPreparedRef.current = false; throw error; }
+  }, [replica, doc, projectId]);
+
+  const disconnect = useCallback(() => {
+    const ws = wsRef.current;
+    wsRef.current = null;
+    protocolSessionRef.current?.destroy();
+    protocolSessionRef.current = null;
+    if (!ws) return;
+    ws.onopen = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+  }, []);
 
   // Send a JSON sideband message (presence-style) on the same WS. Best-effort:
   // if the socket isn't open we silently drop. The server treats absence of
@@ -741,20 +794,27 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   // Forward declaration for recursion
   const connectRef = useRef<() => void>(() => {});
 
+  const retryProjectLoad = useCallback(() => {
+    if (!projectLoadFailedRef.current || rejectedSyncRef.current) return;
+    projectLoadFailedRef.current = false;
+    setProjectLoadError(undefined);
+    retryCountRef.current = 0;
+    connectRef.current();
+  }, []);
+
   const scheduleReconnect = useCallback(() => {
+    if (rejectedSyncRef.current || projectLoadFailedRef.current) return;
     if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
     const delay = Math.min(500 * Math.pow(1.5, retryCountRef.current), 5000);
     reconnectTimeoutRef.current = setTimeout(() => {
+      reconnectTimeoutRef.current = null;
       retryCountRef.current++;
       void (async () => {
         if (!syncServerUrl) {
           try {
             await refreshRuntimeConfig();
           } catch (error) {
-            console.error(
-              "[useLoroSync] Failed to refresh Desktop Host before reconnect:",
-              error,
-            );
+            syncLog.warn("sync.host_refresh_failed", { projectId, error });
           }
         }
         // Recompute the runtime WebSocket URL after Host discovery refresh.
@@ -763,26 +823,19 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         connectRef.current();
       })();
     }, delay);
-  }, [syncServerUrl]);
+  }, [projectId, syncServerUrl]);
 
   // Connect function - only called after initialization
   const connect = useCallback(() => {
-    if (isUnmountingRef.current) return;
+    if (isUnmountingRef.current || rejectedSyncRef.current || projectLoadFailedRef.current) return;
 
-    if (wsRef.current) {
-      if (
-        wsRef.current.readyState === WebSocket.OPEN ||
-        wsRef.current.readyState === WebSocket.CONNECTING
-      ) {
-        wsRef.current.close();
-      }
-    }
+    disconnect();
 
     const baseWsUrl = syncServerUrl
       ? `${syncServerUrl.replace(/\/+$/, "")}/sync/${encodeURIComponent(projectId)}`
       : runtimeSyncWebSocketUrl(projectId);
     const wsUrl = officialLoroProtocolUrl(baseWsUrl);
-    console.log("[useLoroSync] connecting WebSocket", wsUrl);
+    syncLog.debug("sync.connecting", () => ({ projectId, attempt: retryCountRef.current }));
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
@@ -797,42 +850,50 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         ws.send(frame);
       },
       onError: (error) => {
-        console.error("[useLoroSync] Loro protocol error:", error);
+        syncLog.error("sync.protocol_failed", { projectId, error });
       },
-      onUpdateRejected: (_batchId, status) => {
-        console.error("[useLoroSync] Loro update rejected:", status);
+      onUpdateRejected: (batchId, status) => {
+        syncLog.error("sync.update_rejected", { projectId, batchId, status });
+        rejectedSyncRef.current = true;
+        setSyncRejected(true);
+        setConnected(false);
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        callbacksRef.current.onMutation?.(hostMutationRejected({
+          operation: "project_sync", entity: { kind: "project", id: projectId },
+        }, "The Host rejected this update. These local changes were not saved to the project. Sync is paused and the local draft is retained for recovery."));
+        ws.close();
       },
     });
     protocolSessionRef.current?.destroy();
     protocolSessionRef.current = protocolSession;
 
     ws.onopen = () => {
-      console.log("[useLoroSync] ws open", wsUrl);
-      if (isUnmountingRef.current) {
+      if (isUnmountingRef.current || wsRef.current !== ws) {
         ws.close();
         return;
       }
+      syncLog.info("sync.connected", { projectId, retryCount: retryCountRef.current });
       setConnected(true);
       retryCountRef.current = 0;
 
       // Version-vector handshake catches up both sides and uploads offline work.
       protocolSession.join();
-
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      pingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          // Placeholder for app-level ping
-        }
-      }, 30000);
     };
 
     ws.onmessage = async (event) => {
+      if (isUnmountingRef.current || wsRef.current !== ws) return;
       // Text messages = JSON sideband (presence/activity)
       if (typeof event.data === "string") {
         try {
           const msg = JSON.parse(event.data);
           if (isSidebandMessage(msg)) {
-            if (
+            if (msg.type === "project.load-error" && msg.projectId === projectId) {
+              projectLoadFailedRef.current = true;
+              setProjectLoadError(msg);
+              setConnected(false);
+              if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+              ws.close();
+            } else if (
               msg.type === "presence" &&
               callbacksRef.current.onPresenceChange
             ) {
@@ -860,34 +921,31 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         const frame = new Uint8Array(event.data);
         await protocolSession.receive(frame);
       } catch (error: any) {
-        console.error(
-          "[useLoroSync] Error handling Loro protocol frame:",
-          error,
-        );
+        syncLog.error("sync.frame_failed", { projectId, error });
       }
     };
 
-    ws.onerror = (error) => {
-      console.error("[useLoroSync] WebSocket error:", error);
+    ws.onerror = () => {
+      syncLog.debug("sync.transport_error", () => ({ projectId, readyState: ws.readyState }));
     };
 
     ws.onclose = (event) => {
-      console.log("[useLoroSync] ws close", {
+      protocolSession.destroy();
+      if (wsRef.current !== ws) return;
+      syncLog[isUnmountingRef.current || event.code === 1000 || rejectedSyncRef.current ? "debug" : "warn"]("sync.disconnected", {
+        projectId,
+        retryCount: retryCountRef.current,
         code: event.code,
         reason: event.reason,
         wasClean: event.wasClean,
       });
       setConnected(false);
-      protocolSession.destroy();
-      if (protocolSessionRef.current === protocolSession) {
-        protocolSessionRef.current = null;
-      }
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      disconnect();
       if (!isUnmountingRef.current) {
         scheduleReconnect();
       }
     };
-  }, [projectId, syncServerUrl, doc, scheduleReconnect]);
+  }, [projectId, syncServerUrl, doc, scheduleReconnect, disconnect]);
 
   // Keep ref updated
   useEffect(() => {
@@ -904,14 +962,12 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
     return () => {
       isUnmountingRef.current = true;
-      if (wsRef.current) wsRef.current.close();
+      disconnect();
       if (reconnectTimeoutRef.current)
         clearTimeout(reconnectTimeoutRef.current);
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      protocolSessionRef.current?.destroy();
-      protocolSessionRef.current = null;
+      reconnectTimeoutRef.current = null;
     };
-  }, [isInitialized, connect]);
+  }, [isInitialized, connect, disconnect]);
 
   // Helper methods for modifying the document
   // Note: subscribeLocalUpdate automatically sends changes to server
@@ -933,9 +989,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       }
       const existing = nodesMap.get(nodeId);
       if (existing !== undefined) {
-        console.warn(
-          `[useLoroSync] Blocked addNode for existing node ${nodeId}`,
-        );
+        syncLog.warn("canvas.node_add_rejected", { nodeId: nodeId, reason: "node_exists" });
         callbacksRef.current.onMutation?.(
           hostMutationRejected(
             {
@@ -997,6 +1051,27 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     [addNodeToCanvas, canvasId],
   );
 
+  const addGraph = useCallback(
+    (nodes: Node[], edges: Edge[]) => {
+      let success = true;
+      try {
+        addCanvasGraph(doc, canvasId, nodes, edges);
+      } catch (error) {
+        success = false;
+        callbacksRef.current.onMutation?.(hostMutationRejected(
+          { operation: "canvas_add_graph", entity: { kind: "canvas-node", id: nodes[0]?.id ?? canvasId } },
+          error instanceof Error ? error.message : String(error),
+        ));
+      }
+      const projection = readStateFromLoro();
+      callbacksRef.current.onNodesChange?.(projection.nodes);
+      callbacksRef.current.onEdgesChange?.(projection.edges);
+      updateUndoRedoState();
+      return success;
+    },
+    [doc, canvasId, readStateFromLoro, updateUndoRedoState],
+  );
+
   const createLinkedNode = useCallback(
     (input: {
       nodeId: string;
@@ -1030,10 +1105,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         updateUndoRedoState();
         return result;
       } catch (error) {
-        console.warn(
-          `[useLoroSync] Blocked linked node creation for ${input.nodeId}:`,
-          error,
-        );
+        syncLog.warn("canvas.linked_node_rejected", { nodeId: input.nodeId, error });
         return null;
       }
     },
@@ -1105,62 +1177,15 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     [doc, readStateFromLoro],
   );
 
-  const createTimeline = useCallback(
-    (input: { id: string; name: string; state: unknown }) => {
-      const result = createProjectTimeline(doc, input);
-      if (result.ok) {
-        doc.commit();
-        setTimelines(listProjectTimelines(doc));
-      }
-      return result;
-    },
-    [doc],
-  );
-
-  const deleteTimeline = useCallback(
-    (timelineId: string, expectedReadToken?: string) => {
-      const result = deleteProjectTimeline(doc, timelineId, expectedReadToken);
-      if (result.ok) {
-        doc.commit();
-        setTimelines(listProjectTimelines(doc));
-        const state = readStateFromLoro();
-        callbacksRef.current.onNodesChange?.(state.nodes);
-        callbacksRef.current.onEdgesChange?.(state.edges);
-      }
-      return result;
-    },
-    [doc, readStateFromLoro],
-  );
-
-  const attachTimeline = useCallback(
-    (input: {
-      timelineId: string;
-      canvasId?: string;
-      actionNodeId: string;
-      position?: { x: number; y: number };
-    }) => {
-      const result = attachTimelineToCanvas(doc, {
+  const createDirectorStageOnCanvas = useCallback(
+    (input: Omit<CreateDirectorStageOnCanvasInput, "canvasId"> & { canvasId?: string }) => {
+      const result = createDirectorStageOnCanvasMutation(doc, {
         ...input,
         canvasId: input.canvasId?.trim() || canvasIdRef.current,
       });
       if (result.ok) {
-        doc.commit();
-        setTimelines(listProjectTimelines(doc));
-        const state = readStateFromLoro();
-        callbacksRef.current.onNodesChange?.(state.nodes);
-        callbacksRef.current.onEdgesChange?.(state.edges);
-      }
-      return result;
-    },
-    [doc, readStateFromLoro],
-  );
-
-  const detachTimeline = useCallback(
-    (timelineId: string) => {
-      const result = detachTimelineFromCanvas(doc, timelineId);
-      if (result.ok) {
-        doc.commit();
-        setTimelines(listProjectTimelines(doc));
+        setCanvases(listProjectCanvases(doc));
+        setDirectorStages(listProjectDirectorStages(doc));
         const state = readStateFromLoro();
         callbacksRef.current.onNodesChange?.(state.nodes);
         callbacksRef.current.onEdgesChange?.(state.edges);
@@ -1326,7 +1351,10 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
           edges: currentEdges,
           patch: isRecord(nodeData) ? nodeData : {},
         });
-        const guard = readProof.ok ? patchGuard : readProof;
+        const guard = !readProof.ok ? readProof : !patchGuard.ok ? patchGuard
+          : isCanvasNodeImmutable({ nodeId, edges: currentEdges })
+            ? { ok: false as const, error: `IMMUTABLE_NODE: Copy referenced node ${nodeId} before editing it.` }
+            : patchGuard;
         const hostMutation = validateHostMutationEnvelope({
           operation: "canvas_update",
           entity: { kind: "canvas-node", id: nodeId },
@@ -1335,9 +1363,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
           guard,
         });
         if (!guard.ok) {
-          console.warn(
-            `[useLoroSync] Blocked node update for ${nodeId}: ${guard.error}`,
-          );
+          syncLog.warn("canvas.node_update_rejected", { nodeId: nodeId, reason: guard.error });
           if (!hostMutation.ok)
             callbacksRef.current.onMutation?.(hostMutation.mutation);
           const { nodes, edges, tasks } = readStateFromLoro();
@@ -1397,103 +1423,29 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     [doc, readStateFromLoro, updateUndoRedoState],
   );
 
-  const applyTimelineState = useCallback(
-    (
-      timelineId: string,
-      timelineDsl: unknown,
-      options?: LoroHostWriteOptions,
-    ) => {
-      const timeline = listProjectTimelines(doc).find(
-        (candidate) => candidate.id === timelineId,
-      );
-      if (!timeline) {
-        const error = `Timeline ${timelineId} not found`;
-        console.warn(
-          `[useLoroSync] Blocked timeline apply for ${timelineId}: ${error}`,
-        );
-        callbacksRef.current.onMutation?.(
-          hostMutationRejected(
-            {
-              operation: "timeline_apply",
-              entity: { kind: "timeline", id: timelineId },
-            },
-            error,
-          ),
-        );
-        return false;
-      }
-
-      const beforeReadToken = projectTimelineReadToken(timeline);
-      const staleWriteGuard =
-        options?.ifMatch && options.ifMatch !== beforeReadToken
-          ? {
-              ok: false as const,
-              error:
-                "STALE_READ: The target changed after it was read. Read it again before applying Timeline state.",
-            }
-          : { ok: true as const };
-      const agentObservationGuard = validateAgentObservation({
-        actorClientType: options?.actorClientType,
-        operation: "applying Timeline state",
-        observedVersion: options?.ifMatch,
-        currentVersion: beforeReadToken,
-      });
-      const guard = staleWriteGuard.ok
-        ? agentObservationGuard
-        : staleWriteGuard;
-      const hostMutation = validateHostMutationEnvelope({
-        operation: "timeline_apply",
-        entity: { kind: "timeline", id: timelineId },
-        expectedReadToken: options?.ifMatch,
-        currentReadToken: beforeReadToken,
-        guard,
-      });
-      if (!guard.ok) {
-        console.warn(
-          `[useLoroSync] Blocked timeline apply for ${timelineId}: ${guard.error}`,
-        );
-        if (!hostMutation.ok)
-          callbacksRef.current.onMutation?.(hostMutation.mutation);
-        const { nodes, edges, tasks } = readStateFromLoro();
-        const cb = callbacksRef.current;
-        if (cb.onNodesChange) cb.onNodesChange(nodes);
-        if (cb.onEdgesChange) cb.onEdgesChange(edges);
-        if (cb.onTaskUpdate)
-          tasks.forEach((t) => cb.onTaskUpdate!(t.id, t.data));
-        return false;
-      }
-
-      const updated = updateProjectTimelineState(doc, timelineId, timelineDsl);
-      if (!updated.ok) return false;
-      doc.commit();
-      setTimelines(listProjectTimelines(doc));
+  const applyLayout = useCallback((patches: NodePatch[]) => {
+    try {
+      applyCanvasLayout(doc, canvasIdRef.current, patches);
       updateUndoRedoState();
-      callbacksRef.current.onMutation?.(
-        hostMutationSucceeded(
-          hostMutation.ok
-            ? hostMutation.envelope
-            : {
-                operation: "timeline_apply",
-                entity: { kind: "timeline", id: timelineId },
-              },
-          {
-            resultEntityId: timelineId,
-            afterReadToken: projectTimelineReadToken(updated.timeline),
-          },
-        ),
-      );
       return true;
-    },
-    [doc, readStateFromLoro, updateUndoRedoState],
-  );
+    } catch (error) {
+      callbacksRef.current.onMutation?.(hostMutationRejected({
+        operation: "canvas_update",
+        entity: { kind: "project", id: projectId },
+      }, error instanceof Error ? error.message : String(error)));
+      return false;
+    } finally {
+      const projection = readStateFromLoro();
+      callbacksRef.current.onNodesChange?.(projection.nodes);
+      callbacksRef.current.onEdgesChange?.(projection.edges);
+    }
+  }, [doc, projectId, readStateFromLoro, updateUndoRedoState]);
 
   const applyTimelineDsl = useCallback(
-    (nodeId: string, timelineDsl: unknown, options?: LoroHostWriteOptions) => {
+    async (nodeId: string, timelineDsl: unknown, options?: LoroHostWriteOptions) => {
       const existing = doc.getMap("nodes").get(nodeId) as any;
       if (!existing) {
-        console.warn(
-          `[useLoroSync] Blocked timeline apply for ${nodeId}: node not found`,
-        );
+        syncLog.warn("timeline.apply_rejected", { nodeId: nodeId, reason: "node_not_found" });
         callbacksRef.current.onMutation?.(
           hostMutationRejected(
             {
@@ -1512,9 +1464,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
           : undefined;
       if (!timelineId) {
         const error = `Timeline Action ${nodeId} must reference a Project Timeline`;
-        console.warn(
-          `[useLoroSync] Blocked timeline apply for ${nodeId}: ${error}`,
-        );
+        syncLog.warn("timeline.apply_rejected", { nodeId: nodeId, error });
         callbacksRef.current.onMutation?.(
           hostMutationRejected(
             {
@@ -1527,31 +1477,9 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         return false;
       }
 
-      return applyTimelineState(timelineId, timelineDsl, options);
+      return Boolean(await applyTimelineState(timelineId, timelineDsl, options));
     },
     [applyTimelineState, doc],
-  );
-
-  const requestTimelineRender = useCallback(
-    (
-      timelineId: string,
-      options: { actorUserId: string; actorAgentId?: string },
-    ): TimelineRenderRequestResult => {
-      const result = createTimelineRenderRequest(doc, {
-        timelineId,
-        actorUserId: options.actorUserId,
-        actorAgentId: options.actorAgentId,
-        generateId: () => `render-${globalThis.crypto.randomUUID()}`,
-      });
-      if (!result.ok) return result;
-      doc.commit();
-      updateUndoRedoState();
-      const state = readStateFromLoro();
-      callbacksRef.current.onNodesChange?.(state.nodes);
-      callbacksRef.current.onEdgesChange?.(state.edges);
-      return result;
-    },
-    [doc, readStateFromLoro, updateUndoRedoState],
   );
 
   const removeNode = useCallback(
@@ -1560,9 +1488,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       const existing = nodesMap.get(nodeId);
       if (!isRecord(existing)) {
         const error = `Node not found: ${nodeId}`;
-        console.warn(
-          `[useLoroSync] Blocked node delete for ${nodeId}: ${error}`,
-        );
+        syncLog.warn("canvas.node_delete_rejected", { nodeId: nodeId, error });
         callbacksRef.current.onMutation?.(
           hostMutationRejected(
             {
@@ -1600,9 +1526,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         guard,
       });
       if (!guard.ok) {
-        console.warn(
-          `[useLoroSync] Blocked node delete for ${nodeId}: ${guard.error}`,
-        );
+        syncLog.warn("canvas.node_delete_rejected", { nodeId: nodeId, reason: guard.error });
         if (!hostMutation.ok)
           callbacksRef.current.onMutation?.(hostMutation.mutation);
         const { nodes, edges: currentEdges, tasks } = readStateFromLoro();
@@ -1697,9 +1621,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         guard,
       });
       if (!guard.ok) {
-        console.warn(
-          `[useLoroSync] Blocked batch node delete for ${batchId}: ${guard.error}`,
-        );
+        syncLog.warn("canvas.batch_delete_rejected", { batchId, reason: guard.error });
         if (!hostMutation.ok)
           callbacksRef.current.onMutation?.(hostMutation.mutation);
         const { nodes, edges: currentEdges, tasks } = readStateFromLoro();
@@ -1778,9 +1700,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
             guard,
           });
           if (!guard.ok) {
-            console.warn(
-              `[useLoroSync] Blocked edge add for ${edgeId}: ${guard.error}`,
-            );
+            syncLog.warn("canvas.edge_add_rejected", { edgeId: edgeId, reason: guard.error });
             if (!hostMutation.ok)
               callbacksRef.current.onMutation?.(hostMutation.mutation);
             const { nodes, edges, tasks } = readStateFromLoro();
@@ -1879,9 +1799,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         guard,
       });
       if (!guard.ok) {
-        console.warn(
-          `[useLoroSync] Blocked edge update for ${edgeId}: ${guard.error}`,
-        );
+        syncLog.warn("canvas.edge_update_rejected", { edgeId: edgeId, reason: guard.error });
         if (!hostMutation.ok)
           callbacksRef.current.onMutation?.(hostMutation.mutation);
         const { nodes, edges, tasks } = readStateFromLoro();
@@ -1965,9 +1883,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
           guard,
         });
         if (!guard.ok) {
-          console.warn(
-            `[useLoroSync] Blocked edge delete for ${edgeId}: ${guard.error}`,
-          );
+          syncLog.warn("canvas.edge_delete_rejected", { edgeId: edgeId, reason: guard.error });
           if (!hostMutation.ok)
             callbacksRef.current.onMutation?.(hostMutation.mutation);
           const {
@@ -1980,6 +1896,33 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
           if (cb.onEdgesChange) cb.onEdgesChange(currentEdges);
           if (cb.onTaskUpdate)
             tasks.forEach((t) => cb.onTaskUpdate!(t.id, t.data));
+          return false;
+        }
+      }
+      if (existing) {
+        const target = canvas.readNode(existing.target);
+        if (target?.type === "action-badge" && typeof target.data.generatorId === "string") {
+          const envelope = { operation: "canvas_delete_edge" as const, entity: { kind: "canvas-edge" as const, id: edgeId } };
+          // The Host removes this edge, retaining the native input while another
+          // placement still references it. Sync publishes the accepted graph.
+          void (async () => {
+            const response = await fetch(runtimeApiUrl(`/api/v1/projects/${encodeURIComponent(projectId)}/canvas/edges/${encodeURIComponent(edgeId)}`), {
+              method: "DELETE", credentials: "include", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ actorClientType: options?.actorClientType, ifMatch: options?.ifMatch }),
+            });
+            const body = await response.json() as { deleted?: boolean; edgeId?: string; error?: string };
+            if (!response.ok) throw new Error(body.error ?? `Could not remove the connection (${response.status}).`);
+            if (body.deleted !== true || body.edgeId !== edgeId) throw new Error("The connection deletion acknowledgement does not match this edit.");
+          })().then(() => {
+            if (replica.active) callbacksRef.current.onMutation?.(hostMutationSucceeded(envelope, { resultEntityId: edgeId }));
+          })
+            .catch((error) => {
+              if (!replica.active) return;
+              callbacksRef.current.onMutation?.(hostMutationRejected(envelope, error instanceof Error ? error.message : String(error)));
+              const projection = readStateFromLoro();
+              callbacksRef.current.onNodesChange?.(projection.nodes);
+              callbacksRef.current.onEdgesChange?.(projection.edges);
+            });
           return false;
         }
       }
@@ -2000,7 +1943,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       );
       return true;
     },
-    [doc, readStateFromLoro],
+    [replica, doc, readStateFromLoro, projectId],
   );
 
   // Replay the doc's current state into React. Used by undo/redo, because the
@@ -2047,6 +1990,11 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       projectId,
       doc,
       connected,
+      syncRejected,
+      projectLoadError,
+      retryProjectLoad,
+      recoveryDraft,
+      prepareSyncRecovery,
       isInitialized,
       canvases,
       createCanvas,
@@ -2054,21 +2002,26 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       renameCanvas,
       deleteCanvas,
       timelines,
+      timelineError,
       standaloneTimelines,
       createTimeline,
+      createTimelineOnCanvas,
       deleteTimeline,
       attachTimeline,
       detachTimeline,
       directorStages,
       standaloneDirectorStages,
       createDirectorStage,
+      createDirectorStageOnCanvas,
       attachDirectorStage,
       detachDirectorStage,
       applyDirectorStageState,
       addNodeToCanvas,
       addNode,
+      addGraph,
       createLinkedNode,
       updateNode,
+      applyLayout,
       applyTimelineState,
       applyTimelineDsl,
       requestTimelineRender,
@@ -2086,6 +2039,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     [
       addEdge,
       addNode,
+      addGraph,
       addNodeToCanvas,
       createLinkedNode,
       applyTimelineDsl,
@@ -2098,11 +2052,18 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       canUndo,
       canvases,
       connected,
+      syncRejected,
+      projectLoadError,
+      retryProjectLoad,
+      recoveryDraft,
+      prepareSyncRecovery,
       createCanvas,
       createPluginView,
       createTimeline,
+      createTimelineOnCanvas,
       deleteTimeline,
       createDirectorStage,
+      createDirectorStageOnCanvas,
       deleteCanvas,
       detachTimeline,
       detachDirectorStage,
@@ -2119,9 +2080,11 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       standaloneTimelines,
       standaloneDirectorStages,
       timelines,
+      timelineError,
       undo,
       updateEdge,
       updateNode,
+      applyLayout,
     ],
   );
 }

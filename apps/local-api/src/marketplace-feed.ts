@@ -20,8 +20,18 @@ export function selectMarketplaceFeed({
     [...plugins, ...skills].map((plugin) => [plugin.id, plugin]),
   );
 
-  return featuredPluginIds.flatMap((pluginId) => {
-    const plugin = catalog.get(pluginId);
-    return plugin ? [plugin] : [];
+  const curatedIds = skills.flatMap((skill) => {
+    const curation = skill.curation;
+    return curation &&
+      typeof curation === "object" &&
+      (curation as Record<string, unknown>).collection === "official-picks"
+      ? [skill.id]
+      : [];
   });
+  return [...new Set([...featuredPluginIds, ...curatedIds])].flatMap(
+    (pluginId) => {
+      const plugin = catalog.get(pluginId);
+      return plugin ? [plugin] : [];
+    },
+  );
 }

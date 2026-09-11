@@ -16,6 +16,28 @@ const invocation: ExecutablePluginInvocation = {
 };
 
 describe("Director bundled Action", () => {
+  it("renders the pinned source Document and rejects a reference to a different revision", async () => {
+    const input = structuredClone(invocation);
+    const source = "export default () => <pointLight intensity={7} />";
+    // Native collection lowering uses slot:itemKey (local-generator-product.ts).
+    // This shape was also captured from the real Host's frozen executor input.
+    const ref = { slot: "stage:code:light", index: 0, document: { documentAssetId: "code", revisionId: "old", documentKind: "text.plain", schemaVersion: 1 } };
+    (input.input.values.stage as any).state.codeComponents = [{ id: "light", name: "Light", source: { kind: "document", documentAssetId: "code", revisionId: "old" } }];
+    input.input.references = [ref];
+    let renderedSource: unknown;
+    const context = createExecutorContext({
+      reference: async () => ({ form: "document", documentKind: "text.plain", schemaVersion: 1, body: source }),
+      hostTools: { directorStageCaptureFrame: async (request) => {
+        renderedSource = (request as any).codeSources?.light;
+        return { mediaType: "image/png", width: 1, height: 1, bytesBase64: "AQ==" };
+      } },
+      upload: async () => ({ slot: "frame", kind: "asset", asset: { assetId: "frame", uri: "clash-asset://frame", kind: "image" } }),
+    });
+    await plugin.invoke(input, context);
+    expect(renderedSource).toBe(source);
+    input.input.references = [{ ...ref, document: { ...ref.document, revisionId: "new" } }];
+    await expect(plugin.invoke(input, context)).rejects.toThrow();
+  });
   it("passes the strict Stage envelope and pinned frame parameters to the Host tool", async () => {
     const capture = vi.fn(async () => ({ mediaType: "image/png" as const, width: 1920, height: 1080, bytesBase64: "AQ==" }));
     const upload = vi.fn(async () => ({ slot: "frame", kind: "asset" as const, asset: { assetId: "frame-1", uri: "clash-asset://frame-1", kind: "image" as const, mediaType: "image/png" } }));

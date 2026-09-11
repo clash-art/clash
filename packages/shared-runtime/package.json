@@ -43,6 +43,11 @@
       "import": "./src/generator-client.ts",
       "default": "./dist/generator-client.js"
     },
+    "./document-client": {
+      "types": "./src/document-client.ts",
+      "import": "./src/document-client.ts",
+      "default": "./dist/document-client.js"
+    },
     "./durable-run-engine": {
       "types": "./src/durable-run-engine.ts",
       "import": "./src/durable-run-engine.ts",
@@ -67,6 +72,16 @@
       "types": "./dist/pika.d.ts",
       "import": "./dist/pika.js",
       "default": "./dist/pika.js"
+    },
+    "./logging": {
+      "types": "./src/logging.ts",
+      "import": "./src/logging.ts",
+      "default": "./dist/logging.js"
+    },
+    "./log-reader": {
+      "types": "./src/log-reader.ts",
+      "import": "./src/log-reader.ts",
+      "default": "./dist/log-reader.js"
     }
   },
   "engines": {

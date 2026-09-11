@@ -133,3 +133,34 @@ without MCP:
 `clash timeline pull/apply` (YAML projections with stale-write refusal),
 `clash text` (text node files), `clash director` (stage scenes). Both roads
 end in the same Loro-backed project state.
+
+
+### Fullscreen project App
+
+`clash_project_open` resolves a project by `projectId` or working folder (`cwd`)
+and opens the shared ProjectEditor in a fullscreen MCP App. The host must support
+MCP Apps, fullscreen, and embedding the daemon origin. The resource is
+`ui://clash/project`; old miniature Studio/Canvas Apps remain disabled.
+
+The daemon serves the same `apps/web/dist/client` assets packaged for the GUI.
+The Clash distribution copies them into `runtime/project-ui`; its Turbo build
+orders the web artifact before packaging. Direct host-runtime packaging requires
+that shared renderer output to exist first. No Vite or Electron process is
+started at runtime. `CLASH_PROJECT_RENDERER_ROOT` can override the asset directory.
+An MCP-started daemon defaults to `CLASH_AGENT_RUNTIME=disabled`, skipping ACP
+initialization; an already-running desktop daemon is reused without changing its
+runtime configuration.
+
+The MCP view mounts no Copilot, agent annotation menus, or agent selection
+panels. Returning to the conversation requests inline mode and retains the
+mounted editor. Selection identity and names are sent through
+`updateModelContext` when accepted by the host. Native host annotations remain
+host-owned: no undocumented annotation protocol is assumed. Shared DOM project
+identity and accessible node names help browser tools identify real Canvas IDs;
+Codex annotation support inside nested MCP iframes still needs host verification.
+
+Other standard MCP App capabilities include host-mediated messages, downloads,
+links, sampling, and App-defined tools. These are optional host capabilities,
+not automatically enabled project controls. See the
+[MCP App API](https://apps.extensions.modelcontextprotocol.io/api/classes/app.App.html)
+and [native browser annotation documentation](https://learn.chatgpt.com/docs/browser?surface=app).

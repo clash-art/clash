@@ -1,0 +1,4 @@
+interface:
+  display_name: "Talking Head Editing"
+  short_description: "Edit speech with accurate words and continuous sound"
+  default_prompt: "Use $clash-talking-head for the requested creative task, following its scope and the project's existing choices."

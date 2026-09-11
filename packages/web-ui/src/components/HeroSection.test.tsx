@@ -140,6 +140,8 @@ vi.mock("@clash/web-ui/hooks/useClashRuntime", () => ({
     errorMessage: null,
     transientStatus: null,
     diagnostics: [],
+    modelFallback: null,
+    supportsMessageFork: false,
     ...emptyAgentUIRuntime(),
     messages: [],
     availableCommands: [],

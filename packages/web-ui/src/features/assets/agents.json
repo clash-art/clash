@@ -15,7 +15,8 @@
     "relations.ts": "Headless project-wide lineage and Canvas/Timeline relation projection.",
     "media-url.ts": "Canonical validator for current-Host media projections; rejects object-store keys instead of signing or rewriting them.",
     "action-client.ts": "Feature boundary for browser/server asset action executor clients.",
-    "AssetWorkspace.test.tsx": "Feature-level workspace behavior tests."
+    "AssetWorkspace.test.tsx": "Feature-level workspace behavior tests.",
+    "useProjectAssetHydration.ts": "Project/document-owned Asset projection watches. Preserve pending polls across canvas geometry updates; cancel removed targets and old Project callbacks."
   },
   "architecture_notes": "The feature collects user intent and calls executor adapters. Shared-types owns action identity and invocation semantics; APIs own immutable result persistence. ProjectEditor provides the complete project binding set plus raw navigation projections, but relation inference belongs in this feature and must never recursively guess media references from Canvas or Timeline payload fields. ProjectedMedia is the GUI element boundary and accepts only URLs projected by the current Host. Poster, waveform, and filmstrip presentation is frontend-derived and disposable. VideoPoster may read an already-supplied legacy/remote thumbnail compatibility projection, but Current Local does not request or persist a backend poster and never keys cache state by a projected URL."
 }

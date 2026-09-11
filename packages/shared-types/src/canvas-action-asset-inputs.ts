@@ -56,9 +56,11 @@ function mediaModality(
 export function isCanvasManagedAssetAction(
   node: CanvasActionAssetInputNode,
 ): boolean {
-  // Timeline and Director own these node-scoped Action bindings from their
-  // canonical Project state. Canvas is only their visual projection.
+  // Native Generators, Timeline and Director own their inputs in Project
+  // state. Canvas is only their visual projection.
   if (
+    nonEmptyString(node.data.generatorId) ||
+    isRecord(node.data.generatorRevision) ||
     nonEmptyString(node.data.timelineId) ||
     nonEmptyString(node.data.stageId)
   ) {

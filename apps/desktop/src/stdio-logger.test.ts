@@ -54,16 +54,20 @@ describe("desktop stdio logger", () => {
     logger.warn("careful");
     logger.close();
 
-    expect(records).toEqual([
+    expect(records).toMatchObject([
       {
         timestamp: "1970-01-01T00:00:01.000Z",
         level: "info",
-        message: "hello desktop",
+        component: "desktop",
+        event: "desktop.console",
+        context: { message: "hello desktop" },
       },
       {
         timestamp: "1970-01-01T00:00:01.000Z",
         level: "warn",
-        message: "careful",
+        component: "desktop",
+        event: "desktop.console",
+        context: { message: "careful" },
       },
     ]);
     expect(sink.close).toHaveBeenCalledOnce();
@@ -97,7 +101,7 @@ describe("desktop stdio logger", () => {
       exitCode: 5,
     });
 
-    expect(records).toEqual([
+    expect(records).toMatchObject([
       {
         timestamp: "1970-01-01T00:00:02.000Z",
         level: "error",

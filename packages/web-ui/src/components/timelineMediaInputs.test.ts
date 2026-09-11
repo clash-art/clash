@@ -81,22 +81,6 @@ describe("selectTimelineMediaInputs", () => {
         },
       },
       assets,
-      bindings: [
-        {
-          id: "binding-connected",
-          owner: { kind: "draft", actionId: "node:timeline-action" },
-          direction: "input",
-          slot: "timeline:item:clip-connected",
-          projectAssetId: "asset-connected",
-        },
-        {
-          id: "binding-used",
-          owner: { kind: "draft", actionId: "node:timeline-action" },
-          direction: "input",
-          slot: "timeline:item:clip-used",
-          projectAssetId: "asset-used",
-        },
-      ],
       nodes,
       edges: [
         {
@@ -134,14 +118,13 @@ describe("selectTimelineMediaInputs", () => {
           state: { tracks: [] },
         },
         assets,
-        bindings: [],
-        nodes,
+          nodes,
         edges: [],
       }),
     ).toEqual([]);
   });
 
-  it("uses the Timeline Action binding when compatibility fields disagree", () => {
+  it("uses media identities from the native Timeline projection", () => {
     const result = selectTimelineMediaInputs({
       timeline: {
         id: "timeline-authority",
@@ -165,30 +148,20 @@ describe("selectTimelineMediaInputs", () => {
         },
       },
       assets,
-      bindings: [
-        {
-          id: "binding-1",
-          owner: { kind: "draft", actionId: "timeline:timeline-authority" },
-          direction: "input",
-          slot: "timeline:item:clip-1",
-          projectAssetId: "asset-connected",
-          role: "source",
-        },
-      ],
       nodes,
       edges: [],
     });
 
     expect(result).toEqual([
       expect.objectContaining({
-        sourceNodeId: "timeline-asset:asset-connected",
-        projectAssetId: "asset-connected",
-        type: "image",
+        sourceNodeId: "source-used",
+        projectAssetId: "asset-used",
+        type: "video",
       }),
     ]);
   });
 
-  it("admits only media represented by Timeline item bindings", () => {
+  it("reads native Timeline media without Canvas nodes or draft bindings", () => {
     const result = selectTimelineMediaInputs({
       timeline: {
         id: "timeline-standalone",
@@ -207,15 +180,6 @@ describe("selectTimelineMediaInputs", () => {
         },
       },
       assets,
-      bindings: [
-        {
-          id: "binding-used",
-          owner: { kind: "draft", actionId: "timeline:timeline-standalone" },
-          direction: "input",
-          slot: "timeline:item:clip-used",
-          projectAssetId: "asset-used",
-        },
-      ],
       nodes,
       edges: [],
     });
@@ -258,15 +222,6 @@ describe("selectTimelineMediaInputs", () => {
           status: "ready",
         },
       ],
-      bindings: [
-        {
-          id: "binding-video",
-          owner: { kind: "draft", actionId: "timeline:timeline-video" },
-          direction: "input",
-          slot: "timeline:item:clip-video",
-          projectAssetId: "asset-video",
-        },
-      ],
       nodes: [],
       edges: [],
     });
@@ -301,18 +256,6 @@ describe("selectTimelineMediaInputs", () => {
         },
       },
       assets,
-      bindings: [
-        {
-          id: "binding-used",
-          owner: {
-            kind: "draft",
-            actionId: "timeline:timeline-standalone-dropped",
-          },
-          direction: "input",
-          slot: "timeline:item:clip-1",
-          projectAssetId: "asset-used",
-        },
-      ],
       nodes,
       edges: [],
     });
@@ -356,15 +299,6 @@ describe("selectTimelineMediaInputs", () => {
         },
       },
       assets,
-      bindings: [
-        {
-          id: "binding-connected",
-          owner: { kind: "draft", actionId: "node:timeline-action" },
-          direction: "input",
-          slot: "timeline:item:clip-1",
-          projectAssetId: "asset-connected",
-        },
-      ],
       nodes,
       edges: [
         {

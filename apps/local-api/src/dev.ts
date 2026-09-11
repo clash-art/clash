@@ -1,3 +1,5 @@
+import { createBoundedJsonlLogSink, installProcessStdioCapture } from "@clash/shared-runtime/observability";
+import { clashHomeForLocalDataDir, defaultLocalApiDataDir } from "@clash/shared-runtime/local-paths";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
@@ -11,21 +13,24 @@ process.env.TSX_TSCONFIG_PATH ??= fileURLToPath(
   new URL("../../../packages/cli/tsconfig.dev.json", import.meta.url),
 );
 
-const {
-  clashHomeForLocalDataDir,
-  defaultLocalApiDataDir,
-  startLocalApiServer,
-} = await import("./server.js");
+const dataDir = defaultLocalApiDataDir();
+const observability = installProcessStdioCapture({
+  component: "local-api",
+  sink: createBoundedJsonlLogSink({ directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"), filePrefix: "local-api", maxBytes: 5 * 1024 * 1024, maxFiles: 5 }),
+  maxEventsPerWindow: 200,
+  windowMs: 10_000,
+});
+observability.event("info", "process.started", { pid: process.pid, startedBy: "dev" });
+process.once("exit", () => observability.close());
+process.once("uncaughtExceptionMonitor", (error, origin) => observability.event("error", "process.uncaught_exception", { error, origin }));
+const { startLocalApiServer } = await import("./server.js");
 const { prepareDevelopmentBundledPlugins } =
   await import("./development-bundled-plugins.js");
-const dataDir = defaultLocalApiDataDir();
 const pluginDevelopment = await prepareDevelopmentBundledPlugins({
   actionsRoot: join(clashHomeForLocalDataDir(dataDir), "actions"),
 });
 if (pluginDevelopment.rebuilt.length > 0) {
-  process.stderr.write(
-    `[local-api] rebuilt first-party module payloads: ${pluginDevelopment.rebuilt.join(", ")}\n`,
-  );
+  observability.event("info", "plugins.rebuilt", { pluginIds: pluginDevelopment.rebuilt });
 }
 
 await startLocalApiServer({

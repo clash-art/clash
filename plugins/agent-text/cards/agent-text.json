@@ -1,0 +1,51 @@
+{
+  "apiVersion": "clash.card/v1",
+  "kind": "action-card",
+  "spec": {
+    "id": "agent-text",
+    "name": "Agent Text",
+    "description": "Write a text document using a configured local agent.",
+    "parameters": [
+      {
+        "id": "agentId",
+        "label": "Agent",
+        "type": "text",
+        "required": false,
+        "placeholder": "Leave blank to use your default agent"
+      },
+      {
+        "id": "modelId",
+        "label": "Agent model",
+        "type": "text",
+        "required": false,
+        "placeholder": "Leave blank to use the agent's default model"
+      },
+      {
+        "id": "systemPrompt",
+        "label": "Instructions",
+        "type": "text",
+        "required": false,
+        "placeholder": "Optional writing instructions"
+      }
+    ],
+    "outputType": "text",
+    "presentation": {
+      "type": "form"
+    },
+    "input": {
+      "requiresPrompt": true,
+      "inputMode": {},
+      "promptModalities": [
+        "text"
+      ]
+    },
+    "functionExportId": "generate-text",
+    "generator": {
+      "definitionId": "text",
+      "actionId": "generate",
+      "inputSlots": {
+        "text": "text"
+      }
+    }
+  }
+}

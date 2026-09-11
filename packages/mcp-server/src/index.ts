@@ -6,3 +6,4 @@ export * from "./canvas-gateway";
 export * from "./plugin-contract";
 export * from "./server";
 export * from "./studio-app";
+export * from "./project-app";

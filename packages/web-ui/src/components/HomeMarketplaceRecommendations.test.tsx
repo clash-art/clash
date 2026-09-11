@@ -30,7 +30,7 @@ describe("HomeMarketplaceRecommendations", () => {
     );
 
     expect(
-      screen.queryByRole("region", { name: "From Marketplace" }),
+      screen.queryByRole("region", { name: "Official Picks" }),
     ).toBeNull();
   });
 
@@ -47,7 +47,7 @@ describe("HomeMarketplaceRecommendations", () => {
     );
 
     expect(
-      screen.getByRole("region", { name: "From Marketplace" }),
+      screen.getByRole("region", { name: "Official Picks" }),
     ).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Plugin 1" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Plugin 5" })).toBeTruthy();

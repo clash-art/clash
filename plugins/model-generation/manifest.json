@@ -1,0 +1,45 @@
+{
+  "apiVersion": "clash.plugin/v1",
+  "id": "clash.model-generation",
+  "version": "0.1.0",
+  "name": "Model Generation",
+  "description": "Generate immutable media and text Document revisions from a selected Model through its Host-resolved Provider.",
+  "author": "Clash",
+  "runtime": {
+    "kind": "local",
+    "transport": "stdio",
+    "entrypoint": "dist/stdio.mjs"
+  },
+  "contributes": {
+    "cards": [],
+    "generators": [
+      {
+        "id": "text",
+        "kind": "generator",
+        "path": "generators/text.json"
+      },
+      {
+        "id": "image",
+        "kind": "generator",
+        "path": "generators/image.json"
+      },
+      {
+        "id": "video",
+        "kind": "generator",
+        "path": "generators/video.json"
+      },
+      {
+        "id": "audio",
+        "kind": "generator",
+        "path": "generators/audio.json"
+      },
+      {
+        "id": "model",
+        "kind": "generator",
+        "path": "generators/model.json"
+      }
+    ],
+    "functions": []
+  },
+  "contractTests": []
+}

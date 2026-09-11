@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product Advertising"
+  short_description: "Develop product ads with faithful references and claims"
+  default_prompt: "Use $clash-product-ad for the requested creative task, following its scope and the project's existing choices."

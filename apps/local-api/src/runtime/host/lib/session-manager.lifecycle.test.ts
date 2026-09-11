@@ -118,6 +118,94 @@ describe("SessionManager lifecycle", () => {
     mocks.resolveAgentMcpServers.mockResolvedValue([bundledClashMcp]);
   });
 
+  it("sends only the authored prompt, including after compaction and host resume", async () => {
+    const prompts: unknown[] = [];
+    mocks.runtimeStart.mockResolvedValue(
+      createAcpSession({
+        async *prompt(content) {
+          prompts.push(content);
+        },
+      }),
+    );
+    const manager = new SessionManager(() => {});
+    const params = sessionParams("context-lifecycle");
+    await manager.start(params);
+    try {
+      for (const text of [
+        "/help",
+        "first",
+        "second",
+        "/compact preserve the edit",
+        "after compact",
+        "last",
+      ]) {
+        await manager.prompt({
+          session_id: params.session_id,
+          turn_id: text,
+          text,
+        });
+      }
+      expect(prompts[0]).toEqual([{ type: "text", text: "/help" }]);
+      expect(prompts[1]).toEqual([{ type: "text", text: "first" }]);
+      expect(prompts[2]).toEqual([{ type: "text", text: "second" }]);
+      expect(prompts[3]).toEqual([
+        { type: "text", text: "/compact preserve the edit" },
+      ]);
+      expect(prompts[4]).toEqual([{ type: "text", text: "after compact" }]);
+      expect(prompts[5]).toEqual([{ type: "text", text: "last" }]);
+    } finally {
+      await manager.dispose(params.session_id);
+    }
+    const resumedManager = new SessionManager(() => {});
+    await resumedManager.start({
+      ...params,
+      resume: { acp_session_id: "acp-session" },
+    });
+    try {
+      await resumedManager.prompt({
+        session_id: params.session_id,
+        turn_id: "resumed",
+        text: "continue",
+      });
+      expect(prompts.at(-1)).toEqual([{ type: "text", text: "continue" }]);
+    } finally {
+      await resumedManager.dispose(params.session_id);
+    }
+  });
+
+  it("preserves authored text on a failed prompt and its retry", async () => {
+    const prompts: unknown[] = [];
+    mocks.runtimeStart.mockResolvedValue(
+      createAcpSession({
+        async *prompt(content) {
+          prompts.push(content);
+          if (prompts.length === 1) throw new Error("transport failed");
+        },
+      }),
+    );
+    const manager = new SessionManager(() => {});
+    const params = sessionParams("context-retry");
+    await manager.start(params);
+    try {
+      await manager.prompt({
+        session_id: params.session_id,
+        turn_id: "failed",
+        text: "first",
+      });
+      await manager.prompt({
+        session_id: params.session_id,
+        turn_id: "retry",
+        text: "retry",
+      });
+      expect(prompts).toEqual([
+        [{ type: "text", text: "first" }],
+        [{ type: "text", text: "retry" }],
+      ]);
+    } finally {
+      await manager.dispose(params.session_id);
+    }
+  });
+
   it("announces ACP session fork support when the harness provides it", async () => {
     mocks.runtimeStart.mockResolvedValue(
       createAcpSession({ supportsSessionFork: true }),
@@ -154,6 +242,7 @@ describe("SessionManager lifecycle", () => {
         expect.objectContaining({
           CLASH_PROJECT_ID: "project-lifecycle",
           CLASH_WORKSPACE_ROOT: "/tmp/clash-session-lifecycle",
+          CLASH_SESSION_SCRATCHPAD: expect.stringContaining(params.session_id),
         }),
       );
       expect(mocks.runtimeStart).toHaveBeenCalledWith(

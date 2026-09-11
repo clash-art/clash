@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clash Comic"
+  short_description: "Build comics with consistent characters and page state"
+  default_prompt: "Use $clash-comic to create sequential comics with selected character references, readable panels, and continuity across pages."

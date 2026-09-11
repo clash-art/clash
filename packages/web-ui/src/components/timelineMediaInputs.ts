@@ -1,6 +1,4 @@
 import {
-  projectTimelineActionId,
-  type ActionAssetBinding,
   type ProjectTimeline,
   type ResolvedAsset,
 } from "@clash/shared-types";
@@ -56,7 +54,6 @@ function timelineItemRefs(state: unknown): Map<string, TimelineItemScopeRef> {
 export function selectTimelineMediaInputs(input: {
   timeline: ProjectTimeline;
   assets: ResolvedAsset[];
-  bindings: ActionAssetBinding[];
   nodes: AssetRelationNode[];
   edges: AssetRelationEdge[];
 }): TimelineMediaInput[] {
@@ -81,38 +78,15 @@ export function selectTimelineMediaInputs(input: {
     }
   }
   const itemRefs = timelineItemRefs(input.timeline.state);
-  const actionId = projectTimelineActionId(
-    input.timeline.id,
-    input.timeline.owner,
-  );
-  const candidates = input.bindings
-    .filter(
-      (binding) =>
-        binding.direction === "input" &&
-        binding.owner.kind === "draft" &&
-        binding.owner.actionId === actionId,
-    )
-    .sort(
-      (left, right) =>
-        left.slot.localeCompare(right.slot) || left.id.localeCompare(right.id),
-    )
-    .map((binding) => {
-      const itemId = binding.slot.startsWith("timeline:item:")
-        ? binding.slot.slice("timeline:item:".length)
-        : undefined;
-      const item = itemId ? itemRefs.get(itemId) : undefined;
-      const itemSourceNodeId =
-        item?.assetId === binding.projectAssetId
-          ? item.sourceNodeId
-          : undefined;
-      return {
-        projectAssetId: binding.projectAssetId,
-        sourceNodeId:
-          canvasSourceByProjectAssetId.get(binding.projectAssetId) ??
-          itemSourceNodeId ??
-          `timeline-asset:${binding.projectAssetId}`,
-      };
-    });
+  // The Host's Timeline projection carries the native revision's media refs.
+  // Canvas connections only supply additional available media and navigation hints.
+  const candidates = [
+    ...Array.from(canvasSourceByProjectAssetId, ([projectAssetId, sourceNodeId]) => ({ projectAssetId, sourceNodeId })),
+    ...Array.from(itemRefs.values()).flatMap((item) => item.assetId ? [{
+      projectAssetId: item.assetId,
+      sourceNodeId: canvasSourceByProjectAssetId.get(item.assetId) ?? item.sourceNodeId ?? `timeline-asset:${item.assetId}`,
+    }] : []),
+  ];
 
   const seenSourceNodeIds = new Set<string>();
   const seenProjectAssetIds = new Set<string>();
@@ -123,8 +97,8 @@ export function selectTimelineMediaInputs(input: {
     const projectAsset = assetById.get(candidate.projectAssetId);
     const type = projectAsset?.kind;
     if (type !== "image" && type !== "video" && type !== "audio") continue;
-    // The binding is authoritative. Canvas and item identities are navigation
-    // hints only; prefer the Canvas placement for a Canvas-owned Timeline.
+    // Asset identity comes from the native Timeline or its available Canvas media.
+    // A Canvas node is a navigation hint, never the media storage authority.
     if (seenProjectAssetIds.has(candidate.projectAssetId)) continue;
     if (!projectAsset) continue;
     const src = projectAssetPlaybackUrl(projectAsset);

@@ -121,10 +121,20 @@ export interface AwarenessBroadcastMessage {
   users: AwarenessPeer[];
 }
 
+/** Host → client: loading stopped before any accepted Project snapshot was sent. */
+export interface ProjectLoadErrorMessage {
+  type: "project.load-error";
+  projectId: string;
+  code: "PROJECT_UPGRADE_FAILED";
+  message: string;
+  nodeId?: string;
+}
+
 export type SidebandMessage =
   | PresenceMessage
   | ActivityMessage
-  | AwarenessBroadcastMessage;
+  | AwarenessBroadcastMessage
+  | ProjectLoadErrorMessage;
 
 /**
  * Type guard: check if a parsed JSON message is a valid sideband message.
@@ -132,5 +142,10 @@ export type SidebandMessage =
 export function isSidebandMessage(msg: unknown): msg is SidebandMessage {
   if (!msg || typeof msg !== "object") return false;
   const t = (msg as any).type;
+  if (t === "project.load-error") {
+    const error = msg as Record<string, unknown>;
+    return typeof error.projectId === "string" && error.code === "PROJECT_UPGRADE_FAILED"
+      && typeof error.message === "string" && (error.nodeId === undefined || typeof error.nodeId === "string");
+  }
   return t === "presence" || t === "activity" || t === "awareness.broadcast";
 }

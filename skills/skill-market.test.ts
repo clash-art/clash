@@ -35,10 +35,10 @@ const clashCanvasReferencePath = path.join(repoRoot, "skills", "clash", "referen
 const forbiddenInternalSurfacePattern =
   /\b(snapshot\.bin|local\.sqlite|sqlite|loro|room|variables|runtime\/|\.clash\/db)\b/i;
 
-function parseFrontmatter(markdown) {
+function parseFrontmatter(markdown: string) {
   const match = markdown.match(/^---\n([\s\S]*?)\n---\n/);
   assert.ok(match, "SKILL.md must start with YAML frontmatter");
-  const fields = {};
+  const fields: Record<string, string> = {};
   for (const line of match[1].split("\n")) {
     const pair = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (!pair) continue;
@@ -211,13 +211,20 @@ test("first-party skill marketplace registry is self-contained and installable",
 
   for (const skill of registry.skills) {
     assert.ok(
-      skill.source === "first-party" || skill.source === "provider-official",
+      skill.source === "first-party" || skill.source === "provider-official" || skill.source === "community",
       `${skill.id} should name a supported marketplace source`,
     );
-    if (skill.source === "provider-official") {
+    if (skill.source === "provider-official" || skill.source === "community") {
       assert.ok(skill.sourceVersion, `${skill.id} needs a pinned source version`);
-      assert.equal(skill.install?.kind, "npx-skills", `${skill.id} needs a supported lazy installer`);
-      assert.ok(skill.install?.source?.startsWith("https://"), `${skill.id} needs an official install source`);
+      assert.ok(
+        skill.install?.kind === "npx-skills" || skill.install?.kind === "bundled-skill",
+        `${skill.id} needs a supported lazy installer`,
+      );
+      if (skill.install.kind === "npx-skills") {
+        assert.ok(skill.install.source?.startsWith("https://"), `${skill.id} needs an upstream install source`);
+      } else {
+        assert.ok(existsSync(path.join(repoRoot, skill.path, "SKILL.md")), `${skill.id} needs its shipped skill`);
+      }
       assert.equal(skill.install?.scope, "global", `${skill.id} should install independently of project cwd`);
     }
     // Eval prompts retired with the workflow family.
@@ -273,7 +280,7 @@ test("first-party skill marketplace registry is self-contained and installable",
       );
     }
 
-    if (skill.source === "first-party") {
+    if (skill.source === "first-party" || skill.install?.kind === "bundled-skill") {
       const skillPath = path.join(repoRoot, skill.path, "SKILL.md");
       assert.ok(existsSync(skillPath), `${skill.id} SKILL.md missing at ${skill.path}`);
       const skillMarkdown = await readFile(skillPath, "utf8");
@@ -421,7 +428,7 @@ test("agent-facing canvas docs use current option-based CLI syntax", async () =>
   ].join("\n");
 
   // Every canvas verb must be documented as option-based, entity-explicit CLI.
-  for (const verb of ["connect", "get", "list", "search", "add", "update", "replace-asset", "delete"]) {
+  for (const verb of ["get", "list", "search", "add", "update", "replace-asset", "delete"]) {
     assert.match(
       canvasDocs,
       new RegExp(`clash canvas ${verb}[^\\n]*--project `),
@@ -435,6 +442,7 @@ test("agent-facing canvas docs use current option-based CLI syntax", async () =>
     );
   }
 
+  assert.doesNotMatch(canvasDocs, /clash canvas (?:connect|disconnect)\b/, "connection lifecycle is no longer a public command");
   assert.match(canvasDocs, /observed node version|cwd observation|implicit/i);
   assert.doesNotMatch(canvasDocs, /readToken|--if-match|--force/);
 });
@@ -499,7 +507,7 @@ test("clash command reference exposes declared asset metadata with implicit CAS"
   assert.match(commands, /clash assets metadata kinds --json/);
   assert.match(commands, /clash assets metadata get --asset <asset-id> --kind media\.transcript --body --json/);
   assert.match(commands, /clash assets metadata set --asset <asset-id> --kind media\.transcript --metadata meta\.json --body words\.json --json/);
-  assert.match(commands, /clash assets metadata apply --file projections\/metadata\/<asset>\.<kind>\.json --expect-version <token> --json/);
+  assert.match(commands, /clash assets metadata apply --file projections\/metadata\/<asset>\.<kind>\.json --json/);
   assert.match(commands, /clash assets metadata validate --kind <kind>/);
 
   // The three properties that make this surface open rather than a closed union.
@@ -508,10 +516,25 @@ test("clash command reference exposes declared asset metadata with implicit CAS"
   assert.match(commands, /undeclared\s+kind is refused/i);
   // Bodies are content-addressed, not inlined.
   assert.match(commands, /content-addressed blob|deduplicated by hash/i);
-  // The escape hatch must stay documented under a name the global flag cannot eat.
-  assert.match(commands, /--expect-version/);
+  // Agent observations are implicit; the removed token escape hatch must stay absent.
+  assert.doesNotMatch(commands, /--expect-version/);
   assert.doesNotMatch(commands, /apply[^\n]*--version /, "apply must not be documented with the shadowed flag");
   assert.match(commands, /single-use|rejected as stale/i);
   assert.match(commands, /READ_REQUIRED/);
   assert.doesNotMatch(commands, /--lock|readToken|--if-match/);
+});
+
+
+test("standalone Clash instructions match the bundled product skill", async () => {
+  const [standalone, bundled] = await Promise.all([
+    readFile(path.join(repoRoot, "skills/clash/SKILL.md"), "utf8"),
+    readFile(path.join(repoRoot, "plugins/clash/skills/clash/SKILL.md"), "utf8"),
+  ]);
+  // Install metadata can differ; installed agent instructions must not fork.
+  const body = (markdown: string) => {
+    const start = markdown.indexOf("# Use Clash\n");
+    assert.notEqual(start, -1, "missing product instructions");
+    return markdown.slice(start).trim();
+  };
+  assert.equal(body(standalone), body(bundled));
 });

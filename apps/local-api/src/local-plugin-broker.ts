@@ -10,6 +10,7 @@ import {
   ExecutableMediaAnalysisResultSchema,
   ExecutableSpeechTranscriptionResultSchema,
   ExecutableVideoEnhanceResultSchema,
+  ExecutableAgentTextResultSchema,
 } from "@clash/shared-types";
 import type {
   ActionRunModelRoute,
@@ -39,6 +40,7 @@ export interface LocalPluginBrokerAuditRecord {
     | "store.get"
     | "store.put"
     | "codex.image.generate"
+    | "agent.text.generate"
     | "media.analyze"
     | "speech.transcribe"
     | "video.enhance"
@@ -200,11 +202,19 @@ export interface LocalExecutablePluginBrokerOptions {
       bytes: Uint8Array;
     }>;
   }) => Promise<{ mediaType: string; bytes: Uint8Array }>;
+  generateAgentText?: (input: {
+    projectId: string;
+    prompt: string;
+    agentId?: string;
+    modelId?: string;
+    systemPrompt?: string;
+  }) => Promise<{ text: string }>;
   captureDirectorStageFrame?: (input: {
     projectId: string;
     invocationId: string;
     taskId: string;
     stage: { name: string; owner: unknown; state: unknown };
+    codeSources?: Record<string, string>;
     label: string;
     timeSeconds: number;
     aspectRatio: "16:9" | "9:16" | "4:3" | "3:4" | "1:1";
@@ -270,6 +280,7 @@ function requestTarget(
   )
     return operation.slot;
   if (operation.kind === "codex.image.generate") return "codex.imagegen";
+  if (operation.kind === "agent.text.generate") return "agent.text";
   if (operation.kind === "director.stage.capture-frame") return operation.label;
   if (operation.kind === "media.analyze") {
     return operation.reference.asset.assetId;
@@ -637,6 +648,7 @@ export function createLocalExecutablePluginBroker(
           invocationId: context.invocation.invocationId,
           taskId: context.invocation.taskId,
           stage: operation.stage,
+          ...(operation.codeSources ? { codeSources: operation.codeSources } : {}),
           label: operation.label,
           timeSeconds: operation.timeSeconds,
           aspectRatio: operation.aspectRatio,
@@ -928,6 +940,15 @@ export function createLocalExecutablePluginBroker(
           ...(context.accountId ? { accountId: context.accountId } : {}),
           bytes,
         });
+      } else if (operation.kind === "agent.text.generate") {
+        if (!options.generateAgentText) throw new Error("Agent text generation is unavailable in this Clash runtime.");
+        result = ExecutableAgentTextResultSchema.parse(await options.generateAgentText({
+          projectId: context.invocation.projectId,
+          prompt: operation.prompt,
+          ...(operation.agentId ? { agentId: operation.agentId } : {}),
+          ...(operation.modelId ? { modelId: operation.modelId } : {}),
+          ...(operation.systemPrompt !== undefined ? { systemPrompt: operation.systemPrompt } : {}),
+        }));
       } else if (operation.kind === "codex.image.generate") {
         if (!options.generateCodexImage) {
           throw new Error(

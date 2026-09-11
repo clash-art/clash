@@ -4,7 +4,7 @@
   "spec": {
     "id": "codex-imagegen",
     "name": "Codex ImageGen",
-    "description": "Create or edit an image with Codex's built-in ImageGen tool. Uses the locally signed-in ChatGPT subscription; no API key is required.",
+    "description": "Create or edit an image with Codex's built-in ImageGen tool. Uses the locally signed-in ChatGPT subscription; no API key is required. Model, quality, dimensions, and background are requested through the generation prompt.",
     "parameters": [
       {
         "id": "aspect_ratio",
@@ -13,26 +13,180 @@
         "required": false,
         "allowCustom": true,
         "options": [
-          { "label": "Square (1:1)", "value": "1:1" },
-          { "label": "Landscape (16:9)", "value": "16:9" },
-          { "label": "Portrait (9:16)", "value": "9:16" },
-          { "label": "Landscape (4:3)", "value": "4:3" },
-          { "label": "Portrait (3:4)", "value": "3:4" },
-          { "label": "Ultrawide (21:9)", "value": "21:9" }
+          {
+            "label": "Square (1:1)",
+            "value": "1:1"
+          },
+          {
+            "label": "Landscape (16:9)",
+            "value": "16:9"
+          },
+          {
+            "label": "Portrait (9:16)",
+            "value": "9:16"
+          },
+          {
+            "label": "Landscape (4:3)",
+            "value": "4:3"
+          },
+          {
+            "label": "Portrait (3:4)",
+            "value": "3:4"
+          },
+          {
+            "label": "Ultrawide (21:9)",
+            "value": "21:9"
+          }
         ],
         "defaultValue": "1:1"
+      },
+      {
+        "id": "image_model",
+        "label": "Image Model",
+        "type": "select",
+        "required": false,
+        "options": [
+          {
+            "label": "auto",
+            "value": "auto"
+          },
+          {
+            "label": "gpt-image-2.5-flare",
+            "value": "gpt-image-2.5-flare"
+          },
+          {
+            "label": "gpt-image-2.5-sunburst",
+            "value": "gpt-image-2.5-sunburst"
+          }
+        ],
+        "defaultValue": "auto"
+      },
+      {
+        "id": "quality",
+        "label": "Quality",
+        "type": "select",
+        "required": false,
+        "options": [
+          {
+            "label": "auto",
+            "value": "auto"
+          },
+          {
+            "label": "low",
+            "value": "low"
+          },
+          {
+            "label": "medium",
+            "value": "medium"
+          },
+          {
+            "label": "high",
+            "value": "high"
+          },
+          {
+            "label": "xhigh",
+            "value": "xhigh"
+          },
+          {
+            "label": "max",
+            "value": "max"
+          }
+        ],
+        "defaultValue": "auto"
+      },
+      {
+        "id": "resolution",
+        "label": "Target Dimensions",
+        "type": "select",
+        "required": false,
+        "options": [
+          {
+            "label": "auto",
+            "value": "auto"
+          },
+          {
+            "label": "1024x1024",
+            "value": "1024x1024"
+          },
+          {
+            "label": "1536x1024",
+            "value": "1536x1024"
+          },
+          {
+            "label": "1024x1536",
+            "value": "1024x1536"
+          },
+          {
+            "label": "1280x720",
+            "value": "1280x720"
+          },
+          {
+            "label": "2048x2048",
+            "value": "2048x2048"
+          },
+          {
+            "label": "2048x1152",
+            "value": "2048x1152"
+          },
+          {
+            "label": "1152x2048",
+            "value": "1152x2048"
+          },
+          {
+            "label": "3840x2160",
+            "value": "3840x2160"
+          },
+          {
+            "label": "2160x3840",
+            "value": "2160x3840"
+          }
+        ],
+        "defaultValue": "auto",
+        "allowCustom": true
+      },
+      {
+        "id": "background",
+        "label": "Background",
+        "type": "select",
+        "required": false,
+        "options": [
+          {
+            "label": "auto",
+            "value": "auto"
+          },
+          {
+            "label": "opaque",
+            "value": "opaque"
+          },
+          {
+            "label": "transparent",
+            "value": "transparent"
+          }
+        ],
+        "defaultValue": "auto"
       }
     ],
     "outputType": "image",
-    "presentation": { "type": "form" },
+    "presentation": {
+      "type": "form"
+    },
     "input": {
       "requiresPrompt": true,
       "inputMode": {
-        "images": { "max": 5 }
+        "images": {
+          "max": 5
+        }
       },
       "promptModalities": ["text", "image"]
     },
     "functionExportId": "generate-image",
+    "generator": {
+      "definitionId": "codex-imagegen",
+      "actionId": "generate",
+      "inputSlots": {
+        "image": "image"
+      }
+    },
     "maxRuntimeMs": 600000
   }
 }

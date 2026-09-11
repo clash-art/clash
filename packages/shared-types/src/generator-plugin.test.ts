@@ -85,6 +85,18 @@ function manifest() {
 }
 
 describe("native Generator plugin contributions", () => {
+  it("admits a declarative model Action without inventing a plugin function", () => {
+    const base = manifest();
+    const { executorExportId: _export, ...baseAction } = stageDocument.spec.actions[0];
+    const document = { ...stageDocument, spec: { ...stageDocument.spec,
+      actions: [{ ...baseAction, modelExecution: true }],
+    } };
+    const validated = validateExecutablePluginPackage({ ...base,
+      contributes: { ...base.contributes, functions: [] },
+    }, {}, {}, { generators: { "generators/director-stage.json": document } });
+    expect(validated.generators["generators/director-stage.json"]).toEqual(document);
+  });
+
   it("loads one versioned definition with several Actions and injects package provenance", () => {
     const validated = validateExecutablePluginPackage(
       manifest(),

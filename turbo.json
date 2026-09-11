@@ -13,6 +13,10 @@
       ],
       "outputLogs": "new-only"
     },
+    "clash#build": {
+      "dependsOn": ["^build", "@clash/web#build"],
+      "outputs": ["runtime/**"]
+    },
     "dev": {
       "cache": false,
       "persistent": true

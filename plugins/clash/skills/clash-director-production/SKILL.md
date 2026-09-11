@@ -5,6 +5,10 @@ description: Direct stronger staged video scenes through dramatic beats, express
 
 # Clash Director Production
 
+For generative film continuity across characters, sets, and shot keyframes,
+use `clash-film-production`. This skill addresses dramatic staging and the
+actual Director Stage workflow; a generated multi-view image is not a Stage.
+
 Treat the Stage as a performance space. The goal is not to fill it with objects
 and cameras; the goal is to make the dramatic change readable from the chosen
 point of view.
@@ -90,8 +94,38 @@ point, and ending through `clash director capture` or
 the Director menu's capture operation. Require the product renderer identity,
 unchanged source/readback revision, exact times, active cameras, PNG hashes,
 immutable Project Asset identities, and a durable receipt. Reuse those returned
-identities directly in downstream Timeline items; the capture receipt links
-each output to its source Stage revision. Capture is an Action output and does
+identities in the next operation; the capture receipt links each output to its
+source Stage revision. Capture is an Action output and does
 not mutate its input Stage, so never write a capture Asset back into a Stage
 shot. Do not import the captured PNGs again. Inspect the returned PNGs; never
 substitute UI screenshots or a different renderer for Director evidence.
+
+## Carry staged shots into generated video
+
+For an AI-generated video deliverable, the Stage establishes blocking, camera,
+and composition. Continue from its captured frames into a video model. Stop at
+the Stage or stills only when the requested deliverable is staging, previs, or
+images. Putting still captures on a Timeline does not complete a generated shot.
+
+Inspect a capture before promoting it to a shot reference. If it uses proxy
+geometry or unfinished materials, use image generation/editing with that capture
+as the composition reference and selected subject/product images as identity
+references. Preserve the intended framing while resolving appearance. Reuse a
+finished capture directly when it already meets the shot's needs.
+
+Read the chosen video Model Card and live Generator definition. Bind the
+selected image Asset to its supported first-frame, end-frame, or reference
+input; use only the roles the model exposes. A reference mentioned in prompt
+text or a Stage JSON file alone does not bind a visual input. If an image edit
+intervenes, retain both links: capture to edited keyframe, then keyframe to video.
+Use the base `clash` skill's generation workflow to submit through Clash and
+read the completed Action output.
+
+Write the motion prompt for what happens during this shot: subject action,
+camera movement, starting and ending state, and what must remain consistent.
+Check the generated take at normal speed and around important transitions for
+identity drift, contact, direction, timing, and the intended camera move. Repair
+the failed input or motion instruction before another take. Carry selected
+video Assets into the editable Timeline and verify the rendered edit; captured
+stills remain reference evidence. Preserve exact input and output identities
+through this chain so a changed Stage does not silently replace an earlier take.

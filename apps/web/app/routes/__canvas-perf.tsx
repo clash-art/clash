@@ -1,3 +1,4 @@
+import { CanvasTransientUiProvider, createCanvasTransientUiStore } from "@clash/web-ui/components/CanvasTransientUiContext";
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import {
   Background,
@@ -457,6 +458,7 @@ function makeMaterialCanvas(config: PerfConfig): { rawNodes: AppNode[]; edges: E
 }
 
 export default function CanvasPerfRoute() {
+  const transientUiStore = useMemo(() => createCanvasTransientUiStore(), []);
   const renderCountersRef = useRef<RenderCounters>({ image: 0, text: 0, action: 0, group: 0 });
   const legacyMediaSubscription = useMemo(() => readLegacyMediaSubscription(), []);
   const legacyActionEdgesSubscription = useMemo(() => readLegacyActionEdgesSubscription(), []);
@@ -566,6 +568,7 @@ export default function CanvasPerfRoute() {
                     totalRenders: rendersAfterEdgeUpdate,
                     domNodes,
                     imageElements,
+                    fullTextPreviews: document.querySelectorAll('[data-testid="text-node-preview"]').length,
                     renderedTextLength: document.body.innerText.length,
                   };
                 });
@@ -582,6 +585,7 @@ export default function CanvasPerfRoute() {
   }, [metrics]);
 
   return (
+    <CanvasTransientUiProvider store={transientUiStore}>
     <ProjectProvider projectId="canvas-perf">
       <PresenceAwarenessProvider peers={[]}>
         <MediaViewerProvider>
@@ -617,5 +621,6 @@ export default function CanvasPerfRoute() {
         </MediaViewerProvider>
       </PresenceAwarenessProvider>
     </ProjectProvider>
+    </CanvasTransientUiProvider>
   );
 }

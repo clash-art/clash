@@ -9,6 +9,27 @@ import {
 import { createProjectAsset } from "./project-assets.js";
 
 describe("Project workspace model", () => {
+  it.each([false, true])("publishes a complete Timeline attachment before remote reconciliation (explicit canvas=%s)", (explicit) => {
+    const doc = new LoroDoc();
+    if (explicit) workspace.ensureProjectCanvas(doc);
+    workspace.createProjectTimeline(doc, { id: "new-timeline", name: "Editor", state: { tracks: [] } });
+    doc.commit();
+    const remote = new LoroDoc();
+    remote.import(doc.export({ mode: "snapshot" }));
+    const removed: string[] = [];
+    const unsubscribe = doc.subscribeLocalUpdates((update) => {
+      remote.import(update);
+      const result = workspace.reconcileProjectTimelineOwnership(remote);
+      removed.push(...result.removedActionNodeIds, ...result.detachedTimelineIds);
+      remote.commit();
+    });
+    expect(workspace.attachTimelineToCanvas(doc, { timelineId: "new-timeline", canvasId: "main", actionNodeId: "new-editor" }).ok).toBe(true);
+    doc.commit();
+    unsubscribe();
+    expect(removed).toEqual([]);
+    expect(new Canvas(remote, () => {}, "main").readNode("new-editor")).not.toBeNull();
+  });
+
   it("keeps Project Timeline persistence storage-free while retaining media identity", () => {
     const doc = new LoroDoc();
 

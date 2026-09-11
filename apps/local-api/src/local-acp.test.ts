@@ -14,6 +14,7 @@ import type {
   SessionElicitationBroker,
   SessionPermissionBroker,
 } from "./runtime/host/lib/session-manager.js";
+import { readAgentRuntime } from "./runtime/host/lib/session-cwd.js";
 import {
   createLocalAcpAdapter as createLocalAcpAdapterImpl,
   createLocalHarnessConfigStore,
@@ -2104,6 +2105,8 @@ describe("local ACP adapter", () => {
         "utf8",
       );
 
+      let latestVersion = "1.0.2";
+      const probeAuth = vi.fn(async () => undefined);
       const adapter = createLocalAcpAdapter({
         detectAgents: async () => [
           {
@@ -2122,7 +2125,7 @@ describe("local ACP adapter", () => {
           },
         ],
         harnessDownloadDir: harnessDir,
-        probeAgentAuth: async () => undefined,
+        probeAgentAuth: probeAuth,
         fetch: async (url) => {
           if (String(url).includes("registry.json")) {
             return new Response(
@@ -2142,7 +2145,7 @@ describe("local ACP adapter", () => {
           expect(String(url)).toBe(
             "https://registry.npmjs.org/%40test%2Fcodex-acp/latest",
           );
-          return new Response(JSON.stringify({ version: "1.0.2" }), {
+          return new Response(JSON.stringify({ version: latestVersion }), {
             status: 200,
           });
         },
@@ -2161,6 +2164,11 @@ describe("local ACP adapter", () => {
           }),
         ],
       });
+      probeAuth.mockClear();
+      latestVersion = "1.0.3";
+      const checked = await adapter.listHarnesses({ checkUpdates: true });
+      expect(checked.harnesses[0]?.latestVersion).toBe(latestVersion);
+      expect(probeAuth).not.toHaveBeenCalled();
     } finally {
       await rm(harnessDir, { recursive: true, force: true });
     }
@@ -4886,6 +4894,72 @@ describe("local ACP adapter", () => {
     expect(ws.send).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["synchronous", "asynchronous", "rejected"])("preserves a text task's %s startup error and disposes without sending a prompt", async (failure) => {
+    let sendToBrowser!: SessionSender;
+    const prompt = vi.fn<SessionManagerLike["prompt"]>(async ({ session_id, turn_id }) => {
+      sendToBrowser({ type: "session.error", session_id, turn_id, message: "no such session" });
+    });
+    const dispose = vi.fn<SessionManagerLike["dispose"]>(async () => undefined);
+    const adapter = createLocalAcpAdapter({
+      detectAgents: async () => [{ id: "codex-acp", label: "Codex", spec: { command: "codex-acp" } }],
+      createSessionManager: (send) => {
+        sendToBrowser = send;
+        return {
+          start: vi.fn(async ({ session_id }) => {
+            if (failure !== "synchronous") await new Promise((resolve) => setTimeout(resolve, 0));
+            if (failure === "rejected") throw new Error("Agent executable could not start");
+            send({ type: "session.error", session_id, message: "Agent executable could not start" });
+          }),
+          prompt, cancel: vi.fn(), dispose,
+        };
+      },
+      createSessionId: () => "text-startup-error",
+    });
+    await expect(adapter.runTextTask({ projectId: "text-project", prompt: "Write a caption" })).rejects.toThrow("Agent executable could not start");
+    expect(prompt).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledWith("text-startup-error");
+  });
+
+  it.each([false, true])("publishes the structured final answer without warning or commentary chunks (wrapped=%s)", async (wrapped) => {
+    let sendToBrowser!: SessionSender;
+    const adapter = createLocalAcpAdapter({
+      detectAgents: async () => [{ id: "codex-acp", label: "Codex", spec: { command: "codex-acp" } }],
+      createSessionManager: (send) => {
+        sendToBrowser = send;
+        return {
+          start: vi.fn(), cancel: vi.fn(), dispose: vi.fn(),
+          prompt: async ({ session_id, turn_id }) => {
+            // The shipped codex-acp adapter emits _meta.codex.phase on model
+            // messages; its compatibility warning chunks have no phase.
+            for (const [text, phase] of [["Warning: adapter notice.\n", undefined], ["I am writing.\n", "commentary"], ["Warning: a legitimate opening.\n", "final_answer"], ["The cat sleeps.", "final_answer"]]) {
+              const update = { sessionUpdate: "agent_message_chunk", content: { type: "text", text }, ...(phase ? { _meta: { codex: { phase } } } : {}) };
+              sendToBrowser({ type: "session.event", session_id, turn_id, event: wrapped ? { update } : update });
+            }
+            sendToBrowser({ type: "session.complete", session_id, turn_id });
+          },
+        };
+      },
+    });
+    const result = await adapter.runTextTask({ projectId: "text-project", prompt: "Write a caption" });
+    expect(result.text).toBe("Warning: a legitimate opening.\nThe cat sleeps.");
+  });
+
+  it("times out a starting text task without sending a late prompt", async () => {
+    const startup = deferred();
+    const prompt = vi.fn<SessionManagerLike["prompt"]>();
+    const dispose = vi.fn<SessionManagerLike["dispose"]>(async () => undefined);
+    const adapter = createLocalAcpAdapter({
+      detectAgents: async () => [{ id: "codex-acp", label: "Codex", spec: { command: "codex-acp" } }],
+      createSessionManager: () => ({ start: () => startup.promise, prompt, cancel: vi.fn(), dispose }),
+      createSessionId: () => "text-startup-timeout",
+    });
+    await expect(adapter.runTextTask({ projectId: "text-project", prompt: "Write a caption", timeoutMs: 10 })).rejects.toThrow("timed out");
+    startup.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(prompt).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledWith("text-startup-timeout");
+  });
+
   it("passes the selected ACP model before running a one-shot text task", async () => {
     let sendToBrowser!: SessionSender;
     const setConfigOption = vi.fn<
@@ -4917,7 +4991,10 @@ describe("local ACP adapter", () => {
       createSessionManager: (send) => {
         sendToBrowser = send;
         return {
-          start: vi.fn(async ({ session_id }) => {
+          start: vi.fn(async ({ session_id, agent_template_id }) => {
+            if (agent_template_id && !await readAgentRuntime(agent_template_id)) {
+              throw new Error(`unknown agent template: ${agent_template_id}`);
+            }
             send({
               type: "session.ready",
               session_id,

@@ -1,5 +1,8 @@
 "use client";
 
+import type { AcpForkPoint } from "@clash/shared-types";
+import { messageForkPoints } from "../../lib/acpForkPoint";
+
 import type {
   AgentUIMessageItem,
   AgentUIStore,
@@ -62,6 +65,7 @@ export function RuntimeSessionTimeline({
   phase = "active",
   slots,
   onFork,
+  onForkAtMessage,
   className,
 }: {
   store: AgentUIStore;
@@ -73,6 +77,7 @@ export function RuntimeSessionTimeline({
   slots?: AgentChatViewSlots;
   /** Forks the current ACP session; only the latest settled turn exposes it. */
   onFork?: () => void;
+  onForkAtMessage?: (point: AcpForkPoint) => void;
   className?: string;
 }) {
   const state = useAgentUIState(store);
@@ -81,6 +86,7 @@ export function RuntimeSessionTimeline({
     const turn = state.turns[turnId];
     return turn ? [turn] : [];
   });
+  const forkPoints = onForkAtMessage ? messageForkPoints(turns) : undefined;
   const latestForkableTurnId =
     onFork && !state.activeTurnId
       ? [...turns].reverse().find((turn) => turn.status === "completed")?.id
@@ -110,7 +116,11 @@ export function RuntimeSessionTimeline({
             clashEntities={clashEntities}
             onOpenClashEntity={onOpenClashEntity}
             gazeSource={gazeSource}
-            onFork={turn.id === latestForkableTurnId ? onFork : undefined}
+            onFork={
+              forkPoints?.has(turn.id) && onForkAtMessage
+                ? () => onForkAtMessage(forkPoints.get(turn.id)!)
+                : turn.id === latestForkableTurnId ? onFork : undefined
+            }
           />
         )}
       />
@@ -146,7 +156,7 @@ function RuntimeTurn({
       thoughts="history"
       activityTools="all"
       collapsiblePrimitives={CLASH_COLLAPSIBLE_PRIMITIVES}
-      className="!max-w-3xl"
+      className="!max-w-3xl [&_.activity-disclosure-row]:!pl-0"
       labels={{
         workingFor: (seconds) => `正在工作 ${seconds} 秒`,
         workedFor: (seconds) => `已工作 ${seconds} 秒`,
@@ -174,6 +184,7 @@ function RuntimeTurn({
           item.text ? (
             <UserMessage content={item.text} mentionNodes={mentionableNodes} />
           ) : null,
+        // Restored text paints immediately; only newly received deltas are paced.
         renderAssistant: ({ item, section, live, prefixSkip }) =>
           live ? (
             <AgentUIStreamingMarkdown
@@ -181,7 +192,6 @@ function RuntimeTurn({
               turnId={turn.id}
               kind="assistant"
               prefixSkip={prefixSkip}
-              paceReplay
               className={CHAT_ASSISTANT_MARKDOWN_CLASS}
             />
           ) : (
@@ -202,7 +212,7 @@ function RuntimeTurn({
               live={live}
               text={item.text}
               liveFallback="正在思考"
-              completedLabel={`已思考 ${itemContentNumber(item, "durationSeconds")} 秒`}
+              completedLabel={thoughtCompletedLabel(item)}
               projection={projection}
               renderBody={() =>
                 live ? (
@@ -211,7 +221,6 @@ function RuntimeTurn({
                     turnId={turn.id}
                     kind="thought"
                     prefixSkip={prefixSkip}
-                    paceReplay
                     className={CHAT_THOUGHT_MARKDOWN_CLASS}
                   />
                 ) : (
@@ -285,7 +294,7 @@ function projectClashThought({
     text: item.text,
     live,
     liveFallback: "正在思考",
-    completedLabel: `已思考 ${itemContentNumber(item, "durationSeconds")} 秒`,
+    completedLabel: thoughtCompletedLabel(item),
     renderLiveSummary: (fallback) => (
       <AgentUIStreamingThoughtProjection
         store={store}
@@ -298,13 +307,16 @@ function projectClashThought({
   });
 }
 
-function itemContentNumber(
-  item: AgentUIMessageItem,
-  key: "durationSeconds",
-): number {
-  if (!item.content || typeof item.content !== "object") return 0;
-  const value = (item.content as Record<string, unknown>)[key];
-  return typeof value === "number" ? value : 0;
+function thoughtCompletedLabel(item: AgentUIMessageItem): string {
+  const duration =
+    item.content && typeof item.content === "object"
+      ? (item.content as Record<string, unknown>).durationSeconds
+      : undefined;
+  return typeof duration === "number" &&
+    Number.isFinite(duration) &&
+    duration > 0
+    ? `已思考 ${duration} 秒`
+    : "已思考";
 }
 
 function describeTool(tool: AgentUIToolItem, live = false): ReactNode {

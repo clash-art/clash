@@ -73,7 +73,11 @@ function requestBody(
       image_urls: images.length ? images : undefined,
     });
   }
-  if (input.modelId === "gpt-image-2") {
+  if (
+    ["gpt-image-2", "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"].includes(
+      input.modelId,
+    )
+  ) {
     return compact({
       prompt: input.prompt,
       num_images: params.count ?? 1,

@@ -3,6 +3,9 @@ import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { resolveBuiltinClashPluginRoot } from "./runtime/host/lib/session-cwd.js";
+import { HostInstallScopeSchema, HostSkillInstallationsSchema, type HostInstallScope } from "@clash/shared-types";
+import type { ClashUserConfigStore } from "./user-config.js";
 
 interface NpxSkillsInstall {
   kind: "npx-skills";
@@ -11,12 +14,18 @@ interface NpxSkillsInstall {
   scope: "global";
 }
 
+interface BundledSkillInstall {
+  kind: "bundled-skill";
+  skill: string;
+  scope: "global";
+}
+
 export interface NpxSkillsMarketplaceItem extends Record<string, unknown> {
   id: string;
   name: string;
   type: "skill";
-  source: "provider-official";
-  install: NpxSkillsInstall;
+  source: "first-party" | "provider-official" | "community";
+  install: NpxSkillsInstall | BundledSkillInstall;
 }
 
 interface InstalledSkillLockEntry {
@@ -48,20 +57,40 @@ function asLazyMarketplaceSkill(
 ): NpxSkillsMarketplaceItem | null {
   if (!value || typeof value !== "object") return null;
   const skill = value as Record<string, unknown>;
-  const install = skill.install;
-  if (!install || typeof install !== "object") return null;
-  const descriptor = install as Record<string, unknown>;
+  const rawInstall = skill.install;
+  if (!rawInstall || typeof rawInstall !== "object") return null;
+  const descriptor = rawInstall as Record<string, unknown>;
   if (
     typeof skill.id !== "string" ||
     typeof skill.name !== "string" ||
-    skill.source !== "provider-official" ||
-    descriptor.kind !== "npx-skills" ||
-    typeof descriptor.source !== "string" ||
-    !descriptor.source.startsWith("https://") ||
+    (skill.source !== "provider-official" &&
+      skill.source !== "community" &&
+      skill.source !== "first-party") ||
     typeof descriptor.skill !== "string" ||
     !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(descriptor.skill) ||
     descriptor.scope !== "global"
   ) {
+    return null;
+  }
+  let install: NpxSkillsInstall | BundledSkillInstall;
+  if (descriptor.kind === "bundled-skill") {
+    install = {
+      kind: "bundled-skill",
+      skill: descriptor.skill,
+      scope: "global",
+    };
+  } else if (
+    descriptor.kind === "npx-skills" &&
+    typeof descriptor.source === "string" &&
+    descriptor.source.startsWith("https://")
+  ) {
+    install = {
+      kind: "npx-skills",
+      source: descriptor.source,
+      skill: descriptor.skill,
+      scope: "global",
+    };
+  } else {
     return null;
   }
   return {
@@ -69,13 +98,8 @@ function asLazyMarketplaceSkill(
     id: skill.id,
     name: skill.name,
     type: "skill",
-    source: "provider-official",
-    install: {
-      kind: "npx-skills",
-      source: descriptor.source,
-      skill: descriptor.skill,
-      scope: "global",
-    },
+    source: skill.source,
+    install,
   };
 }
 
@@ -97,10 +121,14 @@ export function createNpxSkillsMarketplace({
   registry,
   run = defaultCommandRunner,
   agentsDir = join(homedir(), ".agents"),
+  builtinPluginRoot = resolveBuiltinClashPluginRoot,
+  configStore,
 }: {
   registry: { skills?: unknown };
   run?: CommandRunner;
   agentsDir?: string;
+  builtinPluginRoot?: () => string;
+  configStore?: ClashUserConfigStore;
 }) {
   const rawSkills = Array.isArray(registry.skills) ? registry.skills : [];
   const skills = rawSkills
@@ -118,6 +146,7 @@ export function createNpxSkillsMarketplace({
   return {
     skills,
     async listInstalled(): Promise<Array<Record<string, unknown>>> {
+      const scopes = HostSkillInstallationsSchema.parse(await configStore?.getSection("skills") ?? {});
       const installedByName = await readInstalledSkillLock(agentsDir);
       const installed = await Promise.all(
         skills.map(async (skill) => {
@@ -135,13 +164,16 @@ export function createNpxSkillsMarketplace({
             description: skill.description ?? null,
             version: skill.sourceVersion ?? null,
             path,
-            scope: "global",
+            scope: scopes[skill.install.skill]?.scope ?? "global",
+            installation: scopes[skill.install.skill] ?? { scope: "global" },
             source:
               typeof lockEntry.source === "string" ? lockEntry.source : null,
             sourceUrl:
               typeof lockEntry.sourceUrl === "string"
                 ? lockEntry.sourceUrl
-                : skill.install.source,
+                : skill.install.kind === "npx-skills"
+                  ? skill.install.source
+                  : (skill.repository ?? null),
           };
         }),
       );
@@ -149,23 +181,37 @@ export function createNpxSkillsMarketplace({
         (skill): skill is NonNullable<typeof skill> => skill !== null,
       );
     },
-    async install(id: string): Promise<Record<string, unknown>> {
+    async install(id: string, target: HostInstallScope = { scope: "global" }): Promise<Record<string, unknown>> {
+      const installation = HostInstallScopeSchema.parse(target);
+      if (installation.scope === "projects" && !configStore) throw new Error("Host configuration is required for project-scoped skill installation");
       const skill = requireSkill(id);
+      const source =
+        skill.install.kind === "bundled-skill"
+          ? join(builtinPluginRoot(), "skills", skill.install.skill)
+          : skill.install.source;
+      if (skill.install.kind === "bundled-skill") {
+        await access(join(source, "SKILL.md"));
+      }
       await run(executable, [
         "--yes",
         "skills@latest",
         "add",
-        skill.install.source,
+        source,
         "--skill",
         skill.install.skill,
         "--global",
         "--yes",
       ]);
+      await configStore?.updateSection("skills", (current) => ({
+        ...HostSkillInstallationsSchema.parse(current ?? {}),
+        [skill.install.skill]: installation,
+      }));
       return {
         skillId: skill.id,
         name: skill.name,
         installed: true,
-        scope: "global",
+        scope: installation.scope,
+        installation,
       };
     },
     async uninstall(id: string): Promise<void> {
@@ -178,6 +224,11 @@ export function createNpxSkillsMarketplace({
         "--global",
         "--yes",
       ]);
+      await configStore?.updateSection("skills", (current) => {
+        const scopes = HostSkillInstallationsSchema.parse(current ?? {});
+        delete scopes[skill.install.skill];
+        return scopes;
+      });
     },
   };
 }

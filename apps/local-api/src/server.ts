@@ -1,3 +1,6 @@
+import { registerProjectRenderer } from "./project-renderer.js";
+import { createStructuredLogger } from "@clash/shared-runtime/logging";
+import { createLocalProjectUpgrade } from "./local-project-upgrade.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { delimiter, join, resolve } from "node:path";
@@ -5,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { serve } from "@hono/node-server";
+import { createLocalModelExecutionPlanner } from "./local-model-generation.js";
 import {
   PluginHostClient,
   pluginHostSocketPath,
@@ -148,6 +152,7 @@ import {
 } from "./public-asset-storage.js";
 import type { LocalDirectorStageRenderer } from "./director-stage-renderer.js";
 import { createNpxSkillsMarketplace } from "./marketplace-skills.js";
+import { ensureAgentCwd } from "./runtime/host/lib/session-cwd.js";
 import skillMarketplaceRegistry from "../../../skills/registry.json" with { type: "json" };
 
 export { createHeadlessDirectorStageRenderer } from "./director-stage-renderer.js";
@@ -166,6 +171,10 @@ export interface LocalApiServerOptions {
   dataDir: string;
   directorStageRenderer?: LocalDirectorStageRenderer;
   localAcp?: LocalAcpRuntimeAdapter;
+  /** MCP hosts own agent conversations; disabled skips ACP startup and sockets. */
+  agentRuntime?: "enabled" | "disabled";
+  /** Shipped SPA assets served by this same daemon. */
+  projectRendererRoot?: string;
   audioConfig?: LocalAudioConfigStore;
   /** Injectable so a signed-in Desktop can provide managed Clash storage later. */
   publicAssetStorage?: PublicAssetStorageService;
@@ -789,6 +798,7 @@ export function createLocalPluginBrokerServices(options: {
   analyzeMedia?: LocalExecutablePluginBrokerOptions["analyzeMedia"];
   enhanceVideo?: LocalExecutablePluginBrokerOptions["enhanceVideo"];
   generateCodexImage?: LocalExecutablePluginBrokerOptions["generateCodexImage"];
+  generateAgentText?: LocalExecutablePluginBrokerOptions["generateAgentText"];
 }) {
   const providerStore = createLocalProviderStore(options.dataDir);
   const metadataStore = createLocalMetadataStore(options.dataDir);
@@ -913,16 +923,19 @@ export function createLocalPluginBrokerServices(options: {
     ...(options.generateCodexImage
       ? { generateCodexImage: options.generateCodexImage }
       : {}),
+    ...(options.generateAgentText ? { generateAgentText: options.generateAgentText } : {}),
     ...(options.directorStageRenderer
       ? {
           captureDirectorStageFrame: async ({
             stage,
+            codeSources,
             label,
             timeSeconds,
             aspectRatio,
             longEdge,
           }) => {
             const rendered = await options.directorStageRenderer!.render({
+              codeSources,
               state:
                 stage.state as import("@clash/shared-types").DirectorStageState,
               longEdge,
@@ -1195,6 +1208,8 @@ export function createWorkflowPluginBindingResolver(options: {
   };
 }
 
+const hostLog = createStructuredLogger({ component: "local-api", module: "server" });
+
 export async function startLocalApiServer(options: LocalApiServerOptions) {
   // The recorder/replayer is intentionally imported only for the explicit test harness option.
   // Its module also supports child-process `--import` startup, so a production Host must not load
@@ -1226,9 +1241,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     }),
   );
   if (!codexImagegen.available) {
-    console.info(
-      `[local-api] Codex ImageGen disabled (${codexImagegen.reason}).`,
-    );
+    hostLog.info("host.optional_provider_unavailable", { provider: "codex-imagegen", reason: codexImagegen.reason });
   }
   const discoveryEnabled = options.discovery?.enabled !== false;
   const pendingDiscoveryHostId = discoveryEnabled ? randomUUID() : undefined;
@@ -1244,6 +1257,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   });
   const npxSkillsMarketplace = createNpxSkillsMarketplace({
     registry: skillMarketplaceRegistry,
+    configStore: createClashUserConfigStore(options.dataDir),
   });
   const marketplaceSkills = [...npxSkillsMarketplace.skills];
   const marketplacePlugins = [
@@ -1294,10 +1308,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       dataDir: options.dataDir,
     });
   void audioConfig.getVoiceInputConfig?.().catch((error) => {
-    console.error(
-      "[local-api] voice input startup probe degraded:",
-      error instanceof Error ? error.message : String(error),
-    );
+    hostLog.warn("host.voice_probe_degraded", { error });
   });
   let mediaAnalysisService: LocalMediaAnalysisService | undefined;
   let videoEnhanceService: LocalVideoEnhanceService | undefined;
@@ -1305,6 +1316,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     dataDir: options.dataDir,
     assetStaging: pluginAssetStaging,
     audioConfig,
+    generateAgentText: async (input) => {
+      if (!localAcp?.runTextTask) throw new Error("The local ACP text executor is unavailable.");
+      const result = await localAcp.runTextTask(input);
+      return { text: result.text };
+    },
     // Provider execution runs while the Project room owns its serial mutation queue. Resolving a
     // reference through that same live-room adapter would enqueue a read behind the invocation
     // that is waiting for it. Provider inputs are immutable committed facts, so this broker reads
@@ -1534,16 +1550,16 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     return undefined;
   };
   const discoveryRunDir = options.discovery?.runDir ?? join(clashHome, "run");
-  const localAcp =
-    options.localAcp ??
-    createConfiguredLocalAcpAdapter(process.env, {
-      apiBaseUrl: `http://127.0.0.1:${options.port}`,
-      dataDir: options.dataDir,
-    });
+  const localAcp = (options.agentRuntime ?? process.env.CLASH_AGENT_RUNTIME) === "disabled"
+    ? undefined
+    : options.localAcp ?? createConfiguredLocalAcpAdapter(process.env, {
+        apiBaseUrl: `http://127.0.0.1:${options.port}`,
+        dataDir: options.dataDir,
+      });
   let configWatcherClosed = false;
   let localAcpReady!: Promise<void>;
   let configReloadQueue = Promise.resolve();
-  const stopConfigWatcher = watchClashUserConfig(options.dataDir, {
+  const stopConfigWatcher = localAcp ? watchClashUserConfig(options.dataDir, {
     onChange(config, previousConfig) {
       const apply = configReloadQueue.then(async () => {
         await localAcpReady;
@@ -1559,14 +1575,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       return apply;
     },
     onError(error) {
-      console.error("[local-api] config.yaml reload rejected:", error.message);
+      hostLog.warn("host.config_reload_rejected", { error });
     },
-  });
-  localAcpReady = Promise.resolve(localAcp.warmup?.()).catch((error) => {
-    console.error(
-      "[local-api] ACP startup warmup degraded:",
-      error instanceof Error ? error.message : String(error),
-    );
+  }) : () => {};
+  localAcpReady = Promise.resolve(localAcp?.warmup?.()).catch((error) => {
+    hostLog.warn("host.acp_warmup_degraded", { error });
   });
   const falMock = createMockFalQueueService();
   const syncConfig = createLocalSyncConfigStore({
@@ -1746,6 +1759,12 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   });
   const app = createLocalApiApp({
     dataDir: options.dataDir,
+    prepareProjectWorkspace: async (projectId) => {
+      await ensureAgentCwd("clash", projectId, { harnessId: "codex-acp" }, {
+        ...process.env,
+        CLASH_LOCAL_DATA_DIR: options.dataDir,
+      });
+    },
     projectAssetProjectionOrigin: localOrigin,
     projectAssetReplica,
     acceptPluginUpload,
@@ -1774,6 +1793,12 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     },
     audioConfig,
     mediaAnalysisConfig,
+    resolveGeneratorModelExecution: createLocalModelExecutionPlanner({
+      dataDir: options.dataDir,
+      aigc: externalAigc,
+      modelCards: async () => loadLocalModelCards(options.dataDir, "local-user",
+        await listPluginCards(), await listPluginModelBindings()),
+    }),
     resolveGeneratorModelConsumer: async ({ semanticShape, sourceKind }) => {
       const consumer = await resolveGeneratorConsumerForShape(semanticShape);
       if (!consumer) {
@@ -1877,7 +1902,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     marketplaceSkills,
     marketplaceFeed,
     listInstalledMarketplaceSkills: () => npxSkillsMarketplace.listInstalled(),
-    installMarketplaceSkill: (skillId) => npxSkillsMarketplace.install(skillId),
+    installMarketplaceSkill: (skillId, installation) => npxSkillsMarketplace.install(skillId, installation),
     uninstallMarketplaceSkill: (skillId) =>
       npxSkillsMarketplace.uninstall(skillId),
     marketplacePlugins,
@@ -1921,6 +1946,8 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   // it produced an unroutable `http://127.0.0.1:0` -- reads of a generated asset then
   // failed with a bare `fetch failed`.
   const workflowProcessor = createLocalWorkflowProcessor({
+    resolveGeneratorDefinition: resolvePluginGeneratorDefinition,
+    listPluginCards,
     dataDir: options.dataDir,
     assetInspection,
     assetRepresentations,
@@ -1946,7 +1973,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       ownerId: localDurableRunOwnerId(pendingDiscoveryHostId),
       providerPluginExecutor,
     },
-    textAgent: localAcp.runTextTask
+    textAgent: localAcp?.runTextTask
       ? {
           generate: async (input) => {
             const result = await localAcp.runTextTask!({
@@ -1977,10 +2004,21 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     options.remotePersistence === undefined
       ? (projectId?: string) => syncConfig.resolveRemotePersistence(projectId)
       : (options.remotePersistence ?? undefined);
+  const projectUpgradeAssets = createLocalProjectAssetService({
+    dataDir: options.dataDir, projectionOrigin: localOrigin, assetInspection, assetRepresentations,
+  });
+  const projectUpgradeJournal = createSqliteDurableRunJournal(options.dataDir);
   roomHub = new LocalLoroRoomHub(
     options.dataDir,
     remotePersistence,
     workflowProcessor,
+    createLocalProjectUpgrade({
+      materializeDoc: projectUpgradeAssets.materializeDoc,
+      listDefinitions: listPluginGenerators,
+      listActionCards: listPluginCards,
+      rememberDefinition: projectUpgradeJournal.rememberGeneratorDefinition,
+      modelCards: async () => loadLocalModelCards(options.dataDir, "local-user", await listPluginCards(), await listPluginModelBindings()),
+    }),
   );
   let resolveListening!: (server: ReturnType<typeof serve>) => void;
   let rejectListening!: (error: unknown) => void;
@@ -1991,25 +2029,25 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   });
   let publishedDiscoveryHostId: string | undefined;
   let startupRecovery: Promise<unknown> = Promise.resolve();
+  const rendererRoot = options.projectRendererRoot ?? process.env.CLASH_PROJECT_RENDERER_ROOT ??
+    fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "../../web/dist/client" : "./project-ui", import.meta.url));
+  registerProjectRenderer(app, rendererRoot);
   const server = serve(
     { fetch: app.fetch, hostname: "127.0.0.1", port: options.port },
     (info) => {
       settled = true;
       boundPort = info.port;
-      localAcp.updateSpawnEnv(
+      localAcp?.updateSpawnEnv(
         createLocalAgentToolEnv({
           dataDir: options.dataDir,
           apiBaseUrl: `http://127.0.0.1:${info.port}`,
           env: process.env,
         }),
       );
-      console.log(`[local-api] listening on http://127.0.0.1:${info.port}`);
-      console.log(`[local-api] data dir: ${options.dataDir}`);
+      hostLog.info("host.listening", { port: info.port, profile: discoveryProfile, hostId: pendingDiscoveryHostId });
       void syncConfig.getPublicConfig().then((config) => {
         if (config.remote_loro.enabled) {
-          console.log(
-            `[local-api] remote Loro persistence: enabled (${config.remote_loro.source})`,
-          );
+          hostLog.info("host.remote_sync_enabled", { source: config.remote_loro.source });
         }
       });
       void (async () => {
@@ -2034,10 +2072,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
           ownerId: "local-api",
           roomHub: roomHub!,
         }).catch((error) => {
-          console.error(
-            "[local-api] durable run startup recovery degraded:",
-            error instanceof Error ? error.message : String(error),
-          );
+          hostLog.error("host.run_recovery_degraded", { error });
         });
         resolveListening(server);
       })().catch((error) => {
@@ -2053,7 +2088,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       stopConfigWatcher();
       await Promise.all([
         assetRepresentations.close(),
-        localAcp.disposeAll(),
+        localAcp?.disposeAll(),
         options.directorStageRenderer?.dispose(),
         Promise.resolve(pluginBroker.close?.()),
         startupRecovery.catch(() => undefined).then(() => roomHub?.close()),
@@ -2076,7 +2111,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   );
   server.once("error", (error) => {
     if (settled) {
-      console.error("[local-api] server error", error);
+      hostLog.error("host.server_failed", { error });
       return;
     }
     rejectListening(error);
@@ -2087,7 +2122,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     workflowProcessor,
     hub: roomHub,
   });
-  attachLocalAcpSessions(server, localAcp);
+  if (localAcp) attachLocalAcpSessions(server, localAcp);
   return listening;
 }
 

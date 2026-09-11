@@ -1,0 +1,10 @@
+{
+  "summary": "Canvas node views and authoring adapters. Shared Canvas and Host Generator APIs own persisted semantics.",
+  "key_files": {
+    "ActionBadge.tsx": "Model and mapped Action forms. Native authoring commits Generator revisions; input references retain immutable Asset identities.",
+    "NativeOrderedPrompt.tsx": "Edits ordered prompt text while preserving revision input identities.",
+    "NativeMediaReference.tsx": "Displays an applied media input without requiring a Canvas placement.",
+    "NativeDocumentReference.tsx": "Reads the exact plain-text Document input revision and removes it through the parent revision editor.",
+    "TextDocumentNode.tsx": "Read-only Canvas placement for a generated text Document revision. No editable body shadow."
+  }
+}

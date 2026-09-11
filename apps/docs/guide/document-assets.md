@@ -6,7 +6,10 @@
 > and its Local HTTP routes implement list/create/read/revision history/exact
 > revision read/versioned advance/attachment operations over the live Project
 > room. The native `clash.asr` Generator publishes timed transcript Documents.
-> CLI/MCP/native file-projection clients, legacy ASR consumer migration, and
+> CLI/MCP exact-revision reads, Model card Document mention/picker inputs, and
+> exact Document graph add/rewire/remove/copy for Models and mapped Agent Text
+> Actions are
+> delivered. CLI/MCP authoring, native file projections, legacy ASR consumer migration, and
 > legacy metadata migration are not delivered in this snapshot.
 
 A **Document Asset** is structured, typed product content with a stable head

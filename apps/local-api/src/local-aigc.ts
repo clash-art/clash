@@ -184,6 +184,8 @@ export interface MockTextGenerationResult {
 
 /** A Provider Plugin invocation fully resolved before any Provider HTTP request is made. */
 export interface ProviderPluginExecutionPlan {
+  /** The resolved route is available to native Model Run admission. Legacy callers may omit it. */
+  route?: ModelUpstreamRoute;
   binding: ExecutablePluginBinding;
   accountId?: string;
   assetInputs: ProviderAssetInput[];
@@ -1003,6 +1005,7 @@ export function createMockExternalAigcService(
       }
       return {
         binding,
+        route,
         ...(request.accountId ? { accountId: request.accountId } : {}),
         assetInputs: request.assetInputs ?? [],
         kind,

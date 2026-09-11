@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "packs": {
+    "project": {
+      "description": "Public Clash project operations",
+      "skills": ["./skills/clash"]
+    },
+    "product-ad": {
+      "description": "广告、产品展示、TVC 与参考改编",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-product-ad",
+        "./skills/clash-multiview-consistency",
+        "./skills/clash-reference-composition",
+        "./skills/clash-shot-continuity"
+      ]
+    },
+    "talking-head": {
+      "description": "口播、访谈与播客剪辑",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-talking-head",
+        "./skills/clash-shot-continuity"
+      ]
+    },
+    "explainer": {
+      "description": "教程、演示与科普解释",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-explainer",
+        "./skills/clash-reference-composition"
+      ]
+    },
+    "narrative": {
+      "description": "叙事片段、短剧与电影场景",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-narrative",
+        "./skills/clash-multiview-consistency",
+        "./skills/clash-reference-composition",
+        "./skills/clash-shot-continuity"
+      ]
+    },
+    "music-video": {
+      "description": "音乐、节奏剪辑与 MV",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-music-video",
+        "./skills/clash-shot-continuity"
+      ]
+    },
+    "brand-motion": {
+      "description": "MG、品牌片头与动效",
+      "skills": ["./skills/clash", "./skills/clash-brand-motion"]
+    },
+    "reference-images": {
+      "description": "reference-images",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-multiview-consistency",
+        "./skills/clash-reference-composition"
+      ]
+    },
+    "cover-image": {
+      "description": "cover-image",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-cover-image",
+        "./skills/clash-reference-composition",
+        "./skills/clash-multiview-consistency"
+      ]
+    },
+    "infographic": {
+      "description": "infographic",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-infographic",
+        "./skills/clash-reference-composition"
+      ]
+    },
+    "comic": {
+      "description": "comic",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-comic",
+        "./skills/clash-multiview-consistency",
+        "./skills/clash-reference-composition",
+        "./skills/clash-shot-continuity"
+      ]
+    },
+    "film-production": {
+      "description": "film-production",
+      "skills": [
+        "./skills/clash",
+        "./skills/clash-film-production",
+        "./skills/clash-narrative",
+        "./skills/clash-multiview-consistency",
+        "./skills/clash-reference-composition",
+        "./skills/clash-shot-continuity",
+        "./skills/clash-timeline-production",
+        "./skills/clash-video-finishing"
+      ]
+    }
+  }
+}

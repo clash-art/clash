@@ -1,3 +1,9 @@
+export {
+  CreateProjectGeneratorRequestSchema,
+  SubmitGeneratorActionRequestSchema,
+  AdvanceProjectGeneratorRequestSchema,
+} from "@clash/shared-types";
+
 export type GeneratorRequest = (
   path: string,
   init?: RequestInit,

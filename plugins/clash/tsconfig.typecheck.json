@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.dev.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./.cache/typecheck.tsbuildinfo",
+    "declaration": false
+  }
+}

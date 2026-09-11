@@ -15,7 +15,8 @@
     "manifest.json": "Versioned Director package contributions for stage capture and humanoid retargeting.",
     "generators/humanoid-retarget.json": "Retarget action model input, parameter, and animated model output contract.",
     "src/humanoid-retarget.ts": "Frozen GLB resolution, rig inspection, Three hierarchy construction, retargeting, and GLB animation append.",
-    "src/stdio.ts": "Inert PluginModule with direct-execution stdio compatibility entrypoint."
+    "src/stdio.ts": "Inert PluginModule with direct-execution stdio compatibility entrypoint.",
+    "examples/": "Single-file studio lighting and kinetic prop TSX components for Generator-local registration; each source is a text.plain Document revision."
   },
   "verification": [
     "pnpm test:package @clash-plugin/director",

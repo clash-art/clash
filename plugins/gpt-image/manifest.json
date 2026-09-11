@@ -1,0 +1,43 @@
+{
+  "apiVersion": "clash.plugin/v1",
+  "id": "clash.gpt-image",
+  "version": "0.1.0",
+  "name": "GPT Image Providers",
+  "description": "GPT Image 2.5 generation and editing through OpenAI and Replicate.",
+  "runtime": {
+    "kind": "local",
+    "transport": "stdio",
+    "entrypoint": "dist/stdio.mjs"
+  },
+  "contributes": {
+    "cards": [],
+    "functions": [
+      {
+        "id": "openai-execute",
+        "kind": "provider-executor",
+        "operations": ["submit"]
+      },
+      {
+        "id": "replicate-execute",
+        "kind": "provider-executor",
+        "operations": ["submit", "poll"]
+      }
+    ],
+    "providers": [
+      {
+        "id": "openai",
+        "kind": "provider",
+        "path": "providers/openai.json"
+      },
+      {
+        "id": "replicate",
+        "kind": "provider",
+        "path": "providers/replicate.json"
+      }
+    ]
+  },
+  "contractTests": [
+    "contract-tests/openai-requires-key.json",
+    "contract-tests/replicate-requires-key.json"
+  ]
+}

@@ -69,7 +69,14 @@ async function captureDirectorFixture(input: {
   rerenderedSha256: string;
   publicDirectorGetArtifact?: boolean;
   omitProjectAssetId?: boolean;
-  outputBinding?: "valid" | "missing" | "wrong-revision" | "duplicate";
+  origin?:
+    | "valid"
+    | "missing"
+    | "wrong-revision"
+    | "wrong-asset"
+    | "wrong-executor"
+    | "wrong-time"
+    | "failed-run";
   assetState?: "ready" | "missing" | "trashed" | "missing-bytes";
   receiptStateSha256?: string;
 }) {
@@ -116,6 +123,7 @@ async function captureDirectorFixture(input: {
         stageId: stage.id,
         sourceStageRevisionId: stage.revisionId,
         verifiedStageRevisionId: stage.revisionId,
+        actionRunIds: ["director-capture-run:immutable-frame"],
         renderer: {
           id: "clash-director-viewport-webgl",
           contractVersion: 1,
@@ -200,47 +208,68 @@ async function captureDirectorFixture(input: {
     }
     if (
       request.method === "GET" &&
-      path ===
-        `/api/v1/projects/${projectId}/assets/${encodeURIComponent(projectAssetId)}/references`
+      path.startsWith(`/api/v1/projects/${projectId}/generator-runs/`)
     ) {
-      const outputBinding = {
-        id: "action-asset:director-capture:output:capture",
-        owner: {
-          kind: "run",
-          actionId: `director:${stage.id}`,
-          actionRevisionId:
-            input.outputBinding === "wrong-revision"
-              ? "director-stage-revision-v1:stale"
-              : stage.revisionId,
-          actionRunId: "director-capture-run:immutable-frame",
+      // Public native Generator response, matching app.ts routes and the shipped
+      // plugins/director/generators/director-stage.json contract.
+      const actionRunId = "director-capture-run:immutable-frame";
+      const run = {
+        actionRunId,
+        generatorRevision: {
+          generatorId: stage.id,
+          generatorRevisionId:
+            input.origin === "wrong-revision" ? "stale" : stage.revisionId,
         },
-        direction: "output",
-        slot: "director:capture:capture",
-        projectAssetId,
-        role: "primary",
+        actionId: "capture-frame",
+        executor: {
+          pluginId:
+            input.origin === "wrong-executor"
+              ? "clash.other"
+              : "clash.director",
+          version: "0.1.0",
+          exportId: "capture-frame",
+          schemaHash: `sha256:${sha256("executor")}`,
+        },
+        invocationFingerprint: `sha256:${sha256("invocation")}`,
+        parameters: {
+          label: "capture",
+          timeSeconds: input.origin === "wrong-time" ? 5 : 0,
+          aspectRatio: "16:9",
+          longEdge: 320,
+        },
+        invocationInputRefs: [],
+        outputContract: [
+          {
+            slot: "frame",
+            assetType: { kind: "media", mediaKind: "image" },
+            cardinality: { minItems: 1, maxItems: 1 },
+          },
+        ],
+        status: input.origin === "failed-run" ? "failed" : "succeeded",
       };
       response.setHeader("content-type", "application/json");
-      response.setHeader(
-        "x-clash-read-receipt",
-        "receipt:director-capture-project-asset-references",
-      );
-      response.end(
-        JSON.stringify({
-          projectAssetId,
-          references:
-            input.outputBinding === "missing"
-              ? []
-              : input.outputBinding === "duplicate"
-                ? [
-                    outputBinding,
-                    {
-                      ...outputBinding,
-                      id: "action-asset:director-capture:output:capture-duplicate",
+      if (path.endsWith("/outputs/frame")) {
+        response.statusCode = input.origin === "missing" ? 404 : 200;
+        response.end(
+          JSON.stringify(
+            input.origin === "missing"
+              ? { error: "Generator output is not committed" }
+              : {
+                  commit: {
+                    actionRunId,
+                    outputSlot: "frame",
+                    asset: {
+                      kind: "media",
+                      projectAssetId:
+                        input.origin === "wrong-asset"
+                          ? "another-asset"
+                          : projectAssetId,
                     },
-                  ]
-                : [outputBinding],
-        }),
-      );
+                  },
+                },
+          ),
+        );
+      } else response.end(JSON.stringify({ run }));
       return;
     }
     if (
@@ -346,13 +375,9 @@ it("accepts immutable Host Asset bytes when rendering the same Stage again is no
             {
               artifactId: "capture",
               projectAssetId,
-              outputBinding: {
-                direction: "output",
-                owner: {
-                  kind: "run",
-                  actionId: `director:${stage.id}`,
-                  actionRevisionId: stage.revisionId,
-                },
+              outputCommit: {
+                actionRunId: "director-capture-run:immutable-frame",
+                asset: { kind: "media", projectAssetId },
               },
             },
           ],
@@ -425,7 +450,7 @@ it("rejects a capture Asset without its revision-scoped output reference", async
     submittedBytes: capturedBytes,
     hostBytes: capturedBytes,
     rerenderedSha256: sha256(capturedBytes),
-    outputBinding: "missing",
+    origin: "missing",
   });
 
   expect(result?.report).toMatchObject({
@@ -433,9 +458,7 @@ it("rejects a capture Asset without its revision-scoped output reference", async
     matchedArtifactIds: ["stage"],
     captures: [],
   });
-  expect(result?.report.detail).toMatch(
-    /must have exactly one output ActionAssetBinding/iu,
-  );
+  expect(result?.report.detail).toMatch(/output.*not committed/iu);
 });
 
 it("rejects a capture Asset whose output reference targets another Stage revision", async () => {
@@ -445,7 +468,7 @@ it("rejects a capture Asset whose output reference targets another Stage revisio
     submittedBytes: capturedBytes,
     hostBytes: capturedBytes,
     rerenderedSha256: sha256(capturedBytes),
-    outputBinding: "wrong-revision",
+    origin: "wrong-revision",
   });
 
   expect(result?.report).toMatchObject({
@@ -453,19 +476,17 @@ it("rejects a capture Asset whose output reference targets another Stage revisio
     matchedArtifactIds: ["stage"],
     captures: [],
   });
-  expect(result?.report.detail).toMatch(
-    /output ActionAssetBinding is not owned by .* at Stage revision/iu,
-  );
+  expect(result?.report.detail).toMatch(/capture.*Run.*Stage revision/iu);
 });
 
-it("rejects ambiguous duplicate output references for one capture Asset", async () => {
+it("rejects an Output Commit pointing to a different capture Asset", async () => {
   const capturedBytes = Buffer.from("captured-byte-A");
 
   const result = await captureDirectorFixture({
     submittedBytes: capturedBytes,
     hostBytes: capturedBytes,
     rerenderedSha256: sha256(capturedBytes),
-    outputBinding: "duplicate",
+    origin: "wrong-asset",
   });
 
   expect(result?.report).toMatchObject({
@@ -473,7 +494,20 @@ it("rejects ambiguous duplicate output references for one capture Asset", async 
     matchedArtifactIds: ["stage"],
     captures: [],
   });
-  expect(result?.report.detail).toMatch(
-    /must have exactly one output ActionAssetBinding \(found 2\)/iu,
-  );
+  expect(result?.report.detail).toMatch(/Output Commit.*capture Asset/iu);
 });
+
+it.each(["wrong-executor", "wrong-time", "failed-run"] as const)(
+  "rejects a capture with %s even when the Asset bytes match",
+  async (origin) => {
+    const bytes = Buffer.from("captured-byte-A");
+    const result = await captureDirectorFixture({
+      submittedBytes: bytes,
+      hostBytes: bytes,
+      rerenderedSha256: sha256(bytes),
+      origin,
+    });
+    expect(result?.report.status).toBe("fail");
+    expect(result?.report.detail).toMatch(/capture.*Run.*Stage revision/iu);
+  },
+);

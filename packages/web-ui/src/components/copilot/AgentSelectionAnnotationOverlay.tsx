@@ -1,3 +1,4 @@
+import { isMcpProjectApp } from "../../lib/mcpProject";
 import {
   forwardRef,
   useEffect,
@@ -5,6 +6,7 @@ import {
   useMemo,
   useState,
   type FormEvent,
+  type ComponentPropsWithoutRef,
 } from "react";
 import { ArrowUp } from "@phosphor-icons/react";
 import type {
@@ -259,7 +261,7 @@ function AnnotationHighlight({
   );
 }
 
-export const AgentSelectionAnnotationOverlay = forwardRef<
+const LocalAgentSelectionAnnotationOverlay = forwardRef<
   AgentSelectionAnnotationOverlayHandle,
   {
     target: AgentAnnotationTarget | null;
@@ -479,4 +481,11 @@ export const AgentSelectionAnnotationOverlay = forwardRef<
       </Popover>
     </div>
   );
+});
+
+export const AgentSelectionAnnotationOverlay = forwardRef<
+  AgentSelectionAnnotationOverlayHandle,
+  ComponentPropsWithoutRef<typeof LocalAgentSelectionAnnotationOverlay>
+>(function AgentSelectionAnnotationOverlayForHost(props, ref) {
+  return isMcpProjectApp() ? null : <LocalAgentSelectionAnnotationOverlay {...props} ref={ref} />;
 });

@@ -612,7 +612,7 @@ export function attachLocalTimelineGeneratorToCanvas(
     timelineId: string;
     canvasId: string;
     actionNodeId: string;
-    position: { x: number; y: number };
+    position?: { x: number; y: number };
   },
 ): OwnLocalTimelineGeneratorResult {
   const read = readLocalTimelineGenerator(doc, definition, input.timelineId);
@@ -634,12 +634,9 @@ export function attachLocalTimelineGeneratorToCanvas(
   });
   if (!advanced.ok) return advanced;
   if (mayEnsureMain) ensureProjectCanvas(doc);
-  doc.getMap("nodes").set(input.actionNodeId, {
-    canvasId: input.canvasId,
-    type: "video-editor",
-    data: { timelineId: input.timelineId, label: read.timeline.name },
-    position: input.position,
-  });
+  new Canvas(doc, () => {}, input.canvasId).createNode(
+    input.actionNodeId, "video-editor", { timelineId: input.timelineId, label: read.timeline.name }, input.position,
+  );
   return { ok: true, timeline: advanced.timeline };
 }
 

@@ -1,3 +1,6 @@
+import { createStructuredLogger } from "@clash/shared-runtime/logging";
+
+const actionLog = createStructuredLogger({ component: "local-api", module: "plugins", level: process.env.CLASH_LOG_LEVEL === "debug" ? "debug" : "info" });
 /**
  * Local executable-plugin host.
  *
@@ -985,9 +988,9 @@ export class ActionsHost {
         },
       );
       this.watcher.on("error", (err) => {
-        process.stderr.write(`actions: watcher error ${err.message}\n`);
+        actionLog.warn("plugin.watcher_failed", { error: err });
       });
-      process.stderr.write(`actions: watching ${root} for changes\n`);
+      actionLog.debug("plugin.watching", () => ({ directory: root }));
     } catch (e) {
       // Likely linux <20 without recursive support, or an exotic FS.
       // We still function — just no auto-reload.
@@ -1030,9 +1033,7 @@ export class ActionsHost {
             );
           });
           this.developmentWatchers.set(watcherKey, watcher);
-          process.stderr.write(
-            `actions: watching development source id=${pluginId} root=${sourceRoot}\n`,
-          );
+          actionLog.debug("plugin.source_watching", () => ({ pluginId, directory: sourceRoot }));
         } catch (error) {
           process.stderr.write(
             `actions: development source watch unavailable id=${pluginId} root=${sourceRoot} ` +
@@ -1049,9 +1050,7 @@ export class ActionsHost {
     this.watchDebounce = setTimeout(() => {
       this.watchDebounce = null;
       this.reconcile().catch((e) => {
-        process.stderr.write(
-          `actions: reconcile failed: ${(e as Error).message}\n`,
-        );
+        actionLog.error("plugin.reconcile_failed", { error: e });
       });
     }, WATCH_DEBOUNCE_MS);
   }
@@ -1155,7 +1154,7 @@ export class ActionsHost {
           `actions: new manifest detected dir=${entry} id=${manifest.id}\n`,
         );
         await this.tryLoadAndSpawn(entry);
-        process.stderr.write(`actions: reloaded id=${manifest.id} (added)\n`);
+        actionLog.info("plugin.reloaded", { pluginId: manifest.id, reason: "added" });
         continue;
       }
 
@@ -1180,7 +1179,7 @@ export class ActionsHost {
     for (const [dirName, id] of [...this.dirIndex.entries()]) {
       if (!liveDirs.has(dirName)) {
         await this.stopOne(id, "manifest-removed");
-        process.stderr.write(`actions: reloaded id=${id} (removed)\n`);
+        actionLog.info("plugin.reloaded", { pluginId: id, reason: "removed" });
       }
     }
 
@@ -1208,7 +1207,7 @@ export class ActionsHost {
   private async stopOne(id: string, reason: string): Promise<void> {
     const sup = this.actions.get(id);
     if (!sup) return;
-    process.stderr.write(`actions: stopOne id=${id} reason=${reason}\n`);
+    actionLog.info("plugin.stopping", { pluginId: id, reason });
 
     sup.stopping = true;
     sup.endpoint?.close();
@@ -1367,9 +1366,7 @@ export class ActionsHost {
       return;
     }
 
-    process.stderr.write(
-      `actions: spawn id=${manifest.id} entrypoint=${entrypoint} bin=${bin}\n`,
-    );
+    actionLog.info("plugin.starting", { pluginId: manifest.id });
 
     let child: ChildProcess;
     try {
@@ -1415,9 +1412,7 @@ export class ActionsHost {
 
     child.once("exit", (code, signal) => {
       const uptime = Date.now() - sup.startedAt;
-      process.stderr.write(
-        `actions: exit id=${manifest.id} code=${code} signal=${signal ?? "-"} uptime=${Math.round(uptime / 1000)}s\n`,
-      );
+      actionLog[this.stopping || sup.stopping || code === 0 ? "info" : "warn"]("plugin.exited", { pluginId: manifest.id, code, signal, uptimeMs: uptime });
       sup.child = null;
       sup.endpoint?.close();
       sup.endpoint = null;
@@ -1431,17 +1426,13 @@ export class ActionsHost {
 
       if (uptime < FAST_EXIT_DISABLE_MS) {
         sup.stopping = true;
-        process.stderr.write(
-          `actions: disabled id=${manifest.id} reason=fast-exit code=${code ?? "-"} signal=${signal ?? "-"}; fix the action and restart the local host\n`,
-        );
+        actionLog.error("plugin.disabled", { pluginId: manifest.id, reason: "fast_exit", code, signal, uptimeMs: uptime });
         return;
       }
 
       const delay = sup.backoffMs;
       sup.backoffMs = Math.min(sup.backoffMs * 2, RESTART_BACKOFF_MAX_MS);
-      process.stderr.write(
-        `actions: restart id=${manifest.id} in ${delay}ms\n`,
-      );
+      actionLog.warn("plugin.restarting", { pluginId: manifest.id, delayMs: delay });
       sup.restartTimer = setTimeout(() => {
         sup.restartTimer = null;
         this.spawnOne(sup);
@@ -1449,9 +1440,7 @@ export class ActionsHost {
     });
 
     child.once("error", (err) => {
-      process.stderr.write(
-        `actions: ${manifest.id}: child error ${err.message}\n`,
-      );
+      actionLog.error("plugin.child_failed", { pluginId: manifest.id, error: err });
     });
   }
 }

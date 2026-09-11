@@ -10,6 +10,8 @@ import {
   GeneratorDefinitionSchema,
   GeneratorDefinitionSpecSchema,
   type GeneratorDefinition,
+  type GeneratorDefinitionSpec,
+  type GeneratorInputType,
 } from "./generator-v2.js";
 export {
   GeneratorDefinitionSpecSchema,
@@ -215,6 +217,24 @@ export const ExecutableActionPresentationSchema = z.discriminatedUnion("type", [
     .strict(),
 ]);
 
+/** A text form input consumes a plain-text Document, not an arbitrary typed record. */
+export function executableActionCardInputAcceptsType(type: GeneratorInputType, modality: string): boolean {
+  return modality === "text"
+    ? type.kind === "document" && type.documentKind === "text.plain" && type.schemaVersion === 1
+    : type.kind === "media" && type.mediaKind === modality;
+}
+
+export const ExecutableActionCardGeneratorSchema = z.object({
+  definitionId: z.string().trim().min(1),
+  actionId: z.string().trim().min(1),
+  inputSlots: z.object({
+    text: z.string().trim().min(1).optional(),
+    image: z.string().trim().min(1).optional(),
+    video: z.string().trim().min(1).optional(),
+    audio: z.string().trim().min(1).optional(),
+  }).strict().default({}),
+}).strict();
+
 export const ExecutableActionCardSchema = z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
@@ -230,6 +250,8 @@ export const ExecutableActionCardSchema = z
     constraints: z.array(ModelConstraintRuleSchema).optional(),
     presentation: ExecutableActionPresentationSchema.default({ type: "form" }),
     functionExportId: z.string().trim().regex(PLUGIN_ID_PATTERN),
+    /** Legacy form fields edit top-level Generator state; media references use these explicit persistent slots. */
+    generator: ExecutableActionCardGeneratorSchema.optional(),
     maxRuntimeMs: z.number().int().positive().optional(),
   })
   .strict()
@@ -1472,6 +1494,8 @@ export const ExecutableSpeechTranscriptionResultSchema = z.discriminatedUnion(
 export const ExecutableDirectorStageCaptureOperationSchema = z
   .object({
     kind: z.literal("director.stage.capture-frame"),
+    /** Exact source Document bodies resolved from the frozen Director inputs. */
+    codeSources: z.record(z.string().min(1)).optional(),
     stage: z.object({
       name: z.string(),
       owner: z.union([
@@ -1496,7 +1520,22 @@ export const ExecutableDirectorStageCaptureResultSchema = z.object({
   bytesBase64: z.string().min(1),
 }).strict();
 
+/** Runs text through a configured local agent; Project scope comes from the invocation. */
+export const ExecutableAgentTextOperationSchema = z.object({
+  kind: z.literal("agent.text.generate"),
+  prompt: z.string().refine((text) => text.trim().length > 0, "Agent text requires a prompt."),
+  agentId: z.string().trim().min(1).optional(),
+  modelId: z.string().trim().min(1).optional(),
+  systemPrompt: z.string().optional(),
+}).strict();
+export type ExecutableAgentTextOperation = z.infer<typeof ExecutableAgentTextOperationSchema>;
+export const ExecutableAgentTextResultSchema = z.object({
+  text: z.string().refine((text) => text.trim().length > 0, "Agent text requires a non-empty result."),
+}).strict();
+export type ExecutableAgentTextResult = z.infer<typeof ExecutableAgentTextResultSchema>;
+
 export const ExecutablePluginBrokerOperationSchema = z.union([
+  ExecutableAgentTextOperationSchema,
   ExecutableDirectorStageCaptureOperationSchema,
   z
     .object({
@@ -1817,7 +1856,7 @@ export const ExecutablePluginContributionsSchema = z
     views: z.array(ExecutablePluginViewExportSchema).default([]),
     functions: z.array(ExecutablePluginFunctionExportSchema).default([]),
     hostTools: z
-      .array(z.enum(["codex.imagegen", "speech.transcribe", "media.analyze", "director.stage.capture-frame", "video.enhance"]))
+      .array(z.enum(["codex.imagegen", "speech.transcribe", "media.analyze", "director.stage.capture-frame", "video.enhance", "agent.text"]))
       .default([]),
   })
   .strict();
@@ -1927,6 +1966,12 @@ export function executablePluginDependencyError(
     return capabilities.assets
       ? null
       : `Plugin ${manifest.id} does not contribute anything that reads assets.`;
+  }
+
+  if (operation.kind === "agent.text.generate") {
+    return capabilities.hostTools.includes("agent.text")
+      ? null
+      : `Plugin ${manifest.id} does not contribute agent text generation.`;
   }
 
   if (operation.kind === "codex.image.generate") {
@@ -2203,7 +2248,8 @@ export function validateExecutablePluginPackage(
       );
     }
     for (const action of generator.spec.actions) {
-      const implementation = functions.get(action.executorExportId);
+      if (action.modelExecution) continue;
+      const implementation = action.executorExportId ? functions.get(action.executorExportId) : undefined;
       if (!implementation || implementation.kind !== "action") {
         throw new Error(
           `Generator Action ${action.id} requires action export ${action.executorExportId}.`,
@@ -2211,6 +2257,15 @@ export function validateExecutablePluginPackage(
       }
     }
     generators[generatorExport.path] = generator;
+  }
+
+  for (const card of Object.values(cards)) {
+    if (card.kind !== "action-card" || !card.spec.generator) continue;
+    const definition = Object.values(generators).find(
+      (entry) => entry.spec.definitionId === card.spec.generator!.definitionId,
+    );
+    if (!definition) throw new Error(`Action Card ${card.spec.id} names an undeclared Generator.`);
+    resolveExecutableActionCardGenerator(card.spec, definition.spec);
   }
 
   for (const viewExport of manifest.contributes.views) {
@@ -2263,6 +2318,45 @@ export type ExecutablePluginGeneratorExport = z.infer<
   typeof ExecutablePluginGeneratorExportSchema
 >;
 export type ExecutableActionCard = z.infer<typeof ExecutableActionCardSchema>;
+
+/** Validate a legacy single-output form against its plugin's explicit native contract. */
+export function resolveExecutableActionCardGenerator(
+  card: ExecutableActionCard,
+  definition: GeneratorDefinitionSpec,
+) {
+  const link = card.generator;
+  if (!link || link.definitionId !== definition.definitionId) {
+    throw new Error(`Action Card ${card.id} does not address this Generator.`);
+  }
+  const action = definition.actions.find((entry) => entry.id === link.actionId);
+  if (!action || action.executorExportId !== card.functionExportId) {
+    throw new Error(`Action Card ${card.id} must address an Action backed by its declared executor.`);
+  }
+  const output = action.outputs[0];
+  if (action.outputs.length !== 1 || !output || output.cardinality.minItems !== 1 ||
+      (card.outputType === "text"
+        ? output.assetType.kind !== "document" || output.assetType.documentKind !== "text.plain"
+        : output.assetType.kind !== "media" || output.assetType.mediaKind !== card.outputType)) {
+    throw new Error(`Action Card ${card.id} requires one matching media or plain-text Document output.`);
+  }
+  if (action.invocationInputs.some((port) => port.cardinality.minItems > 0) ||
+      (Array.isArray(action.parametersSchema.required) && action.parametersSchema.required.length > 0) ||
+      action.modelConsumer || action.selectOutputsByParameter) {
+    throw new Error(`Action Card ${card.id} cannot supply additional invocation parameters or inputs.`);
+  }
+  const used = new Set<string>();
+  for (const [modality, slot] of Object.entries(link.inputSlots)) {
+    const port = definition.persistentInputs.find((entry) => entry.slot === slot);
+    if (!port?.accepts.some((type) => executableActionCardInputAcceptsType(type, modality)) || used.has(slot)) {
+      throw new Error(`Action Card ${card.id} has an invalid persistent input mapping for ${modality}.`);
+    }
+    used.add(slot);
+  }
+  if (definition.persistentInputs.some((port) => port.cardinality.minItems > 0 && !used.has(port.slot))) {
+    throw new Error(`Action Card ${card.id} cannot supply a required persistent input.`);
+  }
+  return { action, output };
+}
 export type ExecutableActionPresentation = z.infer<
   typeof ExecutableActionPresentationSchema
 >;

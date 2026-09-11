@@ -1,0 +1,27 @@
+{
+  "apiVersion": "clash.provider/v1",
+  "kind": "provider",
+  "spec": {
+    "id": "replicate",
+    "name": "Replicate",
+    "upstreamId": "replicate",
+    "apiShape": "replicate",
+    "executorExportId": "replicate-execute",
+    "auth": {
+      "methods": [
+        {
+          "id": "api-key",
+          "label": "API key",
+          "form": [
+            {
+              "kind": "field",
+              "key": "apiKey",
+              "label": "API key",
+              "secret": true
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

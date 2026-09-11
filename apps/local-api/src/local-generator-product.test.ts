@@ -132,6 +132,74 @@ const stageDefinition: GeneratorDefinition = {
 };
 
 describe("Local Generator product surface", () => {
+  it("retains exact Definition versions across journal reopen and refuses identity overwrite", async () => {
+    const directory = await dataDir();
+    const first = createSqliteDurableRunJournal(directory);
+    await first.rememberGeneratorDefinition!(definition);
+    await first.rememberGeneratorDefinition!(structuredClone(definition));
+    const next = { ...definition, version: "0.2.0", schemaHash: `sha256:${"b".repeat(64)}`, stateSchema: { type: "object" } };
+    await first.rememberGeneratorDefinition!(next);
+    const reopened = createSqliteDurableRunJournal(directory);
+    expect(await reopened.readGeneratorDefinition!(definition)).toEqual(definition);
+    expect(await reopened.readGeneratorDefinition!(next)).toEqual(next);
+    await expect(reopened.rememberGeneratorDefinition!({ ...definition, stateSchema: { type: "object" } })).rejects.toThrow(/different archived content/);
+    expect(await reopened.readGeneratorDefinition!(definition)).toEqual(definition);
+    expect(await reopened.readGeneratorDefinition!({ ...definition, version: "missing" })).toBeUndefined();
+  });
+
+  it.each(["single", "batch"] as const)("freezes model execution once through %s admission and reuses it on replay", async (mode) => {
+    const doc = new LoroDoc();
+    const journal = createSqliteDurableRunJournal(await dataDir());
+    const { executorExportId: _export, ...action } = definition.actions[0]!;
+    const modelDefinition = { ...definition, actions: [{ ...action, modelExecution: true as const }] };
+    const binding = { pluginId: "provider.image", exportId: "execute", version: "1.0.0", schemaHash: `sha256:${"e".repeat(64)}` };
+    const selection = { semanticShape: "image_generation", modelId: "image-model", route: {
+      upstreamId: "provider", upstreamModel: "model", apiShape: "native", executorBinding: binding,
+    } };
+    const execution = { binding, accountId: "private-account", assetInputs: [],
+      input: { values: { prompt: "a paper lighthouse", resolution: "768P" }, references: [] },
+    };
+    let planned = false;
+    let registryUnavailable = false;
+    const service = createLocalGeneratorProductService({
+      authority: { inspect: async (_id, read) => read(doc), mutate: async (_id, write) => write(doc, async () => undefined) },
+      resolveDefinition: async () => { if (registryUnavailable) throw new Error("Definition was upgraded or removed"); return modelDefinition; },
+      ownerId: "local-api", journal, actor: { kind: "system" },
+      resolveModelExecution: async ({ providerAccountId }) => {
+        expect(providerAccountId).toBe("private-account");
+        if (planned) throw new Error("Replay must not select another Provider or account.");
+        planned = true;
+        return { selection, execution };
+      },
+    });
+    await service.create("project-1", { generatorId: "model-generator", generatorRevisionId: "model:r1",
+      pluginId: definition.pluginId, definitionId: definition.definitionId,
+      state: { prompt: "a paper lighthouse" }, persistentInputRefs: [],
+    });
+    const input = { actionRunId: "model-run", generatorRevisionId: "model:r1", parameters: {}, invocationInputRefs: [], providerAccountId: "private-account" };
+    const submit = () => mode === "single"
+      ? service.submit("project-1", "model-generator", action.id, input)
+      : service.submitBatch("project-1", [{ generatorId: "model-generator", actionId: action.id, input }]);
+    const first = await submit();
+    registryUnavailable = true;
+    const beforeReplay = doc.toJSON();
+    const frozenTask = await journal.load({ actionRunId: input.actionRunId, outputSlot: "image" });
+    expect(await submit()).toEqual(first);
+    expect(doc.toJSON()).toEqual(beforeReplay);
+    expect(await journal.load({ actionRunId: input.actionRunId, outputSlot: "image" })).toEqual(frozenTask);
+    const rejectChanged = (changed: typeof input) => mode === "single"
+      ? service.submit("project-1", "model-generator", action.id, changed)
+      : service.submitBatch("project-1", [{ generatorId: "model-generator", actionId: action.id, input: changed }]);
+    await expect(rejectChanged({ ...input, providerAccountId: "different-account" })).rejects.toThrow(/Provider account/);
+    await expect(rejectChanged({ ...input, parameters: { changed: true } })).rejects.toThrow(/request/);
+    expect(doc.toJSON()).toEqual(beforeReplay);
+    expect(await journal.load({ actionRunId: input.actionRunId, outputSlot: "image" })).toMatchObject({
+      executorInput: { targetKind: "generator-action", binding, providerExecution: execution },
+    });
+    expect(readProjectActionRun(doc, input.actionRunId)).toMatchObject({ executor: binding, modelSelection: selection });
+    expect(JSON.stringify(readProjectActionRun(doc, input.actionRunId))).not.toContain("private-account");
+  });
+
   it("lists and resolves only Host-owned semantic definitions", async () => {
     const app = createLocalApiApp({
       dataDir: await dataDir(),
@@ -769,7 +837,7 @@ describe("Local Generator product surface", () => {
         mutate: (projectId, mutation) =>
           recoveredHub.mutateProjectWithCheckpoint(projectId, mutation),
       },
-      resolveDefinition: async () => definition,
+      resolveDefinition: async () => { throw new Error("Old Definition is no longer installed"); },
       ownerId: "host-1",
       journal: durableJournal,
       actor: { kind: "user", id: "local-user" },

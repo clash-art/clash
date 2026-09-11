@@ -1,3 +1,8 @@
+import { supportsAcpMessageFork, type AcpForkPoint } from "@clash/shared-types";
+import {
+  reconcileCodexModel,
+  type ModelFallback,
+} from "./codex-model-fallback.js";
 /**
  * SessionManager — owns the ACP child processes the daemon is currently
  * running on this machine. Slice-2 minimum: one ACP runtime per session
@@ -38,6 +43,7 @@ import {
 import { AcpRuntimeImpl } from "../_acp-runtime/index.js";
 import { withClashAcpExtensionCapabilities } from "../_acp-runtime/client-capabilities.js";
 import { NodeSpawner } from "../_acp-runtime/spawners/node.js";
+import { ensureSessionScratchpad } from "./session-scratchpad.js";
 import { detect } from "../_acp-runtime/registry.js";
 import type { AcpSession, AgentSpec } from "../_acp-runtime/types.js";
 import {
@@ -94,7 +100,7 @@ export interface SessionStartParams {
    * into the project workspace. */
   cwd?: string;
   resume?: { acp_session_id: string };
-  fork?: { acp_session_id: string };
+  fork?: { acp_session_id: string; point?: AcpForkPoint };
 }
 
 export interface SessionPromptParams {
@@ -132,10 +138,6 @@ export function selectAcpPermissionOutcome(
   return option?.optionId
     ? { outcome: { outcome: "selected", optionId: option.optionId } }
     : { outcome: { outcome: "cancelled" } };
-}
-
-export function composeClashPromptContent(text: string): ContentBlock[] {
-  return [{ type: "text", text }];
 }
 
 type TrustedMcpRenderers = ReadonlyMap<string, string>;
@@ -312,7 +314,9 @@ export type ManagerOut =
       session_id: string;
       acp_session_id: string;
       supports_session_fork: boolean;
+      supports_message_fork?: boolean;
       config_options?: unknown[];
+      model_fallback?: ModelFallback;
       modes?: unknown;
       replay_events?: unknown[];
     }
@@ -370,6 +374,7 @@ export interface SessionManagerOptions {
 }
 
 interface ActiveSession {
+  modelFallback?: ModelFallback;
   acp: AcpSession;
   trustedMcpRenderers: TrustedMcpRenderers;
   /** turnId → abort controller for cancel. */
@@ -455,7 +460,11 @@ export class SessionManager {
       session_id: sessionId,
       acp_session_id: session.acp.acpSessionId,
       supports_session_fork: session.acp.supportsSessionFork,
+      supports_message_fork: session.acp.supportsSessionFork && supportsAcpMessageFork(session.acp.agentInfo?.name, session.acp.agentInfo?.version),
       config_options: [...session.acp.configOptions],
+      ...(session.modelFallback
+        ? { model_fallback: session.modelFallback }
+        : {}),
       ...(modes ? { modes } : {}),
       ...((session.acp.loadedReplayEvents?.length ?? 0) > 0
         ? {
@@ -582,6 +591,7 @@ export class SessionManager {
       // Bind bundled Clash tools to this session's canonical working tree;
       // .clash/project.toml inside that tree remains the project authority.
       spawnEnv.CLASH_WORKSPACE_ROOT = sessionCwd;
+      spawnEnv.CLASH_SESSION_SCRATCHPAD = await ensureSessionScratchpad(sessionCwd, p.session_id);
       const agentSpec = applyPermissionModeToAgentSpec(
         resolvedAgentId,
         agent.spec,
@@ -608,6 +618,7 @@ export class SessionManager {
         },
         resumeAcpSessionId: resumeId,
         forkFromAcpSessionId: p.fork?.acp_session_id,
+        forkPoint: p.fork?.point,
         mcpServers,
         clientCapabilities: withClashAcpExtensionCapabilities({
           auth: { terminal: true },
@@ -624,7 +635,14 @@ export class SessionManager {
         await session.dispose().catch(() => undefined);
         return;
       }
-      for (const [configId, value] of Object.entries(p.config_options ?? {})) {
+      const initialConfig = { ...p.config_options };
+      const modelOption = session.configOptions.find(option => option.category === "model");
+      const requestedModel = modelOption && initialConfig[modelOption.id];
+      const modelFallback = resolvedAgentId === "codex-acp"
+        ? await reconcileCodexModel(session, typeof requestedModel === "string" ? requestedModel : undefined)
+        : undefined;
+      if (modelFallback && modelOption) delete initialConfig[modelOption.id];
+      for (const [configId, value] of Object.entries(initialConfig)) {
         await session.setConfigOption(configId, value);
       }
       if (this.#cancelledStarts.has(p.session_id)) {
@@ -647,6 +665,7 @@ export class SessionManager {
       );
       const activeSession: ActiveSession = {
         acp: session,
+        modelFallback,
         trustedMcpRenderers,
         turns: new Map(),
         promptQueue: Promise.resolve(),
@@ -718,7 +737,9 @@ export class SessionManager {
     this.#activeTurnBySession.set(p.session_id, p.turn_id);
     this.#lastDiagnosticBySession.delete(p.session_id);
     try {
-      const promptContent = composeClashPromptContent(p.text);
+      // Native project instructions are loaded by the harness from AGENTS.md.
+      // Never append host policy to the user's history on start/resume/compact.
+      const promptContent: ContentBlock[] = [{ type: "text", text: p.text }];
       for await (const ev of sess.acp.prompt(promptContent, {
         abortSignal: ctrl.signal,
       })) {

@@ -21,6 +21,10 @@ const persistStatePath = process.env.CLASH_WEB_E2E_PERSIST_STATE?.trim()
 // ignore dist writes produced by tests/builds without serving stale modules.
 export const DEV_SOURCE_ALIASES = [
   {
+    find: /^@tanstack\/react-virtual$/,
+    replacement: realpathSync(resolve(openmaCommonRoot, "node_modules/@tanstack/react-virtual/dist/esm/index.js")),
+  },
+  {
     find: /^eventsource-parser\/stream$/,
     replacement: realpathSync(
       resolve(webNodeModules, "eventsource-parser/dist/stream.js"),

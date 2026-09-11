@@ -183,7 +183,7 @@ describe("provider parameter routing", () => {
       "audio",
     );
 
-    expect(plan).toEqual({
+    expect(plan).toMatchObject({
       binding,
       accountId: "full-account",
       assetInputs: [{

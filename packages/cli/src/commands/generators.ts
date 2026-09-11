@@ -1,3 +1,4 @@
+import { projectGeneratorRequestContract } from "@clash/shared-types";
 import { Command } from "commander";
 import {
   createGeneratorClient,
@@ -29,6 +30,11 @@ export function createGeneratorsCommand(
   );
 
   command
+    .command("contract <operation>")
+    .description("Show the shared --input JSON Schema for create, advance, or submit; no project required")
+    .action((operation) => output(projectGeneratorRequestContract(operation)));
+
+  command
     .command("definitions")
     .description("List registered GeneratorDefinitions")
     .action(async () => output(await client.listDefinitions()));
@@ -41,7 +47,7 @@ export function createGeneratorsCommand(
 
   command
     .command("create")
-    .requiredOption("--input <json>", "CreateLocalProjectGeneratorInput JSON")
+    .requiredOption("--input <json>", "Request JSON; see generators contract create")
     .option("--project <id>")
     .action(async (options) =>
       output(
@@ -64,7 +70,7 @@ export function createGeneratorsCommand(
     );
   command
     .command("advance <generatorId>")
-    .requiredOption("--input <json>", "AdvanceLocalProjectGeneratorInput JSON")
+    .requiredOption("--input <json>", "Request JSON; see generators contract advance")
     .option("--project <id>")
     .action(async (generatorId, options) =>
       output(
@@ -81,7 +87,7 @@ export function createGeneratorsCommand(
     .description("Submit and read native Generator Action Runs");
   runs
     .command("submit <generatorId> <actionId>")
-    .requiredOption("--input <json>", "SubmitLocalGeneratorActionInput JSON")
+    .requiredOption("--input <json>", "Request JSON; see generators contract submit")
     .option("--project <id>")
     .action(async (generatorId, actionId, options) =>
       output(

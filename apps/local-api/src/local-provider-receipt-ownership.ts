@@ -9,6 +9,10 @@ import { ActionRunModelRouteSchema } from "@clash/shared-types";
 export interface FrozenReceiptOwnershipInput {
   targetKind?: string;
   binding: { pluginId: string; version: string; exportId?: string };
+  providerExecution?: {
+    binding: { pluginId: string; version: string };
+    accountId?: string;
+  };
   input: { values: Record<string, unknown> };
 }
 
@@ -42,6 +46,15 @@ export async function expectedProviderReceiptOwner(input: {
   resolveProviderExecutorBinding?: ProviderExecutorBindingResolver;
 }): Promise<StagedReceiptOwner> {
   const { frozen } = input;
+  if (frozen.targetKind === "generator-action" && frozen.providerExecution) {
+    return {
+      pluginId: frozen.providerExecution.binding.pluginId,
+      pluginVersion: frozen.providerExecution.binding.version,
+      ...(frozen.providerExecution.accountId
+        ? { accountId: frozen.providerExecution.accountId }
+        : {}),
+    };
+  }
   const modelRoute = ActionRunModelRouteSchema.safeParse(
     frozen.input.values.modelRoute,
   );

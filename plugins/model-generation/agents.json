@@ -1,0 +1,7 @@
+{
+  "summary": "Declarative media Generator definitions. Model Cards own capabilities; the Host selects and freezes Provider execution. This plugin has no executable Action functions. Optional contentParts preserve mixed text/input order using exact slot and itemKey identities; concatenated text and input labels must equal prompt, and every input must be placed. Private provider_id and require_real_provider parameters are rejected. Audio revisions also retain authored lyrics separately from prompt. The Host maps those fields through the Model Card musicInput contract only during execution planning.",
+  "key_files": {
+    "generators": "Immutable definition artifacts for image, video, audio, model, and text outputs. Each accepts exact text.plain Document revisions through the text input slot. Text generation uses that same versioned Document output contract and Provider execution; Canvas text/local-ACP entry-point migration remains separate work.",
+    "src/stdio.ts": "Inert module registration; model Actions execute through the Host Durable Run engine."
+  }
+}

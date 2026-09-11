@@ -1,6 +1,6 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Node, NodeProps, NodeResizeControl, useReactFlow, useStore, useViewport } from '@xyflow/react';
+import { Node, NodeProps, NodeResizeControl, useReactFlow, useStore } from '@xyflow/react';
 import { useOptionalLoroSyncContext } from '../LoroSyncContext';
 import { useLayoutActions } from '../LayoutActionsContext';
 import { MagicWand, FrameCorners } from '@phosphor-icons/react';
@@ -29,7 +29,12 @@ const GroupNode = ({ selected, data, id }: NodeProps<Node<Record<string, any>>>)
     const { setNodes } = useReactFlow();
     // Counter-scale the action cluster so the buttons stay at constant screen
     // size — matches the floating "Group" pill, which lives in screen-space.
-    const { zoom } = useViewport();
+    // Panning never changes counter-scaling. Unselected groups have no action
+    // cluster, so they need no zoom updates either.
+    const zoom = useStore(useCallback(
+        (state) => selected ? state.transform[2] : 1,
+        [selected],
+    ));
     const loroSync = useOptionalLoroSyncContext();
     const { relayoutParent, ungroup } = useLayoutActions();
     const syncTimeoutRef = useRef<number | null>(null);
