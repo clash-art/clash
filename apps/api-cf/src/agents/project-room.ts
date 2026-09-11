@@ -35,7 +35,11 @@ import {
 } from "../loro/NodeProcessor";
 import { pollNodeTasks } from "../loro/TaskPolling";
 import { updateNodeData, appendNodeLog } from "../loro/NodeUpdater";
-import { authenticateRequest } from "../loro/auth";
+import {
+  authenticateRequest,
+  revalidateProjectConnection,
+  type AuthResult,
+} from "../loro/auth";
 import type {
   ClientInfo,
   ClientType,
@@ -81,6 +85,9 @@ type ProjectReplicaEngine = ReplicaEngine<LoroDoc, Uint8Array, Uint8Array>;
 
 type ProjectClientInfo = ClientInfo & {
   syncProtocol?: "loro-v1";
+  projectAuthorization?: AuthResult;
+  /** Only direct service-binding callers can supply the internal header. */
+  internal?: true;
 };
 
 export class ProjectRoom extends DurableObject<Env> {
@@ -104,6 +111,7 @@ export class ProjectRoom extends DurableObject<Env> {
   /** Connected client identity map for presence tracking. */
   private clients: Map<WebSocket, ProjectClientInfo> = new Map();
   private protocolSessions = new Map<WebSocket, LoroProtocolServerSession>();
+  private outbound = new Map<WebSocket, Promise<void>>();
 
   /** Throttle activity broadcasts: nodeId → last broadcast timestamp */
   private activityThrottle: Map<string, number> = new Map();
@@ -164,12 +172,17 @@ export class ProjectRoom extends DurableObject<Env> {
       return new Response("Missing project ID", { status: 400 });
     }
 
-    // Skip auth for internal agent connections
+    if (!this.env.ROOM.idFromName(projectId).equals(this.ctx.id)) {
+      return new Response("Project ID mismatch", { status: 401 });
+    }
+
+    // Public routing strips this header; direct service bindings are trusted.
     const isInternal = request.headers.get("x-internal-agent") === "true";
     let clientType: ClientType = "browser";
     let userId = "unknown";
     let userName = "User";
     let userAvatar: string | undefined;
+    let projectAuthorization: AuthResult | undefined;
     if (!isInternal) {
       try {
         const authResult = await authenticateRequest(
@@ -177,6 +190,7 @@ export class ProjectRoom extends DurableObject<Env> {
           this.env,
           projectId,
         );
+        projectAuthorization = authResult;
         userId = authResult.userId;
         userName = authResult.userName ?? "User";
         userAvatar = authResult.userAvatar;
@@ -210,6 +224,13 @@ export class ProjectRoom extends DurableObject<Env> {
       return new Response("Project ID mismatch", { status: 400 });
     }
 
+    if (
+      projectAuthorization &&
+      !(await revalidateProjectConnection(this.env, projectAuthorization))
+    ) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
     // Create WebSocket pair and accept via Hibernation API
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
@@ -223,6 +244,7 @@ export class ProjectRoom extends DurableObject<Env> {
       name: userName,
       avatar: userAvatar,
       connectedAt: Date.now(),
+      ...(isInternal ? { internal: true as const } : { projectAuthorization }),
       ...(syncProtocol ? { syncProtocol } : {}),
     };
     server.serializeAttachment(clientInfo);
@@ -238,7 +260,7 @@ export class ProjectRoom extends DurableObject<Env> {
       // send JoinRequest with their VersionVector and receive only the delta.
       try {
         const snapshot = this.doc.export({ mode: "snapshot" });
-        server.send(snapshot);
+        this.sendAuthorized(server, snapshot);
       } catch (error) {
         log.error("Failed to send initial state:", error);
       }
@@ -400,6 +422,32 @@ export class ProjectRoom extends DurableObject<Env> {
     }
   }
 
+  /** A hibernated connection carries identity evidence, never raw credentials. */
+  private async authorizeSocket(ws: WebSocket): Promise<boolean> {
+    const info = this.clientInfoFor(ws);
+    if (info?.internal === true) return true;
+    if (
+      info?.projectAuthorization &&
+      (!this.projectId || info.projectAuthorization.projectId === this.projectId) &&
+      (await revalidateProjectConnection(this.env, info.projectAuthorization))
+    ) return true;
+    ws.close(1008, "Project authorization expired or revoked");
+    this.clients.delete(ws);
+    this.protocolSessions.delete(ws);
+    return false;
+  }
+
+  /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
+  private sendAuthorized(ws: WebSocket, data: string | Uint8Array): void {
+    const pending = (this.outbound.get(ws) ?? Promise.resolve()).then(async () => {
+      if (await this.authorizeSocket(ws)) ws.send(data);
+    }).catch(error => { log.error("Authorized delivery failed:", error); });
+    this.outbound.set(ws, pending);
+    this.ctx.waitUntil(pending.finally(() => {
+      if (this.outbound.get(ws) === pending) this.outbound.delete(ws);
+    }));
+  }
+
   private isProtocolClient(ws: WebSocket): boolean {
     return this.clientInfoFor(ws)?.syncProtocol === "loro-v1";
   }
@@ -412,7 +460,7 @@ export class ProjectRoom extends DurableObject<Env> {
       roomId: this.projectId,
       doc: () => this.doc,
       assumeJoined,
-      send: (frame) => ws.send(frame),
+      send: (frame) => this.sendAuthorized(ws, frame),
       commit: async (batchId, updates) => {
         for (const [index, update] of updates.entries()) {
           await this.enqueueLoroImport({
@@ -444,10 +492,10 @@ export class ProjectRoom extends DurableObject<Env> {
             batchId,
             updates,
           )) {
-            ws.send(frame);
+            this.sendAuthorized(ws, frame);
           }
         } else {
-          for (const update of updates) ws.send(update);
+          for (const update of updates) this.sendAuthorized(ws, update);
         }
       } catch (error) {
         log.error("Failed to broadcast committed replica event:", error);
@@ -542,7 +590,7 @@ export class ProjectRoom extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === sender) continue;
       try {
-        ws.send(json);
+        this.sendAuthorized(ws, json);
       } catch {
         // Connection may have closed
       }
@@ -627,7 +675,7 @@ export class ProjectRoom extends DurableObject<Env> {
         users,
       };
       try {
-        ws.send(JSON.stringify(msg));
+        this.sendAuthorized(ws, JSON.stringify(msg));
       } catch {
         // Connection may have closed
       }
@@ -640,7 +688,7 @@ export class ProjectRoom extends DurableObject<Env> {
   private broadcastText(text: string): void {
     for (const ws of this.ctx.getWebSockets()) {
       try {
-        ws.send(text);
+        this.sendAuthorized(ws, text);
       } catch {
         // Connection may have closed
       }
@@ -653,6 +701,7 @@ export class ProjectRoom extends DurableObject<Env> {
     ws: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
+    if (!(await this.authorizeSocket(ws))) return;
     // After hibernation, in-memory state is lost — re-initialize if needed
     if (!this.projectId) {
       const storedId = await this.ctx.storage.get<string>("projectId");
@@ -685,7 +734,7 @@ export class ProjectRoom extends DurableObject<Env> {
     // Handle collaboration sideband messages.
     if (typeof message === "string") {
       if (message === "ping") {
-        ws.send("pong");
+        this.sendAuthorized(ws, "pong");
         return;
       }
       if (message === "pong") return;
@@ -741,7 +790,8 @@ export class ProjectRoom extends DurableObject<Env> {
       msg.type === "complete_custom_task"
     ) {
       try {
-        sender.send(
+        this.sendAuthorized(
+          sender,
           JSON.stringify({
             type: `${msg.type}.rejected`,
             code: "LEGACY_CUSTOM_ACTION_PROTOCOL_RETIRED",
@@ -910,6 +960,9 @@ export class ProjectRoom extends DurableObject<Env> {
             await msg.applyGeneration();
             msg.resolve?.();
             continue;
+          }
+          if (msg.sender && !(await this.authorizeSocket(msg.sender))) {
+            throw new Error("Project authorization revoked before commit");
           }
           const nodesMap = this.doc.getMap("nodes");
           const shouldRunRealtimeEffects =

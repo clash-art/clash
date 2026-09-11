@@ -21,6 +21,14 @@ class_name = "ProjectRoom"
 tag = "v1"
 new_sqlite_classes = ["ProjectRoom"]
 
+[[durable_objects.bindings]]
+name = "SUPERVISOR"
+class_name = "SupervisorAgent"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SupervisorAgent"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "clash-integration"
@@ -28,6 +36,7 @@ database_id = "00000000-0000-0000-0000-000000000000"
 
 [vars]
 ENVIRONMENT = "test"
+JWT_SECRET = "integration-project-auth-only"
 RENDER_SERVER_URL = "https://render.test"
 WORKER_PUBLIC_URL = "https://clash.test"
 

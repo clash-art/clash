@@ -32,7 +32,8 @@
     "project-canvas-timeline-asset-model.md": "Historical ownership proposal superseded by the current Media Asset, Generator, Document, and Durable Task guide authorities.",
     "model-provider-architecture.md": "Current model-card/provider composition and Host-owned account-routing contract; runtime semantics defer to durable-run-protocol.md.",
     "group-logic-7ef9.md": "Explanation of the complex grouping logic for canvas nodes.",
-    "loro-sync-python-improvements.md": "Notes on Python integration with Loro Sync."
+    "loro-sync-python-improvements.md": "Notes on Python integration with Loro Sync.",
+    "cloud-launch-roadmap.md": "Cloud launch execution roadmap: staged authorization, end-to-end sync, recovery, invited beta, collaboration, and hosted billing gates; audit baseline is not release acceptance."
   },
   "architecture_notes": "Current authority is split intentionally: apps/docs/guide/asset-system.md owns Media Asset/Resource rules, asset-generator-model.md owns native Generator semantics and product migration status, document-assets.md owns typed Document identity/versioning, and durable-run-protocol.md owns the private execution graph. Files explicitly marked historical or superseded are context only, not implementation contracts."
 }

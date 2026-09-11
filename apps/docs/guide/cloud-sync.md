@@ -13,6 +13,28 @@ the cloud. Team support can later add `tenant` and `tenant_member` rows without
 changing the Project Loro protocol. These rows are control-plane state, not
 Loro updates.
 
+### Hosted transport authorization
+
+The public API authenticates Project ownership before forwarding `/sync` or
+Supervisor HTTP/WebSocket traffic. Public sync exposes only the project-root
+WebSocket endpoint; room maintenance paths are not forwarded. Client-supplied
+internal identity and PartyKit routing/props headers cannot grant authority.
+Direct Supervisor requests also authenticate before the framework reads history
+or processes a connection.
+
+Public connections retain non-secret authorization evidence across hibernation.
+Before accepting another message or delivering private data, the server rechecks
+Project ownership/deletion and the current API-token or Better Auth session row.
+A revoked connection closes on its next guarded operation; an idle connection is
+not promised an immediate close notification. Old connections without evidence
+must reconnect. JWT connections require an expiration and current ownership;
+there is no individual-JWT revocation registry. Development fallback applies only
+to explicitly configured development environments and is not a production identity.
+
+These checks protect new transport operations. Cancellation and settlement of
+already-admitted generation work remain part of the durable-run lifecycle, not a
+claim that revoking a credential reverses work already executed.
+
 ## Admission
 
 Admission is explicit and Project-scoped:

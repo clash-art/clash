@@ -3,7 +3,7 @@ import * as jose from "jose";
 
 // We test the module's exported function by importing it.
 // Global fetch is mocked to prevent real BetterAuth calls.
-import { authenticateRequest } from "./auth";
+import { authenticateRequest, revalidateProjectConnection } from "./auth";
 import type { Env } from "../config";
 
 const JWT_SECRET = "test-secret-key-for-unit-tests";
@@ -36,7 +36,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
 async function signJWT(
   payload: Record<string, unknown>,
   secret: string,
-  options: { expiresIn?: string } = {}
+  options: { expiresIn?: string } = {},
 ): Promise<string> {
   const key = new TextEncoder().encode(secret);
   let builder = new jose.SignJWT(payload)
@@ -55,9 +55,9 @@ describe("auth", () => {
 
   beforeEach(() => {
     // Mock global fetch so BetterAuth session check returns null
-    fetchSpy = vi.spyOn(globalThis, "fetch" as any).mockResolvedValue(
-      new Response(JSON.stringify(null), { status: 200 })
-    );
+    fetchSpy = vi
+      .spyOn(globalThis, "fetch" as any)
+      .mockResolvedValue(new Response(JSON.stringify(null), { status: 200 }));
   });
 
   afterEach(() => {
@@ -68,15 +68,25 @@ describe("auth", () => {
 
   describe("extractTokenFromRequest", () => {
     it("rejects query-string credentials", async () => {
-      const token = await signJWT({ sub: "user-1", projectId: "proj-1" }, JWT_SECRET);
-      const request = new Request(`http://localhost/sync/proj-1?token=${token}`);
+      const token = await signJWT(
+        { sub: "user-1", projectId: "proj-1" },
+        JWT_SECRET,
+      );
+      const request = new Request(
+        `http://localhost/sync/proj-1?token=${token}`,
+      );
       const env = makeEnv();
 
-      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow("Unauthorized");
+      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
+        "Unauthorized",
+      );
     });
 
     it("extracts token from Authorization: Bearer header", async () => {
-      const token = await signJWT({ sub: "user-1", projectId: "proj-1" }, JWT_SECRET);
+      const token = await signJWT(
+        { sub: "user-1", projectId: "proj-1" },
+        JWT_SECRET,
+      );
       const request = new Request("http://localhost/sync/proj-1", {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -91,7 +101,9 @@ describe("auth", () => {
       const request = new Request("http://localhost/sync/proj-1");
       const env = makeEnv({ ENVIRONMENT: "production" });
 
-      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow("Unauthorized");
+      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
+        "Unauthorized",
+      );
     });
   });
 
@@ -99,19 +111,29 @@ describe("auth", () => {
 
   describe("JWT verification", () => {
     it("valid token → returns userId + projectId", async () => {
-      const token = await signJWT({ sub: "user-1", projectId: "proj-1" }, JWT_SECRET);
+      const token = await signJWT(
+        { sub: "user-1", projectId: "proj-1" },
+        JWT_SECRET,
+      );
       const request = new Request("http://localhost/sync/proj-1", {
         headers: { Authorization: `Bearer ${token}` },
       });
       const env = makeEnv();
 
       const result = await authenticateRequest(request, env, "proj-1");
-      expect(result).toEqual({ userId: "user-1", projectId: "proj-1" });
+      expect(result).toMatchObject({
+        userId: "user-1",
+        projectId: "proj-1",
+        authorization: { kind: "jwt" },
+      });
     });
 
     it("expired token → throws", async () => {
       const key = new TextEncoder().encode(JWT_SECRET);
-      const token = await new jose.SignJWT({ sub: "user-1", projectId: "proj-1" })
+      const token = await new jose.SignJWT({
+        sub: "user-1",
+        projectId: "proj-1",
+      })
         .setProtectedHeader({ alg: "HS256" })
         .setIssuedAt()
         .setExpirationTime(Math.floor(Date.now() / 1000) - 3600) // 1 hour ago
@@ -122,17 +144,24 @@ describe("auth", () => {
       });
       const env = makeEnv();
 
-      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow();
+      await expect(
+        authenticateRequest(request, env, "proj-1"),
+      ).rejects.toThrow();
     });
 
     it("wrong secret → throws", async () => {
-      const token = await signJWT({ sub: "user-1", projectId: "proj-1" }, "wrong-secret");
+      const token = await signJWT(
+        { sub: "user-1", projectId: "proj-1" },
+        "wrong-secret",
+      );
       const request = new Request("http://localhost/sync/proj-1", {
         headers: { Authorization: `Bearer ${token}` },
       });
       const env = makeEnv();
 
-      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow();
+      await expect(
+        authenticateRequest(request, env, "proj-1"),
+      ).rejects.toThrow();
     });
 
     it("payload missing sub → throws", async () => {
@@ -148,7 +177,7 @@ describe("auth", () => {
       const env = makeEnv();
 
       await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
-        "Invalid JWT payload"
+        "Invalid JWT payload",
       );
     });
 
@@ -165,19 +194,22 @@ describe("auth", () => {
       const env = makeEnv();
 
       await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
-        "Invalid JWT payload"
+        "Invalid JWT payload",
       );
     });
 
     it("projectId mismatch → throws", async () => {
-      const token = await signJWT({ sub: "user-1", projectId: "other-project" }, JWT_SECRET);
+      const token = await signJWT(
+        { sub: "user-1", projectId: "other-project" },
+        JWT_SECRET,
+      );
       const request = new Request("http://localhost/sync/proj-1", {
         headers: { Authorization: `Bearer ${token}` },
       });
       const env = makeEnv();
 
       await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
-        "Project ID mismatch"
+        "Project ID mismatch",
       );
     });
   });
@@ -190,14 +222,20 @@ describe("auth", () => {
       const env = makeEnv({ ENVIRONMENT: "development" });
 
       const result = await authenticateRequest(request, env, "proj-1");
-      expect(result).toEqual({ userId: "dev-user", projectId: "proj-1" });
+      expect(result).toMatchObject({
+        userId: "dev-user",
+        projectId: "proj-1",
+        authorization: { kind: "development" },
+      });
     });
 
     it("ENVIRONMENT=production, no token → Unauthorized", async () => {
       const request = new Request("http://localhost/sync/proj-1");
       const env = makeEnv({ ENVIRONMENT: "production" });
 
-      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow("Unauthorized");
+      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
+        "Unauthorized",
+      );
     });
   });
 
@@ -207,9 +245,12 @@ describe("auth", () => {
     it("valid session cookie → returns userId", async () => {
       fetchSpy.mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ session: {}, user: { id: "ba-user-42" } }),
-          { status: 200 }
-        )
+          JSON.stringify({
+            session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
+            user: { id: "ba-user-42" },
+          }),
+          { status: 200 },
+        ),
       );
 
       const request = new Request("http://localhost/sync/proj-1", {
@@ -220,7 +261,17 @@ describe("auth", () => {
         DB: {
           prepare: vi.fn().mockReturnValue({
             bind: vi.fn().mockReturnValue({
-              all: vi.fn().mockResolvedValue({ results: [{ owner_id: "ba-user-42" }] }),
+              all: vi
+                .fn()
+                .mockResolvedValue({
+                  results: [
+                    {
+                      owner_id: "ba-user-42",
+                      user_id: "ba-user-42",
+                      expires_at: Date.now() + 60_000,
+                    },
+                  ],
+                }),
             }),
           }),
         } as any,
@@ -234,9 +285,12 @@ describe("auth", () => {
     it("session with mismatched project owner → throws Forbidden", async () => {
       fetchSpy.mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ session: {}, user: { id: "ba-user-42" } }),
-          { status: 200 }
-        )
+          JSON.stringify({
+            session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
+            user: { id: "ba-user-42" },
+          }),
+          { status: 200 },
+        ),
       );
 
       // DB says owner is "other-user"
@@ -244,7 +298,9 @@ describe("auth", () => {
         DB: {
           prepare: vi.fn().mockReturnValue({
             bind: vi.fn().mockReturnValue({
-              all: vi.fn().mockResolvedValue({ results: [{ owner_id: "other-user" }] }),
+              all: vi
+                .fn()
+                .mockResolvedValue({ results: [{ owner_id: "other-user" }] }),
             }),
           }),
         } as any,
@@ -254,15 +310,23 @@ describe("auth", () => {
         headers: { cookie: "session=abc123" },
       });
 
-      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow("Forbidden");
+      await expect(authenticateRequest(request, env, "proj-1")).rejects.toThrow(
+        "Forbidden",
+      );
     });
 
     it("BetterAuth returns non-ok response → falls through to JWT", async () => {
       fetchSpy.mockResolvedValueOnce(new Response("", { status: 401 }));
 
-      const token = await signJWT({ sub: "user-1", projectId: "proj-1" }, JWT_SECRET);
+      const token = await signJWT(
+        { sub: "user-1", projectId: "proj-1" },
+        JWT_SECRET,
+      );
       const request = new Request("http://localhost/sync/proj-1", {
-        headers: { cookie: "session=invalid", Authorization: `Bearer ${token}` },
+        headers: {
+          cookie: "session=invalid",
+          Authorization: `Bearer ${token}`,
+        },
       });
       const env = makeEnv();
 
@@ -277,9 +341,12 @@ describe("auth", () => {
     it("skips ownership check in development", async () => {
       fetchSpy.mockResolvedValueOnce(
         new Response(
-          JSON.stringify({ session: {}, user: { id: "ba-user-42" } }),
-          { status: 200 }
-        )
+          JSON.stringify({
+            session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
+            user: { id: "ba-user-42" },
+          }),
+          { status: 200 },
+        ),
       );
 
       const env = makeEnv({
@@ -299,4 +366,53 @@ describe("auth", () => {
       expect(env.DB.prepare).not.toHaveBeenCalled();
     });
   });
+});
+
+it("rejects project JWTs without a finite expiry", async () => {
+  const token = await new jose.SignJWT({ sub: "user-1", projectId: "proj-1" })
+    .setProtectedHeader({ alg: "HS256" })
+    .sign(new TextEncoder().encode(JWT_SECRET));
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(null));
+  try {
+    await expect(
+      authenticateRequest(
+        new Request("https://cloud.test/sync/proj-1", {
+          headers: { authorization: `Bearer ${token}` },
+        }),
+        makeEnv(),
+        "proj-1",
+      ),
+    ).rejects.toThrow();
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+it("expires retained JWT evidence and fails closed for older connections without evidence", async () => {
+  const token = await signJWT(
+    { sub: "user-1", projectId: "proj-1" },
+    JWT_SECRET,
+  );
+  const env = makeEnv();
+  const auth = await authenticateRequest(
+    new Request("https://cloud.test/sync/proj-1", {
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    env,
+    "proj-1",
+  );
+  expect(await revalidateProjectConnection(env, auth)).toBe(true);
+  const expiresAt = jose.decodeJwt(token).exp! * 1000;
+  const clock = vi.spyOn(Date, "now").mockReturnValue(expiresAt);
+  try {
+    expect(await revalidateProjectConnection(env, auth)).toBe(false);
+  } finally {
+    clock.mockRestore();
+  }
+  expect(
+    await revalidateProjectConnection(env, {
+      ...auth,
+      authorization: undefined,
+    } as unknown as typeof auth),
+  ).toBe(false);
 });

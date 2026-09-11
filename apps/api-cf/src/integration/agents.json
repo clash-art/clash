@@ -3,6 +3,8 @@
   "key_files": {
     "project-content-miniflare.integration.test.ts": "Default D1 admission, ProjectRoom reference and R2 registry/byte transport path.",
     "project-content-multipart.integration.test.ts": "Product-limit Resource HTTP/R2 round trip with one reusable request-part buffer and incremental download hashing; large Document replication, private staging, resume, publication/abort races, corruption and TTL cleanup. Never deep-compare large byte arrays or allocate an entire product-limit object.",
-    "test-worker.ts": "Local integration Worker bindings and existing durable runtime entrypoints."
+    "test-worker.ts": "Local integration Worker bindings and existing durable runtime entrypoints.",
+    "project-websocket-auth.integration.test.ts": "Real public createApp to ProjectRoom workerd WebSocket authorization, both raw and loro-v1, D1 API/session revocation, hibernation, JWT expiry, passive-read protection and pre-initialization rejection. Only external Better Auth get-session is mocked.",
+    "supervisor-auth.integration.test.ts": "Real Supervisor storage and WebSocket authorization, including hibernated token revocation before AIChat mutation and deleted-project broadcast suppression."
   }
 }

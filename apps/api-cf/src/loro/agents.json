@@ -9,6 +9,7 @@
     "replica-ports.ts": "Durable Object event log, checkpoint, deduplication and scheduling ports.",
     "storage.ts": "Existing snapshot/update storage keys and migration-compatible helpers.",
     "NodeProcessor.ts": "Hosted caller glue to journal-first startGeneration; pending-task observation rechecked after awaits, journal-owned tasks excluded from legacy orphan recovery. Retired automatic description no-op is not scheduled.",
-    "TaskPolling.ts": "Journal-first public status; never writes projections owned by the durable publisher. Historical tasks retain fallback with pendingTask recheck after awaits."
+    "TaskPolling.ts": "Journal-first public status; never writes projections owned by the durable publisher. Historical tasks retain fallback with pendingTask recheck after awaits.",
+    "auth.ts": "Project ownership plus API-token hash, finite JWT expiry or Better Auth session identity. Revalidates current D1 credential/project state before public connection commands and private delivery; evidence is safe for hibernation and contains no raw credential."
   }
 }

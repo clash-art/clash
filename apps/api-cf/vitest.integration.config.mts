@@ -9,10 +9,60 @@ export default defineConfig(async () => {
   const migrations = await readD1Migrations(migrationsPath);
 
   return {
-    resolve: { alias: {
-      "@clash/shared-types/project-sync-content": path.resolve(__dirname, "../../packages/shared-types/src/project-sync-content.ts"),
-      "@clash/asset-sdk/delivery": path.resolve(__dirname, "../../packages/asset-sdk/src/delivery.ts"),
-    } },
+    resolve: {
+      alias: [
+        ...[
+          "shared-types",
+          "shared-runtime",
+          "action-sdk",
+          "asset-sdk",
+          "shared-cloud-schema",
+        ].flatMap((name) => [
+          {
+            find: new RegExp(`^@clash/${name}/(.+)$`),
+            replacement: path.resolve(
+              __dirname,
+              `../../packages/${name}/src/$1.ts`,
+            ),
+          },
+          {
+            find: new RegExp(`^@clash/${name}$`),
+            replacement: path.resolve(
+              __dirname,
+              `../../packages/${name}/src/index.ts`,
+            ),
+          },
+        ]),
+        {
+          find: /^@clash\/replica\/(.+)$/,
+          replacement: path.resolve(
+            __dirname,
+            "../../packages/shared-replica/src/$1.ts",
+          ),
+        },
+        {
+          find: /^@clash\/replica$/,
+          replacement: path.resolve(
+            __dirname,
+            "../../packages/shared-replica/src/index.ts",
+          ),
+        },
+        {
+          find: /^@clash\/shared-layout$/,
+          replacement: path.resolve(
+            __dirname,
+            "../../packages/shared-layout/src/index.ts",
+          ),
+        },
+        {
+          find: /^@clash\/remotion-core$/,
+          replacement: path.resolve(
+            __dirname,
+            "../../packages/remotion-core/src/index.ts",
+          ),
+        },
+      ],
+    },
     plugins: [
       cloudflareTest({
         singleWorker: true,

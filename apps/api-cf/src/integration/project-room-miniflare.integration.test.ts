@@ -29,6 +29,10 @@ function roomStub(projectId: string): DurableObjectStub {
 function binaryInbox(socket: WebSocket): {
   next(): Promise<Uint8Array>;
 } {
+  // The client WebSocket defaults to Blob in standards-compatible runtimes.
+  // Request ArrayBuffer explicitly so protocol decoding remains synchronous
+  // and preserves the wire order across hibernation.
+  socket.binaryType = "arraybuffer";
   const frames: Uint8Array[] = [];
   const waiters: Array<(frame: Uint8Array) => void> = [];
   socket.addEventListener("message", (event) => {

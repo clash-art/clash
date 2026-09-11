@@ -87,27 +87,26 @@ function createRoom(
   options: { failEventAppend?: boolean; protocolClient?: boolean } = {},
 ) {
   const { storage, data } = createMockStorage(new Map(), options);
+  const pending: Promise<unknown>[] = [];
   const ws = {
     send: vi.fn(),
-    deserializeAttachment: vi.fn(() =>
-      options.protocolClient
-        ? {
-            id: "protocol-client",
-            userId: "user",
-            clientType: "browser",
-            name: "User",
-            connectedAt: 0,
-            syncProtocol: "loro-v1",
-          }
-        : null,
-    ),
+    close: vi.fn(),
+    // This fixture represents a trusted service-binding peer. Public credential
+    // and hibernation authorization are exercised against real DOs separately.
+    deserializeAttachment: vi.fn(() => ({
+      id: "internal-client", userId: "internal", clientType: "agent",
+      name: "Internal", connectedAt: 0, internal: true,
+      ...(options.protocolClient ? { syncProtocol: "loro-v1" } : {}),
+    })),
   };
   const ctx = {
     storage,
     getWebSockets: vi.fn(() => [ws]),
+    waitUntil: (promise: Promise<unknown>) => { pending.push(promise); },
   } as any as DurableObjectState;
   const room = new ProjectRoom(ctx, { ENVIRONMENT: "development" } as any);
-  return { room, data, storage, ws };
+  const flush = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
+  return { room, data, storage, ws, flush };
 }
 
 describe("ProjectRoom Loro remote persistence", () => {
@@ -116,7 +115,7 @@ describe("ProjectRoom Loro remote persistence", () => {
   });
 
   it("imports remote updates, persists them, broadcasts them, and returns snapshots", async () => {
-    const { room, data, ws } = createRoom();
+    const { room, data, ws, flush } = createRoom();
     const source = new LoroDoc();
     const before = source.version();
     source.getMap("nodes").set("n1", {
@@ -140,6 +139,7 @@ describe("ProjectRoom Loro remote persistence", () => {
     expect(data.get("projectId")).toBe("project/one");
     expect(data.get("loro:next-seq")).toBe(1);
     expect(new Uint8Array(data.get("loro:u:000000000000"))).toEqual(update);
+    await flush();
     expect(ws.send).toHaveBeenCalledWith(update);
     expect(mocks.processPendingNodes).not.toHaveBeenCalled();
 
@@ -158,7 +158,7 @@ describe("ProjectRoom Loro remote persistence", () => {
   });
 
   it("persists and broadcasts a repair update after an imported orphan edge", async () => {
-    const { room, data, ws } = createRoom();
+    const { room, data, ws, flush } = createRoom();
     const source = new LoroDoc();
     source.getMap("nodes").set("target", { canvasId: "main", type: "image_gen", data: {} });
     source.getMap("nodeUpstreams").ensureMergeableMap("target").set("orphan", {
@@ -181,6 +181,7 @@ describe("ProjectRoom Loro remote persistence", () => {
 
     expect(updateRes.status).toBe(204);
     expect(data.get("loro:next-seq")).toBe(2);
+    await flush();
     expect(ws.send).toHaveBeenCalledTimes(2);
 
     const snapshotRes = await room.fetch(new Request("https://room/loro/project/snapshot", {
@@ -262,7 +263,7 @@ describe("ProjectRoom Loro remote persistence", () => {
   });
 
   it("speaks the official Loro protocol and ACKs only the durable update", async () => {
-    const { room, data, ws } = createRoom({ protocolClient: true });
+    const { room, data, ws, flush } = createRoom({ protocolClient: true });
     await room.fetch(
       new Request("https://room/loro/project/snapshot", {
         headers: {
@@ -280,6 +281,7 @@ describe("ProjectRoom Loro remote persistence", () => {
       version: new LoroDoc().version().encode(),
     });
     await room.webSocketMessage(ws as any, join.slice().buffer);
+    await flush();
     expect(decode(ws.send.mock.calls[0]![0] as Uint8Array)).toMatchObject({
       type: MessageType.JoinResponseOk,
       roomId: "project",
@@ -299,6 +301,7 @@ describe("ProjectRoom Loro remote persistence", () => {
     });
 
     await room.webSocketMessage(ws as any, frame.slice().buffer);
+    await flush();
 
     expect(decode(ws.send.mock.calls.at(-1)![0] as Uint8Array)).toMatchObject({
       type: MessageType.Ack,

@@ -26,8 +26,97 @@ import { createDelegationTool } from "./tools/delegation";
 import { createWorkflowTools } from "./tools/workflow";
 import { SUPERVISOR_PROMPT } from "../prompts/supervisor";
 import { withCacheControl, cachedSystemPrompt } from "./cache-control";
+import {
+  authenticateRequest,
+  revalidateProjectConnection,
+  type AuthResult,
+} from "../loro/auth";
 
 export class SupervisorAgent extends AIChatAgent<Env> {
+  private deliveryQueue: Promise<void> = Promise.resolve();
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // AIChatAgent and Agent wrap these hooks in their constructors. Guard the
+    // complete installed handlers, before protocol history/state/RPC effects.
+    const connect = this.onConnect.bind(this);
+    this.onConnect = async (connection, context) => {
+      const projectId = this.extractProjectId(context.request);
+      try {
+        const authorization = await authenticateRequest(
+          context.request,
+          this.env,
+          projectId,
+        );
+        connection.setState({ projectAuthorization: authorization });
+      } catch {
+        connection.close(1008, "Unauthorized");
+        return;
+      }
+      await connect(connection, context);
+    };
+    const message = this.onMessage.bind(this);
+    this.onMessage = async (connection, data) => {
+      if (await this.authorizeConnection(connection))
+        await message(connection, data);
+    };
+  }
+
+  override async fetch(request: Request): Promise<Response> {
+    const room = request.headers.get("x-partykit-room");
+    if (
+      !room ||
+      this.env.SUPERVISOR.idFromName(room).toString() !== this.ctx.id.toString()
+    )
+      return new Response("Unauthorized", { status: 401 });
+    try {
+      await authenticateRequest(
+        request,
+        this.env,
+        this.extractProjectId(request),
+      );
+    } catch {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    return super.fetch(request);
+  }
+
+  private async authorizeConnection(connection: Connection): Promise<boolean> {
+    const authorization = (
+      connection.state as { projectAuthorization?: AuthResult } | null
+    )?.projectAuthorization;
+    if (
+      authorization &&
+      (await revalidateProjectConnection(this.env, authorization))
+    )
+      return true;
+    connection.close(1008, "Unauthorized");
+    return false;
+  }
+
+  override broadcast(
+    message: string | ArrayBuffer | ArrayBufferView,
+    without: string[] = [],
+  ): void {
+    // The upstream broadcast contract is synchronous. Keep asynchronous
+    // authorization ordered and attached to the DO lifetime before each send.
+    this.deliveryQueue = this.deliveryQueue
+      .then(async () => {
+        for (const connection of this.getConnections()) {
+          if (without.includes(connection.id)) continue;
+          if (await this.authorizeConnection(connection)) {
+            try {
+              connection.send(message);
+            } catch {
+              /* Connection already closed. */
+            }
+          }
+        }
+      })
+      .catch((error) => log.warn("Supervisor delivery failed", error));
+    this.ctx.waitUntil(this.deliveryQueue);
+  }
+
   /** Local Loro CRDT replica — synced with ProjectRoom via internal WS. */
   private doc: LoroDoc = new LoroDoc();
   /** Internal WebSocket to ProjectRoom for Loro sync. */
@@ -237,6 +326,7 @@ export class SupervisorAgent extends AIChatAgent<Env> {
     if (!ws) {
       throw new Error("ProjectRoom did not return a WebSocket");
     }
+    ws.binaryType = "arraybuffer";
     ws.accept();
     this.roomWs = ws;
 
@@ -472,13 +562,7 @@ export class SupervisorAgent extends AIChatAgent<Env> {
 
     // Send custom events to all connected browser clients
     const sendMsg = (msg: Record<string, unknown>) => {
-      for (const conn of this.getConnections()) {
-        try {
-          conn.send(JSON.stringify(msg));
-        } catch {
-          // Connection may be closing
-        }
-      }
+      this.broadcast(JSON.stringify(msg));
     };
 
     const generateId = () => crypto.randomUUID().slice(0, 8);

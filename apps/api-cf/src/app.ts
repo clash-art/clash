@@ -73,6 +73,23 @@ function decodeProjectIdParam(raw: string): string {
   }
 }
 
+/** Public callers cannot attest to an internal DO identity. */
+function publicProjectRequest(request: Request): Request {
+  const sanitized = new Request(request);
+  for (const name of [
+    "x-internal-agent",
+    "x-internal-loro",
+    "x-loro-project-id",
+    "x-user-id",
+    "x-partykit-room",
+    "x-partykit-namespace",
+    "x-partykit-props",
+  ]) {
+    sanitized.headers.delete(name);
+  }
+  return sanitized;
+}
+
 async function forwardLoroPersistenceRequest(
   c: Context<{ Bindings: Env }>,
   projectId: string,
@@ -152,9 +169,22 @@ export function createApp(
   // ─── WebSocket: /sync/:projectId → ProjectRoom DO ──────────
   app.all("/sync/:projectId{.*}", async (c) => {
     const rawProjectId = c.req.param("projectId");
-    const projectId = rawProjectId.split("/")[0];
+    // Only the public WebSocket endpoint is exposed. DO maintenance HTTP
+    // routes are reached via service bindings, never this wildcard proxy.
+    if (rawProjectId.includes("/")) return c.notFound();
+    if (c.req.method !== "GET" || c.req.header("Upgrade") !== "websocket") {
+      return c.text("WebSocket only", 400);
+    }
+    const projectId = rawProjectId;
+    const request = publicProjectRequest(c.req.raw);
+    try {
+      const identity = await authenticateRequest(request, c.env, projectId);
+      request.headers.set("x-user-id", identity.userId);
+    } catch {
+      return c.text("Unauthorized", 401);
+    }
     const id = c.env.ROOM.idFromName(projectId);
-    return c.env.ROOM.get(id).fetch(c.req.raw);
+    return c.env.ROOM.get(id).fetch(request);
   });
 
   // ─── Local-first Loro remote persistence ───────────────────
@@ -224,18 +254,17 @@ export function createApp(
   app.all("/agents/supervisor/:room{.*}", async (c) => {
     const rawRoom = c.req.param("room");
     const room = rawRoom.split("/")[0];
-    const id = c.env.SUPERVISOR.idFromName(room);
-    // Resolve userId at the gateway so supervisor logs can be filtered per user.
-    // Best-effort: don't 401 here — the WS handshake is what carries the cookie,
-    // and DO has no other way to learn the user.
+    const projectId = room.split(":")[0];
+    const req = publicProjectRequest(c.req.raw);
+    // Protect both the WebSocket and the agent's HTTP session endpoints.
+    // Resolving identity alone does not authorize access to this project.
     try {
-      await applyValidatedPublicIdentity(c);
+      const identity = await authenticateRequest(req, c.env, projectId);
+      req.headers.set("x-user-id", identity.userId);
     } catch {
-      const sanitized = new Request(c.req.raw);
-      sanitized.headers.delete("x-user-id");
-      c.req.raw = sanitized;
+      return c.text("Unauthorized", 401);
     }
-    const req = new Request(c.req.raw);
+    const id = c.env.SUPERVISOR.idFromName(room);
     req.headers.set("x-partykit-room", room);
     req.headers.set("x-partykit-namespace", "SUPERVISOR");
     return c.env.SUPERVISOR.get(id).fetch(req);

@@ -32,6 +32,6 @@ class StubDO {
     return new Response("stub", { status: 501 });
   }
 }
-export const SupervisorAgent = StubDO;
+export { SupervisorAgent } from "../agents/supervisor";
 export const RenderContainer = StubDO;
 export { GenerationWorkflow } from "../agents/generation";

@@ -1,0 +1,11 @@
+{
+  "summary": "Hosted Durable Objects for Project replication and supervised generation. The local Host remains the local Project authority.",
+  "context_hints": [
+    "Public transports must authenticate before framework handlers read or mutate state. Raw client headers do not establish internal authority.",
+    "Connection authorization evidence is server-owned and contains no raw credentials. Revalidate before messages and private delivery; old connections without evidence must reconnect."
+  ],
+  "key_files": {
+    "project-room.ts": "Remote Loro sequencer and fan-out with durable replica persistence and connection authorization.",
+    "supervisor.ts": "AIChatAgent adapter. Constructor guards wrap the framework-installed handlers; guarding only the subclass onMessage misses chat history, clear and resume protocol effects. HTTP fetch and outgoing broadcasts also enforce authorization."
+  }
+}

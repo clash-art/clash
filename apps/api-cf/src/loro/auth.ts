@@ -1,183 +1,209 @@
-/**
- * Authentication utilities for WebSocket connections.
- * Supports authenticated browser and CLI WebSocket connections to ProjectRoom.
- */
+/** Project transport authentication and non-secret connection revocation evidence. */
+import * as jose from "jose";
+import type { Env } from "../config";
 
-import * as jose from 'jose';
-import type { Env } from '../config';
+export type ProjectConnectionAuthorization =
+  | { kind: "api-token"; tokenHash: string }
+  | { kind: "jwt"; expiresAt: number }
+  | { kind: "session"; sessionId: string; expiresAt: number }
+  | { kind: "development" };
 
 export interface AuthResult {
   userId: string;
   projectId: string;
-  /** User display name (from Better Auth session, or "CLI Agent" for API tokens) */
   userName?: string;
-  /** User avatar URL (from Better Auth session) */
   userAvatar?: string;
+  /** Safe to retain across WebSocket hibernation; never a raw token or cookie. */
+  authorization: ProjectConnectionAuthorization;
 }
 
-interface JWTPayload {
-  sub: string;
-  projectId: string;
-  iat?: number;
-  exp?: number;
+async function assertProjectOwner(env: Env, projectId: string, userId: string) {
+  if (!env.DB) throw new Error("Project authority unavailable");
+  const { results } = await env.DB.prepare(
+    "SELECT owner_id, deleted_at FROM project WHERE id = ? LIMIT 1",
+  )
+    .bind(projectId)
+    .all<{ owner_id: string; deleted_at: number | null }>();
+  const row = results?.[0];
+  if (!row || row.owner_id !== userId || row.deleted_at != null)
+    throw new Error("Forbidden");
 }
 
-/**
- * Verify JWT token using jose (HS256 signature verification).
- */
-async function verifyJWT(token: string, secret: string): Promise<JWTPayload> {
-  const secretKey = new TextEncoder().encode(secret);
-
-  const { payload } = await jose.jwtVerify(token, secretKey, {
-    algorithms: ['HS256'],
-  });
-
-  if (!payload.sub || !(payload as any).projectId) {
-    throw new Error('Invalid JWT payload: missing required fields');
+/** Recheck before accepting a command or delivering private data. JWTs have a
+ * finite lifetime and current Project ownership, not invented per-JWT revocation.
+ * Better Auth and API credentials additionally require their current D1 record. */
+export async function revalidateProjectConnection(
+  env: Env,
+  auth: AuthResult,
+): Promise<boolean> {
+  try {
+    if (!auth?.authorization || !auth.userId || !auth.projectId) return false;
+    const proof = auth.authorization;
+    if (proof.kind === "development") return env.ENVIRONMENT === "development";
+    if (env.ENVIRONMENT !== "development")
+      await assertProjectOwner(env, auth.projectId, auth.userId);
+    if (proof.kind === "jwt")
+      return Number.isFinite(proof.expiresAt) && proof.expiresAt > Date.now();
+    if (proof.kind === "api-token") {
+      const { results } = await env.DB.prepare(
+        "SELECT user_id FROM api_token WHERE token_hash = ? LIMIT 1",
+      )
+        .bind(proof.tokenHash)
+        .all<{ user_id: string }>();
+      return results?.[0]?.user_id === auth.userId;
+    }
+    if (proof.kind === "session") {
+      if (!Number.isFinite(proof.expiresAt) || proof.expiresAt <= Date.now())
+        return false;
+      const { results } = await env.DB.prepare(
+        "SELECT user_id, expires_at FROM sessions WHERE id = ? LIMIT 1",
+      )
+        .bind(proof.sessionId)
+        .all<{ user_id: string; expires_at: number }>();
+      const session = results?.[0];
+      return (
+        session?.user_id === auth.userId && session.expires_at > Date.now()
+      );
+    }
+    return false;
+  } catch {
+    return false;
   }
-
-  return {
-    sub: payload.sub as string,
-    projectId: (payload as any).projectId as string,
-    iat: payload.iat,
-    exp: payload.exp,
-  };
 }
 
-function extractTokenFromRequest(request: Request): string | null {
-  const authHeader = request.headers.get('Authorization');
-  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
-
-  return null;
+async function sha256(input: string): Promise<string> {
+  const bytes = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(input),
+  );
+  return Array.from(new Uint8Array(bytes), (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
-type BetterAuthGetSessionResponse =
-  | { session: unknown; user: { id: string } & Record<string, unknown> }
-  | null;
-
-async function getBetterAuthSession(request: Request, env: Env): Promise<BetterAuthGetSessionResponse> {
-  const cookie = request.headers.get('cookie') ?? '';
-  const authorization = request.headers.get('authorization') ?? '';
-
+type SessionIdentity = {
+  session: { id: string; expiresAt: string | number };
+  user: { id: string; name?: string; image?: string };
+};
+async function getBetterAuthSession(
+  request: Request,
+  env: Env,
+): Promise<SessionIdentity | null> {
+  const cookie = request.headers.get("cookie"),
+    authorization = request.headers.get("authorization");
   if (!cookie && !authorization) return null;
-
   const origin = env.BETTER_AUTH_ORIGIN ?? new URL(request.url).origin;
-  const basePath = env.BETTER_AUTH_BASE_PATH ?? '/api/better-auth';
-  const sessionUrl = new URL(`${origin}${basePath}/get-session`);
-
-  const res = await fetch(sessionUrl.toString(), {
-    method: 'GET',
+  const basePath = env.BETTER_AUTH_BASE_PATH ?? "/api/better-auth";
+  const response = await fetch(new URL(`${basePath}/get-session`, origin), {
     headers: {
       ...(cookie ? { cookie } : {}),
       ...(authorization ? { authorization } : {}),
-      accept: 'application/json',
+      accept: "application/json",
     },
   });
-
-  if (!res.ok) return null;
-
-  const data = (await res.json()) as unknown;
-  if (!data || typeof data !== 'object') return null;
-
-  const maybeUser = (data as any).user;
-  if (!maybeUser || typeof maybeUser !== 'object') return null;
-
-  const id = (maybeUser as any).id;
-  if (typeof id !== 'string' || id.length === 0) return null;
-
-  return data as BetterAuthGetSessionResponse;
+  if (!response.ok) return null;
+  const value = (await response.json()) as Partial<SessionIdentity> | null;
+  if (!value?.user?.id || !value.session?.id || !value.session.expiresAt)
+    return null;
+  return value as SessionIdentity;
 }
 
-async function assertProjectOwner(env: Env, projectId: string, userId: string): Promise<void> {
-  if (!env.DB) return;
+export async function authenticateRequest(
+  request: Request,
+  env: Env,
+  projectId: string,
+): Promise<AuthResult> {
+  const development = env.ENVIRONMENT === "development";
+  const rawToken = request.headers
+    .get("authorization")
+    ?.match(/^Bearer (.+)$/i)?.[1];
+  const verifyOwnership = async (userId: string) => {
+    if (!development) await assertProjectOwner(env, projectId, userId);
+  };
 
-  const { results } = await env.DB
-    .prepare('SELECT owner_id FROM project WHERE id = ? LIMIT 1')
-    .bind(projectId)
-    .all();
-
-  const ownerId = (results?.[0] as any)?.owner_id as string | null | undefined;
-  if (!ownerId || ownerId !== userId) {
-    throw new Error('Forbidden');
-  }
-}
-
-/**
- * SHA-256 hash a string, returning hex.
- */
-async function sha256(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-/**
- * Authenticate a request using API token (clsh_*), returning userId if valid.
- */
-async function getUserIdFromApiToken(token: string, env: Env): Promise<{ userId: string; tokenName: string } | null> {
-  if (!token.startsWith('clsh_')) return null;
-  if (!env.DB) return null;
-
-  const hash = await sha256(token);
-  const { results } = await env.DB
-    .prepare('SELECT user_id, name FROM api_token WHERE token_hash = ? LIMIT 1')
-    .bind(hash)
-    .all();
-
-  if (!results?.[0]) return null;
-  const row = results[0] as any;
-
-  // Fire-and-forget: update last_used_at
-  env.DB.prepare('UPDATE api_token SET last_used_at = unixepoch() WHERE token_hash = ?').bind(hash).run();
-
-  return { userId: row.user_id as string, tokenName: (row.name as string) || 'CLI' };
-}
-
-export async function authenticateRequest(request: Request, env: Env, projectId: string): Promise<AuthResult> {
-  const isDev = env.ENVIRONMENT === 'development';
-
-  async function verifyOwnership(userId: string): Promise<void> {
-    if (!isDev) await assertProjectOwner(env, projectId, userId);
-  }
-
-  // 1. Try BetterAuth session (cookie-based)
-  const session = await getBetterAuthSession(request, env);
-  if (session?.user?.id) {
-    await verifyOwnership(session.user.id);
+  // Known API credentials are resolved locally, never sent to a session service.
+  if (rawToken?.startsWith("clsh_")) {
+    const tokenHash = await sha256(rawToken);
+    const { results } = await env.DB.prepare(
+      "SELECT user_id, name FROM api_token WHERE token_hash = ? LIMIT 1",
+    )
+      .bind(tokenHash)
+      .all<{ user_id: string; name: string }>();
+    const row = results?.[0];
+    if (!row?.user_id) throw new Error("Unauthorized");
+    await verifyOwnership(row.user_id);
+    void env.DB.prepare(
+      "UPDATE api_token SET last_used_at = unixepoch() WHERE token_hash = ?",
+    )
+      .bind(tokenHash)
+      .run()
+      .catch(() => {});
     return {
-      userId: session.user.id,
+      userId: row.user_id,
       projectId,
-      userName: (session.user as any).name as string | undefined,
-      userAvatar: (session.user as any).image as string | undefined,
+      userName: row.name || "CLI",
+      authorization: { kind: "api-token", tokenHash },
     };
   }
 
-  // 2. Try API token (clsh_*)
-  const rawToken = extractTokenFromRequest(request);
-  if (rawToken?.startsWith('clsh_')) {
-    const result = await getUserIdFromApiToken(rawToken, env);
-    if (result) {
-      await verifyOwnership(result.userId);
-      return { userId: result.userId, projectId, userName: result.tokenName };
+  // Browser cookie sessions retain precedence over a separate JWT credential.
+  if (
+    request.headers.has("cookie") ||
+    (rawToken && rawToken.split(".").length !== 3)
+  ) {
+    const session = await getBetterAuthSession(request, env);
+    if (session) {
+      await verifyOwnership(session.user.id);
+      const expiresAt =
+        typeof session.session.expiresAt === "number"
+          ? session.session.expiresAt
+          : Date.parse(session.session.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now())
+        throw new Error("Unauthorized");
+      const identity: AuthResult = {
+        userId: session.user.id,
+        projectId,
+        userName: session.user.name,
+        userAvatar: session.user.image,
+        authorization: {
+          kind: "session",
+          sessionId: session.session.id,
+          expiresAt,
+        },
+      };
+      if (!development && !(await revalidateProjectConnection(env, identity)))
+        throw new Error("Unauthorized");
+      return identity;
     }
   }
 
-  // 3. Try JWT token (query param or Authorization header)
   if (rawToken && env.JWT_SECRET) {
-    const payload = await verifyJWT(rawToken, env.JWT_SECRET);
-    if (payload.projectId !== projectId) {
-      throw new Error('Project ID mismatch');
-    }
+    const { payload } = await jose.jwtVerify(
+      rawToken,
+      new TextEncoder().encode(env.JWT_SECRET),
+      { algorithms: ["HS256"] },
+    );
+    if (
+      typeof payload.sub !== "string" ||
+      !payload.sub ||
+      typeof payload.projectId !== "string" ||
+      !payload.projectId ||
+      !Number.isFinite(payload.exp)
+    )
+      throw new Error("Invalid JWT payload: missing required fields or expiry");
+    if (payload.projectId !== projectId) throw new Error("Project ID mismatch");
     await verifyOwnership(payload.sub);
-    return { userId: payload.sub, projectId: payload.projectId };
+    return {
+      userId: payload.sub,
+      projectId,
+      authorization: { kind: "jwt", expiresAt: payload.exp! * 1000 },
+    };
   }
-
-  // 4. Development mode fallback
-  if (isDev) {
-    return { userId: 'dev-user', projectId };
-  }
-
-  throw new Error('Unauthorized');
+  if (development && !rawToken && !request.headers.has("cookie"))
+    return {
+      userId: "dev-user",
+      projectId,
+      authorization: { kind: "development" },
+    };
+  throw new Error("Unauthorized");
 }
