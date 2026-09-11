@@ -39,9 +39,8 @@
     "build": "pnpm build:core && pnpm bundle:agents",
     "clean": "rm -rf runtime",
     "dev": "CLASH_SOURCE_RUNTIME=1 tsx --tsconfig tsconfig.dev.json src/dispatcher.ts --profile dev",
-    "lint": "tsc --project tsconfig.typecheck.json",
     "test": "TSX_TSCONFIG_PATH=tsconfig.dev.json node --import tsx --test src/*.test.ts scripts/*.test.ts",
-    "typecheck": "tsc --project tsconfig.typecheck.json"
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "1.1.0",

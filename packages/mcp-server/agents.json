@@ -5,7 +5,8 @@
     "dcc.ts discovers the native addon for the requested real working folder through machine-private ~/.clash/dcc-connections records. It only connects to loopback, binds app/workspace/session identity, and never returns session credentials to the agent.",
     "Native Python execution is full local application access, not a sandbox. Unknown mutation outcomes are never retried automatically.",
     "The native adapters in integrations/dcc-assets run all application API operations on their UI thread and publish media through the existing Clash Asset CLI authority.",
-    "The fullscreen Project App embeds the shared shipped web renderer served by local-api. Native host context replaces agent GUI; project-app-native only relays context and display mode, never ACP sessions."
+    "The fullscreen Project App embeds the shared shipped web renderer served by local-api. Native host context replaces agent GUI; project-app-native only relays context and display mode, never ACP sessions.",
+    "Source quality checks use tsconfig.dev.json with the common workspace source map; root make lint runs this typecheck through dependency-aware Turbo without requiring packaged dist."
   ],
   "key_files": {
     "src/server.ts": "Composes the bundled tools, including native DCC operations.",

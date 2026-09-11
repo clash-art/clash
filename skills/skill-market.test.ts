@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { sourceContains, sourceMatches } from "../packages/web-ui/src/test-support/source-match";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 const registryPath = path.join(repoRoot, "skills", "registry.json");
@@ -501,27 +502,17 @@ test("clash command reference retires the production command family", async () =
   assert.doesNotMatch(commands, /--lock|readToken|--if-match/);
 });
 
-test("clash command reference exposes declared asset metadata with implicit CAS", async () => {
+test("clash command reference teaches native Document edits and keeps legacy metadata read-only", async () => {
   const commands = await readFile(clashCommandsReferencePath, "utf8");
-
-  assert.match(commands, /clash assets metadata kinds --json/);
-  assert.match(commands, /clash assets metadata get --asset <asset-id> --kind media\.transcript --body --json/);
-  assert.match(commands, /clash assets metadata set --asset <asset-id> --kind media\.transcript --metadata meta\.json --body words\.json --json/);
-  assert.match(commands, /clash assets metadata apply --file projections\/metadata\/<asset>\.<kind>\.json --json/);
-  assert.match(commands, /clash assets metadata validate --kind <kind>/);
-
-  // The three properties that make this surface open rather than a closed union.
-  assert.match(commands, /`--kind` is a parameter, never a command/i);
-  assert.match(commands, /\.clash\/metadata-kinds/);
-  assert.match(commands, /undeclared\s+kind is refused/i);
-  // Bodies are content-addressed, not inlined.
-  assert.match(commands, /content-addressed blob|deduplicated by hash/i);
-  // Agent observations are implicit; the removed token escape hatch must stay absent.
-  assert.doesNotMatch(commands, /--expect-version/);
-  assert.doesNotMatch(commands, /apply[^\n]*--version /, "apply must not be documented with the shadowed flag");
-  assert.match(commands, /single-use|rejected as stale/i);
-  assert.match(commands, /READ_REQUIRED/);
-  assert.doesNotMatch(commands, /--lock|readToken|--if-match/);
+  for (const operation of ["create --kind text.plain --file script.txt", "pull <document-id> --file draft.txt", "apply <document-id> --file draft.txt", "copy <document-id> --revision <revision-id>"]) {
+    assert.ok(sourceContains(commands, `clash assets documents ${operation}`));
+  }
+  assert.ok(sourceContains(commands, "clash assets metadata get --asset <asset-id> --kind media.transcript --body --json"));
+  assert.ok(!sourceMatches(commands, /clash assets metadata (set|apply)/));
+  assert.ok(sourceContains(commands, "METADATA_WRITE_RETIRED"));
+  assert.ok(sourceContains(commands, "READ_REQUIRED"));
+  assert.ok(sourceMatches(commands, /rejected as stale/));
+  assert.ok(!sourceMatches(commands, /--lock|readToken|--if-match|--expect-version/));
 });
 
 

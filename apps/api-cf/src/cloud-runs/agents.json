@@ -2,7 +2,7 @@
   "src/cloud-runs/cloud-durable-run-coordinator.ts": "Cloud owner adapter for the shared DurableRunEngine: journal-first creation, owner guard, CAS transitions, and restart recovery.",
   "src/cloud-runs/cloud-durable-run-journal.ts": "D1 implementation of the owner-private cloud durable-run journal. It stores frozen JSON records and elects one CAS transition winner.",
   "src/cloud-runs/cloud-durable-dispatcher.ts": "Workflow scheduling boundary. It persists a run before starting a stable Workflow instance and treats duplicate starts as success.",
-  "src/cloud-runs/cloud-durable-workflow.ts": "Cloudflare-independent Workflow loop port with named advances, sleep-until wakeups, and injectable coordinator/step ports.",
+  "src/cloud-runs/cloud-durable-workflow.ts": "Platform-neutral Workflow loop with named shared-engine advances, durable sleepUntil, and a 30-minute step timeout aligned to hosted attempt deadlines. Live GenerationWorkflow supplies generation/runtime.ts ports.",
   "src/cloud-runs/cloud-durable-workflow-entrypoint.ts": "Optional Cloudflare WorkflowEntrypoint subclass adapter. Deployments provide provider, OSS staging, and Project publisher ports.",
   "src/cloud-runs/cloud-durable-run-coordinator.test.ts": "Chaos tests for duplicate enqueue, ambiguous side-effect crashes, CAS contention, dispatcher idempotency, and Workflow wakeups.",
   "src/cloud-runs/cloud-durable-run-journal.integration.test.ts": "Miniflare/D1 integration tests for persistence, concurrent CAS election, and due recovery scans."

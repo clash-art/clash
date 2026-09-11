@@ -493,7 +493,7 @@ test("secondary canvas recovery restore rejects shared projects owned by the clo
     rawSyncMode: "shared",
     roomAuthority: "cloud-sequencer",
     cloudProjectRoom: "sequencer",
-    syncReadinessStatus: "ready",
+    syncReadinessStatus: "pending",
     localRestoreAllowed: false,
     cloudStateIncluded: false,
     cloudStateMutated: false,

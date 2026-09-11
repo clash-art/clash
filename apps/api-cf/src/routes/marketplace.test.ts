@@ -68,19 +68,7 @@ describe("marketplace registry", () => {
         }),
       ]),
     );
-    expect(body.actions.some((item) => item.id === "community.grid-split")).toBe(true);
-    expect(body.actions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "codex-imagegen",
-          name: "Codex ImageGen",
-          type: "action",
-          runtime: "local",
-          outputType: "image",
-          packageId: "clash.codex-imagegen",
-        }),
-      ]),
-    );
+    expect(body.actions).toEqual([]);
     // The ten `clash.action.production.*` entries were removed with the `clash production` command
     // family they invoked; every one of them resolved to nothing. Asserted absent so the registry is
     // never repopulated with ids that have no implementation -- a listing that cannot run is worse
@@ -117,14 +105,7 @@ describe("marketplace registry", () => {
       skills: Array<{ id: string }>;
     };
 
-    expect(body.actions).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: "codex-imagegen",
-          packageId: "clash.codex-imagegen",
-        }),
-      ]),
-    );
+    expect(body.actions).toEqual([]);
     expect(body.actions.filter((item) => item.id.startsWith("clash.action.production."))).toEqual([]);
     expect(body.skills).toEqual(
       expect.arrayContaining([

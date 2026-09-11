@@ -11,7 +11,7 @@ import type { GenerationAdapter } from "../adapter";
 export const understandAdapter: GenerationAdapter = {
   name: "understand",
 
-  async execute(ctx) {
+  async submit(ctx) {
     const { params, env } = ctx;
     const r2Key = params.r2Key;
     const mime = params.mimeType ?? "";
@@ -28,27 +28,19 @@ export const understandAdapter: GenerationAdapter = {
     }
 
     if (isImage || isVideo) {
-      understanding.visual = await ctx.step(
-        "visual-analyze",
-        { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "3 minutes" },
-        async () => {
-          log.info("Visual analysis started", ctx.tag);
-          const dataUri = await ctx.readR2DataUri(r2Key);
-          const result = await analyzeVisual(env.AI, dataUri);
-          log.info("Visual analysis completed", {
-            ...ctx.tag,
-            hasDescription: !!result.description,
-            shots: result.shots?.length,
-          });
-          return result;
-        },
-      );
+      understanding.visual = await (async () => {
+        log.info("Visual analysis started", ctx.tag);
+        const dataUri = await ctx.readR2DataUri(r2Key);
+        const result = await analyzeVisual(env.AI, dataUri);
+        log.info("Visual analysis completed", {
+          ...ctx.tag,
+          hasDescription: !!result.description,
+          shots: result.shots?.length,
+        });
+        return result;
+      })();
     }
 
-    await ctx.notify({
-      pendingTask: undefined,
-      understanding,
-      _log: undefined,
-    });
+    return ctx.completedValue({ understanding: understanding as never });
   },
 };

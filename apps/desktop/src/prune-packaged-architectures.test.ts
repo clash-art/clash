@@ -4,21 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-// @ts-expect-error The electron-builder hook is an ESM script without declarations.
-import * as pruningHook from "../scripts/prune-packaged-architectures.mjs";
-
-const {
-  default: prunePackagedArchitectures,
+import {
+  default as prunePackagedArchitectures,
   packageDirectoriesToPrune,
-} = pruningHook as unknown as {
-  default: (context: {
-    appOutDir: string;
-    arch: number;
-    electronPlatformName: string;
-    packager: { appInfo: { productFilename: string } };
-  }) => Promise<void>;
-  packageDirectoriesToPrune: (arch: number) => string[];
-};
+} from "../scripts/prune-packaged-architectures.ts";
 
 const temporaryDirectories: string[] = [];
 

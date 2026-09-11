@@ -81,7 +81,10 @@ test("Canvas App does not embed Timeline", () => {
 });
 
 test("built runtime preserves structured host error codes", async () => {
-  const runtime = await import("../runtime/index.js");
+  // Load the shipped artifact at runtime without borrowing its generated types
+  // for the independent source quality check.
+  const runtime = await import(new URL("../runtime/index.js", import.meta.url).href);
+  assert.equal(typeof runtime.timelineToolErrorPayload, "function");
 
   assert.deepEqual(
     runtime.timelineToolErrorPayload(new Error(

@@ -162,6 +162,7 @@ export default {
     if (
       path.startsWith("/api/") ||
       path.startsWith("/assets/") ||
+      path.startsWith("/loro/") ||
       path.startsWith("/sync/") ||
       path.startsWith("/agents/")
     ) {

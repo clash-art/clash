@@ -28,25 +28,21 @@ export class ApiJsonError extends Error {
 
 export async function apiFetch(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ): Promise<Response> {
   const serverUrl = getServerUrl();
   const apiKey = requireApiKey(serverUrl);
   const url = `${serverUrl}${path}`;
 
-  return fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      ...((options.headers as Record<string, string>) ?? {}),
-    },
-  });
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
+  new Headers(options.headers).forEach((value, key) => headers.set(key, value));
+  return fetch(url, { ...options, headers });
 }
 
 export async function apiJson<T = unknown>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ): Promise<T> {
   const res = await apiFetch(path, options);
   if (!res.ok) {

@@ -10,12 +10,12 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test:e2e": "node e2e/local-runtime-smoke.mjs && node e2e/gui-smoke.mjs && node e2e/acp-setup-smoke.mjs && pnpm test:e2e:asset-persistence",
-    "test:e2e:runtime": "node e2e/local-runtime-smoke.mjs",
-    "test:e2e:host-mutation": "node e2e/local-runtime-smoke.mjs",
-    "test:e2e:gui": "node e2e/gui-smoke.mjs",
-    "test:e2e:acp-setup": "node e2e/acp-setup-smoke.mjs",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
+    "test:e2e": "node e2e/local-runtime-smoke.ts && node e2e/gui-smoke.ts && node e2e/acp-setup-smoke.ts && pnpm test:e2e:asset-persistence",
+    "test:e2e:runtime": "node e2e/local-runtime-smoke.ts",
+    "test:e2e:host-mutation": "node e2e/local-runtime-smoke.ts",
+    "test:e2e:gui": "node e2e/gui-smoke.ts",
+    "test:e2e:acp-setup": "node e2e/acp-setup-smoke.ts",
     "test:e2e:asset-persistence": "tsx e2e/asset-persistence-smoke.ts",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply clash-d1 --local --persist-to ../../.wrangler/state",
@@ -78,7 +78,8 @@
     "react-moveable": "^0.56.0",
     "react-router": "^7.14.2",
     "remotion": "4.0.507",
-    "zod": "^4.1.13"
+    "zod": "^4.1.13",
+    "@clash/shared-cloud-schema": "workspace:*"
   },
   "devDependencies": {
     "@clash/local-api": "workspace:*",

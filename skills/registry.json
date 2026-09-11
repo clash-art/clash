@@ -974,7 +974,7 @@
       "id": "media.analysis-store",
       "title": "Analysis metadata store",
       "status": "partial",
-      "description": "Shared metadata-fill schemas exist for audio, transcript, reference video, and storyboard analysis; project-file/SQLite storage and host apply API still missing."
+      "description": "Native Documents provide Host-backed create/read/pull/apply/copy and revision-pinned attachments. Historical metadata manifests/indexes remain read-only compatibility; automatic legacy consumer migration is not delivered."
     },
     {
       "id": "media.copy-on-write",

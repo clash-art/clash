@@ -1,3 +1,4 @@
+import { providerHttpError } from "@clash/action-sdk/executable-failure";
 import * as jose from "jose";
 
 const DEFAULT_KLING_URL = "https://api-beijing.klingai.com/v1/videos/image2video";
@@ -82,7 +83,7 @@ export async function createVideoTask(
 
   if (!resp.ok) {
     const text = await resp.text();
-    throw new Error(`Kling API error ${resp.status}: ${text}`);
+    throw providerHttpError({ status: resp.status, operation: "submit", message: `Kling API error ${resp.status}: ${text}` });
   }
 
   const result = (await resp.json()) as KlingResult;
@@ -98,49 +99,28 @@ export async function createVideoTask(
   return taskId;
 }
 
-/** Poll a video generation task until completion or timeout. */
-export async function pollVideoTask(
-  config: KlingConfig,
-  taskId: string,
-  pollIntervalMs = 5000,
-  maxWaitMs = 300_000
-): Promise<{ url: string; duration: number; coverImageUrl?: string }> {
+/** A single status request; hosted waiting belongs to the durable scheduler. */
+export async function pollVideoTaskOnce(config: KlingConfig, taskId: string): Promise<{ url: string; duration: number; coverImageUrl?: string } | null> {
   const token = await generateJwtToken(config);
   const baseUrl = config.apiUrl || DEFAULT_KLING_URL;
   const queryUrl = `${baseUrl}/${taskId}`;
-  const start = Date.now();
+  const resp = await fetch(queryUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!resp.ok) throw providerHttpError({ status: resp.status, operation: "poll", message: `Kling poll error: ${resp.status}` });
 
-  while (Date.now() - start < maxWaitMs) {
-    const resp = await fetch(queryUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!resp.ok) throw new Error(`Kling poll error: ${resp.status}`);
+  const result = (await resp.json()) as KlingResult;
+  if (result.code !== 0) throw new Error(`Kling query failed: ${JSON.stringify(result)}`);
 
-    const result = (await resp.json()) as KlingResult;
-    if (result.code !== 0) throw new Error(`Kling query failed: ${JSON.stringify(result)}`);
-
-    const status = result.data?.task_status;
-    if (status === "succeed") {
-      const videos = result.data.task_result?.videos;
-      if (!videos?.length) throw new Error("No videos in completed result");
-      return { url: videos[0].url, duration: videos[0].duration, coverImageUrl: videos[0].cover_image_url };
-    }
-    if (status === "failed") {
-      throw new Error(`Video generation failed: ${JSON.stringify(result.data)}`);
-    }
-
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  const status = result.data?.task_status;
+  if (status === "succeed") {
+    const videos = result.data.task_result?.videos;
+    if (!videos?.length) throw new Error("No videos in completed result");
+    return { url: videos[0].url, duration: videos[0].duration, coverImageUrl: videos[0].cover_image_url };
+  }
+  if (status === "failed") {
+    throw new Error(`Video generation failed: ${JSON.stringify(result.data)}`);
   }
 
-  throw new Error(`Video generation timed out after ${maxWaitMs}ms. Task: ${taskId}`);
-}
-
-/** Generate video from image — creates task and polls to completion. */
-export async function generateVideo(
-  config: KlingConfig,
-  params: KlingGenerateParams
-): Promise<{ url: string; duration: number; coverImageUrl?: string; taskId: string }> {
-  const taskId = await createVideoTask(config, params);
-  const result = await pollVideoTask(config, taskId);
-  return { ...result, taskId };
+  return null;
 }

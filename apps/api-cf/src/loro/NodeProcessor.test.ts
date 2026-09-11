@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LoroDoc } from "loro-crdt";
 import { processPendingNodes, recoverOrphanedTasks } from "./NodeProcessor";
+import { startGeneration } from "../generation/start";
+vi.mock("../generation/start", () => ({ startGeneration: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../generation/status", () => ({ hostedGenerationStatus: vi.fn().mockResolvedValue(undefined) }));
 import type { Env } from "../config";
 
 // Mock describe service
@@ -77,6 +80,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(startGeneration).mockReset().mockResolvedValue(undefined);
     // Mock crypto.randomUUID
     vi.spyOn(crypto, "randomUUID").mockReturnValue("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
   });
@@ -104,7 +108,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
     expect(doc.getMap("nodes").get("seedance-edit")).toMatchObject({
       data: {
         status: "failed",
@@ -121,7 +125,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
     expect(triggerPolling).not.toHaveBeenCalled();
   });
 
@@ -137,7 +141,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
   });
 
   it("submits image_gen task for pending image without src", async () => {
@@ -153,7 +157,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
     // GENERATION_WORKFLOW.create should have been called with correct params
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(
+    expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
         id: "proj-1-gen-node-img-1",
         params: expect.objectContaining({
@@ -165,7 +169,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     );
 
     // GENERATION_WORKFLOW should have been called
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalled();
+    expect(startGeneration).toHaveBeenCalled();
 
     // triggerPolling should have been called
     expect(triggerPolling).toHaveBeenCalled();
@@ -195,7 +199,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(
+    expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
         params: expect.objectContaining({
           type: "video_gen",
@@ -271,7 +275,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(expect.objectContaining({
+    expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(expect.objectContaining({
       params: expect.objectContaining({
         promptParts: [
           { type: "text", text: "Use " },
@@ -312,7 +316,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
     expect(doc.getMap("nodes").get("custom-worker-node")).toMatchObject({
       data: {
         status: "failed",
@@ -322,50 +326,11 @@ describe("NodeProcessor - processPendingNodes", () => {
     });
     expect(triggerPolling).not.toHaveBeenCalled();
   });
-  it("submits description task for completed asset without description", async () => {
-    const doc = makeDoc([
-      {
-        id: "node-img-2",
-        type: "image",
-        data: { status: "completed", assetId: "asset-img-2" },
-      },
-    ]);
-    const env = makeEnv({
-      DB: {
-        prepare: vi.fn().mockReturnValue({
-          bind: vi.fn().mockReturnValue({
-            run: vi.fn().mockResolvedValue({}),
-            all: vi.fn().mockResolvedValue({ results: [] }),
-            first: vi.fn().mockResolvedValue({
-              id: "asset-img-2",
-              userId: "u-1",
-              kind: "image",
-              srcR2Key: "projects/proj-1/assets/img.png",
-              coverR2Key: null,
-              metadata: null,
-              sources: null,
-              sourceModel: null,
-              sourcePrompt: null,
-              sourceTaskId: null,
-              createdAt: 1,
-              updatedAt: 1,
-            }),
-          }),
-        }),
-      } as any,
-    });
-
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
-
-    // Should have submitted desc workflow
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        params: expect.objectContaining({
-          type: "image_desc",
-          nodeId: "node-img-2",
-        }),
-      })
-    );
+  it("does not enqueue the retired description no-op for a completed asset", async () => {
+    const doc = makeDoc([{ id: "completed", type: "image", data: { status: "completed", assetId: "asset" } }]);
+    await processPendingNodes(doc, makeEnv(), "project", broadcast, triggerPolling);
+    expect(startGeneration).not.toHaveBeenCalled();
+    expect((doc.getMap("nodes").get("completed") as any).data.status).toBe("completed");
   });
 
   it("when Workflow submission fails, pendingTask is cleared and node marked failed", async () => {
@@ -378,11 +343,8 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
 
     // Make GENERATION_WORKFLOW.create throw
-    const env = makeEnv({
-      GENERATION_WORKFLOW: {
-        create: vi.fn().mockRejectedValue(new Error("Workflow down")),
-      } as any,
-    });
+    const env = makeEnv();
+    vi.mocked(startGeneration).mockRejectedValueOnce(new Error("Workflow down"));
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
@@ -402,11 +364,8 @@ describe("NodeProcessor - processPendingNodes", () => {
       },
     ]);
 
-    const env = makeEnv({
-      GENERATION_WORKFLOW: {
-        create: vi.fn().mockRejectedValue(new Error("Workflow error")),
-      } as any,
-    });
+    const env = makeEnv();
+    vi.mocked(startGeneration).mockRejectedValueOnce(new Error("Workflow error"));
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
@@ -427,7 +386,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
     expect(triggerPolling).not.toHaveBeenCalled();
   });
 
@@ -446,7 +405,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(
+    expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
         id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         params: expect.objectContaining({
@@ -519,7 +478,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(
+    expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
         params: expect.objectContaining({
           type: "video_render",
@@ -608,7 +567,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith(
+    expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
         params: expect.objectContaining({
           type: "video_render",
@@ -669,7 +628,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
     const node = doc.getMap("nodes").get("n-render") as any;
     expect(node.data.status).toBe("failed");
     expect(node.data.error).toContain("media item(s) without src");
@@ -717,7 +676,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
   });
 
   it("does not call triggerPolling when no tasks were submitted", async () => {
@@ -744,17 +703,10 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     let pendingTaskAtCreateTime: string | null = null;
     let statusAtCreateTime: string | null = null;
-    const env = makeEnv({
-      GENERATION_WORKFLOW: {
-        create: vi.fn().mockImplementation(async () => {
-          // Check node state at the time workflow.create is called
-          const nodesMap = doc.getMap("nodes");
-          const nodeData = nodesMap.get("node-lock") as any;
-          pendingTaskAtCreateTime = nodeData.data.pendingTask;
-          statusAtCreateTime = nodeData.data.status;
-          return { id: "wf-id" };
-        }),
-      } as any,
+    const env = makeEnv();
+    vi.mocked(startGeneration).mockImplementationOnce(async () => {
+      pendingTaskAtCreateTime = (doc.getMap("nodes").get("node-lock") as any).data.pendingTask;
+      statusAtCreateTime = (doc.getMap("nodes").get("node-lock") as any).data.status;
     });
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
@@ -777,8 +729,8 @@ describe("NodeProcessor - processPendingNodes", () => {
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
     // Should not submit a new task
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
   });
 
   it("completed node with description is not re-processed", async () => {
@@ -793,7 +745,7 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
 
-    expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
+    expect(startGeneration).not.toHaveBeenCalled();
     expect(triggerPolling).not.toHaveBeenCalled();
   });
 

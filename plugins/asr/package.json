@@ -19,7 +19,8 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/action-sdk": "workspace:*",

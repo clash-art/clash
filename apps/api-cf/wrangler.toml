@@ -213,3 +213,7 @@ BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # explicitly (empty = falls through to RENDER_CONTAINER DO at runtime).
 RENDER_SERVER_URL = ""
 MEDIA_GATEWAY_URL = ""
+
+# Recover journaled generation whose Workflow scheduling or execution was interrupted.
+[triggers]
+crons = ["* * * * *"]

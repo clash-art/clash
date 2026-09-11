@@ -13,6 +13,10 @@ function gatewayEnv(): Env {
 }
 
 describe("web worker Asset routing boundary", () => {
+  it.each(["snapshot", "updates", "metadata"])("routes Project Loro %s to the authenticated API boundary", async suffix => {
+    const response = await worker.fetch(new Request(`https://clash.test/loro/project/${suffix}`), gatewayEnv());
+    expect(response.status).toBe(418);
+  });
   it("does not carve anonymous upload out to api-cf", async () => {
     const response = await worker.fetch(
       new Request("https://clash.test/upload", { method: "POST" }),

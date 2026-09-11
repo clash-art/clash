@@ -14,7 +14,8 @@ import * as textGeneration from "./text-generation.js";
 // browser.ts, so every Worker-safe API the root entry publishes must also be
 // reachable here and must be the same implementation, not a re-declaration.
 const workerSafeSurface: ReadonlyArray<readonly [string, unknown]> = [
-  ["generateBflFlux3Video", bflVideo.generateBflFlux3Video],
+  ["submitBflFlux3Video", bflVideo.submitBflFlux3Video],
+  ["pollBflFlux3VideoOnce", bflVideo.pollBflFlux3VideoOnce],
   ["resolveFlux3KeyframeIndices", bflVideo.resolveFlux3KeyframeIndices],
   ["buildBflFlux3VideoRequest", bflVideo.buildBflFlux3VideoRequest],
   ["createGeminiOmniInteraction", geminiOmni.createGeminiOmniInteraction],
@@ -27,7 +28,6 @@ const workerSafeSurface: ReadonlyArray<readonly [string, unknown]> = [
   ["createPikaMediaJob", pikaMedia.createPikaMediaJob],
   ["getPikaMediaJob", pikaMedia.getPikaMediaJob],
   ["getPikaMediaContent", pikaMedia.getPikaMediaContent],
-  ["waitForPikaMediaJob", pikaMedia.waitForPikaMediaJob],
   ["PIKA_MEDIA_BASE_URL", pikaMedia.PIKA_MEDIA_BASE_URL],
   ["generatePikaChat", pikaChat.generatePikaChat],
   ["buildPikaMediaRequest", pikaRequest.buildPikaMediaRequest],

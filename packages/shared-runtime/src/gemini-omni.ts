@@ -1,3 +1,4 @@
+import { providerHttpError } from "@clash/action-sdk/executable-failure";
 export type GeminiOmniInputPart =
   | { type: "text"; text: string }
   | { type: "image"; data: string; mimeType: string };
@@ -118,7 +119,7 @@ async function parseJsonResponse(response: Response, operation: string): Promise
     json = { error: { message: raw || response.statusText } };
   }
   if (!response.ok) {
-    throw new Error(`Gemini Omni ${operation} failed: ${json?.error?.message ?? response.statusText}`);
+    throw providerHttpError({ status: response.status, operation: operation === "interaction creation" ? "submit" : "poll", message: `Gemini Omni ${operation} failed: ${json?.error?.message ?? response.statusText}` });
   }
   return json;
 }
@@ -267,10 +268,8 @@ export async function downloadGeminiOmniVideo(input: {
   accessToken?: string;
   uri: string;
   baseUrl?: string;
-  pollIntervalMs?: number;
-  maxAttempts?: number;
   fetch?: typeof fetch;
-}): Promise<{ bytes: ArrayBuffer; mimeType: string }> {
+}): Promise<{ bytes: ArrayBuffer; mimeType: string } | undefined> {
   const fetchImpl = input.fetch ?? fetch;
   const match = /(?:^|\/)files\/([^/:?#]+)/.exec(input.uri);
   if (match?.[1]) {
@@ -286,37 +285,18 @@ export async function downloadGeminiOmniVideo(input: {
       }
     }
     const metadataUrl = `${baseUrl}/files/${encodeURIComponent(fileId)}`;
-    let active = false;
-    for (let attempt = 0; attempt < (input.maxAttempts ?? 120); attempt += 1) {
-      const metadataResponse = await fetchImpl(metadataUrl, {
-        method: "GET",
-        headers: headers(input),
-      });
-      const metadata = await parseJsonResponse(metadataResponse, "file polling");
-      const state = typeof metadata?.state === "string"
-        ? metadata.state
-        : typeof metadata?.state?.name === "string"
-          ? metadata.state.name
-          : "";
-      if (state.toUpperCase() === "ACTIVE") {
-        active = true;
-        break;
-      }
-      if (state.toUpperCase() === "FAILED") {
-        throw new Error("Gemini Omni generated video file processing failed.");
-      }
-      if ((input.pollIntervalMs ?? 5_000) > 0) {
-        await new Promise((resolve) => setTimeout(resolve, input.pollIntervalMs ?? 5_000));
-      }
-    }
-    if (!active) throw new Error("Gemini Omni generated video file did not become ACTIVE.");
+    const metadataResponse = await fetchImpl(metadataUrl, { method: "GET", headers: headers(input) });
+    const metadata = await parseJsonResponse(metadataResponse, "file polling");
+    const state = typeof metadata?.state === "string" ? metadata.state : typeof metadata?.state?.name === "string" ? metadata.state.name : "";
+    if (state.toUpperCase() === "FAILED") throw new Error("Gemini Omni generated video file processing failed.");
+    if (state.toUpperCase() !== "ACTIVE") return undefined;
     const response = await fetchImpl(`${metadataUrl}:download?alt=media`, {
       method: "GET",
       headers: headers(input),
     });
     if (!response.ok) {
       const message = await response.text();
-      throw new Error(`Gemini Omni video download failed: ${message || response.statusText}`);
+      throw providerHttpError({ status: response.status, operation: "poll", message: `Gemini Omni video download failed: ${message || response.statusText}` });
     }
     return {
       bytes: await response.arrayBuffer(),
@@ -338,7 +318,7 @@ export async function downloadGeminiOmniVideo(input: {
   const response = await fetchImpl(input.uri, { method: "GET", headers: downloadHeaders });
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(`Gemini Omni video download failed: ${message || response.statusText}`);
+    throw providerHttpError({ status: response.status, operation: "poll", message: `Gemini Omni video download failed: ${message || response.statusText}` });
   }
   return {
     bytes: await response.arrayBuffer(),

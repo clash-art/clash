@@ -197,3 +197,43 @@ describe("ResourceReplicator", () => {
     );
   });
 });
+
+it("rejects known oversize before opening local bytes and bounds dishonest download chunks", async () => {
+  const maxBytes = bytes.byteLength;
+  const local = store(bytes);
+  const delivery: AssetDeliveryPort = {
+    issueReadUrl: async () => url("read"),
+    issueUploadUrl: async () => url("upload"),
+  };
+  await expect(
+    pushResource({
+      resource: { ...resource, byteLength: maxBytes + 1 },
+      local,
+      delivery,
+      scope: { tenantId: "tenant" },
+      maxBytes,
+    }),
+  ).rejects.toMatchObject({ code: "CLOUD_CONTENT_TOO_LARGE", maxBytes });
+  expect(local.read).not.toHaveBeenCalled();
+  const receiver = store();
+  await expect(
+    pullResource({
+      resource,
+      local: receiver,
+      delivery,
+      scope: { tenantId: "tenant" },
+      maxBytes,
+      fetch: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.enqueue(new Uint8Array(1));
+              controller.close();
+            },
+          }),
+        ),
+    }),
+  ).rejects.toMatchObject({ code: "CLOUD_CONTENT_TOO_LARGE", maxBytes });
+  expect(receiver.write).not.toHaveBeenCalled();
+});

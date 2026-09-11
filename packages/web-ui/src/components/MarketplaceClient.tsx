@@ -1,3 +1,4 @@
+import { marketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 import { useMemo, useState } from "react";
 import type { RegistryItem } from "@clash/web-ui/lib/clientActions";
 import { MarketplaceItemCard } from "./MarketplaceItemCard";
@@ -49,6 +50,7 @@ export default function MarketplaceClient({
     [installedPluginIds],
   );
   const canManage = mode === "manage";
+  const hasInstaller = canManage && items.some(item => marketplaceInstallation(item));
 
   const filtered = useMemo(() => {
     let result =
@@ -109,10 +111,10 @@ export default function MarketplaceClient({
           description={
             catalogScope === "official-picks"
               ? "Creative tools and skills selected by Clash, with original sources credited"
-              : canManage
+              : hasInstaller
                 ? catalogScope === "plugins-and-actions"
-                  ? "Install Clash plugins and actions for your workspace"
-                  : "Install actions and skills for your workspace"
+                  ? "Install supported Clash plugins for your workspace"
+                  : "Install supported plugins and skills for your workspace"
                 : catalogScope === "plugins-and-actions"
                   ? "Plugins and actions for Clash projects"
                   : "Actions and skills for Clash agents"

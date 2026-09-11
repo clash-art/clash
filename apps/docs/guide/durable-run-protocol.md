@@ -221,17 +221,64 @@ recovery decisions. An adapter owns persistence and byte staging only:
 | Realm | Journal                 | Byte staging                    | Project publication                           | Delivery status |
 | ----- | ----------------------- | ------------------------------- | --------------------------------------------- | --------------- |
 | Local | SQLite run/step journal | Local content-addressed storage | Native Run/Output Commit or legacy projection | Current work    |
-| Cloud | Workflow journal        | OSS staging                     | `ProjectPublisher`                            | Future port     |
+| Cloud | D1 private journal + Workflow scheduling | R2 bytes + immutable receipts | Hosted legacy D1 Asset + sequenced Canvas projection | Delivered legacy path |
 
 Cloud must implement these three ports together: **Workflow journal + OSS
 staging + ProjectPublisher**. A Workflow that bypasses the shared graph, writes
 Loro directly, or invents a second output lifecycle is not this protocol.
 
-### Future Cloud adapter port contract (design only)
+### Current hosted generation adapter
 
-This subsection is an implementation contract for a later Cloud adapter. None
-of the components or transitions below are claimed as delivered in the current
-work.
+`startGeneration` now admits all live HTTP, agent and NodeProcessor generation
+through `generation/runtime.ts`. It freezes request and selected account references
+in the private D1 journal before starting the existing task-ID Workflow. The
+Workflow drives the shared engine: each advance submits once or polls once,
+checkpoints the opaque token, and uses durable `sleepUntil` for waiting. R2 broker
+receipts verify media bytes before a completed result is checkpointed; the later
+stage prepares the existing D1 Asset. ProjectRoom uses shared Canvas operations
+on a detached candidate and acknowledges replica append before publication is
+complete. Only then does the publisher expose the Project Asset reference.
+Text outputs retain their existing node content projection. This is the supported
+legacy projection, **not native Generator Output Commit publication**.
+
+`GET /api/tasks/:taskId`, TaskPolling and orphan recovery prefer the journal over
+legacy Asset rows. A prepared Asset cannot imply success. A superseded or deleted
+output node cannot be overwritten by late completion, and its old run can report
+failed without waiting forever for an obsolete failure projection. Historical
+tasks without a journal retain the deliberate old lookup path. The nonfunctional
+`/api/describe` endpoint returns an explicit retirement response; automatic
+no-op description jobs are no longer created. Use the supported visual
+understanding generation flow when a textual analysis is needed.
+
+The default Worker scheduled handler resumes due journals without changing frozen
+identity; deployments using an injected entrypoint must wire the exported recovery
+handler too. Runtime admission is rechecked before submit, including recovery after
+a failed scheduling/claim request. Workflow steps use a finite 30-minute timeout
+aligned with attempt deadlines; completed media is represented by handles rather
+than a large Workflow step result. Cloudflare documents the step timeout and
+non-stream result constraints in its [Workflow rules](https://developers.cloudflare.com/workflows/build/rules-of-workflows/).
+
+`beforeGenerationStart` remains the read-only admission check. `beforeGenerate`
+retains credit holds, `afterGenerate` runs after successful output publication,
+and `onFailure` handles terminal failure. Private R2 completion markers avoid
+ordinary hook replay; a crash between an external billing effect and its marker
+remains at-least-once. Billing integrations must deduplicate by stable task ID.
+If settlement repeatedly fails after output publication, the journal reports the
+failure without deleting the already published immutable output; owner-side
+billing reconciliation is required. No exactly-once billing claim is made.
+
+Pre-migration Workflow payloads without a durable identity are rejected explicitly
+for owner-side reconciliation. Their old in-memory provider tokens cannot safely
+be reconstructed, so migration must not blindly submit another paid request.
+D1 migrations, R2/Workflow/ProjectRoom bindings, recovery scheduling and configured
+provider accounts are deployment prerequisites; local tests are not live provider
+or deployment evidence.
+
+### Native Cloud adapter extension contract
+
+The following contract also describes native Generator/public Run admission, which
+remains future work. The delivered hosted legacy adapter implements the shared
+journal/staging/publication lifecycle, but does not claim these native outputs.
 
 The Cloud adapter must bind one `actionRunId` to one Workflow owner and provide
 the same atomic journal operations used by the Local engine:
@@ -664,8 +711,9 @@ account-grant checks. Credentials stay inside the selected realm.
 `ProjectPublisher` rechecks that the caller owns the Task, may publish to its
 Project, and is writing a declared output slot. The Local publisher applies the
 mutation to the canonical local replica; optional replication separately
-enforces hosted admission at `ProjectRoom`. A future Cloud publisher must have
-the room enforce hosted admission and sequencing before publication. Being able
+enforces hosted admission at `ProjectRoom`. The hosted legacy Cloud publisher has the room enforce ownership, current task
+identity and durable sequencing; native Cloud admission additionally requires
+the declared Generator/Action permissions. Being able
 to read synchronized run state or possessing a Resource identifier grants
 neither execution ownership nor publish permission.
 

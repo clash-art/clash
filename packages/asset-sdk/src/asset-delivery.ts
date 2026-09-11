@@ -15,6 +15,8 @@ export type AssetDeliveryPurpose =
 export interface AssetDeliveryScope {
   tenantId: string;
   projectId?: string;
+  /** Exact admitted machine when used for Project replication. */
+  localReplicaId?: string;
 }
 
 export interface AssetDeliveryReadRequest {
@@ -120,6 +122,14 @@ function validateScope(scope: AssetDeliveryScope): AssetDeliveryScope {
   }
   return {
     tenantId: required(scope.tenantId, "scope.tenantId"),
+    ...(scope.localReplicaId === undefined
+      ? {}
+      : {
+          localReplicaId: required(
+            scope.localReplicaId,
+            "scope.localReplicaId",
+          ),
+        }),
     ...(scope.projectId === undefined
       ? {}
       : { projectId: required(scope.projectId, "scope.projectId") }),

@@ -1,3 +1,5 @@
+import { createLocalProjectCloudSync } from "./project-cloud-sync.js";
+import { localProjectSyncMetadata } from "./app.js";
 import { registerProjectRenderer } from "./project-renderer.js";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
 import { createLocalProjectUpgrade } from "./local-project-upgrade.js";
@@ -1273,6 +1275,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     join(options.dataDir, "projects"),
   );
   let roomHub: LocalLoroRoomHub | undefined;
+  let projectCloudSync: ReturnType<typeof createLocalProjectCloudSync> | undefined;
   const projectAssetReplica: LocalProjectAssetReplica = {
     async inspect(projectId, read) {
       if (roomHub) return roomHub.inspectProject(projectId, read);
@@ -1724,26 +1727,19 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     );
   };
   const clashUserConfigStore = createClashUserConfigStore(options.dataDir);
-  const syncConfigSection = await clashUserConfigStore.getSection<{
-    remote_loro?: { url?: unknown };
-  }>("sync");
-  const cloudAdmissionBaseUrl =
-    process.env.CLASH_REMOTE_LORO_URL?.trim() ||
-    (typeof syncConfigSection?.remote_loro?.url === "string"
-      ? syncConfigSection.remote_loro.url.trim()
-      : "");
-  const cloudAdmission =
-    options.cloudAdmission ??
-    (cloudAdmissionBaseUrl
-      ? createHttpCloudAdmissionClient({
-          baseUrl: cloudAdmissionBaseUrl,
-          token: async () => {
-            const credentials = await clashUserConfigStore.getCredentials();
-            const token = credentials.syncRemoteLoroToken ?? credentials.cliApiKey;
-            return typeof token === "string" ? token : undefined;
-          },
-        })
-      : undefined);
+  const resolveCloudAdmission = async () => {
+    if (options.cloudAdmission) return options.cloudAdmission;
+    const config = await syncConfig.getPublicConfig();
+    const baseUrl = config.remote_loro.url;
+    return baseUrl ? createHttpCloudAdmissionClient({
+      baseUrl,
+      token: async () => {
+        const credentials = await clashUserConfigStore.getCredentials();
+        const value = process.env.CLASH_REMOTE_LORO_TOKEN ?? credentials.syncRemoteLoroToken ?? credentials.cliApiKey;
+        return typeof value === "string" ? value : undefined;
+      },
+    }) : undefined;
+  };
   const mediaAnalysisConfig = createLocalMediaAnalysisConfigStore({
     dataDir: options.dataDir,
     resolveOptions: (sourceKind) =>
@@ -1787,10 +1783,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     falMock,
     syncConfig,
     publicAssetStorage,
-    ...(cloudAdmission ? { cloudAdmission } : {}),
+    resolveCloudAdmission,
     ensureProjectSync: async (projectId) => {
-      await roomHub?.room(projectId);
+      await projectCloudSync?.schedule(projectId);
     },
+    onProjectChanged: async projectId => { await projectCloudSync?.invalidate(projectId); },
     audioConfig,
     mediaAnalysisConfig,
     resolveGeneratorModelExecution: createLocalModelExecutionPlanner({
@@ -2019,7 +2016,27 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       rememberDefinition: projectUpgradeJournal.rememberGeneratorDefinition,
       modelCards: async () => loadLocalModelCards(options.dataDir, "local-user", await listPluginCards(), await listPluginModelBindings()),
     }),
+    async projectId => { await projectCloudSync?.invalidate(projectId); },
   );
+  const cloudSyncMetadata = createLocalMetadataStore(options.dataDir);
+  projectCloudSync = createLocalProjectCloudSync({
+    dataDir: options.dataDir, rooms: roomHub, inspection: assetInspection,
+    remote: async projectId => typeof remotePersistence === "function" ? remotePersistence(projectId) : remotePersistence,
+    metadata: {
+      list: async () => (await cloudSyncMetadata.load()).projects.filter(project => !project.deletedAt).map(project => project.id),
+      read: async projectId => {
+        const project = (await cloudSyncMetadata.load()).projects.find(project => project.id === projectId);
+        return project ? localProjectSyncMetadata(project) : null;
+      },
+      write: metadata => cloudSyncMetadata.applyProjectSyncMetadata(metadata),
+    },
+    token: async () => {
+      const credentials = await clashUserConfigStore.getCredentials();
+      const value = process.env.CLASH_REMOTE_LORO_TOKEN ?? credentials.syncRemoteLoroToken ?? credentials.cliApiKey;
+      return typeof value === "string" ? value : undefined;
+    },
+  });
+  await projectCloudSync.start();
   let resolveListening!: (server: ReturnType<typeof serve>) => void;
   let rejectListening!: (error: unknown) => void;
   let settled = false;
@@ -2086,6 +2103,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     async () => {
       configWatcherClosed = true;
       stopConfigWatcher();
+      await projectCloudSync?.close();
       await Promise.all([
         assetRepresentations.close(),
         localAcp?.disposeAll(),

@@ -1,3 +1,4 @@
+import { hostedGenerationStatus } from "../generation/status";
 /**
  * Node Processor - Task Submission via Cloudflare Workflows
  *
@@ -103,6 +104,13 @@ async function inspectWorkflowStatus(
   env: Env,
   taskId: string
 ): Promise<{ status: string; error?: string } | null> {
+  try {
+    const durable = await hostedGenerationStatus(env, taskId);
+    if (durable) return { status: "journal-managed" };
+  } catch (error) {
+    log.warn("Durable generation status unavailable", { taskId, error: String(error) });
+    return null;
+  }
   const wf = getWorkflowBinding(env);
   if (!wf) return null;
 
@@ -362,6 +370,8 @@ export async function recoverOrphanedTasks(
   await Promise.allSettled(
     candidates.map(async ({ nodeId, nodeType, pendingTask, pendingTaskAt, modelId }) => {
       const info = await inspectWorkflowStatus(env, pendingTask);
+      const current = doc.getMap('nodes').get(nodeId) as { data?: { pendingTask?: string } } | undefined;
+      if (current?.data?.pendingTask !== pendingTask || info?.status === 'journal-managed') return;
       const age = pendingTaskAt ? Date.now() - pendingTaskAt : undefined;
       const runningTooLong = info?.status === 'running'
         && age !== undefined
@@ -761,49 +771,7 @@ export async function processPendingNodes(
         }
       }
 
-      // Case 2: completed + has asset + no description -> submit description task
-      if (status === Status.Completed && assetId && !description && nodeType !== 'audio' && !pendingTask) {
-        const assetRow = await getAssetById(env.DB, assetId);
-        if (!assetRow?.srcR2Key) {
-          log.warn('desc.skip_no_asset', { nodeId, assetId });
-          continue;
-        }
 
-        const taskId = crypto.randomUUID();
-        const tag = { nodeId, taskId, type: 'desc' };
-
-        // Set pendingTask synchronously (optimistic lock) before any await
-        updateNodeData(doc, nodeId, { pendingTask: taskId, pendingTaskAt: Date.now() }, broadcast);
-        log.info("Submitting desc task", tag);
-
-        const taskType: GenerationParams['type'] = nodeType === 'image' ? 'image_desc' : 'video_desc';
-
-        // Desc is an automation triggered by completion. Inherit actor
-        // from the source node's data (set at creation time). If the
-        // node was created before Phase 0 attribution we attribute the
-        // description to the asset's stored owner — desc isn't billed
-        // anyway today, so falling back to assetRow.userId is safe.
-        const descActorUserId = (typeof innerData.actorUserId === 'string' ? innerData.actorUserId : undefined)
-          ?? assetRow.userId
-          ?? '';
-        const descActorType: 'user' | 'agent' = innerData.actorType === 'agent' ? 'agent' : 'user';
-        const descActorAgentId = typeof innerData.actorAgentId === 'string' ? innerData.actorAgentId : undefined;
-
-        const result = await submitDescTask(env, taskType, projectId, nodeId, taskId, {
-          r2Key: assetRow.srcR2Key,
-          mimeType: nodeType === 'image' ? 'image/png' : 'video/mp4',
-          actorType: descActorType,
-          actorUserId: descActorUserId,
-          actorAgentId: descActorAgentId,
-        });
-
-        if (result.error) {
-          // Description failure is non-critical — keep completed status
-          updateNodeData(doc, nodeId, { pendingTask: undefined }, broadcast);
-        } else {
-          submitted = true;
-        }
-      }
     }
 
     if (submitted) {
@@ -886,44 +854,6 @@ async function submitGenTask(
       return {};
     }
     log.error('gen.submit_failed', { ...tag, error: String(e) });
-    return { error: String(e) };
-  }
-}
-
-/**
- * Submit a description task (image_desc/video_desc) via Workflow.
- */
-async function submitDescTask(
-  env: Env,
-  taskType: GenerationParams['type'],
-  projectId: string,
-  nodeId: string,
-  taskId: string,
-  params: {
-    r2Key: string;
-    mimeType: string;
-    actorType: 'user' | 'agent';
-    actorUserId: string;
-    actorAgentId?: string;
-  },
-): Promise<{ error?: string }> {
-  try {
-    const genParams: GenerationParams = {
-      taskId,
-      nodeId,
-      type: taskType,
-      projectId,
-      r2Key: params.r2Key,
-      mimeType: params.mimeType,
-      actorType: params.actorType,
-      actorUserId: params.actorUserId,
-      actorAgentId: params.actorAgentId,
-    };
-
-    await startGeneration(env, taskId, genParams);
-    return {};
-  } catch (e) {
-    log.error('Exception during desc submission:', e);
     return { error: String(e) };
   }
 }

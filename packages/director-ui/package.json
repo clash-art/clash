@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --external react --external react-dom --external three",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "test": "vitest run"
   },
   "dependencies": {

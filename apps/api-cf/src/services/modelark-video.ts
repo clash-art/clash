@@ -1,3 +1,4 @@
+import { providerHttpError } from "@clash/action-sdk/executable-failure";
 export interface ModelArkVideoParams {
   baseUrl?: string;
   prompt: string;
@@ -11,8 +12,6 @@ export interface ModelArkVideoParams {
   duration?: number | string;
   aspectRatio?: string;
   modelParams?: Record<string, unknown>;
-  pollIntervalMs?: number;
-  maxWaitMs?: number;
 }
 
 export interface ModelArkVideoResult {
@@ -93,7 +92,7 @@ async function parseJsonResponse(resp: Response, label: string): Promise<any> {
   }
   if (!resp.ok) {
     const message = json?.error?.message ?? json?.message ?? `${resp.status} ${resp.statusText}`;
-    throw new Error(`${label} failed: ${message}`);
+    throw providerHttpError({ status: resp.status, operation: label.includes("retrieve") ? "poll" : "submit", message: `${label} failed: ${message}` });
   }
   return json;
 }
@@ -109,10 +108,10 @@ function buildContent(params: ModelArkVideoParams): Array<Record<string, unknown
   return content;
 }
 
-export async function generateModelArkVideo(
+export async function submitModelArkVideo(
   apiKey: string | undefined,
   params: ModelArkVideoParams,
-): Promise<ModelArkVideoResult> {
+): Promise<{ taskId: string; model: string }> {
   const key = apiKey?.trim();
   if (!key) throw new Error("ModelArk API key is required for Seedance generation.");
   const modelName = params.modelName ?? "seedance-2-ref";
@@ -164,34 +163,38 @@ export async function generateModelArkVideo(
   const taskId = created?.id ?? created?.task_id;
   if (typeof taskId !== "string" || !taskId) throw new Error("ModelArk create task response returned no id.");
 
-  const start = Date.now();
-  const pollIntervalMs = params.pollIntervalMs ?? 5000;
-  const maxWaitMs = params.maxWaitMs ?? 30 * 60 * 1000;
-  while (Date.now() - start <= maxWaitMs) {
-    const pollResp = await fetch(`${endpoint}/${encodeURIComponent(taskId)}`, {
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-    });
-    const polled = await parseJsonResponse(pollResp, "ModelArk retrieve video task");
-    const status = polled?.status ?? polled?.task_status;
-    if (status === "succeeded" || status === "success") {
-      const url = extractVideoUrl(polled);
-      if (!url) throw new Error("ModelArk completed task returned no video URL.");
-      return {
-        url,
-        coverImageUrl: polled?.output?.cover_url ?? polled?.output?.cover_image_url,
-        duration: typeof polled?.output?.duration === "number" ? polled.output.duration : undefined,
-        taskId,
-        model,
-      };
-    }
-    if (status === "failed" || status === "cancelled" || status === "canceled") {
-      throw new Error(`ModelArk video generation failed: ${JSON.stringify(polled?.error ?? polled)}`);
-    }
-    if (pollIntervalMs > 0) await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
+  return { taskId, model };
+}
 
-  throw new Error(`ModelArk video generation timed out after ${maxWaitMs}ms. Task: ${taskId}`);
+export async function pollModelArkVideoOnce(
+  apiKey: string,
+  params: Pick<ModelArkVideoParams, "baseUrl">,
+  token: { taskId: string; model: string },
+): Promise<ModelArkVideoResult | null> {
+  const { taskId, model } = token;
+  const key = apiKey.trim();
+  const endpoint = `${normalizeBaseUrl(params.baseUrl)}/contents/generations/tasks`;
+  const pollResp = await fetch(`${endpoint}/${encodeURIComponent(taskId)}`, {
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+  });
+  const polled = await parseJsonResponse(pollResp, "ModelArk retrieve video task");
+  const status = polled?.status ?? polled?.task_status;
+  if (status === "succeeded" || status === "success") {
+    const url = extractVideoUrl(polled);
+    if (!url) throw new Error("ModelArk completed task returned no video URL.");
+    return {
+      url,
+      coverImageUrl: polled?.output?.cover_url ?? polled?.output?.cover_image_url,
+      duration: typeof polled?.output?.duration === "number" ? polled.output.duration : undefined,
+      taskId,
+      model,
+    };
+  }
+  if (status === "failed" || status === "cancelled" || status === "canceled") {
+    throw new Error(`ModelArk video generation failed: ${JSON.stringify(polled?.error ?? polled)}`);
+  }
+  return null;
 }

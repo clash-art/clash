@@ -1,10 +1,10 @@
+import { marketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 import { CaretRight, Check, Download } from "@phosphor-icons/react";
 import { CSS } from "@dnd-kit/utilities";
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { RegistryItem } from "@clash/web-ui/lib/clientActions";
 import {
-  marketplaceInstallAction,
   marketplaceInstallPlugin,
   marketplaceInstallSkill,
 } from "@clash/web-ui/lib/clientActions";
@@ -326,6 +326,8 @@ export function MarketplaceItemCard({
   );
   const [addingReference, setAddingReference] = useState(false);
   const installed = initiallyInstalled || installedLocally;
+  const installation = marketplaceInstallation(item);
+  const canInstall = canManage && Boolean(installation);
   const isAction = item.type === "action";
   const isPlugin = item.type === "plugin";
   const isSkill = item.type === "skill";
@@ -342,6 +344,7 @@ export function MarketplaceItemCard({
   const ensureInstalled = useCallback(
     (context: "install" | "reference") => {
       if (installedRef.current) return Promise.resolve(true);
+      if (!marketplaceInstallation(item)) return Promise.resolve(false);
       if (installRequestRef.current) return installRequestRef.current;
 
       setInstalling(true);
@@ -349,9 +352,7 @@ export function MarketplaceItemCard({
       setErrorContext(context);
       const request = (async () => {
         try {
-          if (isAction) {
-            await marketplaceInstallAction(item);
-          } else if (isPlugin) {
+          if (isPlugin) {
             await marketplaceInstallPlugin(item);
           } else {
             await marketplaceInstallSkill(item);
@@ -375,7 +376,7 @@ export function MarketplaceItemCard({
   );
 
   const install = async () => {
-    if (!canManage || installed || installing) return;
+    if (!canInstall || installed || installing) return;
     await ensureInstalled("install");
   };
 
@@ -412,7 +413,7 @@ export function MarketplaceItemCard({
   ]);
 
   const referenceEnabled =
-    isSkill && canAddReference && Boolean(onAddReference);
+    isSkill && canAddReference && Boolean(onAddReference) && (installed || installation?.kind === "skill");
   const draggable = useMarketplaceSkillReferenceDraggable({
     item,
     enabled: referenceEnabled && !isReferenceAdded,
@@ -495,7 +496,7 @@ export function MarketplaceItemCard({
         </Link>
 
         <div className="flex min-h-8 min-w-0 flex-wrap items-center justify-end gap-2 px-4 pb-4">
-          {canManage || referenceEnabled ? (
+          {canInstall || installed || referenceEnabled ? (
             <>
               <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                 {installed ? (
@@ -505,7 +506,7 @@ export function MarketplaceItemCard({
                       weight="bold"
                       aria-hidden="true"
                     />
-                    Installed
+                    {isAction ? "Legacy record" : "Installed"}
                   </Badge>
                 ) : null}
                 {isReferenceAdded ? (
@@ -528,7 +529,7 @@ export function MarketplaceItemCard({
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
-                {canManage && !installed ? (
+                {canInstall && !installed ? (
                   <Button
                     onClick={() => void install()}
                     disabled={installing || addingReference}
@@ -566,11 +567,7 @@ export function MarketplaceItemCard({
                 ) : null}
               </div>
             </>
-          ) : (
-            <Badge variant="secondary" tone="blue" className="w-fit">
-              Available in workspace
-            </Badge>
-          )}
+          ) : null}
         </div>
       </li>
     </Card>

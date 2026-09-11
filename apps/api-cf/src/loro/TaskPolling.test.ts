@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LoroDoc } from "loro-crdt";
 import { hasPendingTasks, pollNodeTasks } from "./TaskPolling";
+import { hostedGenerationStatus } from "../generation/status";
+vi.mock("../generation/status", () => ({ hostedGenerationStatus: vi.fn().mockResolvedValue(undefined) }));
 import type { Env } from "../config";
 
 vi.mock("../services/assets", () => ({
@@ -295,4 +297,28 @@ describe("TaskPolling", () => {
       expect((broadcast as any).mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   });
+});
+
+
+it("does not apply a historical result if a newer task arrived during the status read", async () => {
+  const doc = makeDocWithNodes([{ id: "node", type: "video", data: { pendingTask: "old", status: "generating" } }]);
+  vi.mocked(hostedGenerationStatus).mockResolvedValue(undefined);
+  vi.mocked(getAssetByTaskId).mockImplementationOnce(async () => {
+    const node = doc.getMap("nodes").get("node") as any;
+    doc.getMap("nodes").set("node", { ...node, data: { ...node.data, pendingTask: "new" } });
+    return asset() as any;
+  });
+  await pollNodeTasks(doc, makeEnv(), "project", vi.fn());
+  expect((doc.getMap("nodes").get("node") as any).data).toEqual({ pendingTask: "new", status: "generating" });
+  doc.free();
+});
+
+it("leaves journal-owned node publication to its durable publisher even when legacy bytes exist", async () => {
+  const doc = makeDocWithNodes([{ id: "node", type: "video", data: { pendingTask: "task", status: "generating" } }]);
+  vi.mocked(hostedGenerationStatus).mockResolvedValueOnce({ managedByJournal: true, status: "completed", assetId: "asset" } as any);
+  const lookup = vi.mocked(getAssetByTaskId); lookup.mockClear();
+  await pollNodeTasks(doc, makeEnv(), "project", vi.fn());
+  expect(lookup).not.toHaveBeenCalled();
+  expect((doc.getMap("nodes").get("node") as any).data.pendingTask).toBe("task");
+  doc.free();
 });

@@ -655,3 +655,34 @@ Native drag-connect and Host Canvas edge mutations also use the shared keyframe 
 Unplaced media references are now displayed in authored input order. Removing an unplaced keyframe uses the same atomic keyframe transformation as its placed counterpart, updating timing and contentParts together. Removal is keyed by slot/itemKey as well as Asset identity, preserving other occurrences of the same Asset. The unplaced timing editor and its verification are described below.
 
 The native keyframe strip and timing dialog now enumerate exact Revision input identities, including Assets without Canvas placements. Thumbnails resolve from Project Assets, repeated Asset identities remain separate frame occurrences, and count validation uses native inputs. Unplaced image keyframes no longer appear twice in the generic reference list. Timing edits preserve the complete sequence and refuse to overwrite a sequence changed while the edit was queued. Component coverage includes changing an unplaced middle keyframe at 24 fps through one revision request. Real browser verification changed the middle frame from 1s to 2s and restored it to 1s; formal Host readback retained the three distinct input identities throughout (see the Hilo E2E artifact report).
+
+## Marketplace installation authority
+
+The Local Host marketplace installs executable plugin packages through its existing
+package installer and activation receipt verifier. Its registry and featured feed
+include an `installation` operation only for a matching catalog entry whose Host
+installer and verifier are available. A `packageId`, remote manifest, or Worker URL
+alone is not an executable installation contract. The backend independently looks
+up the requested package in its own catalog and validates the active package after
+installation; it does not accept catalog capabilities supplied by a caller.
+
+The production path is `server.ts` → `local-marketplace.ts` → the existing bundled
+plugin installer and `readHostExecutablePluginPackage`. Repeated installation may
+produce an installer no-op (`installed: false` internally); the HTTP operation
+confirms `installed: true` only after a valid matching active package is present.
+Drifted packages are excluded from usable installed state. Built-in immutable
+plugins have no install action. Skill installation remains a separate Host workflow
+using the existing skills installer, followed by its installed-files/lock reader.
+An already installed skill can still be referenced in the composer from a read-only
+catalog without reinstalling it.
+
+The hosted cloud catalog is read-only: it does not offer the Local Host installer.
+Marketplace cards and management pages display install buttons only for operations
+provided by their serving backend. Hosted legacy Action records remain readable
+and removable in Settings, explicitly as historical manifests rather than proof of
+executable availability. `POST /api/settings/actions` and the former Local Host
+`POST /api/marketplace/actions/:packageId/install` return
+`410 LEGACY_ACTION_INSTALL_RETIRED`. Use a supported executable plugin from the
+Local Host marketplace instead; these endpoints do not write a replacement record.
+Cloud execution infrastructure and existing generation providers remain separate
+from this retired manifest-installation path.

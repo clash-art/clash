@@ -8,9 +8,10 @@
 > room. The native `clash.asr` Generator publishes timed transcript Documents.
 > CLI/MCP exact-revision reads, Model card Document mention/picker inputs, and
 > exact Document graph add/rewire/remove/copy for Models and mapped Agent Text
-> Actions are
-> delivered. CLI/MCP authoring, native file projections, legacy ASR consumer migration, and
-> legacy metadata migration are not delivered in this snapshot.
+> Actions are delivered. CLI native Document create/read/history/copy/attachments
+> and pull/edit/apply now use the Local Host authority with implicit observations.
+> MCP authoring, legacy ASR consumer migration, and automatic legacy metadata
+> migration remain outside the delivered boundary.
 
 A **Document Asset** is structured, typed product content with a stable head
 over immutable revisions. Examples include a timed transcript, a media
@@ -54,10 +55,11 @@ mutability, projection format/editability, allowed attachment target kinds,
 and the standard product consumers that understand it. An empty consumer list
 means storage/projection support only; it grants no implicit product behavior.
 
-The delivered built-in declarations are:
+The delivered built-in declarations include:
 
 | Kind                     | Policy      | Projection     | Declared consumers                   |
 | ------------------------ | ----------- | -------------- | ------------------------------------ |
+| `text.plain@1`           | `versioned` | editable text  | storage/projection contract          |
 | `media.transcript@1`     | `versioned` | editable JSON  | captions, transcript editing, search |
 | `media.description@1`    | `versioned` | editable JSON  | search, agent context                |
 | `media.render-lineage@1` | `immutable` | read-only JSON | provenance                           |
@@ -83,10 +85,15 @@ for different immutable facts fails. The authority treats an identical replay
 as idempotent. Existing Generator inputs, Run inputs, attachments, and output
 commits remain pinned to the exact older revision until explicitly rewired.
 
-This is the same user-facing rule intended for projected text: read the current
-revision, edit a native file projection, and apply with CAS. The Document
-authority needed for that rule is delivered; a general Document checkout/apply
-CLI or GUI is not.
+The CLI implements this through `documents pull`, native file edits, and
+`documents apply`. Each file retains its original observed revision and Host
+receipt in `.clash/observed.json`; a later `get` or another file's successful
+apply cannot refresh that draft's baseline. A dirty file is never overwritten
+by pull. Reconcile against a fresh file, then apply from its observed baseline.
+An unchanged `documents copy` creates a new Asset with `forkedFrom` pointing to
+the selected exact revision. Existing references and attachments remain on the
+source. A kind with `projection.editable: false` permits reads and unchanged
+copies, but the CLI refuses native editing; copying does not bypass that policy.
 
 ## Attachments
 
@@ -130,8 +137,8 @@ Run.
 The ABI, publication bridge, and Local HTTP compiler from validated Generator
 state/references to a native invocation are delivered. The Local Generator API
 also supports observed-head advancement and the explicit-create COW path.
-CLI/MCP/GUI clients are not delivered, so this should not be presented as a
-complete end-user Document authoring flow yet.
+Native Document CLI authoring is delivered separately below. MCP authoring and
+a general Document GUI editor are not implied by these Generator APIs.
 
 ## Current Local Host service and HTTP surface
 
@@ -143,7 +150,8 @@ authority and content-addressed body store. It:
   validated body;
 - lists Document heads and revision history as descriptors/body references
   without loading body content;
-- advances a `versioned` head with observed-head CAS;
+- advances a `versioned` head with observed-head CAS and copies exact revisions
+  into a new Asset with existing `forkedFrom` lineage;
 - creates or CAS-advances a revision-pinned attachment; and
 - rejects missing or purged Media sources, missing Document revisions, and
   missing Generator revisions in `sourceRefs`.
@@ -152,23 +160,65 @@ The service stores bodies before the Project mutation, while Project Loro owns
 only the immutable body reference and semantic facts. An unused body left by a
 failed/stale Project CAS is unreferenced storage, not an admitted Document.
 
-The public Local HTTP routes use the same live-room serial mutation/checkpoint
+The public Local HTTP routes in `local-document-routes.ts` use the same live-room serial mutation/checkpoint
 authority as native Generator writes. Create and advance derive a `user` or
 `agent` producer from Host request context; callers cannot submit a producer.
 Collection/history reads return descriptors and body references, while head and
 exact-revision reads validate and return the body.
 
-The service has no explicit immutable-Document COW/fork operation. That gap,
-plus CLI/MCP/native file projection, prevents calling this a complete end-user
-authoring surface.
+Agent mutations require Host-signed observation evidence in internal HTTP
+headers. CLI and MCP output omit these protocol fields without altering fields
+inside the Document body. CLI transport uses the normal Host discovery and
+`apiFetch`; an unavailable Host fails the operation and never writes a legacy
+manifest as a fallback.
+
+## Delivered CLI workflow
+
+All commands below are under `clash assets documents`; project identity is
+resolved from the working-tree marker (or `--project` for explicit reads).
+
+```bash
+clash assets documents kinds --json
+clash assets documents create --kind text.plain --file script.txt
+clash assets documents list --json
+clash assets documents get <document-id>
+clash assets documents history <document-id>
+clash assets documents get <document-id> --revision <revision-id>
+clash assets documents pull <document-id> --file draft.txt
+# edit draft.txt with native tools
+clash assets documents apply <document-id> --file draft.txt
+clash assets documents copy <document-id> --revision <previously-read-revision-id>
+```
+
+`create` accepts `--schema-version` and an optional `--source-refs` JSON file of
+exact shared input references. Body files follow the kind's declared projection:
+`text.plain` is plain text; transcript/description bodies are JSON validated by
+the Host kind registry. Relative paths are relative to the invoking directory;
+pull/apply files must remain inside the linked working tree. Successful entity
+reads record internal observations. Apply, copy, and attachment changes require
+the relevant prior observation; there is no public token, force, or manual CAS
+flag. Immutable revisions remain readable after head advancement and Host
+restart.
+
+`attachments` lists relations; `attachment <id>` reads one. After reading the
+exact Document revision, `attach <document-id> --revision <revision-id>
+--target target.json --slot <slot>` creates a relation. The target JSON follows
+the shared target union above, for example
+`{"kind":"project-asset","projectAssetId":"<media-id>"}`.
+`advance-attachment <attachment-id> --revision <previously-read-revision-id>`
+requires observations of both the attachment and destination revision, and
+advances only within the same Document Asset. It checks the full current
+attachment inside the serial Host mutation. Cross-Document in-place reattach
+is not supported: explicitly attach a copied Document as a new relation;
+existing attachments and downstream inputs are preserved.
 
 ## Legacy metadata boundary
 
 Two systems currently coexist during migration:
 
 - the native Document Asset model described here;
-- the older typed metadata manifest/CAS and attachment query projection used by
-  current `clash assets metadata` workflows.
+- historical typed metadata manifests and the old attachment query index,
+  retained for deliberate compatibility reads.
 
 The older address includes Project Asset and Action Revision targets and
 remains compatibility behavior. It is not an alias for a Document Asset and
@@ -179,12 +229,20 @@ In particular:
 
 - the native `clash.asr` Generator creates `media.transcript@1` Documents, but
   the current legacy ASR endpoint and Timeline transcript flow do not;
-- Local HTTP human/agent authoring exists, but CLI/MCP/native file projection
-  and apply are not connected in this snapshot;
+- `clash assets metadata set/apply`, `projection --kind metadata:*`, and
+  `PUT /api/v1/local/asset-metadata` are retired with explicit replacement
+  guidance; the HTTP writer returns 410;
+- `assets metadata list/get/kinds/validate`, the historical index GET, and old
+  Timeline transcript body reads remain available;
+- CLI Document authoring is connected, while MCP authoring remains unimplemented;
 - native Document deletion, trash, restore, and purge lifecycle is not defined;
 - declared product consumers do not automatically wire captions, search, or
   agent context.
 
+No manifest is automatically imported, replaced, or made authoritative. A user
+can read/export a legacy body, validate it against an appropriate native kind,
+then explicitly create a new Document and attachment with its source references.
+Arbitrary descriptive metadata is not automatically a valid Document body.
 Migration should create explicit Document revisions and attachments, preserve
 source/provenance facts, and move each consumer deliberately. It must not
 silently reinterpret an old metadata row as a delivered native workflow.

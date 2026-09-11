@@ -6,6 +6,7 @@
   ],
   "subdirectories": {},
   "key_files": {
+    "legacy-convergence-roadmap.md": "Sequential high-effort implementation and acceptance roadmap for project cloud readiness, Resource replication, hosted generation, Document metadata, executable plugin installation, schemas/guidance, quality gates, and TypeScript script migration.",
     "../apps/docs/guide/asset-generator-model.md": "Authoritative native Asset + Generator model, including Action purity, public Run/private Task split, plugin realms, and honest product migration status.",
     "../apps/docs/guide/document-assets.md": "Authoritative typed Document Asset identity, registry, versioning/COW, attachment admission, plugin ABI, and legacy metadata boundary.",
     "../apps/docs/guide/asset-system.md": "Authoritative Media Asset, Resource, publication, binding, collaboration, and lifecycle model.",

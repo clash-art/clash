@@ -1,0 +1,4 @@
+{
+  "summary": "Native Node TypeScript CDP, browser, process and HTTP helpers shared by opt-in Web/Desktop verification. The helper is infrastructure for explicit E2E commands, not a product runtime or a default browser launch.",
+  "verification": "Strict TypeScript checks include the CDP helper. harness.test.ts uses a loopback WebSocket fixture to check evaluation, errors and byte capture without starting a browser."
+}

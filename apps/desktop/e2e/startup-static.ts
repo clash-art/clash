@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { KNOWN_ACP_AGENTS } from "../../local-api/src/runtime/host/_acp-runtime/registry.js";
 import { sourceContains } from "../../../packages/gui/test-support/source-match.js";
-import { BUILTIN_ACP_WRAPPERS } from "../scripts/prepare-acp-harnesses.mjs";
+import { BUILTIN_ACP_WRAPPERS } from "../scripts/prepare-acp-harnesses.ts";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const desktopDirectory = path.resolve(scriptDirectory, "..");

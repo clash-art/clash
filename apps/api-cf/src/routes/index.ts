@@ -1,3 +1,4 @@
+import { hostedGenerationStatus } from "../generation/status";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { ZodError } from "zod";
@@ -228,42 +229,17 @@ api.post("/api/generate/video", async (c) => {
 
 // ─── POST /api/describe ────────────────────────────────────
 
-api.post("/api/describe", async (c) => {
-  const body = GenerateDescriptionRequestSchema.parse(await c.req.json());
-  const taskId = body.task_id;
-
-  // /api/describe is a freestanding description endpoint that doesn't
-  // have a project / node context — used only by the legacy frontend
-  // direct calls. Attribute the call to whoever's making the request;
-  // the asset row this produces never lands in a project canvas.
-  const actorUserId = getActorUserId(c);
-  if (!actorUserId) return c.json({ error: "unauthorized" }, 401);
-
-  // Submit description via Workflow for durability
-  const genParams: GenerationParams = {
-    taskId,
-    nodeId: taskId,
-    type: "image_desc",
-    projectId: "",
-    r2Key: body.url,
-    actorType: "user",
-    actorUserId,
-  };
-
-  try {
-    await startGeneration(c.env, `desc-${taskId}`, genParams);
-  } catch (e) {
-    log.error("Failed to create description workflow:", e);
-    return c.json({ error: "Failed to start description task" }, 500);
-  }
-
-  return c.json({ task_id: taskId, status: Status.Generating });
-});
+api.post("/api/describe", (c) => c.json({ error: "Hosted description generation is unavailable. Use the supported visual understanding operation.", code: "HOSTED_DESCRIPTION_UNAVAILABLE" }, 410));
 
 // ─── GET /api/tasks/:taskId ────────────────────────────────
 
 api.get("/api/tasks/:taskId", async (c) => {
   const taskId = c.req.param("taskId");
+  const durable = await hostedGenerationStatus(c.env, taskId);
+  if (durable) {
+    if (durable.actorUserId !== getActorUserId(c)) return c.json({ error: "Task not found" }, 404);
+    return c.json({ task_id: taskId, status: durable.status, ...(durable.assetId ? { asset_id: durable.assetId } : {}), ...(durable.updates ? { result_data: durable.updates } : {}), ...(durable.error ? { error: durable.error } : {}) });
+  }
   const asset = await getAssetByTaskId(c.env.DB, taskId);
 
   if (!asset) {

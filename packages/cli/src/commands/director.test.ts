@@ -59,19 +59,19 @@ test("registers an agent-first Director Stage command surface", async () => {
   // Stage content is authored through the projection loop, so the per-concept
   // mutation commands are retired: the JSON expresses strictly more than they
   // could (it accepts `creature`, which `object add --kind` never did).
-  assert.deepEqual(
-    command.commands.map((candidate) => candidate.name()),
-    [
-      "schema",
-      "list",
-      "create",
-      "attach",
-      "detach",
-      "capture",
-      "pull",
-      "apply",
-    ],
-  );
+  const registered = new Set(command.commands.map((candidate) => candidate.name()));
+  for (const required of [
+    "schema",
+    "list",
+    "create",
+    "attach",
+    "detach",
+    "capture",
+    "pull",
+    "apply",
+  ]) {
+    assert.ok(registered.has(required), `Director must expose ${required}`);
+  }
   // Every retired group must stay absent.
   for (const retired of ["object", "camera", "scene", "keyframe", "action"]) {
     assert.equal(

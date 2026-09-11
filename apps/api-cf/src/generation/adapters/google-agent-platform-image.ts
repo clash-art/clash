@@ -9,7 +9,10 @@ import {
   type AgentPlatformInlineImage,
 } from "../../services/google-gen";
 import type { GenerationAdapter } from "../adapter";
-import { credentialsForRoute, googleServiceAccountFromProvider } from "./provider-credentials";
+import {
+  credentialsForRoute,
+  googleServiceAccountFromProvider,
+} from "./provider-credentials";
 
 async function loadInlineFromR2(
   bucket: R2Bucket,
@@ -30,69 +33,48 @@ async function loadInlineFromR2(
 export const googleAgentPlatformImageAdapter: GenerationAdapter = {
   name: "google-image",
 
-  async execute(ctx) {
+  async submit(ctx) {
     const { params, env } = ctx;
     const route = params.selectedRoute;
     if (!route || route.apiShape !== "google-agent-platform") {
-      throw new Error(`Google image execution requires a selected Agent Platform route for ${params.modelName ?? "unknown model"}`);
+      throw new Error(
+        `Google image execution requires a selected Agent Platform route for ${params.modelName ?? "unknown model"}`,
+      );
     }
 
-    const storageKey = await ctx.step(
-      "google-image-generate",
-      { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" },
-      async () => {
-        // R2 read + base64 encode happens INSIDE this step. Don't return
-        // base64 bytes from a separate step — CF Workflow's per-step output
-        // cap is 1 MiB, and a 1280×720 PNG base64 is ~1–2 MiB. R2 reads are
-        // cheap (same isolate, no egress); re-reading on retry is fine.
-        // Only the final R2 storage key (a short string) crosses the step
-        // boundary. Same trick as veo.ts.
-        const r2Keys = params.referenceImageR2Keys ?? [];
-        const referenceImages: AgentPlatformInlineImage[] = [];
-        for (const k of r2Keys) {
-          const inline = await loadInlineFromR2(env.R2_BUCKET, k);
-          if (inline) referenceImages.push(inline);
-        }
+    const storageKey = await (async () => {
+      // R2 read + base64 encode happens INSIDE this step. Don't return
+      // base64 bytes from a separate step — CF Workflow's per-step output
+      // cap is 1 MiB, and a 1280×720 PNG base64 is ~1–2 MiB. R2 reads are
+      // cheap (same isolate, no egress); re-reading on retry is fine.
+      // Only the final R2 storage key (a short string) crosses the step
+      // boundary. Same trick as veo.ts.
+      const r2Keys = params.referenceImageR2Keys ?? [];
+      const referenceImages: AgentPlatformInlineImage[] = [];
+      for (const k of r2Keys) {
+        const inline = await loadInlineFromR2(env.R2_BUCKET, k);
+        if (inline) referenceImages.push(inline);
+      }
 
-        const creds = googleServiceAccountFromProvider(
-          await credentialsForRoute(ctx, route),
-        );
-        log.info("Google image generate started", {
-          ...ctx.tag,
-          model: params.modelName,
-          refs: referenceImages.length,
-        });
-        const result = await generateGoogleImage(creds, {
-          prompt: params.prompt ?? "",
-          aspectRatio: params.aspectRatio,
-          modelName: route.upstreamModel,
-          modelParams: params.modelParams,
-          referenceImages: referenceImages.length ? referenceImages : undefined,
-        });
-        log.info("Google image generated", { ...ctx.tag, model: result.model });
-        return ctx.uploadBytes(result.data, result.mediaType ?? "image/png");
-      },
-    );
+      const creds = googleServiceAccountFromProvider(
+        await credentialsForRoute(ctx, route),
+      );
+      log.info("Google image generate started", {
+        ...ctx.tag,
+        model: params.modelName,
+        refs: referenceImages.length,
+      });
+      const result = await generateGoogleImage(creds, {
+        prompt: params.prompt ?? "",
+        aspectRatio: params.aspectRatio,
+        modelName: route.upstreamModel,
+        modelParams: params.modelParams,
+        referenceImages: referenceImages.length ? referenceImages : undefined,
+      });
+      log.info("Google image generated", { ...ctx.tag, model: result.model });
+      return ctx.uploadBytes(result.data, result.mediaType ?? "image/png");
+    })();
 
-    const probe = await ctx.step(
-      "probe-image",
-      { retries: { limit: 2, delay: "5 seconds" }, timeout: "1 minute" },
-      async () => ctx.probe("image", storageKey),
-    );
-
-    const assetId = await ctx.step(
-      "save-asset",
-      { retries: { limit: 3, delay: "2 seconds", backoff: "exponential" }, timeout: "30 seconds" },
-      async () =>
-        ctx.createAsset({
-          kind: "image",
-          srcR2Key: storageKey,
-          metadata: probe.metadata,
-          sourceModel: params.modelName,
-          sourcePrompt: params.prompt,
-        }),
-    );
-
-    await ctx.notifyCompleted({ assetId });
+    return ctx.completedMedia(storageKey);
   },
 };

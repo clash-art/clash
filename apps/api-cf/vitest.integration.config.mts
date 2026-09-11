@@ -9,6 +9,10 @@ export default defineConfig(async () => {
   const migrations = await readD1Migrations(migrationsPath);
 
   return {
+    resolve: { alias: {
+      "@clash/shared-types/project-sync-content": path.resolve(__dirname, "../../packages/shared-types/src/project-sync-content.ts"),
+      "@clash/asset-sdk/delivery": path.resolve(__dirname, "../../packages/asset-sdk/src/delivery.ts"),
+    } },
     plugins: [
       cloudflareTest({
         singleWorker: true,

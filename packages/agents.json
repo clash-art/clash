@@ -3,7 +3,8 @@
   "context_hints": [
     "Check here for shared code between Frontend and Backend",
     "Contains the 'shared-types' package, which is the source of truth for protocols",
-    "Contains Remotion packages for video generation components"
+    "Contains Remotion packages for video generation components",
+    "make lint includes workspace source TypeScript checks plus existing ESLint tasks. Source-check configs use root tsconfig.source.json; browser/runtime aliases are generated from sparse source-check-profiles.json. No release build or repository dist is required."
   ],
   "subdirectories": {
     "shared-replica": "Portable durable replica engine and Loro protocol adapters; infrastructure is supplied through ports.",
@@ -13,7 +14,8 @@
     "shared-types": "TypeScript Zod definitions that generate Python Pydantic models. The Protocol Layer.",
     "remotion-core": "Core video processing logic and hooks for Remotion.",
     "remotion-ui": "UI components specifically for the video editor interface.",
-    "remotion-components": "Reusable video elements and compositions."
+    "remotion-components": "Reusable video elements and compositions.",
+    "shared-cloud-schema": "Backend-only SQLite/D1 Drizzle table definitions and Better Auth ORM relations, with narrow auth/app/broker/runtime exports and preserved API/Web migration profiles."
   },
   "key_files": {
     "shared-types/src/index.ts": "Main export for shared types.",

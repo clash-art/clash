@@ -198,7 +198,6 @@
                 "casRequired": { "type": "boolean" },
                 "applyCommand": {
                   "enum": [
-                    "clash assets metadata apply",
                     "clash timeline apply"
                   ]
                 },

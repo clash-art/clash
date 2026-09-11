@@ -1,3 +1,5 @@
+import { recoverHostedGenerations } from "./generation/recovery";
+import type { Env } from "./config";
 import { createApp } from "./app";
 import { ProjectRoom } from "./agents/project-room";
 import { SupervisorAgent } from "./agents/supervisor";
@@ -29,7 +31,13 @@ if (typeof addEventListener === "function") {
 // to install billing / quota / BYOK key resolution.
 const app = createApp();
 
-export default app;
+export default {
+  fetch: app.fetch,
+  scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(recoverHostedGenerations(env));
+  },
+};
+export { recoverHostedGenerations };
 
 // Export Durable Object classes, Workflow, and Container
 export { ProjectRoom, SupervisorAgent, GenerationWorkflow, RuntimeRoom };

@@ -64,7 +64,7 @@ describe("Marketplace manage loader", () => {
           });
         }
         if (path === "/api/v1/local/plugins") {
-          return Response.json([{ id: "clash.storyboard" }]);
+          return Response.json([{ id: "clash.storyboard", drifted: false }]);
         }
         return Response.json([]);
       }),
@@ -200,4 +200,14 @@ describe("Marketplace manage loader", () => {
 
     await expect(loader()).rejects.toMatchObject({ status: 302 });
   });
+});
+
+it("does not present drifted packages as usable installed plugins", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+    const pathname = new URL(String(input), "http://clash.local").pathname;
+    if (pathname === "/api/v1/local/plugins") return Response.json([{ id: "valid", drifted: false }, { id: "drifted", drifted: true }]);
+    if (pathname === "/api/marketplace/registry") return Response.json({ version: 1, actions: [], skills: [], plugins: [] });
+    return Response.json([]);
+  }));
+  expect((await loader()).installedPluginIds).toEqual(["valid"]);
 });

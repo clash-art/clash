@@ -144,7 +144,8 @@ export {
 
 export {
   buildBflFlux3VideoRequest,
-  generateBflFlux3Video,
+  submitBflFlux3Video,
+  pollBflFlux3VideoOnce,
   resolveFlux3KeyframeIndices,
   type BflFlux3VideoInput,
   type BflFlux3VideoRequestOptions,
@@ -171,7 +172,6 @@ export {
   getPikaMediaContent,
   PIKA_MEDIA_BASE_URL,
   uploadPikaMedia,
-  waitForPikaMediaJob,
   type PikaMediaJob,
   type PikaMediaStatus,
 } from "./pika-media.js";

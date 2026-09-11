@@ -17,7 +17,7 @@ export type FetchLike = (
   init?: {
     method?: string;
     headers?: Record<string, string>;
-    body?: string | Uint8Array;
+    body?: string | Uint8Array<ArrayBuffer>;
   },
 ) => Promise<{
   ok: boolean;
@@ -255,7 +255,7 @@ export async function moveAiSubmitTake(
 
   const putResponse = await options.fetch(presignedUploadUrl, {
     method: "PUT",
-    body: options.bytes,
+    body: Uint8Array.from(options.bytes),
   });
   if (!putResponse.ok) {
     throw providerHttpError({

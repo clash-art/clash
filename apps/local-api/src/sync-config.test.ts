@@ -1,3 +1,4 @@
+import { getLocalReplicaId } from "./local-replica-identity.js";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,7 +113,7 @@ describe("local sync config", () => {
       projectId: "project-1",
       tenantId: "personal:user-1",
       userId: "user-1",
-      localReplicaId: "replica-1",
+      localReplicaId: await getLocalReplicaId(dataDir),
       syncBaseUrl: "https://cloud.example",
       status: "pending",
       capabilities: { canvas: true, projectMetadata: true, resources: true },
@@ -138,4 +139,16 @@ describe("local sync config", () => {
     const remote = await store.resolveRemotePersistence("project-1");
     await expect(remote?.loadSnapshot?.("project-1")).resolves.toBeNull();
   });
+});
+
+it("never resolves a global transport for an unadmitted Project or another replica", async () => {
+  const store = createLocalSyncConfigStore({ dataDir, env: { CLASH_REMOTE_LORO_URL: "https://cloud.example" } });
+  expect(await store.resolveRemotePersistence("private-project")).toBeUndefined();
+  expect(await store.resolveRemotePersistence()).toBeUndefined();
+  await createLocalMetadataStore(dataDir).upsertProjectCloudAdmission({
+    schemaVersion: 1, projectId: "private-project", tenantId: "t", userId: "u", localReplicaId: "old-process",
+    syncBaseUrl: "https://cloud.example", status: "ready", capabilities: { canvas: true, projectMetadata: true, resources: true },
+    admittedAt: "2026-09-04T00:00:00Z", updatedAt: "2026-09-04T00:00:00Z", lastError: null,
+  });
+  expect(await store.resolveRemotePersistence("private-project")).toBeUndefined();
 });

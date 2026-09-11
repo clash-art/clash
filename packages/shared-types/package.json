@@ -60,17 +60,28 @@
       "types": "./dist/director-code.d.ts",
       "import": "./dist/director-code.js",
       "default": "./dist/director-code.js"
+    },
+    "./project-sync-content": {
+      "types": "./dist/project-sync-content.d.ts",
+      "import": "./dist/project-sync-content.js",
+      "default": "./dist/project-sync-content.js"
+    },
+    "./marketplace-installation": {
+      "types": "./dist/marketplace-installation.d.ts",
+      "import": "./dist/marketplace-installation.js",
+      "default": "./dist/marketplace-installation.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts --format esm --dts --clean --target es2020",
+    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts src/project-sync-content.ts src/marketplace-installation.ts --format esm --dts --clean --target es2020",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",
     "generate:json-schema": "ts-node scripts/generate-json-schema.ts",
     "generate:python": "ts-node scripts/generate-python.ts",
     "generate:timeline-dsl-docs": "tsx scripts/generate-timeline-dsl-docs.ts",
-    "prepack": "pnpm generate:timeline-dsl-docs"
+    "prepack": "pnpm generate:timeline-dsl-docs",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/shared-layout": "workspace:^",

@@ -1,3 +1,8 @@
+import {
+  ProjectCloudAdmissionSchema,
+  type ProjectCloudAdmission,
+} from "@clash/shared-types";
+
 export type ProjectStatusSource = "explicit" | "marker" | "env";
 
 export interface ProjectStatusContext {
@@ -202,7 +207,8 @@ export type ProjectCollaborationMode =
 export type ProjectRoomAuthority =
   "local" | "local-with-cloud-mirror" | "cloud-sequencer";
 export type ProjectCloudRoomMode = "disabled" | "sequencer";
-export type ProjectSyncReadinessStatus = "disabled" | "pending" | "ready";
+export type ProjectSyncReadinessStatus =
+  "disabled" | "pending" | "syncing" | "failed" | "ready";
 
 export interface ProjectStatusProjectRoomPolicy {
   schemaVersion: 1;
@@ -471,7 +477,7 @@ export function buildProjectStatus(
       : "unknown";
   const collaboration = projectCollaborationStatus(
     mode,
-    options.replicationState ?? undefined,
+    { ...options.replicationState, projectId: context.projectId },
   );
   const localSqlitePath = joinPath(localApiDataDir, "local.sqlite");
   const userConfigPath = joinPath(clashRoot, "config.yaml");
@@ -727,10 +733,21 @@ export function projectCollaborationStatus(
 ): ProjectStatusCollaboration {
   const raw =
     typeof rawMode === "string" && rawMode.trim() ? rawMode.trim() : "unknown";
-  const normalized = normalizeCollaborationMode(raw);
-  const syncReadiness = projectSyncReadiness(normalized, sync);
-  const webOpenable =
-    normalized === "shared" || (normalized === "synced" && syncReadiness.ready);
+  const parsed = ProjectCloudAdmissionSchema.safeParse(sync?.admission);
+  const admission =
+    parsed.success &&
+    parsed.data.projectId === sync?.projectId &&
+    parsed.data.localReplicaId === sync?.localReplicaId
+      ? parsed.data
+      : undefined;
+  const normalized =
+    admission && admission.status !== "local-only"
+      ? normalizeCollaborationMode(raw) === "shared"
+        ? "shared"
+        : "synced"
+      : normalizeCollaborationMode(raw);
+  const syncReadiness = projectSyncReadiness(normalized, admission);
+  const webOpenable = syncReadiness.ready;
   const actions = projectActionGates(normalized, syncReadiness, webOpenable);
   return {
     schemaVersion: 1,
@@ -846,64 +863,27 @@ const CLOUD_SYNC_REQUIREMENTS = [
 
 function projectSyncReadiness(
   mode: ProjectCollaborationMode,
-  sync: Record<string, unknown> | undefined,
+  admission: ProjectCloudAdmission | undefined,
 ): ProjectSyncReadiness {
-  if (mode === "shared") {
-    return {
-      status: "ready",
-      ready: true,
-      required: CLOUD_SYNC_REQUIREMENTS,
-      missing: [],
-    };
-  }
-  if (mode !== "synced") {
-    return {
-      status: "disabled",
-      ready: false,
-      required: CLOUD_SYNC_REQUIREMENTS,
-      missing: CLOUD_SYNC_REQUIREMENTS,
-    };
-  }
-
-  const capabilities =
-    sync && typeof sync.capabilities === "object" && sync.capabilities !== null
-      ? (sync.capabilities as Record<string, unknown>)
-      : {};
-  const missing = CLOUD_SYNC_REQUIREMENTS.filter(
-    (requirement) => !syncCapabilityReady(capabilities, requirement),
-  );
+  // Capability flags describe available transports. Only the Host synchronizer
+  // may mark this exact Project/replica ready after all required planes finish.
+  const ready =
+    admission?.status === "ready" &&
+    admission.capabilities.canvas &&
+    admission.capabilities.projectMetadata &&
+    admission.capabilities.resources;
   return {
-    status: missing.length === 0 ? "ready" : "pending",
-    ready: missing.length === 0,
+    status: ready
+      ? "ready"
+      : admission?.status === "failed" || admission?.status === "syncing"
+        ? admission.status
+        : mode === "local-only" || mode === "unknown"
+          ? "disabled"
+          : "pending",
+    ready,
     required: CLOUD_SYNC_REQUIREMENTS,
-    missing,
+    missing: ready ? [] : CLOUD_SYNC_REQUIREMENTS,
   };
-}
-
-function syncCapabilityReady(
-  capabilities: Record<string, unknown>,
-  requirement: string,
-): boolean {
-  if (capabilities[requirement] === true) return true;
-  if (requirement === "asset-metadata") {
-    return (
-      capabilities.assetMetadata === true ||
-      capabilities.asset_metadata === true
-    );
-  }
-  if (requirement === "revision-content") {
-    return (
-      capabilities.revisionContent === true ||
-      capabilities.revision_content === true
-    );
-  }
-  if (requirement === "project-metadata") {
-    return (
-      capabilities.projectMetadata === true ||
-      capabilities.project_metadata === true
-    );
-  }
-  return false;
 }
 
 function projectActionGates(
@@ -912,7 +892,7 @@ function projectActionGates(
   webOpenable: boolean,
 ): ProjectStatusActionGates {
   const localAgent = allowedGate(["owner-machine-online"]);
-  if (mode === "shared") {
+  if (mode === "shared" && syncReadiness.ready) {
     return {
       openInWeb: allowedGate(),
       enableSync: deniedGate("already-cloud-connected"),
@@ -920,7 +900,7 @@ function projectActionGates(
       runLocalAgent: localAgent,
     };
   }
-  if (mode === "synced") {
+  if (mode === "synced" || mode === "shared") {
     const syncRequirements = syncReadiness.ready ? [] : syncReadiness.missing;
     const cloudReadyGate = webOpenable
       ? allowedGate()

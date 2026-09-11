@@ -1,0 +1,3 @@
+{
+  "summary": "Native Node 24 ESM repository artwork maintenance tool. update-social-preview-title.ts replaces .github/social-preview.png using Sharp; do not execute it as a syntax/typecheck. Included in the strict root tooling check."
+}

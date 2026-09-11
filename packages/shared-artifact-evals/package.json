@@ -19,9 +19,8 @@
   "scripts": {
     "benchmark": "tsx --tsconfig tsconfig.dev.json src/cli.ts",
     "build": "tsup src/index.ts src/cli.ts src/pi-clash-extension.ts --format esm --dts",
-    "lint": "tsc --noEmit --project tsconfig.dev.json",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit --project tsconfig.dev.json"
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/asset-sdk": "workspace:*",

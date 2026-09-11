@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   credentialsForRoute: vi.fn(),
-  generateBflFlux3Video: vi.fn(),
+  submitBflFlux3Video: vi.fn(),
+  pollBflFlux3VideoOnce: vi.fn(),
   signedMediaUrls: vi.fn(),
 }));
 
@@ -11,7 +12,8 @@ vi.mock("./provider-credentials", () => ({
 }));
 
 vi.mock("@clash/shared-runtime", () => ({
-  generateBflFlux3Video: mocks.generateBflFlux3Video,
+  submitBflFlux3Video: mocks.submitBflFlux3Video,
+  pollBflFlux3VideoOnce: mocks.pollBflFlux3VideoOnce,
 }));
 
 vi.mock("./media-url", () => ({
@@ -21,8 +23,12 @@ vi.mock("./media-url", () => ({
 import { bflVideoAdapter } from "./bfl-video";
 
 function makeCtx() {
-  const uploadFromUrl = vi.fn().mockResolvedValue("projects/p1/uploads/task-1.mp4");
-  const probe = vi.fn().mockResolvedValue({ metadata: { width: 1920, height: 1080 } });
+  const uploadFromUrl = vi
+    .fn()
+    .mockResolvedValue("projects/p1/uploads/task-1.mp4");
+  const probe = vi
+    .fn()
+    .mockResolvedValue({ metadata: { width: 1920, height: 1080 } });
   const createAsset = vi.fn().mockResolvedValue("asset-1");
   const notifyCompleted = vi.fn();
   return {
@@ -52,7 +58,11 @@ function makeCtx() {
     },
     env: { R2_PUBLIC_URL: "https://cdn.example" },
     tag: { taskId: "task-1", nodeId: "node-1" },
-    step: async (_name: string, optsOrFn: unknown, maybeFn?: () => Promise<unknown>) => {
+    step: async (
+      _name: string,
+      optsOrFn: unknown,
+      maybeFn?: () => Promise<unknown>,
+    ) => {
       const fn = typeof optsOrFn === "function" ? optsOrFn : maybeFn;
       if (!fn) throw new Error("missing step fn");
       return fn();
@@ -61,6 +71,12 @@ function makeCtx() {
     probe,
     createAsset,
     notifyCompleted,
+    accepted: (pollState: unknown) => ({ status: "accepted", pollState }),
+    completedMedia: (asset: unknown) => ({
+      status: "completed",
+      outputs: [{ slot: "output", kind: "asset", asset }],
+    }),
+    completedVideo: vi.fn(async () => ({ status: "completed", outputs: [] })),
   };
 }
 
@@ -68,27 +84,40 @@ describe("bflVideoAdapter", () => {
   afterEach(() => vi.clearAllMocks());
 
   it("uses the official account and signed FLUX 3 keyframe references", async () => {
-    mocks.credentialsForRoute.mockResolvedValue({ apiKey: "bfl-key", baseUrl: "https://api.bfl.ai" });
-    mocks.signedMediaUrls.mockImplementation(async (_env: unknown, keys?: string[]) =>
-      keys?.map((key) => `https://media.example/${key}`));
-    mocks.generateBflFlux3Video.mockResolvedValue({
+    mocks.credentialsForRoute.mockResolvedValue({
+      apiKey: "bfl-key",
+      baseUrl: "https://api.bfl.ai",
+    });
+    mocks.signedMediaUrls.mockImplementation(
+      async (_env: unknown, keys?: string[]) =>
+        keys?.map((key) => `https://media.example/${key}`),
+    );
+    mocks.submitBflFlux3Video.mockResolvedValue({
       requestId: "bfl-task-1",
       url: "https://video.example/out.mp4",
       pollingUrl: "https://api.bfl.ai/v1/get_result?id=bfl-task-1",
     });
     const ctx = makeCtx();
 
-    await bflVideoAdapter.execute(ctx as never);
+    await bflVideoAdapter.submit(ctx as never);
 
-    expect(mocks.credentialsForRoute).toHaveBeenCalledWith(ctx, ctx.params.selectedRoute);
-    expect(mocks.generateBflFlux3Video).toHaveBeenCalledWith(expect.objectContaining({
-      apiKey: "bfl-key",
-      baseUrl: "https://api.bfl.ai",
-      input: expect.objectContaining({
-        duration: 10,
-        referenceImageUrls: ["https://media.example/one.png", "https://media.example/two.png"],
+    expect(mocks.credentialsForRoute).toHaveBeenCalledWith(
+      ctx,
+      ctx.params.selectedRoute,
+    );
+    expect(mocks.submitBflFlux3Video).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "bfl-key",
+        baseUrl: "https://api.bfl.ai",
+        input: expect.objectContaining({
+          duration: 10,
+          referenceImageUrls: [
+            "https://media.example/one.png",
+            "https://media.example/two.png",
+          ],
+        }),
       }),
-    }));
-    expect(ctx.notifyCompleted).toHaveBeenCalledWith({ assetId: "asset-1" });
+    );
+    expect(ctx.notifyCompleted).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import { hostedGenerationStatus } from "../generation/status";
 /**
  * Task Polling Service
  *
@@ -37,6 +38,12 @@ export async function pollNodeTasks(
 
       const taskStatus = await getTaskStatusDirect(env, pendingTask);
 
+      const latest = nodesMap.get(nodeId) as { data?: { pendingTask?: string } } | undefined;
+      if (latest?.data?.pendingTask !== pendingTask) continue;
+      if (taskStatus.managedByJournal) {
+        hasPendingTasks = true;
+        continue;
+      }
       if (taskStatus.status === Status.Completed) {
         const updates: Record<string, any> = {
           pendingTask: undefined,
@@ -76,12 +83,15 @@ async function getTaskStatusDirect(
   taskId: string
 ): Promise<{
   status: string;
+  managedByJournal?: boolean;
   assetId?: string;
   srcR2Key?: string;
   coverR2Key?: string;
   error?: string;
 }> {
   try {
+    const durable = await hostedGenerationStatus(env, taskId);
+    if (durable) return durable;
     const asset = await getAssetByTaskId(env.DB, taskId);
     if (asset) {
       return {

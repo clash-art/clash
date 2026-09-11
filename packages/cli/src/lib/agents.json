@@ -1,0 +1,10 @@
+{
+  "description": "CLI filesystem and transport adapters. Shared domain contracts and Host authority own product mutations.",
+  "modules": {
+    "api.ts": "Discovered/configured Host HTTP transport preserving all HeadersInit forms and optional hosted authentication.",
+    "document-worktree.ts": "Native Document file projection and internal observed.json evidence. Each file retains its own original baseline; apply never refreshes it with a get. No sidecar locks, force or manifest fallback.",
+    "legacy-metadata-body.ts": "Read-only compatibility for historical manifest and Timeline metadata bodies in the existing body store.",
+    "transcript-grid.ts": "Stable word-grid content hashing for legacy Timeline transcript readers; no metadata writer.",
+    "worktree-observations.ts": "Project-scoped atomic internal observation ledger shared by CLI entities."
+  }
+}

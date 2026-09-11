@@ -96,3 +96,5 @@ export type {
   AssetDeliveryStore,
   AssetDeliveryStoredObject,
 } from "./asset-delivery-store.js";
+
+export { PROJECT_CLOUD_CONTENT_MAX_BYTES, ContentTransferLimitError, assertContentTransferSize, contentTransferMaxBytes, readBoundedContent, readContentTransferLimitError, type ContentTransferLimits } from "./content-transfer.js";

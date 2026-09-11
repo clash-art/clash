@@ -61,44 +61,44 @@ describe("desktop startup test suite", () => {
       "pnpm test:startup:static && pnpm test:startup:ui",
     );
     expect(pkg.scripts["test:startup:static"]).toBe(
-      "node scripts/prepare-clash-cli.mjs && pnpm prepare:harnesses && tsx e2e/startup-static.ts",
+      "node scripts/prepare-clash-cli.ts && pnpm prepare:harnesses && tsx e2e/startup-static.ts",
     );
     expect(pkg.scripts["test:startup:api"]).toBeUndefined();
     expect(pkg.scripts["test:startup:ui"]).toContain("startup-ui-smoke.ts");
     expect(pkg.scripts["test:agent:real-codex"]).toContain(
-      "real-codex-acp-backend.mjs",
+      "real-codex-acp-backend.ts",
     );
     expect(pkg.scripts["test:startup:real-codex"]).not.toMatch(
       /pnpm --filter .* build/,
     );
     expect(pkg.scripts["test:startup:real-codex"]).toContain(
-      "node scripts/prepare-clash-cli.mjs",
+      "node scripts/prepare-clash-cli.ts",
     );
     expect(pkg.scripts["test:startup:real-codex"]).toContain(
       "pnpm prepare:harnesses",
     );
     expect(pkg.scripts["test:startup:real-codex"]).toContain(
-      "real-codex-agent-browser.mjs",
+      "real-codex-agent-browser.ts",
     );
     expect(pkg.scripts["test:startup:real-codex-resume"]).not.toMatch(
       /pnpm --filter .* build/,
     );
     expect(pkg.scripts["test:startup:real-codex-resume"]).toContain(
-      "real-codex-resume-agent-browser.mjs",
+      "real-codex-resume-agent-browser.ts",
     );
     expect(pkg.scripts["test:startup:real-codex-cold"]).toContain(
-      "real-codex-cold-start-agent-browser.mjs",
+      "real-codex-cold-start-agent-browser.ts",
     );
     expect(pkg.scripts["test:e2e:short-drama-timeline"]).toContain(
-      "short-drama-timeline-smoke.mjs",
+      "short-drama-timeline-smoke.ts",
     );
     expect(pkg.scripts["test:e2e:agent-first-cas"]).toContain(
-      "agent-first-cas-smoke.mjs",
+      "agent-first-cas-smoke.ts",
     );
     expect(pkg.scripts["test:e2e:agent-first-local-v1"]).toContain(
       "agent-first-local-v1-gate.ts",
     );
-    expect(pkg.scripts["test:e2e:qa-agent"]).toContain("qa-agent-codex.mjs");
+    expect(pkg.scripts["test:e2e:qa-agent"]).toContain("qa-agent-codex.ts");
   });
 
   it("typechecks the desktop source graph without prebuilt workspace SDK artifacts", () => {
@@ -114,7 +114,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("stages the root-built unified Clash runtime without nested workspace builds", () => {
-    const source = readText("scripts/prepare-clash-cli.mjs");
+    const source = readText("scripts/prepare-clash-cli.ts");
 
     expect(source).not.toContain("build:package");
     expect(source).not.toContain("pnpm deploy");
@@ -333,12 +333,12 @@ describe("desktop startup test suite", () => {
     for (const relativePath of [
       "e2e/startup-static.ts",
       "e2e/startup-ui-smoke.ts",
-      "e2e/real-codex-acp-backend.mjs",
-      "e2e/real-codex-agent-browser.mjs",
+      "e2e/real-codex-acp-backend.ts",
+      "e2e/real-codex-agent-browser.ts",
       "e2e/agent-first-local-v1-gate.ts",
-      "e2e/short-drama-timeline-smoke.mjs",
-      "e2e/agent-first-cas-smoke.mjs",
-      "e2e/qa-agent-codex.mjs",
+      "e2e/short-drama-timeline-smoke.ts",
+      "e2e/agent-first-cas-smoke.ts",
+      "e2e/qa-agent-codex.ts",
       "e2e/qa-agent-report.schema.json",
     ]) {
       expect(statSync(join(desktopPath, relativePath)).isFile()).toBe(true);
@@ -346,8 +346,8 @@ describe("desktop startup test suite", () => {
   });
 
   it("runs black-box QA through Codex CLI with a structured artifact contract", () => {
-    const source = readText("e2e/qa-agent-codex.mjs");
-    const casSmokeSource = readText("e2e/agent-first-cas-smoke.mjs");
+    const source = readText("e2e/qa-agent-codex.ts");
+    const casSmokeSource = readText("e2e/agent-first-cas-smoke.ts");
     const schema = JSON.parse(readText("e2e/qa-agent-report.schema.json")) as {
       required: string[];
       properties: {
@@ -487,9 +487,9 @@ describe("desktop startup test suite", () => {
   it("runs the agent-first local v1 release gate over required black-box reports", () => {
     const source = readText("e2e/agent-first-local-v1-gate.ts");
 
-    expect(source).toContain("short-drama-timeline-smoke.mjs");
-    expect(source).toContain("agent-first-cas-smoke.mjs");
-    expect(source).toContain("storage-doctor-repair-smoke.mjs");
+    expect(source).toContain("short-drama-timeline-smoke.ts");
+    expect(source).toContain("agent-first-cas-smoke.ts");
+    expect(source).toContain("storage-doctor-repair-smoke.ts");
     expect(source).toContain("requiredChecks");
     expect(source).toContain("requiredBooleans");
     expect(source).toContain("directCanvasCliFreshObservationAccepted");
@@ -517,7 +517,7 @@ describe("desktop startup test suite", () => {
     const releaseWorkflow = readRootText(".github/workflows/release.yml");
 
     expect(ciWorkflow).toContain("desktop-checks:");
-    expect(ciWorkflow).toContain("pnpm --filter @clash/desktop typecheck");
+    expect(sourceContains(ciWorkflow, "make lint")).toBe(true);
     expect(ciWorkflow).toContain("pnpm --filter @clash/desktop test");
     expect(ciWorkflow).not.toContain("pnpm lint --concurrency=1");
     expect(ciWorkflow).not.toContain("pnpm typecheck --concurrency=1");
@@ -538,7 +538,7 @@ describe("desktop startup test suite", () => {
 
   it("keeps real Codex transport diagnostics out of assistant text", async () => {
     const helpers = (await import(
-      new URL("../e2e/real-codex-transcript.mjs", import.meta.url).href
+      new URL("../e2e/real-codex-transcript.ts", import.meta.url).href
     )) as {
       assistantTextFromEvents: (events: unknown[]) => string;
       diagnosticTextFromEvents: (events: unknown[]) => string;
@@ -565,7 +565,7 @@ describe("desktop startup test suite", () => {
 
   it("reads terminal output and final answers from current Codex ACP events", async () => {
     const helpers = (await import(
-      new URL("../e2e/real-codex-transcript.mjs", import.meta.url).href
+      new URL("../e2e/real-codex-transcript.ts", import.meta.url).href
     )) as {
       terminalOutputsFromEvents: (events: unknown[]) => string[];
       finalAnswerTextFromEvents: (events: unknown[]) => string;
@@ -607,7 +607,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("keeps the real Codex E2E out of stub mode", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
 
     expect(source).toContain("CLASH_E2E_REAL_CODEX");
     expect(source).not.toContain("CLASH_E2E_STUB_ACP");
@@ -618,8 +618,8 @@ describe("desktop startup test suite", () => {
   });
 
   it("checks the real cold-start product contract before the first Codex turn", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
-    const helperSource = readText("e2e/product-cold-start-contract.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
+    const helperSource = readText("e2e/product-cold-start-contract.ts");
     const contractCall = source.indexOf("assertColdStartProductContract");
     const prompt = source.indexOf('const prompt = "Run pwd');
 
@@ -641,7 +641,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("requires a trusted bundled Clash MCP turn and rejects global skill or shell CLI fallback", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
 
     expect(source).toContain("clash_canvas_list");
     expect(source).toContain('"clash.host_trusted_mcp"');
@@ -657,7 +657,7 @@ describe("desktop startup test suite", () => {
   it("derives selections from live harness values and ignores removed cached choices", async () => {
     const { chooseAlternateRunPreferences, resolveHarnessProductProfile } =
       (await import(
-        new URL("../e2e/product-cold-start-contract.mjs", import.meta.url).href
+        new URL("../e2e/product-cold-start-contract.ts", import.meta.url).href
       )) as {
         chooseAlternateRunPreferences: (profile: unknown) => {
           configValues: Record<string, string | boolean>;
@@ -787,8 +787,8 @@ describe("desktop startup test suite", () => {
   });
 
   it("cold-restarts the product and restores only the latest recorded run choices", () => {
-    const source = readText("e2e/real-codex-cold-start-agent-browser.mjs");
-    const helperSource = readText("e2e/product-cold-start-contract.mjs");
+    const source = readText("e2e/real-codex-cold-start-agent-browser.ts");
+    const helperSource = readText("e2e/product-cold-start-contract.ts");
 
     expect(source).toContain("assertRecentRunPreferencesProductContract");
     expect(source).toContain("chooseAlternateRunPreferences");
@@ -802,7 +802,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("keeps the real Codex backend ACP smoke out of stub mode", () => {
-    const source = readText("e2e/real-codex-acp-backend.mjs");
+    const source = readText("e2e/real-codex-acp-backend.ts");
 
     expect(source).toContain("CLASH_E2E_REAL_CODEX");
     expect(source).toContain("AcpRuntimeImpl");
@@ -874,7 +874,7 @@ describe("desktop startup test suite", () => {
 
   it("starts every desktop UI smoke with an isolated local-only Vite shell", () => {
     const source = readText("e2e/agent-browser-smoke.ts");
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const helperSource = readText("e2e/startup-shared.ts");
 
     expect(source).toContain("startVite({ webPort, logs: webLogs })");
     expect(source).not.toContain(
@@ -890,14 +890,14 @@ describe("desktop startup test suite", () => {
   });
 
   it("can freeze the web UI to a static build snapshot for long real-agent E2E runs", () => {
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const helperSource = readText("e2e/startup-shared.ts");
 
     expect(helperSource).toContain('process.env.CLASH_E2E_STATIC_WEB === "1"');
     expect(helperSource).toContain('useStaticPreview ? ["preview"] : []');
   });
 
   it("keeps a dedicated Electron GUI E2E for harness update and session restart", () => {
-    const source = readText("e2e/harness-update-agent-browser.mjs");
+    const source = readText("e2e/harness-update-agent-browser.ts");
 
     expect(source).toContain('CLASH_E2E_STUB_HARNESS_UPDATE: "1"');
     expect(source).toContain('CLASH_E2E_STUB_ACP_DELAY_MS: "20000"');
@@ -920,7 +920,7 @@ describe("desktop startup test suite", () => {
 
   it("keeps a permanent narrow-window project chrome check", () => {
     const source = readText("e2e/agent-browser-smoke.ts");
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const helperSource = readText("e2e/startup-shared.ts");
 
     expect(source).toContain('agentBrowser(["set", "viewport", "720", "900"])');
     expect(source).toContain("narrowLayoutScreenshot");
@@ -942,7 +942,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("accepts any configured Codex auth method declared by the runtime", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
 
     expect(source).toContain(
       "supportedAuthMethods.includes(configuredAuthMethod)",
@@ -953,7 +953,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("exercises /plan as a closable tag in the real narrow composer", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
 
     expect(source).toContain('const command = "/plan"');
     expect(source).toContain("active Plan tag after /plan");
@@ -965,8 +965,8 @@ describe("desktop startup test suite", () => {
   });
 
   it("submits the real Codex prompt with a scoped composer submit helper", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
+    const helperSource = readText("e2e/startup-shared.ts");
 
     expect(source).toContain("clickComposerSubmitButton");
     expect(helperSource).toContain("button.clash-chat-input-primary");
@@ -974,7 +974,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("recovers the real Codex Electron target before post-turn session controls", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
     const finalCapture = source.indexOf(
       'agentBrowser(["screenshot", finalScreenshot])',
     );
@@ -993,7 +993,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("types the real Codex prompt through agent-browser keyboard input", () => {
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const helperSource = readText("e2e/startup-shared.ts");
 
     expect(helperSource).toContain('"keyboard", "type"');
     expect(helperSource).not.toContain('execCommand("insertText"');
@@ -1008,11 +1008,11 @@ describe("desktop startup test suite", () => {
   });
 
   it("creates projects through the named project dialog in every desktop UI E2E", () => {
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const helperSource = readText("e2e/startup-shared.ts");
     const sources = [
       readText("e2e/agent-browser-smoke.ts"),
-      readText("e2e/real-codex-agent-browser.mjs"),
-      readText("e2e/real-codex-resume-agent-browser.mjs"),
+      readText("e2e/real-codex-agent-browser.ts"),
+      readText("e2e/real-codex-resume-agent-browser.ts"),
     ];
 
     expect(helperSource).toContain("submitProjectCreateDialog");
@@ -1024,11 +1024,11 @@ describe("desktop startup test suite", () => {
   });
 
   it("requires a visibly open history menu in every desktop UI E2E", () => {
-    const helperSource = readText("e2e/startup-shared.mjs");
+    const helperSource = readText("e2e/startup-shared.ts");
     const sources = [
       readText("e2e/agent-browser-smoke.ts"),
-      readText("e2e/real-codex-agent-browser.mjs"),
-      readText("e2e/real-codex-resume-agent-browser.mjs"),
+      readText("e2e/real-codex-agent-browser.ts"),
+      readText("e2e/real-codex-resume-agent-browser.ts"),
     ];
 
     expect(helperSource).toContain("openSessionHistoryMenu");
@@ -1040,7 +1040,7 @@ describe("desktop startup test suite", () => {
 
   it("recovers an Electron agent-browser session that falls back to about:blank", async () => {
     const { recoverAgentBrowserTarget } = (await import(
-      new URL("../e2e/startup-shared.mjs", import.meta.url).href
+      new URL("../e2e/startup-shared.ts", import.meta.url).href
     )) as {
       recoverAgentBrowserTarget: (
         agentBrowser: (
@@ -1102,7 +1102,7 @@ describe("desktop startup test suite", () => {
 
   it("reports exact stub session ids and persistence provenance", async () => {
     const { runtimeSessionPathObservation } = (await import(
-      new URL("../e2e/startup-shared.mjs", import.meta.url).href
+      new URL("../e2e/startup-shared.ts", import.meta.url).href
     )) as {
       runtimeSessionPathObservation: (input: {
         session: {
@@ -1145,7 +1145,7 @@ describe("desktop startup test suite", () => {
 
   it("rejects placeholder session paths in stub Codex QA reports", async () => {
     const { validateStubRuntimeReport } = (await import(
-      new URL("../e2e/qa-agent-report-validation.mjs", import.meta.url).href
+      new URL("../e2e/qa-agent-report-validation.ts", import.meta.url).href
     )) as {
       validateStubRuntimeReport: (report: Record<string, unknown>) => void;
     };
@@ -1200,7 +1200,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("waits for the real Codex turn to finish before creating a fresh session", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
 
     expect(source).toContain("Codex turn idle after final answer");
     expect(source.indexOf("Codex turn idle after final answer")).toBeLessThan(
@@ -1209,7 +1209,7 @@ describe("desktop startup test suite", () => {
   });
 
   it("accepts the current project-root cwd in the real Codex E2E", () => {
-    const source = readText("e2e/real-codex-agent-browser.mjs");
+    const source = readText("e2e/real-codex-agent-browser.ts");
 
     expect(source).toContain("/.clash/projects/");
     expect(source).not.toContain("/.clash/agent/");
@@ -1218,8 +1218,8 @@ describe("desktop startup test suite", () => {
   });
 
   it("verifies real Codex project cwd materializes the v1 editable roots", () => {
-    const realSource = readText("e2e/real-codex-agent-browser.mjs");
-    const resumeSource = readText("e2e/real-codex-resume-agent-browser.mjs");
+    const realSource = readText("e2e/real-codex-agent-browser.ts");
+    const resumeSource = readText("e2e/real-codex-resume-agent-browser.ts");
 
     for (const source of [realSource, resumeSource]) {
       expect(source).toContain("assertProjectWorkspaceLayout");

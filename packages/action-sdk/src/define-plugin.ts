@@ -536,7 +536,7 @@ export function createExecutorContext(
             "content-type": request.mediaType ?? "application/octet-stream",
             "content-length": String(request.bytes.byteLength),
           },
-          body: request.bytes as unknown as BodyInit,
+          body: request.bytes as unknown as RequestInit["body"],
         });
         if (!response.ok) {
           // A refused upload reported as completed would attach an empty asset and close a task

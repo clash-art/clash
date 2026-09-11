@@ -45,6 +45,7 @@ const items = [
     type: "skill" as const,
     name: "Seedance guide",
     description: "Improve video prompts.",
+    installation: { kind: "skill" as const, skillId: "sd25-pe" },
   },
 ];
 
@@ -87,6 +88,7 @@ describe("MarketplaceClient interactions", () => {
     const picked = {
       id: "example.curated",
       name: "Multiview workflow",
+      installation: { kind: "skill" as const, skillId: "example.curated" },
       type: "skill" as const,
       source: "community",
       author: "Original author",
@@ -119,6 +121,8 @@ describe("MarketplaceClient interactions", () => {
           {
             id: "clash.storyboard",
             packageId: "clash.storyboard",
+            runtime: "local",
+            installation: { kind: "executable-plugin", packageId: "clash.storyboard", pluginId: "clash.storyboard" },
             type: "plugin",
             name: "Storyboard",
             author: "Clash",
@@ -436,7 +440,7 @@ describe("MarketplaceClient interactions", () => {
 
     expect(screen.queryByRole("button", { name: "Installed" })).toBeNull();
     const installed = screen
-      .getByText("Installed")
+      .getByText("Legacy record")
       .closest('[data-slot="badge"]');
     expect(installed).toHaveAttribute("data-tone", "sage");
     expect(installed).toHaveAttribute("data-variant", "secondary");
@@ -698,4 +702,19 @@ describe("MarketplaceClient interactions", () => {
     expect(details).toHaveAttribute("href", "/marketplace/skill/sd25-pe");
     expect(details.contains(install)).toBe(false);
   });
+
+it("does not offer installation for a read-only catalog even on the manage page", () => {
+  render(<MarketplaceClient items={items.map(({ installation: _capability, ...item }) => item)} installedActionIds={[]} installedSkillIds={[]} mode="manage" />);
+  expect(screen.queryByRole("button", { name: /^Install/ })).toBeNull();
+});
+
+it("allows referencing an already installed skill from a read-only catalog without reinstalling", async () => {
+  const onAddReference = vi.fn();
+  const { installation: _capability, ...skill } = items[1];
+  render(<MarketplaceClient items={[skill]} installedActionIds={[]} installedSkillIds={[skill.id]} canAddReference onAddReference={onAddReference} />);
+  fireEvent.click(screen.getByRole("button", { name: "Add to Composer" }));
+  await waitFor(() => expect(onAddReference).toHaveBeenCalled());
+  expect(marketplaceApi.installSkill).not.toHaveBeenCalled();
+});
+
 });

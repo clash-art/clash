@@ -181,7 +181,7 @@ packages/
   gui/                  platform-neutral React views and typed UI ports
   web-ui/               Web product controllers and compatibility exports
   cli/                  terminal CLI
-  claude-code-plugin/   Claude Code integration
+  shared-cloud-schema/ backend-only Drizzle tables and auth relations
   remotion-effects/     reusable video effects
   remotion-{core,components,ui}/  video editor
 plugins/

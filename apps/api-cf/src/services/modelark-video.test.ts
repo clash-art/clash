@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { generateModelArkVideo } from "./modelark-video";
+import { submitModelArkVideo, pollModelArkVideoOnce, type ModelArkVideoParams } from "./modelark-video";
 
 function successfulFetchMock() {
   return vi
@@ -23,6 +23,11 @@ function successfulFetchMock() {
     );
 }
 
+async function runFixture(key: string, params: ModelArkVideoParams) {
+  const token = await submitModelArkVideo(key, params);
+  return pollModelArkVideoOnce(key, params, token);
+}
+
 describe("ModelArk video service", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -33,7 +38,7 @@ describe("ModelArk video service", () => {
     const fetchMock = successfulFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    const result = await generateModelArkVideo("ark-key", {
+    const result = await runFixture("ark-key", {
       baseUrl: "https://ark.example.com/api/v3",
       prompt: "cinematic product launch",
       modelName: "seedance-2-ref",
@@ -44,8 +49,6 @@ describe("ModelArk video service", () => {
       duration: 8,
       aspectRatio: "16:9",
       modelParams: { resolution: "720p", generate_audio: true, output_format: "mov" },
-      pollIntervalMs: 0,
-      maxWaitMs: 1000,
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -92,11 +95,9 @@ describe("ModelArk video service", () => {
     const fetchMock = successfulFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    await generateModelArkVideo("ark-key", {
+    await runFixture("ark-key", {
       prompt: "A quiet establishing shot",
       modelName: "seedance-2.5-ref",
-      pollIntervalMs: 0,
-      maxWaitMs: 1000,
     });
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
@@ -108,15 +109,13 @@ describe("ModelArk video service", () => {
     const fetchMock = successfulFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    await generateModelArkVideo("ark-key", {
+    await runFixture("ark-key", {
       prompt: "Move from dawn to night",
       modelName: "seedance-2.5-startend",
       upstreamModel: "doubao-seedance-2-5-260628",
       startFrameUrl: "https://cdn.example/first.png",
       endFrameUrl: "https://cdn.example/last.png",
       aspectRatio: "16:9",
-      pollIntervalMs: 0,
-      maxWaitMs: 1000,
     });
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
@@ -132,7 +131,7 @@ describe("ModelArk video service", () => {
     const fetchMock = successfulFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    await generateModelArkVideo("ark-key", {
+    await runFixture("ark-key", {
       prompt: "Replace the subject in @视频1",
       modelName: "seedance-2.5-ref",
       upstreamModel: "doubao-seedance-2-5-260628",
@@ -140,8 +139,6 @@ describe("ModelArk video service", () => {
       duration: 12,
       aspectRatio: "16:9",
       modelParams: { edit_mode: true },
-      pollIntervalMs: 0,
-      maxWaitMs: 1000,
     });
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
@@ -156,7 +153,7 @@ describe("ModelArk video service", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(generateModelArkVideo("ark-key", {
+    await expect(runFixture("ark-key", {
       prompt: "Replace the subject",
       modelName: "seedance-2.5-ref",
       modelParams: { edit_mode: true },
@@ -168,15 +165,13 @@ describe("ModelArk video service", () => {
     const fetchMock = successfulFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    await generateModelArkVideo("ark-key", {
+    await runFixture("ark-key", {
       prompt: "Continue @视频1 into @视频2",
       modelName: "seedance-2.5-extend",
       upstreamModel: "doubao-seedance-2-5-260628",
       referenceVideoUrls: ["https://cdn.example/a.mp4", "https://cdn.example/b.mp4"],
       duration: "auto",
       aspectRatio: "16:9",
-      pollIntervalMs: 0,
-      maxWaitMs: 1000,
     });
 
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
@@ -193,7 +188,7 @@ describe("ModelArk video service", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(generateModelArkVideo("ark-key", {
+    await expect(runFixture("ark-key", {
       prompt: "Continue forward",
       modelName: "seedance-2.5-extend",
     })).rejects.toThrow(/extension.*reference video/i);

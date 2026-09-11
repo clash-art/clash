@@ -22,7 +22,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "lint": "eslint src --ext .ts",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"

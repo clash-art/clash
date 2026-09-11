@@ -1,14 +1,14 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file guides coding agents working in this repository. Current product guides under `apps/docs/guide/` describe the supported architecture; older design material may describe retired paths.
 
 ## Critical Rules
 
 - **No foreign keys.** Never add `REFERENCES`, `FOREIGN KEY`, or `.references()` in schema definitions or migrations. D1 enables foreign key enforcement and it causes issues with user IDs across auth boundaries.
 - **No orphan GUI.** Do not ship buttons, menus, filters, toggles, status labels, or detail panels unless they are backed by real product behavior: a state change, persisted data, a backend/API action, navigation, or a clearly implemented local workflow. If a control has no functional contract yet, delete it instead of leaving placeholder UI. Never copy another product's surface literally; adapt the interaction to Clash's actual data model and supported actions.
 - **Use mature interaction primitives.** Dialogs, sheets, popovers, dropdowns, selects, comboboxes, tabs, collapsibles, sortable lists, and switches must use the existing shared Radix/Ariakit/dnd-kit primitives instead of hand-rolled roles, document-level keyboard listeners, click-outside handlers, or ad hoc expanded/open state. If the dependency is missing and the interaction is real, add the dependency; if the interaction has no functional contract, delete the UI.
-- **TypeScript only for source and tests.** Add or modify implementation and test code as `.ts` or `.tsx`; do not introduce `.js` or `.jsx` source files. Existing executable packaging shims must be treated as legacy and should be migrated to TypeScript when touched.
-- **All `/api/v1/*` routes live in api-cf (Hono), not in Next.js.** Gateway routes `/api/v1/*` to api-cf. Never create Next.js API routes under `/api/v1/` — they will 404. Add new endpoints in `apps/api-cf/src/routes/v1/` and register them in `apps/api-cf/src/routes/v1/index.ts`. Next.js API routes (`apps/web/app/api/`) are only for paths that gateway does not intercept (e.g., `/api/better-auth/*`).
+- **TypeScript only for source and tests.** Add or modify implementation and test code as `.ts` or `.tsx`; do not introduce `.js` or `.jsx` source files. Maintained executable scripts use native Node 24 TypeScript with erasable syntax and explicit `.ts` relative imports. Preserve scoped ESM metadata and shebang permissions. Published `dist`/`runtime` JavaScript remains a generated package boundary, not a TypeScript source launcher.
+- **Route APIs through their real backend.** The hosted Web Worker gateway forwards `/api/v1/*` to api-cf (Hono); add hosted routes in `apps/api-cf/src/routes/v1/` and register them in `index.ts`. The local Host independently serves its supported `/api/v1/*` contracts in `apps/local-api`; shared paths do not make hosted infrastructure the local authority. Web is Vite/React Router, not Next.js: never add Next API routes. Preserve `apps/web/workers/app.ts` routing and the existing Better Auth proxy for `/api/better-auth/*`.
 - **A generated frame's size is `ratio + resolution`, and the two are not symmetric.** A ratio is one geometric fact with a canonical `W:H` form, so provider spellings (`landscape_16_9`, `square_hd`) belong in the adapter. A resolution is a **menu of concrete outputs** whose names are already exact — `720p` is 1280×720, `fhd` is 1920×1080, `768P` is MiniMax's own rung — so cards carry the provider's published values verbatim and **no adapter rewrites them**. Never invent a shared `0.5K/1K/2K/4K` ladder and map onto it: `720p → 1K` asserts a false equality (921600 vs 1048576 pixels) and silently reframes the user's image. A provider's own sentinel is a value, not a spelling — MiniMax means "match the reference" by `adaptive`, so the card says `adaptive`. Read [`apps/docs/guide/model-cards.md`](apps/docs/guide/model-cards.md) before touching a card's `aspect_ratio` or `resolution`.
 - **A test may not pin a value invented in the same change.** Mutation testing proves a test is wired to the code, not that its assertion is true, so an implementation and test written from one assumption confirm nothing about each other — and a test locking an unverified invention makes _fixing_ the code turn the suite red. Pin only values with an external source of truth (upstream docs, a captured response, a shipped third-party implementation); otherwise assert behaviour or pass-through. Never pin counts, data copied out of the file under test, or a rule `ModelCardSchema`'s `superRefine` already enforces. Read [`apps/docs/guide/testing-rules.md`](apps/docs/guide/testing-rules.md) — it documents the ratchet, the `720p → 1K` incident, and why source-text assertions must use `source-match.ts`.
 - **Timeline/composition has three distinct frame/pixel coordinate systems** (tracks-viewport px, composition-absolute frames, Sequence-relative frames). Mixing them silently "works" for the first item (`from=0`) and fails for everything else. Before touching `buildPreview`, `updatePreviewFromDnd`, `ItemComponent`, or anything passing frame numbers into `<Sequence>`, read [`packages/remotion-ui/TIMELINE_COORDINATES.md`](packages/remotion-ui/TIMELINE_COORDINATES.md) — it lists the two historical bugs (stale `.tracks-viewport` ref, sequence-relative vs composition-absolute mismatch) with reproducers.
@@ -72,22 +72,22 @@ must extend this model without creating a second local workflow.
 make install                # pnpm install
 
 # Development (most common)
-make dev                    # Start web (:3000) + api-cf (:8789) in parallel
-make dev-gateway-full       # Start all services behind auth gateway (:8788)
+make dev                    # Web (:3000, api-cf auxiliary Worker) + render (:8080)
+make dev-full               # Alias for make dev
+make dev-desktop            # Electron + renderer HMR (prefers :3001)
 
 # Individual services
-make dev-web                # Frontend only (:3000, Next.js + Turbopack)
-make dev-api-cf             # API only (:8789, Wrangler)
-make dev-gateway            # Auth gateway only (:8788)
+make dev-web                # Vite/React Router + api-cf auxiliary Worker
+make dev-api-cf-standalone   # Rare isolated API debugging; do not run beside dev-web
 make dev-render             # Render server only (:8080)
 
 # Database
-make db-local               # Run D1 migrations locally (web + api-cf)
+make db-local               # Alias for db-web-local, shared local D1 migrations
 
 # Build, test, lint
-make build                  # turbo run build
 make test                   # turbo run test
-make lint                   # turbo run lint
+make lint                   # Generated profile check + source tsc + existing ESLint
+make typecheck              # Generated profile check + source tsc
 make format                 # prettier on all TS/JSON/MD
 
 # Per-app testing
@@ -101,29 +101,42 @@ make remotion-bundle        # Build Remotion video bundle
 
 **After completing a task, run `make lint` to verify.** Do not run `make build` — the project uses hot-reload in dev.
 
+`make lint` runs both TypeScript source checks and the existing ESLint tasks;
+root lint/typecheck limit Turbo concurrency to three checks to bound memory use.
+ESLint and `tsc` are distinct checks. Package source profiles extend their actual
+development/base configuration plus `tsconfig.source.json`, without changing
+release compiler targets or relying on workspace `dist`. Browser overrides live
+in `source-check-profiles.json`; after changing the shared mapping, run
+`pnpm quality:configs:write`. Both public check commands reject stale generated
+profiles without rewriting files. Turbo checks depend on upstream checks, and
+root source/ESLint configuration is part of the cache key. CI runs this gate and
+retains Desktop tests; no release build is required for the quality gate.
+
 ## Architecture
 
 ### Monorepo Structure
 
-pnpm workspaces + Turborepo. All apps deploy to **Cloudflare** (Workers / Pages).
+pnpm workspaces + Turborepo. Hosted Web/API use Cloudflare Workers; Desktop and the Local Host run on the user’s machine.
 
 | Directory                     | What                                                  | Runtime                       |
 | ----------------------------- | ----------------------------------------------------- | ----------------------------- |
-| `apps/web`                    | Next.js 15 frontend (React 19, Tailwind CSS v4)       | Cloudflare Pages via OpenNext |
+| `apps/web`                    | Vite + React Router 7 SPA, integrated gateway        | Cloudflare Worker + browser    |
 | `apps/api-cf`                 | Hono API + Durable Objects + Workflows                | Cloudflare Workers            |
-| `apps/auth-gateway`           | Reverse proxy, auth validation, request routing       | Cloudflare Workers            |
+| `apps/local-api`              | Persistent local Project Host and plugin runtime    | Node.js                       |
+| `apps/desktop`                | Desktop GUI and machine integration                 | Electron                      |
 | `apps/render-server`          | Remotion video rendering (Node.js)                    | Cloudflare Containers         |
 | `packages/shared-types`       | Zod schemas, TS types, model cards, Loro operations   | Shared library                |
 | `packages/shared-layout`      | Canvas node layout algorithms (zero deps)             | Shared library                |
 | `packages/cli`                | Terminal CLI (`clash` command) for project/canvas ops | Node.js                       |
-| `packages/claude-code-plugin` | Claude Code integration (skills, hooks)               | Plugin                        |
+| `packages/shared-cloud-schema` | Backend Drizzle tables and Better Auth relations  | SQLite / D1 backend only      |
+| `plugins/clash`               | Installable Clash agent plugin                      | Agent harness integration     |
 | `packages/remotion-*`         | Video editor: core state, components, UI              | Shared libraries              |
 
 ### Hosted Gateway Pattern (Optional Cloud Path)
 
 ```
-User/CLI → Auth Gateway (:8788)
-  ├─ /               → Web Frontend (:3000)
+Hosted client → Web Worker (:3000 in development)
+  ├─ /               → Vite / React Router SPA
   ├─ /sync/:projectId → ProjectRoom DO (WebSocket, Loro CRDT binary sync)
   ├─ /agents/*       → SupervisorAgent DO (AI chat WebSocket)
   ├─ /api/v1/*       → REST API (projects CRUD, authenticated)
@@ -132,7 +145,7 @@ User/CLI → Auth Gateway (:8788)
   └─ /assets/*       → Expiring HMAC capability delivery (internal issuers only)
 ```
 
-Auth gateway injects `x-user-id` header for downstream services. Two auth methods: **Better Auth session** (cookie-based, browser) and **API token** (`clsh_*` prefix, CLI/agents).
+The gateway is integrated in `apps/web/workers/app.ts`; there is no separate `apps/auth-gateway` service. Hosted authentication uses **Better Auth sessions** (browser cookies) and **API tokens** (`clsh_*`, CLI/agents). Preserve backend authentication and internal transport checks; an arbitrary client-supplied `x-user-id` is not authority.
 Bare upload, signing, and storage-key thumbnail routes are retired. Product
 callers publish through the Asset SDK/Host authority; `/assets/*` only consumes
 an already-issued, expiring delivery capability and does not accept a raw object
@@ -158,27 +171,37 @@ local work:
 
 Machine-local metadata, provider credentials, sessions, and indexes live in the
 local SQLite store. Hosted identity, membership, billing, and remote admission
-live in D1 through Drizzle ORM.
+live in D1 through Drizzle ORM. Backend definitions live in
+`packages/shared-cloud-schema`: `auth` owns Better Auth tables and ORM relations;
+`app` owns common cloud tables; `broker` and `runtime` preserve backend-specific
+export profiles. Existing API/Web schema paths re-export these definitions.
+`apps/web/drizzle.config.ts` reads `app/lib/db/migrations.schema.ts`; historical
+SQL remains unchanged. Removing column `.references()` prevents future schema
+generation from adding SQL foreign keys; ORM `relations({ fields, references })`
+remain query metadata and must be preserved. Existing deployed constraints are
+not silently removed by this source change. Do not import Drizzle into browser
+domain packages such as `shared-types`.
 
 ### Durable Objects (api-cf)
 
 - **`ProjectRoom`** (`src/agents/project-room.ts`) — Loro CRDT host, WebSocket hub, presence tracking, activity broadcasts (throttled 500ms), task polling, periodic snapshots.
 - **`SupervisorAgent`** (`src/agents/supervisor.ts`) — AI chat agent per project. Maintains Loro replica synced with ProjectRoom. Has canvas tools (list/read/create/update/delete nodes, run generation). Room name format: `projectId:agentId`.
-- **`GenerationWorkflow`** (`src/agents/generation.ts`) — Cloudflare Workflow for multi-step AIGC: generate → upload to R2 → update asset node.
+- **`GenerationWorkflow`** (`src/agents/generation.ts`) — Cloudflare Workflow driving the shared DurableRunEngine: journaled submit/poll, durable result staging, and acknowledged legacy node/Asset projection. See `apps/docs/guide/durable-run-protocol.md`.
 
 ### AI & Generation Providers
 
-- **Image**: Google Generative AI (Gemini), Recraft
-- **Video**: Kling, FAL AI (Sora, Flux)
-- **AI Chat**: OpenAI SDK via Cloudflare AI Gateway
-- **Description**: Claude (via AI SDK)
-- Model configs centralized in `packages/shared-types/src/models.ts` — never hardcode model parameters.
+Provider/model facts come from the model cards in `packages/shared-types/src/models.ts`
+and the installed executable plugin contracts. Hosted generation uses the live
+api-cf registry and DurableRunEngine adapters; local execution uses Host plugin
+ports. Do not infer supported models from historical provider lists or hardcode
+model parameters. Read the model-card and durable-run guides before changing
+provider protocol or generation state.
 
 ### Authentication
 
 **Better Auth** with Drizzle adapter on D1. Supports email/password and Google OAuth. Base path: `/api/better-auth`.
 
-API tokens: `clsh_` + 40 hex chars. Only SHA-256 hash stored in D1 (`api_token` table). Created via Settings UI, validated by auth gateway and api-cf auth module.
+API tokens: `clsh_` + 40 hex chars. Only SHA-256 hash stored in D1 (`api_token` table). Created via Settings UI, validated by the integrated Web gateway and api-cf authentication modules.
 
 ### Collaboration Visibility
 
@@ -193,7 +216,7 @@ Types defined in `packages/shared-types/src/presence.ts`. Detected via `isSideba
 
 ### Shared Types as Single Source of Truth
 
-All schemas in `packages/shared-types`. Both frontend and backend validate against the same Zod schemas. Canvas node types, task schemas, model cards — all defined once. Python types can be generated via `pnpm generate:python`.
+Product contracts live in `packages/shared-types`: both frontend and backend use the same Zod schemas for Canvas, tasks, model cards, and Project facts. Runtime orchestration belongs in `shared-runtime` and adapters. Database definitions are backend-only in `shared-cloud-schema`, never in browser/domain contracts.
 
 ### Canvas Operations (Loro)
 
@@ -252,17 +275,17 @@ All API requests validated with Zod schemas in `apps/api-cf/src/domain/requests.
 - **Styling**: Tailwind CSS v4, Framer Motion animations, Phosphor Icons (`weight="bold"` or `"duotone"`)
 - **Fonts**: Inter (body), Space Grotesk (headings), JetBrains Mono (mono)
 - **Design**: Modern minimalist — soft shadows, rounded corners (`rounded-xl`, `rounded-2xl`), glass morphism (`bg-white/30 backdrop-blur-xl`), red accent (`red-500`/`red-600` as brand)
-- **Component model**: Server components by default, `'use client'` only when needed
+- **Component model**: React client components and React Router 7 route modules/loaders; Vite serves the SPA. Shared product UI lives in `packages/web-ui` and platform-neutral GUI modules.
 - **Canvas**: ReactFlow for node graph, dnd-kit for drag-and-drop
-- **Path alias**: `@/*` maps to project root
-- **DB schema**: `apps/web/lib/db/app.schema.ts` (projects, API tokens), `apps/web/lib/db/better-auth.schema.ts` (users, sessions)
+- **Path alias**: Use the actual app `tsconfig.json` and Vite aliases; Web route code lives under `apps/web/app`.
+- **DB schema**: `apps/web/app/lib/db/{app,better-auth}.schema.ts` are backend compatibility exports from `@clash/shared-cloud-schema`.
 
 ## CLI (packages/cli)
 
-Installed as `clash` command. Connects to canvas via WebSocket (Loro CRDT sync), REST for project CRUD.
+Installed as `clash`. Normal local operations discover the machine Host and use its HTTP contracts; the Host owns Project Loro, receipts, and persistence. Streaming/subscription consumers may use WebSocket, but agents do not need to manage a separate Canvas replica for routine mutations.
 
 ```bash
-clash host status --json             # Verify the local host
+clash host status --json             # Optional diagnostic; no mutation preflight
 clash init --project <id> --json     # Link this cwd once
 clash canvas list --json             # Read the marker-selected Canvas
 clash timeline pull --timeline <id>  # Project Timeline to editable YAML
@@ -271,5 +294,9 @@ clash auth login                     # Optional cloud sync only
 ```
 
 Local commands use the discovered local-api host and need no cloud credential.
-Optional cloud OAuth config is stored below `$CLASH_HOME`. Server URL can be
-overridden with `CLASH_API_URL` (default `http://localhost:8788`).
+Optional cloud OAuth config is stored below `$CLASH_HOME`. `CLASH_API_URL` explicitly
+overrides endpoint selection; otherwise the CLI prefers Host discovery, then saved
+configuration. The residual `localhost:8788` fallback in the low-level config helper
+is legacy development compatibility, not the default product gateway or a port to
+hardcode in new callers. Use `apiFetch`/Host discovery rather than inventing a mirror
+request or requiring a cloud token for local work.

@@ -56,7 +56,9 @@
     "src/model-keyframes.ts": "Canonical Model keyframe draft editing and timing math. Addition/replacement/removal returns ordered image refs, contentParts and timing params together, using Model Card limits and frame rate. Shared with the legacy presentation math to avoid divergent insertion rules.",
     "src/canvas-ops.ts": "Shared Canvas mutation authority. Automatic insertion avoids pushing nodes with downstream references; layoutPendingNodes completes only unreferenced legacy placement for Host admission, without rewriting authored data.",
     "src/canvas-asset-reference.ts": "Shared Canvas source resolution and exact Asset reference identity. Applied text resolves to a validated Document/revision pair; media resolves to its Project Asset. Used by native connection validation, graph compilation, copy projection, and peer guards; it never resolves a mutable Document head.",
-    "src/director-code.ts": "Director-owned component registry and exact source Document decoder. stage:code is a plugin protocol slot, not a platform Recipe primitive."
+    "src/director-code.ts": "Director-owned component registry and exact source Document decoder. stage:code is a plugin protocol slot, not a platform Recipe primitive.",
+    "src/project-sync-content.ts": "Narrow shared Project Loro reference enumeration for retained media and all Document revisions, plus Resource-delivery request schema. Conflicting immutable Resource kinds/body facts fail closed.",
+    "src/marketplace-installation.ts": "Portable marketplace operation descriptor and identity validator. Host adapters derive installability from real ports; remote catalog fields, Worker manifests and packageId alone confer no installation authority."
   },
   "architecture_notes": "Single Source of Truth (SSOT) pattern. Zod is the master definition. Model cards own provider implementation route metadata via providerImplementations; provider definitions must not reintroduce provider-supported model matrices."
 }

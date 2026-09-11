@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { generateSunoAudio } from "./suno-audio";
+import { submitSunoAudio, pollSunoAudioOnce, type SunoAudioParams } from "./suno-audio";
+
+async function runFixture(params: SunoAudioParams) {
+  const token = await submitSunoAudio(params);
+  const first = await pollSunoAudioOnce(params, token);
+  return first ?? await pollSunoAudioOnce(params, token);
+}
 
 describe("Suno API audio service", () => {
   it("submits V5.5 and polls the returned task without switching providers", async () => {
@@ -31,13 +37,12 @@ describe("Suno API audio service", () => {
         },
       }));
 
-    const result = await generateSunoAudio({
+    const result = await runFixture({
       apiKey: "suno-key",
       prompt: "a nocturnal synth-pop song",
       model: "V5_5",
       callbackUrl: "https://api.clash.test/api/v1/provider-callbacks/suno",
       fetch: fetchMock,
-      wait: async () => {},
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -86,13 +91,12 @@ describe("Suno API audio service", () => {
         },
       }));
 
-    await expect(generateSunoAudio({
+    await expect(runFixture({
       apiKey: "suno-key",
       prompt: "do not fall back",
       model: "V5_5",
       callbackUrl: "https://api.clash.test/api/v1/provider-callbacks/suno",
       fetch: fetchMock,
-      wait: async () => {},
     })).rejects.toThrow("provider rejected generation");
   });
 });

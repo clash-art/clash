@@ -1,21 +1,10 @@
 {
-  "extends": "./tsconfig.json",
+  "extends": [
+    "./tsconfig.json",
+    "../../tsconfig.source.json"
+  ],
   "compilerOptions": {
     "incremental": true,
-    "tsBuildInfoFile": "./.cache/typecheck.tsbuildinfo",
-    "rootDir": "../..",
-    "paths": {
-      "@clash/shared-layout": ["../../packages/shared-layout/src/index.ts"],
-      "@clash/shared-types": ["../../packages/shared-types/src/index.ts"],
-      "@clash/shared-types/*": ["../../packages/shared-types/src/*.ts"],
-      "@clash/shared-runtime": ["../../packages/shared-runtime/src/index.ts"],
-      "@clash/shared-runtime/*": ["../../packages/shared-runtime/src/*.ts"],
-      "@clash/asset-sdk": ["../../packages/asset-sdk/src/index.ts"],
-      "@clash/action-sdk": ["../../packages/action-sdk/src/index.ts"],
-      "@clash/action-sdk/browser": ["../../packages/action-sdk/src/browser.ts"],
-      "@clash/replica": ["../../packages/shared-replica/src/index.ts"],
-      "@clash/replica/*": ["../../packages/shared-replica/src/*.ts"],
-      "@clash/sdk": ["../../packages/clash-sdk/js/src/index.ts"]
-    }
+    "tsBuildInfoFile": "./.cache/typecheck.tsbuildinfo"
   }
 }

@@ -5,7 +5,6 @@ import {
   getPikaMediaJob,
   getPikaMediaContent,
   uploadPikaMedia,
-  waitForPikaMediaJob,
 } from "./pika-media.js";
 
 describe("Pika media API", () => {
@@ -38,7 +37,7 @@ describe("Pika media API", () => {
     );
   });
 
-  it("polls until completion and returns the content URL", async () => {
+  it("exposes individual status checks and content retrieval", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(Response.json({ id: "media-2", status: "running" }))
       .mockResolvedValueOnce(Response.json({
@@ -48,11 +47,11 @@ describe("Pika media API", () => {
       }))
       .mockResolvedValueOnce(Response.json({ url: "https://pika.test/output.mp4" }));
 
-    const job = await waitForPikaMediaJob({
+    expect((await getPikaMediaJob({ apiKey: "pk_live_test", jobId: "media-2", fetch })).status).toBe("running");
+    const job = await getPikaMediaJob({
       apiKey: "pk_live_test",
       jobId: "media-2",
       fetch,
-      pollIntervalMs: 0,
     });
     const content = await getPikaMediaContent({
       apiKey: "pk_live_test",
@@ -97,11 +96,10 @@ describe("Pika media API", () => {
       error: { code: "insufficient_balance", message: "Insufficient org balance" },
     }));
 
-    await expect(waitForPikaMediaJob({
+    await expect(getPikaMediaJob({
       apiKey: "pk_live_test",
       jobId: "media-3",
       fetch,
-      pollIntervalMs: 0,
     })).rejects.toThrow("Pika media job failed (insufficient_balance): Insufficient org balance");
     expect(fetch).toHaveBeenCalledTimes(1);
   });

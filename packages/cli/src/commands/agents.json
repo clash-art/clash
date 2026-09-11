@@ -2,6 +2,9 @@
   "description": "Public Clash CLI commands. Command handlers preserve Host authority and local project observation/CAS rules.",
   "modules": {
     "canvas.ts": "Canvas commands use the existing Host command/REST adapters. Native Model and mapped Action Cards create/edit/copy Generator drafts and execute pinned Actions; CLI observations and Host CAS remain implicit. Help describes product behavior rather than legacy Canvas storage fields.",
-    "logs.ts": "Offline local diagnostics query. Never bootstrap a Host to inspect failed startup; profile resolution and beforeAction bypass live in the shared CLI program."
+    "logs.ts": "Offline local diagnostics query. Never bootstrap a Host to inspect failed startup; profile resolution and beforeAction bypass live in the shared CLI program.",
+    "asset-documents.ts": "Native Document command/file glue over shared document-client and discovered Host API. Create, observed reads, pull/apply, explicit copy, and same-Document attachment advance. No public CAS flags or tokens.",
+    "asset-metadata.ts": "Read/validate historical manifest metadata. Set/apply are explicit retired errors pointing to native Document commands; descriptive Media facts are not automatically Documents.",
+    "projection.ts": "Canvas/Timeline native projection command glue. Historical metadata:* projections are retired; Documents use the existing Document client and format contract."
   }
 }

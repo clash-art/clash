@@ -16,10 +16,11 @@
     "src/project-asset-http-client.ts": "Shared browser/Node Project Asset HTTP transport returning only canonical ResolvedAsset values and opaque observations.",
     "src/personal-global-asset-http-client.ts": "Shared browser/Node personal Global library HTTP transport returning only canonical ResolvedAsset values.",
     "src/asset-delivery.ts": "Host-neutral signed URL issuance port for read and upload capabilities.",
-    "src/asset-delivery-capability.ts": "Opaque HMAC capability token signer/verifier; claims never contain storage locators.",
+    "src/asset-delivery-capability.ts": "Opaque HMAC capabilities, including optional exact localReplicaId in signed Project scope; no storage locators. Cloud adapters reauthorize admission and Project references at use.",
     "src/asset-delivery-store.ts": "Host-neutral byte-store port used behind standalone delivery endpoints.",
     "src/resource-replication.ts": "Verified at-least-once Resource byte push/pull for local and hosted replicas.",
-    "src/delivery.ts": "Narrow server-runtime entrypoint for delivery and replication ports."
+    "src/delivery.ts": "Narrow server-runtime entrypoint for delivery and replication ports.",
+    "src/content-transfer.ts": "Whole-object Project cloud transport policy: hard 32 MiB ceiling (adapters may lower), structured limit error, preflight size validation, and cancellable actual-byte bounded stream reader. Local publication and generic preview delivery do not inherit this cap."
   },
   "architecture_notes": "Resource bytes and projections are Host-owned ports. ProjectAssetEntry remains Project Loro authority and ResolvedAsset is read-only. Delivery is storage-neutral: R2, S3, filesystem, and other stores implement AssetDeliveryStore behind the standalone capability endpoint."
 }

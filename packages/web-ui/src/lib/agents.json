@@ -14,6 +14,7 @@
     "modelMediaInput.ts": "Frontend re-export of shared-types Model role selection, also used by Host legacy migration.",
     "addCanvasGraph.ts": "Atomically publishes a copied Canvas graph through shared Canvas operations on a detached mutation. Rejects duplicate identities and edges outside the copied graph; prevents Host admission before input edges exist.",
     "logger.ts": "Browser adapter for shared-runtime/logging. Stable module loggers, opt-in clash.logLevel and pagehide summary flush; no separate web.log file.",
-    "useDirectorCodeSources.ts": "Loads exact Document revisions selected by the Director component registry; errors and source loading gate the viewport."
+    "useDirectorCodeSources.ts": "Loads exact Document revisions selected by the Director component registry; errors and source loading gate the viewport.",
+    "marketplaceCatalog.ts": "Validates untrusted marketplace entries and retains only installation descriptors matching their product kind, runtime and identity; shared by cloud/local loaders."
   }
 }

@@ -19,12 +19,18 @@
       "types": "./dist/browser.d.ts",
       "import": "./dist/browser.js",
       "default": "./dist/browser.js"
+    },
+    "./executable-failure": {
+      "types": "./dist/executable-failure.d.ts",
+      "import": "./dist/executable-failure.js",
+      "default": "./dist/executable-failure.js"
     }
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "files": [
     "dist",

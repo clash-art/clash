@@ -1,3 +1,4 @@
+import { providerHttpError } from "@clash/action-sdk/executable-failure";
 export interface BflFlux3VideoInput {
   prompt: string;
   duration?: number | string;
@@ -12,8 +13,6 @@ export interface BflFlux3VideoRequestOptions {
   input: BflFlux3VideoInput;
   fetch?: typeof fetch;
   baseUrl?: string;
-  pollIntervalMs?: number;
-  maxPollAttempts?: number;
 }
 
 export interface BflFlux3VideoResult {
@@ -151,7 +150,7 @@ function firstHttpUrl(value: unknown): string | undefined {
   return undefined;
 }
 
-export async function generateBflFlux3Video(options: BflFlux3VideoRequestOptions): Promise<BflFlux3VideoResult> {
+export async function submitBflFlux3Video(options: BflFlux3VideoRequestOptions): Promise<{ requestId: string; pollingUrl: string }> {
   const fetchImpl = options.fetch ?? fetch;
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   const headers = { "content-type": "application/json", "x-key": options.apiKey };
@@ -162,7 +161,7 @@ export async function generateBflFlux3Video(options: BflFlux3VideoRequestOptions
   });
   const submitted = await responseJson(submittedResponse);
   if (!submittedResponse.ok) {
-    throw new Error(`BFL FLUX 3 request failed: ${submitted?.detail ?? submitted?.error?.message ?? submittedResponse.statusText}`);
+    throw providerHttpError({ status: submittedResponse.status, operation: "submit", message: `BFL FLUX 3 request failed: ${submitted?.detail ?? submitted?.error?.message ?? submittedResponse.statusText}` });
   }
   const requestId = submitted?.id;
   if (typeof requestId !== "string" || !requestId) {
@@ -172,24 +171,28 @@ export async function generateBflFlux3Video(options: BflFlux3VideoRequestOptions
     ? submitted.polling_url
     : `${baseUrl}/v1/get_result?id=${encodeURIComponent(requestId)}`;
 
-  const pollIntervalMs = Math.max(0, options.pollIntervalMs ?? 2_000);
-  const maxPollAttempts = Math.max(1, options.maxPollAttempts ?? 600);
-  for (let attempt = 0; attempt < maxPollAttempts; attempt += 1) {
-    const polledResponse = await fetchImpl(pollingUrl, { headers: { "x-key": options.apiKey } });
-    const polled = await responseJson(polledResponse);
-    if (!polledResponse.ok) {
-      throw new Error(`BFL FLUX 3 poll failed: ${polled?.detail ?? polled?.error?.message ?? polledResponse.statusText}`);
-    }
-    const status = String(polled?.status ?? "").toLowerCase();
-    if (status === "ready") {
-      const url = firstHttpUrl(polled?.result ?? polled);
-      if (!url) throw new Error("BFL FLUX 3 result returned no video URL.");
-      return { requestId, url, pollingUrl };
-    }
-    if (status === "error" || status.includes("moderated") || status === "task not found") {
-      throw new Error(`BFL FLUX 3 request failed: ${polled?.details?.error ?? polled?.details ?? polled?.status}`);
-    }
-    if (pollIntervalMs > 0) await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  return { requestId, pollingUrl };
+}
+
+export async function pollBflFlux3VideoOnce(
+  options: Pick<BflFlux3VideoRequestOptions, "apiKey" | "fetch">,
+  token: { requestId: string; pollingUrl: string },
+): Promise<BflFlux3VideoResult | null> {
+  const { requestId, pollingUrl } = token;
+  const fetchImpl = options.fetch ?? fetch;
+  const polledResponse = await fetchImpl(pollingUrl, { headers: { "x-key": options.apiKey } });
+  const polled = await responseJson(polledResponse);
+  if (!polledResponse.ok) {
+    throw providerHttpError({ status: polledResponse.status, operation: "poll", message: `BFL FLUX 3 poll failed: ${polled?.detail ?? polled?.error?.message ?? polledResponse.statusText}` });
   }
-  throw new Error(`BFL FLUX 3 request timed out: ${requestId}`);
+  const status = String(polled?.status ?? "").toLowerCase();
+  if (status === "ready") {
+    const url = firstHttpUrl(polled?.result ?? polled);
+    if (!url) throw new Error("BFL FLUX 3 result returned no video URL.");
+    return { requestId, url, pollingUrl };
+  }
+  if (status === "error" || status.includes("moderated") || status === "task not found") {
+    throw new Error(`BFL FLUX 3 request failed: ${polled?.details?.error ?? polled?.details ?? polled?.status}`);
+  }
+  return null;
 }

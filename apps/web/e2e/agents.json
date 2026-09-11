@@ -1,0 +1,11 @@
+{
+  "summary": "Opt-in browser smoke and performance workflows, run by native Node 24 using the shared scripts/e2e/harness.ts. Web source checks include these scripts under the existing tsconfig scope; syntax checking and full browser execution remain separate.",
+  "entrypoints": [
+    "acp-setup-smoke.ts",
+    "canvas-perf.ts",
+    "gui-smoke.ts",
+    "local-runtime-smoke.ts",
+    "host-artifacts.ts"
+  ],
+  "artifact_boundary": "host-artifacts loads prebuilt local-api artifacts by dynamic URL and checks required callable exports. Test-side consumer ports avoid stale generated declarations; full execution still requires a prepared Host build."
+}

@@ -26,7 +26,7 @@ export interface CloudDurableWorkflowStep {
 
 const ADVANCE_CONFIG = {
   retries: { limit: 3, delay: "2 seconds", backoff: "exponential" },
-  timeout: "5 minutes",
+  timeout: "30 minutes",
 };
 const CONTENDED_RETRY_MS = 100;
 

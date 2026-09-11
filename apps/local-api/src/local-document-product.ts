@@ -12,6 +12,8 @@ import {
   ensureDocumentAttachment,
   getDocumentKindDefinition,
   listDocumentAssetRevisions,
+  listDocumentAttachments,
+  readDocumentAttachment,
   listProjectDocumentAssets,
   parseDocumentBody,
   readDocumentAssetRevision,
@@ -132,6 +134,16 @@ export const AdvanceLocalDocumentBodySchema = z
 export type AdvanceLocalDocumentBody = z.infer<
   typeof AdvanceLocalDocumentBodySchema
 >;
+
+export const CopyLocalDocumentBodySchema = z
+  .object({
+    sourceRevisionId: idSchema,
+    documentAssetId: idSchema,
+    revisionId: idSchema,
+    body: z.unknown().optional(),
+  })
+  .strict();
+export type CopyLocalDocumentBody = z.infer<typeof CopyLocalDocumentBodySchema>;
 
 export const AttachLocalDocumentInputSchema = attachmentSchema;
 
@@ -258,6 +270,63 @@ export function createLocalDocumentProductService(options: {
       });
     },
 
+    async copy(
+      projectId: string,
+      input: CopyLocalDocumentBody & { sourceDocumentAssetId: string },
+    ) {
+      const parsed = CopyLocalDocumentBodySchema.parse({
+        sourceRevisionId: input.sourceRevisionId,
+        documentAssetId: input.documentAssetId,
+        revisionId: input.revisionId,
+        ...(input.body === undefined ? {} : { body: input.body }),
+      });
+      const source = await options.authority.inspect(projectId, (doc) =>
+        readDocumentAssetRevision(doc, {
+          documentAssetId: input.sourceDocumentAssetId,
+          revisionId: parsed.sourceRevisionId,
+        }),
+      );
+      if (!source)
+        throw new LocalDocumentProductError(
+          "DOCUMENT_REVISION_NOT_FOUND",
+          "Document copy source revision not found.",
+        );
+      const body =
+        parsed.body === undefined
+          ? await readRevisionBody({
+              dataDir: options.dataDir,
+              revision: source,
+            })
+          : parsed.body;
+      const stored = await storeBody({
+        dataDir: options.dataDir,
+        documentKind: source.documentKind,
+        schemaVersion: source.schemaVersion,
+        body,
+      });
+      return options.authority.mutate(projectId, async (doc, checkpoint) => {
+        assertSourceRefs(doc, source.sourceRefs);
+        const result = createProjectDocumentAsset(doc, {
+          id: parsed.revisionId,
+          documentAssetId: parsed.documentAssetId,
+          documentKind: source.documentKind,
+          schemaVersion: source.schemaVersion,
+          mutability: source.mutability,
+          forkedFrom: {
+            kind: "document",
+            documentAssetId: source.documentAssetId,
+            revisionId: source.id,
+          },
+          body: stored.ref,
+          producer,
+          sourceRefs: source.sourceRefs,
+        });
+        if (!result.ok) return throwMutationError(result);
+        if (result.changed) await checkpoint();
+        return { ...result, body: stored.body };
+      });
+    },
+
     async advance(projectId: string, inputRaw: AdvanceLocalDocumentInput) {
       const input = AdvanceLocalDocumentInputSchema.parse(inputRaw);
       const current = await options.authority.inspect(projectId, (doc) => {
@@ -350,6 +419,17 @@ export function createLocalDocumentProductService(options: {
       };
     },
 
+    async listAttachments(projectId: string) {
+      return options.authority.inspect(projectId, (doc) =>
+        listDocumentAttachments(doc),
+      );
+    },
+    async readAttachment(projectId: string, attachmentId: string) {
+      return options.authority.inspect(projectId, (doc) =>
+        readDocumentAttachment(doc, attachmentId),
+      );
+    },
+
     async attach(projectId: string, inputRaw: DocumentAttachment) {
       const input = AttachLocalDocumentInputSchema.parse(inputRaw);
       return options.authority.mutate(projectId, async (doc, checkpoint) => {
@@ -367,8 +447,16 @@ export function createLocalDocumentProductService(options: {
         expectedRevisionId: string;
         document: unknown;
       },
+      assertCurrent?: (attachment: DocumentAttachment) => void,
     ) {
       return options.authority.mutate(projectId, async (doc, checkpoint) => {
+        const current = readDocumentAttachment(doc, input.attachmentId);
+        if (!current)
+          throw new LocalDocumentProductError(
+            "DOCUMENT_ATTACHMENT_NOT_FOUND",
+            "Document attachment not found.",
+          );
+        assertCurrent?.(current);
         const result = advanceDocumentAttachment(doc, input);
         if (!result.ok) return throwMutationError(result);
         if (result.changed) await checkpoint();

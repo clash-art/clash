@@ -28,7 +28,7 @@ function putResponse(status: number, statusText = "") {
 
 function fetchSequence(...responses: Array<ReturnType<typeof graphqlResponse>>) {
   let call = 0;
-  return vi.fn(async () => {
+  return vi.fn(async (_input: string, _init?: {body?: string | Uint8Array<ArrayBuffer>}) => {
     const response = responses[call];
     call += 1;
     if (!response) throw new Error("fetch called more times than expected");

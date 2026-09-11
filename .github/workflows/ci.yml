@@ -27,5 +27,5 @@ jobs:
 
       - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @clash/desktop typecheck
+      - run: make lint
       - run: pnpm --filter @clash/desktop test

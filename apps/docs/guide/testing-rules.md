@@ -132,3 +132,37 @@ Prettier reflow and the rest asserted designs that were never implemented.
 
 Delete a test only when its subject is deliberately gone. Then **reverse it** —
 assert the absence — so the deletion becomes the locked invariant instead of a gap.
+
+## Source quality gate
+
+`make lint` first validates generated source-check profiles and checks the small
+configuration tool itself, then runs workspace TypeScript checks and the existing
+ESLint tasks. `make typecheck` uses the same configuration validation but omits
+ESLint. This is a source gate; it does not run release builds or the root Turbo
+test task, whose existing dependencies include builds. CI retains Desktop tests
+after this gate.
+
+`tsconfig.source.json` owns common workspace source paths. Each check profile
+extends the package's actual development/base config without reducing strictness
+or excluding failing implementation files. Browser entrypoints and app-local
+aliases are sparse overrides in `source-check-profiles.json`; the generated full
+`paths` maps are necessary because TypeScript replaces that map rather than
+merging it. Edit the authoritative mapping/overrides and run
+`pnpm quality:configs:write`; normal gates only detect drift. Release targets and
+artifact generation configs remain separate.
+
+Turbo `typecheck` depends on upstream `typecheck`, and ESLint depends on relevant
+source checks. Root source-profile, configuration-tool and ESLint files are global
+cache inputs. To verify changes to the gate, inspect `--dry=json` task hashes using
+a temporary shared-source probe and a root-config probe, restoring both afterward;
+confirm downstream CLI/Host/API/UI hashes change and no build task is scheduled.
+Use `tsc --listFilesOnly` to distinguish repository source from stale repository
+`dist`; third-party dependencies' own distribution files are expected.
+
+Maintained packaging and runner tools use native Node 24 TypeScript. Their strict
+checks live in `tsconfig.quality.json`; isolated tests cover import guards, runner
+selection, and staging already-built plugin artifacts. Large opt-in E2E scripts
+are syntax-checked with `node --check <script.ts>` separately from their browser,
+Host, or real-agent execution. Renaming a script does not authorize executing
+those workflows. Published `dist/*.js`, `dist/*.mjs`, and `runtime/*.js` names
+remain generated external contracts.

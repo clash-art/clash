@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { minimaxPoll, minimaxSubmit } from "./minimax-executor.js";
+import { minimaxPoll, minimaxSubmit } from "@clash/shared-runtime/minimax-executor";
 
 /**
  * MiniMax puts the verdict in the body, not in the HTTP status.

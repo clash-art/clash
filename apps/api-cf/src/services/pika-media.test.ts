@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { generatePikaMedia, type PikaUsageLifecycleEvent } from "./pika-media";
+import { submitPikaMedia, pollPikaMediaOnce, type PikaMediaGenerationInput, type PikaUsageLifecycleEvent } from "./pika-media";
+
+async function runFixture(apiKey: string, input: PikaMediaGenerationInput) {
+  const token = await submitPikaMedia(apiKey, input);
+  return pollPikaMediaOnce(apiKey, input, token);
+}
 
 describe("generatePikaMedia", () => {
   it("executes a Pika-routed image generation", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const usageEvents: PikaUsageLifecycleEvent[] = [];
-    const result = await generatePikaMedia("pk_live_hosted", {
+    const result = await runFixture("pk_live_hosted", {
       taskId: "hosted-pika-1",
       kind: "image",
       route: {

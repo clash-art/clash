@@ -1,3 +1,4 @@
+import { providerHttpError } from "@clash/action-sdk/executable-failure";
 export interface SunoAudioParams {
   apiKey: string;
   prompt: string;
@@ -6,7 +7,6 @@ export interface SunoAudioParams {
   modelParams?: Record<string, unknown>;
   baseUrl?: string;
   fetch?: typeof fetch;
-  wait?: (milliseconds: number) => Promise<void>;
 }
 
 export interface SunoAudioResult {
@@ -41,13 +41,14 @@ async function jsonResponse(response: Response, operation: string): Promise<any>
   } catch {
     parsed = { msg: raw };
   }
-  if (!response.ok || parsed?.code !== 200) {
+  if (!response.ok) throw providerHttpError({ status: response.status, operation: operation === "submit" ? "submit" : "poll", message: `Suno API ${operation} failed: ${parsed?.msg || response.statusText}` });
+  if (parsed?.code !== 200) {
     throw new Error(`Suno API ${operation} failed: ${parsed?.msg || response.statusText}`);
   }
   return parsed;
 }
 
-export async function generateSunoAudio(params: SunoAudioParams): Promise<SunoAudioResult> {
+export async function submitSunoAudio(params: SunoAudioParams): Promise<{ taskId: string; model: string }> {
   const apiKey = params.apiKey.trim();
   if (!apiKey) throw new Error("Suno provider account is missing apiKey.");
   const prompt = params.prompt.trim();
@@ -58,8 +59,6 @@ export async function generateSunoAudio(params: SunoAudioParams): Promise<SunoAu
   }
 
   const fetchImpl = params.fetch ?? fetch;
-  const wait = params.wait ?? ((milliseconds: number) =>
-    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const baseUrl = (params.baseUrl || "https://api.sunoapi.org").replace(/\/+$/, "");
   const style = stringParam(params.modelParams, "style");
   const title = stringParam(params.modelParams, "title");
@@ -90,30 +89,39 @@ export async function generateSunoAudio(params: SunoAudioParams): Promise<SunoAu
     throw new Error("Suno API submit response returned no taskId.");
   }
 
-  for (let attempt = 0; attempt < 120; attempt += 1) {
-    const record = await jsonResponse(await fetchImpl(
-      `${baseUrl}/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`,
-      { method: "GET", headers: { authorization: `Bearer ${apiKey}` } },
-    ), "poll");
-    const data = record?.data;
-    const status = typeof data?.status === "string" ? data.status : "PENDING";
-    if (TERMINAL_FAILURES.has(status)) {
-      throw new Error(`Suno API generation failed: ${data?.errorMessage || status}`);
-    }
-    if (status === "SUCCESS") {
-      const song = data?.response?.sunoData?.[0];
-      if (typeof song?.audioUrl !== "string" || !song.audioUrl) {
-        throw new Error("Suno API completed without an audioUrl.");
-      }
-      return {
-        url: song.audioUrl,
-        taskId,
-        model: params.model,
-        ...(typeof song.duration === "number" ? { durationMs: Math.round(song.duration * 1000) } : {}),
-        ...(typeof song.title === "string" && song.title ? { title: song.title } : {}),
-      };
-    }
-    await wait(5000);
+  return { taskId, model: params.model };
+}
+
+export async function pollSunoAudioOnce(
+  params: Pick<SunoAudioParams, "apiKey" | "baseUrl" | "fetch">,
+  token: { taskId: string; model: string },
+): Promise<SunoAudioResult | null> {
+  const { taskId } = token;
+  const apiKey = params.apiKey.trim();
+  const fetchImpl = params.fetch ?? fetch;
+  const baseUrl = (params.baseUrl || "https://api.sunoapi.org").replace(/\/+$/, "");
+
+  const record = await jsonResponse(await fetchImpl(
+    `${baseUrl}/api/v1/generate/record-info?taskId=${encodeURIComponent(taskId)}`,
+    { method: "GET", headers: { authorization: `Bearer ${apiKey}` } },
+  ), "poll");
+  const data = record?.data;
+  const status = typeof data?.status === "string" ? data.status : "PENDING";
+  if (TERMINAL_FAILURES.has(status)) {
+    throw new Error(`Suno API generation failed: ${data?.errorMessage || status}`);
   }
-  throw new Error(`Suno API generation timed out: ${taskId}`);
+  if (status === "SUCCESS") {
+    const song = data?.response?.sunoData?.[0];
+    if (typeof song?.audioUrl !== "string" || !song.audioUrl) {
+      throw new Error("Suno API completed without an audioUrl.");
+    }
+    return {
+      url: song.audioUrl,
+      taskId,
+      model: token.model,
+      ...(typeof song.duration === "number" ? { durationMs: Math.round(song.duration * 1000) } : {}),
+      ...(typeof song.title === "string" && song.title ? { title: song.title } : {}),
+    };
+  }
+  return null;
 }

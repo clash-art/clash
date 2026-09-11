@@ -80,7 +80,7 @@ function fileNameOf(file: Blob): string | undefined {
 }
 
 function newOperationId(prefix: string): string {
-  const cryptoObject = globalThis.crypto;
+  const cryptoObject = typeof crypto === "undefined" ? undefined : crypto;
   if (typeof cryptoObject?.randomUUID !== "function") {
     throw new Error("crypto.randomUUID is required for Asset operation ids");
   }

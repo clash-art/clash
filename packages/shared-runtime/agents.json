@@ -6,9 +6,14 @@
     "src/project-host-client.ts": "Node workspace-marker and Host endpoint resolution, reusing project-host-http transport.",
     "src/timeline-client.ts": "Native Timeline Host projection client. Keep the returned observation with each draft; never rotate an old draft's CAS evidence after a background refresh.",
     "src/generator-client.ts": "Generic Generator/Revision/Action Run/Output Commit HTTP client.",
-    "src/document-client.ts": "Exact Project Document revision body reads through the existing Host API, shared by MCP Assets and CLI assets documents. Requires a revision identity and preserves structured HTTP errors.",
+    "src/document-client.ts": "Platform-neutral native Document HTTP client for kinds/heads/history/exact bodies, create/advance/copy and attachments. Internal observations travel in request headers; public envelope sanitation preserves user body fields. CLI and MCP reuse this transport, without Node storage or manifest authority.",
     "src/logging.ts": "Browser-safe versioned diagnostics, structured Error context, bounded sanitization and duplicate summaries. No filesystem or Node imports.",
     "src/observability.ts": "Node JSONL sinks and stdio capture; bounded rotation, process run identity, console severity, line framing and startup-only forwarding.",
-    "src/log-reader.ts": "Read-only local diagnostic query across desktop and Host rotations; legacy compatibility, event summaries and original file/line locations."
+    "src/log-reader.ts": "Read-only local diagnostic query across desktop and Host rotations; legacy compatibility, event summaries and original file/line locations.",
+    "src/project-status.ts": "Shared Project storage/recovery diagnostics and cloud gates. Readiness requires an exact Project/local-replica admission marked ready by the Host synchronizer; global transport capability flags cannot grant readiness. Raw modes remain conservative recovery hints.",
+    "src/project-cloud-sync.ts": "Platform-neutral phased Project synchronization with monotonic admission-version CAS. New writes/revocation cancel stale completion; a ready record is rechecked on reconciliation. Exposed via the narrow project-cloud-sync subpath.",
+    "src/minimax-executor.ts": "Portable MiniMax submit/poll execution, shared by executable plugin and hosted adapter through a narrow subpath. No Node Buffer or credentials persistence. Provider failures come from action-sdk/executable-failure; the SDK Node root is not a portable dependency.",
+    "src/gemini-omni.ts": "Google Interactions and Files one-request primitives; pending file processing returns control to the durable owner.",
+    "src/provider-browser-boundary.test.ts": "Bundles portable Provider sources and the Action SDK executable-failure subpath for browser, executes HTTP failure classification without Node globals, and verifies narrow/root class identity and published subpath resolution."
   }
 }

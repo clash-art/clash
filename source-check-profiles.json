@@ -1,0 +1,26 @@
+[
+  {
+    "file": "apps/web/tsconfig.check.json",
+    "extends": ["./tsconfig.json", "../../tsconfig.source.json"],
+    "aliases": {
+      "@clash/shared-runtime": ["packages/shared-runtime/src/browser.ts"],
+      "@/*": ["apps/web/app/*"],
+      "~/*": ["apps/web/app/*"]
+    }
+  },
+  {
+    "file": "packages/web-ui/tsconfig.check.json",
+    "extends": ["./tsconfig.json", "../../tsconfig.source.json"],
+    "aliases": {
+      "@clash/shared-runtime": ["packages/shared-runtime/src/browser.ts"],
+      "@/*": ["packages/web-ui/src/*"]
+    }
+  },
+  {
+    "file": "plugins/clash/tsconfig.check.json",
+    "extends": ["./tsconfig.typecheck.json", "../../tsconfig.source.json"],
+    "aliases": {
+      "@clash/cli/plugin": ["packages/cli/src/lib/plugin-lifecycle.ts"]
+    }
+  }
+]

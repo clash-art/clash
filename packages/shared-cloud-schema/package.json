@@ -1,0 +1,42 @@
+{
+  "name": "@clash/shared-cloud-schema",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Backend-only Drizzle SQLite/D1 table definitions and auth relations",
+  "exports": {
+    "./auth": {
+      "types": "./src/auth.ts",
+      "import": "./src/auth.ts",
+      "default": "./src/auth.ts"
+    },
+    "./app": {
+      "types": "./src/app.ts",
+      "import": "./src/app.ts",
+      "default": "./src/app.ts"
+    },
+    "./broker": {
+      "types": "./src/broker.ts",
+      "import": "./src/broker.ts",
+      "default": "./src/broker.ts"
+    },
+    "./runtime": {
+      "types": "./src/runtime.ts",
+      "import": "./src/runtime.ts",
+      "default": "./src/runtime.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.36.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "drizzle-kit": "^0.28.1",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.4"
+  }
+}

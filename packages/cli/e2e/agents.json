@@ -1,0 +1,3 @@
+{
+  "summary": "Explicit CLI integration tests in a native Node ESM scope. canvas-add-refs.test.ts exercises an existing configured Host/project only when its required environment is supplied; ordinary CLI tests still use the source runner."
+}

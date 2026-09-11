@@ -170,11 +170,11 @@ bundle: remotion-bundle ## Alias for remotion-bundle
 # Code Quality
 #==============================================================================
 
-lint: check-tools ## Lint all code
-	@echo "$(BLUE)Linting TypeScript...$(NC)"
+lint: check-tools ## Check workspace TypeScript source and existing ESLint rules
+	@echo "$(BLUE)Checking TypeScript source and ESLint...$(NC)"
 	@pnpm lint
 
-typecheck: check-tools ## Type-check all packages
+typecheck: check-tools ## Type-check workspace source without release builds
 	@echo "$(BLUE)Type-checking TypeScript...$(NC)"
 	@pnpm typecheck
 

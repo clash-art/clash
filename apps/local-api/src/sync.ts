@@ -72,16 +72,18 @@ export interface LocalSyncOptions {
   workflowProcessor?: LocalWorkflowProcessor | null;
   canvasPreviewCacheEnabled?: boolean;
   upgradeProject?: LocalProjectUpgrade;
+  onProjectCommitted?: (projectId: string) => Promise<void>;
 }
 
 export interface RemoteLoroPersistence {
-  loadSnapshot?(projectId: string): Promise<Uint8Array | null>;
-  appendUpdate(projectId: string, update: Uint8Array): Promise<void>;
+  loadSnapshot?(projectId: string, signal?: AbortSignal): Promise<Uint8Array | null>;
+  appendUpdate(projectId: string, update: Uint8Array, signal?: AbortSignal): Promise<void>;
   /** Optional product metadata mirror; deliberately separate from Loro bytes. */
-  loadProjectMetadata?(projectId: string): Promise<ProjectMetadata | null>;
+  loadProjectMetadata?(projectId: string, signal?: AbortSignal): Promise<ProjectMetadata | null>;
   saveProjectMetadata?(
     projectId: string,
     metadata: ProjectMetadata,
+    signal?: AbortSignal,
   ): Promise<void>;
   createLink?(options: {
     projectId: string;
@@ -374,10 +376,11 @@ export function createHttpRemoteLoroPersistence(
 ): RemoteLoroPersistence {
   const fetchImpl = options.fetch ?? fetch;
   return {
-    async loadSnapshot(projectId) {
+    async loadSnapshot(projectId, signal) {
       const response = await fetchImpl(
         remoteProjectUrl(options.baseUrl, projectId, "snapshot"),
         {
+          signal,
           method: "GET",
           headers: remoteHeaders(options.token),
         },
@@ -386,10 +389,11 @@ export function createHttpRemoteLoroPersistence(
       await assertRemoteOk(response, "snapshot load");
       return new Uint8Array(await response.arrayBuffer());
     },
-    async appendUpdate(projectId, update) {
+    async appendUpdate(projectId, update, signal) {
       const response = await fetchImpl(
         remoteProjectUrl(options.baseUrl, projectId, "updates"),
         {
+          signal,
           method: "POST",
           headers: remoteHeaders(options.token, {
             "content-type": "application/octet-stream",
@@ -399,10 +403,11 @@ export function createHttpRemoteLoroPersistence(
       );
       await assertRemoteOk(response, "update append");
     },
-    async loadProjectMetadata(projectId) {
+    async loadProjectMetadata(projectId, signal) {
       const response = await fetchImpl(
         remoteProjectUrl(options.baseUrl, projectId, "metadata"),
         {
+          signal,
           method: "GET",
           headers: remoteHeaders(options.token),
         },
@@ -414,10 +419,11 @@ export function createHttpRemoteLoroPersistence(
       );
       return payload.metadata;
     },
-    async saveProjectMetadata(projectId, metadata) {
+    async saveProjectMetadata(projectId, metadata, signal) {
       const response = await fetchImpl(
         remoteProjectUrl(options.baseUrl, projectId, "metadata"),
         {
+          signal,
           method: "PUT",
           headers: remoteHeaders(options.token, {
             "content-type": "application/json",
@@ -580,6 +586,7 @@ export class LocalLoroRoom {
     private readonly workflowProcessor?: LocalWorkflowProcessor,
     private readonly canvasPreviewCacheEnabled = false,
     private readonly upgradeProject?: LocalProjectUpgrade,
+    private readonly onProjectCommitted?: (projectId: string) => Promise<void>,
   ) {
     this.checkpointedDoc = this.replica.read((state) => state);
   }
@@ -598,6 +605,7 @@ export class LocalLoroRoom {
       options.workflowProcessor ?? undefined,
       options.canvasPreviewCacheEnabled ?? false,
       options.upgradeProject,
+      options.onProjectCommitted,
     );
     if (loaded.importedRemoteSnapshot || loaded.workspaceRepaired)
       await room.saveSnapshot();
@@ -789,6 +797,20 @@ export class LocalLoroRoom {
       this.receiveUnsafe(sender, update),
     );
     await this.processPendingWork();
+  }
+
+  /** Import remote state through the same durable Project mutation queue. */
+  async mergeRemoteSnapshot(snapshot: Uint8Array): Promise<void> {
+    const missing = await this.inspectProject(doc => {
+      const before = doc.version();
+      try {
+        doc.import(snapshot);
+        const after = doc.version();
+        try { return before.compare(after) === 0 ? null : doc.export({ mode: "update", from: before }); }
+        finally { after.free(); }
+      } finally { before.free(); }
+    });
+    if (missing) await this.receiveCloudUpdates(loroSyncUpdateId(missing), [missing]);
   }
 
   private async receiveCloudUpdates(
@@ -1027,6 +1049,7 @@ export class LocalLoroRoom {
     });
     this.checkpointedDoc = this.replica.read((state) => state);
     if (result.appended) {
+      await this.onProjectCommitted?.(this.projectId);
       this.updatesSinceSnapshot += 1;
       this.updateBytesSinceSnapshot += update.byteLength;
     }
@@ -1195,7 +1218,7 @@ export class LocalLoroRoom {
 
   private mirrorRemoteUpdate(update: Uint8Array): void {
     if (this.remoteLink) {
-      void this.remoteLink.publish(update);
+      void Promise.resolve(this.remoteLink.publish(update)).catch(error => console.error("[local-sync] remote Project update failed", error));
       return;
     }
     if (!this.remotePersistence) return;
@@ -1266,6 +1289,7 @@ export class LocalLoroRoomHub {
     private readonly remotePersistence?: RemoteLoroPersistenceSource,
     private readonly workflowProcessor?: LocalWorkflowProcessor | null,
     private readonly upgradeProject?: LocalProjectUpgrade,
+    private readonly onProjectCommitted?: (projectId: string) => Promise<void>,
   ) {
     this.replicaStore = new FileReplicaStore(join(dataDir, "projects"));
   }
@@ -1299,6 +1323,7 @@ export class LocalLoroRoomHub {
             workflowProcessor: this.workflowProcessor,
             canvasPreviewCacheEnabled: true,
             upgradeProject: this.upgradeProject,
+            onProjectCommitted: this.onProjectCommitted,
           },
           (opened) => {
             this.checkpointReadableRooms.set(projectId, opened);
@@ -1482,6 +1507,7 @@ export function attachLocalSync(
     workflowProcessor?: LocalWorkflowProcessor | null;
     hub?: LocalLoroRoomHub;
     upgradeProject?: LocalProjectUpgrade;
+  onProjectCommitted?: (projectId: string) => Promise<void>;
   },
 ): LocalLoroRoomHub {
   const hub =

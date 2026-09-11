@@ -10,7 +10,6 @@ import {
   defineExecutor,
   type ExecutorStep,
 } from "@clash/action-sdk";
-// @ts-expect-error the built stdio bundle has no declaration file; the runtime export is real.
 import { plugin as videoEnhancePlugin } from "@clash-plugin/video-enhance/stdio";
 import type { ActionRunModelRoute } from "@clash/shared-types";
 

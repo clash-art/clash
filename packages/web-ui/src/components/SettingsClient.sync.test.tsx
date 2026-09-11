@@ -1058,7 +1058,7 @@ describe("SettingsClient sync section", () => {
       ),
     );
 
-    await screen.findByRole("radio", { name: /Local only/ });
+    await screen.findByRole("radio", { name: /No default endpoint/ });
     expect(
       screen.queryByRole("status", { name: "Loading sync settings" }),
     ).toBeNull();
@@ -1097,10 +1097,10 @@ describe("SettingsClient sync section", () => {
             remote_loro_url: "https://cloud.example",
             remote_loro_token: "secret",
             capabilities: {
-              canvas: true,
-              asset_metadata: true,
-              revision_content: true,
-              project_metadata: true,
+              canvas: false,
+              asset_metadata: false,
+              revision_content: false,
+              project_metadata: false,
             },
           });
           return new Response(
@@ -1113,10 +1113,10 @@ describe("SettingsClient sync section", () => {
                 source: "config",
               },
               capabilities: {
-                canvas: true,
-                asset_metadata: true,
-                revision_content: true,
-                project_metadata: true,
+                canvas: false,
+                asset_metadata: false,
+                revision_content: false,
+                project_metadata: false,
               },
             }),
             { headers: { "content-type": "application/json" } },
@@ -1142,44 +1142,20 @@ describe("SettingsClient sync section", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByText("Local only");
+    await screen.findByText("No default endpoint");
     const syncSection = screen
       .getByRole("heading", { name: "Sync" })
       .closest('[data-slot="settings-section"]');
     expect(syncSection).toBeTruthy();
-    const readiness = screen.getByRole("heading", {
-      name: "Cloud mirror readiness",
-    });
-    expect(readiness.closest('[data-slot="settings-panel"]')).toBeTruthy();
-    expect(
-      screen
-        .getByRole("switch", { name: "Canvas mirror ready" })
-        .closest('[data-slot="settings-capability-row"]'),
-    ).toBeTruthy();
-    expect(
-      screen
-        .getByRole("switch", { name: "Canvas mirror ready" })
-        .closest('[data-slot="settings-row"]'),
-    ).toBeNull();
-    fireEvent.click(screen.getByRole("radio", { name: /Cloud sync/ }));
+    expect(screen.queryAllByRole("switch", { name: /mirror ready/i })).toEqual([]);
+    expect(screen.queryByRole("switch", { name: "Sync project metadata" })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /Cloud endpoint/ }));
     fireEvent.change(screen.getByLabelText("Remote Loro URL"), {
       target: { value: "https://cloud.example" },
     });
     fireEvent.change(screen.getByLabelText("Remote Loro token"), {
       target: { value: "secret" },
     });
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Canvas mirror ready" }),
-    );
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Asset metadata mirror ready" }),
-    );
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Revision content mirror ready" }),
-    );
-    fireEvent.click(
-      screen.getByRole("switch", { name: "Project metadata mirror ready" }),
-    );
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     expect(screen.getAllByText("Token saved").length).toBeGreaterThan(0);
@@ -8631,4 +8607,15 @@ describe("SettingsClient model routing", () => {
       ).toBe(false);
     });
   });
+});
+
+it("shows legacy Action records without claiming execution availability", () => {
+  render(<MemoryRouter><SettingsClient initialTokens={[]} initialVariables={[]} initialSkills={[]} initialActions={[
+    {id: "historical", actionId: "historical", name: "Old Worker", manifest: "{}", removable: true},
+    {id: "bundled", actionId: "bundled", name: "Bundled compatibility record", manifest: "{}", removable: false},
+  ] as any} activeSection="actions" /></MemoryRouter>);
+  expect(screen.getByRole("heading", {name: "Legacy Action records"})).toBeTruthy();
+  expect(screen.getByRole("button", {name: "Uninstall Old Worker"})).toBeTruthy();
+  expect(screen.queryByRole("button", {name: "Uninstall Bundled compatibility record"})).toBeNull();
+  expect(screen.queryByText("Canvas actions available in all projects")).toBeNull();
 });

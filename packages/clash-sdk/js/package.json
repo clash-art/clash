@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsup src/index.ts src/local-models.ts --format esm --clean --target node24 && tsc --emitDeclarationOnly --outDir dist",
     "dev": "tsup src/index.ts --format esm --watch --target node24",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "test": "vitest run"
   },
   "devDependencies": {

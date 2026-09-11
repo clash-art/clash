@@ -24,7 +24,6 @@
   },
   "scripts": {
     "build": "tsup && esbuild src/project-app-client.ts --bundle --minify --format=esm --target=es2022 --outfile=dist/project-app-client.js && esbuild src/canvas-app-client.ts --bundle --minify --format=esm --target=es2022 --outfile=dist/canvas-app-client.js && esbuild src/studio-app-client.ts --bundle --minify --format=esm --target=es2022 --outfile=dist/studio-app-client.js",
-    "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit --project tsconfig.dev.json",
     "test": "TSX_TSCONFIG_PATH=tsconfig.dev.json node --import tsx --test src/*.test.ts",
     "clean": "rm -rf dist"

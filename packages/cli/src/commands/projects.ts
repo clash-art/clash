@@ -1,3 +1,4 @@
+import { getHostDiscoveryStatus } from "../lib/host-discovery";
 import { Command } from "commander";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -86,19 +87,21 @@ export async function initProject(options: {
   return initializeClashWorkspace(options);
 }
 
-export async function resolveProjectStatus(options: {
-  project?: string;
-  cwd?: string;
-  env?: Record<string, string | undefined>;
-  homeDir?: string;
-  clashRoot?: string;
-  replicationState?: Record<string, unknown> | null;
-} = {}): Promise<ProjectStatus> {
+export async function resolveProjectStatus(
+  options: {
+    project?: string;
+    cwd?: string;
+    env?: Record<string, string | undefined>;
+    homeDir?: string;
+    clashRoot?: string;
+    replicationState?: Record<string, unknown> | null;
+  } = {},
+): Promise<ProjectStatus> {
   const env = options.env ?? process.env;
   const cwd = resolve(options.cwd ?? process.cwd());
-  const clashRoot = options.clashRoot ?? (
-    options.homeDir ? join(options.homeDir, ".clash") : resolveClashRoot(env)
-  );
+  const clashRoot =
+    options.clashRoot ??
+    (options.homeDir ? join(options.homeDir, ".clash") : resolveClashRoot(env));
   const context = await resolveProjectContext({
     project: options.project,
     cwd,
@@ -109,19 +112,51 @@ export async function resolveProjectStatus(options: {
     const candidate = await readProjectMarker(context.markerPath);
     marker = candidate.projectId === context.projectId ? candidate : null;
   }
-  const replicationState = options.replicationState === undefined
-    ? readProductReplicationState({
-        localApiDataDir: join(clashRoot, "local-api"),
-        env,
-      })
-    : options.replicationState;
-  return buildProjectStatus(context, {
+  const replicationState =
+    options.replicationState === undefined
+      ? readProductReplicationState({
+          localApiDataDir: join(clashRoot, "local-api"),
+          env,
+        })
+      : options.replicationState;
+  const status = buildProjectStatus(context, {
     marker,
     homeDir: options.homeDir,
     clashRoot,
     currentWorkingDirectory: cwd,
     replicationState,
   });
+  // A config file describes transports, never this Project's cloud readiness.
+  // Use the running Host's exact Project status; offline diagnostics remain
+  // available without starting a Host or enabling any cloud action.
+  if (options.replicationState === undefined) {
+    try {
+      const host = await getHostDiscoveryStatus({
+        runDir: join(clashRoot, "run"),
+      });
+      if (host.status === "active") {
+        const response = await fetch(
+          `${host.record.endpoint}/api/v1/projects/${encodeURIComponent(context.projectId)}/status`,
+          {
+            signal: AbortSignal.timeout(2_000),
+          },
+        );
+        if (response.ok) {
+          const remote = (await response.json()) as ProjectStatus;
+          if (
+            remote.projectId === context.projectId &&
+            remote.collaboration?.actions
+          ) {
+            status.collaboration = remote.collaboration;
+            status.syncMode = remote.syncMode;
+          }
+        }
+      }
+    } catch {
+      // Storage doctor and offline status must not require a running Host.
+    }
+  }
+  return status;
 }
 
 export function buildProjectStatus(

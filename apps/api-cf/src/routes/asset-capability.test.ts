@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createHmacAssetDeliverySigner,
+  PROJECT_CLOUD_CONTENT_MAX_BYTES,
   type AssetDeliveryCapabilityClaims,
 } from "@clash/asset-sdk/delivery";
 
@@ -149,4 +150,61 @@ describe("standalone Asset capability route", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("hello");
   });
+});
+
+it("bounds actual download bytes even when stored object metadata understates the stream", async () => {
+  const now = Date.parse("2026-09-04T00:00:00.000Z"),
+    maxBytes = 8;
+  const routes = createAssetCapabilityRoutes({
+    now: () => now,
+    maxBytes,
+    resolve: () => ({ storageKey: "private/media" }),
+    store: {
+      head: () => ({ size: maxBytes }),
+      get: () => ({
+        size: maxBytes,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(maxBytes));
+            controller.enqueue(new Uint8Array(1));
+            controller.close();
+          },
+        }),
+      }),
+      put: async () => undefined,
+    },
+  });
+  const response = await routes.request(
+    `https://api.example.test/${await signedToken("read", now)}`,
+    {},
+    env(),
+  );
+  expect(response.status).toBe(413);
+  expect(await response.json()).toMatchObject({
+    code: "CLOUD_CONTENT_TOO_LARGE",
+    maxBytes,
+  });
+});
+
+it("keeps generic large-Resource range previews streaming outside Project replica transfer policy", async () => {
+  const now = Date.parse("2026-09-04T00:00:00.000Z");
+  const routes = createAssetCapabilityRoutes({
+    now: () => now,
+    resolve: () => ({ storageKey: "private/large-preview" }),
+    store: {
+      head: () => ({ size: PROJECT_CLOUD_CONTENT_MAX_BYTES + 1 }),
+      get: () => ({
+        size: PROJECT_CLOUD_CONTENT_MAX_BYTES + 1,
+        body: new Response("hello").body!,
+      }),
+      put: async () => undefined,
+    },
+  });
+  const response = await routes.request(
+    `https://api.example.test/${await signedToken("read", now)}`,
+    { headers: { range: "bytes=0-4" } },
+    env(),
+  );
+  expect(response.status).toBe(206);
+  expect(await response.text()).toBe("hello");
 });

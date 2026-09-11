@@ -9,8 +9,8 @@ import { join } from "node:path";
  * and which contract describes it. Those facts belong in this table, not in a
  * new command per entity.
  *
- * Adding a projectable kind here adds zero CLI surface, exactly as declaring an
- * asset metadata kind does.
+ * These projections cover existing Canvas and Timeline contracts. Native
+ * Documents use their Host-declared projection format through documents commands.
  */
 
 /**
@@ -21,9 +21,15 @@ import { join } from "node:path";
  * existing source shape; it does not supply its own read/write or stale check.
  */
 export type ProjectionSource =
-  | { readonly from: "canvas-node"; readonly nodeType: string; readonly field: "content" }
-  | { readonly from: "host-entity"; readonly entity: "timeline" | "director-stage" }
-  | { readonly from: "asset-metadata"; readonly metadataKind: string };
+  | {
+      readonly from: "canvas-node";
+      readonly nodeType: string;
+      readonly field: "content";
+    }
+  | {
+      readonly from: "host-entity";
+      readonly entity: "timeline" | "director-stage";
+    };
 
 export interface ProjectionKind {
   /** Stable kind id used as a `--kind` parameter value. */
@@ -66,7 +72,10 @@ const KINDS: readonly ProjectionKind[] = [
     suffix: ".director-stage.json",
     idKind: "director-stage",
     source: { from: "host-entity", entity: "director-stage" },
-    dsl: { source: "contract", command: "clash projection schema --kind stage" },
+    dsl: {
+      source: "contract",
+      command: "clash projection schema --kind stage",
+    },
   },
   {
     kind: "text",
@@ -85,7 +94,11 @@ const KINDS: readonly ProjectionKind[] = [
     suffix: ".tsx",
     idKind: "canvas-node",
     nodeType: "remotion-component",
-    source: { from: "canvas-node", nodeType: "remotion-component", field: "content" },
+    source: {
+      from: "canvas-node",
+      nodeType: "remotion-component",
+      field: "content",
+    },
     dsl: { source: "format", format: "remotion-tsx" },
   },
 ];
@@ -95,6 +108,10 @@ export function listProjectionKinds(): readonly ProjectionKind[] {
 }
 
 export function getProjectionKind(kind: string): ProjectionKind {
+  if (kind.startsWith("metadata:"))
+    throw new Error(
+      "METADATA_WRITE_RETIRED: Use clash assets documents create, pull and apply; legacy metadata remains readable through assets metadata get.",
+    );
   const found = KINDS.find((entry) => entry.kind === kind);
   if (!found) {
     throw new Error(
@@ -106,7 +123,9 @@ export function getProjectionKind(kind: string): ProjectionKind {
 
 /** Slug rules are shared so one entity never gets two projection paths. */
 export function projectionFileSlug(entityId: string): string {
-  const slug = entityId.replace(/[^a-zA-Z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "");
+  const slug = entityId
+    .replace(/[^a-zA-Z0-9._-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
   if (!slug) throw new Error(`Entity id ${entityId} has no usable file slug.`);
   return slug;
 }
@@ -125,34 +144,14 @@ export function projectionFilePath(options: {
 }
 
 /** Which declared kind owns a projection path, if any. */
-export function projectionKindForPath(relativePath: string): ProjectionKind | undefined {
+export function projectionKindForPath(
+  relativePath: string,
+): ProjectionKind | undefined {
   const normalized = relativePath.split("\\").join("/");
   return KINDS.find((entry) => {
     const prefix = `${entry.directory.join("/")}/`;
     return normalized.startsWith(prefix) && normalized.endsWith(entry.suffix);
   });
-}
-
-/**
- * Derive projection kinds from declared asset metadata kinds.
- *
- * This is the pluggable slice, and it needs no new host capability: metadata
- * kinds are already declarable by a workspace (`.clash/metadata-kinds/*.json`)
- * or by a plugin, and they already round-trip through the same CAS valve. The
- * `metadata:` prefix keeps a declaration from shadowing a built-in kind.
- */
-export function projectionKindsForMetadata(
-  metadataKinds: readonly string[],
-): readonly ProjectionKind[] {
-  return metadataKinds.map((metadataKind) => ({
-    kind: `metadata:${metadataKind}`,
-    description: `Declared ${metadataKind} metadata body`,
-    directory: ["projections", "metadata"] as const,
-    suffix: `.${metadataKind}.json`,
-    idKind: "asset" as const,
-    source: { from: "asset-metadata" as const, metadataKind },
-    dsl: { source: "contract" as const, command: `clash assets metadata kinds` },
-  }));
 }
 
 /**
@@ -170,7 +169,5 @@ export function projectionObservationEntityKind(kind: string): string {
       return "canvas-node";
     case "host-entity":
       return source.entity;
-    case "asset-metadata":
-      return "asset-metadata";
   }
 }

@@ -98,13 +98,13 @@ beforeAll(async () => {
     recursive: true,
   });
   await cp(
-    join(cliPackageRoot, "scripts", "bundle-agents.mjs"),
-    join(isolatedPackage, "scripts", "bundle-agents.mjs"),
+    join(cliPackageRoot, "scripts", "bundle-agents.ts"),
+    join(isolatedPackage, "scripts", "bundle-agents.ts"),
   );
   await writeFakeClashPlugin(pluginRoot);
   await execFileAsync(
     process.execPath,
-    [join(isolatedPackage, "scripts", "bundle-agents.mjs")],
+    [join(isolatedPackage, "scripts", "bundle-agents.ts")],
     {
       env: {
         ...process.env,

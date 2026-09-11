@@ -1,13 +1,14 @@
 {
   "name": "Clash Action SDK",
   "purpose": "Define and assemble executable Plugin contributions against the shared invocation, Host-context, and result ABI.",
-  "runtimeBoundary": "PluginModule is transport-neutral and browser-safe through the ./browser entrypoint. The runner chooses local, cloud, or client; servePluginStdio adapts the same module to process/stdio. Realm and transport never enter Plugin invocation or Generator semantic identity.",
+  "runtimeBoundary": "PluginModule is transport-neutral and browser-safe through the ./browser entrypoint. The runner chooses local, cloud, or client; servePluginStdio adapts the same module to process/stdio. Realm and transport never enter Plugin invocation or Generator semantic identity. Provider error contracts use ./executable-failure, a pure implementation shared with the Node root export; portable consumers must not import the root assemble/stdio entrypoint.",
   "entrypoints": [
     "src/index.ts",
     "src/browser.ts",
     "src/assemble.ts",
     "src/define-plugin.ts",
-    "src/stdio-plugin.ts"
+    "src/stdio-plugin.ts",
+    "src/executable-failure.ts"
   ],
   "invariants": [
     "Manifest declarations and implementation contributions must match exactly before invocation.",
@@ -18,7 +19,7 @@
   ],
   "verification": [
     "pnpm --dir packages/action-sdk test",
-    "pnpm --dir packages/action-sdk build",
+    "pnpm --dir packages/action-sdk typecheck",
     "pnpm prettier --check packages/action-sdk/src packages/action-sdk/agents.json"
   ]
 }

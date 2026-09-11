@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   credentialsForRoute: vi.fn(),
-  generateModelArkVideo: vi.fn(),
+  submitModelArkVideo: vi.fn(),
+  pollModelArkVideoOnce: vi.fn(),
   signedMediaUrl: vi.fn(),
   signedMediaUrls: vi.fn(),
 }));
@@ -12,7 +13,8 @@ vi.mock("./provider-credentials", () => ({
 }));
 
 vi.mock("../../services/modelark-video", () => ({
-  generateModelArkVideo: mocks.generateModelArkVideo,
+  submitModelArkVideo: mocks.submitModelArkVideo,
+  pollModelArkVideoOnce: mocks.pollModelArkVideoOnce,
 }));
 
 vi.mock("./media-url", () => ({
@@ -27,15 +29,23 @@ function makeCtx() {
     .fn()
     .mockResolvedValueOnce("projects/p1/uploads/task-1.mp4")
     .mockResolvedValueOnce("projects/p1/uploads/task-1-cover.jpg");
-  const probe = vi.fn().mockResolvedValue({ metadata: { width: 1280, height: 720 } });
+  const probe = vi
+    .fn()
+    .mockResolvedValue({ metadata: { width: 1280, height: 720 } });
   const createAsset = vi.fn().mockResolvedValue("asset-1");
   const notifyCompleted = vi.fn();
 
-  const step = vi.fn(async (_name: string, optsOrFn: unknown, maybeFn?: () => Promise<unknown>) => {
-    const fn = typeof optsOrFn === "function" ? optsOrFn : maybeFn;
-    if (!fn) throw new Error("missing step fn");
-    return fn();
-  });
+  const step = vi.fn(
+    async (
+      _name: string,
+      optsOrFn: unknown,
+      maybeFn?: () => Promise<unknown>,
+    ) => {
+      const fn = typeof optsOrFn === "function" ? optsOrFn : maybeFn;
+      if (!fn) throw new Error("missing step fn");
+      return fn();
+    },
+  );
 
   return {
     params: {
@@ -81,6 +91,12 @@ function makeCtx() {
     probe,
     createAsset,
     notifyCompleted,
+    accepted: (pollState: unknown) => ({ status: "accepted", pollState }),
+    completedMedia: (asset: unknown) => ({
+      status: "completed",
+      outputs: [{ slot: "output", kind: "asset", asset }],
+    }),
+    completedVideo: vi.fn(async () => ({ status: "completed", outputs: [] })),
   };
 }
 
@@ -95,9 +111,11 @@ describe("volcengineVideoAdapter", () => {
       baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
     });
     mocks.signedMediaUrl.mockResolvedValue("https://media.example/ref.png");
-    mocks.signedMediaUrls.mockImplementation(async (_env: unknown, keys?: string[]) =>
-      keys?.map((key) => `https://media.example/${key}`) ?? []);
-    mocks.generateModelArkVideo.mockResolvedValue({
+    mocks.signedMediaUrls.mockImplementation(
+      async (_env: unknown, keys?: string[]) =>
+        keys?.map((key) => `https://media.example/${key}`) ?? [],
+    );
+    mocks.submitModelArkVideo.mockResolvedValue({
       url: "https://video.example/out.mp4",
       coverImageUrl: "https://video.example/cover.jpg",
       duration: 5,
@@ -105,10 +123,13 @@ describe("volcengineVideoAdapter", () => {
     });
     const ctx = makeCtx();
 
-    await volcengineVideoAdapter.execute(ctx as never);
+    await volcengineVideoAdapter.submit(ctx as never);
 
-    expect(mocks.credentialsForRoute).toHaveBeenCalledWith(ctx, ctx.params.selectedRoute);
-    expect(mocks.generateModelArkVideo).toHaveBeenCalledWith(
+    expect(mocks.credentialsForRoute).toHaveBeenCalledWith(
+      ctx,
+      ctx.params.selectedRoute,
+    );
+    expect(mocks.submitModelArkVideo).toHaveBeenCalledWith(
       "ark-provider-key",
       expect.objectContaining({
         baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
@@ -116,33 +137,38 @@ describe("volcengineVideoAdapter", () => {
         prompt: "Use @图像1 as the opening",
       }),
     );
-    expect(ctx.notifyCompleted).toHaveBeenCalledWith({ assetId: "asset-1" });
+    expect(ctx.notifyCompleted).not.toHaveBeenCalled();
   });
 
-  it("keeps the provider task alive for 30 minutes and stores MOV output with its real MIME", async () => {
+  it("resumes the same provider task and keeps MOV output with its real MIME", async () => {
     mocks.credentialsForRoute.mockResolvedValue({ apiKey: "ark-provider-key" });
     mocks.signedMediaUrl.mockResolvedValue(undefined);
     mocks.signedMediaUrls.mockResolvedValue([]);
-    mocks.generateModelArkVideo.mockResolvedValue({
+    mocks.submitModelArkVideo.mockResolvedValue({
       url: "https://video.example/out.mov",
       taskId: "ark-task-mov",
     });
     const ctx = makeCtx();
-    (ctx.params as typeof ctx.params & { modelParams: Record<string, unknown> }).modelParams = {
+    (
+      ctx.params as typeof ctx.params & { modelParams: Record<string, unknown> }
+    ).modelParams = {
       output_format: "mov",
     };
 
-    await volcengineVideoAdapter.execute(ctx as never);
+    await volcengineVideoAdapter.submit(ctx as never);
 
-    expect(ctx.step).toHaveBeenCalledWith(
-      "volcengine-generate",
-      expect.objectContaining({ timeout: "30 minutes" }),
-      expect.any(Function),
-    );
-    expect(ctx.uploadFromUrl).toHaveBeenNthCalledWith(
-      1,
+    mocks.pollModelArkVideoOnce.mockResolvedValue({
+      url: "https://video.example/out.mov",
+      taskId: "ark-task-mov",
+    });
+    await volcengineVideoAdapter.poll!(ctx as never, {
+      taskId: "ark-task-mov",
+      model: "seedance",
+    });
+    expect(ctx.completedVideo).toHaveBeenCalledWith(
       "https://video.example/out.mov",
       "video/quicktime",
+      expect.objectContaining({ taskId: "ark-task-mov" }),
     );
   });
 });

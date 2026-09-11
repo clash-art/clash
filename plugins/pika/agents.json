@@ -15,5 +15,10 @@
     "providers/pika.json": "Provider metadata and API-key authentication form.",
     "src/pika-adapter.ts": "Pika chat/media execution and durable polling translation."
   },
-  "verification": ["pnpm --filter @clash-plugin/pika test"]
+  "verification": [
+    "pnpm --filter @clash-plugin/pika test"
+  ],
+  "quality_checks": [
+    "Source typechecking uses tsconfig.check.json. Provider reference conversion rejects Host executor-url capabilities and Document references before network access."
+  ]
 }

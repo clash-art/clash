@@ -1703,7 +1703,7 @@ describe("local API app", () => {
     }
   });
 
-  it("exposes installable local action packages through the desktop marketplace", async () => {
+  it("retires legacy Action writes while preserving supported skill installation", async () => {
     const installMarketplaceAction = vi.fn(async (packageId: string) => ({
       actionId: "codex-imagegen",
       packageId,
@@ -1739,6 +1739,7 @@ describe("local API app", () => {
       name: "Storyboard",
       type: "plugin" as const,
       packageId: "clash.storyboard",
+      runtime: "local",
     };
     const installMarketplacePlugin = vi.fn(async (packageId: string) => ({
       id: packageId,
@@ -1819,19 +1820,15 @@ describe("local API app", () => {
         },
       }),
     });
-    expect(installed.status).toBe(200);
-    expect(installMarketplaceAction).toHaveBeenCalledWith(
-      "clash.codex-imagegen",
-    );
+    expect(installed.status).toBe(410);
+    expect(installMarketplaceAction).not.toHaveBeenCalled();
 
     const marketplaceInstalled = await app.request(
       "/api/marketplace/actions/clash.codex-imagegen/install",
       { method: "POST" },
     );
-    expect(marketplaceInstalled.status).toBe(200);
-    expect(installMarketplaceAction).toHaveBeenLastCalledWith(
-      "clash.codex-imagegen",
-    );
+    expect(marketplaceInstalled.status).toBe(410);
+    expect(installMarketplaceAction).not.toHaveBeenCalled();
 
     const uninstalled = await app.request(
       "/api/settings/actions/codex-imagegen",
@@ -1871,8 +1868,8 @@ describe("local API app", () => {
       "/api/marketplace/plugins/clash.storyboard/install",
       { method: "POST" },
     );
-    expect(marketplacePluginInstalled.status).toBe(200);
-    expect(installMarketplacePlugin).toHaveBeenCalledWith("clash.storyboard");
+    expect(marketplacePluginInstalled.status).toBe(409);
+    expect(installMarketplacePlugin).not.toHaveBeenCalled();
 
     const marketplacePluginUninstalled = await app.request(
       "/api/marketplace/plugins/clash.storyboard/install",

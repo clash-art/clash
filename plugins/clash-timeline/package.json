@@ -33,9 +33,8 @@
   "scripts": {
     "build": "tsup && esbuild src/app-client.ts --bundle --minify --format=esm --target=es2022 --outfile=runtime/app-client.js",
     "clean": "rm -rf runtime",
-    "lint": "tsc --noEmit",
     "test": "node --import tsx --test src/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/shared-mcp": "workspace:*",

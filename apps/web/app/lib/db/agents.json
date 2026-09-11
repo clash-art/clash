@@ -1,0 +1,11 @@
+{
+  "summary": "Web backend D1 query and migration export profiles; actual definitions live in shared-cloud-schema.",
+  "key_files": {
+    "app.schema.ts": "Common cloud app tables plus Web-only runtime/session/chat tables, preserving the existing migration/query export profile.",
+    "better-auth.schema.ts": "Compatibility export of canonical Better Auth tables and ORM relation metadata.",
+    "schema.ts": "Existing app query profile consumed by drizzle.ts.",
+    "drizzle.ts": "Cloudflare D1 adapter; no browser-owned persistence authority.",
+    "migrations.schema.ts": "Existing Drizzle Kit profile: app tables and explicitly aliased Better Auth tables/relations. apps/web/drizzle.config.ts is the migration discovery entrypoint."
+  },
+  "architecture_notes": ["Do not alter historical SQL to mirror source refactoring. No new SQL foreign keys; ORM relations remain valid query metadata."]
+}

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../../config";
+import { createProjectContentRoutes } from "./project-content";
 import { projectRoutes } from "./projects";
 import { varsRoutes } from "./vars";
 import { sessionRoutes } from "./sessions";
@@ -12,6 +13,7 @@ import { providerUsageRoutes } from "./provider-usage";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
 
+v1Routes.route("/projects", createProjectContentRoutes());
 v1Routes.route("/projects", projectRoutes);
 v1Routes.route("/vars", varsRoutes);
 v1Routes.route("/sessions", sessionRoutes);

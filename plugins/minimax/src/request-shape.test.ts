@@ -631,3 +631,15 @@ describe("MiniMax request projection", () => {
     ).rejects.toThrow("MiniMax video generation failed: content policy");
   });
 });
+
+it.each([
+  {form: "executor-url", executorUrl: "http://127.0.0.1/private-capability", expiresAt: "2099-01-01T00:00:00Z", kind: "image"},
+  {form: "document", documentKind: "text.plain", schemaVersion: 1, body: "private document"},
+] as const)("rejects $form as a Provider media reference before network I/O", async (resolved) => {
+  const fetch = vi.fn();
+  await expect(minimaxAdapter.submit(
+    invocation({kind: "video", modelId: "minimax-h3", upstreamModel: "MiniMax-H3", prompt: "Animate"}, [{slot: "image", index: 0, asset: {assetId: "image", uri: "clash-asset://image", kind: "image"}}]),
+    runtimeFetch(fetch, async () => resolved),
+  )).rejects.toMatchObject({failure: {code: "invalid_request", requestState: "rejected", retryable: false}});
+  expect(fetch).not.toHaveBeenCalled();
+});

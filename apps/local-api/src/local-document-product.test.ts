@@ -250,3 +250,56 @@ describe("Local Typed Document product service", () => {
     });
   });
 });
+
+it("copies an exact Document revision with fork lineage and leaves source history intact", async () => {
+  const doc = new LoroDoc();
+  const service = createLocalDocumentProductService({
+    dataDir: await dataDir(),
+    authority: authority(doc),
+    producer: { kind: "actor", actor: { kind: "user", id: "editor" } },
+  });
+  const created = await service.create("project", {
+    documentAssetId: "source",
+    revisionId: "source-r1",
+    documentKind: "media.description",
+    schemaVersion: 1,
+    body: description("Original"),
+    sourceRefs: [],
+  });
+  await service.advance("project", {
+    documentAssetId: "source",
+    expectedHeadRevisionId: created.revision.id,
+    revisionId: "source-r2",
+    body: description("Later head"),
+    sourceRefs: [],
+  });
+  const copied = await service.copy("project", {
+    sourceDocumentAssetId: "source",
+    sourceRevisionId: "source-r1",
+    documentAssetId: "copy",
+    revisionId: "copy-r1",
+    body: description("Independent edit"),
+  });
+  expect(copied.revision).toMatchObject({
+    forkedFrom: {
+      kind: "document",
+      documentAssetId: "source",
+      revisionId: "source-r1",
+    },
+    producer: { kind: "actor", actor: { id: "editor" } },
+    sourceRefs: [],
+  });
+  expect((await service.read("project", "source"))!.body).toMatchObject({
+    text: "Later head",
+  });
+  expect(
+    (await service.readRevision("project", {
+      documentAssetId: "source",
+      revisionId: "source-r1",
+    }))!.body,
+  ).toMatchObject({ text: "Original" });
+  expect((await service.read("project", "copy"))!.body).toMatchObject({
+    text: "Independent edit",
+  });
+  doc.free();
+});

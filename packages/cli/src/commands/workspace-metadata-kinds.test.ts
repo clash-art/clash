@@ -4,9 +4,11 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { listDeclaredAssetMetadataKinds } from "@clash/shared-types";
+import {
+  listDeclaredAssetMetadataKinds,
+  parseDeclaredAssetMetadata,
+} from "@clash/shared-types";
 
-import { attachAssetMetadata } from "../lib/attach-asset-metadata";
 import { loadWorkspaceMetadataKinds } from "../lib/workspace-metadata-kinds";
 
 let sequence = 0;
@@ -54,56 +56,21 @@ function shotNotesDeclaration(kind: string) {
   };
 }
 
-test("a workspace declares a custom kind as data and attaches through the generic trunk", async () => {
+test("legacy workspace declarations remain available to validate existing metadata without writing", async () => {
   const kind = `team.shot-notes-${++sequence}`;
-  const { cwd, dataDir, assetsPath } = await workspaceWithDeclaration(
+  const { cwd, assetsPath } = await workspaceWithDeclaration(
     shotNotesDeclaration(kind),
   );
-
-  const loaded = await loadWorkspaceMetadataKinds(cwd);
-  assert.deepEqual(
-    loaded.map((entry) => entry.kind),
-    [kind],
-  );
+  const before = await readFile(assetsPath, "utf8");
+  await loadWorkspaceMetadataKinds(cwd);
   assert.ok(listDeclaredAssetMetadataKinds().includes(kind));
-
-  const result = await attachAssetMetadata({
-    cwd,
-    dataDir,
-    assetsPath,
-    assetId: "asset-clip",
-    metadataKind: kind,
-    producer: "qa-fixture",
-    metadata: { schemaVersion: 1, mood: "tense" },
-    body: { notes: ["hold on the door", "cut on the slam"] },
-  });
-  assert.equal(result.attached, true);
-
-  const manifest = JSON.parse(await readFile(assetsPath, "utf8"));
-  const attached = manifest.assets[0].metadata[kind];
-  assert.equal(attached.mood, "tense");
-  assert.match(attached.bodyHash, /^sha256:/);
-  assert.equal(attached.notes, undefined);
-});
-
-test("rejects a custom-kind payload its own schema refuses", async () => {
-  const kind = `team.shot-notes-${++sequence}`;
-  const { cwd, dataDir, assetsPath } = await workspaceWithDeclaration(
-    shotNotesDeclaration(kind),
-  );
-
-  await assert.rejects(
-    attachAssetMetadata({
-      cwd,
-      dataDir,
-      assetsPath,
-      assetId: "asset-clip",
-      metadataKind: kind,
-      producer: "qa-fixture",
-      metadata: { schemaVersion: 1, mood: "furious" },
-    }),
+  const valid = { kind, schemaVersion: 1, mood: "tense" };
+  assert.deepEqual(parseDeclaredAssetMetadata(kind, valid), valid);
+  assert.throws(
+    () => parseDeclaredAssetMetadata(kind, { ...valid, mood: "furious" }),
     /mood/,
   );
+  assert.equal(await readFile(assetsPath, "utf8"), before);
 });
 
 test("refuses to redeclare a product-declared kind from a workspace", async () => {

@@ -1,0 +1,4 @@
+{
+  "summary": "Opt-in Desktop browser, ACP and Provider workflows authored as native Node 24 TypeScript scripts. Shared startup/transport helpers and pure panorama/report/transcript helpers retain their original execution semantics.",
+  "verification": "Node --check validates script parsing without executing workflows. Pure helper tests and src/startup-suite.test.ts validate local contracts. These E2E scripts are not part of the normal source tsc project or default Vitest discovery; full browser/real-agent suites require their explicit commands and prerequisites."
+}

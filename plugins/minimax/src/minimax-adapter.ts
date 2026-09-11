@@ -12,7 +12,7 @@ import {
   minimaxSubmit,
   minimaxPoll,
   type MinimaxPollState,
-} from "./minimax-executor";
+} from "@clash/shared-runtime/minimax-executor";
 import {
   valueOutput,
   type ExecutorContext,
@@ -192,9 +192,9 @@ function mediaReferenceUrl(
   resolved: ResolvedReference,
   expectedKind?: MiniMaxMediaKind,
 ): { kind: MiniMaxMediaKind; url: string } {
-  if (resolved.form === "text") {
+  if (resolved.form !== "provider-url" && resolved.form !== "bytes") {
     throw rejectedInvalidRequest(
-      `MiniMax H3 ${reference.slot} reference resolved to text instead of media.`,
+      `MiniMax H3 ${reference.slot} reference requires Provider-accessible media; ${resolved.form} is unsupported.`,
     );
   }
   const declaredKind = "asset" in reference ? reference.asset.kind : undefined;

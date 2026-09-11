@@ -52,7 +52,9 @@ function fromBase64Url(value: string): Uint8Array | null {
   }
 }
 
-async function keyFor(secret: string): Promise<CryptoKey> {
+type SigningKey = Awaited<ReturnType<typeof crypto.subtle.importKey>>;
+
+async function keyFor(secret: string): Promise<SigningKey> {
   if (!secret) throw new Error("Asset delivery signing secret is required.");
   return crypto.subtle.importKey(
     "raw",
@@ -63,7 +65,7 @@ async function keyFor(secret: string): Promise<CryptoKey> {
   );
 }
 
-async function signatureFor(key: CryptoKey, signed: string): Promise<string> {
+async function signatureFor(key: SigningKey, signed: string): Promise<string> {
   const bytes = await crypto.subtle.sign(
     "HMAC",
     key,
@@ -95,6 +97,9 @@ function claimsPayload(
     resourceId: input.resourceId,
     scope: {
       tenantId: input.scope.tenantId,
+      ...(input.scope.localReplicaId === undefined
+        ? {}
+        : { localReplicaId: input.scope.localReplicaId }),
       ...(input.scope.projectId === undefined
         ? {}
         : { projectId: input.scope.projectId }),
@@ -150,6 +155,8 @@ function parseClaims(value: unknown): AssetDeliveryCapabilityClaims | null {
   ) {
     return null;
   }
+  if (scope.localReplicaId !== undefined && !validString(scope.localReplicaId))
+    return null;
   if (scope.projectId !== undefined && !validString(scope.projectId)) {
     return null;
   }
@@ -177,6 +184,9 @@ function parseClaims(value: unknown): AssetDeliveryCapabilityClaims | null {
     resourceId: record.resourceId as string,
     scope: {
       tenantId: scope.tenantId as string,
+      ...(scope.localReplicaId === undefined
+        ? {}
+        : { localReplicaId: scope.localReplicaId as string }),
       ...(scope.projectId === undefined
         ? {}
         : { projectId: scope.projectId as string }),

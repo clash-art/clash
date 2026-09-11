@@ -541,3 +541,14 @@ describe("local Resource CAS", () => {
     );
   });
 });
+
+it("retains an opaque replicated Resource identity only after local facts verification", async () => {
+  const { store } = await fixture();
+  const staged = await store.stage({ bytes: new TextEncoder().encode("immutable-replica") });
+  const source = await store.seal({ receipt: staged.receipt, kind: "image", contentType: "image/png" });
+  const remote = { ...source.resource, id: "opaque-remote-resource" };
+  const installed = await store.installReplica({ resource: remote, verifiedResourceId: source.resource.id });
+  expect(installed.resource).toEqual(remote);
+  expect(await readFile(installed.path)).toEqual(await readFile(source.path));
+  await expect(store.installReplica({ resource: { ...remote, kind: "video" }, verifiedResourceId: source.resource.id })).rejects.toThrow(/facts/i);
+});

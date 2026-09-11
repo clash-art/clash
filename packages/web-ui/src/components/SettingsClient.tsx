@@ -1724,10 +1724,11 @@ export default function SettingsClient({
             />
             <div className="flex-1">
               <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-                Installed Actions
+                Legacy Action records
               </h2>
               <p className="text-sm text-stone-600 dark:text-stone-300">
-                Canvas actions available in all projects
+                Historical manifests; executable plugins are managed by the Local
+                Host
               </p>
             </div>
             <Link
@@ -1745,7 +1746,7 @@ export default function SettingsClient({
                 weight="duotone"
               />
               <p className="text-sm text-stone-600 dark:text-stone-300 mb-2">
-                No actions installed
+                No legacy Action records
               </p>
               <Link
                 to="/marketplace/manage"
@@ -1825,14 +1826,16 @@ export default function SettingsClient({
                           </div>
                         )}
                       </div>
-                      <IconButton
-                        label={`Uninstall ${action.name}`}
-                        onClick={() => handleUninstallAction(action.actionId)}
-                        variant="destructive"
-                        size="sm"
-                        icon={<Trash className="h-4 w-4" />}
-                        className={`${settingsHoverActionClass} flex-shrink-0`}
-                      />
+                      {action.removable === true && (
+                        <IconButton
+                          label={`Uninstall ${action.name}`}
+                          onClick={() => handleUninstallAction(action.actionId)}
+                          variant="destructive"
+                          size="sm"
+                          icon={<Trash className="h-4 w-4" />}
+                          className={`${settingsHoverActionClass} flex-shrink-0`}
+                        />
+                      )}
                     </div>
                   </div>
                 );
@@ -6320,34 +6323,6 @@ interface LocalSyncCapabilities {
   project_metadata: boolean;
 }
 
-const LOCAL_SYNC_CAPABILITY_FIELDS: Array<{
-  key: keyof LocalSyncCapabilities;
-  label: string;
-  description: string;
-}> = [
-  {
-    key: "canvas",
-    label: "Canvas mirror ready",
-    description: "Loro canvas snapshots and updates are mirrored.",
-  },
-  {
-    key: "asset_metadata",
-    label: "Asset metadata mirror ready",
-    description: "SQLite asset indexes are mirrored without raw local blobs.",
-  },
-  {
-    key: "revision_content",
-    label: "Revision content mirror ready",
-    description: "Text and timeline revision content blobs are mirrored.",
-  },
-  {
-    key: "project_metadata",
-    label: "Project metadata mirror ready",
-    description:
-      "Project name, description, and lifecycle metadata are mirrored.",
-  },
-];
-
 function defaultLocalSyncCapabilities(): LocalSyncCapabilities {
   return {
     canvas: false,
@@ -6514,24 +6489,17 @@ function SyncSection() {
     [feedback, rt],
   );
 
-  const updateCapability = useCallback(
-    (key: keyof LocalSyncCapabilities, checked: boolean) => {
-      setCapabilities((current) => ({ ...current, [key]: checked }));
-      markDirty();
-    },
-    [markDirty],
-  );
 
   return (
     <SettingsSectionLayout aria-labelledby="sync-heading">
       <SettingsSectionHeader
         title="Sync"
         titleId="sync-heading"
-        description="Local canvas state with optional cloud persistence."
+        description="Connection details for project cloud admission. Each project controls its own sync admission."
         icon={<CloudArrowUp className="size-4" weight="bold" />}
         action={
           <span className="rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground">
-            {mode === "cloud-sync" ? "Cloud sync" : "Local only"}
+            {mode === "cloud-sync" ? "Cloud endpoint" : "No default endpoint"}
           </span>
         }
       />
@@ -6544,7 +6512,7 @@ function SyncSection() {
       ) : (
         <SettingsAnimatedBody className="space-y-4">
           <RadioGroup
-            aria-label="Sync mode"
+            aria-label="Default cloud connection"
             value={mode}
             onValueChange={(nextMode) => {
               if (nextMode === "local-only" || nextMode === "cloud-sync") {
@@ -6559,10 +6527,10 @@ function SyncSection() {
               className="rounded-[var(--settings-row-radius)] p-3 data-[state=checked]:bg-[var(--control-bg-open)]"
             >
               <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
-                Local only
+                No default endpoint
               </span>
               <span className="mt-1 block text-xs text-stone-600 dark:text-stone-300">
-                Stores projects on this machine.
+                No default endpoint for new project admissions.
               </span>
             </RadioGroupItem>
             <RadioGroupItem
@@ -6570,10 +6538,10 @@ function SyncSection() {
               className="rounded-[var(--settings-row-radius)] p-3 data-[state=checked]:bg-[var(--control-bg-open)]"
             >
               <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
-                Cloud sync
+                Cloud endpoint
               </span>
               <span className="mt-1 block text-xs text-stone-600 dark:text-stone-300">
-                Mirrors Loro snapshots and updates.
+                Configure the cloud connection for project admission.
               </span>
             </RadioGroupItem>
           </RadioGroup>
@@ -6617,44 +6585,6 @@ function SyncSection() {
               <span>{hasToken ? "Token saved" : "No token saved"}</span>
               <span>·</span>
               <span>Source: {source}</span>
-            </div>
-          </SettingsPanel>
-
-          <SettingsPanel className="p-4">
-            <div>
-              <h3 className="font-display text-sm font-bold text-slate-900 dark:text-slate-50">
-                Cloud mirror readiness
-              </h3>
-              <p className="mt-1 text-xs text-stone-600 dark:text-stone-300">
-                Web/share gates open only after each mirrored surface has a real
-                sync path.
-              </p>
-            </div>
-            <div className="mt-3 divide-y divide-border border-t border-border">
-              {LOCAL_SYNC_CAPABILITY_FIELDS.map((field) => (
-                <label
-                  key={field.key}
-                  data-slot="settings-capability-row"
-                  className="flex items-start gap-3 py-3"
-                >
-                  <Switch
-                    aria-label={field.label}
-                    checked={capabilities[field.key]}
-                    disabled={mode !== "cloud-sync"}
-                    onCheckedChange={(checked) =>
-                      updateCapability(field.key, checked)
-                    }
-                  />
-                  <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
-                      {field.label}
-                    </span>
-                    <span className="mt-1 block text-xs leading-5 text-stone-600 dark:text-stone-300">
-                      {field.description}
-                    </span>
-                  </span>
-                </label>
-              ))}
             </div>
           </SettingsPanel>
 

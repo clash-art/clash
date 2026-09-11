@@ -1,3 +1,5 @@
+import { createProjectContentResolver, type ProjectContentPorts } from "./services/project-content";
+import { createProjectContentRoutes } from "./routes/v1/project-content";
 /**
  * Hono app factory.
  *
@@ -53,6 +55,7 @@ import {
 export interface CreateAppOptions {
   plugins?: Plugin[];
   /** Resolver supplied by the deployment's Resource Registry; storage locators stay private. */
+  projectContentPorts?: (env: Env) => ProjectContentPorts;
   assetDeliveryResolver?: AssetCapabilityRoutesOptions["resolve"];
   /** Optional R2/S3/filesystem adapter behind the standalone capability route. */
   assetDeliveryStore?: AssetDeliveryStore;
@@ -260,18 +263,16 @@ export function createApp(
     return c.env.RUNTIME_ROOM.get(id).fetch(fwd);
   });
 
-  // Opaque capability delivery is mounted only when the deployment supplies a
-  // Resource Registry resolver. The route never accepts a caller-supplied
-  // storage key; the legacy transport below remains compatibility-only.
-  if (opts.assetDeliveryResolver) {
-    app.route(
-      "/assets/capability",
-      createAssetCapabilityRoutes({
-        resolve: opts.assetDeliveryResolver,
-        ...(opts.assetDeliveryStore ? { store: opts.assetDeliveryStore } : {}),
-      }),
-    );
-  }
+  // Production default resolves only admitted Project Resource references.
+  // SaaS/Node deployments may supply the same authorization and storage ports.
+  app.route("/assets/capability", createAssetCapabilityRoutes({
+    resolve: opts.assetDeliveryResolver ?? createProjectContentResolver(opts.projectContentPorts),
+    ...(opts.assetDeliveryStore ? { store: opts.assetDeliveryStore } : {}),
+  }));
+  if (opts.projectContentPorts) app.route("/api/v1/projects", createProjectContentRoutes({
+    ports: opts.projectContentPorts,
+    ...(opts.assetDeliveryStore ? { store: opts.assetDeliveryStore } : {}),
+  }));
 
   // Signed capability delivery is a transport adapter, not Asset authority.
   app.route("/assets", assetDeliveryRoutes);

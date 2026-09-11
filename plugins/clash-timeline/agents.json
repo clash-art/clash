@@ -18,5 +18,8 @@
     "src/server.ts": "Typed MCP tools and MCP App resource registration.",
     "src/app-client.ts": "Self-contained interactive Timeline GUI."
   },
-  "architecture_notes": "The plugin is independently installable and cohesive. Timeline domain code may remain elsewhere in Clash; this package owns only the Codex plugin interface and its host adapter."
+  "architecture_notes": "The plugin is independently installable and cohesive. Timeline domain code may remain elsewhere in Clash; this package owns only the Codex plugin interface and its host adapter.",
+  "quality_checks": [
+    "The source gate uses tsconfig.check.json and does not resolve generated runtime declarations. Separate package-boundary tests dynamically load actual runtime artifacts to validate shipped exports and behavior; source checking does not build those artifacts."
+  ]
 }

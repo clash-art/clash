@@ -1,3 +1,4 @@
+import { minimaxSubmit, minimaxPoll } from "@clash/shared-runtime/minimax-executor";
 import { minimaxBaseUrl, type OrderedPromptContentPart } from "@clash/shared-types";
 import { buildMiniMaxH3Content } from "@clash/shared-runtime";
 
@@ -16,7 +17,6 @@ export interface MiniMaxVideoParams {
   orderedContentParts?: OrderedPromptContentPart[];
   baseUrl?: string;
   fetch?: typeof fetch;
-  wait?: (milliseconds: number) => Promise<void>;
 }
 
 export interface MiniMaxVideoResult {
@@ -32,21 +32,7 @@ function normalizeBaseUrl(baseUrl: string | undefined, region?: string): string 
   return minimaxBaseUrl(region, baseUrl);
 }
 
-async function parseResponse(response: Response, operation: string): Promise<any> {
-  const raw = await response.text();
-  let json: any;
-  try {
-    json = raw ? JSON.parse(raw) : {};
-  } catch {
-    json = { message: raw };
-  }
-  if (!response.ok) {
-    throw new Error(`MiniMax H3 ${operation} failed: ${json?.error?.message ?? json?.message ?? response.statusText}`);
-  }
-  return json;
-}
-
-export async function generateMiniMaxVideo(params: MiniMaxVideoParams): Promise<MiniMaxVideoResult> {
+export async function submitMiniMaxVideo(params: MiniMaxVideoParams): Promise<{ taskId: string; model: string }> {
   const apiKey = params.apiKey.trim();
   if (!apiKey) throw new Error("MiniMax provider account is missing apiKey.");
   const orderedContentParts = params.orderedContentParts ?? [];
@@ -80,13 +66,7 @@ export async function generateMiniMaxVideo(params: MiniMaxVideoParams): Promise<
   }
 
   const fetchImpl = params.fetch ?? fetch;
-  const wait = params.wait ?? ((milliseconds: number) =>
-    new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const baseUrl = normalizeBaseUrl(params.baseUrl);
-  const headers = {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-  };
   const content = buildMiniMaxH3Content({
     prompt,
     orderedContentParts,
@@ -96,47 +76,20 @@ export async function generateMiniMaxVideo(params: MiniMaxVideoParams): Promise<
     referenceVideos,
     referenceAudios,
   });
-  const created = await parseResponse(await fetchImpl(`${baseUrl}/v2/video_generation`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: params.model,
-      content,
-      resolution: params.resolution,
-      duration: params.duration,
-      ratio: params.startFrame ? "adaptive" : params.ratio,
-    }),
-  }), "submit");
-  const taskId = created?.task_id;
-  if (typeof taskId !== "string" || !taskId) {
-    throw new Error("MiniMax H3 submit response returned no task_id.");
-  }
+  const created = await minimaxSubmit({
+    kind: "video", apiKey, baseUrl, fetch: fetchImpl,
+    body: { model: params.model, content, resolution: params.resolution, duration: params.duration, ratio: params.startFrame ? "adaptive" : params.ratio },
+  });
+  const taskId = created.pollState.taskId;
+  return { taskId, model: params.model };
+}
 
-  for (let attempt = 0; attempt < 180; attempt += 1) {
-    const json = await parseResponse(await fetchImpl(
-      `${baseUrl}/v2/query/video_generation/${encodeURIComponent(taskId)}`,
-      { headers: { Authorization: `Bearer ${apiKey}` } },
-    ), "poll");
-    const task = json?.task;
-    const status = String(task?.status ?? "queued").toLowerCase();
-    if (status === "succeeded") {
-      const url = task?.content?.url;
-      if (typeof url !== "string" || !url) {
-        throw new Error("MiniMax H3 completed without a video URL.");
-      }
-      return {
-        taskId,
-        url,
-        model: params.model,
-        ...(typeof task.duration === "number" ? { duration: task.duration } : {}),
-        ...(typeof task.resolution === "string" ? { resolution: task.resolution } : {}),
-        ...(typeof task.ratio === "string" ? { ratio: task.ratio } : {}),
-      };
-    }
-    if (status === "failed" || status === "cancelled") {
-      throw new Error(`MiniMax H3 generation failed: ${task?.error?.message ?? task?.message ?? status}`);
-    }
-    await wait(5000);
-  }
-  throw new Error(`MiniMax H3 generation timed out: ${taskId}`);
+export async function pollMiniMaxVideoOnce(
+  params: Pick<MiniMaxVideoParams, "apiKey" | "baseUrl" | "fetch">,
+  token: { taskId: string; model: string },
+): Promise<MiniMaxVideoResult | null> {
+  const { taskId } = token;
+  const result = await minimaxPoll({ state: { taskId }, apiKey: params.apiKey, baseUrl: params.baseUrl, fetch: params.fetch ?? fetch });
+  if (result.status === "accepted") return null;
+  return { taskId, url: result.media.url, model: token.model, ...(result.media.durationMs === undefined ? {} : { duration: result.media.durationMs / 1000 }) };
 }

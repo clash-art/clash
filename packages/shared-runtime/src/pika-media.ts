@@ -1,3 +1,4 @@
+import { providerHttpError, ProviderExecutionError } from "@clash/action-sdk/executable-failure";
 export const PIKA_MEDIA_BASE_URL = "https://api.dev.pika.art";
 
 export type PikaMediaStatus = "queued" | "running" | "completed" | "failed";
@@ -78,7 +79,7 @@ export async function createPikaMediaJob(options: PikaRequestOptions & {
   );
   const body = await json(response);
   if (!response.ok) {
-    throw new Error(`Pika media request failed: ${errorMessage(body, response.statusText)}`);
+    throw providerHttpError({ status: response.status, operation: "submit", message: `Pika media request failed: ${errorMessage(body, response.statusText)}` });
   }
   const job = parseJob(body);
   if (job.status === "failed") throw pikaJobError(job);
@@ -87,27 +88,7 @@ export async function createPikaMediaJob(options: PikaRequestOptions & {
 
 function pikaJobError(job: PikaMediaJob): Error {
   const code = job.error?.code ? ` (${job.error.code})` : "";
-  return new Error(`Pika media job failed${code}: ${job.error?.message ?? "unknown error"}`);
-}
-
-export async function waitForPikaMediaJob(
-  options: PikaRequestOptions & {
-    jobId: string;
-    pollIntervalMs?: number;
-    maxAttempts?: number;
-  },
-): Promise<PikaMediaJob> {
-  const maxAttempts = options.maxAttempts ?? 240;
-  const pollIntervalMs = options.pollIntervalMs ?? 1_000;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const job = await getPikaMediaJob(options);
-    if (job.status === "completed") return job;
-    if (job.status === "failed") throw pikaJobError(job);
-    if (pollIntervalMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-    }
-  }
-  throw new Error(`Pika media job timed out: ${options.jobId}`);
+  return new ProviderExecutionError({ code: "execution_failed", message: `Pika media job failed${code}: ${job.error?.message ?? "unknown error"}`, retryable: false, requestState: "accepted", providerCode: `PIKA_JOB_FAILED:${job.error?.code ?? "unknown"}` });
 }
 
 export async function getPikaMediaJob(
@@ -122,9 +103,7 @@ export async function getPikaMediaJob(
   );
   const body = await json(response);
   if (!response.ok) {
-    throw new Error(
-      `Pika media status failed: ${errorMessage(body, response.statusText)}`,
-    );
+    throw providerHttpError({ status: response.status, operation: "poll", message: `Pika media status failed: ${errorMessage(body, response.statusText)}` });
   }
   const job = parseJob(body);
   if (job.status === "failed") throw pikaJobError(job);
@@ -143,7 +122,7 @@ export async function getPikaMediaContent(
   );
   const body = await json(response);
   if (!response.ok) {
-    throw new Error(`Pika media content failed: ${errorMessage(body, response.statusText)}`);
+    throw providerHttpError({ status: response.status, operation: "poll", message: `Pika media content failed: ${errorMessage(body, response.statusText)}` });
   }
   if (typeof body?.url !== "string" || !body.url) {
     throw new Error(`Pika media job returned no content URL: ${options.jobId}`);
@@ -177,7 +156,7 @@ export async function uploadPikaMedia(options: PikaRequestOptions & {
   const uploaded = await fetchImpl(body.upload_url, {
     method: "PUT",
     headers,
-    body: options.bytes as BodyInit,
+    body: options.bytes as RequestInit["body"],
   });
   if (!uploaded.ok) {
     throw new Error(`Pika media upload failed: ${uploaded.status} ${uploaded.statusText}`.trim());

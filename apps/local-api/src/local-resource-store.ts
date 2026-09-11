@@ -94,6 +94,10 @@ export interface LocalResourceStreamProjection {
 }
 
 export interface LocalResourceStore {
+  /** Registry facts only; does not open or hash the immutable byte file. */
+  readFacts(resourceId: string): Promise<Resource | undefined>;
+  /** Replicate opaque identity only from a locally inspected, verified Resource. */
+  installReplica(input: { resource: Resource; verifiedResourceId: string }): Promise<LocalResourceProjection>;
   stage(input: {
     bytes: Uint8Array;
     originalName?: string;
@@ -176,7 +180,8 @@ function openDatabase(path: string): SqliteDatabase {
       facts_verified INTEGER NOT NULL DEFAULT 0 CHECK (facts_verified IN (0, 1)),
       created_at INTEGER NOT NULL
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS local_resources_digest
+    DROP INDEX IF EXISTS local_resources_digest;
+    CREATE INDEX IF NOT EXISTS local_resources_digest_lookup
       ON local_resources (digest_sha256);
     CREATE TABLE IF NOT EXISTS local_resource_staging (
       resource_id TEXT PRIMARY KEY,
@@ -260,11 +265,8 @@ function parseRow(row: Record<string, unknown>): LocalResourceRow {
   ) {
     throw new Error("Local Resource registry row is corrupt.");
   }
-  if (resourceId !== resourceIdForSha256(digest)) {
-    throw new Error(
-      `Local Resource ${resourceId} has a mismatched digest identity.`,
-    );
-  }
+  // Resource identity is opaque across Hosts. Local staging uses a digest id,
+  // while replicated identities may name the same verified immutable bytes.
   return {
     resourceId,
     kind: kind.data,
@@ -735,6 +737,16 @@ export function createLocalResourceStore(options: {
   }
 
   const store: LocalResourceStore = {
+    async readFacts(resourceId) { const row = await rowFor(resourceId); return row ? resourceFromRow(row) : undefined; },
+    async installReplica({ resource: input, verifiedResourceId }) {
+      const resource = ResourceSchema.parse(input);
+      const verified = await rowFor(verifiedResourceId);
+      if (!verified?.factsVerified || verified.kind !== resource.kind || verified.digest !== resource.digest.value || verified.byteLength !== resource.byteLength || verified.contentType !== resource.contentType) {
+        throw new Error("Replicated Resource facts must match a locally verified Resource");
+      }
+      await projection(verified);
+      return persist({ resourceId: resource.id, kind: resource.kind, digest: resource.digest.value, byteLength: resource.byteLength, ...(resource.contentType ? { contentType: resource.contentType } : {}) }, verified.storageKey, true);
+    },
     async stage(input) {
       const digest = sha256(input.bytes);
       const resourceId = resourceIdForSha256(digest);

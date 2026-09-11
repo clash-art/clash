@@ -17,7 +17,8 @@ vi.mock("@clash/shared-runtime", () => ({
   getGeminiOmniInteraction: mocks.getInteraction,
   extractGeminiOmniVideo: mocks.extractVideo,
   geminiOmniInteractionId: (value: { id: string }) => value.id,
-  geminiOmniInteractionStatus: (value: { status: string }) => value.status.toLowerCase(),
+  geminiOmniInteractionStatus: (value: { status: string }) =>
+    value.status.toLowerCase(),
   downloadGeminiOmniVideo: mocks.downloadVideo,
 }));
 
@@ -28,8 +29,14 @@ function makeCtx(env: Record<string, unknown> = {}) {
     bytesBase64Encoded: key === "jacket.png" ? "amFja2V0" : "bW9vZA==",
     mimeType: "image/png",
   }));
-  const uploadBytes = vi.fn().mockResolvedValue("projects/p1/uploads/task-1.mp4");
-  const probe = vi.fn().mockResolvedValue({ metadata: { width: 720, height: 1280, durationMs: 7000 } });
+  const uploadBytes = vi
+    .fn()
+    .mockResolvedValue("projects/p1/uploads/task-1.mp4");
+  const probe = vi
+    .fn()
+    .mockResolvedValue({
+      metadata: { width: 720, height: 1280, durationMs: 7000 },
+    });
   const createAsset = vi.fn().mockResolvedValue("asset-1");
   const notifyCompleted = vi.fn();
 
@@ -70,7 +77,11 @@ function makeCtx(env: Record<string, unknown> = {}) {
     },
     env: { DB: {} as D1Database, ACTION_SECRET_KEY: "secret-key", ...env },
     tag: { taskId: "task-1", nodeId: "node-1" },
-    step: async (_name: string, optsOrFn: unknown, maybeFn?: () => Promise<unknown>) => {
+    step: async (
+      _name: string,
+      optsOrFn: unknown,
+      maybeFn?: () => Promise<unknown>,
+    ) => {
       const fn = typeof optsOrFn === "function" ? optsOrFn : maybeFn;
       if (!fn) throw new Error("missing step fn");
       return fn();
@@ -80,6 +91,12 @@ function makeCtx(env: Record<string, unknown> = {}) {
     probe,
     createAsset,
     notifyCompleted,
+    accepted: (pollState: unknown) => ({ status: "accepted", pollState }),
+    completedMedia: (asset: unknown) => ({
+      status: "completed",
+      outputs: [{ slot: "output", kind: "asset", asset }],
+    }),
+    completedVideo: vi.fn(async () => ({ status: "completed", outputs: [] })),
   };
 }
 
@@ -88,42 +105,87 @@ describe("googleAiStudioInteractionsAdapter", () => {
 
   it("keeps inline order and appends only unmentioned global image references", async () => {
     mocks.credentialsForRoute.mockResolvedValue({ apiKey: "gemini-key" });
-    mocks.createInteraction.mockResolvedValue({ id: "interactions/omni-1", status: "in_progress" });
-    mocks.getInteraction.mockResolvedValue({ id: "interactions/omni-1", status: "completed" });
-    mocks.extractVideo.mockReturnValue({ uri: "https://files.example/video.mp4", mimeType: "video/mp4" });
-    mocks.downloadVideo.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]).buffer, mimeType: "video/mp4" });
+    mocks.createInteraction.mockResolvedValue({
+      id: "interactions/omni-1",
+      status: "in_progress",
+    });
+    mocks.getInteraction.mockResolvedValue({
+      id: "interactions/omni-1",
+      status: "completed",
+    });
+    mocks.extractVideo.mockReturnValue({
+      uri: "https://files.example/video.mp4",
+      mimeType: "video/mp4",
+    });
+    mocks.downloadVideo.mockResolvedValue({
+      bytes: new Uint8Array([1, 2, 3]).buffer,
+      mimeType: "video/mp4",
+    });
     const ctx = makeCtx();
 
-    await googleAiStudioInteractionsAdapter.execute(ctx as never);
+    const result = await googleAiStudioInteractionsAdapter.submit(ctx as never);
+    if (result.status === "accepted") {
+      expect(mocks.getInteraction).not.toHaveBeenCalled();
+      const next = await googleAiStudioInteractionsAdapter.poll!(
+        ctx as never,
+        result.pollState,
+      );
+      if (next.status === "accepted")
+        await googleAiStudioInteractionsAdapter.poll!(
+          ctx as never,
+          next.pollState,
+        );
+    }
 
-    expect(mocks.createInteraction).toHaveBeenCalledWith(expect.objectContaining({
-      apiKey: "gemini-key",
-      model: "gemini-omni-flash-preview",
-      aspectRatio: "9:16",
-      duration: 7,
-      input: [
-        { type: "text", text: "Use " },
-        { type: "image", data: "amFja2V0", mimeType: "image/png" },
-        { type: "text", text: " as the jacket reference." },
-        { type: "image", data: "bW9vZA==", mimeType: "image/png" },
-      ],
-    }));
+    expect(mocks.createInteraction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "gemini-key",
+        model: "gemini-omni-flash-preview",
+        aspectRatio: "9:16",
+        duration: 7,
+        input: [
+          { type: "text", text: "Use " },
+          { type: "image", data: "amFja2V0", mimeType: "image/png" },
+          { type: "text", text: " as the jacket reference." },
+          { type: "image", data: "bW9vZA==", mimeType: "image/png" },
+        ],
+      }),
+    );
     expect(ctx.readR2Base64).toHaveBeenCalledTimes(2);
-    expect(ctx.uploadBytes).toHaveBeenCalledWith(expect.any(ArrayBuffer), "video/mp4");
-    expect(ctx.notifyCompleted).toHaveBeenCalledWith({ assetId: "asset-1" });
+    expect(ctx.uploadBytes).toHaveBeenCalledWith(
+      expect.any(ArrayBuffer),
+      "video/mp4",
+    );
+    expect(mocks.getInteraction).toHaveBeenCalledTimes(1);
   });
 
   it("uploads inline base64 output without a second download", async () => {
     mocks.credentialsForRoute.mockResolvedValue({ apiKey: "gemini-key" });
-    mocks.createInteraction.mockResolvedValue({ id: "interactions/omni-2", status: "completed" });
+    mocks.createInteraction.mockResolvedValue({
+      id: "interactions/omni-2",
+      status: "completed",
+    });
     mocks.extractVideo.mockReturnValue({ data: "AQID", mimeType: "video/mp4" });
     const ctx = makeCtx();
 
-    await googleAiStudioInteractionsAdapter.execute(ctx as never);
+    const result = await googleAiStudioInteractionsAdapter.submit(ctx as never);
+    if (result.status === "accepted") {
+      expect(mocks.getInteraction).not.toHaveBeenCalled();
+      const next = await googleAiStudioInteractionsAdapter.poll!(
+        ctx as never,
+        result.pollState,
+      );
+      if (next.status === "accepted")
+        await googleAiStudioInteractionsAdapter.poll!(
+          ctx as never,
+          next.pollState,
+        );
+    }
 
     expect(mocks.downloadVideo).not.toHaveBeenCalled();
-    expect(ctx.uploadBytes).toHaveBeenCalledWith(expect.any(Uint8Array), "video/mp4");
+    expect(ctx.uploadBytes).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      "video/mp4",
+    );
   });
-
-  
-  });
+});

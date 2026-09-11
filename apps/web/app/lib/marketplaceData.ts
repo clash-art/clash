@@ -1,3 +1,4 @@
+import { normalizeMarketplaceItems } from "@clash/web-ui/lib/marketplaceCatalog";
 import { redirect } from "react-router";
 import type { RegistryItem } from "@clash/web-ui/lib/clientActions";
 import { runtimeApiUrl } from "@clash/web-ui/lib/runtimeConfig";
@@ -74,9 +75,9 @@ async function fetchRegistry(): Promise<RegistryData> {
     const registry = (await response.json()) as Partial<RegistryData>;
     return {
       version: typeof registry.version === "number" ? registry.version : 1,
-      actions: Array.isArray(registry.actions) ? registry.actions : [],
-      skills: Array.isArray(registry.skills) ? registry.skills : [],
-      plugins: Array.isArray(registry.plugins) ? registry.plugins : [],
+      actions: normalizeMarketplaceItems(registry.actions, "action"),
+      skills: normalizeMarketplaceItems(registry.skills, "skill"),
+      plugins: normalizeMarketplaceItems(registry.plugins, "plugin"),
     };
   } catch {
     return emptyRegistry;
@@ -92,9 +93,7 @@ async function fetchMarketplaceFeed(): Promise<MarketplaceFeedResponse> {
     const feed = (await response.json()) as Partial<MarketplaceFeedResponse>;
     return {
       version: typeof feed.version === "number" ? feed.version : 1,
-      featuredPlugins: Array.isArray(feed.featuredPlugins)
-        ? feed.featuredPlugins
-        : [],
+      featuredPlugins: normalizeMarketplaceItems(feed.featuredPlugins),
     };
   } catch {
     return emptyMarketplaceFeedResponse;
@@ -123,7 +122,7 @@ export async function loadMarketplaceData(options?: {
     fetchRegistry(),
     fetchInstalled<{ actionId?: unknown }>("/api/settings/actions"),
     fetchInstalled<{ skillId?: unknown }>("/api/settings/skills"),
-    fetchInstalled<{ id?: unknown }>("/api/v1/local/plugins"),
+    fetchInstalled<{ id?: unknown; drifted?: unknown }>("/api/v1/local/plugins"),
   ]);
 
   return {
@@ -145,7 +144,7 @@ export async function loadMarketplaceData(options?: {
       typeof skill.skillId === "string" ? [skill.skillId] : [],
     ),
     installedPluginIds: plugins.flatMap((plugin) =>
-      typeof plugin.id === "string" ? [plugin.id] : [],
+      typeof plugin.id === "string" && plugin.drifted === false ? [plugin.id] : [],
     ),
   };
 }
@@ -154,7 +153,7 @@ export async function loadMarketplaceFeedData(): Promise<MarketplaceFeedData> {
   const [feed, actions, plugins, skills] = await Promise.all([
     fetchMarketplaceFeed(),
     fetchInstalled<{ actionId?: unknown }>("/api/settings/actions"),
-    fetchInstalled<{ id?: unknown }>("/api/v1/local/plugins"),
+    fetchInstalled<{ id?: unknown; drifted?: unknown }>("/api/v1/local/plugins"),
     fetchInstalled<{ skillId?: unknown }>("/api/settings/skills"),
   ]);
 
@@ -164,7 +163,7 @@ export async function loadMarketplaceFeedData(): Promise<MarketplaceFeedData> {
       typeof action.actionId === "string" ? [action.actionId] : [],
     ),
     installedPluginIds: plugins.flatMap((plugin) =>
-      typeof plugin.id === "string" ? [plugin.id] : [],
+      typeof plugin.id === "string" && plugin.drifted === false ? [plugin.id] : [],
     ),
     installedSkillIds: skills.flatMap((skill) =>
       typeof skill.skillId === "string" ? [skill.skillId] : [],

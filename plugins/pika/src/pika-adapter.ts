@@ -127,10 +127,10 @@ async function referenceUrl(options: {
   context: ExecutorContext;
 }): Promise<string> {
   const resolved = await options.context.reference(options.reference);
-  if (resolved.form === "text") {
+  if (resolved.form !== "provider-url" && resolved.form !== "bytes") {
     throw new ProviderExecutionError({
       code: "invalid_request",
-      message: `Pika ${options.reference.slot} reference resolved to text instead of media.`,
+      message: `Pika ${options.reference.slot} reference requires Provider-accessible media; ${resolved.form} is unsupported.`,
       retryable: false,
       requestState: "rejected",
     });

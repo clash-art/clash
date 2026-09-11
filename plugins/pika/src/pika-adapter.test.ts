@@ -317,3 +317,12 @@ describe("Pika provider adapter", () => {
     expect(get).not.toHaveBeenCalled();
   });
 });
+
+it.each([
+  {form: "executor-url", executorUrl: "http://127.0.0.1/private-capability", expiresAt: "2099-01-01T00:00:00Z", kind: "image"},
+  {form: "document", documentKind: "text.plain", schemaVersion: 1, body: "private document"},
+] as const)("rejects $form before uploading a Provider reference", async (resolved) => {
+  const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+  await expect(pikaAdapter.submit(invocation({kind: "video", modelId: "pika-2.2", upstreamModel: "pika-v2.2", prompt: "Animate"}, {references: [{slot: "image", index: 0, asset: {assetId: "image", uri: "clash-asset://image", kind: "image"}}]}), context({reference: async () => resolved}))).rejects.toMatchObject({failure: {code: "invalid_request", requestState: "rejected", retryable: false}});
+  expect(fetch).not.toHaveBeenCalled();
+});

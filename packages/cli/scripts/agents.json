@@ -1,0 +1,8 @@
+{
+  "summary": "Native Node 24 TypeScript tools in an ESM scope, independent of the CLI source tests' existing CJS/tsx semantics. The installed clash bin remains generated dist/index.js.",
+  "key_files": {
+    "run-tests.ts": "Discovers source test files, invokes Node/tsx and Vitest separately, and propagates failure without running later suites. Importable helpers support isolated runner tests.",
+    "bundle-agents.ts": "Stages existing plugin runtime and Skills into dist/agents; skips nested runtime/agents to prevent recursive bundles."
+  },
+  "verification": "Production scripts are included in root strict tsconfig.quality.json. Root executable-scripts.test.ts tests native import guards and agent bundling in a temporary repository fixture."
+}

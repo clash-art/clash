@@ -14,7 +14,8 @@
     "agents.json"
   ],
   "scripts": {
-    "build": "tsup"
+    "build": "tsup",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/action-sdk": "workspace:*"

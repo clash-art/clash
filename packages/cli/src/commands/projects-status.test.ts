@@ -10,6 +10,15 @@ import {
 } from "./projects";
 import type { ResolvedProjectContext } from "../lib/project-context";
 
+function verifiedReplication(projectId: string, mode = "cloud-sync") {
+  return { mode, localReplicaId: "host-1", admission: {
+    schemaVersion: 1, projectId, localReplicaId: "host-1", userId: "owner", tenantId: "tenant",
+    syncBaseUrl: "https://cloud.example.com", status: "ready",
+    capabilities: { canvas: true, projectMetadata: true, resources: true },
+    admittedAt: "2026-09-04T00:00:00Z", updatedAt: "2026-09-04T00:00:00Z", lastError: null,
+  } };
+}
+
 const expectedTracePolicy = {
   schemaVersion: 1,
   agentSessionMetadata: {
@@ -165,7 +174,7 @@ test("project status exposes agent-readable project roots and protected local fi
   assert.equal(status.source, "marker");
   assert.equal(status.mode, "local");
   assert.equal(status.syncMode, "local");
-  assert.deepEqual(status.collaboration, {
+  assert.partialDeepStrictEqual(status.collaboration, {
     schemaVersion: 1,
     mode: "local-only",
     rawMode: "local",
@@ -483,7 +492,7 @@ test("project marker rejects removed sync fields", async () => {
   );
 });
 
-test("project status reads canonical sync readiness from the product SQLite store", async () => {
+test("project status does not infer Project readiness from global product capability flags", async () => {
   const homeDir = await tempDir();
   const cwd = await tempDir();
   await initProject({ cwd, projectId: "sqlite_cloud_project" });
@@ -504,19 +513,8 @@ test("project status reads canonical sync readiness from the product SQLite stor
   const status = await resolveProjectStatus({ cwd, env: {}, homeDir });
 
   assert.equal(status.collaboration.mode, "synced");
-  assert.equal(status.collaboration.webOpenable, true);
-  assert.equal(status.collaboration.roomAuthority, "local-with-cloud-mirror");
-  assert.deepEqual(status.collaboration.syncReadiness, {
-    status: "ready",
-    ready: true,
-    required: [
-      "canvas",
-      "asset-metadata",
-      "revision-content",
-      "project-metadata",
-    ],
-    missing: [],
-  });
+  assert.equal(status.collaboration.webOpenable, false);
+  assert.equal(status.collaboration.actions.shareProject.allowed, false);
 });
 
 test("project status uses canonical sync readiness supplied by the product", async () => {
@@ -549,19 +547,19 @@ test("project status uses canonical sync readiness supplied by the product", asy
       "revision-content",
       "project-metadata",
     ],
-    missing: ["revision-content", "project-metadata"],
+    missing: ["canvas", "asset-metadata", "revision-content", "project-metadata"],
   });
   assert.deepEqual(status.collaboration.actions.openInWeb, {
     allowed: false,
     reason: "cloud-sync-not-ready",
-    requirements: ["revision-content", "project-metadata"],
+    requirements: ["canvas", "asset-metadata", "revision-content", "project-metadata"],
   });
   assert.deepEqual(status.collaboration.actions.shareProject, {
     allowed: false,
     reason: "cloud-sync-not-ready",
-    requirements: ["revision-content", "project-metadata"],
+    requirements: ["canvas", "asset-metadata", "revision-content", "project-metadata"],
   });
-  assert.deepEqual(
+  assert.partialDeepStrictEqual(
     status.collaboration.syncPolicy,
     expectedSyncPolicy("blocked-until-requirements-ready"),
   );
@@ -624,11 +622,11 @@ test("project status exposes explicit collaboration gates for synced and shared 
     { projectId: "shared_project", source: "marker" },
     {
       homeDir: "/tmp/clash-home",
-      replicationState: { mode: "shared" },
+      replicationState: verifiedReplication("shared_project", "shared"),
     },
   );
 
-  assert.deepEqual(synced.collaboration, {
+  assert.partialDeepStrictEqual(synced.collaboration, {
     schemaVersion: 1,
     mode: "synced",
     rawMode: "cloud-sync",
@@ -692,7 +690,7 @@ test("project status exposes explicit collaboration gates for synced and shared 
     projectRoom: expectedProjectRoomPolicy("disabled"),
     tracePolicy: expectedTracePolicy,
   });
-  assert.deepEqual(shared.collaboration, {
+  assert.partialDeepStrictEqual(shared.collaboration, {
     schemaVersion: 1,
     mode: "shared",
     rawMode: "shared",

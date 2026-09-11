@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": [
+    "scripts/source-check-config.ts",
+    "scripts/source-check-config.test.ts",
+    "apps/desktop/scripts/*.ts",
+    "packages/cli/scripts/*.ts",
+    ".github/scripts/*.ts",
+    "scripts/executable-scripts.test.ts",
+    "scripts/e2e/harness.test.ts"
+  ]
+}

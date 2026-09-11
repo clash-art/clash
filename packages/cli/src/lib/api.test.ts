@@ -14,7 +14,10 @@ test("loopback local-api requests work without a cloud Authorization header", as
   process.env.CLASH_API_URL = "http://127.0.0.1:49321";
   delete process.env.CLASH_API_KEY;
   let request: Request | undefined;
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = (async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
     request = new Request(input, init);
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
@@ -22,6 +25,21 @@ test("loopback local-api requests work without a cloud Authorization header", as
     const response = await apiFetch("/api/v1/projects");
     assert.equal(response.status, 200);
     assert.equal(request?.headers.get("authorization"), null);
+    for (const headers of [
+      new Headers({
+        "x-clash-if-match": "observation",
+        "x-clash-client-type": "agent",
+      }),
+      [
+        ["x-clash-if-match", "observation"],
+        ["x-clash-client-type", "agent"],
+      ],
+      { "x-clash-if-match": "observation", "x-clash-client-type": "agent" },
+    ] as HeadersInit[]) {
+      await apiFetch("/api/v1/projects", { headers });
+      assert.equal(request?.headers.get("x-clash-if-match"), "observation");
+      assert.equal(request?.headers.get("x-clash-client-type"), "agent");
+    }
   } finally {
     globalThis.fetch = originalFetch;
     if (originalHome === undefined) delete process.env.CLASH_HOME;

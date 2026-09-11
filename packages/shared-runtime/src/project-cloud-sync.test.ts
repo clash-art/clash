@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createProjectCloudSyncCoordinator,
-} from "./project-cloud-sync.js";
+import { createProjectCloudSyncCoordinator } from "./project-cloud-sync.js";
+import type { ProjectCloudSyncObservation } from "./project-cloud-sync.js";
 import type { ProjectCloudAdmission } from "@clash/shared-types";
 
 const base: ProjectCloudAdmission = {
@@ -21,13 +20,19 @@ const base: ProjectCloudAdmission = {
 describe("project cloud sync coordinator", () => {
   it("coalesces concurrent runs and retries a failed idempotent step", async () => {
     let state = base;
+    let version = 0;
     const writes: ProjectCloudAdmission[] = [];
     const store = {
-      read: vi.fn(async () => state),
-      write: vi.fn(async (next: ProjectCloudAdmission) => {
+      read: vi.fn(async () => ({ admission: state, version })),
+      compareAndSet: async (
+        expected: ProjectCloudSyncObservation,
+        next: ProjectCloudAdmission,
+      ) => {
+        if (version !== expected.version) return null;
         state = next;
         writes.push(next);
-      }),
+        return { admission: state, version: ++version };
+      },
     };
     let resourceAttempt = 0;
     const steps = {
@@ -60,19 +65,55 @@ describe("project cloud sync coordinator", () => {
       "ready",
     ]);
   });
+});
 
-  it("does not rerun a ready project", async () => {
-    const state: ProjectCloudAdmission = { ...base, status: "ready" };
-    const steps = {
-      syncLoro: vi.fn(),
-      syncMetadata: vi.fn(),
-      syncResources: vi.fn(),
-    };
+describe("Project sync concurrency", () => {
+  it("does not restore readiness after admission is revoked during Resource upload", async () => {
+    let state = { ...base };
+    let version = 0;
     const result = await createProjectCloudSyncCoordinator({
-      state: { read: async () => state, write: async () => undefined },
-      steps,
+      state: {
+        read: async () => ({ admission: state, version }),
+        compareAndSet: async (expected, next) => {
+          if (version !== expected.version) return null;
+          state = next;
+          return { admission: state, version: ++version };
+        },
+      },
+      steps: {
+        syncLoro: async () => undefined,
+        syncMetadata: async () => undefined,
+        syncResources: async () => {
+          state = { ...state, status: "local-only" };
+          version++;
+        },
+      },
     }).run();
-    expect(result).toEqual({ status: "ready", changed: false });
-    expect(steps.syncLoro).not.toHaveBeenCalled();
+    expect(state.status).toBe("local-only");
+    expect(result.status).not.toBe("ready");
+  });
+
+  it("reconciles new content after an earlier ready result", async () => {
+    let state = { ...base, status: "ready" as const } as ProjectCloudAdmission;
+    let version = 0;
+    let mirrored = false;
+    await createProjectCloudSyncCoordinator({
+      state: {
+        read: async () => ({ admission: state, version }),
+        compareAndSet: async (expected, next) => {
+          if (version !== expected.version) return null;
+          state = next;
+          return { admission: state, version: ++version };
+        },
+      },
+      steps: {
+        syncLoro: async () => undefined,
+        syncMetadata: async () => undefined,
+        syncResources: async () => {
+          mirrored = true;
+        },
+      },
+    }).run();
+    expect(mirrored).toBe(true);
   });
 });

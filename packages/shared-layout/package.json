@@ -19,7 +19,8 @@
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean --target es2020",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0"

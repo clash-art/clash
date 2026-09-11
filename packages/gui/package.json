@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit --project tsconfig.build.json",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

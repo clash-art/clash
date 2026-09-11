@@ -1,0 +1,17 @@
+{
+  "summary": "Backend-only SQLite/D1 Drizzle schema authority, consumed by api-cf, Web backend queries and Drizzle Kit. No browser or domain dependency on this package.",
+  "key_files": {
+    "src/auth.ts": "Single Better Auth users/sessions/accounts/verifications table definitions and bidirectional ORM relations. Column SQL foreign keys are absent; relation fields/references remain query metadata.",
+    "src/app.ts": "Shared cloud control-plane Project, tenant, token, provider, legacy installed-record and Asset/index tables. Project Loro and local SQLite authority are not moved here.",
+    "src/broker.ts": "API-only capability broker audit table, preserving its existing columns and indexes.",
+    "src/runtime.ts": "Web backend runtime, runtime token/session, chat message and agent member index tables; not a replacement local Host state store.",
+    "src/schema.test.ts": "Generates actual Drizzle Kit DDL, executes it in SQLite with foreign_keys enabled, exercises cross-auth-ID writes and both directions of Better Auth relation queries."
+  },
+  "architecture_notes": [
+    "Narrow source exports auth/app/broker/runtime are consumed directly by TypeScript-aware Node/Worker bundlers and Drizzle Kit. There is no broad root export or pre-build requirement.",
+    "Existing API and Web schema files are compatibility export profiles: API includes app+broker, Web includes app+runtime. Their auth paths all re-export auth. Preserve each profile so migration discovery does not silently add or drop a backend-specific table.",
+    "Never add column .references() or foreignKey definitions. Do not confuse ORM relations({ fields, references }) with SQL constraints.",
+    "Historical migration SQL and deployed tables are unchanged. Removing source SQL foreign keys only changes future schema generation; existing deployed constraints require a separately reviewed migration if needed.",
+    "Only backend apps depend on this package. Do not import Drizzle or these tables into shared-types, GUI or browser domain contracts."
+  ]
+}

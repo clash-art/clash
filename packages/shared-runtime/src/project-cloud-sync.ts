@@ -3,9 +3,18 @@ import type {
   ProjectCloudAdmissionStatus,
 } from "@clash/shared-types";
 
+export interface ProjectCloudSyncObservation {
+  admission: ProjectCloudAdmission;
+  /** Host-owned monotonic record version; never part of Project public state. */
+  version: number;
+}
+
 export interface ProjectCloudSyncStateStore {
-  read(): Promise<ProjectCloudAdmission>;
-  write(state: ProjectCloudAdmission): Promise<void>;
+  read(): Promise<ProjectCloudSyncObservation>;
+  compareAndSet(
+    expected: ProjectCloudSyncObservation,
+    next: ProjectCloudAdmission,
+  ): Promise<ProjectCloudSyncObservation | null>;
 }
 
 /** Each step must be idempotent: Loro and Resource delivery ports already use
@@ -17,7 +26,7 @@ export interface ProjectCloudSyncSteps {
 }
 
 export interface ProjectCloudSyncResult {
-  status: Exclude<ProjectCloudAdmissionStatus, "local-only">;
+  status: ProjectCloudAdmissionStatus;
   changed: boolean;
   error?: string;
 }
@@ -47,36 +56,58 @@ export function createProjectCloudSyncCoordinator(options: {
   let inFlight: Promise<ProjectCloudSyncResult> | undefined;
 
   const run = async (): Promise<ProjectCloudSyncResult> => {
-    const current = await options.state.read();
+    const observation = await options.state.read();
+    const current = observation.admission;
     if (current.status === "local-only") {
-      return { status: "pending", changed: false };
-    }
-    if (current.status === "ready") {
-      return { status: "ready", changed: false };
+      return { status: "local-only", changed: false };
     }
     const now = options.now ?? (() => new Date());
-    await options.state.write(
+    const syncing = await options.state.compareAndSet(
+      observation,
       withStatus(current, "syncing", now().toISOString(), null),
     );
-    try {
-      await options.steps.syncLoro();
-      await options.steps.syncMetadata();
-      await options.steps.syncResources();
-      // A retry may have refreshed the admission while the idempotent steps
-      // were running. Preserve that latest record instead of overwriting it
-      // with the stale pre-run snapshot.
+    if (!syncing) {
+      return {
+        status: (await options.state.read()).admission.status,
+        changed: false,
+      };
+    }
+    const stillCurrent = async () => {
       const latest = await options.state.read();
-      await options.state.write(
-        withStatus(latest, "ready", now().toISOString(), null),
+      return latest.version === syncing.version;
+    };
+    try {
+      for (const step of [
+        options.steps.syncLoro,
+        options.steps.syncMetadata,
+        options.steps.syncResources,
+      ]) {
+        if (!(await stillCurrent()))
+          return {
+            status: (await options.state.read()).admission.status,
+            changed: false,
+          };
+        await step();
+      }
+      const committed = await options.state.compareAndSet(
+        syncing,
+        withStatus(syncing.admission, "ready", now().toISOString(), null),
       );
-      return { status: "ready", changed: true };
+      return {
+        status: (await options.state.read()).admission.status,
+        changed: !!committed,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const latest = await options.state.read();
-      await options.state.write(
-        withStatus(latest, "failed", now().toISOString(), message),
+      const committed = await options.state.compareAndSet(
+        syncing,
+        withStatus(syncing.admission, "failed", now().toISOString(), message),
       );
-      return { status: "failed", changed: true, error: message };
+      return {
+        status: (await options.state.read()).admission.status,
+        changed: !!committed,
+        error: message,
+      };
     }
   };
 

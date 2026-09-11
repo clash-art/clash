@@ -5,6 +5,7 @@
   "entrypoints": [
     ".codex-plugin/plugin.json",
     ".mcp.json",
+    "tsconfig.check.json",
     "tsconfig.typecheck.json",
     "src/dispatcher.ts",
     "src/index.ts",
@@ -39,7 +40,7 @@
     "skills/clash-brand-motion/SKILL.md",
     "skill-packs.json"
   ],
-  "typecheckBoundary": "lint and typecheck use tsconfig.typecheck.json, extending the development workspace aliases so current Local API and MCP contracts are checked instead of stale dist declarations. It uses Bundler resolution for the bundled runtime and DOM Web API types shared by the Host, keeps strictness and the full source/test include set, emits no JavaScript or declarations and sets no heap override. Incremental checker metadata is kept in the package-local ignored .cache/typecheck.tsbuildinfo, without limiting dependency invalidation. Release artifact consistency remains a separate package-boundary test.",
+  "typecheckBoundary": "typecheck uses the generated tsconfig.check.json profile, preserving tsconfig.typecheck.json runtime libraries and strict source/test coverage while resolving workspace imports from the root source map. Sparse distribution-specific aliases live in source-check-profiles.json; pnpm quality:configs:check rejects drift. The root lint gate runs this source check once through Turbo, without release builds or stale dist declarations. Incremental metadata remains package-local and dependency-aware. Release artifact consistency remains a separate package-boundary test.",
   "verification": [
     "pnpm test:package clash",
     "pnpm typecheck:package clash",

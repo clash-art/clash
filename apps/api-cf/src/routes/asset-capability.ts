@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 
 import {
+  ContentTransferLimitError,
+  assertContentTransferSize,
+  readBoundedContent,
   type AssetDeliveryCapabilityClaims,
   type AssetDeliveryByteRange,
   type AssetDeliveryStore,
@@ -13,6 +16,7 @@ export interface AssetCapabilityResource {
   /** Private storage locator. It never appears in the capability or Project state. */
   storageKey: string;
   contentType?: string;
+  byteLength?: number;
 }
 
 export interface AssetCapabilityRoutesOptions {
@@ -24,6 +28,7 @@ export interface AssetCapabilityRoutesOptions {
     | undefined
     | Promise<AssetCapabilityResource | undefined>;
   now?: () => number;
+  maxBytes?: number;
   /** Optional storage adapter. Omit it only for the default Cloudflare R2 adapter. */
   store?: AssetDeliveryStore;
 }
@@ -68,7 +73,9 @@ function sha256Hex(bytes: Uint8Array): Promise<string> {
     );
 }
 
-function createR2AssetDeliveryStore(bucket: R2Bucket): AssetDeliveryStore {
+export function createR2AssetDeliveryStore(
+  bucket: R2Bucket,
+): AssetDeliveryStore {
   return {
     async head(locator) {
       const object = await bucket.head(locator);
@@ -124,6 +131,14 @@ export function createAssetCapabilityRoutes(
 ): Hono<{ Bindings: Env }> {
   const routes = new Hono<{ Bindings: Env }>();
   const now = options.now ?? Date.now;
+  routes.onError((error, c) =>
+    error instanceof ContentTransferLimitError
+      ? c.json(
+          { error: error.message, code: error.code, maxBytes: error.maxBytes },
+          413,
+        )
+      : c.json({ error: "Cloud content transport unavailable" }, 503),
+  );
 
   routes.options(
     "/:token",
@@ -134,6 +149,8 @@ export function createAssetCapabilityRoutes(
     const token = c.req.param("token");
     const claims = await verifyCloudAssetDeliveryCapability(c.env, token, now);
     if (!claims) return c.text("Invalid or expired capability", 403);
+    const boundedTransfer =
+      !!claims.scope.localReplicaId || options.maxBytes !== undefined;
 
     const expectedMethod = claims.operation === "read" ? "GET" : "PUT";
     if (
@@ -152,14 +169,22 @@ export function createAssetCapabilityRoutes(
     const resource = await options.resolve(claims, c.env);
     const storageKey = resource && safeStorageKey(resource.storageKey);
     if (!storageKey) return c.text("Resource not found", 404);
+    if (boundedTransfer && resource.byteLength !== undefined)
+      assertContentTransferSize(resource.byteLength, options.maxBytes);
     const store = options.store ?? createR2AssetDeliveryStore(c.env.R2_BUCKET);
 
     if (claims.operation === "upload") {
       if (claims.byteLength === undefined) {
         return c.text("Upload capability has no byte length", 400);
       }
-      const bytes = new Uint8Array(await c.req.arrayBuffer());
+      if (boundedTransfer)
+        assertContentTransferSize(claims.byteLength, options.maxBytes);
       const declaredLength = c.req.header("content-length");
+      if (boundedTransfer && declaredLength !== undefined)
+        assertContentTransferSize(Number(declaredLength), options.maxBytes);
+      const bytes = boundedTransfer
+        ? await readBoundedContent(c.req.raw.body, options)
+        : new Uint8Array(await c.req.arrayBuffer());
       if (
         (declaredLength !== undefined &&
           Number(declaredLength) !== bytes.byteLength) ||
@@ -173,6 +198,9 @@ export function createAssetCapabilityRoutes(
           return c.text("Upload digest does not match capability", 400);
         }
       }
+      const current = await options.resolve(claims, c.env);
+      if (!current || current.storageKey !== storageKey)
+        return c.text("Resource no longer admitted", 403);
       const contentType = resource.contentType ?? claims.contentType;
       await store.put(
         storageKey,
@@ -184,6 +212,9 @@ export function createAssetCapabilityRoutes(
 
     const head = await store.head(storageKey);
     if (!head) return c.text("Resource not found", 404);
+    if (boundedTransfer) assertContentTransferSize(head.size, options.maxBytes);
+    if (resource.byteLength !== undefined && head.size !== resource.byteLength)
+      return c.text("Resource integrity mismatch", 502);
     const responseHeaders = corsHeaders();
     responseHeaders.set("Accept-Ranges", "bytes");
     responseHeaders.set("Content-Length", String(head.size));
@@ -215,7 +246,15 @@ export function createAssetCapabilityRoutes(
         "Content-Range",
         `bytes ${range.start}-${range.end}/${head.size}`,
       );
-      return new Response(object.body, {
+      if (!boundedTransfer)
+        return new Response(object.body, {
+          status: 206,
+          headers: responseHeaders,
+        });
+      const bytes = await readBoundedContent(object.body, options);
+      if (bytes.byteLength !== length)
+        return c.text("Resource integrity mismatch", 502);
+      return new Response(bytes, {
         status: 206,
         headers: responseHeaders,
       });
@@ -223,7 +262,15 @@ export function createAssetCapabilityRoutes(
 
     const object = await store.get(storageKey);
     if (!object) return c.text("Resource not found", 404);
-    return new Response(object.body, { status: 200, headers: responseHeaders });
+    if (!boundedTransfer)
+      return new Response(object.body, {
+        status: 200,
+        headers: responseHeaders,
+      });
+    const bytes = await readBoundedContent(object.body, options);
+    if (bytes.byteLength !== head.size)
+      return c.text("Resource integrity mismatch", 502);
+    return new Response(bytes, { status: 200, headers: responseHeaders });
   });
 
   return routes;

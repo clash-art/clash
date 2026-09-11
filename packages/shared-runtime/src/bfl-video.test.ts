@@ -1,3 +1,9 @@
+import { submitBflFlux3Video, pollBflFlux3VideoOnce, type BflFlux3VideoRequestOptions } from "./bfl-video";
+async function runFixture(options: BflFlux3VideoRequestOptions) {
+  const token = await submitBflFlux3Video(options);
+  const first = await pollBflFlux3VideoOnce(options, token);
+  return first ?? await pollBflFlux3VideoOnce(options, token);
+}
 import { describe, expect, it } from "vitest";
 
 import * as runtime from "./index";
@@ -81,10 +87,9 @@ describe("BFL FLUX 3 protocol", () => {
       return new Response("not found", { status: 404 });
     };
 
-    const result = await runtime.generateBflFlux3Video({
+    const result = await runFixture({
       apiKey: "bfl-key",
       fetch: fetchImpl as typeof fetch,
-      pollIntervalMs: 0,
       input: { prompt: "morning mist" },
     });
 

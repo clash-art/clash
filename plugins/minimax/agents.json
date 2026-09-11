@@ -3,7 +3,8 @@
   "context_hints": [
     "The Provider id is clash.minimax; keep its declaration in providers/minimax.json",
     "Plugin code performs native upstream HTTP and uses only the Host-selected account state exposed through context.store",
-    "Every MiniMax H3 reference is uploaded through /v1/files/upload before submission; submitted references use mm_file:// handles only"
+    "Every MiniMax H3 reference is uploaded through /v1/files/upload before submission; submitted references use mm_file:// handles only",
+    "The source gate checks every ResolvedReference variant: media accepts bytes/provider-url only and explicitly rejects executor-url Host capabilities and Documents before any Provider request."
   ],
   "subdirectories": {
     "providers": "MiniMax Provider declaration and account authentication form.",
@@ -13,8 +14,7 @@
   "key_files": {
     "manifest.json": "Versioned executable package and contribution declarations.",
     "providers/minimax.json": "Provider metadata, executor link, and regional API-key configuration.",
-    "src/minimax-adapter.ts": "Native MiniMax request translation, reference upload, polling, and response translation.",
-    "src/minimax-executor.ts": "Typed invocation orchestration and account-scoped dependency use."
+    "src/minimax-adapter.ts": "Node plugin account/reference glue consuming portable @clash/shared-runtime/minimax-executor submit/poll primitives."
   },
   "verification": [
     "pnpm --filter @clash-plugin/minimax test"

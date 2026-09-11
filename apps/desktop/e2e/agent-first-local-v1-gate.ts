@@ -22,7 +22,7 @@ const pnpmBin = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const suiteDefinitions = [
   {
     id: "short-drama-timeline",
-    command: [process.execPath, "e2e/short-drama-timeline-smoke.mjs"],
+    command: [process.execPath, "e2e/short-drama-timeline-smoke.ts"],
     minChecks: 4,
     requiredChecks: [
       "created timeline JSON validates",
@@ -34,7 +34,7 @@ const suiteDefinitions = [
   },
   {
     id: "agent-first-cas",
-    command: [process.execPath, "e2e/agent-first-cas-smoke.mjs"],
+    command: [process.execPath, "e2e/agent-first-cas-smoke.ts"],
     schemaVersion: 1,
     minChecks: 52,
     requiredBooleans: [
@@ -86,7 +86,7 @@ const suiteDefinitions = [
   },
   {
     id: "storage-doctor-repair",
-    command: [process.execPath, "e2e/storage-doctor-repair-smoke.mjs"],
+    command: [process.execPath, "e2e/storage-doctor-repair-smoke.ts"],
     schemaVersion: 1,
     minChecks: 70,
     requiredChecks: [

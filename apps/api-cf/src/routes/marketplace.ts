@@ -1,3 +1,4 @@
+import { withMarketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 import { Hono } from "hono";
 import type { Env } from "../config";
 import firstPartyRegistry from "../../../../skills/registry.json";
@@ -8,49 +9,36 @@ const REGISTRY_URL =
 interface RegistryData {
   version: number;
   marketplaceSemantics?: Record<string, unknown>;
-  /**
-   * Retired with the skill marketplace, so absent from `registry.json`.
-   *
-   * Optional rather than removed because the remote community registry still publishes it, and the
-   * merge below has to keep passing those entries through.
-   */
+  /** Historical remote field, never an executable installation contract. */
   actions?: Array<Record<string, unknown>>;
+  plugins?: Array<Record<string, unknown>>;
   skills: Array<Record<string, unknown> & { id?: unknown }>;
   systemCapabilities?: Array<Record<string, unknown>>;
   thirdPartyReferences?: Array<Record<string, unknown>>;
 }
 
 const FIRST_PARTY = firstPartyRegistry as RegistryData;
-
-const CODEX_IMAGEGEN_MARKETPLACE_ITEM = {
-  id: "codex-imagegen",
-  name: "Codex ImageGen",
-  type: "action",
-  description:
-    "Generate or edit images with Codex's built-in image generation tool and your ChatGPT subscription.",
-  runtime: "local",
-  outputType: "image",
-  packageId: "clash.codex-imagegen",
-  version: "0.1.0",
-  author: "Clash",
-  icon: "✨",
-  color: "#57534e",
-  tags: ["image", "codex", "local", "chatgpt"],
-  promptModalities: ["text", "image"],
-} as const;
-
-function firstPartyActions(): Array<Record<string, unknown>> {
-  return [CODEX_IMAGEGEN_MARKETPLACE_ITEM, ...(FIRST_PARTY.actions ?? [])];
+function readOnlySkill(skill: RegistryData["skills"][number]) {
+  return withMarketplaceInstallation(
+    { ...skill, id: typeof skill.id === "string" ? skill.id : "" },
+    { executablePlugins: false, skills: false },
+  );
 }
 
 function isRegistryData(value: unknown): value is RegistryData {
   if (!value || typeof value !== "object") return false;
   const maybe = value as Partial<RegistryData>;
-  return Array.isArray(maybe.actions) && Array.isArray(maybe.skills);
+  return Array.isArray(maybe.skills);
 }
 
 function mergeRegistry(remote: RegistryData | null): RegistryData {
-  if (!remote) return { ...FIRST_PARTY, actions: firstPartyActions() };
+  if (!remote)
+    return {
+      ...FIRST_PARTY,
+      actions: [],
+      plugins: [],
+      skills: FIRST_PARTY.skills.map(readOnlySkill),
+    };
 
   const seenSkillIds = new Set<string>();
   const skills = [...FIRST_PARTY.skills];
@@ -67,8 +55,9 @@ function mergeRegistry(remote: RegistryData | null): RegistryData {
   return {
     version: 1,
     marketplaceSemantics: FIRST_PARTY.marketplaceSemantics,
-    actions: [...firstPartyActions(), ...(remote.actions ?? [])],
-    skills,
+    actions: [],
+    plugins: [],
+    skills: skills.map(readOnlySkill),
     systemCapabilities: FIRST_PARTY.systemCapabilities,
     thirdPartyReferences: FIRST_PARTY.thirdPartyReferences,
   };

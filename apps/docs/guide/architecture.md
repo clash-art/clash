@@ -30,6 +30,30 @@ all carry the same reusable host artifact. Whichever is installed first, they
 coordinate one compatible host per `CLASH_HOME` and profile rather than
 embedding or starting a second host in Electron.
 
+## Shared package runtime boundaries
+
+`shared-types` owns product contracts, while `shared-runtime` owns portable
+clients and execution coordination. Node filesystem/discovery adapters use
+explicit Node entrypoints; browser and Worker consumers use portable entries.
+The native Document client and cloud synchronization coordinator are shared;
+local Document/marketplace routes and cloud persistence remain runtime adapters.
+`shared-cloud-schema` contains backend Drizzle definitions consumed only by the
+API and Web backend, including ORM relations. Historical migration SQL remains
+historical; the package does not introduce SQL foreign keys.
+
+The Action SDK root retains its Node assembly and stdio API. Portable Provider
+modules and hosted error handling import `@clash/action-sdk/executable-failure`
+for the existing error implementation; browser Plugin modules use
+`@clash/action-sdk/browser`. Root and narrow exports share the same error class.
+Source-check paths and test aliases resolve these entries consistently from
+source. Browser bundle regressions execute Provider failures without Node
+polyfills or repository build outputs; release entrypoints still point to
+generated JavaScript.
+
+Legacy readers and the hosted Asset/node publication projection remain explicit
+compatibility boundaries. They do not create a second Document, Resource or Run
+authority, and retiring a writer does not rewrite historical user data.
+
 ## Distribution boundary
 
 The public headless Node distribution is one unscoped package, `clash`. Its
@@ -396,3 +420,26 @@ five local cards sit in the same registry and run on-device (see
 [Local ASR](/guide/local-asr)). The native `clash.asr` Generator publishes a
 `media.transcript@1` Document Asset; the existing endpoint and Timeline flow
 have not yet migrated to it.
+
+## Hosted database schema boundary
+
+`packages/shared-cloud-schema` is the backend-only Drizzle authority. Its narrow
+`auth`, `app`, `broker`, and `runtime` exports hold real definitions; the existing
+API/Web schema paths preserve their public import and migration profiles. API
+includes the broker audit table, while Web retains its runtime/session/chat
+indexes. Better Auth imports on both sides resolve to the same table and relation
+objects. Browser product contracts remain in `shared-types` without Drizzle.
+
+`apps/web/drizzle.config.ts` still discovers
+`apps/web/app/lib/db/migrations.schema.ts`. Source tables have no SQL foreign
+keys. Drizzle `relations` with `fields`/`references` are retained as query metadata;
+they do not add SQL constraints. Historical migration SQL and deployed tables are
+unchanged by this extraction, so existing deployed constraints are not implicitly
+removed. Any deployment requiring their removal needs a separately reviewed
+migration; do not regenerate or overwrite history as a schema-refactoring step.
+
+For current development commands and gateway topology, use the root `AGENTS.md`
+and `Makefile`: Web is Vite/React Router 7 with its integrated Worker gateway and
+an api-cf auxiliary Worker. Local CLI workflows discover the Local Host and need
+no cloud token. Historical references to a separate auth-gateway, Next.js API
+routes, or the removed `packages/claude-code-plugin` are not implementation paths.

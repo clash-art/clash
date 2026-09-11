@@ -4,7 +4,7 @@ import { expect, it } from "vitest";
 it("keeps Clash navigation out of generated repository instruction files", async () => {
   const bundleScript = await readFile(
     new URL(
-      "../../../../../../packages/cli/scripts/bundle-agents.mjs",
+      "../../../../../../packages/cli/scripts/bundle-agents.ts",
       import.meta.url,
     ),
     "utf8",

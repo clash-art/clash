@@ -1,3 +1,4 @@
+import { providerHttpError } from "@clash/action-sdk/executable-failure";
 /**
  * Image & video generation via Google Vertex AI (Vercel AI SDK).
  *
@@ -5,7 +6,7 @@
  * (clientEmail + privateKey from env vars).
  * Returns raw bytes (Uint8Array) — callers upload to R2.
  */
-import { generateImage, generateText, experimental_generateVideo } from "ai";
+import { generateImage, generateText } from "ai";
 import { createVertex } from "@ai-sdk/google-vertex/edge";
 import { normalizeModelId } from "@clash/shared-types";
 import { getVertexAccessTokenForCredentials } from "./vertex-auth";
@@ -496,109 +497,6 @@ function buildVideoProviderOptions(modelParams?: Record<string, unknown>) {
   return opts;
 }
 
-export async function generateGoogleVideo(
-  creds: GoogleServiceAccount,
-  params: GoogleVideoParams,
-): Promise<GoogleVideoResult> {
-  const modelId =
-    GOOGLE_VIDEO_MODEL_MAP[params.modelName ?? "veo-3.1"] ??
-    "veo-3.1-generate-001";
-  const ar = (params.aspectRatio || "16:9") as `${number}:${number}`;
-
-  // The AI SDK's Veo Zod schema only keeps `{bytesBase64Encoded, gcsUri}` inside
-  // referenceImages[] (other fields are silently stripped) and routes unknown
-  // keys from providerOptions.vertex into `parameters` — but Vertex Veo 3.1
-  // REST wants:
-  //   instance.image          — first frame (image-to-video / startEnd)
-  //   instance.lastFrame      — tail frame (startEnd)
-  //   instance.referenceImages[] = { image: { bytesBase64Encoded, mimeType }, referenceType: "asset" }
-  // We feed the SDK shaped stubs so the happy path still runs, then rewrite
-  // the outgoing body via a fetch interceptor before it reaches Vertex.
-  const fullReferenceImages = params.referenceImages?.map((img) => ({
-    image: { bytesBase64Encoded: img.bytesBase64Encoded, mimeType: img.mimeType },
-    referenceType: "asset" as const,
-  }));
-  const firstFrame = params.image
-    ? { bytesBase64Encoded: params.image.bytesBase64Encoded, mimeType: params.image.mimeType }
-    : undefined;
-  const lastFrame = params.tailImage
-    ? { bytesBase64Encoded: params.tailImage.bytesBase64Encoded, mimeType: params.tailImage.mimeType }
-    : undefined;
-
-  const rewritingFetch: typeof fetch = async (input, init) => {
-    const urlStr = typeof input === "string" ? input : (input as URL | Request).toString();
-    if (
-      init?.body &&
-      typeof init.body === "string" &&
-      urlStr.endsWith(":predictLongRunning")
-    ) {
-      try {
-        const body = JSON.parse(init.body);
-        const inst = body?.instances?.[0];
-        if (inst) {
-          if (firstFrame) inst.image = firstFrame;
-          if (lastFrame) inst.lastFrame = lastFrame;
-          if (fullReferenceImages?.length) inst.referenceImages = fullReferenceImages;
-          if (body?.parameters) {
-            delete body.parameters.image;
-            delete body.parameters.lastFrame;
-            delete body.parameters.referenceImages;
-          }
-          init = { ...init, body: JSON.stringify(body) };
-        }
-      } catch {
-        // fall through — leave body untouched
-      }
-    }
-    return fetch(input, init);
-  };
-
-  const vertex = createVertex({
-    project: creds.project,
-    location: creds.location ?? "global",
-    googleCredentials: {
-      clientEmail: creds.clientEmail,
-      privateKey: creds.privateKey,
-    },
-    fetch: rewritingFetch,
-  });
-
-  const agentPlatformOpts: Record<string, unknown> = buildVideoProviderOptions(params.modelParams);
-  // Stubs — the fetch interceptor replaces these with the full Vertex shapes.
-  if (firstFrame) agentPlatformOpts.image = firstFrame;
-  if (lastFrame) agentPlatformOpts.lastFrame = lastFrame;
-  if (fullReferenceImages?.length) {
-    agentPlatformOpts.referenceImages = fullReferenceImages.map((r) => ({
-      bytesBase64Encoded: r.image.bytesBase64Encoded,
-    }));
-  }
-
-  const result = await experimental_generateVideo({
-    model: vertex.video(modelId),
-    prompt: params.prompt,
-    aspectRatio: ar,
-    providerOptions: {
-      vertex: agentPlatformOpts as Record<string, any>,
-    },
-  });
-
-  return {
-    data: result.video.uint8Array,
-    mediaType: result.video.mediaType,
-    model: modelId,
-  };
-}
-
-// ─── Veo Long-Running Operation (split submit + poll) ────────────────
-// `generateGoogleVideo` above wraps the AI SDK's `experimental_generateVideo`,
-// which hides the operation name and awaits internally. That's fine for a
-// monolithic call but means a DO/Workflow reset mid-poll re-submits to Veo
-// on retry — and Veo bills $0.50/sec, so a single retry can cost $2-5.
-//
-// The split below talks to Vertex REST directly, exposing the operation name
-// so callers can checkpoint it in workflow step state. On retry the same
-// operation gets re-polled instead of re-submitted → zero double-billing.
-
 export interface SubmitVeoOperationResult {
   operationName: string;
   modelId: string;
@@ -663,7 +561,7 @@ export async function submitVeoOperation(
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "<unreadable>");
-    throw new Error(`Veo predictLongRunning failed (${resp.status}): ${text.slice(0, 500)}`);
+    throw providerHttpError({ status: resp.status, operation: "submit", message: `Veo predictLongRunning failed (${resp.status}): ${text.slice(0, 500)}` });
   }
   const data = (await resp.json()) as { name?: string };
   if (!data.name) {
@@ -687,7 +585,7 @@ export async function fetchVeoOperationOnce(
   });
   if (!resp.ok) {
     const text = await resp.text().catch(() => "<unreadable>");
-    throw new Error(`Veo fetchPredictOperation failed (${resp.status}): ${text.slice(0, 500)}`);
+    throw providerHttpError({ status: resp.status, operation: "poll", message: `Veo fetchPredictOperation failed (${resp.status}): ${text.slice(0, 500)}` });
   }
   return resp.json() as Promise<{ done?: boolean; response?: any; error?: any; name?: string }>;
 }
@@ -695,48 +593,4 @@ export async function fetchVeoOperationOnce(
 export interface VeoVideoBytes {
   bytes: Uint8Array;
   mediaType: string;
-}
-
-/**
- * Poll a previously-submitted Veo operation until done. Returns the inline
- * video bytes. Re-entrant: calling again with the same `operationName`
- * keeps polling the same job — Vertex tracks state independently of us, so
- * a DO reset mid-poll causes a re-poll, not a re-submit.
- */
-export async function pollVeoOperation(
-  creds: GoogleServiceAccount,
-  modelId: string,
-  operationName: string,
-  opts: { intervalMs?: number; maxWaitMs?: number } = {},
-): Promise<VeoVideoBytes> {
-  const intervalMs = opts.intervalMs ?? 5000;
-  const maxWaitMs = opts.maxWaitMs ?? 9 * 60 * 1000;
-  const start = Date.now();
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const op = await fetchVeoOperationOnce(creds, modelId, operationName);
-    if (op.done) {
-      if (op.error) {
-        throw new Error(`Veo operation errored: ${JSON.stringify(op.error).slice(0, 500)}`);
-      }
-      // Vertex uses different field names across API versions / models —
-      // accept either generated_samples[] or videos[].
-      const samples = op.response?.generated_samples ?? op.response?.videos;
-      const video = samples?.[0]?.video ?? samples?.[0];
-      const b64 = video?.bytesBase64Encoded;
-      if (!b64) {
-        const uri = video?.uri ?? video?.gcsUri;
-        if (uri) {
-          throw new Error(`Veo returned GCS URI but inline bytes not present: ${uri}`);
-        }
-        throw new Error(`Veo done but no video in response: ${JSON.stringify(op.response).slice(0, 500)}`);
-      }
-      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      return { bytes, mediaType: video?.mimeType ?? "video/mp4" };
-    }
-    if (Date.now() - start > maxWaitMs) {
-      throw new Error(`Veo operation poll timeout after ${maxWaitMs}ms: ${operationName}`);
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
 }

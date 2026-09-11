@@ -23,7 +23,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "test": "node --import tsx --test src/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/shared-runtime": "workspace:*",

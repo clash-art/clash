@@ -1,3 +1,4 @@
+import { marketplaceInstallation, type MarketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 /**
  * Client-side wrappers around the web app's HTTP API.
  *
@@ -41,6 +42,8 @@ export interface VariableInfo {
 }
 
 export interface InstalledActionInfo {
+  /** Historical record removal is offered only by its serving backend. */
+  removable?: boolean;
   id: string;
   actionId: string;
   name: string;
@@ -106,6 +109,8 @@ export type PluginProviderInfo = ExecutablePluginProviderDefinition & {
 };
 
 export interface RegistryItem {
+  builtIn?: boolean;
+  installation?: MarketplaceInstallation;
   id: string;
   name: string;
   type: "action" | "skill" | "plugin";
@@ -498,15 +503,6 @@ export async function listInstalledActions(): Promise<InstalledActionInfo[]> {
   return jsonFetch("/api/settings/actions");
 }
 
-export async function installAction(
-  manifest: Record<string, unknown>,
-): Promise<InstalledActionInfo> {
-  return jsonFetch("/api/settings/actions", {
-    method: "POST",
-    body: JSON.stringify({ manifest }),
-  });
-}
-
 export async function uninstallAction(actionId: string): Promise<void> {
   await jsonFetch(`/api/settings/actions/${encodeURIComponent(actionId)}`, {
     method: "DELETE",
@@ -547,71 +543,25 @@ export async function fetchRegistry(): Promise<RegistryData> {
   return jsonFetch("/api/marketplace/registry");
 }
 
-export async function marketplaceInstallAction(
-  item: RegistryItem,
-): Promise<void> {
-  if (item.packageId) {
-    await jsonFetch(
-      `/api/marketplace/actions/${encodeURIComponent(item.packageId)}/install`,
-      {
-        method: "POST",
-      },
-    );
-    return;
-  }
-  await installAction({
-    id: item.id,
-    name: item.name,
-    description: item.description,
-    runtime: item.runtime || "worker",
-    outputType: item.outputType || "image",
-    workerUrl: item.workerUrl,
-    model: item.model,
-    version: item.version,
-    author: item.author,
-    repository: item.repository,
-    icon: item.icon,
-    color: item.color,
-    tags: item.tags,
-    secrets: item.secrets,
-    packageId: item.packageId,
-    parameters: [],
-  });
+/** Historical callers receive an explicit retirement error; a package id is not an executable contract. */
+export async function marketplaceInstallAction(_item: RegistryItem): Promise<never> {
+  throw new Error("Legacy Action installation is retired. Use a supported executable plugin from the Local Host catalog.");
 }
-
-export async function marketplaceUninstallAction(
-  item: RegistryItem,
-): Promise<void> {
-  if (item.packageId) {
-    await jsonFetch(
-      `/api/marketplace/actions/${encodeURIComponent(item.packageId)}/install`,
-      {
-        method: "DELETE",
-      },
-    );
-    return;
-  }
+export async function marketplaceUninstallAction(item: RegistryItem): Promise<void> {
   await uninstallAction(item.id);
 }
 
-export async function marketplaceInstallSkill(
-  item: RegistryItem,
-): Promise<void> {
-  await jsonFetch(
-    `/api/marketplace/skills/${encodeURIComponent(item.id)}/install`,
-    {
-      method: "POST",
-    },
-  );
+export async function marketplaceInstallSkill(item: RegistryItem): Promise<void> {
+  const target = marketplaceInstallation(item);
+  if (target?.kind !== "skill") throw new Error("This catalog does not support installing this skill.");
+  const result = await jsonFetch<{ installed?: boolean; skillId?: string }>(`/api/marketplace/skills/${encodeURIComponent(target.skillId)}/install`, { method: "POST" });
+  if (result?.installed !== true || result.skillId !== target.skillId) throw new Error("Host did not confirm skill installation.");
 }
-
-export async function marketplaceInstallPlugin(
-  item: RegistryItem,
-): Promise<void> {
-  await jsonFetch(
-    `/api/marketplace/plugins/${encodeURIComponent(item.packageId ?? item.id)}/install`,
-    { method: "POST" },
-  );
+export async function marketplaceInstallPlugin(item: RegistryItem): Promise<void> {
+  const target = marketplaceInstallation(item);
+  if (target?.kind !== "executable-plugin") throw new Error("This catalog does not support installing this executable plugin.");
+  const result = await jsonFetch<{ installed?: boolean; id?: string }>(`/api/marketplace/plugins/${encodeURIComponent(target.packageId)}/install`, { method: "POST" });
+  if (result?.installed !== true || result.id !== target.pluginId) throw new Error("Host did not confirm executable plugin activation.");
 }
 
 export async function marketplaceUninstallSkill(

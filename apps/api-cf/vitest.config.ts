@@ -5,6 +5,14 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: /^@clash\/action-sdk\/(.+)$/,
+        replacement: resolve(__dirname, "../../packages/action-sdk/src/$1.ts"),
+      },
+      {
+        find: /^@clash\/action-sdk$/,
+        replacement: resolve(__dirname, "../../packages/action-sdk/src/index.ts"),
+      },
+      {
         find: /^@clash\/replica\/loro-protocol$/,
         replacement: resolve(
           __dirname,

@@ -1,6 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { D1Database } from "@cloudflare/workers-types";
-import { CustomActionDefinitionSchema } from "@clash/shared-types";
 import {
   apiTokens,
   userVariables,
@@ -175,6 +174,7 @@ export async function listInstalledActions(env: Env, userId: string) {
   return rows.map((r) => ({
     id: r.id,
     actionId: r.actionId,
+    removable: true,
     name: r.name,
     description: r.description,
     runtime: r.runtime,
@@ -191,43 +191,11 @@ export async function listInstalledActions(env: Env, userId: string) {
 }
 
 export async function installAction(
-  env: Env,
-  userId: string,
-  manifest: Record<string, any>,
-) {
-  const parsed = CustomActionDefinitionSchema.safeParse(manifest);
-  if (!parsed.success) {
-    throw new Response(`Invalid action manifest: ${parsed.error.message}`, { status: 400 });
-  }
-  const normalizedManifest = parsed.data;
-  const db = getDb(env.DB);
-  await db
-    .delete(installedActions)
-    .where(
-      and(
-        eq(installedActions.userId, userId),
-        eq(installedActions.actionId, normalizedManifest.id),
-      ),
-    );
-  const [row] = await db
-    .insert(installedActions)
-    .values({
-      userId,
-      actionId: normalizedManifest.id,
-      name: normalizedManifest.name,
-      description: normalizedManifest.description || null,
-      manifest: JSON.stringify(normalizedManifest),
-      runtime: normalizedManifest.runtime || "worker",
-      version: normalizedManifest.version || null,
-      author: normalizedManifest.author || null,
-      repository: normalizedManifest.repository || null,
-      workerUrl: normalizedManifest.workerUrl || null,
-      icon: normalizedManifest.icon || null,
-      color: normalizedManifest.color || null,
-      tags: normalizedManifest.tags ? JSON.stringify(normalizedManifest.tags) : null,
-    })
-    .returning();
-  return row;
+  _env: Env,
+  _userId: string,
+  _manifest?: unknown,
+): Promise<never> {
+  throw Response.json({ code: "LEGACY_ACTION_INSTALL_RETIRED", error: "Worker Action manifest installation is retired. Install an executable plugin through a supported Local Host marketplace." }, { status: 410 });
 }
 
 export async function uninstallAction(

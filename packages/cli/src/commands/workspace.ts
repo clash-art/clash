@@ -149,7 +149,9 @@ export function createWorkspaceTransferClient(
   );
   const token = options.token ?? discovered?.token;
   const fetchImpl = options.fetch ?? globalThis.fetch;
-  const authorization = token ? { authorization: `Bearer ${token}` } : {};
+  const authorization: Record<string, string> = token
+    ? { authorization: `Bearer ${token}` }
+    : {};
   const jsonHeaders = {
     accept: "application/json",
     "content-type": "application/json",

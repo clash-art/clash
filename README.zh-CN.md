@@ -174,7 +174,7 @@ packages/
   gui/                  平台无关的 React 视图与类型化 UI ports
   web-ui/               Web 产品 controller 与兼容导出
   cli/                  终端 CLI
-  claude-code-plugin/   Claude Code 集成
+  shared-cloud-schema/ 仅后端使用的 Drizzle 表与认证关系
   remotion-effects/     可复用视频特效
   remotion-{core,components,ui}/  视频编辑器
 plugins/

@@ -1,3 +1,4 @@
+import { GenerationPublicationConflict, assertHostedGenerationAccess, generationAdmissionUpdate, generationPublicationUpdate, type GenerationNodePublication } from "../generation/publication";
 /**
  * ProjectRoom — pure Loro CRDT sequencer Durable Object.
  *
@@ -66,6 +67,7 @@ const AWARENESS_BROADCAST_MIN_INTERVAL_MS = 80;
 const AWARENESS_STALE_MS = 8_000;
 
 type LoroImportQueueItem = {
+  applyGeneration?: () => Promise<void>;
   sender?: WebSocket;
   data: Uint8Array;
   eventId?: string;
@@ -904,6 +906,11 @@ export class ProjectRoom extends DurableObject<Env> {
         if (this.initPromise) await this.initPromise;
 
         try {
+          if (msg.applyGeneration) {
+            await msg.applyGeneration();
+            msg.resolve?.();
+            continue;
+          }
           const nodesMap = this.doc.getMap("nodes");
           const shouldRunRealtimeEffects =
             msg.runRealtimeEffects && !!msg.sender;
@@ -1219,10 +1226,36 @@ export class ProjectRoom extends DurableObject<Env> {
 
     const operation = pathParts[pathParts.length - 1];
     const projectId = this.extractLoroProjectId(request, url);
-    const initError = await this.ensureRoomInitialized(projectId, {
-      enableTaskPolling: false,
-    });
+    const initError = operation === "generation-admission" && this.replica && this.projectId === projectId
+      ? null
+      : await this.ensureRoomInitialized(projectId, { enableTaskPolling: false });
     if (initError) return initError;
+
+    if ((operation === "generation-publication" || operation === "generation-admission") && request.method === "POST") {
+      try {
+        const body = await request.json() as GenerationNodePublication;
+        if (!body.taskId || !body.nodeId || !body.actorUserId || !body.updates || typeof body.updates !== "object") return Response.json({ error: "Invalid generation publication" }, { status: 400 });
+        await assertHostedGenerationAccess(this.env, { projectId, actorUserId: body.actorUserId } as never);
+        // NodeProcessor calls admission while processing this room's import queue.
+        // Its matching pendingTask is already installed locally; persist it before
+        // acknowledging, without waiting on the queue that is awaiting this request.
+        const current = this.doc.getMap("nodes").get(body.nodeId) as { data?: { pendingTask?: string; generationRunId?: string } } | undefined;
+        if (operation === "generation-admission" && (current?.data?.pendingTask === body.taskId || current?.data?.generationRunId === body.taskId)) {
+          await this.persistAndMaybeCompact(this.doc.export({ mode: "update" }));
+          return Response.json({ ok: true });
+        }
+        await this.enqueueLoroImport({ data: new Uint8Array(), runRealtimeEffects: false, applyGeneration: async () => {
+          const update = operation === "generation-admission" ? generationAdmissionUpdate(this.doc, body) : generationPublicationUpdate(this.doc, body);
+          if (update) {
+            await this.persistAndMaybeCompact(update);
+            this.broadcastBinary(update);
+          }
+        } });
+        return Response.json({ ok: true });
+      } catch (error) {
+        return Response.json({ error: error instanceof GenerationPublicationConflict ? error.message : "Generation publication failed" }, { status: error instanceof GenerationPublicationConflict ? 409 : 503 });
+      }
+    }
 
     if (operation === "snapshot" && request.method === "GET") {
       try {

@@ -124,25 +124,27 @@ describe("Gemini Omni Interactions transport", () => {
     })).rejects.toThrow("model unavailable");
   });
 
-  it("polls Google Files until ACTIVE before downloading URI-delivered video", async () => {
+  it("checks Google Files once and leaves PROCESSING scheduling to the caller", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(Response.json({ name: "files/video-1", state: "PROCESSING" }))
       .mockResolvedValueOnce(Response.json({ name: "files/video-1", state: "ACTIVE" }))
       .mockResolvedValueOnce(new Response("video-bytes", { headers: { "content-type": "video/mp4" } }));
 
-    const result = await downloadGeminiOmniVideo({
+    const options = {
       apiKey: "gemini-key",
       uri: "https://generativelanguage.googleapis.com/v1beta/files/video-1:download?alt=media",
-      pollIntervalMs: 0,
       fetch: fetchImpl,
-    });
+    };
+    expect(await downloadGeminiOmniVideo(options)).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const result = await downloadGeminiOmniVideo(options);
 
     expect(fetchImpl.mock.calls.map((call) => call[0])).toEqual([
       "https://generativelanguage.googleapis.com/v1beta/files/video-1",
       "https://generativelanguage.googleapis.com/v1beta/files/video-1",
       "https://generativelanguage.googleapis.com/v1beta/files/video-1:download?alt=media",
     ]);
-    expect(new TextDecoder().decode(result.bytes)).toBe("video-bytes");
+    expect(new TextDecoder().decode(result!.bytes)).toBe("video-bytes");
   });
 
   });

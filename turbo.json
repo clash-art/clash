@@ -1,9 +1,19 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalDependencies": ["**/.env.*local"],
+  "globalDependencies": [
+    "**/.env.*local",
+    "tsconfig.source.json",
+    "source-check-profiles.json",
+    "scripts/source-check-config.ts",
+    "tsconfig.quality.json",
+    ".eslintrc.*",
+    "scripts/package.json"
+  ],
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": [
+        "^build"
+      ],
       "outputs": [
         ".next/**",
         "!.next/cache/**",
@@ -14,16 +24,26 @@
       "outputLogs": "new-only"
     },
     "clash#build": {
-      "dependsOn": ["^build", "@clash/web#build"],
-      "outputs": ["runtime/**"]
+      "dependsOn": [
+        "^build",
+        "@clash/web#build"
+      ],
+      "outputs": [
+        "runtime/**"
+      ]
     },
     "dev": {
       "cache": false,
       "persistent": true
     },
     "test": {
-      "dependsOn": ["^test", "build"],
-      "outputs": ["coverage/**"],
+      "dependsOn": [
+        "^test",
+        "build"
+      ],
+      "outputs": [
+        "coverage/**"
+      ],
       "inputs": [
         "src/**/*.ts",
         "src/**/*.tsx",
@@ -41,22 +61,30 @@
         "lib/**/*.ts",
         "lib/**/*.tsx",
         "scripts/**/*.ts",
-        "scripts/**/*.mjs",
         "vitest.config.*",
         "vitest.setup.*",
         "package.json"
       ]
     },
     "test:e2e": {
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "cache": false,
       "outputs": []
     },
     "lint": {
-      "outputs": []
+      "outputs": [],
+      "dependsOn": [
+        "typecheck",
+        "^typecheck"
+      ]
     },
     "typecheck": {
-      "outputs": []
+      "outputs": [],
+      "dependsOn": [
+        "^typecheck"
+      ]
     },
     "clean": {
       "cache": false

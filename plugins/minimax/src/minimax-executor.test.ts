@@ -1,10 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   minimaxSubmit,
   minimaxPoll,
   type MinimaxPollState,
-} from "./minimax-executor";
+} from "@clash/shared-runtime/minimax-executor";
 
 /**
  * MiniMax, translated rather than waited on.
@@ -223,7 +223,9 @@ describe("minimax executor", () => {
           base_resp: { status_code: 0 },
           data: { audio: "48656c6c6f" },
         });
-      const result = await submitAudio(fetch);
+      vi.stubGlobal("Buffer", undefined);
+      let result;
+      try { result = await submitAudio(fetch); } finally { vi.unstubAllGlobals(); }
       expect(result.status).toBe("completed");
       if (result.status !== "completed") throw new Error("expected completed");
       expect(Buffer.from(result.media.bytes).toString()).toBe("Hello");
@@ -342,7 +344,7 @@ describe("minimax executor", () => {
     // reintroduce a ceiling that no Model Card asked for.
     const source = await import("node:fs").then((fs) =>
       fs.readFileSync(
-        new URL("./minimax-executor.ts", import.meta.url),
+        new URL("../../../packages/shared-runtime/src/minimax-executor.ts", import.meta.url),
         "utf8",
       ),
     );

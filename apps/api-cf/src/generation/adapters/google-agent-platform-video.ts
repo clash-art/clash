@@ -19,21 +19,26 @@
 import { log } from "../../logger";
 import {
   submitVeoOperation,
-  pollVeoOperation,
+  fetchVeoOperationOnce,
   type AgentPlatformInlineImage,
 } from "../../services/google-gen";
 import type { GenerationContext } from "../context";
 import type { GenerationAdapter } from "../adapter";
-import { credentialsForRoute, googleServiceAccountFromProvider } from "./provider-credentials";
+import {
+  credentialsForRoute,
+  googleServiceAccountFromProvider,
+} from "./provider-credentials";
 
 export const googleAgentPlatformVideoAdapter: GenerationAdapter = {
   name: "veo",
 
-  async execute(ctx: GenerationContext): Promise<void> {
+  async submit(ctx: GenerationContext) {
     const { params } = ctx;
     const route = params.selectedRoute;
     if (!route || route.apiShape !== "google-agent-platform") {
-      throw new Error(`Veo execution requires a selected Agent Platform route for ${params.videoModel ?? params.modelName ?? "unknown model"}`);
+      throw new Error(
+        `Veo execution requires a selected Agent Platform route for ${params.videoModel ?? params.modelName ?? "unknown model"}`,
+      );
     }
     const creds = googleServiceAccountFromProvider(
       await credentialsForRoute(ctx, route),
@@ -43,82 +48,67 @@ export const googleAgentPlatformVideoAdapter: GenerationAdapter = {
     // base64 of a 1280×720 PNG is 1-2 MiB, exceeds Workflows' 1 MiB step
     // output cap so they can't cross a step boundary). Output is just the
     // operation name + model id, both small strings.
-    const { operationName, modelId } = await ctx.step(
-      "veo-submit",
-      { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "2 minutes" },
-      async () => {
-        const read = (k?: string): Promise<AgentPlatformInlineImage | undefined> =>
-          k ? ctx.readR2Base64(k) : Promise.resolve(undefined);
-        const readAll = async (keys?: string[]): Promise<AgentPlatformInlineImage[] | undefined> => {
-          if (!keys?.length) return undefined;
-          return Promise.all(keys.map((k) => ctx.readR2Base64(k)));
-        };
-        const [image, tailImage, referenceImages] = await Promise.all([
-          read(params.startFrameR2Key),
-          read(params.endFrameR2Key),
-          readAll(params.referenceImageR2Keys),
-        ]);
-        const modelName = route.upstreamModel;
-        log.info("Veo submit", {
-          ...ctx.tag,
-          model: modelName,
-          hasImage: !!image,
-          hasTail: !!tailImage,
-          refs: referenceImages?.length ?? 0,
-        });
-        const result = await submitVeoOperation(creds, {
-          prompt: params.prompt ?? "",
-          aspectRatio: params.aspectRatio,
-          modelName,
-          modelParams: params.modelParams,
-          image,
-          tailImage,
-          referenceImages,
-        });
-        log.info("Veo operation submitted", { ...ctx.tag, operationName: result.operationName });
-        return result;
-      },
+    const { operationName, modelId } = await (async () => {
+      const read = (
+        k?: string,
+      ): Promise<AgentPlatformInlineImage | undefined> =>
+        k ? ctx.readR2Base64(k) : Promise.resolve(undefined);
+      const readAll = async (
+        keys?: string[],
+      ): Promise<AgentPlatformInlineImage[] | undefined> => {
+        if (!keys?.length) return undefined;
+        return Promise.all(keys.map((k) => ctx.readR2Base64(k)));
+      };
+      const [image, tailImage, referenceImages] = await Promise.all([
+        read(params.startFrameR2Key),
+        read(params.endFrameR2Key),
+        readAll(params.referenceImageR2Keys),
+      ]);
+      const modelName = route.upstreamModel;
+      log.info("Veo submit", {
+        ...ctx.tag,
+        model: modelName,
+        hasImage: !!image,
+        hasTail: !!tailImage,
+        refs: referenceImages?.length ?? 0,
+      });
+      const result = await submitVeoOperation(creds, {
+        prompt: params.prompt ?? "",
+        aspectRatio: params.aspectRatio,
+        modelName,
+        modelParams: params.modelParams,
+        image,
+        tailImage,
+        referenceImages,
+      });
+      log.info("Veo operation submitted", {
+        ...ctx.tag,
+        operationName: result.operationName,
+      });
+      return result;
+    })();
+
+    return ctx.accepted({ operationName, modelId });
+  },
+  async poll(ctx, token) {
+    const { operationName, modelId } = token as {
+      operationName: string;
+      modelId: string;
+    };
+    const creds = googleServiceAccountFromProvider(
+      await credentialsForRoute(ctx, ctx.params.selectedRoute!),
     );
-
-    // Step 2: poll until done + upload to R2. Bytes stay inside the step;
-    // only the storage key (small string) crosses to the next step.
-    const storageKey = await ctx.step(
-      "veo-poll",
-      { retries: { limit: 2, delay: "10 seconds" }, timeout: "10 minutes" },
-      async () => {
-        const { bytes, mediaType } = await pollVeoOperation(creds, modelId, operationName, {
-          intervalMs: 5000,
-          maxWaitMs: 9 * 60 * 1000,
-        });
-        log.info("Veo operation done", { ...ctx.tag, bytes: bytes.byteLength });
-        return ctx.uploadBytes(bytes, mediaType);
-      },
+    const op = await fetchVeoOperationOnce(creds, modelId, operationName);
+    if (!op.done) return ctx.accepted(token);
+    if (op.error)
+      throw new Error(`Veo operation errored: ${JSON.stringify(op.error)}`);
+    const samples = op.response?.generated_samples ?? op.response?.videos;
+    const video = samples?.[0]?.video ?? samples?.[0];
+    const b64 = video?.bytesBase64Encoded;
+    if (!b64) throw new Error("Veo completed without inline video bytes.");
+    const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+    return ctx.completedMedia(
+      await ctx.uploadBytes(bytes, video?.mimeType ?? "video/mp4"),
     );
-
-    const probe = await ctx.step(
-      "probe-video",
-      { retries: { limit: 2, delay: "5 seconds" }, timeout: "2 minutes" },
-      async () => ctx.probe("video", storageKey),
-    );
-
-    const durationMs =
-      probe.metadata.durationMs ??
-      (typeof params.duration === "number" ? Math.round(params.duration * 1000) : undefined);
-
-    const assetId = await ctx.step(
-      "save-asset",
-      { retries: { limit: 3, delay: "2 seconds", backoff: "exponential" }, timeout: "30 seconds" },
-      async () =>
-        ctx.createAsset({
-          kind: "video",
-          srcR2Key: storageKey,
-          coverR2Key: probe.coverR2Key,
-          metadata: { ...probe.metadata, durationMs },
-          sourceModel: params.videoModel ?? params.modelName,
-          sourcePrompt: params.prompt,
-        }),
-    );
-
-    await ctx.notifyCompleted({ assetId });
   },
 };

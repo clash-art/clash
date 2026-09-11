@@ -1,8 +1,8 @@
 # Minimal, fully local workerd configuration for Vitest integration tests.
-# Keep remote AI, production workflows, containers, and R2 out of this harness.
+# Keep remote AI, production workflows and containers out of this harness.
 name = "clash-api-integration"
 main = "src/integration/test-worker.ts"
-compatibility_date = "2025-03-14"
+compatibility_date = "2026-07-01"
 compatibility_flags = ["nodejs_compat"]
 
 [alias]
@@ -28,3 +28,14 @@ database_id = "00000000-0000-0000-0000-000000000000"
 
 [vars]
 ENVIRONMENT = "test"
+RENDER_SERVER_URL = "https://render.test"
+WORKER_PUBLIC_URL = "https://clash.test"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "clash-integration-content"
+
+[[workflows]]
+name = "integration-generation"
+binding = "GENERATION_WORKFLOW"
+class_name = "GenerationWorkflow"

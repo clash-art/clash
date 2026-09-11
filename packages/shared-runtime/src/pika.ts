@@ -4,7 +4,6 @@ export {
   getPikaMediaJob,
   PIKA_MEDIA_BASE_URL,
   uploadPikaMedia,
-  waitForPikaMediaJob,
   type PikaMediaJob,
   type PikaMediaStatus,
 } from "./pika-media.js";

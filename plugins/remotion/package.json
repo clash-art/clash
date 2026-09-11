@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsup && tsx scripts/copy-browser-bundle.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/action-sdk": "workspace:*",

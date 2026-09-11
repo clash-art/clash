@@ -1,0 +1,9 @@
+{
+  "summary": "api-cf D1 query adapter and compatibility schema export profile.",
+  "key_files": {
+    "index.ts": "Creates the Drizzle D1 adapter over the API app schema profile.",
+    "app.schema.ts": "Compatibility exports from shared-cloud-schema/app and shared-cloud-schema/broker; retains API-only audit tables without importing Web-only runtime tables.",
+    "better-auth.schema.ts": "Compatibility export of the same auth table and relation objects used by src/auth-schema.ts and Web.",
+    "schema-boundaries.test.ts": "Checks identical shared table/relation identity across real backend import paths and verifies no active exported table introduces SQL foreign keys."
+  }
+}

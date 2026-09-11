@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "wrangler dev --port 8789 --inspector-port 9333 --persist-to ../../.wrangler/state",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.mts"
@@ -18,14 +18,15 @@
     "@ai-sdk/google": "^3.0.0",
     "@ai-sdk/google-vertex": "^4.0.98",
     "@ai-sdk/openai": "^3.0.48",
-    "@clash/shared-runtime": "workspace:*",
+    "@clash/action-sdk": "workspace:*",
     "@clash/asset-sdk": "workspace:*",
+    "@clash/remotion-core": "workspace:*",
     "@clash/replica": "workspace:*",
     "@clash/shared-layout": "workspace:^",
+    "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
     "@cloudflare/ai-chat": "^0.2.5",
     "@cloudflare/containers": "^0.2.0",
-    "@clash/remotion-core": "workspace:*",
     "agents": "^0.8.6",
     "ai": "^6.0.0",
     "better-auth": "^1.6.9",
@@ -35,7 +36,8 @@
     "hono": "^4.7.10",
     "jose": "^6.0.11",
     "loro-crdt": "^1.10.3",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@clash/shared-cloud-schema": "workspace:*"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.3",
@@ -43,7 +45,7 @@
     "@types/ws": "^8.5.0",
     "typescript": "^5.8.3",
     "vitest": "~4.1.0",
-    "ws": "^8.18.0",
-    "wrangler": "^4.18.0"
+    "wrangler": "^4.18.0",
+    "ws": "^8.18.0"
   }
 }

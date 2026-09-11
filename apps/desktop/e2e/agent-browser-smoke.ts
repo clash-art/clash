@@ -15,7 +15,7 @@ import {
   startVite,
   submitProjectCreateDialog,
   typeComposer,
-} from "./startup-shared.mjs";
+} from "./startup-shared.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);

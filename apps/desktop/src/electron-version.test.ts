@@ -153,7 +153,7 @@ describe("desktop Electron runtime", () => {
       'x64ArchFiles: "**/node_modules/{@anthropic-ai/claude-agent-sdk-*,@esbuild/*,@remotion/compositor-*}/**"',
     );
     expect(builderConfig).toContain(
-      "afterPack: scripts/prune-packaged-architectures.mjs",
+      "afterPack: scripts/prune-packaged-architectures.ts",
     );
     expect(workspaceConfig).toMatch(
       /supportedArchitectures:\n\s+cpu:\s+\[arm64, x64\]/,

@@ -34,6 +34,4 @@ class StubDO {
 }
 export const SupervisorAgent = StubDO;
 export const RenderContainer = StubDO;
-export const GenerationWorkflow = class {
-  async run(): Promise<void> {}
-};
+export { GenerationWorkflow } from "../agents/generation";

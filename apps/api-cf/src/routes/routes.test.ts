@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { startGeneration } from "../generation/start";
+import { hostedGenerationStatus } from "../generation/status";
+vi.mock("../generation/start", () => ({ startGeneration: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("../generation/status", () => ({ hostedGenerationStatus: vi.fn().mockResolvedValue(undefined) }));
 import type { Env } from "../config";
 import { computeSignature, getSigningKey } from "../services/asset-signing";
 
@@ -39,7 +43,8 @@ vi.mock("../agents/supervisor", () => ({
 }));
 
 // We need to import the app after mocks are set up
-import app from "../index";
+import { createApp } from "../app";
+const app = createApp();
 
 const USER_HEADERS = { authorization: "Bearer clsh_routes_test" };
 
@@ -621,7 +626,7 @@ describe("Hono routes", () => {
         task_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         status: "pending",
       });
-      expect(env.GENERATION_WORKFLOW.create).toHaveBeenCalledWith({
+      expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual({
         id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         params: expect.objectContaining({
           taskId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -736,7 +741,7 @@ describe("Hono routes", () => {
 
   describe("POST /api/tasks/submit error handling", () => {
     it("returns 500 when workflow.create throws (does NOT write to D1)", async () => {
-      (env.GENERATION_WORKFLOW.create as any).mockRejectedValueOnce(
+      vi.mocked(startGeneration).mockRejectedValueOnce(
         new Error("Workflow service unavailable"),
       );
       const dbRun = vi.fn().mockResolvedValue({});
@@ -805,7 +810,7 @@ describe("Hono routes", () => {
   // We can test it by providing executionCtx in the env bindings.
 
   describe("POST /api/describe", () => {
-    it("returns task_id and processing status", async () => {
+    it("explicitly retires the nonfunctional description endpoint", async () => {
       // Hono's app.request(path, init, env, executionCtx) takes executionCtx as 4th arg
       const executionCtx = {
         waitUntil: vi.fn(),
@@ -822,10 +827,8 @@ describe("Hono routes", () => {
 
       const res = await app.request(req, undefined, env, executionCtx as any);
 
-      expect(res.status).toBe(200);
-      const json: any = await res.json();
-      expect(json.task_id).toBe("task-desc");
-      expect(json.status).toBe("generating");
+      expect(res.status).toBe(410);
+      expect(startGeneration).not.toHaveBeenCalled();
     });
   });
 });

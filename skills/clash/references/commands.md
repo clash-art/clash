@@ -138,38 +138,53 @@ to Canvas. `refs` reads downstream references through the Host. For a generated
 Document, use its exact Output Commit reference to read the body and provenance;
 do not replace that reference with a copied Canvas text node.
 
-## asset metadata
+## Native Documents and historical metadata
+
+```bash
+clash assets documents kinds --json
+clash assets documents create --kind text.plain --file script.txt --json
+clash assets documents get <document-id> --json
+clash assets documents get <document-id> --revision <revision-id> --json
+clash assets documents pull <document-id> --file draft.txt --json
+# edit the native file
+clash assets documents apply <document-id> --file draft.txt --json
+clash assets documents copy <document-id> --revision <revision-id> --json
+clash assets documents attach <document-id> --revision <revision-id> --target target.json --slot <slot> --json
+clash assets documents attachment <attachment-id> --json
+clash assets documents advance-attachment <attachment-id> --revision <revision-id> --json
+```
+
+Use the kind's declared format: `text.plain` is native text; transcript and
+media description bodies are validated JSON. A kind whose projection is not
+editable supports reading and unchanged copy only. `create --source-refs`
+accepts a JSON file of exact existing source references.
+
+Pull records an implicit observation for that file. Apply without a prior pull
+fails `READ_REQUIRED`; a changed source is rejected as stale even after another
+get. Reconcile against a freshly pulled file and apply again. A dirty file is
+not overwritten by pull. Copy creates a new Document with exact source lineage,
+leaving existing inputs and attachments pinned. Attachment advance stays within
+the same Document; attach a copy explicitly as a new relation. Host failure
+fails the command instead of writing a manifest fallback.
+
+Historical metadata remains readable and validatable:
 
 ```bash
 clash assets metadata kinds --json
 clash assets metadata list --asset <asset-id> --json
 clash assets metadata get --asset <asset-id> --kind media.transcript --json
 clash assets metadata get --asset <asset-id> --kind media.transcript --body --json
-clash assets metadata set --asset <asset-id> --kind media.transcript --metadata meta.json --body words.json --json
-clash assets metadata apply --file projections/metadata/<asset>.<kind>.json --json
 clash assets metadata validate --kind <kind> --metadata meta.json --json
 ```
 
-`--kind` is a parameter, never a command: declaring a new kind adds no CLI
-surface. `kinds` lists what this build accepts — the product-declared kinds plus
-any workspace kind declared under `.clash/metadata-kinds/*.json`. An undeclared
-kind is refused everywhere.
-
-`set` attaches the identity to the asset and stores any `--body` as an immutable
-content-addressed blob, deduplicated by hash. It also materializes an editable
-projection under `projections/metadata/` and records an implicit observation.
-
-After editing that JSON, `apply` consumes the linked workspace's observation.
-An apply without a prior read fails `READ_REQUIRED`; a changed source is
-rejected as stale. Re-read, reconcile the edit, and apply again. The CLI does
-not accept a caller-authored version token or a mutation bypass.
-
-`get --body` returns the stored blob
-verbatim and fails loudly if the blob no longer hashes to its recorded address.
-
-Attaching does not require an action file — the fill envelope is synthesized
-internally, and every attach appends to the asset's `metadataFills` provenance
-ledger.
+Historical `set`/`apply` and `metadata:*` projections are retired. They report
+`METADATA_WRITE_RETIRED` and leave existing manifests untouched. Legacy
+`get --body` verifies its content-addressed blob. Workspace declarations under
+`.clash/metadata-kinds/*.json` still describe legacy metadata for validation;
+they do not install native Document kinds. Migrate deliberately by validating
+a compatible body, creating a Document with source references, and attaching
+that revision. Media dimensions, duration and codecs remain descriptive Media
+facts and must not be automatically converted into Documents.
 
 ## Generator authoring and execution
 

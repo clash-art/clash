@@ -65,7 +65,7 @@ export interface ProjectAssetHttpClientOptions {
   endpoint?: string;
   token?: string;
   fetch?: typeof globalThis.fetch;
-  credentials?: RequestCredentials;
+  credentials?: "omit" | "same-origin" | "include";
   resolveConnection?: () =>
     ProjectAssetHttpConnection | Promise<ProjectAssetHttpConnection>;
   createHttpError?: (status: number, body: unknown) => Error;
@@ -142,7 +142,7 @@ function snapshotProjectImport(
 }
 
 function newDeleteOperationId(): string {
-  const cryptoObject = globalThis.crypto;
+  const cryptoObject = typeof crypto === "undefined" ? undefined : crypto;
   if (typeof cryptoObject?.randomUUID !== "function") {
     throw new Error("crypto.randomUUID is required for Asset operation ids");
   }

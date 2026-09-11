@@ -5,6 +5,15 @@ import {
   projectWorkspaceId,
 } from "./project-status";
 
+function verifiedReplication(projectId: string, mode = "cloud-sync") {
+  return { mode, localReplicaId: "host-1", admission: {
+    schemaVersion: 1, projectId, localReplicaId: "host-1", userId: "owner", tenantId: "tenant",
+    syncBaseUrl: "https://cloud.example.com", status: "ready",
+    capabilities: { canvas: true, projectMetadata: true, resources: true },
+    admittedAt: "2026-09-04T00:00:00Z", updatedAt: "2026-09-04T00:00:00Z", lastError: null,
+  } };
+}
+
 const expectedTracePolicy = {
   schemaVersion: 1,
   agentSessionMetadata: {
@@ -635,7 +644,7 @@ describe("project status path builder", () => {
     );
     const shared = buildProjectStatus(
       { projectId: "project-shared", source: "explicit" },
-      { clashRoot: "/tmp/clash-home", replicationState: { mode: "shared" } },
+      { clashRoot: "/tmp/clash-home", replicationState: verifiedReplication("project-shared", "shared") },
     );
 
     expect(local.collaboration).toMatchObject({
@@ -783,15 +792,7 @@ describe("project status path builder", () => {
     });
     const synced = buildProjectStatus(context, {
       clashRoot: "/tmp/clash-home",
-      replicationState: {
-        mode: "cloud-sync",
-        capabilities: {
-          canvas: true,
-          assetMetadata: true,
-          revisionContent: true,
-          projectMetadata: true,
-        },
-      },
+      replicationState: verifiedReplication("project-synced"),
     });
 
     expect(local.mode).toBe("local");
@@ -813,20 +814,12 @@ describe("project status path builder", () => {
       { projectId: "project-synced", source: "explicit" },
       {
         clashRoot: "/tmp/clash-home",
-        replicationState: {
-          mode: "cloud-sync",
-          capabilities: {
-            canvas: true,
-            assetMetadata: true,
-            revisionContent: true,
-            projectMetadata: true,
-          },
-        },
+        replicationState: verifiedReplication("project-synced"),
       },
     );
     const shared = buildProjectStatus(
       { projectId: "project-shared", source: "explicit" },
-      { clashRoot: "/tmp/clash-home", replicationState: { mode: "shared" } },
+      { clashRoot: "/tmp/clash-home", replicationState: verifiedReplication("project-shared", "shared") },
     );
     const unknown = buildProjectStatus(
       { projectId: "project-unknown", source: "explicit" },
@@ -881,7 +874,7 @@ describe("project status path builder", () => {
     });
   });
 
-  it("keeps cloud-sync pending until canvas, asset metadata, and revision content sync are all ready", () => {
+  it("keeps cloud sync gated until this Project has completed replication", () => {
     const pending = buildProjectStatus(
       { projectId: "project-synced", source: "explicit" },
       {
@@ -893,15 +886,7 @@ describe("project status path builder", () => {
       { projectId: "project-synced", source: "explicit" },
       {
         clashRoot: "/tmp/clash-home",
-        replicationState: {
-          mode: "cloud-sync",
-          capabilities: {
-            canvas: true,
-            assetMetadata: true,
-            revisionContent: true,
-            projectMetadata: true,
-          },
-        },
+        replicationState: verifiedReplication("project-synced"),
       },
     );
 
@@ -966,84 +951,12 @@ describe("project status path builder", () => {
     });
   });
 
-  it("keeps cloud-sync pending until revision content sync is ready", () => {
-    const missingRevisionContent = buildProjectStatus(
-      { projectId: "project-synced", source: "explicit" },
-      {
-        clashRoot: "/tmp/clash-home",
-        replicationState: {
-          mode: "cloud-sync",
-          capabilities: {
-            canvas: true,
-            assetMetadata: true,
-          },
-        },
-      },
-    );
-    const ready = buildProjectStatus(
-      { projectId: "project-synced", source: "explicit" },
-      {
-        clashRoot: "/tmp/clash-home",
-        replicationState: {
-          mode: "cloud-sync",
-          capabilities: {
-            canvas: true,
-            assetMetadata: true,
-            revisionContent: true,
-            projectMetadata: true,
-          },
-        },
-      },
-    );
-
-    expect(missingRevisionContent.collaboration).toMatchObject({
-      mode: "synced",
-      webOpenable: false,
-      roomAuthority: "local",
-      syncReadiness: {
-        status: "pending",
-        ready: false,
-        missing: ["revision-content", "project-metadata"],
-      },
-      actions: {
-        openInWeb: {
-          allowed: false,
-          reason: "cloud-sync-not-ready",
-          requirements: ["revision-content", "project-metadata"],
-        },
-        shareProject: {
-          allowed: false,
-          reason: "cloud-sync-not-ready",
-          requirements: ["revision-content", "project-metadata"],
-        },
-      },
-    });
-    expect(ready.collaboration).toMatchObject({
-      mode: "synced",
-      webOpenable: true,
-      roomAuthority: "local-with-cloud-mirror",
-      syncReadiness: {
-        status: "ready",
-        ready: true,
-        missing: [],
-      },
-    });
-  });
-
   it("publishes the cloud mirror policy for revision content separately from media assets", () => {
     const status = buildProjectStatus(
       { projectId: "project-synced", source: "explicit" },
       {
         clashRoot: "/tmp/clash-home",
-        replicationState: {
-          mode: "cloud-sync",
-          capabilities: {
-            canvas: true,
-            assetMetadata: true,
-            revisionContent: true,
-            projectMetadata: true,
-          },
-        },
+        replicationState: verifiedReplication("project-synced"),
       },
     );
 
@@ -1078,7 +991,7 @@ describe("project status path builder", () => {
   it("publishes the room chat and raw agent trace sync boundary", () => {
     const status = buildProjectStatus(
       { projectId: "project-shared", source: "explicit" },
-      { clashRoot: "/tmp/clash-home", replicationState: { mode: "shared" } },
+      { clashRoot: "/tmp/clash-home", replicationState: verifiedReplication("project-shared", "shared") },
     );
 
     expect(status.collaboration.projectRoom).toEqual(

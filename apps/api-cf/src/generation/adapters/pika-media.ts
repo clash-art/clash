@@ -1,7 +1,11 @@
 import { uploadPikaMedia } from "@clash/shared-runtime";
 
 import { log } from "../../logger";
-import { generatePikaMedia } from "../../services/pika-media";
+import {
+  submitPikaMedia,
+  pollPikaMediaOnce,
+  type PikaMediaTask,
+} from "../../services/pika-media";
 import { appendProviderUsageEvent } from "../../services/provider-usage";
 import type { GenerationContext } from "../context";
 import type { GenerationAdapter } from "../adapter";
@@ -44,102 +48,125 @@ function mediaKind(ctx: GenerationContext): "image" | "video" | "audio" {
 export const pikaMediaAdapter: GenerationAdapter = {
   name: "pika-media",
 
-  async execute(ctx) {
+  async submit(ctx) {
     const { params } = ctx;
     const route = params.selectedRoute;
     if (!route || route.apiShape !== "pika") {
-      throw new Error(`Pika media execution requires a selected Pika route for ${params.modelName ?? "unknown model"}`);
+      throw new Error(
+        `Pika media execution requires a selected Pika route for ${params.modelName ?? "unknown model"}`,
+      );
     }
     const credentials = await credentialsForRoute(ctx, route);
     const apiKey = credentials.apiKey;
     const kind = mediaKind(ctx);
-    const sources = await ctx.step(
-      "pika-upload-sources",
-      { retries: { limit: 2, delay: "2 seconds" }, timeout: "3 minutes" },
-      async () => {
-        const [startFrameUrl, endFrameUrl, referenceImageUrls, referenceVideoUrls, referenceAudioUrls] =
-          await Promise.all([
-            uploadR2ToPika(ctx, params.startFrameR2Key, apiKey),
-            uploadR2ToPika(ctx, params.endFrameR2Key, apiKey),
-            uploadMany(ctx, params.referenceImageR2Keys, apiKey),
-            uploadMany(ctx, params.referenceVideoR2Keys, apiKey),
-            uploadMany(ctx, params.referenceAudioR2Keys, apiKey),
-          ]);
-        return { startFrameUrl, endFrameUrl, referenceImageUrls, referenceVideoUrls, referenceAudioUrls };
-      },
-    );
+    const sources = await (async () => {
+      const [
+        startFrameUrl,
+        endFrameUrl,
+        referenceImageUrls,
+        referenceVideoUrls,
+        referenceAudioUrls,
+      ] = await Promise.all([
+        uploadR2ToPika(ctx, params.startFrameR2Key, apiKey),
+        uploadR2ToPika(ctx, params.endFrameR2Key, apiKey),
+        uploadMany(ctx, params.referenceImageR2Keys, apiKey),
+        uploadMany(ctx, params.referenceVideoR2Keys, apiKey),
+        uploadMany(ctx, params.referenceAudioR2Keys, apiKey),
+      ]);
+      return {
+        startFrameUrl,
+        endFrameUrl,
+        referenceImageUrls,
+        referenceVideoUrls,
+        referenceAudioUrls,
+      };
+    })();
 
-    const storageKey = await ctx.step(
-      "pika-generate",
-      { retries: { limit: 1, delay: "5 seconds" }, timeout: "15 minutes" },
-      async () => {
-        log.info("Pika media generation started", { ...ctx.tag, model: route.modelCode });
-        const result = await generatePikaMedia(apiKey, {
-          taskId: params.taskId,
-          kind,
-          route,
-          prompt: positionalReferencePrompt(params),
-          aspectRatio: params.aspectRatio,
-          duration: params.duration,
-          modelParams: params.modelParams,
-          baseUrl: credentials.baseUrl,
-          onUsageEvent: async (event) => {
-            const requestPart = event.providerRequestId ?? "submit";
-            await appendProviderUsageEvent(ctx.env.DB, {
-              id: `${params.taskId}:pika:${requestPart}:${event.status}`,
-              userId: params.actorUserId,
-              providerId: "pika",
-              ...(route.accountId ? { providerAccountId: route.accountId } : {}),
-              modelId: route.modelCode,
-              operation: event.operation,
-              taskId: params.taskId,
-              projectId: params.projectId,
-              nodeId: params.nodeId,
-              actorType: params.actorType,
-              actorUserId: params.actorUserId,
-              ...(params.actorAgentId ? { actorAgentId: params.actorAgentId } : {}),
-              ...(event.providerRequestId ? { providerRequestId: event.providerRequestId } : {}),
-              idempotencyKey: event.idempotencyKey,
-              status: event.status,
-              ...(event.estimatedCostMicroUsd !== undefined
-                ? { estimatedCostMicroUsd: event.estimatedCostMicroUsd }
-                : {}),
-              estimateComplete: event.estimateComplete,
-              currency: "USD",
-              pricingSource: event.pricingSource,
-              billingBasis: event.billingBasis,
-              ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
-              occurredAt: event.occurredAt,
-            });
-          },
-          ...sources,
-        });
-        log.info("Pika media generation completed", {
-          ...ctx.tag,
-          requestId: result.requestId,
-          operation: result.operation,
-        });
-        return ctx.uploadFromUrl(result.url, kind === "video" ? "video/mp4" : kind === "audio" ? "audio/mpeg" : "image/png");
-      },
-    );
-
-    const probe = await ctx.step(
-      `probe-${kind}`,
-      { retries: { limit: 2, delay: "5 seconds" }, timeout: "2 minutes" },
-      async () => ctx.probe(kind, storageKey),
-    );
-    const assetId = await ctx.step(
-      "save-asset",
-      { retries: { limit: 3, delay: "2 seconds", backoff: "exponential" }, timeout: "30 seconds" },
-      async () => ctx.createAsset({
+    const token = await (async () => {
+      log.info("Pika media generation started", {
+        ...ctx.tag,
+        model: route.modelCode,
+      });
+      const result = await submitPikaMedia(apiKey, {
+        taskId: params.taskId,
         kind,
-        srcR2Key: storageKey,
-        ...(kind === "video" && probe.coverR2Key ? { coverR2Key: probe.coverR2Key } : {}),
-        metadata: probe.metadata,
-        sourceModel: params.modelName ?? params.videoModel,
-        sourcePrompt: params.prompt,
-      }),
+        route,
+        prompt: positionalReferencePrompt(params),
+        aspectRatio: params.aspectRatio,
+        duration: params.duration,
+        modelParams: params.modelParams,
+        baseUrl: credentials.baseUrl,
+        ...sources,
+      });
+      log.info("Pika media submission accepted", {
+        ...ctx.tag,
+        requestId: result.requestId,
+        operation: result.operation,
+      });
+      return result;
+    })();
+
+    return ctx.accepted(token as never);
+  },
+  async poll(ctx, token) {
+    const credentials = await credentialsForRoute(
+      ctx,
+      ctx.params.selectedRoute!,
     );
-    await ctx.notifyCompleted({ assetId });
+    const result = await pollPikaMediaOnce(
+      credentials.apiKey,
+      { baseUrl: credentials.baseUrl, onUsageEvent: usageRecorder(ctx) },
+      token as unknown as PikaMediaTask,
+    );
+    if (!result) return ctx.accepted(token);
+    const kind = mediaKind(ctx);
+    return ctx.completedMedia(
+      await ctx.uploadFromUrl(
+        result.url,
+        kind === "video"
+          ? "video/mp4"
+          : kind === "audio"
+            ? "audio/mpeg"
+            : "image/png",
+      ),
+    );
   },
 };
+
+function usageRecorder(ctx: GenerationContext) {
+  const { params } = ctx;
+  const route = params.selectedRoute!;
+  return async (
+    event: import("../../services/pika-media").PikaUsageLifecycleEvent,
+  ) => {
+    const requestPart = event.providerRequestId ?? "submit";
+    await appendProviderUsageEvent(ctx.env.DB, {
+      id: `${params.taskId}:pika:${requestPart}:${event.status}`,
+      userId: params.actorUserId,
+      providerId: "pika",
+      ...(route.accountId ? { providerAccountId: route.accountId } : {}),
+      modelId: route.modelCode,
+      operation: event.operation,
+      taskId: params.taskId,
+      projectId: params.projectId,
+      nodeId: params.nodeId,
+      actorType: params.actorType,
+      actorUserId: params.actorUserId,
+      ...(params.actorAgentId ? { actorAgentId: params.actorAgentId } : {}),
+      ...(event.providerRequestId
+        ? { providerRequestId: event.providerRequestId }
+        : {}),
+      idempotencyKey: event.idempotencyKey,
+      status: event.status,
+      ...(event.estimatedCostMicroUsd !== undefined
+        ? { estimatedCostMicroUsd: event.estimatedCostMicroUsd }
+        : {}),
+      estimateComplete: event.estimateComplete,
+      currency: "USD",
+      pricingSource: event.pricingSource,
+      billingBasis: event.billingBasis,
+      ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
+      occurredAt: event.occurredAt,
+    });
+  };
+}

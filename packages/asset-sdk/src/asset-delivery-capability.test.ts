@@ -17,7 +17,11 @@ describe("HMAC Asset delivery capability", () => {
       operation: "read",
       method: "GET",
       resourceId: "sha256:resource-1",
-      scope: { tenantId: "tenant-1", projectId: "project-1" },
+      scope: {
+        tenantId: "tenant-1",
+        projectId: "project-1",
+        localReplicaId: "machine-1",
+      },
       purpose: "preview",
       expiresAt: new Date(now + 60_000).toISOString(),
     });
@@ -38,7 +42,11 @@ describe("HMAC Asset delivery capability", () => {
       operation: "read",
       method: "GET",
       resourceId: "sha256:resource-1",
-      scope: { tenantId: "tenant-1", projectId: "project-1" },
+      scope: {
+        tenantId: "tenant-1",
+        projectId: "project-1",
+        localReplicaId: "machine-1",
+      },
       purpose: "preview",
     });
   });

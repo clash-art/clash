@@ -1,3 +1,9 @@
+import {
+  assertContentTransferSize,
+  readBoundedContent,
+  readContentTransferLimitError,
+  type ContentTransferLimits,
+} from "./content-transfer.js";
 import { ResourceSchema, type Resource } from "@clash/shared-types/assets";
 
 import type {
@@ -40,7 +46,7 @@ export class ResourceReplicationError extends Error {
   }
 }
 
-export interface ResourceReplicationBaseOptions {
+export interface ResourceReplicationBaseOptions extends ContentTransferLimits {
   resource: Resource;
   local: ResourceByteStore;
   delivery: AssetDeliveryPort;
@@ -52,7 +58,7 @@ export interface PushResourceOptions extends ResourceReplicationBaseOptions {}
 
 export interface PullResourceOptions extends ResourceReplicationBaseOptions {}
 
-export interface ProjectResourceReplicationOptions {
+export interface ProjectResourceReplicationOptions extends ContentTransferLimits {
   resources: readonly Resource[];
   local: ResourceByteStore;
   delivery: AssetDeliveryPort;
@@ -147,6 +153,7 @@ export async function pushResource(
   options: PushResourceOptions,
 ): Promise<ResourceReplicationResult> {
   const resource = validatedResource(options.resource);
+  assertContentTransferSize(resource.byteLength, options.maxBytes);
   const bytes = await options.local.read(resource.id);
   if (!bytes) {
     throw new ResourceReplicationError(
@@ -172,9 +179,13 @@ export async function pushResource(
   const response = await fetchResource(fetch, "upload", delivery.url, {
     method: delivery.method,
     headers,
-    body: bytes as unknown as BodyInit,
+    body: bytes as unknown as RequestInit["body"],
   });
-  if (!response.ok) throw responseError("upload", response);
+  if (!response.ok)
+    throw (
+      (await readContentTransferLimitError(response)) ??
+      responseError("upload", response)
+    );
   return {
     status: "uploaded",
     resourceId: resource.id,
@@ -186,6 +197,7 @@ export async function pullResource(
   options: PullResourceOptions,
 ): Promise<ResourceReplicationResult> {
   const resource = validatedResource(options.resource);
+  assertContentTransferSize(resource.byteLength, options.maxBytes);
   const existing = await options.local.read(resource.id);
   if (existing) {
     try {
@@ -209,9 +221,17 @@ export async function pullResource(
   const fetch = options.fetch ?? globalThis.fetch;
   const response = await fetchResource(fetch, "download", delivery.url, {
     method: delivery.method,
+    headers: delivery.headers,
   });
-  if (!response.ok) throw responseError("download", response);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!response.ok)
+    throw (
+      (await readContentTransferLimitError(response)) ??
+      responseError("download", response)
+    );
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null)
+    assertContentTransferSize(Number(declaredLength), options.maxBytes);
+  const bytes = await readBoundedContent(response.body, options);
   await assertBytes(resource, bytes);
   await options.local.write({ resource, bytes });
   return {
@@ -234,10 +254,13 @@ export async function pushProjectResources(
     Math.min(32, Math.floor(options.concurrency ?? 4)),
   );
   const resources = Array.from(
-    new Map(options.resources.map((resource) => [resource.id, resource])).values(),
+    new Map(
+      options.resources.map((resource) => [resource.id, resource]),
+    ).values(),
   );
   const uploaded: ResourceReplicationResult[] = [];
-  const failed: Array<{ resourceId: string; error: ResourceReplicationError }> = [];
+  const failed: Array<{ resourceId: string; error: ResourceReplicationError }> =
+    [];
   let cursor = 0;
   const worker = async () => {
     while (cursor < resources.length) {
@@ -249,6 +272,7 @@ export async function pushProjectResources(
             local: options.local,
             delivery: options.delivery,
             scope: options.scope,
+            maxBytes: options.maxBytes,
             ...(options.fetch ? { fetch: options.fetch } : {}),
           }),
         );
@@ -268,7 +292,9 @@ export async function pushProjectResources(
   await Promise.all(
     Array.from({ length: Math.min(concurrency, resources.length) }, worker),
   );
-  uploaded.sort((left, right) => left.resourceId.localeCompare(right.resourceId));
+  uploaded.sort((left, right) =>
+    left.resourceId.localeCompare(right.resourceId),
+  );
   failed.sort((left, right) => left.resourceId.localeCompare(right.resourceId));
   return { uploaded, failed };
 }

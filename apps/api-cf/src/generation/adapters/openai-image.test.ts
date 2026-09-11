@@ -16,8 +16,12 @@ vi.mock("../../services/openai-image", () => ({
 import { openaiImageAdapter } from "./openai-image";
 
 function makeCtx() {
-  const uploadBytes = vi.fn().mockResolvedValue("projects/p1/uploads/task-1.png");
-  const probe = vi.fn().mockResolvedValue({ metadata: { width: 1024, height: 1024 } });
+  const uploadBytes = vi
+    .fn()
+    .mockResolvedValue("projects/p1/uploads/task-1.png");
+  const probe = vi
+    .fn()
+    .mockResolvedValue({ metadata: { width: 1024, height: 1024 } });
   const createAsset = vi.fn().mockResolvedValue("asset-1");
   const notifyCompleted = vi.fn();
 
@@ -49,7 +53,11 @@ function makeCtx() {
       ACTION_SECRET_KEY: "secret-key",
     },
     tag: { taskId: "task-1", nodeId: "node-1" },
-    step: async (_name: string, optsOrFn: unknown, maybeFn?: () => Promise<unknown>) => {
+    step: async (
+      _name: string,
+      optsOrFn: unknown,
+      maybeFn?: () => Promise<unknown>,
+    ) => {
       const fn = typeof optsOrFn === "function" ? optsOrFn : maybeFn;
       if (!fn) throw new Error("missing step fn");
       return fn();
@@ -58,6 +66,12 @@ function makeCtx() {
     probe,
     createAsset,
     notifyCompleted,
+    accepted: (pollState: unknown) => ({ status: "accepted", pollState }),
+    completedMedia: (asset: unknown) => ({
+      status: "completed",
+      outputs: [{ slot: "output", kind: "asset", asset }],
+    }),
+    completedVideo: vi.fn(async () => ({ status: "completed", outputs: [] })),
   };
 }
 
@@ -78,9 +92,12 @@ describe("openaiImageAdapter", () => {
     });
     const ctx = makeCtx();
 
-    await openaiImageAdapter.execute(ctx as never);
+    const result = await openaiImageAdapter.submit(ctx as never);
 
-    expect(mocks.credentialsForRoute).toHaveBeenCalledWith(ctx, ctx.params.selectedRoute);
+    expect(mocks.credentialsForRoute).toHaveBeenCalledWith(
+      ctx,
+      ctx.params.selectedRoute,
+    );
     expect(mocks.generateOpenAIImage).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKey: "provider-openai-key",
@@ -88,6 +105,9 @@ describe("openaiImageAdapter", () => {
         modelName: "gpt-image-2",
       }),
     );
-    expect(ctx.notifyCompleted).toHaveBeenCalledWith({ assetId: "asset-1" });
+    expect(result).toMatchObject({
+      status: "completed",
+      outputs: [{ kind: "asset" }],
+    });
   });
 });

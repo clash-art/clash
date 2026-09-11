@@ -1,3 +1,4 @@
+import type { ProjectCloudSyncObservation } from "@clash/shared-runtime/project-cloud-sync";
 import { createRequire } from "node:module";
 import { chmod, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -492,6 +493,7 @@ function applySchema(db: SqliteDatabase): void {
 }
 
 function ensureLocalMetadataColumns(db: SqliteDatabase): void {
+  ensureSqliteColumn(db, "project_cloud_admission", "state_version INTEGER NOT NULL DEFAULT 0");
   for (const column of [
     "completed_at INTEGER NOT NULL DEFAULT 0",
     "source_path TEXT NOT NULL DEFAULT ''",
@@ -2407,6 +2409,29 @@ export function createLocalMetadataStore(dataDir: string) {
     });
   }
 
+  function cloudAdmissionFromRow(row: Record<string, unknown>): ProjectCloudAdmission {
+    return ProjectCloudAdmissionSchema.parse({
+        schemaVersion: 1,
+        projectId: row.project_id,
+        tenantId: row.tenant_id,
+        userId: row.user_id,
+        localReplicaId: row.local_replica_id,
+        syncBaseUrl: row.sync_base_url,
+        status: row.status,
+        capabilities: JSON.parse(String(row.capabilities_json)),
+        admittedAt: row.admitted_at ?? null,
+        updatedAt: row.updated_at,
+        lastError: row.last_error ?? null,
+    });
+  }
+
+  async function getProjectCloudSyncState(projectId: string, localReplicaId: string): Promise<ProjectCloudSyncObservation | null> {
+    return withDb((db) => {
+      const row = db.prepare("SELECT * FROM project_cloud_admission WHERE project_id = ? AND local_replica_id = ?").get(projectId, localReplicaId);
+      return row ? { admission: cloudAdmissionFromRow(row), version: Number(row.state_version) } : null;
+    });
+  }
+
   async function getProjectCloudAdmission(
     projectId: string,
     localReplicaId: string,
@@ -2421,19 +2446,7 @@ export function createLocalMetadataStore(dataDir: string) {
         )
         .get(projectId, localReplicaId);
       if (!row) return null;
-      return ProjectCloudAdmissionSchema.parse({
-        schemaVersion: 1,
-        projectId: row.project_id,
-        tenantId: row.tenant_id,
-        userId: row.user_id,
-        localReplicaId: row.local_replica_id,
-        syncBaseUrl: row.sync_base_url,
-        status: row.status,
-        capabilities: JSON.parse(String(row.capabilities_json)),
-        admittedAt: row.admitted_at ?? null,
-        updatedAt: row.updated_at,
-        lastError: row.last_error ?? null,
-      });
+      return cloudAdmissionFromRow(row);
     });
   }
 
@@ -2451,19 +2464,7 @@ export function createLocalMetadataStore(dataDir: string) {
         )
         .get(projectId);
       if (!row) return null;
-      return ProjectCloudAdmissionSchema.parse({
-        schemaVersion: 1,
-        projectId: row.project_id,
-        tenantId: row.tenant_id,
-        userId: row.user_id,
-        localReplicaId: row.local_replica_id,
-        syncBaseUrl: row.sync_base_url,
-        status: row.status,
-        capabilities: JSON.parse(String(row.capabilities_json)),
-        admittedAt: row.admitted_at ?? null,
-        updatedAt: row.updated_at,
-        lastError: row.last_error ?? null,
-      });
+      return cloudAdmissionFromRow(row);
     });
   }
 
@@ -2485,7 +2486,8 @@ export function createLocalMetadataStore(dataDir: string) {
            capabilities_json = excluded.capabilities_json,
            admitted_at = excluded.admitted_at,
            updated_at = excluded.updated_at,
-           last_error = excluded.last_error`,
+           last_error = excluded.last_error,
+           state_version = project_cloud_admission.state_version + 1`,
       ).run(
         parsed.projectId,
         parsed.tenantId,
@@ -2498,6 +2500,23 @@ export function createLocalMetadataStore(dataDir: string) {
         parsed.updatedAt,
         parsed.lastError,
       );
+    });
+  }
+
+  async function compareAndSetProjectCloudAdmission(
+    expected: ProjectCloudSyncObservation, next: ProjectCloudAdmission,
+  ): Promise<ProjectCloudSyncObservation | null> {
+    const before = expected.admission;
+    const after = ProjectCloudAdmissionSchema.parse(next);
+    if (before.projectId !== after.projectId || before.localReplicaId !== after.localReplicaId) throw new Error("Cloud admission identity cannot change during CAS");
+    return withDb((db) => {
+      const row = db.prepare(`UPDATE project_cloud_admission SET
+        status = ?, admitted_at = ?, updated_at = ?, last_error = ?, state_version = state_version + 1
+        WHERE project_id = ? AND local_replica_id = ? AND state_version = ? RETURNING *`).get(
+        after.status, after.admittedAt, after.updatedAt, after.lastError,
+        before.projectId, before.localReplicaId, expected.version,
+      );
+      return row ? { admission: cloudAdmissionFromRow(row), version: Number(row.state_version) } : null;
     });
   }
 
@@ -2533,5 +2552,13 @@ export function createLocalMetadataStore(dataDir: string) {
     getProjectCloudAdmission,
     getLatestProjectCloudAdmission,
     upsertProjectCloudAdmission,
+    async applyProjectSyncMetadata(metadata: import("@clash/shared-types").ProjectMetadata) {
+      await withDb(db => {
+        db.prepare("UPDATE project SET name = ?, description = ?, created_at = ?, updated_at = ?, deleted_at = ? WHERE id = ?")
+          .run(metadata.name, metadata.description, metadata.createdAt, metadata.updatedAt, metadata.deletedAt, metadata.projectId);
+      });
+    },
+    compareAndSetProjectCloudAdmission,
+    getProjectCloudSyncState,
   };
 }

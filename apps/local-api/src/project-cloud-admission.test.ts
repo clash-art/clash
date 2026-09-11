@@ -98,3 +98,24 @@ describe("HTTP project cloud admission client", () => {
     }
   });
 });
+
+it("does not commit stale readiness over a revoked admission", async () => {
+  const root = await mkdtemp(join(tmpdir(), "clash-admission-cas-"));
+  try {
+    const store = createLocalMetadataStore(root);
+    const admission = {
+      schemaVersion: 1 as const, projectId: "p", tenantId: "t", userId: "u", localReplicaId: "r",
+      syncBaseUrl: "https://cloud.example", status: "syncing" as const,
+      capabilities: { canvas: true, projectMetadata: true, resources: true }, admittedAt: null,
+      updatedAt: "2026-09-04T00:00:00Z", lastError: null,
+    };
+    await store.upsertProjectCloudAdmission(admission);
+    const observed = (await store.getProjectCloudSyncState("p", "r"))!;
+    expect(await store.compareAndSetProjectCloudAdmission(observed, { ...admission, status: "ready" })).not.toBeNull();
+    await store.upsertProjectCloudAdmission({ ...admission, status: "local-only" });
+    expect(await store.compareAndSetProjectCloudAdmission(observed, { ...admission, status: "ready" })).toBeNull();
+    expect((await store.getProjectCloudAdmission("p", "r"))?.status).toBe("local-only");
+    await store.upsertProjectCloudAdmission(admission);
+    expect(await store.compareAndSetProjectCloudAdmission(observed, { ...admission, status: "ready" })).toBeNull();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

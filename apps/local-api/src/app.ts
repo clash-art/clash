@@ -1,3 +1,5 @@
+import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./local-marketplace.js";
+import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
 import { readGeneratorRevision } from "@clash/shared-types";
 import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.js";
@@ -5,7 +7,7 @@ import { commitProjectMutation } from "@clash/shared-types";
 import { migrateLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
 import { migrateLegacyProjectTimelines } from "./local-timeline-migration.js";
 import { AcpForkPointSchema, type AcpForkPoint } from "@clash/shared-types";
-import { HostInstallScopeSchema, type HostInstallScope } from "@clash/shared-types";
+import { type HostInstallScope } from "@clash/shared-types";
 import {
   mkdtemp,
   mkdir,
@@ -102,7 +104,6 @@ import {
   localConfigReadToken,
   normalizeModelId,
   MetadataAttachmentTargetSchema,
-  parseAssetMetadataFillAction,
   projectReadToken,
   providerAccountReadToken,
   providerAccountsReadToken,
@@ -287,15 +288,8 @@ import {
   LocalGeneratorProductError,
   type LocalGeneratorProjectAuthority,
 } from "./local-generator-product.js";
-import {
-  AdvanceLocalDocumentAttachmentBodySchema,
-  AdvanceLocalDocumentBodySchema,
-  AttachLocalDocumentInputSchema,
-  CreateLocalDocumentInputSchema,
-  createLocalDocumentProductService,
-  LocalDocumentProductError,
-  type LocalDocumentProjectAuthority,
-} from "./local-document-product.js";
+import type { LocalDocumentProjectAuthority } from "./local-document-product.js";
+import { createLocalDocumentRoutes } from "./local-document-routes.js";
 import {
   LocalWorkspaceProjectOperationLease,
   LocalWorkspaceTransferError,
@@ -376,8 +370,10 @@ export interface LocalApiOptions {
   syncEnv?: RemoteLoroPersistenceEnv;
   /** Optional cloud control-plane adapter. Admission is project-scoped and does not enable global sync. */
   cloudAdmission?: LocalCloudAdmissionClient;
+  resolveCloudAdmission?: () => Promise<LocalCloudAdmissionClient | undefined>;
   /** Starts the project room after admission so the initial Loro replica can be mirrored. */
   ensureProjectSync?: (projectId: string) => Promise<void>;
+  onProjectChanged?: (projectId: string) => Promise<void>;
   providerOAuth?: Partial<Record<ProviderOAuthId, ProviderOAuthDriver>>;
   providerPluginExecutor?: ProviderPluginExecutor;
   /** Host policy for a complete durable Provider run. Defaults to 30 minutes. */
@@ -429,9 +425,6 @@ export interface LocalApiOptions {
   listInstalledMarketplaceActions?: () => Promise<
     Array<Record<string, unknown>>
   >;
-  installMarketplaceAction?: (
-    packageId: string,
-  ) => Promise<Record<string, unknown>>;
   uninstallMarketplaceAction?: (actionId: string) => Promise<void>;
   marketplaceSkills?: Array<Record<string, unknown> & { id: string }>;
   marketplaceFeed?: Array<Record<string, unknown> & { id: string }>;
@@ -1136,7 +1129,7 @@ function isoToEpochSeconds(value: string): number {
   return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
 }
 
-function createDb(dataDir: string) {
+function createDb(dataDir: string, onProjectChanged?: (projectId: string) => Promise<void>) {
   const metadataStore = createLocalMetadataStore(dataDir);
   const providerStore = createLocalProviderStore(dataDir);
   let writeQueue: Promise<unknown> = Promise.resolve();
@@ -1177,6 +1170,7 @@ function createDb(dataDir: string) {
           providerOAuth,
           modelCardConfigs,
         };
+        const previousProjects = new Map(normalized.projects.map(project => [project.id, JSON.stringify(localProjectSyncMetadata(project))]));
         const result = await mutate(normalized);
         await metadataStore.save({
           projects: normalized.projects,
@@ -1188,6 +1182,13 @@ function createDb(dataDir: string) {
           agentMembers: normalized.agentMembers,
           sessionMessages: normalized.sessionMessages,
         });
+        if (onProjectChanged) {
+          for (const project of normalized.projects) {
+            if (previousProjects.get(project.id) !== JSON.stringify(localProjectSyncMetadata(project))) await onProjectChanged(project.id);
+            previousProjects.delete(project.id);
+          }
+          for (const projectId of previousProjects.keys()) await onProjectChanged(projectId);
+        }
         await providerStore.saveProviderAccounts(normalized.providerAccounts);
         await providerStore.saveProviderOAuth(normalized.providerOAuth);
         await providerStore.saveModelCardConfigs(normalized.modelCardConfigs);
@@ -1246,19 +1247,6 @@ function createDb(dataDir: string) {
   ): Promise<TextAppliedRevision | null> {
     await writeQueue.catch(() => undefined);
     return metadataStore.getTextRevision(projectId, revisionId);
-  }
-
-  async function upsertMetadataAttachmentIndex(
-    record: Parameters<typeof metadataStore.upsertMetadataAttachmentIndex>[0],
-  ): Promise<void> {
-    const task = writeQueue
-      .catch(() => undefined)
-      .then(() => metadataStore.upsertMetadataAttachmentIndex(record));
-    writeQueue = task.then(
-      () => undefined,
-      () => undefined,
-    );
-    return task;
   }
 
   async function listMetadataAttachmentIndex(
@@ -1357,7 +1345,6 @@ function createDb(dataDir: string) {
     upsertTextRevision,
     listTextRevisions,
     getTextRevision,
-    upsertMetadataAttachmentIndex,
     listMetadataAttachmentIndex,
     listProviderUsageEvents,
     appendSessionEvent,
@@ -1819,7 +1806,7 @@ interface V1ProjectCanvasThumbnail {
   height: number;
 }
 
-function localProjectSyncMetadata(project: LocalProject): ProjectMetadata {
+export function localProjectSyncMetadata(project: LocalProject): ProjectMetadata {
   // Hosted D1 project timestamps use epoch-second precision. Normalize the
   // local millisecond timestamps at this boundary so a successful mirror does
   // not turn every subsequent read into another PUT merely because the local
@@ -3618,7 +3605,7 @@ function modelRoutesForProviderAccount(
 
 export function createLocalApiApp(options: LocalApiOptions): Hono {
   const userId = options.userId ?? "local-user";
-  const localReplicaId = options.hostIdentity?.hostId ?? `local:${userId}`;
+  const localReplicaId = () => getLocalReplicaId(options.dataDir);
   const cloudAdmission =
     options.cloudAdmission ??
     (options.syncEnv?.CLASH_REMOTE_LORO_URL
@@ -3633,7 +3620,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       dataDir: options.dataDir,
       resolveOptions: async () => [],
     });
-  const db = createDb(options.dataDir);
+  const db = createDb(options.dataDir, options.onProjectChanged);
   const sessionEventStore = createLocalSessionEventStore(db);
   options.localAcp?.setSessionEventStore?.(sessionEventStore);
   let importedPluginStore:
@@ -4027,51 +4014,6 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           deadlineMs: providerGenerationDeadlineMs,
         })
       : null;
-  const documentProductForRequest = (c: Context) =>
-    options.documentProjectAuthority
-      ? createLocalDocumentProductService({
-          dataDir: options.dataDir,
-          authority: options.documentProjectAuthority,
-          producer:
-            normalizeString(
-              c.req.header("x-clash-client-type"),
-            )?.toLowerCase() === "agent"
-              ? { kind: "actor", actor: { kind: "agent" } }
-              : { kind: "actor", actor: { kind: "user", id: userId } },
-        })
-      : null;
-
-  function localDocumentProductErrorResponse(
-    c: Context,
-    error: unknown,
-  ): Response {
-    if (!(error instanceof LocalDocumentProductError)) {
-      return c.json(
-        { error: error instanceof Error ? error.message : String(error) },
-        422,
-      );
-    }
-    const body = { error: error.message, code: error.code };
-    if (
-      error.code === "DOCUMENT_ASSET_NOT_FOUND" ||
-      error.code === "DOCUMENT_REVISION_NOT_FOUND" ||
-      error.code === "DOCUMENT_ATTACHMENT_NOT_FOUND"
-    ) {
-      return c.json(body, 404);
-    }
-    if (
-      error.code === "DOCUMENT_ASSET_EXISTS" ||
-      error.code === "DOCUMENT_REVISION_ID_COLLISION" ||
-      error.code === "DOCUMENT_ATTACHMENT_ID_COLLISION" ||
-      error.code === "STALE_DOCUMENT_HEAD" ||
-      error.code === "STALE_DOCUMENT_ATTACHMENT" ||
-      error.code === "DOCUMENT_COPY_ON_WRITE_REQUIRED"
-    ) {
-      return c.json(body, 409);
-    }
-    return c.json(body, 422);
-  }
-
   const workspaceTransferErrorResponse = (error: unknown): Response => {
     if (!(error instanceof LocalWorkspaceTransferError)) {
       return Response.json(
@@ -4641,240 +4583,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     },
   );
 
-  app.get("/api/v1/projects/:projectId/documents", async (c) => {
-    const documentProduct = documentProductForRequest(c);
-    if (!documentProduct) {
-      return c.json(
-        { error: "Document Project authority is unavailable" },
-        503,
-      );
-    }
-    try {
-      return c.json({
-        documents: await documentProduct.list(c.req.param("projectId")),
-      });
-    } catch (error) {
-      return localDocumentProductErrorResponse(c, error);
-    }
-  });
-
-  app.post("/api/v1/projects/:projectId/documents", async (c) => {
-    const documentProduct = documentProductForRequest(c);
-    if (!documentProduct) {
-      return c.json(
-        { error: "Document Project authority is unavailable" },
-        503,
-      );
-    }
-    const body = CreateLocalDocumentInputSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!body.success) {
-      return c.json(
-        { error: "Invalid Document creation", details: body.error.issues },
-        400,
-      );
-    }
-    try {
-      const created = await documentProduct.create(
-        c.req.param("projectId"),
-        body.data,
-      );
-      return c.json(
-        {
-          asset: created.asset,
-          revision: created.revision,
-          body: created.body,
-        },
-        created.changed ? 201 : 200,
-      );
-    } catch (error) {
-      return localDocumentProductErrorResponse(c, error);
-    }
-  });
-
-  app.get(
-    "/api/v1/projects/:projectId/documents/:documentAssetId/revisions",
-    async (c) => {
-      const documentProduct = documentProductForRequest(c);
-      if (!documentProduct) {
-        return c.json(
-          { error: "Document Project authority is unavailable" },
-          503,
-        );
-      }
-      try {
-        return c.json({
-          revisions: await documentProduct.listRevisions(
-            c.req.param("projectId"),
-            c.req.param("documentAssetId"),
-          ),
-        });
-      } catch (error) {
-        return localDocumentProductErrorResponse(c, error);
-      }
-    },
-  );
-
-  app.get(
-    "/api/v1/projects/:projectId/documents/:documentAssetId/revisions/:revisionId",
-    async (c) => {
-      const documentProduct = documentProductForRequest(c);
-      if (!documentProduct) {
-        return c.json(
-          { error: "Document Project authority is unavailable" },
-          503,
-        );
-      }
-      try {
-        const projection = await documentProduct.readRevision(
-          c.req.param("projectId"),
-          {
-            documentAssetId: c.req.param("documentAssetId"),
-            revisionId: c.req.param("revisionId"),
-          },
-        );
-        return projection
-          ? c.json(projection)
-          : c.json({ error: "Document revision not found" }, 404);
-      } catch (error) {
-        return localDocumentProductErrorResponse(c, error);
-      }
-    },
-  );
-
-  app.post(
-    "/api/v1/projects/:projectId/documents/:documentAssetId/revisions",
-    async (c) => {
-      const documentProduct = documentProductForRequest(c);
-      if (!documentProduct) {
-        return c.json(
-          { error: "Document Project authority is unavailable" },
-          503,
-        );
-      }
-      const body = AdvanceLocalDocumentBodySchema.safeParse(
-        await c.req.json().catch(() => null),
-      );
-      if (!body.success) {
-        return c.json(
-          { error: "Invalid Document revision", details: body.error.issues },
-          400,
-        );
-      }
-      try {
-        const advanced = await documentProduct.advance(
-          c.req.param("projectId"),
-          {
-            documentAssetId: c.req.param("documentAssetId"),
-            ...body.data,
-          },
-        );
-        return c.json(
-          {
-            asset: advanced.asset,
-            revision: advanced.revision,
-            body: advanced.body,
-          },
-          advanced.changed ? 201 : 200,
-        );
-      } catch (error) {
-        return localDocumentProductErrorResponse(c, error);
-      }
-    },
-  );
-
-  app.get(
-    "/api/v1/projects/:projectId/documents/:documentAssetId",
-    async (c) => {
-      const documentProduct = documentProductForRequest(c);
-      if (!documentProduct) {
-        return c.json(
-          { error: "Document Project authority is unavailable" },
-          503,
-        );
-      }
-      try {
-        const projection = await documentProduct.read(
-          c.req.param("projectId"),
-          c.req.param("documentAssetId"),
-        );
-        return projection
-          ? c.json(projection)
-          : c.json({ error: "Document Asset not found" }, 404);
-      } catch (error) {
-        return localDocumentProductErrorResponse(c, error);
-      }
-    },
-  );
-
-  app.post("/api/v1/projects/:projectId/document-attachments", async (c) => {
-    const documentProduct = documentProductForRequest(c);
-    if (!documentProduct) {
-      return c.json(
-        { error: "Document Project authority is unavailable" },
-        503,
-      );
-    }
-    const body = AttachLocalDocumentInputSchema.safeParse(
-      await c.req.json().catch(() => null),
-    );
-    if (!body.success) {
-      return c.json(
-        { error: "Invalid Document attachment", details: body.error.issues },
-        400,
-      );
-    }
-    try {
-      const attached = await documentProduct.attach(
-        c.req.param("projectId"),
-        body.data,
-      );
-      return c.json(
-        { attachment: attached.attachment },
-        attached.changed ? 201 : 200,
-      );
-    } catch (error) {
-      return localDocumentProductErrorResponse(c, error);
-    }
-  });
-
-  app.post(
-    "/api/v1/projects/:projectId/document-attachments/:attachmentId/revisions",
-    async (c) => {
-      const documentProduct = documentProductForRequest(c);
-      if (!documentProduct) {
-        return c.json(
-          { error: "Document Project authority is unavailable" },
-          503,
-        );
-      }
-      const body = AdvanceLocalDocumentAttachmentBodySchema.safeParse(
-        await c.req.json().catch(() => null),
-      );
-      if (!body.success) {
-        return c.json(
-          {
-            error: "Invalid Document attachment revision",
-            details: body.error.issues,
-          },
-          400,
-        );
-      }
-      try {
-        const advanced = await documentProduct.advanceAttachment(
-          c.req.param("projectId"),
-          {
-            attachmentId: c.req.param("attachmentId"),
-            ...body.data,
-          },
-        );
-        return c.json({ attachment: advanced.attachment });
-      } catch (error) {
-        return localDocumentProductErrorResponse(c, error);
-      }
-    },
-  );
+  app.route("/", createLocalDocumentRoutes({ dataDir: options.dataDir, userId, authority: options.documentProjectAuthority }));
 
   app.get("/api/v1/projects/:projectId/assets", async (c) => {
     try {
@@ -5646,31 +5355,11 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   app.get("/api/settings/actions", async (c) =>
     c.json(
       options.listInstalledMarketplaceActions
-        ? await options.listInstalledMarketplaceActions()
+        ? (await options.listInstalledMarketplaceActions()).map(record => ({ ...record, removable: Boolean(options.uninstallMarketplaceAction) && !record.builtIn && !record.immutable }))
         : [],
     ),
   );
-  if (options.installMarketplaceAction) {
-    app.post("/api/settings/actions", async (c) => {
-      const body = (await c.req.json().catch(() => null)) as {
-        manifest?: { id?: unknown; packageId?: unknown };
-      } | null;
-      const id = typeof body?.manifest?.id === "string" ? body.manifest.id : "";
-      const packageId =
-        typeof body?.manifest?.packageId === "string"
-          ? body.manifest.packageId
-          : "";
-      const item = options.marketplaceActions?.find(
-        (candidate) => candidate.id === id && candidate.packageId === packageId,
-      );
-      if (!item)
-        return c.json(
-          { error: "Unknown local marketplace action package" },
-          404,
-        );
-      return c.json(await options.installMarketplaceAction!(packageId));
-    });
-  }
+  app.post("/api/settings/actions", legacyActionInstallRetired);
   if (options.uninstallMarketplaceAction) {
     app.delete("/api/settings/actions/:id", async (c) => {
       try {
@@ -7420,105 +7109,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     });
     return new Response(null, { status: 204 });
   });
-  app.get("/api/marketplace/registry", (c) =>
-    c.json({
-      version: 1,
-      actions: options.marketplaceActions ?? [],
-      skills: options.marketplaceSkills ?? [],
-      plugins: options.marketplacePlugins ?? [],
-    }),
-  );
-  app.get("/api/marketplace/feed", (c) =>
-    c.json({
-      version: 1,
-      featuredPlugins: options.marketplaceFeed ?? [],
-    }),
-  );
-  if (options.installMarketplaceAction) {
-    app.post("/api/marketplace/actions/:packageId/install", async (c) => {
-      const packageId = c.req.param("packageId");
-      const item = options.marketplaceActions?.find(
-        (candidate) => candidate.packageId === packageId,
-      );
-      if (!item)
-        return c.json(
-          { error: "Unknown local marketplace action package" },
-          404,
-        );
-      return c.json(await options.installMarketplaceAction!(packageId));
-    });
-  }
-  if (options.uninstallMarketplaceAction) {
-    app.delete("/api/marketplace/actions/:packageId/install", async (c) => {
-      const item = options.marketplaceActions?.find(
-        (candidate) => candidate.packageId === c.req.param("packageId"),
-      );
-      if (!item)
-        return c.json(
-          { error: "Unknown local marketplace action package" },
-          404,
-        );
-      try {
-        await options.uninstallMarketplaceAction!(item.id);
-        return new Response(null, { status: 204 });
-      } catch (error) {
-        return immutableMarketplaceActionErrorResponse(c, error);
-      }
-    });
-  }
-  if (options.installMarketplaceSkill) {
-    app.post("/api/marketplace/skills/:skillId/install", async (c) => {
-      const skillId = c.req.param("skillId");
-      const item = options.marketplaceSkills?.find(
-        (candidate) => candidate.id === skillId,
-      );
-      if (!item)
-        return c.json({ error: "Unknown local marketplace skill" }, 404);
-      const raw = await c.req.text();
-      if (!raw.trim()) return c.json(await options.installMarketplaceSkill!(skillId));
-      let value: unknown;
-      try { value = JSON.parse(raw); } catch { return c.json({ error: "Invalid installation scope" }, 400); }
-      const scope = HostInstallScopeSchema.safeParse(value);
-      if (!scope.success) return c.json({ error: "Invalid installation scope", details: scope.error.issues }, 400);
-      return c.json(await options.installMarketplaceSkill!(skillId, scope.data));
-    });
-  }
-  if (options.uninstallMarketplaceSkill) {
-    app.delete("/api/marketplace/skills/:skillId/install", async (c) => {
-      const skillId = c.req.param("skillId");
-      const item = options.marketplaceSkills?.find(
-        (candidate) => candidate.id === skillId,
-      );
-      if (!item)
-        return c.json({ error: "Unknown local marketplace skill" }, 404);
-      await options.uninstallMarketplaceSkill!(skillId);
-      return new Response(null, { status: 204 });
-    });
-  }
-  if (options.installMarketplacePlugin) {
-    app.post("/api/marketplace/plugins/:packageId/install", async (c) => {
-      const packageId = c.req.param("packageId");
-      const item = options.marketplacePlugins?.find(
-        (candidate) => candidate.packageId === packageId,
-      );
-      if (!item) {
-        return c.json({ error: "Unknown local marketplace plugin" }, 404);
-      }
-      return c.json(await options.installMarketplacePlugin!(packageId));
-    });
-  }
-  if (options.uninstallMarketplacePlugin) {
-    app.delete("/api/marketplace/plugins/:packageId/install", async (c) => {
-      const item = options.marketplacePlugins?.find(
-        (candidate) => candidate.packageId === c.req.param("packageId"),
-      );
-      if (!item) {
-        return c.json({ error: "Unknown local marketplace plugin" }, 404);
-      }
-      await options.uninstallMarketplacePlugin!(item.id);
-      return new Response(null, { status: 204 });
-    });
-  }
+  app.route("/", createLocalMarketplaceRoutes({ ...options, readInstalledPlugin: options.pluginPackages ? id => options.pluginPackages!.read(id) : undefined }));
   app.get("/api/v1/local/sync", async (c) =>
     c.json(publicLocalSyncConfig(await localSyncReadState(syncConfig))),
   );
@@ -7724,45 +7315,11 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     c.json(publicLocalAudioConfig(await localAudioReadState(audioConfig))),
   );
 
-  // Rebuildable query projection over typed metadata attachments. The owning
-  // ProjectAsset or ActionRevision remains authoritative; this route neither
-  // creates a second authority nor accepts storage topology as target identity.
-  app.put("/api/v1/local/asset-metadata", async (c) => {
-    let attachment: ReturnType<typeof parseAssetMetadataFillAction>;
-    try {
-      attachment = parseAssetMetadataFillAction(
-        await c.req.json().catch(() => null),
-      );
-    } catch (error) {
-      return c.json(
-        { error: error instanceof Error ? error.message : String(error) },
-        400,
-      );
-    }
-    const identity = attachment.metadata;
-    await db.upsertMetadataAttachmentIndex({
-      target: attachment.target,
-      metadataKind: attachment.metadataKind,
-      ...(typeof identity.schemaVersion === "number"
-        ? { schemaVersion: identity.schemaVersion }
-        : {}),
-      ...(typeof identity.contentHash === "string"
-        ? { contentHash: identity.contentHash }
-        : {}),
-      ...(typeof identity.bodyHash === "string"
-        ? { bodyHash: identity.bodyHash }
-        : {}),
-      producer: attachment.producer,
-      ...(identity.summary === undefined ? {} : { summary: identity.summary }),
-      identity,
-    });
-    return c.json({
-      recorded: true,
-      authority: "projection-index" as const,
-      target: attachment.target,
-      metadataKind: attachment.metadataKind,
-    });
-  });
+  // Historical index remains readable; native Documents own new authored bodies.
+  app.put("/api/v1/local/asset-metadata", c => c.json({
+    code: "METADATA_WRITE_RETIRED",
+    error: "Legacy metadata index writes are retired. Use clash assets documents create, pull, apply and attach through the Project Document authority.",
+  }, 410));
 
   app.get("/api/v1/local/asset-metadata", async (c) => {
     const targetKind = c.req.query("targetKind");
@@ -9805,7 +9362,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const project = findActiveProject(state, projectId, userId);
     if (!project) return c.json({ error: "not found" }, 404);
     syncProjectMetadataInBackground(project.id);
-    const sync = await syncConfig.getPublicConfig();
+    const admission = await db.getProjectCloudAdmission(
+      projectId,
+      await localReplicaId(),
+    );
     return c.json(
       buildProjectStatus(
         { projectId, source: "explicit" },
@@ -9813,8 +9373,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           clashRoot,
           localApiDataDir,
           replicationState: {
-            mode: sync.mode,
-            capabilities: sync.capabilities,
+            mode:
+              admission && admission.status !== "local-only"
+                ? "cloud-sync"
+                : "local-only",
+            localReplicaId: await localReplicaId(),
+            admission,
           },
         },
       ),
@@ -9823,23 +9387,23 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
 
   app.get("/api/v1/projects/:projectId/cloud-admission", async (c) => {
     const projectId = c.req.param("projectId");
-    const project = findActiveProject(
-      await db.load(),
-      projectId,
-      userId,
-    );
+    const project = findActiveProject(await db.load(), projectId, userId);
     if (!project) return c.json({ error: "not found" }, 404);
     const admission = await db.getProjectCloudAdmission(
       projectId,
-      c.req.query("localReplicaId")?.trim() || localReplicaId,
+      c.req.query("localReplicaId")?.trim() || await localReplicaId(),
     );
     return c.json({ admission });
   });
 
   app.post("/api/v1/projects/:projectId/cloud-admission", async (c) => {
-    if (!cloudAdmission) {
+    const admissionClient = await options.resolveCloudAdmission?.() ?? cloudAdmission;
+    if (!admissionClient) {
       return c.json(
-        { error: "Cloud admission is not configured", code: "CLOUD_UNAVAILABLE" },
+        {
+          error: "Cloud admission is not configured",
+          code: "CLOUD_UNAVAILABLE",
+        },
         503,
       );
     }
@@ -9854,7 +9418,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const requestedReplicaId =
       typeof body.localReplicaId === "string" && body.localReplicaId.trim()
         ? body.localReplicaId.trim()
-        : localReplicaId;
+        : await localReplicaId();
     const requestedResourceIds = Array.isArray(body.resourceIds)
       ? body.resourceIds.filter((id): id is string => typeof id === "string")
       : state.assets
@@ -9871,7 +9435,24 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       resourceIds: [...new Set(requestedResourceIds)],
     });
     try {
-      const response = await cloudAdmission.admit(request);
+      const response = ProjectCloudAdmissionResponseSchema.parse(
+        await admissionClient.admit(request),
+      );
+      if (
+        response.admission.projectId !== projectId ||
+        response.admission.localReplicaId !== requestedReplicaId
+      ) {
+        throw new Error(
+          "Cloud admission identity does not match this Project and replica",
+        );
+      }
+      // Remote admission proves access, not that this Host mirrored its current
+      // Loro state, metadata, and immutable bytes. The synchronizer owns ready.
+      response.admission = {
+        ...response.admission,
+        status: "pending",
+        lastError: null,
+      };
       await db.upsertProjectCloudAdmission(response.admission);
       // Admission is the only user-visible switch. Starting the room here
       // makes initial snapshot/update mirroring happen even before Desktop
@@ -9900,13 +9481,20 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         localReplicaId: requestedReplicaId,
         syncBaseUrl: "https://cloud-admission-failed.invalid",
         status: "failed" as const,
-        capabilities: { canvas: false, projectMetadata: false, resources: false },
+        capabilities: {
+          canvas: false,
+          projectMetadata: false,
+          resources: false,
+        },
         admittedAt: null,
         updatedAt: nowIso(),
         lastError: message,
       };
       await db.upsertProjectCloudAdmission(failed);
-      return c.json({ error: message, code: "CLOUD_ADMISSION_FAILED", admission: failed }, 502);
+      return c.json(
+        { error: message, code: "CLOUD_ADMISSION_FAILED", admission: failed },
+        502,
+      );
     }
   });
 

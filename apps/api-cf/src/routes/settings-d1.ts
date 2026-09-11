@@ -18,7 +18,10 @@ import { requireUserId } from "../services/session";
 
 export const settingsD1Routes = new Hono<{ Bindings: Env }>();
 
-async function auth(c: { req: { raw: Request }; env: Env }): Promise<string | Response> {
+async function auth(c: {
+  req: { raw: Request };
+  env: Env;
+}): Promise<string | Response> {
   try {
     return await requireUserId(c.req.raw, c.env as any, c.req.raw.cf as any);
   } catch (err) {
@@ -82,9 +85,12 @@ settingsD1Routes.get("/actions", async (c) => {
 settingsD1Routes.post("/actions", async (c) => {
   const userId = await auth(c);
   if (userId instanceof Response) return userId;
-  const body = await c.req.json<{ manifest?: Record<string, any> }>();
-  if (!body.manifest) return c.json({ error: "Missing manifest" }, 400);
-  return c.json(await installAction(c.env, userId, body.manifest));
+  try {
+    await installAction(c.env, userId);
+  } catch (error) {
+    if (error instanceof Response) return error;
+    throw error;
+  }
 });
 
 settingsD1Routes.delete("/actions/:id", async (c) => {

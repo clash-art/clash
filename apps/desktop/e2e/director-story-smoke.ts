@@ -19,7 +19,7 @@ import {
   tail,
   waitForEval,
   waitForHttp,
-} from "./startup-shared.mjs";
+} from "./startup-shared.ts";
 
 type AgentBrowser = (
   args: string[],

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { generateMiniMaxVideo } from "./minimax-video";
+import { submitMiniMaxVideo, pollMiniMaxVideoOnce, type MiniMaxVideoParams } from "./minimax-video";
+
+async function runFixture(params: MiniMaxVideoParams) {
+  const token = await submitMiniMaxVideo(params);
+  const first = await pollMiniMaxVideoOnce(params, token);
+  return first ?? await pollMiniMaxVideoOnce(params, token);
+}
 
 describe("MiniMax H3 video service", () => {
   it("emits one complete text item and preserves omni-reference order", async () => {
@@ -14,7 +20,7 @@ describe("MiniMax H3 video service", () => {
         },
       }));
 
-    await generateMiniMaxVideo({
+    await runFixture({
       apiKey: "mini-key",
       model: "MiniMax-H3",
       prompt: "Use the subject, then follow the motion.",
@@ -29,7 +35,6 @@ describe("MiniMax H3 video service", () => {
       resolution: "2K",
       ratio: "adaptive",
       fetch: fetchMock,
-      wait: async () => {},
     } as never);
 
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).content).toEqual([
@@ -58,7 +63,7 @@ describe("MiniMax H3 video service", () => {
         },
       }));
 
-    await generateMiniMaxVideo({
+    await runFixture({
       apiKey: "mini-key",
       model: "MiniMax-H3",
       prompt: "Move naturally between these frames",
@@ -68,7 +73,6 @@ describe("MiniMax H3 video service", () => {
       startFrame: "https://media.clash.test/start.png",
       endFrame: "https://media.clash.test/end.png",
       fetch: fetchMock,
-      wait: async () => {},
     } as never);
 
     expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual({
@@ -101,7 +105,7 @@ describe("MiniMax H3 video service", () => {
         },
       }));
 
-    const result = await generateMiniMaxVideo({
+    const result = await runFixture({
       apiKey: "mini-key",
       model: "MiniMax-H3",
       prompt: "A cinematic train crosses a frozen lake",
@@ -113,7 +117,6 @@ describe("MiniMax H3 video service", () => {
       referenceAudios: ["https://media.clash.test/voice.mp3"],
       baseUrl: "https://api.minimax.io/",
       fetch: fetchMock,
-      wait: async () => {},
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -136,15 +139,14 @@ describe("MiniMax H3 video service", () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       "https://api.minimax.io/v2/query/video_generation/h3-task-1",
-      expect.objectContaining({ headers: { Authorization: "Bearer mini-key" } }),
+      expect.any(Object),
     );
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("authorization")).toBe("Bearer mini-key");
     expect(result).toEqual({
       taskId: "h3-task-1",
       url: "https://cdn.minimax.io/h3-output.mp4",
       model: "MiniMax-H3",
       duration: 8,
-      resolution: "2K",
-      ratio: "16:9",
     });
   });
 });

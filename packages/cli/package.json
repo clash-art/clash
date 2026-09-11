@@ -2,7 +2,7 @@
   "name": "@clash/cli",
   "version": "0.1.0-beta.3",
   "private": true,
-  "description": "Clash CLI \u2014 manage projects and canvas from your terminal",
+  "description": "Clash CLI — manage projects and canvas from your terminal",
   "bin": {
     "clash": "./dist/index.js"
   },
@@ -21,12 +21,12 @@
   },
   "scripts": {
     "build": "tsup && tsup --config tsup.plugin-esm.config.ts",
-    "bundle:agents": "node scripts/bundle-agents.mjs",
+    "bundle:agents": "node scripts/bundle-agents.ts",
     "dev": "tsx --tsconfig tsconfig.dev.json src/index.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit --project tsconfig.dev.json",
     "clean": "rm -rf dist",
-    "test": "node scripts/run-tests.mjs",
-    "test:e2e": "node --test e2e/canvas-add-refs.test.mjs"
+    "test": "node scripts/run-tests.ts",
+    "test:e2e": "node --test e2e/canvas-add-refs.test.ts"
   },
   "dependencies": {
     "@clash/shared-runtime": "workspace:*",

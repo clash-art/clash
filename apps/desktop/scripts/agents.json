@@ -1,0 +1,4 @@
+{
+  "summary": "Native Node 24 TypeScript packaging tools. prepare-clash-cli stages prebuilt unified runtime; prepare-acp-harnesses stages installed ACP dependencies; prune-packaged-architectures is the electron-builder afterPack hook.",
+  "verification": "Strict source checking through root tsconfig.quality.json; Vitest fixture tests cover artifact layout, executable media payloads and platform wrappers. Import guards keep helper imports side-effect free. Do not run prepare commands merely to test them: they replace build directories and can install dependencies."
+}

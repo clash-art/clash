@@ -82,6 +82,16 @@
       "types": "./src/log-reader.ts",
       "import": "./src/log-reader.ts",
       "default": "./dist/log-reader.js"
+    },
+    "./project-cloud-sync": {
+      "types": "./src/project-cloud-sync.ts",
+      "import": "./src/project-cloud-sync.ts",
+      "default": "./dist/project-cloud-sync.js"
+    },
+    "./minimax-executor": {
+      "types": "./src/minimax-executor.ts",
+      "import": "./src/minimax-executor.ts",
+      "default": "./dist/minimax-executor.js"
     }
   },
   "engines": {
@@ -91,7 +101,8 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
     "@clash/action-sdk": "workspace:*",
@@ -100,7 +111,8 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.2",
+    "esbuild": "0.25.0"
   },
   "files": [
     "dist",

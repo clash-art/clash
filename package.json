@@ -41,12 +41,14 @@
     "benchmark:artifacts": "pnpm --dir packages/shared-artifact-evals exec tsx src/cli.ts",
     "benchmark:agent-product": "pnpm --dir packages/shared-artifact-evals exec tsx src/cli.ts --suite benchmarks/agent-product/v1/suite.json",
     "assets:director:anny": "tsx scripts/generate-director-anny-assets.ts",
-    "lint": "turbo run lint",
+    "lint": "node scripts/source-check-config.ts --check && tsc --noEmit --project tsconfig.quality.json && turbo run lint typecheck --concurrency=3",
     "lint:package": "turbo run lint --filter",
-    "typecheck": "turbo run typecheck",
+    "typecheck": "node scripts/source-check-config.ts --check && tsc --noEmit --project tsconfig.quality.json && turbo run typecheck --concurrency=3",
     "typecheck:package": "turbo run typecheck --filter",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
-    "clean": "turbo run clean && rm -rf node_modules .turbo"
+    "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "quality:configs:write": "node scripts/source-check-config.ts --write",
+    "quality:configs:check": "node scripts/source-check-config.ts --check"
   },
   "keywords": [
     "creative-platform",
@@ -76,7 +78,12 @@
     "@changesets/cli": "^2.27.0",
     "prettier": "^3.0.0",
     "turbo": "^2.0.0",
-    "wrangler": "^4"
+    "wrangler": "^4",
+    "typescript": "^5.9.3",
+    "@types/node": "^24.0.0",
+    "ws": "^8.18.0",
+    "@types/ws": "^8.5.0",
+    "sharp": "^0.34.5"
   },
   "packageManager": "pnpm@10.34.5",
   "pnpm": {

@@ -1,10 +1,11 @@
+import { ProviderExecutionError } from "@clash/action-sdk/executable-failure";
 import {
   buildPikaMediaRequest,
   createPikaMediaJob,
   fetchPikaCatalogQuote,
   getPikaMediaContent,
   pikaBillingBasis,
-  waitForPikaMediaJob,
+  getPikaMediaJob,
 } from "@clash/shared-runtime";
 import type { ModelKind, ModelUpstreamRoute } from "@clash/shared-types";
 
@@ -39,10 +40,17 @@ export interface PikaUsageLifecycleEvent {
   occurredAt: string;
 }
 
-export async function generatePikaMedia(
-  apiKey: string,
-  input: PikaMediaGenerationInput,
-): Promise<{ url: string; requestId: string; operation: string }> {
+export interface PikaMediaTask {
+  requestId: string;
+  operation: string;
+  idempotencyKey: string;
+  estimateComplete: boolean;
+  pricingSource: "pika-catalog" | "unavailable";
+  estimatedCostMicroUsd?: number;
+  billingBasis: Record<string, unknown>;
+}
+
+export async function submitPikaMedia(apiKey: string, input: PikaMediaGenerationInput): Promise<PikaMediaTask> {
   const request = buildPikaMediaRequest({
     modelId: input.route.modelCode,
     kind: input.kind,
@@ -68,28 +76,7 @@ export async function generatePikaMedia(
     fetch: fetchImpl,
   });
   const billingBasis = pikaBillingBasis(body);
-  const emit = async (
-    status: PikaUsageLifecycleEvent["status"],
-    providerRequestId?: string,
-    error?: unknown,
-  ) => input.onUsageEvent?.({
-    status,
-    operation: selectedOperation,
-    ...(providerRequestId ? { providerRequestId } : {}),
-    idempotencyKey,
-    ...(quote.estimatedCostMicroUsd !== undefined
-      ? { estimatedCostMicroUsd: quote.estimatedCostMicroUsd }
-      : {}),
-    estimateComplete: quote.complete,
-    pricingSource: quote.pricingSource,
-    billingBasis,
-    ...(error ? { errorMessage: error instanceof Error ? error.message : String(error) } : {}),
-    occurredAt: new Date().toISOString(),
-  });
-
-  let created;
-  try {
-    created = await createPikaMediaJob({
+  const created = await createPikaMediaJob({
       apiKey,
       operation: selectedOperation,
       input: body,
@@ -97,30 +84,39 @@ export async function generatePikaMedia(
       baseUrl: input.baseUrl,
       fetch: fetchImpl,
     });
-  } catch (error) {
-    await emit("failed", undefined, error);
+  return { requestId: created.id, operation: selectedOperation, idempotencyKey,
+    estimateComplete: quote.complete, pricingSource: quote.pricingSource,
+    ...(quote.estimatedCostMicroUsd === undefined ? {} : { estimatedCostMicroUsd: quote.estimatedCostMicroUsd }), billingBasis };
+}
+
+export async function pollPikaMediaOnce(
+  apiKey: string,
+  input: Pick<PikaMediaGenerationInput, "baseUrl" | "fetch" | "onUsageEvent">,
+  token: PikaMediaTask,
+): Promise<{ url: string; requestId: string; operation: string } | null> {
+  const { requestId, ...usage } = token;
+  const emit = async (status: PikaUsageLifecycleEvent["status"], error?: unknown) => {
+    try {
+      await input.onUsageEvent?.({ ...usage, status, providerRequestId: requestId, occurredAt: new Date().toISOString(), ...(error ? { errorMessage: error instanceof Error ? error.message : String(error) } : {}) });
+    } catch (cause) {
+      throw new ProviderExecutionError({ code: "output_persistence_failed", message: `Provider usage persistence failed: ${String(cause)}`, retryable: true, requestState: "accepted" });
+    }
+  };
+  // Submission is already journaled before this idempotent usage event is attempted.
+  await emit("submitted");
+  let job;
+  try { job = await getPikaMediaJob({ apiKey, jobId: requestId, baseUrl: input.baseUrl, fetch: input.fetch }); }
+  catch (error) {
+    if (error instanceof ProviderExecutionError && error.failure.providerCode?.startsWith("PIKA_JOB_FAILED:")) await emit("failed", error);
     throw error;
   }
-  await emit("submitted", created.id);
-  try {
-    const completed = created.status === "completed"
-      ? created
-      : await waitForPikaMediaJob({
-          apiKey,
-          jobId: created.id,
-          baseUrl: input.baseUrl,
-          fetch: fetchImpl,
-        });
-    const content = await getPikaMediaContent({
-      apiKey,
-      jobId: completed.id,
-      baseUrl: input.baseUrl,
-      fetch: fetchImpl,
-    });
-    await emit("completed", completed.id);
-    return { url: content.url, requestId: completed.id, operation: selectedOperation };
-  } catch (error) {
-    await emit("failed", created.id, error);
+  if (job.status === "failed") {
+    const error = new Error(job.error?.message ?? "Pika media generation failed");
+    await emit("failed", error);
     throw error;
   }
+  if (job.status !== "completed") return null;
+  const content = await getPikaMediaContent({ apiKey, jobId: requestId, baseUrl: input.baseUrl, fetch: input.fetch });
+  await emit("completed");
+  return { url: content.url, requestId, operation: token.operation };
 }

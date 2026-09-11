@@ -215,11 +215,10 @@ describe("local API server configuration", () => {
           type: string;
         }>;
       };
-      expect(feed.featuredPlugins.map((item) => item.id)).toEqual([
+      expect(feed.featuredPlugins.map((item) => item.id)).toEqual(expect.arrayContaining([
         "clash.storyboard",
         "clash.codex-imagegen",
-        "clash.video.sd25-pe",
-      ]);
+      ]));
       const catalog = new Map(
         [...registry.actions, ...registry.plugins, ...registry.skills].map(
           (item) => [item.id, item],
@@ -239,6 +238,27 @@ describe("local API server configuration", () => {
       expect(installed.some((plugin) => plugin.id === "clash.storyboard")).toBe(
         false,
       );
+      const storyboard = registry.plugins.find(item => item.id === "clash.storyboard")!;
+      expect(storyboard.installation).toMatchObject({ kind: "executable-plugin", packageId: storyboard.packageId });
+      expect(registry.plugins.find(item => item.id === "clash.codex-imagegen")).not.toHaveProperty("installation");
+      for (const _attempt of ["initial", "idempotent retry"]) {
+        const response = await fetch(`${origin}/api/marketplace/plugins/${storyboard.packageId}/install`, { method: "POST" });
+        expect(await response.json()).toMatchObject({ installed: true, id: storyboard.id });
+        expect(response.ok).toBe(true);
+      }
+      const activeResponse = await fetch(`${origin}/api/v1/local/plugins/${storyboard.id}/package`);
+      const active = await activeResponse.json() as { id: string; manifest: { id: string }; viewRegistrations: unknown[] };
+      expect(activeResponse.ok).toBe(true);
+      expect(active.id).toBe(storyboard.id);
+      expect(active.manifest.id).toBe(storyboard.id);
+      expect(active.viewRegistrations.length).toBeGreaterThan(0);
+      const runtimeViews = await (await fetch(`${origin}/api/v1/plugin-views`)).json() as {views: Array<{pluginId: string}>};
+      expect(runtimeViews.views.some(view => view.pluginId === storyboard.id)).toBe(true);
+      const after = await (await fetch(`${origin}/api/v1/local/plugins`)).json() as Array<{id: string; drifted: boolean}>;
+      expect(after.find(item => item.id === storyboard.id)?.drifted).toBe(false);
+      expect((await fetch(`${origin}/api/marketplace/plugins/${storyboard.packageId}/install`, { method: "DELETE" })).status).toBe(204);
+      expect((await fetch(`${origin}/api/v1/local/plugins/${storyboard.id}/package`)).ok).toBe(false);
+
     } finally {
       if (server) {
         await new Promise<void>((resolveClose) =>

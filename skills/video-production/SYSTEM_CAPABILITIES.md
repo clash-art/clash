@@ -14,20 +14,19 @@ working tree and check it yourself.
   and `media.description` ship built in; a workspace declares its own under
   `.clash/metadata-kinds/*.json` with a JSON Schema that pins `kind` and
   `schemaVersion`. An undeclared kind is refused everywhere.
-- `media.analysis-store`: attached metadata is identity-on-the-asset, plus a
-  content-addressed body blob (`$CLASH_HOME/local-api/metadata-blobs/`,
-  immutable, deduplicated by sha256), plus a queryable SQLite row
-  (`asset_metadata_index`, `GET /api/v1/local/asset-metadata`).
-- `media.transcript`: `/api/v1/local/audio/transcriptions` returns a validated
-  millisecond word-level `clash.asr.timed-transcript`. Attaching it records
-  backend/model provenance, the media `sourceHash`, a word-grid `contentHash`
-  that survives cosmetic restatement, and a summary. Timeline transcript
-  projections prefer this canonical grid over editor caches.
-- `media.metadata-cas`: every declared kind round-trips through
-  `clash assets metadata set/get/list/apply` with an editable projection under
-  `projections/metadata/`, stale-write rejection, and an append-only
-  `metadataFills` provenance ledger. The fill envelope is synthesized
-  internally; there is no action file to author.
+- `media.analysis-store`: native Document heads/revisions and attachments belong
+  to the Project authority; verified immutable bodies use the Host body store.
+  Historical manifest metadata and `GET /api/v1/local/asset-metadata` remain
+  read-only compatibility. Public legacy index writes are retired.
+- `media.transcript`: the native ASR Generator publishes a timed transcript
+  Document. Legacy ASR HTTP and Timeline transcript consumers retain their
+  existing grid/body reads; consumer migration is not automatic.
+- `document.native-edit`: `clash assets documents create/get/pull/apply/copy`
+  uses the live Host and file-specific implicit observations. The declared kind
+  chooses text or JSON and whether editing is supported. Stale edits fail;
+  copies preserve source lineage and existing attachments. Use explicit
+  `documents attach` and same-Document `advance-attachment` for relations.
+  Legacy metadata set/apply and metadata projections report retirement errors.
 - `render.remotion-composition`: Canvas `remotion-component` nodes hold editable
   default-exported Remotion TSX; Timeline `composition` items bind the Canvas
   identity through `sourceNodeId`; a completed Timeline render creates the
