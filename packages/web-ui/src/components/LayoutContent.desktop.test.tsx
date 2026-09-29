@@ -215,7 +215,7 @@ describe("LayoutContent desktop chrome", () => {
     expect(
       sourceMatches(
         css,
-        /html\.clash-desktop-route\[data-clash-sidebar-collapsed="true"\]\s*\{\s*--clash-app-sidebar-width:\s*var\(--clash-app-sidebar-collapsed-width\);\s*\}/,
+        /html\[data-clash-sidebar-collapsed="true"\]\s*\{\s*--clash-app-sidebar-width:\s*var\(--clash-app-sidebar-collapsed-width\);\s*\}/,
       ),
     ).toBe(true);
   });

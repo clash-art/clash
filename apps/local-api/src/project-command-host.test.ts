@@ -136,6 +136,42 @@ test("Host creates a native Timeline and its Canvas placement atomically", () =>
   assert.equal(client.doc.getMap("nodes").get("cut-node"), undefined);
 });
 
+test("native Timeline material edges follow edits, copy and snapshot reopen without legacy bindings", () => {
+  const client = new LoroSyncClient({ serverUrl: "http://localhost:0", projectId: "native-media-edges", token: "test" });
+  const context = { timelineGeneratorDefinition: timelineGeneratorDefinition() };
+  const state = (assetId: string) => ({ tracks: [{ id: "main", items: [
+    { id: "shot", type: "video", assetId, from: 0, durationInFrames: 30 },
+    { id: "repeat", type: "video", assetId, from: 30, durationInFrames: 30 },
+  ] }] });
+  for (const id of ["a", "b"]) {
+    assert.equal(createProjectAsset(client.doc, { id, kind: "video", source: { kind: "owned", resourceId: `resource-${id}` }, lifecycle: { state: "active" }, metadata: {} }).ok, true);
+  }
+  client.createNode("existing-a", "video", { assetId: "a" });
+  const created = handleCommandForTest(client, { action: "create_timeline", timelineId: "cut", name: "Cut", state: state("a"), placement: { canvasId: "main", actionNodeId: "cut-node" } }, context) as { error?: string; readToken: string };
+  assert.equal(created.error, undefined);
+  const inputs = () => client.canvas.listEdges().filter(edge => edge.target === "cut-node").map(edge => client.readNode(edge.source)?.data.assetId);
+  assert.deepEqual(inputs(), ["a"]);
+  assert.deepEqual(client.readNode("cut-node")?.upstream.map(ref => ref.nodeId), ["existing-a"]);
+  assert.equal(client.doc.getMap("timelines").size, 0);
+  const updated = handleCommandForTest(client, { action: "update_timeline_state", timelineId: "cut", state: state("b"), actorClientType: "browser", ifMatch: created.readToken }, context) as { error?: string; readToken: string };
+  assert.equal(updated.error, undefined);
+  assert.deepEqual(inputs(), ["b"]);
+  assert.ok(client.readNode("existing-a"));
+  assert.throws(() => client.canvas.deleteEdge(client.canvas.listEdges().find(edge => edge.target === "cut-node")!.id), /reference/i);
+  client.createCanvas({ id: "other", name: "Other" });
+  const copied = handleCommandForTest(client, { action: "copy_timeline_action", sourceTimelineId: "cut", targetCanvasId: "other", newTimelineId: "copy", newActionNodeId: "copy-node", actorClientType: "browser", ifMatch: updated.readToken }, context) as { error?: string };
+  assert.equal(copied.error, undefined);
+  const reopened = new LoroSyncClient({ serverUrl: "http://localhost:0", projectId: "native-media-edges", token: "test" });
+  reopened.doc.import(client.doc.export({ mode: "snapshot" }));
+  reopened.selectCanvas("other");
+  const edges = reopened.canvas.listEdges();
+  assert.deepEqual(edges.map(edge => [reopened.readNode(edge.source)?.data.assetId, edge.target]), [["b", "copy-node"]]);
+  assert.equal(reopened.doc.getMap("edgeIdentity").size, 0);
+  const removed = handleCommandForTest(client, { action: "update_timeline_state", timelineId: "cut", state: { tracks: [] }, actorClientType: "browser", ifMatch: updated.readToken }, context) as { error?: string };
+  assert.equal(removed.error, undefined);
+  assert.deepEqual(inputs(), []);
+});
+
 test("Timeline commands project native Generator facts and fail closed without the Definition", () => {
   const client = new LoroSyncClient({
     serverUrl: "http://localhost:0",

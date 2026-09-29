@@ -1,3 +1,4 @@
+import type { HostInstallScope } from "@clash/shared-types";
 import { marketplaceInstallation, type MarketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 /**
  * Client-side wrappers around the web app's HTTP API.
@@ -551,16 +552,17 @@ export async function marketplaceUninstallAction(item: RegistryItem): Promise<vo
   await uninstallAction(item.id);
 }
 
-export async function marketplaceInstallSkill(item: RegistryItem): Promise<void> {
+export async function marketplaceInstallSkill(item: RegistryItem, scope?: HostInstallScope): Promise<void> {
   const target = marketplaceInstallation(item);
   if (target?.kind !== "skill") throw new Error("This catalog does not support installing this skill.");
-  const result = await jsonFetch<{ installed?: boolean; skillId?: string }>(`/api/marketplace/skills/${encodeURIComponent(target.skillId)}/install`, { method: "POST" });
+  const result = await jsonFetch<{ installed?: boolean; skillId?: string }>(`/api/marketplace/skills/${encodeURIComponent(target.skillId)}/install`, { method: "POST", ...(scope ? { body: JSON.stringify(scope) } : {}) });
   if (result?.installed !== true || result.skillId !== target.skillId) throw new Error("Host did not confirm skill installation.");
 }
-export async function marketplaceInstallPlugin(item: RegistryItem): Promise<void> {
+export async function marketplaceInstallPlugin(item: RegistryItem, scope?: HostInstallScope): Promise<void> {
   const target = marketplaceInstallation(item);
-  if (target?.kind !== "executable-plugin") throw new Error("This catalog does not support installing this executable plugin.");
-  const result = await jsonFetch<{ installed?: boolean; id?: string }>(`/api/marketplace/plugins/${encodeURIComponent(target.packageId)}/install`, { method: "POST" });
+  if (target?.kind === "skill") return marketplaceInstallSkill(item, scope);
+  if (target?.kind !== "executable-plugin") throw new Error("This catalog does not support installing this plugin.");
+  const result = await jsonFetch<{ installed?: boolean; id?: string }>(`/api/marketplace/plugins/${encodeURIComponent(target.packageId)}/install`, { method: "POST", ...(scope ? { body: JSON.stringify(scope) } : {}) });
   if (result?.installed !== true || result.id !== target.pluginId) throw new Error("Host did not confirm executable plugin activation.");
 }
 
@@ -573,4 +575,14 @@ export async function marketplaceUninstallSkill(
       method: "DELETE",
     },
   );
+}
+
+export async function marketplacePluginScope(item: RegistryItem): Promise<HostInstallScope> {
+  const target = marketplaceInstallation(item);
+  if (target?.kind === "skill") return jsonFetch(`/api/marketplace/skills/${encodeURIComponent(target.skillId)}/install`);
+  if (target?.kind !== "executable-plugin") throw new Error("Plugin scope is unavailable");
+  return jsonFetch(`/api/marketplace/plugins/${encodeURIComponent(target.packageId)}/install`);
+}
+export async function listLocalPlugins(): Promise<Array<{id: string; version?: string; drifted?: boolean}>> {
+  return jsonFetch("/api/v1/local/plugins");
 }

@@ -10,12 +10,15 @@
     "types": ["node"]
   },
   "include": [
+    "scripts/project-renderer-freshness*.ts",
     "scripts/source-check-config.ts",
     "scripts/source-check-config.test.ts",
     "apps/desktop/scripts/*.ts",
     "packages/cli/scripts/*.ts",
     ".github/scripts/*.ts",
     "scripts/executable-scripts.test.ts",
+    "scripts/runtime-dependency-identity.ts",
+    "scripts/runtime-dependency-identity.test.ts",
     "scripts/e2e/harness.test.ts"
   ]
 }

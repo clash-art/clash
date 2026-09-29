@@ -1,3 +1,4 @@
+import { projectAssetMention } from "./projectAssetReferences";
 import {
   forwardRef,
   useState,
@@ -321,11 +322,8 @@ function ChatInputInner(
         editorRef.current?.focus();
       },
       insertAssetReference(reference) {
-        const label = reference.label
-          .replace(/\\/g, "\\\\")
-          .replace(/\]/g, "\\]");
         editorRef.current?.insertAtCursor(
-          `@[${label}](project-asset:${encodeURIComponent(reference.id)}) `,
+          `${projectAssetMention(reference.label, reference.id)} `,
         );
       },
     }),

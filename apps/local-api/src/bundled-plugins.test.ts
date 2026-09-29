@@ -13,6 +13,17 @@ import {
 } from "./bundled-plugins";
 import * as bundledPlugins from "./bundled-plugins";
 
+it("explains why built-in checkout is unavailable and how to create a project draft", async () => {
+  const reader = (bundledPlugins as Record<string, unknown>).readEditablePluginPackage as
+    ((root: string, id: string) => Promise<unknown>) | undefined;
+  expect(reader).toBeTypeOf("function");
+  if (!reader) return;
+  const root = await mkdtemp(join(tmpdir(), "clash-builtin-checkout-"));
+  await expect(reader(root, "clash.asset-edit"))
+    .rejects.toMatchObject({ code: "BUILTIN_PLUGIN_CHECKOUT_UNSUPPORTED", message: expect.stringMatching(/clash plugin create/) });
+  expect(existsSync(join(root, "clash.asset-edit"))).toBe(false);
+});
+
 it("resolves an official Provider from the payload beside the shipped host bundle", async () => {
   const root = await mkdtemp(join(tmpdir(), "clash-packaged-provider-"));
   const runtimeRoot = join(root, "runtime");
@@ -32,6 +43,35 @@ it("resolves an official Provider from the payload beside the shipped host bundl
   ).toEqual({
     manifestPath: join(providerRoot, "manifest.json"),
     entrypointPath: join(providerRoot, "dist", "stdio.mjs"),
+  });
+});
+
+it("reads built-in ImageGen installation from a relocated desktop payload", async () => {
+  const root = await mkdtemp(join(tmpdir(), "clash-imagegen-payload-"));
+  const pluginRoot = join(root, "bundled-plugins", "codex-imagegen");
+  await mkdir(join(pluginRoot, "dist"), { recursive: true });
+  const manifest = JSON.parse(
+    await readFile(
+      new URL("../../../plugins/codex-imagegen/manifest.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  manifest.version = `${manifest.version}-relocated`;
+  await writeFile(join(pluginRoot, "manifest.json"), JSON.stringify(manifest));
+  await writeFile(
+    join(pluginRoot, "dist", "stdio.mjs"),
+    "// fixture runtime\n",
+  );
+  const marketplace = bundledPlugins.createCodexImagegenMarketplace({
+    actionsRoot: join(root, "actions"),
+    moduleUrl: pathToFileURL(join(root, "local-api.cjs")).href,
+  });
+  await expect(marketplace.listInstalled()).resolves.toContainEqual(
+    expect.objectContaining({ version: manifest.version, builtIn: true }),
+  );
+  await expect(marketplace.install(manifest.id)).resolves.toMatchObject({
+    version: manifest.version,
+    bundled: true,
   });
 });
 

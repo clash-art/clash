@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
+import { execFileSync } from "node:child_process";
 
 import { buildPluginEntrypoint, pluginBuildPlan } from "./plugin-build";
 
@@ -107,6 +108,40 @@ describe("build plan", () => {
 });
 
 describe("building", () => {
+  it("produces identical SDK bundles when an unchanged draft moves to a different directory depth", async () => {
+    // Installed acceptance found only SDK installation paths in esbuild comments
+    // changing, which made the Host reject an unchanged same-version activation.
+    const dir = await draft(NODE_TS);
+    const moved = join(dir, "another-workspace", "draft");
+    const source = `
+      import { ProviderExecutionError } from '@clash/action-sdk';
+      console.log(new ProviderExecutionError({code: 'invalid_request', message: 'bad range', retryable: false, requestState: 'rejected'}).message);
+    `;
+    await mkdir(join(moved, "src"), { recursive: true });
+    for (const location of [dir, moved]) {
+      await writeFile(join(location, "src", "stdio.ts"), source);
+    }
+    const first = await buildPluginEntrypoint(dir, NODE_TS);
+    const second = await buildPluginEntrypoint(moved, NODE_TS);
+    assert.equal(await readFile(second, "utf8"), await readFile(first, "utf8"));
+    assert.equal(execFileSync(process.execPath, [second], { encoding: "utf8" }).trim(), "bad range");
+  });
+
+  it("bundles the supplied action SDK for a draft outside the Clash checkout", async () => {
+    const dir = await draft(NODE_TS);
+    await writeFile(join(dir, "src", "stdio.ts"), `
+      import { ProviderExecutionError } from '@clash/action-sdk';
+      import { executableFailureFromThrown } from '@clash/action-sdk/executable-failure';
+      const error = new ProviderExecutionError({code: 'invalid_request', message: 'bad range', retryable: false, requestState: 'rejected'});
+      console.log(JSON.stringify(executableFailureFromThrown(error, 'submit')));
+    `);
+    const artifact = await buildPluginEntrypoint(dir, NODE_TS);
+    await rm(join(dir, "src"), { recursive: true });
+    const result = JSON.parse(execFileSync(process.execPath, [artifact], { cwd: tmpdir(), encoding: "utf8" }));
+    assert.equal(result.code, "invalid_request");
+    assert.equal(result.requestState, "rejected");
+  });
+
   it("bundles TypeScript into one ESM artifact", async () => {
     const dir = await draft(NODE_TS);
     await mkdir(join(dir, "src", "lib"), { recursive: true });

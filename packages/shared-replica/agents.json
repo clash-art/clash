@@ -9,6 +9,12 @@
   "key_files": {
     "src/replica-engine.ts": "Generic durable replica engine.",
     "src/loro.ts": "Loro state adapter.",
-    "src/loro-protocol.ts": "Transport-neutral official Loro protocol session."
-  }
+    "src/loro-protocol.ts": "Transport-neutral official Loro protocol session.",
+    "src/replica-relay.ts": "Opaque snapshot/log storage port and cursor page continuity checks; no CRDT runtime.",
+    "src/replica-stream-client.ts": "Official Streams SDK append/read/SSE with persist-before-offset and snapshot bootstrap. Cloud checkpoint computation belongs to the Node worker.",
+    "src/loro-stream-session.ts": "Browser Loro binding for the Streams SDK: snapshot bootstrap, ordered local appends, remote imports and reconnectable offline edits."
+  },
+  "architecture_notes": [
+    "The narrow ./loro import/types export points to src/loro.ts so native Node 24 checkpoint workers reuse the same adapter without a prerequisite workspace build. Default distribution remains dist/loro.js."
+  ]
 }

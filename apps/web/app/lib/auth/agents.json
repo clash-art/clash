@@ -1,0 +1,10 @@
+{
+  "summary": "Hosted browser authentication and safe post-login continuation.",
+  "files": {
+    "better-auth.server.ts": "Existing Better Auth server configuration and delivery bindings.",
+    "login-return.ts": "Validates same-origin browser paths for returning from sign-in to PKCE authorization; external destinations and login loops fall back to home.",
+    "login-return.test.ts": "Behavior checks for preserved authorization query parameters and rejected unsafe destinations.",
+    "continue-with-email.ts": "Unified password entry through Better Auth: sign in first, register only on invalid credentials, preserve existing-account and service errors; reports newly created accounts for name completion.",
+    "continue-with-email.test.ts": "Behavior checks for existing accounts, new registrations, incorrect passwords, network failure and throttling."
+  }
+}

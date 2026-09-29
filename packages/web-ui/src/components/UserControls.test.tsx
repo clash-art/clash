@@ -42,6 +42,7 @@ vi.mock("framer-motion", async () => {
   };
 });
 
+vi.mock("./SettingsDialog",()=>({SettingsDialog:({open}:{open:boolean})=>open?<div role="dialog" aria-label="Settings"/>:null}));
 function renderUserControls() {
   return render(
     <MemoryRouter>
@@ -167,5 +168,7 @@ describe("UserControls", () => {
     expect(menu.getAttribute("data-align")).toBe("end");
     expect(screen.getByRole("menuitem", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem",{name:"Settings"}));
+    expect(screen.getByRole("dialog",{name:"Settings"})).toBeTruthy();
   });
 });

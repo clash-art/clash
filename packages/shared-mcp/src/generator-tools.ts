@@ -9,6 +9,7 @@ import {
 } from "@clash/shared-runtime/generator-client";
 import { describeClashTool } from "./tool-guidance.js";
 import type { ClashMcpServer } from "./server.js";
+import { registerActionTools } from "./action-tools.js";
 
 const result = (value: unknown) => ({
   content: [{ type: "text" as const, text: JSON.stringify(value) }],
@@ -20,6 +21,7 @@ export function registerGeneratorTools(
   server: ClashMcpServer,
   options: { request: GeneratorRequest },
 ): void {
+  registerActionTools(server, options);
   const client = createGeneratorClient(options.request);
   const tool = (
     name: string,

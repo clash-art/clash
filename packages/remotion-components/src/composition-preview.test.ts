@@ -85,6 +85,44 @@ vi.mock("remotion", () => ({
 }));
 
 describe("composition preview helpers", () => {
+  it.each([0, 5])("keeps unanimated text visible at clip frame %i", (frame) => {
+    mockedFrame = frame;
+    try {
+      const markup = renderToStaticMarkup(React.createElement(VideoComposition, {
+        tracks: [{ id: "text", name: "Text", items: [{
+          id: "title", type: "text", text: "Visible first keyframe", color: "white",
+          from: 60, durationInFrames: 30,
+        }] }],
+      }));
+      const wrapper = markup.match(/<div[^>]*style="([^"]*)"[^>]*><h1/);
+      expect(wrapper).not.toBeNull();
+      expect(wrapper![1]).toMatch(/(?:^|;)opacity:1(?:;|$)/);
+    } finally {
+      mockedFrame = 0;
+    }
+  });
+
+  it.each([[0, 0.25], [5, 0.5], [10, 0.75]])("honors authored text opacity at clip frame %i", (frame, opacity) => {
+    mockedFrame = frame;
+    try {
+      const markup = renderToStaticMarkup(React.createElement(VideoComposition, {
+        tracks: [{ id: "text", name: "Text", items: [{
+          id: "title", type: "text", text: "Authored opacity", color: "white",
+          from: 60, durationInFrames: 30,
+          keyframes: { opacity: [
+            { frame: 0, value: 0.25, interpolation: "linear" },
+            { frame: 10, value: 0.75, interpolation: "linear" },
+          ] },
+        }] }],
+      }));
+      const wrapper = markup.match(/<div[^>]*style="([^"]*)"[^>]*><h1/);
+      expect(wrapper).not.toBeNull();
+      expect(wrapper![1]).toContain(`opacity:${opacity}`);
+    } finally {
+      mockedFrame = 0;
+    }
+  });
+
   it("does not turn an object-store key into a renderable Asset URL", () => {
     const markup = renderToStaticMarkup(
       React.createElement(VideoComposition, {

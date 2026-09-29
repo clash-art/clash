@@ -17,7 +17,7 @@ export const Checkbox = forwardRef<
       data-slot="checkbox"
       className={cn(
         "inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded border border-input bg-background text-white transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-offset-1",
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/40 focus-visible:ring-offset-0",
         "data-[state=checked]:border-info data-[state=checked]:bg-info",
         "disabled:cursor-not-allowed disabled:opacity-50",
         className,

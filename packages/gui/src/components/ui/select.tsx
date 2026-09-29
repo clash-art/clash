@@ -19,6 +19,7 @@ export interface SelectOption<Value extends SelectValue = string> {
     value: Value;
     label: ReactNode;
     description?: ReactNode;
+    descriptionPlacement?: "below" | "inline";
     searchText?: string;
     icon?: ReactNode;
     disabled?: boolean;
@@ -183,7 +184,7 @@ function DropdownSelectMenu<Value extends SelectValue = string>({
                 onPointerDown={handleEventBoundary}
                 className={cn(
                     'app-select-trigger clash-select-trigger inline-flex min-w-0 items-center gap-1.5 transition-colors outline-none',
-                    'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+                    'focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50',
                     'disabled:cursor-not-allowed disabled:opacity-45',
                     triggerVariantClasses[variant],
                     triggerSizeClasses[size],
@@ -317,7 +318,7 @@ function RadixSelectMenu<Value extends SelectValue = string>({
             onPointerDown={handleEventBoundary}
             className={cn(
                 'app-select-trigger clash-select-trigger inline-flex min-w-0 items-center gap-1.5 transition-colors outline-none',
-                'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+                'focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50',
                 'disabled:cursor-not-allowed disabled:opacity-45',
                 triggerVariantClasses[variant],
                 triggerSizeClasses[size],
@@ -473,10 +474,10 @@ function DropdownSelectMenuSection<Value extends SelectValue>({
                                             {option.icon}
                                         </span>
                                     ) : null}
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block truncate font-medium leading-5">{option.label}</span>
+                                    <span className={option.descriptionPlacement === "inline" ? "flex min-w-0 flex-1 items-center gap-4" : "min-w-0 flex-1"}>
+                                        <span className="block min-w-0 flex-1 truncate font-medium leading-5">{option.label}</span>
                                         {option.description ? (
-                                            <span className="block truncate text-xs font-normal leading-4 text-muted-foreground">
+                                            <span className={option.descriptionPlacement === "inline" ? "max-w-[60%] truncate text-right font-normal leading-5 text-muted-foreground" : "block truncate text-xs font-normal leading-4 text-muted-foreground"}>
                                                 {option.description}
                                             </span>
                                         ) : null}

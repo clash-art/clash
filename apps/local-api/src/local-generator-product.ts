@@ -30,6 +30,7 @@ import {
   type GeneratorRevision,
   type GeneratorRevisionRef,
   type ProjectGenerator,
+  type GeneratorRunCanvasPlacement,
 } from "@clash/shared-types";
 
 import {
@@ -48,6 +49,7 @@ import {
 } from "./durable-run-coordinator.js";
 import type { SqliteDurableRunJournal } from "./durable-run-journal.js";
 import { createLocalGeneratorRunBridge } from "./local-generator-run-bridge.js";
+import { readLocalGeneratorRunDiagnostics } from "./local-generator-run-diagnostics.js";
 
 export interface LocalGeneratorProjectAuthority {
   inspect<T>(
@@ -391,6 +393,22 @@ export function createLocalGeneratorProductService(options: {
   const deadlineMs =
     options.deadlineMs ?? DEFAULT_LOCAL_PROVIDER_RUN_DEADLINE_MS;
   const now = options.now ?? Date.now;
+  const validateRunPlacement = async (revision: GeneratorRevision, placement: GeneratorRunCanvasPlacement | undefined, actionId: string) => {
+    if (!placement) return;
+    // A submitted native Run can be shown as a frozen operation without a
+    // legacy form Card. The normal Run compiler and Canvas admission still
+    // validate its Definition, exact inputs, parameters, and media outputs.
+    if (!placement.actionCardId) return;
+    const registration = (await options.listPluginCards?.() ?? []).find(entry =>
+      entry.document.kind === "action-card" && entry.document.spec.id === placement.actionCardId &&
+      entry.pluginId === revision.definitionRef.pluginId && entry.version === revision.definitionRef.version && entry.schemaHash === revision.definitionRef.schemaHash);
+    if (!registration || registration.document.kind !== "action-card")
+      throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_UNSUPPORTED", "The Action Card for this Generator revision is unavailable.");
+    const definition = await resolvePinnedDefinition(revision.definitionRef);
+    resolveExecutableActionCardGenerator(registration.document.spec, definition);
+    if (registration.document.spec.generator?.actionId !== actionId)
+      throw new LocalGeneratorProductError("GENERATOR_CANVAS_PLACEMENT_UNSUPPORTED", "The Action Card does not expose this Action.");
+  };
   const resolveModelSelection = async (
     projectId: string,
     doc: LoroDoc,
@@ -672,7 +690,7 @@ export function createLocalGeneratorProductService(options: {
         input: SubmitLocalGeneratorActionInputSchema.parse(proposal.input),
       }));
       return options.authority.mutate(projectId, async (doc, checkpoint) => {
-        const planned: Array<{ request: ActionRunRequest; command: LocalDurableRunCreateCommand }> = [];
+        const planned: Array<{ request: ActionRunRequest; command: LocalDurableRunCreateCommand; canvasPlacement?: GeneratorRunCanvasPlacement }> = [];
         const validationDoc = doc.fork();
         try {
         for (const proposal of parsed) {
@@ -680,8 +698,9 @@ export function createLocalGeneratorProductService(options: {
           if (!generator) throw new LocalGeneratorProductError("PROJECT_GENERATOR_NOT_FOUND", `Project Generator ${proposal.generatorId} not found.`);
           const revision = readGeneratorRevision(validationDoc, { generatorId: proposal.generatorId, generatorRevisionId: proposal.input.generatorRevisionId });
           if (!revision) throw new LocalGeneratorProductError("GENERATOR_REVISION_NOT_FOUND", `Generator revision ${proposal.generatorId}/${proposal.input.generatorRevisionId} not found.`);
+          await validateRunPlacement(revision, proposal.input.canvasPlacement, proposal.actionId);
           const replay = await replayEntries(projectId, validationDoc, proposal.generatorId, proposal.actionId, proposal.input);
-          if (replay) { planned.push(...replay); continue; }
+          if (replay) { planned.push(...replay.map(entry=>({...entry,canvasPlacement:proposal.input.canvasPlacement}))); continue; }
           const definition = await resolvePinnedDefinition(revision.definitionRef);
           const { built, providerExecution } = await prepareInvocation(projectId, {
             doc: validationDoc, definition, actionRunId: proposal.input.actionRunId,
@@ -710,7 +729,7 @@ export function createLocalGeneratorProductService(options: {
               }),
             );
           }
-          planned.push(...commands.map((command) => ({ request: built.request, command })));
+          planned.push(...commands.map((command) => ({ request: built.request, command, canvasPlacement:proposal.input.canvasPlacement })));
         }
         } finally { validationDoc.free(); }
         const runs = await bridge.enqueueBatch({
@@ -749,9 +768,10 @@ export function createLocalGeneratorProductService(options: {
             `Generator revision ${generatorId}/${input.generatorRevisionId} not found.`,
           );
         }
+        await validateRunPlacement(frozenRevision,input.canvasPlacement,actionId);
         const replay = await replayEntries(projectId, doc, generatorId, actionId, input);
         if (replay) {
-          const runs = await bridge.enqueueBatch({ doc, entries: replay, checkpoint });
+          const runs = await bridge.enqueueBatch({ doc, entries: replay.map(entry=>({...entry,canvasPlacement:input.canvasPlacement})), checkpoint });
           return runs[0]!;
         }
         const definition = await resolvePinnedDefinition(frozenRevision.definitionRef);
@@ -763,6 +783,7 @@ export function createLocalGeneratorProductService(options: {
         const entries: Array<{
           request: ActionRunRequest;
           command: LocalDurableRunCreateCommand;
+          canvasPlacement?: GeneratorRunCanvasPlacement;
         }> = [];
         for (const output of built.request.outputContract) {
           const existingTask = await options.journal.load({
@@ -771,6 +792,7 @@ export function createLocalGeneratorProductService(options: {
           });
           entries.push({
             request: built.request,
+            canvasPlacement:input.canvasPlacement,
             command: buildLocalGeneratorDurableRunCommand({
               doc,
               projectId,
@@ -797,6 +819,12 @@ export function createLocalGeneratorProductService(options: {
       );
     },
 
+    async readRunDiagnostics(projectId: string, actionRunId: string) {
+      const run = await options.authority.inspect(projectId, (doc) => readProjectActionRun(doc, actionRunId));
+      if (!run) return { failures: [] };
+      return readLocalGeneratorRunDiagnostics({ projectId, ownerId: options.ownerId, run, journal: options.journal });
+    },
+
     async readOutput(
       projectId: string,
       input: { actionRunId: string; outputSlot: string },
@@ -820,8 +848,8 @@ export function advanceLocalGeneratorRevision(doc: LoroDoc, definition: Generato
   if (!generator || !currentRevision) throw new LocalGeneratorProductError("GENERATOR_REVISION_NOT_FOUND", "Generator revision is unavailable. Read again.");
   if (generator.headRevisionId !== input.generatorRevisionId) {
     for (const [nodeId, raw] of doc.getMap("nodes").entries()) {
-      const placement = raw as { type?: string; canvasId?: string; data?: { generatorId?: string } };
-      if (placement.type !== "action-badge" || placement.data?.generatorId !== generatorId) continue;
+      const placement = raw as { type?: string; canvasId?: string; data?: { generatorId?: string; actionRunId?: string } };
+      if (placement.type !== "action-badge" || placement.data?.generatorId !== generatorId || placement.data.actionRunId) continue;
       const canvas = new Canvas(doc, () => {}, placement.canvasId ?? "main");
       if (isCanvasNodeImmutable({ nodeId, edges: canvas.listEdges() })) {
         throw new LocalGeneratorProductError("IMMUTABLE_NODE", `Canvas placement ${nodeId} has downstream references. Copy the Generator draft before editing it.`);
@@ -860,8 +888,8 @@ export function advanceLocalGeneratorRevision(doc: LoroDoc, definition: Generato
       const assets = new Set(revision.persistentInputRefs.map(ref => assetRevisionKey(ref.target)).filter(key => key !== null));
       const placements = new Map<string, string>();
       for (const [nodeId, raw] of draft.getMap("nodes").entries()) {
-        const node = raw as { type?: string; canvasId?: string; data?: { generatorId?: string } };
-        if (node.type === "action-badge" && node.data?.generatorId === generatorId) placements.set(nodeId, node.canvasId ?? "main");
+        const node = raw as { type?: string; canvasId?: string; data?: { generatorId?: string; actionRunId?: string } };
+        if (node.type === "action-badge" && node.data?.generatorId === generatorId && !node.data.actionRunId) placements.set(nodeId, node.canvasId ?? "main");
       }
       for (const canvasId of new Set(placements.values())) {
         const canvas = new Canvas(draft, () => {}, canvasId);

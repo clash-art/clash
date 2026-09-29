@@ -1,7 +1,10 @@
+import { PluginInstallScopeDialog } from "./PluginInstallScopeDialog";
+import { PluginInstallControl } from "./PluginInstallControl";
+import type { HostInstallScope } from "@clash/shared-types";
 import { marketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 import { CaretRight, Check, Download } from "@phosphor-icons/react";
 import { CSS } from "@dnd-kit/utilities";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import type { RegistryItem } from "@clash/web-ui/lib/clientActions";
 import {
@@ -170,8 +173,9 @@ export function MarketplacePluginDeclarations({
         ? "Action"
         : item.type === "plugin"
           ? "Plugin"
-          : "Skill",
+          : "Plugin",
     ],
+    ["Capabilities", item.type === "skill" ? "Skills" : undefined],
     ["Plugin ID", item.id],
     ["Publisher", item.author],
     ["Version", item.version ?? item.sourceVersion],
@@ -318,6 +322,8 @@ export function MarketplaceItemCard({
   onAddReference?: AddMarketplaceSkillReference;
   isReferenceAdded?: boolean;
 }) {
+  const [scopeRequest, setScopeRequest] = useState<{ resolve: (scope: HostInstallScope | null) => void } | null>(null);
+  useEffect(() => () => scopeRequest?.resolve(null), [scopeRequest]);
   const [installedLocally, setInstalledLocally] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
@@ -352,10 +358,12 @@ export function MarketplaceItemCard({
       setErrorContext(context);
       const request = (async () => {
         try {
+          const scope = await new Promise<HostInstallScope | null>(resolve => setScopeRequest({ resolve }));
+          if (!scope) return false;
           if (isPlugin) {
-            await marketplaceInstallPlugin(item);
+            await marketplaceInstallPlugin(item, scope);
           } else {
-            await marketplaceInstallSkill(item);
+            await marketplaceInstallSkill(item, scope);
           }
           installedRef.current = true;
           setInstalledLocally(true);
@@ -495,7 +503,9 @@ export function MarketplaceItemCard({
           </span>
         </Link>
 
+        {scopeRequest ? <PluginInstallScopeDialog initial={{ scope: "global" }} onClose={() => { scopeRequest.resolve(null); setScopeRequest(null); }} onSave={async scope => { scopeRequest.resolve(scope); setScopeRequest(null); }} /> : null}
         <div className="flex min-h-8 min-w-0 flex-wrap items-center justify-end gap-2 px-4 pb-4">
+          {installed && canInstall ? <PluginInstallControl item={item} installed /> : null}
           {canInstall || installed || referenceEnabled ? (
             <>
               <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">

@@ -41,6 +41,15 @@ export type CreateProjectGeneratorRequest = z.infer<
   typeof CreateProjectGeneratorRequestSchema
 >;
 
+/** A Run may be shown in a Canvas. Opening its composer does not create a placement. */
+export const GeneratorRunCanvasPlacementSchema = z.object({
+  canvasId: z.string().trim().min(1),
+  nodeId: z.string().trim().min(1),
+  actionCardId: z.string().trim().min(1).optional(),
+  label: z.string().optional(),
+}).strict();
+export type GeneratorRunCanvasPlacement = z.infer<typeof GeneratorRunCanvasPlacementSchema>;
+
 export const SubmitGeneratorActionRequestSchema = z
   .object({
     actionRunId: z.string().trim().min(1),
@@ -49,6 +58,7 @@ export const SubmitGeneratorActionRequestSchema = z
     providerAccountId: z.string().trim().min(1).optional(),
     parameters: z.record(ExecutablePluginJsonValueSchema).default({}),
     invocationInputRefs: z.array(GeneratorInputRefSchema).default([]),
+    canvasPlacement: GeneratorRunCanvasPlacementSchema.optional(),
   })
   .strict();
 export type SubmitGeneratorActionRequest = z.infer<

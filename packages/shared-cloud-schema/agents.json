@@ -5,7 +5,13 @@
     "src/app.ts": "Shared cloud control-plane Project, tenant, token, provider, legacy installed-record and Asset/index tables. Project Loro and local SQLite authority are not moved here.",
     "src/broker.ts": "API-only capability broker audit table, preserving its existing columns and indexes.",
     "src/runtime.ts": "Web backend runtime, runtime token/session, chat message and agent member index tables; not a replacement local Host state store.",
-    "src/schema.test.ts": "Generates actual Drizzle Kit DDL, executes it in SQLite with foreign_keys enabled, exercises cross-auth-ID writes and both directions of Better Auth relation queries."
+    "src/schema.test.ts": "Generates actual Drizzle Kit DDL, executes it in SQLite with foreign_keys enabled, exercises cross-auth-ID writes and both directions of Better Auth relation queries.",
+    "postgres/0001_project_admission.sql": "Initial PostgreSQL tenant/project/admission migration, separate from D1 Drizzle exports. Auth and remaining cloud tables are not included.",
+    "postgres/0006_client_checkpoint.sql": "Historical task table migration; superseded by 0007, preserve checksum.",
+    "postgres/0007_retire_checkpoint_tasks.sql": "Removes abandoned client-task table. Backend checkpoint workers use dirty heads and existing checkpoint storage without task ownership.",
+    "postgres/0008_checkpoint_outbox.sql": "Extends existing outbox with notification/checkpoint kind, per-project checkpoint coalescing and dirty-head backfill. No foreign keys or separate task table.",
+    "postgres/0009_cloud_runs.sql": "PostgreSQL cloud run journal and initial dispatch intent; no foreign keys. Separate from upstream BullMQ-owned schema.",
+    "postgres/0010_auth.sql": "Better Auth 1.6.23 core user/session/account/verification and database rate-limit fields; application schema without SQL foreign keys."
   },
   "architecture_notes": [
     "Narrow source exports auth/app/broker/runtime are consumed directly by TypeScript-aware Node/Worker bundlers and Drizzle Kit. There is no broad root export or pre-build requirement.",

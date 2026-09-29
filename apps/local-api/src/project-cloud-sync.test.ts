@@ -172,7 +172,7 @@ async function fixture(autoSchedule = true) {
         Object.assign(metadata, value);
       },
     },
-    token: async () => undefined,
+    token: async () => "test-cloud-token",
     inspection: {
       finalize: async (input: {
         resourceId: string;

@@ -1005,25 +1005,15 @@ describe("SettingsClient sync section", () => {
     window.localStorage.clear();
   });
 
-  it("shows a sync skeleton while local sync configuration is loading", async () => {
-    let resolveSync!: (response: Response) => void;
-    const syncPromise = new Promise<Response>((resolve) => {
-      resolveSync = resolve;
+  it("shows account loading and then the official cloud choice", async () => {
+    let resolveAccount!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      resolveAccount = resolve;
     });
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = input instanceof Request ? input.url : String(input);
-        if (
-          url.includes("/api/v1/local/sync") &&
-          (!init || init.method === "GET")
-        ) {
-          return syncPromise;
-        }
-        return new Response("not found", { status: 404 });
-      }),
+      vi.fn(() => pending),
     );
-
     render(
       <MemoryRouter>
         <AppFeedbackProvider>
@@ -1038,95 +1028,46 @@ describe("SettingsClient sync section", () => {
         </AppFeedbackProvider>
       </MemoryRouter>,
     );
-
     expect(
-      await screen.findByRole("status", { name: "Loading sync settings" }),
+      await screen.findByRole("status", { name: "Loading cloud account" }),
     ).toBeTruthy();
-
-    resolveSync(
-      new Response(
-        JSON.stringify({
-          mode: "local-only",
-          remote_loro: {
-            enabled: false,
-            url: null,
-            has_token: false,
-            source: "none",
-          },
-        }),
-        { headers: { "content-type": "application/json" } },
-      ),
+    resolveAccount(
+      Response.json({
+        serviceUrl: "https://clash.art",
+        official: true,
+        user: null,
+      }),
     );
-
-    await screen.findByRole("radio", { name: /No default endpoint/ });
     expect(
-      screen.queryByRole("status", { name: "Loading sync settings" }),
+      await screen.findByRole("radio", { name: "Official cloud" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("status", { name: "Loading cloud account" }),
     ).toBeNull();
   });
 
-  it("loads and saves local sync configuration", async () => {
+  it("signs out of the selected cloud without enabling project sync", async () => {
+    let signedIn = true;
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
-        if (
-          url.includes("/api/v1/local/sync") &&
-          (!init || init.method === "GET")
-        ) {
-          return new Response(
-            JSON.stringify({
-              mode: "local-only",
-              remote_loro: {
-                enabled: false,
-                url: null,
-                has_token: false,
-                source: "none",
-              },
-              capabilities: {
-                canvas: false,
-                asset_metadata: false,
-                revision_content: false,
-                project_metadata: false,
-              },
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
-        }
-        if (url.includes("/api/v1/local/sync") && init?.method === "PATCH") {
-          expect(JSON.parse(String(init.body))).toEqual({
-            mode: "cloud-sync",
-            remote_loro_url: "https://cloud.example",
-            remote_loro_token: "secret",
-            capabilities: {
-              canvas: false,
-              asset_metadata: false,
-              revision_content: false,
-              project_metadata: false,
-            },
+        if (url.endsWith("/api/v1/local/cloud/logout")) {
+          expect(init?.method).toBe("POST");
+          expect(JSON.parse(String(init?.body))).toEqual({
+            serviceUrl: "https://clash.art",
           });
-          return new Response(
-            JSON.stringify({
-              mode: "cloud-sync",
-              remote_loro: {
-                enabled: true,
-                url: "https://cloud.example",
-                has_token: true,
-                source: "config",
-              },
-              capabilities: {
-                canvas: false,
-                asset_metadata: false,
-                revision_content: false,
-                project_metadata: false,
-              },
-            }),
-            { headers: { "content-type": "application/json" } },
-          );
-        }
-        return new Response("not found", { status: 404 });
+          signedIn = false;
+        } else expect(url).toContain("/api/v1/local/cloud");
+        return Response.json({
+          serviceUrl: "https://clash.art",
+          official: true,
+          user: signedIn
+            ? { id: "owner", email: "owner@example.com", name: "Owner" }
+            : null,
+        });
       },
     );
     vi.stubGlobal("fetch", fetchMock);
-
     render(
       <MemoryRouter>
         <AppFeedbackProvider>
@@ -1141,29 +1082,14 @@ describe("SettingsClient sync section", () => {
         </AppFeedbackProvider>
       </MemoryRouter>,
     );
-
-    await screen.findByText("No default endpoint");
-    const syncSection = screen
-      .getByRole("heading", { name: "Sync" })
-      .closest('[data-slot="settings-section"]');
-    expect(syncSection).toBeTruthy();
-    expect(screen.queryAllByRole("switch", { name: /mirror ready/i })).toEqual([]);
-    expect(screen.queryByRole("switch", { name: "Sync project metadata" })).toBeNull();
-    fireEvent.click(screen.getByRole("radio", { name: /Cloud endpoint/ }));
-    fireEvent.change(screen.getByLabelText("Remote Loro URL"), {
-      target: { value: "https://cloud.example" },
-    });
-    fireEvent.change(screen.getByLabelText("Remote Loro token"), {
-      target: { value: "secret" },
-    });
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    expect(screen.getAllByText("Token saved").length).toBeGreaterThan(0);
-    expect(await screen.findByText("Sync settings saved")).toBeTruthy();
-    expect(screen.queryByText("Sync settings saved.")).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect(screen.queryByLabelText("Remote Loro token")).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "Save sync settings" }),
-    ).toBeNull();
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).includes("cloud-admission"),
+      ),
+    ).toBe(false);
   });
 
   it("manages runtime machines from Sync without an add-machine action", async () => {
@@ -8610,12 +8536,46 @@ describe("SettingsClient model routing", () => {
 });
 
 it("shows legacy Action records without claiming execution availability", () => {
-  render(<MemoryRouter><SettingsClient initialTokens={[]} initialVariables={[]} initialSkills={[]} initialActions={[
-    {id: "historical", actionId: "historical", name: "Old Worker", manifest: "{}", removable: true},
-    {id: "bundled", actionId: "bundled", name: "Bundled compatibility record", manifest: "{}", removable: false},
-  ] as any} activeSection="actions" /></MemoryRouter>);
-  expect(screen.getByRole("heading", {name: "Legacy Action records"})).toBeTruthy();
-  expect(screen.getByRole("button", {name: "Uninstall Old Worker"})).toBeTruthy();
-  expect(screen.queryByRole("button", {name: "Uninstall Bundled compatibility record"})).toBeNull();
-  expect(screen.queryByText("Canvas actions available in all projects")).toBeNull();
+  render(
+    <MemoryRouter>
+      <SettingsClient
+        initialTokens={[]}
+        initialVariables={[]}
+        initialSkills={[]}
+        initialActions={
+          [
+            {
+              id: "historical",
+              actionId: "historical",
+              name: "Old Worker",
+              manifest: "{}",
+              removable: true,
+            },
+            {
+              id: "bundled",
+              actionId: "bundled",
+              name: "Bundled compatibility record",
+              manifest: "{}",
+              removable: false,
+            },
+          ] as any
+        }
+        activeSection="actions"
+      />
+    </MemoryRouter>,
+  );
+  expect(
+    screen.getByRole("heading", { name: "Legacy Action records" }),
+  ).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Uninstall Old Worker" }),
+  ).toBeTruthy();
+  expect(
+    screen.queryByRole("button", {
+      name: "Uninstall Bundled compatibility record",
+    }),
+  ).toBeNull();
+  expect(
+    screen.queryByText("Canvas actions available in all projects"),
+  ).toBeNull();
 });

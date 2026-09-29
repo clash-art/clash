@@ -30,8 +30,9 @@ runner-provided ready receipt has the same meaning and also skips init.
 
 Only run `clash init` or call `clash_workspace_init` when the user explicitly
 asks to create or bind a Clash workspace and `.clash/project.toml` is missing.
-Initialization creates only that project binding; it must not replace the
-repository's own instructions or source files:
+Initialization creates the project binding and registers the same identity with
+the local Host, so project discovery and project-scoped Actions can use it. It
+must not replace the repository's own instructions or source files:
 
 - CLI: use `clash init --json`, or `clash init --project <id> --json` when the
   project identity is known.
@@ -42,6 +43,13 @@ Both entry points return the same initialization contract. Inspect the result:
 `reused: false` means a new local project binding was created; `reused: true`
 means the existing project binding was preserved. A conflicting requested
 project identity must fail rather than overwrite `.clash/project.toml`.
+
+The marker is retained if Host registration fails; retry initialization in the
+same directory rather than creating another project. For an older marker-only
+workspace that is confirmed absent from the Host project list, rerunning init
+registers its existing ID and preserves its media and Timeline. This repair is
+not a response to an ordinary transport failure. Initialization never renames an
+existing project or restores an archived project.
 
 Do not assume every working directory is new or backed by Git. If it is already
 bound, continue with the marker's `projectId`; if it is unbound and binding was

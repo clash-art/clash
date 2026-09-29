@@ -1,3 +1,5 @@
+import { createClashUserConfigStore } from "../../../user-config.js";
+import { defaultLocalApiDataDir } from "../../../local-paths.js";
 /**
  * Per-project workspace management.
  *
@@ -481,6 +483,8 @@ async function installNativeAgentSkills(
     nativeDirectories: [".claude/skills", workspaceSkillDirectory!],
     initialSkills,
     installedSkills: await resolveHostProjectSkills(projectId, runtimeEnv),
+    managedSkillsRoot: join(createClashUserConfigStore(defaultLocalApiDataDir(runtimeEnv)).clashHome, "plugin-skills"),
+    legacySkillsRoot: join(homedir(), ".agents", "skills"),
   });
 }
 

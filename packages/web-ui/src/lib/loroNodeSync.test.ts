@@ -3,21 +3,52 @@ import { Canvas } from "@clash/shared-types";
 import { expect, it } from "vitest";
 import { applyCanvasLayout } from "./loroNodeSync";
 
-it("rejects an entire layout when a later node has downstream references", () => {
+it("rearranges referenced nodes without rewriting their facts or edges", () => {
   const doc = new LoroDoc();
   const canvas = new Canvas(doc, () => {});
   try {
     for (const id of ["editable", "source", "target"])
       canvas.createNode(id, "text", { content: id });
     canvas.insertEdge("reference", "source", "target");
-    const before = doc.toJSON();
-    expect(() =>
-      applyCanvasLayout(doc, "main", [
-        { id: "editable", patch: { position: { x: 123, y: 456 } } },
-        { id: "source", patch: { position: { x: 789, y: 456 } } },
-      ]),
-    ).toThrow(/IMMUTABLE_NODE/);
-    expect(doc.toJSON()).toEqual(before);
+    const beforeNodes = doc.getMap("nodes").toJSON();
+    const beforeEdges = canvas.listEdges();
+    applyCanvasLayout(doc, "main", [
+      { id: "editable", patch: { position: { x: 123, y: 456 } } },
+      { id: "source", patch: { position: { x: 789, y: 456 } } },
+    ]);
+    expect(canvas.readNode("source")?.position).toEqual({ x: 789, y: 456 });
+    expect(doc.getMap("nodes").toJSON()).toEqual(beforeNodes);
+    expect(canvas.listEdges()).toEqual(beforeEdges);
+    const reopened = LoroDoc.fromSnapshot(doc.export({ mode: "snapshot" }));
+    expect(new Canvas(reopened, () => {}).readNode("source")?.position).toEqual(
+      { x: 789, y: 456 },
+    );
+    reopened.free();
+  } finally {
+    doc.free();
+  }
+});
+
+it("keeps structural and content edits out of presentation-only layout writes", () => {
+  const doc = new LoroDoc();
+  const canvas = new Canvas(doc, () => {});
+  canvas.createNode("source", "text", { content: "original" });
+  canvas.createNode("target", "text", { content: "target" });
+  canvas.insertEdge("reference", "source", "target");
+  const before = doc.toJSON();
+  try {
+    for (const patch of [
+      { data: { content: "changed" } },
+      { parentId: "target" },
+    ]) {
+      expect(() =>
+        applyCanvasLayout(doc, "main", [
+          { id: "target", patch: { position: { x: 100, y: 200 } } },
+          { id: "source", patch },
+        ]),
+      ).toThrow();
+      expect(doc.toJSON()).toEqual(before);
+    }
   } finally {
     doc.free();
   }

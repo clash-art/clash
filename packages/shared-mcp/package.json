@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "node --import tsx --test src/*.test.ts",
+    "test": "TSX_TSCONFIG_PATH=tsconfig.check.json node --import tsx --test src/*.test.ts",
     "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {

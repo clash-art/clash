@@ -15,7 +15,7 @@ export const Switch = forwardRef<ElementRef<typeof SwitchPrimitive.Root>, Switch
             ref={ref}
             className={cn(
                 'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors duration-150',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-surface',
+                'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-surface',
                 'cursor-pointer disabled:cursor-not-allowed disabled:opacity-60',
                 'border-warm-border bg-warm-muted data-[state=checked]:border-brand data-[state=checked]:bg-brand',
                 className,

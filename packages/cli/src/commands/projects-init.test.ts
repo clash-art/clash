@@ -14,6 +14,16 @@ async function captureInit(
   const previousCwd = process.cwd();
   const previousIsTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
   const previousLog = console.log;
+  const previousFetch = globalThis.fetch;
+  const previousApiUrl = process.env.CLASH_API_URL;
+  process.env.CLASH_API_URL = "http://127.0.0.1:49321";
+  let registered = false;
+  globalThis.fetch = async (input, init) => {
+    assert.match(String(input), /^http:\/\/127\.0\.0\.1:49321\/api\/v1\/projects\/.+\/initialize$/);
+    assert.equal(init?.method, "POST");
+    registered = true;
+    return Response.json({});
+  };
   const lines: string[] = [];
 
   process.chdir(workspace);
@@ -27,10 +37,14 @@ async function captureInit(
 
   try {
     await initCommand.parseAsync(args, { from: "user" });
+    assert.equal(registered, true, "successful init must register its identity with the Host");
     return lines;
   } finally {
     process.chdir(previousCwd);
     console.log = previousLog;
+    globalThis.fetch = previousFetch;
+    if (previousApiUrl === undefined) delete process.env.CLASH_API_URL;
+    else process.env.CLASH_API_URL = previousApiUrl;
     if (previousIsTty) {
       Object.defineProperty(process.stdout, "isTTY", previousIsTty);
     } else {

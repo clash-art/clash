@@ -784,10 +784,6 @@ const ItemComponent: React.FC<{
   }
 
   if (resolvedItem.type === "text" && !Array.isArray(resolvedItem.cues)) {
-    const fadeOpacity = interpolate(frame, [0, 10], [0, 1], {
-      extrapolateRight: "clamp",
-    });
-
     return (
       <AbsoluteFill
         ref={(el) => {
@@ -797,7 +793,7 @@ const ItemComponent: React.FC<{
         style={applyTransform({
           justifyContent: "center",
           alignItems: "center",
-          opacity: isObscured ? 0 : fadeOpacity,
+          opacity: isObscured ? 0 : 1,
         })}
       >
         <h1

@@ -93,3 +93,44 @@ export default function Prop({ parameters, timeSeconds }) {
 ## 当前边界
 
 这是单个 Generator 内的复用协议。组件参数暂由 JSON 文件编辑；没有自动生成参数表单、跨 Generator 组件市场、全局库收录或外部包安装。注册不等于代码已经通过渲染验证，完成创作后应实际预览或 capture。
+
+## Local plugin installation scope
+
+The Local Host records marketplace executable plugin scope in the user configuration's
+`plugin_installations` section. An absent entry retains the historical global scope.
+Package files are shared; scope selects the projects allowed to discover and invoke
+that package. Existing project documents remain intact when scope changes.
+
+`POST /api/marketplace/plugins/:packageId/install` accepts either
+`{"scope":"global"}` or `{"scope":"projects","projectIds":["<project-id>"]}`.
+It also updates the scope of an already installed package. The Host rejects empty
+selections and unknown projects. `GET` on the same path reads the scope.
+Agents can use this same Host contract; when installing for a project, pass that
+project's ID explicitly. Global installation should follow an explicit user choice.
+
+Project discovery supplies `projectId` to `/api/v1/plugin-views` and
+`/api/v1/plugin-actions`; global discovery excludes project-only packages. The
+shared plugin invocation client independently checks the invocation's project.
+Desktop Settings → Plugins displays marketplace installations and their scope.
+Opening Settings from a project carries the project ID through both the dialog
+and expanded settings route.
+
+Skill-only packages use the same Plugins UI, installation selector and project
+context. Their existing `/api/marketplace/skills/:skillId/install` GET/POST
+contracts carry the same scope schema. The Host stores these skills privately
+under `plugin-skills`, then projects them into matching Clash project workspaces.
+Changing scope reconciles existing workspaces; subsequent agent sessions use the
+updated set. Already loaded instructions in an active agent conversation cannot
+be removed from its context by deleting files.
+
+Only Host-managed symlinks are revoked. Custom project skill files and unrelated
+symlinks are preserved. Legacy Host-owned global installs migrate into private
+storage; independent global installs must be removed by their owner before a
+project-only scope can be guaranteed. Source installers run in a private working
+directory, without global installation flags. Scope edits reuse installed files.
+
+`clash plugin install <catalog-id>` installs executable and Skill-only plugins through
+these same Host descriptors. It defaults to the marker-selected project; use
+`--project <id...>` for selected projects or `--global` for all projects. Without
+project context, the command requires an explicit scope instead of silently
+installing globally.

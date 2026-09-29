@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import {
   chmod,
   mkdir,
@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { LoroDoc } from "loro-crdt";
+import { WebSocket } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
   LOCAL_HOST_PROTOCOL_VERSION,
@@ -1658,9 +1659,12 @@ describe("local API server configuration", () => {
 
     expect(scripts["build:deps"]).toBeUndefined();
     expect(scripts["build:with-deps"]).toBeUndefined();
-    expect(scripts.build).toBe("tsc");
-    expect(scripts.typecheck).toBe("tsc --noEmit");
-    expect(scripts.test).toBe("vitest run src");
+    expect(scripts.build).toMatch(/^tsc(?:\s|$)/);
+    expect(scripts.typecheck).toMatch(/^tsc\s+.*--noEmit(?:\s|$)/);
+    expect(scripts.test).toMatch(/^vitest run(?:\s|$)/);
+    for (const name of ["build", "typecheck", "test"]) {
+      expect(scripts[name]).not.toMatch(/\b(?:turbo|pnpm|npm|yarn)\b/);
+    }
     expect(scripts["test:e2e"]).toBe(
       "tsx --tsconfig tsconfig.dev.json e2e/daemon-smoke.ts",
     );
@@ -1956,6 +1960,59 @@ describe("local API server configuration", () => {
     await expect(readHostDiscovery({ runDir })).resolves.toEqual({
       status: "inactive",
     });
+  });
+
+  it("finishes shutdown after cleanup even when a client leaves an HTTP request open", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-api-open-request-"));
+    const server = await startLocalApiServer({ dataDir, port: 0, remotePersistence: null });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server");
+    const socket = createConnection({ host: "127.0.0.1", port: address.port });
+    socket.on("error", () => {});
+    const received = new Promise<void>((resolve) => server.once("request", () => resolve()));
+    socket.write("POST /api/v1/projects HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n");
+    await received;
+    const closing = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        closing.then(() => "closed"),
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve("client still owns socket"), 1000); }),
+      ]);
+      expect(outcome).toBe("closed");
+    } finally {
+      clearTimeout(timer);
+      socket.destroy();
+      await closing;
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("finishes shutdown with a connected Project sync WebSocket", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-api-open-sync-"));
+    const server = await startLocalApiServer({ dataDir, port: 0, remotePersistence: null });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected TCP server");
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/sync/shutdown-project`);
+    await new Promise<void>((resolve, reject) => {
+      socket.once("message", () => resolve());
+      socket.once("error", reject);
+    });
+    const disconnected = new Promise<void>(resolve => socket.once("close", () => resolve()));
+    const closing = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const outcome = await Promise.race([
+        Promise.all([closing, disconnected]).then(() => "closed"),
+        new Promise<string>(resolve => { timer = setTimeout(() => resolve("sync socket remains open"), 1000); }),
+      ]);
+      expect(outcome).toBe("closed");
+    } finally {
+      clearTimeout(timer);
+      socket.terminate();
+      await closing;
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("waits for local ACP disposal before completing server close", async () => {

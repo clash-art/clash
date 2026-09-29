@@ -2,6 +2,7 @@ import type { Node } from "@xyflow/react";
 import type { LoroDoc } from "loro-crdt";
 import {
   Canvas,
+  CanvasNodeLayoutSchema,
   commitProjectMutation,
   isCanvasNodeImmutable,
   validateCanvasNodePatch,
@@ -92,24 +93,44 @@ export function applyCanvasLayout(
     const canvas = new Canvas(draft, () => {}, canvasId);
     const edges = canvas.listEdges();
     const nodes = canvas.listNodes();
-    for (const { id, patch } of patches) {
+    const prepared = patches.map(({ id, patch }) => {
       const node = canvas.readNode(id);
       if (!node) throw new Error(`Node not found: ${id}`);
-      if (isCanvasNodeImmutable({ nodeId: id, edges }))
+      const { parentId, extent, ...presentation } = patch;
+      const layout = CanvasNodeLayoutSchema.parse(presentation);
+      const structural: Record<string, unknown> = {};
+      const raw = draft.getMap("nodes").get(id) as Record<string, unknown>;
+      if ("parentId" in patch && (parentId ?? null) !== node.parent_id)
+        structural.parentId = parentId;
+      if (
+        "extent" in patch &&
+        JSON.stringify(extent) !== JSON.stringify(raw.extent)
+      )
+        structural.extent = extent;
+      if (
+        Object.keys(structural).length &&
+        isCanvasNodeImmutable({ nodeId: id, edges })
+      )
         throw new Error(
-          `IMMUTABLE_NODE: Copy referenced node ${id} before changing its layout.`,
+          `IMMUTABLE_NODE: Copy referenced node ${id} before changing its parent.`,
         );
       const guard = validateCanvasNodePatch({
         nodeId: id,
         node,
         nodes,
         edges,
-        patch,
+        patch: structural,
       });
       if (!guard.ok) throw new Error(guard.error);
-    }
-    for (const { id, patch } of patches) {
-      if (!canvas.updateNodeRecord(id, patch))
+      return { id, layout, structural };
+    });
+    for (const { id, layout, structural } of prepared) {
+      if (
+        Object.keys(structural).length &&
+        !canvas.updateNodeRecord(id, structural)
+      )
+        throw new Error(`Node not found: ${id}`);
+      if (!canvas.updateNodeLayout(id, layout))
         throw new Error(`Node not found: ${id}`);
     }
     return { ok: true };

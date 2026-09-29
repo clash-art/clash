@@ -142,6 +142,8 @@
       "uploadFailed": "⚠️ {{name}} 上传失败 "
     },
     "dashboardComposer": {
+      "configureAgent": "配置 Agent",
+      "agentSetupHint": "先配置 Agent，即可开始创作。",
       "newProject": "创建新项目",
       "newProjectHint": "发送时创建",
       "chooseProject": "选择项目",

@@ -1,3 +1,5 @@
+import { marketplaceInstallation, type MarketplaceInstallableItem } from "@clash/shared-types/marketplace-installation";
+import type { HostInstallScope } from "@clash/shared-types";
 import { pluginIdSchema } from "@clash/shared-types";
 import {
   lstat,
@@ -89,37 +91,37 @@ export interface ValidatedDownloadedActionPackage extends ActionPackage {
 }
 
 export interface LocalMarketplaceInstallResult {
-  actionId: string;
-  packageId: string;
-  installed: boolean;
-  targetDir: string;
+  id: string;
+  installed: true;
+  installation: HostInstallScope;
 }
 
-export async function tryInstallLocalMarketplaceAction(options: {
+export async function tryInstallLocalMarketplacePlugin(options: {
   packageId: string;
   serverUrl: string;
+  installation: HostInstallScope;
   apiKey?: string;
   request?: typeof fetch;
 }): Promise<LocalMarketplaceInstallResult | null> {
-  const request = options.request ?? fetch;
-  const response = await request(
-    `${options.serverUrl}/api/marketplace/actions/${encodeURIComponent(options.packageId)}/install`,
-    {
-      method: "POST",
-      ...(options.apiKey
-        ? { headers: { Authorization: `Bearer ${options.apiKey}` } }
-        : {}),
-    },
-  );
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    const detail = await response.text().catch(() => "");
-    throw new Error(
-      `Local marketplace returned ${response.status} ${response.statusText}` +
-        (detail ? `: ${detail}` : ""),
-    );
+  const request = createLocalPluginHostRequest(options);
+  const catalog = await request<{ plugins?: MarketplaceInstallableItem[]; skills?: MarketplaceInstallableItem[] }>("/api/marketplace/registry");
+  const items = [...(catalog.plugins ?? []), ...(catalog.skills ?? [])];
+  const item = items.find((candidate) => candidate.id === options.packageId)
+    ?? items.find((candidate) => candidate.packageId === options.packageId);
+  if (!item) return null;
+  const target = marketplaceInstallation(item);
+  if (!target) throw new Error("This Host does not offer installation for this plugin.");
+  const path = target.kind === "skill"
+    ? `/api/marketplace/skills/${encodeURIComponent(target.skillId)}/install`
+    : `/api/marketplace/plugins/${encodeURIComponent(target.packageId)}/install`;
+  const result = await request<{ installed?: boolean; id?: string; skillId?: string }>(path, {
+    method: "POST",
+    body: JSON.stringify(options.installation),
+  });
+  if (result.installed !== true || (target.kind === "skill" ? result.skillId : result.id) !== item.id) {
+    throw new Error("Host did not confirm plugin installation.");
   }
-  return (await response.json()) as LocalMarketplaceInstallResult;
+  return { id: item.id, installed: true, installation: options.installation };
 }
 
 function packageRecord(value: unknown, label: string): Record<string, unknown> {
@@ -596,31 +598,24 @@ export async function scaffoldExecutablePluginDraft(
       await writeFileAsync(
         join(pluginDir, "src", "stdio.ts"),
         [
-          'import { createInterface } from "node:readline";',
+          'import { definePlugin } from "@clash/action-sdk";',
           "",
           `const exportId = ${JSON.stringify(id)};`,
           "",
-          'createInterface({ input: process.stdin }).on("line", (line) => {',
-          "  const invocation = JSON.parse(line);",
-          '  if (invocation.protocol !== "clash.plugin.invoke/v1") return;',
-          '  const prompt = typeof invocation.input?.values?.prompt === "string"',
-          "    ? invocation.input.values.prompt",
-          '    : "";',
-          "  const result = invocation.target?.exportId === exportId",
-          "    ? {",
-          '        protocol: "clash.plugin.result/v1",',
-          "        invocationId: invocation.invocationId,",
-          '        status: "completed",',
-          `        outputs: [{ slot: ${JSON.stringify(outputSlot)}, kind: "value", value: { ${valueKey}: prompt } }],`,
-          "      }",
-          "    : {",
-          '        protocol: "clash.plugin.result/v1",',
-          "        invocationId: invocation.invocationId,",
-          '        status: "failed",',
-          '        error: { code: "invalid_request", message: "Unknown export", retryable: false, requestState: "rejected" },',
-          "      };",
-          "  process.stdout.write(`${JSON.stringify(result)}\\n`);",
-          "});",
+          "void definePlugin({",
+          "  executors: {",
+          "    [exportId]: {",
+          "      async submit(invocation, context) {",
+          '        const prompt = typeof invocation.input.values.prompt === "string" ? invocation.input.values.prompt : "";',
+          "        // context.reference and context.upload resolve and save invocation-scoped media.",
+          "        return {",
+          '          status: "completed",',
+          `          outputs: [{ slot: ${JSON.stringify(outputSlot)}, kind: "value", value: { ${valueKey}: prompt } }],`,
+          "        };",
+          "      },",
+          "    },",
+          "  },",
+          "}).start();",
           "",
         ].join("\n"),
       );
@@ -637,6 +632,7 @@ export async function scaffoldExecutablePluginDraft(
         "- Keep provider wire-shape translation in the handler; keep user-facing fields in the Card.",
         "- Read account credentials and settings only from the Host-scoped `context.store`; never accept them from invocation values.",
         "- Use the SDK's typed `context.reference`, `context.upload`, and output shapes for Clash-owned assets.",
+        "- Import the bundled SDK from `@clash/action-sdk`; validate/activate resolves it automatically, without a separate npm installation.",
         "- Provider HTTP belongs to the plugin and uses its runtime's normal HTTP client directly.",
         "- Run `clash plugin validate .` after edits.",
         "- Bump `manifest.json` version for code or schema changes, then run `clash plugin activate .`.",
@@ -766,6 +762,8 @@ async function buildDeclaredPluginEntrypoint(pluginDir: string): Promise<void> {
 export interface ActivateExecutablePluginDraftOptions {
   pluginDir: string;
   hostRequest?: LocalPluginHostRequest;
+  /** Omission preserves the active package's existing scope. */
+  installation?: HostInstallScope;
 }
 
 /**
@@ -785,7 +783,7 @@ export async function activateExecutablePluginDraft(
     options.hostRequest ?? requestLocalPluginHost
   )<ActivatedDownloadedActionPackage>("/api/v1/local/plugins/activate", {
     method: "POST",
-    body: JSON.stringify(pkg),
+    body: JSON.stringify({ ...pkg, ...(options.installation ? { installation: options.installation } : {}) }),
   });
   return {
     ...activated,

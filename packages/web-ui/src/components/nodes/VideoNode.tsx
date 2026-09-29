@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useState } from "react";
+import { isCanvasNodeImmutable } from "@clash/shared-types";
 /* eslint-disable @next/next/no-img-element */
 import { Handle, Position, NodeProps, Node, useReactFlow } from "@xyflow/react";
 import SourceHandleMenu from "./SourceHandleMenu";
@@ -44,7 +45,7 @@ const VideoNode = ({
   const [label, setLabel] = useState(data.label || "Video Node");
   const { projectId } = useProject();
   const { openAssetPreview, openViewer } = useMediaViewer();
-  const { setNodes } = useReactFlow();
+  const { setNodes, getEdges } = useReactFlow();
   const loroSync = useOptionalLoroSyncContext();
   const [status, setStatus] = useState<AssetStatus>(
     normalizeStatus(data.status) || (data.assetId ? "completed" : "generating"),
@@ -98,6 +99,7 @@ const VideoNode = ({
     const assetW = asset?.metadata?.width;
     const assetH = asset?.metadata?.height;
     if (!assetW || !assetH) return;
+    if (isCanvasNodeImmutable({ nodeId: id, edges: getEdges() })) return;
     const target = calculateScaledDimensions(assetW, assetH);
     const mw = Number(measuredWidth);
     const mh = Number(measuredHeight);
@@ -127,6 +129,7 @@ const VideoNode = ({
     measuredHeight,
     id,
     setNodes,
+    getEdges,
     loroSync,
   ]);
 

@@ -39,8 +39,8 @@ describe('PropertiesPanel caption defaults', () => {
       .toBe(TIMELINE_CAPTION_STYLE_DEFAULTS.color);
     expect((screen.getByRole('textbox', { name: 'Caption background color' }) as HTMLInputElement).value)
       .toBe(TIMELINE_CAPTION_STYLE_DEFAULTS.backgroundColor);
-    expect((screen.getByRole('textbox', { name: 'Caption font family' }) as HTMLInputElement).value)
-      .toBe(TIMELINE_CAPTION_STYLE_DEFAULTS.fontFamily);
+    expect(screen.getByRole('button', { name: 'Caption font family' }).textContent)
+      .toContain(TIMELINE_CAPTION_STYLE_DEFAULTS.fontFamily);
     expect(screen.getByRole('combobox', { name: 'Caption font weight' }).textContent)
       .toContain('Bold');
   });

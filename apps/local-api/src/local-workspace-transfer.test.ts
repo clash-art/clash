@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  Canvas,
+  ensureProjectCanvas,
+  attachTimelineToCanvas,
+  readProjectTimeline,
   createActionAssetBinding,
   createProjectAsset,
   createProjectDocumentAsset,
@@ -253,6 +257,39 @@ async function fixture() {
 }
 
 describe("local Workspace transfer authority", () => {
+  it("exports after merging independently initialized Canvas peers", async () => {
+    const source = await fixture();
+    const canvas = new Canvas(source.doc, () => {});
+    for (const id of ["first", "second", "third"]) {
+      expect(
+        canvas.createNode(id, "image", { assetId: "asset-linked" }).error,
+      ).toBeNull();
+    }
+    canvas.updateNodeLayout("first", { position: { x: -100, y: 120 } });
+    // Captured installed shape: the Host history plus two peers that initialized
+    // Main before receiving it. Their identical inserts are concurrent at root.
+    for (let index = 0; index < 2; index += 1) {
+      const peer = new LoroDoc();
+      ensureProjectCanvas(peer);
+      source.doc.import(peer.export({ mode: "update" }));
+    }
+    const before = source.doc.version().toJSON();
+    const exported = await source.service.createExport({
+      projectId: source.projectId,
+      sourceWorkspaceId: "external:portable-project:source-path",
+    });
+    const project = exported.files.find((file) => file.role === "project")!;
+    const restored = new LoroDoc();
+    restored.import(
+      await source.service.readExportFile(exported.exportId, project.fileId),
+    );
+    expect(new Canvas(restored, () => {}).listNodes()).toEqual(
+      canvas.listNodes(),
+    );
+    // Export must never repair or rewrite the live source to collapse its heads.
+    expect(source.doc.version().toJSON()).toEqual(before);
+  });
+
   it("expires every import capability and bounds active sessions", async () => {
     const dataDir = await tempDataDir();
     const ffprobePath = localFfprobePath();
@@ -624,56 +661,86 @@ describe("local Workspace transfer authority", () => {
     ).rejects.toMatchObject({ code: "WORKSPACE_AUTHORITY_INVALID" });
   });
 
-  it("rejects any unresolved Map register conflict retained by a shallow snapshot", async () => {
-    const source = await fixture();
-    source.doc.setPeerId("999");
-    source.doc.getMap("nodes").set("conflicted-safe-node", {
-      id: "conflicted-safe-node",
-      type: "text",
-      data: { label: "base" },
-      position: { x: 0, y: 0 },
-    });
-    source.doc.commit();
-    const base = source.doc.export({ mode: "snapshot" });
-    const left = new LoroDoc();
-    left.import(base);
-    left.setPeerId("1");
-    left.getMap("nodes").set("conflicted-safe-node", {
-      id: "conflicted-safe-node",
-      type: "text",
-      data: { label: "loser" },
-      position: { x: 0, y: 0 },
-    });
-    left.commit();
-    const right = new LoroDoc();
-    right.import(base);
-    right.setPeerId("2");
-    right.getMap("nodes").set("conflicted-safe-node", {
-      id: "conflicted-safe-node",
-      type: "text",
-      data: { label: "winner" },
-      position: { x: 0, y: 0 },
-    });
-    right.commit();
-    left.import(right.export({ mode: "update" }));
+  it.each([false, true])(
+    "only rejects differing concurrent values until causally resolved (resolved=%s)",
+    async (resolved) => {
+      const source = await fixture();
+      source.doc.setPeerId("999");
+      source.doc.getMap("nodes").set("conflicted-safe-node", {
+        id: "conflicted-safe-node",
+        type: "text",
+        data: { label: "base" },
+        position: { x: 0, y: 0 },
+      });
+      source.doc.commit();
+      const base = source.doc.export({ mode: "snapshot" });
+      const left = new LoroDoc();
+      left.import(base);
+      left.setPeerId("1");
+      left.getMap("nodes").set("conflicted-safe-node", {
+        id: "conflicted-safe-node",
+        type: "text",
+        data: { label: "loser" },
+        position: { x: 0, y: 0 },
+      });
+      left.commit();
+      const right = new LoroDoc();
+      right.import(base);
+      right.setPeerId("2");
+      right.getMap("nodes").set("conflicted-safe-node", {
+        id: "conflicted-safe-node",
+        type: "text",
+        data: { label: "winner" },
+        position: { x: 0, y: 0 },
+      });
+      right.commit();
+      left.import(right.export({ mode: "update" }));
+      if (resolved) {
+        left.getMap("nodes").set("conflicted-safe-node", {
+          id: "conflicted-safe-node",
+          type: "text",
+          data: { label: "resolved" },
+          position: { x: 0, y: 0 },
+        });
+        left.commit();
+        // Keep earlier operations inside the shallow history, as in the installed
+        // project with an independent Main initialization.
+        const independent = new LoroDoc();
+        ensureProjectCanvas(independent);
+        left.import(independent.export({ mode: "update" }));
+      }
 
-    const service = createLocalWorkspaceTransferService({
-      dataDir: source.dataDir,
-      authority: {
-        inspect: async <T>(
-          _projectId: string,
-          read: (doc: LoroDoc) => T | Promise<T>,
-        ) => read(left),
-      },
-      assetInspection: source.inspection,
-    });
-    await expect(
-      service.createExport({
+      const service = createLocalWorkspaceTransferService({
+        dataDir: source.dataDir,
+        authority: {
+          inspect: async <T>(
+            _projectId: string,
+            read: (doc: LoroDoc) => T | Promise<T>,
+          ) => read(left),
+        },
+        assetInspection: source.inspection,
+      });
+      const exporting = service.createExport({
         projectId: source.projectId,
         sourceWorkspaceId: "external:portable-project:source-path",
-      }),
-    ).rejects.toMatchObject({ code: "WORKSPACE_AUTHORITY_INVALID" });
-  });
+      });
+      if (resolved) {
+        const plan = await exporting;
+        const project = plan.files.find((file) => file.role === "project")!;
+        const restored = new LoroDoc();
+        restored.import(
+          await service.readExportFile(plan.exportId, project.fileId),
+        );
+        expect(restored.getMap("nodes").get("conflicted-safe-node")).toEqual(
+          left.getMap("nodes").get("conflicted-safe-node"),
+        );
+      } else {
+        await expect(exporting).rejects.toMatchObject({
+          code: "WORKSPACE_AUTHORITY_INVALID",
+        });
+      }
+    },
+  );
 
   it("publishes one CAS object when Document and text semantics share bytes", async () => {
     const source = await fixture();
@@ -1432,6 +1499,37 @@ describe("local Workspace transfer authority", () => {
     },
   );
 
+  it.each([
+    {
+      name: "missing node",
+      id: "missing",
+      layout: { position: { x: 1, y: 2 } },
+    },
+    { name: "invalid geometry", id: "image", layout: { width: -1 } },
+    {
+      name: "node authoring fields",
+      id: "image",
+      layout: { data: { label: "injected" } },
+    },
+    {
+      name: "private style URI",
+      id: "image",
+      layout: { style: { width: "file:///Users/private/font.ttf" } },
+    },
+  ])("rejects portable layout with $name", async ({ id, layout }) => {
+    const source = await fixture();
+    new Canvas(source.doc, () => {}).createNode("image", "image", {
+      assetId: "asset-linked",
+    });
+    source.doc.getMap("canvasNodeLayouts").set(id, layout);
+    await expect(
+      source.service.createExport({
+        projectId: source.projectId,
+        sourceWorkspaceId: "external:portable-project:source-path",
+      }),
+    ).rejects.toMatchObject({ code: "WORKSPACE_AUTHORITY_INVALID" });
+  });
+
   it("rejects machine-private Canvas node projection fields", async () => {
     const source = await fixture();
     source.doc.getMap("nodes").set("leaky-node", {
@@ -1656,6 +1754,62 @@ describe("local Workspace transfer authority", () => {
 
   it("imports through staged Host verification into a fresh authority and survives trusted readback", async () => {
     const source = await fixture();
+    expect(markActionAssetBindingAuthority(source.doc).ok).toBe(true);
+    const canvas = new Canvas(source.doc, () => {});
+    expect(
+      canvas.createNode("placed-image", "image", { assetId: "asset-linked" })
+        .error,
+    ).toBeNull();
+    expect(
+      createProjectTimeline(source.doc, {
+        id: "portable-edit",
+        name: "Portable edit",
+        state: {
+          compositionWidth: 1080,
+          compositionHeight: 1920,
+          fps: 30,
+          durationInFrames: 30,
+          tracks: [
+            {
+              id: "media",
+              items: [
+                {
+                  id: "image",
+                  type: "image",
+                  assetId: "asset-linked",
+                  from: 0,
+                  durationInFrames: 30,
+                },
+              ],
+            },
+          ],
+        },
+      }).ok,
+    ).toBe(true);
+    expect(
+      attachTimelineToCanvas(source.doc, {
+        timelineId: "portable-edit",
+        canvasId: "main",
+        actionNodeId: "editor",
+      }).ok,
+    ).toBe(true);
+    const originalNode = source.doc.getMap("nodes").get("placed-image");
+    expect(
+      canvas.updateNodeLayout("placed-image", {
+        position: { x: -180, y: 240 },
+        width: 320,
+        height: 480,
+        style: { width: "320px", height: "480px", zIndex: 2 },
+      }),
+    ).toBe(true);
+    expect(source.doc.getMap("nodes").get("placed-image")).toEqual(
+      originalNode,
+    );
+    const originalTimeline = readProjectTimeline(source.doc, "portable-edit");
+    const originalEdges = canvas.listEdges();
+    expect(originalEdges).toEqual([
+      expect.objectContaining({ source: "placed-image", target: "editor" }),
+    ]);
     const exportPlan = await source.service.createExport({
       projectId: source.projectId,
       sourceWorkspaceId: "external:portable-project:source-path",
@@ -1762,6 +1916,21 @@ describe("local Workspace transfer authority", () => {
     const restartedDoc = await new FileReplicaStore(
       join(targetDataDir, "projects"),
     ).recover(source.projectId);
+    const restoredCanvas = new Canvas(restartedDoc, () => {});
+    expect(restoredCanvas.readNode("placed-image")).toMatchObject({
+      position: { x: -180, y: 240 },
+      width: 320,
+      height: 480,
+      style: { width: "320px", height: "480px", zIndex: 2 },
+      data: { assetId: "asset-linked" },
+    });
+    expect(restartedDoc.getMap("nodes").get("placed-image")).toEqual(
+      originalNode,
+    );
+    expect(restoredCanvas.listEdges()).toEqual(originalEdges);
+    expect(readProjectTimeline(restartedDoc, "portable-edit")).toEqual(
+      originalTimeline,
+    );
     expect(readProjectAsset(restartedDoc, "asset-linked")).toMatchObject({
       id: "asset-linked",
       kind: "image",

@@ -79,13 +79,14 @@ test("plugin MCP gateway authors and manages plugins through the discovered loca
         version: "0.1.0",
       });
     }
+    if (url.pathname === "/api/marketplace/registry") return json({ plugins: [{ id: "acme.marketplace-helper", type: "plugin", runtime: "local", packageId: "acme.marketplace-helper", installation: { kind: "executable-plugin", pluginId: "acme.marketplace-helper", packageId: "acme.marketplace-helper" } }], skills: [] });
     if (
       url.pathname ===
-        "/api/marketplace/actions/acme.marketplace-helper/install" &&
+        "/api/marketplace/plugins/acme.marketplace-helper/install" &&
       init?.method === "POST"
     ) {
       return json({
-        actionId: "marketplace-helper",
+        id: "acme.marketplace-helper",
         packageId: "acme.marketplace-helper",
         installed: true,
         targetDir: "/managed/actions/acme.marketplace-helper",
@@ -205,12 +206,12 @@ test("plugin MCP gateway authors and manages plugins through the discovered loca
   assert.deepEqual(
     await gateway.invoke("clash_plugin_install", {
       id: "acme.marketplace-helper",
+      installation: { scope: "projects", projectIds: ["project-a"] },
     }),
     {
-      actionId: "marketplace-helper",
-      packageId: "acme.marketplace-helper",
+      id: "acme.marketplace-helper",
       installed: true,
-      targetDir: "/managed/actions/acme.marketplace-helper",
+      installation: { scope: "projects", projectIds: ["project-a"] },
     },
   );
   assert.deepEqual(

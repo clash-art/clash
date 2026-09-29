@@ -73,6 +73,26 @@ function brokerWithInvocationRelease(options: {
 }
 
 describe("in-process plugin module endpoint", () => {
+  it("gives nested Host tools the original deadline after module work has consumed time", async () => {
+    let now = 1_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const endpoint = new ModulePluginEndpoint({ manifest, schemaHash,
+      broker: async (_request, context) => ({ value: String(context.deadlineAt) }),
+      module: { contributes: manifest.contributes.functions, invoke: async (current, context) => {
+        if (!context?.store) throw new Error("Expected Host broker context");
+        now = 1_500;
+        const deadline = await context.store.get("deadline");
+        return { protocol: "clash.plugin.result/v1", invocationId: current.invocationId, status: "completed",
+          outputs: [{ slot: "deadline", kind: "value", value: deadline ?? "missing" }] };
+      } },
+    });
+    try {
+      await expect(endpoint.invoke(invocation(), { timeoutMs: 2_000 })).resolves.toMatchObject({
+        status: "completed", outputs: [{ value: "3000" }],
+      });
+    } finally { endpoint.close(); clock.mockRestore(); }
+  });
+
   it("releases an invocation exactly once after a completed result even when the endpoint later closes", async () => {
     const released: string[] = [];
     const endpoint = new ModulePluginEndpoint({

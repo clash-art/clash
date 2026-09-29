@@ -115,4 +115,14 @@ describe("frozen Provider route pinning", () => {
     ).rejects.toThrow(/no longer available/i);
     expect(requests).toHaveLength(0);
   });
+
+  it("fails before dispatch when the pinned executor cannot honor video sampling controls", async () => {
+    const requests: Array<Record<string, any>> = [];
+    const aigc = service([account("dummy-b")], requests);
+    await expect(aigc.generateText({ taskId: "unsupported-video-controls", model: "multi-route-card", prompt: "inspect",
+      providerRoute: pinnedRouteB,
+      mediaAnalysisVideo: { processing: "static", fps: 12, mediaResolution: "medium", startSeconds: 3, endSeconds: 4 },
+    })).rejects.toThrow(/does not support media-analysis video controls/);
+    expect(requests).toHaveLength(0);
+  });
 });

@@ -21,6 +21,7 @@ import { InlineAlert } from "./ui/feedback";
 import {
   SettingsEmptyState,
   SettingsSectionHeader,
+  SettingsSectionLayout,
 } from "./SettingsPrimitives";
 
 type ProjectArchiveState =
@@ -73,7 +74,7 @@ export function SessionArchiveLibrary() {
   }, []);
 
   return (
-    <div className="space-y-10">
+    <SettingsSectionLayout>
       <SettingsSectionHeader
         icon={<Archive className="size-5" weight="bold" />}
         title="Archive Library"
@@ -152,7 +153,7 @@ export function SessionArchiveLibrary() {
           );
         })}
       </ArchiveCollection>
-    </div>
+    </SettingsSectionLayout>
   );
 }
 

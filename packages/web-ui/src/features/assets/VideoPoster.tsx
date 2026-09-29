@@ -49,6 +49,10 @@ export function VideoPoster({
   );
   const [failedCapture, setFailedCapture] = useState<string | null>(null);
   const captureStarted = useRef<string | null>(null);
+  const pendingFrame = useRef<{
+    video: HTMLVideoElement;
+    id: number;
+  } | null>(null);
   const mounted = useRef(false);
   const latest = useRef({
     canCapture: false,
@@ -85,6 +89,13 @@ export function VideoPoster({
     setBrowserPoster((current) =>
       current?.source === playback ? current : null,
     );
+    return () => {
+      if (pendingFrame.current) {
+        const { video, id } = pendingFrame.current;
+        video.cancelVideoFrameCallback(id);
+        pendingFrame.current = null;
+      }
+    };
   }, [playback]);
 
   useEffect(() => {
@@ -191,13 +202,40 @@ export function VideoPoster({
           playsInline
           preload="metadata"
           crossOrigin="anonymous"
-          onLoadedData={(event) => {
-            // Chromium may report loadeddata before drawImage can access the
-            // decoded frame. An explicit seek to the start completes decoding
-            // without changing which frame is used as the cover.
-            event.currentTarget.currentTime = 0;
+          onLoadedMetadata={(event) => {
+            const video = event.currentTarget;
+            if (typeof video.requestVideoFrameCallback !== "function") return;
+            const id = video.requestVideoFrameCallback(() => {
+              pendingFrame.current = null;
+              capture(video);
+            });
+            pendingFrame.current = { video, id };
           }}
-          onSeeked={(event) => capture(event.currentTarget)}
+          onLoadedData={(event) => {
+            const video = event.currentTarget;
+            // Metadata/loadeddata/seeked can precede usable pixels. Modern
+            // browsers provide the presented-frame callback registered above.
+            if (typeof video.requestVideoFrameCallback === "function") return;
+            // A decoded first frame can already be at zero; assigning zero
+            // again may not emit seeked. Capture that frame immediately.
+            if (
+              video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+              !video.seeking
+            ) {
+              capture(video);
+              return;
+            }
+            // Some Chromium decoders still need the initial seek to finish.
+            video.currentTime = 0;
+          }}
+          onSeeked={(event) => {
+            if (
+              typeof event.currentTarget.requestVideoFrameCallback !==
+              "function"
+            ) {
+              capture(event.currentTarget);
+            }
+          }}
           onError={() => {
             if (playback) setFailedCapture(playback);
           }}

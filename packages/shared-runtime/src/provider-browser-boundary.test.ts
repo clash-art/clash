@@ -100,3 +100,22 @@ it("bundles portable providers from source and executes failures without Node gl
     });
   }
 });
+
+it("preserves a separately bundled plugin's typed failure across the Host module boundary", async () => {
+  const bundled = await build({
+    absWorkingDir: resolve(__dirname, "../../.."),
+    stdin: { resolveDir: resolve(__dirname, "../../.."), contents: `
+      import { ProviderExecutionError } from '@clash/action-sdk/executable-failure';
+      export const error = new ProviderExecutionError({ code: 'invalid_request',
+        message: 'Trim start and end must lie within the source video duration.',
+        providerCode: 'ASSET_EDIT_TRIM_OUT_OF_RANGE', retryable: false, requestState: 'rejected' });
+    ` },
+    tsconfig: "tsconfig.source.json", bundle: true, platform: "browser",
+    format: "iife", globalName: "isolatedPlugin", write: false, logLevel: "silent",
+  });
+  const error = runInNewContext(`${bundled.outputFiles[0]!.text}\nisolatedPlugin.error`);
+  expect(error).not.toBeInstanceOf(ProviderExecutionError);
+  expect(executableFailureFromThrown(error, "submit")).toEqual(error.failure);
+  // A similarly named arbitrary exception must not acquire the typed contract.
+  expect(executableFailureFromThrown({ name: "ProviderExecutionError", failure: error.failure }, "submit").code).toBe("execution_failed");
+});

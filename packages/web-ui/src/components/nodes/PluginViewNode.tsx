@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react";
-import type { Node, NodeProps } from "@xyflow/react";
+import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { Shapes } from "@phosphor-icons/react";
 
 import { usePluginView } from "../PluginViewContext";
@@ -13,6 +13,12 @@ function PluginViewNode({ id, data }: NodeProps<Node<Record<string, unknown>>>) 
   const handleOpen = useCallback(() => openView(id), [id, openView]);
   return (
     <div className="group relative w-[320px]" data-plugin-view-node={id} onDoubleClick={handleOpen}>
+      <Handle
+        type="target"
+        position={Position.Left}
+        isConnectable={false}
+        className="!h-3 !w-3 !border-2 !border-warm-surface !bg-stone-400"
+      />
       <div className="overflow-hidden rounded-matrix bg-warm-surface shadow-md ring-1 ring-warm-border transition-shadow hover:shadow-lg">
         <div className="flex min-h-32 items-center gap-4 bg-warm-muted px-5 py-4">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-warm-border bg-warm-surface text-brand shadow-sm">

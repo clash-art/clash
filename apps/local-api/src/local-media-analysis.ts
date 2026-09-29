@@ -3,6 +3,8 @@ import type {
   ExecutableMediaAnalysisReference,
   ExecutableMediaAnalysisResult,
 } from "@clash/shared-types";
+import { createHash } from "node:crypto";
+import { createStructuredLogger } from "@clash/shared-runtime/logging";
 
 import type { ExternalAigcService } from "./local-aigc.js";
 import type { LocalMediaAnalysisConfigStore } from "./media-analysis-config.js";
@@ -19,15 +21,55 @@ export interface LocalMediaAnalysisInput {
   prompt: string;
   promptVersion: string;
   responseFormat?: "json" | "text";
+  /** Absolute Host attempt deadline, shared by the initial analysis and every refinement. */
+  deadlineAt?: number;
 }
 
-function parseJsonResult(value: string): unknown {
+const analysisLog = createStructuredLogger({ component: "local-api", module: "media-analysis" });
+
+function parseJsonResult(
+  value: string,
+  input: LocalMediaAnalysisInput,
+  boundaryIndex?: number,
+): unknown {
   const trimmed = value.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/iu)?.[1];
+  const source = fenced ?? trimmed;
   try {
-    return JSON.parse(fenced ?? trimmed);
+    return JSON.parse(source);
   } catch (error) {
-    throw new Error("Media analysis model did not return valid JSON.", { cause: error });
+    // SyntaxError messages may quote the model's output. Retain useful syntax
+    // evidence in the existing local log, never arbitrary prose, secrets or a
+    // raw cause that could cross the plugin/Project boundary.
+    const match = error instanceof Error ? /\bposition (\d+)\b/.exec(error.message) : null;
+    const position = match ? Number(match[1]) : undefined;
+    const syntax = (text: string) => text.replace(/[^\s{}[\]:,"\\`]/gu, "•");
+    analysisLog.warn("media-analysis.invalid-json", {
+      projectId: input.projectId,
+      actionRunId: input.taskId,
+      invocationId: input.invocationId,
+      assetId: input.reference.asset.assetId,
+      modelId: input.modelId,
+      providerId: input.route.providerId,
+      upstreamId: input.route.upstreamId,
+      upstreamModel: input.route.upstreamModel,
+      category: input.category,
+      stage: boundaryIndex === undefined ? "initial" : "boundary-refinement",
+      ...(boundaryIndex === undefined ? {} : { boundaryIndex }),
+      responseEvidence: {
+        byteLength: Buffer.byteLength(value, "utf8"),
+        sha256: createHash("sha256").update(value).digest("hex"),
+        parsedCharacterLength: source.length,
+        fenced: fenced !== undefined,
+        syntaxPrefix: syntax(source.slice(0, 512)),
+        ...(position === undefined ? {} : {
+          // Position is relative to the trimmed, unfenced JSON input.
+          position,
+          syntaxNearError: syntax(source.slice(Math.max(0, position - 64), position + 64)),
+        }),
+      },
+    });
+    throw new Error("Media analysis model did not return valid JSON.");
   }
 }
 
@@ -73,6 +115,10 @@ export function createLocalMediaAnalysisService(options: {
         category: input.category,
       });
       const config = await options.config.get();
+      // The Action's source port is provenance. Model Providers receive the
+      // modality port from their existing reference protocol, retaining the
+      // immutable handle that the Host froze for this Run.
+      const modelReference = { ...input.reference, slot: input.reference.asset.kind };
       const result = await options.aigc.generateText({
         taskId: input.taskId,
         projectId: input.projectId,
@@ -81,21 +127,22 @@ export function createLocalMediaAnalysisService(options: {
         model: input.modelId,
         modelConsumer: option.consumer,
         providerRoute: input.route,
-        references: [input.reference],
+        deadlineAt: input.deadlineAt,
+        references: [modelReference],
         ...(input.reference.asset.kind === "video"
           ? {
-              modelParams: {
+              mediaAnalysisVideo: {
                 // The Provider chooses whether its upstream supports adaptive analysis.
-                video_processing: "auto",
-                video_fps: config.video.fps,
-                video_media_resolution: config.video.mediaResolution,
+                processing: "auto",
+                fps: config.video.fps,
+                mediaResolution: config.video.mediaResolution,
               },
             }
           : {}),
       });
       let parsed = input.responseFormat === "text"
         ? { text: result.text }
-        : parseJsonResult(result.text);
+        : parseJsonResult(result.text, input);
       const refinement = config.video.boundaryRefinement;
       const scenes = sceneBoundaries(parsed);
       if (
@@ -129,16 +176,17 @@ export function createLocalMediaAnalysisService(options: {
             model: input.modelId,
             modelConsumer: option.consumer,
             providerRoute: input.route,
-            references: [input.reference],
-            modelParams: {
-              video_processing: "static",
-              video_fps: refinement.fps,
-              video_media_resolution: config.video.mediaResolution,
-              video_start_seconds: startSeconds,
-              video_end_seconds: endSeconds,
+            deadlineAt: input.deadlineAt,
+            references: [modelReference],
+            mediaAnalysisVideo: {
+              processing: "static",
+              fps: refinement.fps,
+              mediaResolution: config.video.mediaResolution,
+              startSeconds,
+              endSeconds,
             },
           });
-          const boundaryMs = parsedBoundaryMs(parseJsonResult(review.text));
+          const boundaryMs = parsedBoundaryMs(parseJsonResult(review.text, input, index));
           if (
             boundaryMs === null ||
             boundaryMs < Math.round(startSeconds * 1000) ||

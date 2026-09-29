@@ -18,7 +18,7 @@ const GAP_X = 60;
 const GAP_Y = 30;
 const MAX_MEDIA_DIMENSION = 500;
 
-function calculateScaledDimensions(naturalWidth: number, naturalHeight: number): { width: number; height: number } {
+export function calculateScaledDimensions(naturalWidth: number, naturalHeight: number): { width: number; height: number } {
   if (!naturalWidth || !naturalHeight) return { width: 400, height: 400 };
   const scale = Math.min(1, MAX_MEDIA_DIMENSION / Math.max(naturalWidth, naturalHeight));
   return { width: Math.round(naturalWidth * scale), height: Math.round(naturalHeight * scale) };

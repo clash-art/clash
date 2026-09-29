@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { isCanvasNodeImmutable } from "@clash/shared-types";
 import { Handle, Position, NodeProps, Node, useReactFlow } from "@xyflow/react";
 import SourceHandleMenu from "./SourceHandleMenu";
 import DraftPlaceholder from "./DraftPlaceholder";
@@ -46,7 +47,7 @@ const ImageNode = ({
   const [label, setLabel] = useState(data.label || "Image Node");
   const { projectId } = useProject();
   const { openAssetPreview, openViewer } = useMediaViewer();
-  const { setNodes } = useReactFlow();
+  const { setNodes, getEdges } = useReactFlow();
   const loroSync = useOptionalLoroSyncContext();
   // Peers (other connected users) who currently have THIS node selected.
   // Empty array reference is stable when no peer is selecting us, so the
@@ -120,6 +121,7 @@ const ImageNode = ({
   // insertion and skip this path entirely.
   useEffect(() => {
     if (!legacyCustomAspectRatio) return;
+    if (isCanvasNodeImmutable({ nodeId: id, edges: getEdges() })) return;
     const target = aspectRatioDimensions;
     setNodes((nds) =>
       nds.map((node) => {
@@ -145,7 +147,7 @@ const ImageNode = ({
       height: target.height,
       data: { aspectRatio: legacyCustomAspectRatio },
     });
-  }, [aspectRatioDimensions, id, legacyCustomAspectRatio, loroSync, setNodes]);
+  }, [aspectRatioDimensions, id, legacyCustomAspectRatio, loroSync, setNodes, getEdges]);
 
   // Reconciliation effect: whenever asset.metadata is available, compare
   // it to Loro's measuredSize. If they disagree — either first write
@@ -158,6 +160,7 @@ const ImageNode = ({
     const assetW = asset?.metadata?.width;
     const assetH = asset?.metadata?.height;
     if (!assetW || !assetH) return;
+    if (isCanvasNodeImmutable({ nodeId: id, edges: getEdges() })) return;
     const target = calculateScaledDimensions(assetW, assetH);
     const mw = Number(measuredWidth);
     const mh = Number(measuredHeight);
@@ -187,6 +190,7 @@ const ImageNode = ({
     measuredHeight,
     id,
     setNodes,
+    getEdges,
     loroSync,
   ]);
 

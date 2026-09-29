@@ -10,7 +10,7 @@ import {
   type ForwardedRef,
 } from "react";
 import { PuzzlePiece, X } from "@phosphor-icons/react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { flushSync } from "react-dom";
 import { useTranslation } from "react-i18next";
 import type { ResolvedAsset } from "@clash/shared-types";
@@ -45,6 +45,7 @@ import {
   permissionModeOption,
   resolvePermissionModeForSession,
 } from "../lib/acpSessionConfig";
+import { buttonVariants } from "./ui/button";
 import { IconButton } from "./ui/icon-button";
 import { useDashboardComposer } from "./DashboardComposerContext";
 import { buildDashboardComposerPrompt } from "../lib/dashboardComposerPrompt";
@@ -168,6 +169,10 @@ function DashboardComposerRuntimeInner(
       sessionModes,
     ],
   );
+  const needsAgentSetup =
+    clashRt.startupStatus === "ready" &&
+    localRuntime?.status === "online" &&
+    localRuntime.agents.length === 0;
   const runtimeReady =
     clashRt.startupStatus === "ready" &&
     localRuntime?.status === "online" &&
@@ -606,6 +611,13 @@ function DashboardComposerRuntimeInner(
           );
         }}
         disabled={!runtimeReady}
+        placeholder={
+          needsAgentSetup
+            ? t("copilot.dashboardComposer.agentSetupHint", {
+                defaultValue: "Configure an Agent to start creating.",
+              })
+            : undefined
+        }
         toolbarAccessory={
           <div className="clash-composer-session-controls flex min-w-0 items-center gap-1">
             <HarnessPermissionSelector
@@ -626,18 +638,29 @@ function DashboardComposerRuntimeInner(
           </div>
         }
         rightToolbarAccessory={
-          <SessionConfigSelector
-            open={sessionConfigOpen}
-            onOpenChange={handleSessionConfigOpenChange}
-            embedded
-            selectedHarnessId={selectedHarnessId}
-            statusLabel={null}
-            harnessOptions={localRuntime?.agents ?? []}
-            configOptions={configOptions}
-            modelConfigOption={modelConfigOption}
-            onSelectHarness={handleSelectHarness}
-            onSelectConfigOption={handleSelectConfigOption}
-          />
+          needsAgentSetup ? (
+            <Link
+              to="/settings?section=agents"
+              className={buttonVariants({ variant: "primary", size: "sm" })}
+            >
+              {t("copilot.dashboardComposer.configureAgent", {
+                defaultValue: "Configure Agent",
+              })}
+            </Link>
+          ) : (
+            <SessionConfigSelector
+              open={sessionConfigOpen}
+              onOpenChange={handleSessionConfigOpenChange}
+              embedded
+              selectedHarnessId={selectedHarnessId}
+              statusLabel={null}
+              harnessOptions={localRuntime?.agents ?? []}
+              configOptions={configOptions}
+              modelConfigOption={modelConfigOption}
+              onSelectHarness={handleSelectHarness}
+              onSelectConfigOption={handleSelectConfigOption}
+            />
+          )
         }
         referenceAccessory={
           references.skills.length > 0 ? (

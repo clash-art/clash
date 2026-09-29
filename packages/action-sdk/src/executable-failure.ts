@@ -3,6 +3,11 @@ import type {
   ExecutablePluginFailureError,
   ExecutablePluginInvocation,
 } from "@clash/shared-types/executable-plugin";
+import { ExecutablePluginFailureErrorSchema } from "@clash/shared-types/executable-plugin";
+
+// Installed module plugins and the Host each bundle their own SDK class.
+// instanceof alone loses failure semantics across that package boundary.
+const PROVIDER_FAILURE_BRAND = Symbol.for("clash.ProviderExecutionError.v1");
 
 const TRANSPORT_CODES = new Set([
   "ECONNREFUSED",
@@ -36,6 +41,7 @@ export interface ProviderHttpFailureInput {
 /** A failure whose request-boundary facts the executor can prove before throwing. */
 export class ProviderExecutionError extends Error {
   override name = "ProviderExecutionError";
+  readonly [PROVIDER_FAILURE_BRAND] = true;
 
   constructor(readonly failure: ExecutablePluginFailureError) {
     super(failure.message);
@@ -129,6 +135,11 @@ export function executableFailureFromThrown(
   operation: InvocationOperation,
 ): ExecutablePluginFailureError {
   if (error instanceof ProviderExecutionError) return error.failure;
+  if (error && typeof error === "object" &&
+      Reflect.get(error, PROVIDER_FAILURE_BRAND) === true) {
+    const parsed = ExecutablePluginFailureErrorSchema.safeParse(Reflect.get(error, "failure"));
+    if (parsed.success) return parsed.data;
+  }
   const transport = transportCode(error);
   return {
     code: transport ?? "execution_failed",

@@ -155,11 +155,11 @@ const pluginToolDefinitions: Record<
     description: describeClashTool({
       useWhen:
         "an existing local marketplace plugin matches the needed capability",
-      effect: "installs and attests the selected executable plugin package",
-      returns: "the installed package and Action identities and managed path",
+      effect: "installs the selected plugin, including skills, for the current project or explicit installation scope",
+      returns: "the installed plugin identity and installation scope",
       next: "use the installed contribution or list active plugins to verify it",
     }),
-    inputSchema: pluginIdInput,
+    inputSchema: { ...pluginIdInput, cwd: scope.cwd, installation: z.discriminatedUnion("scope", [z.object({ scope: z.literal("global") }), z.object({ scope: z.literal("projects"), projectIds: z.array(z.string().trim().min(1)).min(1) })]).optional() },
   },
   clash_plugin_list: {
     title: "List active plugins",
@@ -895,7 +895,7 @@ export function registerClashCanvasMcp(
   gateway: CanvasProjectHostGateway,
   bundledAppJavascript: string,
   bundledStudioAppJavascript = bundledAppJavascript,
-  options: { appSurfaces?: boolean } = {},
+  options: { appSurfaces?: boolean; workspaceRequest?: GeneratorRequest } = {},
 ): void {
   const appSurfaces = options.appSurfaces ?? false;
   for (const name of CANVAS_MCP_TOOL_NAMES) {
@@ -1039,8 +1039,10 @@ export function registerClashCanvasMcp(
     },
     async (input) => {
       try {
+        if (!options.workspaceRequest) throw new Error("Host workspace registration transport is unavailable; the project marker was not changed.");
         const initialized = await initializeClashWorkspace({
           cwd: input.cwd,
+          request: options.workspaceRequest,
           ...(typeof input.projectId === "string"
             ? { projectId: input.projectId }
             : {}),
@@ -1149,18 +1151,18 @@ export function createClashMcpServer(
   if (options.pluginGateway) {
     registerClashPluginMcp(server, options.pluginGateway);
   }
+  const requestClient = options.client ?? createProjectHostClient();
   const generatorRequest =
     options.generatorRequest ??
-    (options.client?.resolveConnection
+    (requestClient.resolveConnection
       ? async (path: string, init?: RequestInit) => {
           const { endpoint, token } =
-            await options.client!.resolveConnection!();
+            await requestClient.resolveConnection!();
+          const headers = new Headers(token ? { Authorization: `Bearer ${token}` } : {});
+          new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
           return fetch(`${endpoint.replace(/\/$/, "")}${path}`, {
             ...init,
-            headers: {
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-              ...((init?.headers as Record<string, string> | undefined) ?? {}),
-            },
+            headers,
           });
         }
       : undefined);
@@ -1176,7 +1178,7 @@ export function createClashMcpServer(
       ),
     bundledAppJavascript,
     bundledStudioAppJavascript,
-    { appSurfaces: options.appSurfaces },
+    { appSurfaces: options.appSurfaces, workspaceRequest: generatorRequest },
   );
   return server;
 }

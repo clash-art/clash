@@ -910,7 +910,8 @@ function candidateRoutes(query: ModelUpstreamRouteQuery): ModelUpstreamRoute[] {
   const modelCode = normalizeModelId(query.modelCode) ?? query.modelCode.trim();
   const routes = query.models
     ? [
-        ...routesFromModelCards(query.models),
+        ...routesFromModelCards(query.models.filter((model) =>
+          model.id === modelCode && (!query.kind || model.kind === query.kind))),
         ...(query.allowMock ? MOCK_ROUTES : []),
       ]
     : MODEL_UPSTREAM_ROUTES;

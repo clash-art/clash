@@ -1,3 +1,6 @@
+import { PluginInstallControl } from "./PluginInstallControl";
+import { useState } from "react";
+import { marketplaceInstallation } from "@clash/shared-types/marketplace-installation";
 import { useNavigate } from "react-router";
 import { isDesktopRuntime } from "../lib/runtimeConfig";
 import { usePageHistorySwipe } from "./usePageHistorySwipe";
@@ -12,12 +15,15 @@ import {
 import { Badge } from "./ui/badge";
 
 export default function MarketplacePluginDetail({
-  installed,
+  installed: initiallyInstalled,
   item,
 }: {
   installed: boolean;
   item: RegistryItem;
 }) {
+  const [installedLocally, setInstalledLocally] = useState(false);
+  const installed = initiallyInstalled || installedLocally;
+  const installation = marketplaceInstallation(item);
   const navigate = useNavigate();
   const historySwipe = usePageHistorySwipe(
     () => navigate(-1),
@@ -35,7 +41,7 @@ export default function MarketplacePluginDetail({
         />
       </AppPageHeaderBand>
 
-      <AppPage width="narrow">
+      <AppPage width="narrow" className="px-[calc(var(--app-page-inline-inset)+1rem)]">
         <header className="flex flex-col gap-5 sm:flex-row sm:items-start">
           <span className="flex size-16 shrink-0 items-center justify-center">
             <MarketplaceItemArtwork item={item} context="preview" />
@@ -65,6 +71,7 @@ export default function MarketplacePluginDetail({
               </p>
             ) : null}
           </div>
+          {installation ? <PluginInstallControl item={item} installed={installed} onChanged={() => setInstalledLocally(true)} /> : null}
         </header>
 
         <section aria-label="Plugin declarations" className="mt-10">

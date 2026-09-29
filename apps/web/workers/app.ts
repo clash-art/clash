@@ -141,8 +141,23 @@ export default {
 
     // Better Auth handler (mounted directly in the worker so the session
     // cookie origin matches the browser-visible domain).
+    if (path === "/api/better-auth/options" && request.method === "GET") {
+      return json({password:true,emailOtp:true,google:!!(env.AUTH_GOOGLE_ID&&env.AUTH_GOOGLE_SECRET)});
+    }
     if (path.startsWith("/api/better-auth/")) {
       return createAuth(env).handler(request);
+    }
+
+    // Discovery and PKCE code exchange must work before the client has a token.
+    // The API validates the authorization code + verifier; no caller identity
+    // is trusted on either public endpoint.
+    if (
+      (path === "/api/v1/cloud" && request.method === "GET") ||
+      (path === "/api/v1/cli-auth/token" && request.method === "POST")
+    ) {
+      const publicRequest = new Request(request);
+      publicRequest.headers.delete("x-user-id");
+      return proxyToApiCf(publicRequest, env);
     }
 
     // Auth-gated public REST API v1 — inject x-user-id then proxy.

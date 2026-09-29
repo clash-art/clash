@@ -95,7 +95,7 @@ else if (bandIdx >= tracks.length) → create track at bottom
 else → target = tracks[bandIdx]
 ```
 
-下游 `preferItemEdgeSnap`（横向吸附） + `resolveNonOverlapInTrack`（目标 track 内避让推挤） + `finalizeDrop`（drop action 分类）三步保持不动。
+下游按 `preferItemEdgeSnap`（横向吸附）→ `resolveNonOverlapInTrack`（目标 track 内最近的合法空位）→ `finalizeDrop`（drop action 分类）处理。避让不改写相邻片段；不要只向后推挤，否则短距离拖动会跳过整串连续片段。2026-09-29 的实际工程回归：100 帧片段从 44 拖向 84，应停在最近空位 44，不能跳到 1587。
 
 **不要再引入"item 某区域横跨 boundary 就怎样"这类 zone 规则**——如果真要加（比如"拖到两 track 缝隙插入新 track"），单独做成显式的阈值判定，不要和基础路由搅在一起。
 

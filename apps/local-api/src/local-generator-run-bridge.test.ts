@@ -5,18 +5,23 @@ import { join } from "node:path";
 import { LoroDoc } from "loro-crdt";
 import { createBoundedRetryPolicy } from "@clash/shared-runtime";
 import {
+  Canvas,
   commitActionRunOutcome,
   createProjectAsset,
+  createProjectDocumentAsset,
   createProjectGenerator,
   readDocumentAssetRevision,
   readDocumentAttachment,
   ensureActionRunRequest,
+  ensureOutputCommit,
+  resolveOutputCommitAssetType,
   markActionRunStarted,
   readActionAssetBinding,
   readOutputCommit,
   readProjectAsset,
   readProjectActionRun,
   readProjectDocumentAsset,
+  MODEL_TEXT_DOCUMENT_KIND,
   type ActionAssetBinding,
   type ActionRunRequest,
   type ProjectAssetEntry,
@@ -172,6 +177,41 @@ function legacyOutputBinding(
 }
 
 describe("Local Generator Run bridge", () => {
+  it("checkpoints the Canvas pending output with admission and resolves it from the published OutputCommit", async () => {
+    const doc = projectDoc();
+    const canvas = new Canvas(doc, () => {});
+    const journal = createSqliteDurableRunJournal(await temporaryDataDir());
+    const bridge = createLocalGeneratorRunBridge({ownerId:"local",journal});
+    const checkpoints: unknown[] = [];
+    const checkpoint = async () => { checkpoints.push(canvas.listNodes().find(node=>node.data.generatorOutputSlot === "image")?.data); };
+    const entries=[{request:request(),command:durableCommand(),canvasPlacement:{canvasId:"main",nodeId:"stage-placement",actionCardId:"stage-card"}}];
+    await bridge.enqueueBatch({doc,entries,checkpoint});
+    expect(checkpoints[0]).toMatchObject({status:"generating",actionRunId:"run-stage-1"});
+    const pending=canvas.listNodes().find(node=>node.data.generatorOutputSlot === "image")!;
+    const publication=await bridge.publishMediaSuccess({doc,actionRunId:"run-stage-1",outputSlot:"image",entry:generatedAsset(),checkpoint});
+    expect(canvas.readNode(pending.id)?.data).toMatchObject({status:"completed",assetId:publication.entry.id});
+    const before=canvas.listNodes();
+    await bridge.enqueueBatch({doc,entries,checkpoint});
+    expect(canvas.listNodes()).toEqual(before);
+    expect(canvas.listEdges()).toEqual(expect.arrayContaining([expect.objectContaining({source:"stage-placement",target:pending.id})]));
+    doc.free();
+  });
+
+  it("rejects a conflicting placement before admitting the Run or writing a private task", async () => {
+    const doc=projectDoc();
+    const canvas=new Canvas(doc,()=>{});
+    canvas.createNode("occupied","text",{content:"Keep me"});
+    const before=canvas.listNodes();
+    const journal=createSqliteDurableRunJournal(await temporaryDataDir());
+    const bridge=createLocalGeneratorRunBridge({ownerId:"local",journal});
+    const checkpoint=vi.fn(async()=>{});
+    await expect(bridge.enqueueBatch({doc,entries:[{request:request(),command:durableCommand(),canvasPlacement:{canvasId:"main",nodeId:"occupied",actionCardId:"stage-card"}}],checkpoint})).rejects.toThrow(/another Generator/);
+    expect(readProjectActionRun(doc,"run-stage-1")).toBeNull();
+    expect(canvas.listNodes()).toEqual(before);
+    expect(await journal.load({actionRunId:"run-stage-1",outputSlot:"image"})).toBeUndefined();
+    expect(checkpoint).not.toHaveBeenCalled();
+    doc.free();
+  });
   it.each(["completed", "wrong-kind", "binding-drift"] as const)(
     "keeps a Provider-backed Generator Run authoritative across restart: %s",
     async (outcome) => {
@@ -940,6 +980,43 @@ describe("Local Generator Run bridge", () => {
       slot: "description",
       document: { documentAssetId: "analysis-description", revisionId: "analysis:r1" },
     });
+  });
+
+  it("publishes plain model text with media provenance without inventing a forbidden asset attachment", async () => {
+    const doc = projectDoc();
+    expect(createProjectAsset(doc, { id: "source-asset", kind: "image", source: { kind: "owned", resourceId: "source-resource" }, lifecycle: { state: "active" }, metadata: { contentType: "image/png" } }).ok).toBe(true);
+    const run = { ...request(), outputContract: [{ slot: "answer", assetType: { kind: "document" as const, documentKind: MODEL_TEXT_DOCUMENT_KIND, schemaVersion: 1 }, cardinality: { minItems: 1, maxItems: 1 } }] };
+    expect(ensureActionRunRequest(doc, run).ok).toBe(true);
+    expect(markActionRunStarted(doc, run.actionRunId).ok).toBe(true);
+    const bridge = createLocalGeneratorRunBridge({ ownerId: "host", journal: createSqliteDurableRunJournal(await temporaryDataDir()) });
+    const sourceRefs = [{ slot: "source", target: { kind: "media" as const, projectAssetId: "source-asset" } }];
+    const input = { doc, actionRunId: run.actionRunId, outputSlot: "answer", checkpoint: async () => undefined,
+      revision: { id: "answer-r1", documentAssetId: "answer", documentKind: MODEL_TEXT_DOCUMENT_KIND, schemaVersion: 1, mutability: "versioned" as const,
+        body: { digest: `sha256:${"d".repeat(64)}` as const, byteLength: 10, contentType: "application/json" }, producer: { kind: "action-run" as const, actionRunId: run.actionRunId }, sourceRefs } };
+    await expect(bridge.publishDocumentSuccess(input)).resolves.toMatchObject({ run: { status: "succeeded" } });
+    expect(readDocumentAssetRevision(doc, { documentAssetId: "answer", revisionId: "answer-r1" })?.sourceRefs).toEqual(sourceRefs);
+    expect(readDocumentAttachment(doc, "attachment:answer-r1:source-asset")).toBeNull();
+    const first = readOutputCommit(doc, { actionRunId: run.actionRunId, outputSlot: "answer" });
+    await bridge.publishDocumentSuccess(input);
+    expect(readOutputCommit(doc, { actionRunId: run.actionRunId, outputSlot: "answer" })).toEqual(first);
+  });
+
+  it("repairs missing typed-source attachments when replay finds an already committed output", async () => {
+    const doc = projectDoc();
+    expect(createProjectAsset(doc, { id: "source-asset", kind: "image", source: { kind: "owned", resourceId: "source-resource" }, lifecycle: { state: "active" }, metadata: { contentType: "image/png" } }).ok).toBe(true);
+    const run = { ...request(), outputContract: [{ slot: "description", assetType: { kind: "document" as const, documentKind: "media.analysis.description", schemaVersion: 1 }, cardinality: { minItems: 1, maxItems: 1 } }] };
+    expect(ensureActionRunRequest(doc, run).ok).toBe(true);
+    expect(markActionRunStarted(doc, run.actionRunId).ok).toBe(true);
+    const revision = { id: "description-r1", documentAssetId: "description", documentKind: "media.analysis.description", schemaVersion: 1, mutability: "versioned" as const,
+      body: { digest: `sha256:${"d".repeat(64)}` as const, byteLength: 10, contentType: "application/json" }, producer: { kind: "action-run" as const, actionRunId: run.actionRunId },
+      sourceRefs: [{ slot: "source", target: { kind: "media" as const, projectAssetId: "source-asset" } }] };
+    expect(createProjectDocumentAsset(doc, revision).ok).toBe(true);
+    expect(ensureOutputCommit(doc, { actionRunId: run.actionRunId, outputSlot: "description", asset: { kind: "document", documentAssetId: revision.documentAssetId, revisionId: revision.id } }, resolveOutputCommitAssetType).ok).toBe(true);
+    const bridge = createLocalGeneratorRunBridge({ ownerId: "host", journal: createSqliteDurableRunJournal(await temporaryDataDir()) });
+    const input = { doc, actionRunId: run.actionRunId, outputSlot: "description", revision, checkpoint: async () => undefined };
+    await bridge.publishDocumentSuccess(input);
+    expect(readDocumentAttachment(doc, `attachment:${revision.id}:source-asset`)).toMatchObject({ document: { documentAssetId: revision.documentAssetId, revisionId: revision.id } });
+    expect((await bridge.publishDocumentSuccess(input)).changed).toBe(false);
   });
 
   it("publishes independent optional Document slots without terminalizing before explicit finalization", async () => {

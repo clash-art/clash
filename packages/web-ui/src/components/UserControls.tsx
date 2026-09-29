@@ -1,3 +1,4 @@
+import { SettingsDialog } from "./SettingsDialog";
 /* eslint-disable @next/next/no-img-element */
 
 import { useState } from "react";
@@ -66,6 +67,7 @@ function SettingsOnlyControl({
 }
 
 function AccountUserControls({
+  sidebarExpanded = false,
   compact = false,
   projectChrome = false,
 }: UserControlsProps = {}) {
@@ -73,6 +75,7 @@ function AccountUserControls({
   const session = sessionQuery.data;
   const user = session?.user;
   const [avatarFailed, setAvatarFailed] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const balance = useBillingBalance(!!user);
 
   const handleSignOut = async () => {
@@ -118,8 +121,11 @@ function AccountUserControls({
 
   return (
     <div
-      className={`flex items-center ${compact || projectChrome ? "gap-1.5" : "gap-3"}`}
+      className={`flex items-center ${sidebarExpanded ? "w-full" : ""} ${compact || projectChrome ? "gap-1.5" : "gap-3"}`}
     >
+      {settingsOpen ? (
+        <SettingsDialog open onClose={() => setSettingsOpen(false)} />
+      ) : null}
       {user ? (
         <div className="relative flex items-center gap-2">
           {(balance.status === "ready" || balance.status === "loading") && (
@@ -135,9 +141,11 @@ function AccountUserControls({
                 className={
                   projectChrome
                     ? "clash-project-top-balance flex h-10 items-center gap-1.5 rounded-xl px-3 text-sm font-display font-semibold text-slate-900 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-page"
-                    : compact
-                      ? "flex h-8 w-8 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-warm-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      : "flex items-center gap-1.5 rounded-xl bg-warm-surface border border-warm-border px-3 py-1.5 shadow-sm hover:shadow-md hover:border-brand/40 transition-[box-shadow,border-color] text-sm font-display font-medium text-content-primary"
+                    : sidebarExpanded
+                      ? "flex h-10 w-full min-h-0 justify-start gap-2.5 rounded-lg border-transparent bg-transparent px-2 text-content-secondary shadow-none hover:bg-warm-hover data-[state=open]:bg-warm-hover"
+                      : compact
+                        ? "flex h-8 w-8 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-warm-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        : "flex items-center gap-1.5 rounded-xl bg-warm-surface border border-warm-border px-3 py-1.5 shadow-sm hover:shadow-md hover:border-brand/40 transition-[box-shadow,border-color] text-sm font-display font-medium text-content-primary"
                 }
                 aria-label="Credits balance — click to manage billing"
               >
@@ -161,9 +169,11 @@ function AccountUserControls({
                 className={
                   projectChrome
                     ? "clash-project-top-avatar flex h-10 min-h-0 w-10 items-center justify-center rounded-xl border-transparent bg-transparent p-0 shadow-none transition-colors focus-visible:ring-offset-warm-page"
-                    : compact
-                      ? "flex h-8 min-h-0 items-center rounded-lg border-transparent bg-transparent px-1 text-content-secondary shadow-none transition-colors hover:bg-warm-hover hover:text-content-primary"
-                      : "flex min-h-0 items-center gap-3 rounded-2xl border border-warm-border bg-warm-surface pl-1.5 pr-4 py-1.5 text-sm shadow-sm cursor-pointer hover:shadow-md transition-shadow focus-visible:ring-offset-warm-page"
+                    : sidebarExpanded
+                      ? "flex h-10 w-full min-h-0 justify-start gap-2.5 rounded-lg border-transparent bg-transparent px-2 text-content-secondary shadow-none hover:bg-warm-hover data-[state=open]:bg-warm-hover"
+                      : compact
+                        ? "flex h-8 min-h-0 items-center rounded-lg border-transparent bg-transparent px-1 text-content-secondary shadow-none transition-colors hover:bg-warm-hover hover:text-content-primary"
+                        : "flex min-h-0 items-center gap-3 rounded-2xl border border-warm-border bg-warm-surface pl-1.5 pr-4 py-1.5 text-sm shadow-sm cursor-pointer hover:shadow-md transition-shadow focus-visible:ring-offset-warm-page"
                 }
               >
                 {user.image && !avatarFailed ? (
@@ -175,14 +185,14 @@ function AccountUserControls({
                   />
                 ) : (
                   <div
-                    className={`flex ${compact ? "h-7 w-7 text-[11px]" : projectChrome ? "h-8 w-8 text-xs" : "h-10 w-10 text-sm"} items-center justify-center rounded-xl bg-brand-light font-bold text-brand ring-1 ring-brand/20`}
+                    className={`flex ${compact ? "h-7 w-7 text-[11px]" : projectChrome ? "h-8 w-8 text-xs" : "h-10 w-10 text-sm"} items-center justify-center rounded-lg font-medium ${sidebarExpanded ? "bg-warm-hover text-content-secondary" : "bg-brand-light text-brand ring-1 ring-brand/20"}`}
                     aria-hidden="true"
                   >
                     {getInitials(user.name)}
                   </div>
                 )}
-                {!compact && !projectChrome && (
-                  <span className="max-w-[120px] truncate font-display text-base font-medium text-content-primary">
+                {(!compact || sidebarExpanded) && !projectChrome && (
+                  <span className="min-w-0 truncate text-sm font-medium text-content-primary">
                     {user.name}
                   </span>
                 )}
@@ -194,13 +204,11 @@ function AccountUserControls({
               side="bottom"
               className="w-[208px]"
             >
-              <DropdownMenuItem asChild>
-                <Link to="/settings">
-                  <Gear className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    Settings
-                  </span>
-                </Link>
+              <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                <Gear className="h-4 w-4 flex-shrink-0" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate font-medium">
+                  Settings
+                </span>
               </DropdownMenuItem>
               {balance.status !== "unavailable" && (
                 <DropdownMenuItem asChild>

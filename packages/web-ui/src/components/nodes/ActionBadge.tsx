@@ -1,10 +1,22 @@
 import { createLogger } from "../../lib/logger";
-import { appendActionCardInput, createActionCardPromptEdit, reorderActionCardInputs } from "@clash/shared-types";
-import { editModelKeyframes, evenlySpacedFrameIndices, keyframeFrameIndices, planKeyframeInsertion, KEYFRAME_FRAME_INDICES_PARAM, KEYFRAME_TIMING_CUSTOMIZED_PARAM } from "@clash/shared-types";
+import {
+  appendActionCardInput,
+  createActionCardPromptEdit,
+  reorderActionCardInputs,
+} from "@clash/shared-types";
+import {
+  editModelKeyframes,
+  evenlySpacedFrameIndices,
+  keyframeFrameIndices,
+  planKeyframeInsertion,
+  KEYFRAME_FRAME_INDICES_PARAM,
+  KEYFRAME_TIMING_CUSTOMIZED_PARAM,
+} from "@clash/shared-types";
 export { planKeyframeInsertion } from "@clash/shared-types";
 import { canvasModelGeneratorRevisionData } from "@clash/shared-types";
 import type { GeneratorDraftEdit } from "../../lib/generatorDraftEditor";
 import { useNativeGeneratorDraft } from "../../hooks/useNativeGeneratorDraft";
+import { NativeActionRunNode } from "./NativeActionRunNode";
 import {
   Fragment,
   memo,
@@ -57,11 +69,22 @@ import { useLayoutManager } from "@clash/web-ui/lib/layout";
 import { generateSemanticId } from "@clash/web-ui/lib/utils/semanticId";
 import { ProjectedImage } from "../ProjectedMedia";
 import { getAsset, useAsset } from "@clash/web-ui/lib/hooks/useAsset";
+import { FrameReferenceSlot } from "./GeneratorReferenceThumbnail";
 import { NativeMediaReference } from "./NativeMediaReference";
 import { NativeDocumentReference } from "./NativeDocumentReference";
 import { NativeOrderedPrompt } from "./NativeOrderedPrompt";
-import { modelPromptParts, modelPromptPartsWithInputs, withModelPromptParts, removeModelPromptInput, modelInputRefsInPromptOrder, reorderModelMediaInputs } from "../../lib/modelPromptContent";
-import { createModelPromptEdit, createModelTextReferenceEdit } from "../../lib/modelPromptMentions";
+import {
+  modelPromptParts,
+  modelPromptPartsWithInputs,
+  withModelPromptParts,
+  removeModelPromptInput,
+  modelInputRefsInPromptOrder,
+  reorderModelMediaInputs,
+} from "../../lib/modelPromptContent";
+import {
+  createModelPromptEdit,
+  createModelTextReferenceEdit,
+} from "../../lib/modelPromptMentions";
 import { createModelMediaInput } from "../../lib/modelMediaInput";
 import { assetThumbnailImageUrl } from "../../features/assets/media-url";
 import { VideoPoster } from "../../features/assets/VideoPoster";
@@ -271,76 +294,6 @@ function FrameReferenceStrip({
       </div>
       {message}
     </div>
-  );
-}
-
-function FrameReferenceSlot({
-  assetReference,
-  badge,
-  emptyControl,
-  filled,
-  label,
-  onRemove,
-  removeLabel,
-  thumb,
-  timeControl,
-  timeLabel,
-}: {
-  assetReference?: { projectId: string; assetId: string };
-  badge?: ReactNode;
-  emptyControl?: ReactNode;
-  filled: boolean;
-  label: string;
-  onRemove?: () => void;
-  removeLabel?: string;
-  thumb?: string;
-  timeControl?: ReactNode;
-  timeLabel?: string;
-}) {
-  const asset = useAsset(assetReference?.projectId ?? "", assetReference?.assetId);
-  const resolvedThumb = thumb ?? (assetReference ? asset?.thumbnailUrl ?? (asset?.kind === "image" ? asset.url : undefined) : undefined);
-  return (
-    <Tooltip label={label}>
-      <div className="group/thumb relative w-10 flex-shrink-0">
-        {filled ? (
-          <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-lg border border-warm-border bg-warm-muted shadow-sm">
-            {resolvedThumb ? (
-              <ProjectedImage
-                src={resolvedThumb}
-                alt={label}
-                className="h-full w-full object-cover"
-              />
-            ) : (
-              <ImageIcon size={15} className="text-content-secondary" />
-            )}
-          </div>
-        ) : (
-          emptyControl
-        )}
-        <span className="sr-only">{label}</span>
-        {badge != null && (
-          <span className="clash-node-ref-index pointer-events-none absolute -left-1 -top-1 min-w-[14px] rounded px-1 text-center text-[9px] font-bold leading-[14px]">
-            {badge}
-          </span>
-        )}
-        {timeControl ??
-          (timeLabel && (
-            <div className="mt-1 text-center text-[9px] tabular-nums leading-none text-content-secondary">
-              {timeLabel}
-            </div>
-          ))}
-        {onRemove && removeLabel && (
-          <IconButton
-            label={removeLabel}
-            icon="×"
-            size="sm"
-            shape="circle"
-            onClick={onRemove}
-            className={`${NODE_INTERACTION_BOUNDARY_CLASS} clash-node-ref-remove absolute -right-1 -top-1 hidden h-5 min-h-5 w-5 min-w-5 text-[11px] leading-none group-hover/thumb:flex`}
-          />
-        )}
-      </div>
-    </Tooltip>
   );
 }
 
@@ -676,21 +629,45 @@ const extractLabelFromPrompt = (
   return firstLine;
 };
 
-type NativeGeneratorDraft = NonNullable<ReturnType<typeof useNativeGeneratorDraft>>;
+type NativeGeneratorDraft = NonNullable<
+  ReturnType<typeof useNativeGeneratorDraft>
+>;
+type GeneratorComposerHost = {
+  composer?: boolean;
+  onComposerClose?: () => void;
+  onExecuteRevision?: (revision: {
+    generatorId: string;
+    generatorRevisionId: string;
+  }) => Promise<void>;
+};
+type ActionEditorProps = Pick<
+  NodeProps<RFNode<Record<string, any>>>,
+  "id" | "data" | "selected"
+> &
+  Partial<NodeProps<RFNode<Record<string, any>>>> &
+  GeneratorComposerHost;
 const PromptActionNode = ({
   data,
   selected,
   id,
   nativeDraft,
-}: NodeProps<RFNode<Record<string, any>>> & { nativeDraft?: NativeGeneratorDraft }) => {
+  composer = false,
+  onComposerClose,
+  onExecuteRevision,
+}: ActionEditorProps & { nativeDraft?: NativeGeneratorDraft }) => {
   // `data.openPanel` is a one-shot handoff from `handleCopy` — a freshly
   // cloned node mounts with its config panel already open, then clears the
   // flag in an effect so subsequent loads don't re-open.
   const {
-    close: closeActionPanel,
-    isOpen: showPanel,
+    close: closeCanvasActionPanel,
+    isOpen: canvasPanelOpen,
     open: openActionPanel,
   } = useCanvasTransientUiOwner("action-panel", id);
+  const showPanel = composer || canvasPanelOpen;
+  const closeActionPanel = useCallback(() => {
+    if (composer) onComposerClose?.();
+    else closeCanvasActionPanel();
+  }, [composer, onComposerClose, closeCanvasActionPanel]);
   const flowStore = useStoreApi();
   // Configuration belongs to the real canvas selection, so its highlight
   // and keyboard deletion always target the same node.
@@ -844,7 +821,8 @@ const PromptActionNode = ({
 
   const editorRef = useRef<HTMLDivElement>(null);
 
-  const actionKind = customDef?.outputType ?? resolveBuiltInActionKind(actionType);
+  const actionKind =
+    customDef?.outputType ?? resolveBuiltInActionKind(actionType);
   const initialModelId = isCustom
     ? ""
     : (actionKind === "image" || actionKind === "video"
@@ -855,7 +833,8 @@ const PromptActionNode = ({
           )
         : (data.modelId as string | undefined)) ||
       (enabledModelCatalog.find((entry) => entry.model.kind === actionKind)
-        ?.model.id ?? "");
+        ?.model.id ??
+        "");
   const initialModelCard =
     enabledModelCatalog.find((entry) => entry.model.id === initialModelId)
       ?.model ?? MODEL_CARDS.find((card) => card.id === initialModelId);
@@ -876,7 +855,7 @@ const PromptActionNode = ({
           ? TextT
           : actionKind === "model"
             ? Cube
-          : ImageIcon;
+            : ImageIcon;
   const colorClass = isCustom
     ? "text-custom"
     : actionKind === "video"
@@ -887,7 +866,7 @@ const PromptActionNode = ({
           ? "text-slate-800 dark:text-slate-200"
           : actionKind === "model"
             ? "text-slate-800 dark:text-slate-200"
-          : "text-image";
+            : "text-image";
   const bgClass = isCustom
     ? "bg-custom-light"
     : actionKind === "video"
@@ -898,7 +877,7 @@ const PromptActionNode = ({
           ? "bg-warm-muted"
           : actionKind === "model"
             ? "bg-warm-muted"
-          : "bg-image-light";
+            : "bg-image-light";
   const ringClass = isCustom
     ? "ring-custom"
     : actionKind === "video"
@@ -909,7 +888,7 @@ const PromptActionNode = ({
           ? "ring-slate-500"
           : actionKind === "model"
             ? "ring-slate-500"
-          : "ring-image";
+            : "ring-image";
   const btnClass = isCustom
     ? "bg-custom hover:opacity-90"
     : actionKind === "video"
@@ -920,7 +899,7 @@ const PromptActionNode = ({
           ? "clash-node-primary"
           : actionKind === "model"
             ? "clash-node-primary"
-          : "bg-image hover:opacity-90";
+            : "bg-image hover:opacity-90";
 
   const availableModels = useMemo(
     () =>
@@ -937,7 +916,8 @@ const PromptActionNode = ({
     [enabledModelCatalog, isCustom, modelId],
   );
   const modelUnavailable = !isCustom && !selectedCatalogEntry;
-  const modelUnavailableReason = "No connected provider or executable route for this model. Connect a provider or choose an available model.";
+  const modelUnavailableReason =
+    "No connected provider or executable route for this model. Connect a provider or choose an available model.";
   const unavailableParameterIds = useMemo(
     () => new Set(selectedCatalogEntry?.unavailableParameterIds ?? []),
     [selectedCatalogEntry?.unavailableParameterIds],
@@ -1113,15 +1093,29 @@ const PromptActionNode = ({
 
   // Attached node IDs = incoming edges whose source has a compatible modality,
   // including drafts (empty src, will materialize when Build runs).
-  const nativeInputKey = nativeDraft?.projection ? JSON.stringify([nativeDraft.projection.revision.persistentInputRefs, nativeDraft.projection.revision.state.contentParts]) : null;
+  const nativeInputKey = nativeDraft?.projection
+    ? JSON.stringify([
+        nativeDraft.projection.revision.persistentInputRefs,
+        nativeDraft.projection.revision.state.contentParts,
+      ])
+    : null;
   const attachedNodeIds = useMemo(() => {
     if (nativeDraft?.projection) {
       const nodes = getNodes();
       const revision = nativeDraft.projection.revision;
-      return (isCustom ? revision.persistentInputRefs : modelInputRefsInPromptOrder(revision.state, revision.persistentInputRefs)).flatMap((ref) => {
+      return (
+        isCustom
+          ? revision.persistentInputRefs
+          : modelInputRefsInPromptOrder(
+              revision.state,
+              revision.persistentInputRefs,
+            )
+      ).flatMap((ref) => {
         if (!("kind" in ref.target) || ref.target.kind !== "media") return [];
         const assetId = ref.target.projectAssetId;
-        const node = nodes.find((candidate) => referenceAssetId(candidate) === assetId);
+        const node = nodes.find(
+          (candidate) => referenceAssetId(candidate) === assetId,
+        );
         return node ? [node.id] : [];
       });
     }
@@ -1132,7 +1126,15 @@ const PromptActionNode = ({
         (n): n is NonNullable<typeof n> => !!n && hasCompatibleModality(n),
       )
       .map((n) => n.id);
-  }, [connectedEdges, id, getNode, getNodes, hasCompatibleModality, nativeInputKey, isCustom]);
+  }, [
+    connectedEdges,
+    id,
+    getNode,
+    getNodes,
+    hasCompatibleModality,
+    nativeInputKey,
+    isCustom,
+  ]);
 
   const refNodeIds = useMemo(() => {
     const order = Array.isArray(data.referenceImageOrder)
@@ -1146,14 +1148,31 @@ const PromptActionNode = ({
   }, [attachedNodeIds, data.referenceImageOrder]);
   const keyframeInputs = useMemo(() => {
     const before = nativeDraft?.projection?.revision;
-    return new Map(before && !isCustom ? modelInputRefsInPromptOrder(before.state, before.persistentInputRefs)
-      .filter(ref => ref.slot === "image" && "kind" in ref.target && ref.target.kind === "media")
-      .map(ref => [JSON.stringify([ref.slot, ref.itemKey ?? null]), ref]) : []);
+    return new Map(
+      before && !isCustom
+        ? modelInputRefsInPromptOrder(before.state, before.persistentInputRefs)
+            .filter(
+              (ref) =>
+                ref.slot === "image" &&
+                "kind" in ref.target &&
+                ref.target.kind === "media",
+            )
+            .map((ref) => [
+              JSON.stringify([ref.slot, ref.itemKey ?? null]),
+              ref,
+            ])
+        : [],
+    );
   }, [nativeInputKey, isCustom]);
-  const keyframeKeys = useMemo(() => nativeDraft ? [...keyframeInputs.keys()] : refNodeIds, [nativeDraft, keyframeInputs, refNodeIds]);
+  const keyframeKeys = useMemo(
+    () => (nativeDraft ? [...keyframeInputs.keys()] : refNodeIds),
+    [nativeDraft, keyframeInputs, refNodeIds],
+  );
   const keyframeAssetReference = (key: string) => {
     const input = keyframeInputs.get(key);
-    return input && "kind" in input.target && input.target.kind === "media" ? { projectId, assetId: input.target.projectAssetId } : undefined;
+    return input && "kind" in input.target && input.target.kind === "media"
+      ? { projectId, assetId: input.target.projectAssetId }
+      : undefined;
   };
   const keyframeFrames = useMemo(
     () =>
@@ -1182,8 +1201,19 @@ const PromptActionNode = ({
     };
     if (nativeDraft?.projection) {
       for (const ref of nativeDraft.projection.revision.persistentInputRefs) {
-        const kind = ref.slot === "startFrame" || ref.slot === "endFrame" ? "image" : ref.slot;
-        if ("kind" in ref.target && ref.target.kind === "media" && (kind === "image" || kind === "video" || kind === "audio" || kind === "model")) byKind[kind] += 1;
+        const kind =
+          ref.slot === "startFrame" || ref.slot === "endFrame"
+            ? "image"
+            : ref.slot;
+        if (
+          "kind" in ref.target &&
+          ref.target.kind === "media" &&
+          (kind === "image" ||
+            kind === "video" ||
+            kind === "audio" ||
+            kind === "model")
+        )
+          byKind[kind] += 1;
       }
       return byKind;
     }
@@ -1259,8 +1289,22 @@ const PromptActionNode = ({
         models: compatibleAvailableModels,
         customActions,
         referenceCounts: refKindCounts,
-      }).filter((choice) => !nativeDraft || (isCustom ? choice.kind === "action" && choice.id === customActionId : choice.kind === "model")),
-    [actionKind, compatibleAvailableModels, customActions, refKindCounts, nativeDraft, isCustom, customActionId],
+      }).filter(
+        (choice) =>
+          !nativeDraft ||
+          (isCustom
+            ? choice.kind === "action" && choice.id === customActionId
+            : choice.kind === "model"),
+      ),
+    [
+      actionKind,
+      compatibleAvailableModels,
+      customActions,
+      refKindCounts,
+      nativeDraft,
+      isCustom,
+      customActionId,
+    ],
   );
 
   const clearAllRefs = useCallback(() => {
@@ -1332,11 +1376,34 @@ const PromptActionNode = ({
         cleaned.push(nid);
       }
       if (nativeDraft) {
-        const orderedAssets = cleaned.flatMap((nodeId) => { const node = getNode(nodeId); return node ? [referenceAssetId(node)] : []; }).filter(Boolean);
-        void nativeDraft.editDraft((before) => ({
-          state: isCustom ? before.state : reorderModelMediaInputs(before.state, before.persistentInputRefs, orderedAssets as string[]),
-          persistentInputRefs: isCustom ? reorderActionCardInputs(before.persistentInputRefs, (orderedAssets as string[]).map(projectAssetId => ({ kind: "media", projectAssetId }))) : before.persistentInputRefs,
-        })).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        const orderedAssets = cleaned
+          .flatMap((nodeId) => {
+            const node = getNode(nodeId);
+            return node ? [referenceAssetId(node)] : [];
+          })
+          .filter(Boolean);
+        void nativeDraft
+          .editDraft((before) => ({
+            state: isCustom
+              ? before.state
+              : reorderModelMediaInputs(
+                  before.state,
+                  before.persistentInputRefs,
+                  orderedAssets as string[],
+                ),
+            persistentInputRefs: isCustom
+              ? reorderActionCardInputs(
+                  before.persistentInputRefs,
+                  (orderedAssets as string[]).map((projectAssetId) => ({
+                    kind: "media",
+                    projectAssetId,
+                  })),
+                )
+              : before.persistentInputRefs,
+          }))
+          .catch((error) =>
+            setError(error instanceof Error ? error.message : String(error)),
+          );
         return;
       }
       setNodes((nds) =>
@@ -1364,16 +1431,45 @@ const PromptActionNode = ({
       setModelParams(nextParams);
       if (nativeDraft) {
         const expectedKeys = JSON.stringify(keyframeKeys);
-        void nativeDraft.editDraft(before => {
-          const currentKeys = modelInputRefsInPromptOrder(before.state, before.persistentInputRefs)
-            .filter(ref => ref.slot === "image" && "kind" in ref.target && ref.target.kind === "media")
-            .map(ref => JSON.stringify([ref.slot, ref.itemKey ?? null]));
-          if (JSON.stringify(currentKeys) !== expectedKeys || next.length !== currentKeys.length) throw new Error("The keyframe sequence changed. Read the draft again before editing timing.");
-          return { state: { ...before.state, params: {
-            ...(before.state.params && typeof before.state.params === "object" && !Array.isArray(before.state.params) ? before.state.params : {}),
-            [KEYFRAME_FRAME_INDICES_PARAM]: serialized, [KEYFRAME_TIMING_CUSTOMIZED_PARAM]: customized,
-          } }, persistentInputRefs: before.persistentInputRefs };
-        }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        void nativeDraft
+          .editDraft((before) => {
+            const currentKeys = modelInputRefsInPromptOrder(
+              before.state,
+              before.persistentInputRefs,
+            )
+              .filter(
+                (ref) =>
+                  ref.slot === "image" &&
+                  "kind" in ref.target &&
+                  ref.target.kind === "media",
+              )
+              .map((ref) => JSON.stringify([ref.slot, ref.itemKey ?? null]));
+            if (
+              JSON.stringify(currentKeys) !== expectedKeys ||
+              next.length !== currentKeys.length
+            )
+              throw new Error(
+                "The keyframe sequence changed. Read the draft again before editing timing.",
+              );
+            return {
+              state: {
+                ...before.state,
+                params: {
+                  ...(before.state.params &&
+                  typeof before.state.params === "object" &&
+                  !Array.isArray(before.state.params)
+                    ? before.state.params
+                    : {}),
+                  [KEYFRAME_FRAME_INDICES_PARAM]: serialized,
+                  [KEYFRAME_TIMING_CUSTOMIZED_PARAM]: customized,
+                },
+              },
+              persistentInputRefs: before.persistentInputRefs,
+            };
+          })
+          .catch((error) =>
+            setError(error instanceof Error ? error.message : String(error)),
+          );
         return;
       }
       setNodes((nodes) =>
@@ -1387,80 +1483,224 @@ const PromptActionNode = ({
         loroSync.updateNode(id, { data: { modelParams: nextParams } });
       }
     },
-    [id, keyframeTimingCustomized, loroSync, modelParams, setNodes, nativeDraft, keyframeKeys],
+    [
+      id,
+      keyframeTimingCustomized,
+      loroSync,
+      modelParams,
+      setNodes,
+      nativeDraft,
+      keyframeKeys,
+    ],
   );
 
-  const addNativeMediaReference = useCallback((sourceNodeId: string, endpoint?: "start" | "end") => {
-    if (!nativeDraft) return;
-    const node = getNode(sourceNodeId);
-    if (isCustom && customDef?.generator) {
-      if (node?.type === "text" && node.data?.documentRevision === undefined && typeof node.data?.content === "string") {
-        const text = node.data.content;
-        void nativeDraft.edit((state) => ({ ...state, prompt: `${state.prompt ?? ""}\n\n${text}` })).catch((error) => setError(String(error)));
+  const addNativeMediaReference = useCallback(
+    (sourceNodeId: string, endpoint?: "start" | "end") => {
+      if (!nativeDraft) return;
+      const node = getNode(sourceNodeId);
+      if (isCustom && customDef?.generator) {
+        if (
+          node?.type === "text" &&
+          node.data?.documentRevision === undefined &&
+          typeof node.data?.content === "string"
+        ) {
+          const text = node.data.content;
+          void nativeDraft
+            .edit((state) => ({
+              ...state,
+              prompt: `${state.prompt ?? ""}\n\n${text}`,
+            }))
+            .catch((error) => setError(String(error)));
+          return;
+        }
+        try {
+          const asset = canvasAssetRevision(node);
+          const kind = node && referenceModality(node);
+          if (!asset || !kind)
+            throw new Error("This reference needs an applied Asset.");
+          const placement = loroSync?.doc?.getMap("nodes").get(id) as
+            { canvasId?: string } | undefined;
+          void nativeDraft
+            .prepare((before, definition) => ({
+              ...appendActionCardInput(
+                before,
+                customDef.generator!,
+                definition,
+                asset,
+                kind,
+              ),
+              canvasInputConnections: placement ? [
+                {
+                  canvasId: placement?.canvasId ?? "main",
+                  sourceNodeId,
+                  targetNodeId: id,
+                  asset,
+                },
+              ] : undefined,
+            }))
+            .catch((error) =>
+              setError(error instanceof Error ? error.message : String(error)),
+            );
+        } catch (error) {
+          setError(error instanceof Error ? error.message : String(error));
+        }
         return;
       }
-      try {
-        const asset = canvasAssetRevision(node);
-        const kind = node && referenceModality(node);
-        if (!asset || !kind) throw new Error("This reference needs an applied Asset.");
-        const placement = loroSync?.doc?.getMap("nodes").get(id) as { canvasId?: string } | undefined;
-        void nativeDraft.prepare((before, definition) => ({
-          ...appendActionCardInput(before, customDef.generator!, definition, asset, kind),
-          canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset }],
-        })).catch((error) => setError(error instanceof Error ? error.message : String(error)));
-      } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
-      return;
-    }
-    if (node?.type === "text") {
-      try {
-        const edit = createModelTextReferenceEdit(node, typeof node.data?.label === "string" ? node.data.label : "Text");
-        const asset = canvasAssetRevision(node);
-        const placement = loroSync?.doc?.getMap("nodes").get(id) as { canvasId?: string } | undefined;
-        void nativeDraft.editDraft((before) => ({ ...edit(before), ...(asset ? {
-          canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset }],
-        } : {}) })).catch((error) => setError(error instanceof Error ? error.message : String(error)));
-      } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
-      return;
-    }
-    const assetId = node && referenceAssetId(node);
-    const modality = node && referenceModality(node);
-    if (!assetId || !modality || modality === "text") {
-      setError("This reference needs an applied media Asset before it can be attached.");
-      return;
-    }
-    const placement = loroSync?.doc?.getMap("nodes").get(id) as { canvasId?: string } | undefined;
-    void nativeDraft.editDraft((before) => {
-      const model = enabledModelCatalog.find((entry) => entry.model.id === before.state.modelId)?.model;
-      if (model?.input.presentation?.type === "keyframes") {
-        if (modality !== "image") throw new Error("Keyframes require image Assets.");
-        return { ...editModelKeyframes(before, model, { type: "add", projectAssetId: assetId, position: endpoint ?? "append" }),
-          canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset: { kind: "media" as const, projectAssetId: assetId } }] };
-      }
-      const refs = before.persistentInputRefs;
-      const existing = !endpoint && refs.find((ref) => "kind" in ref.target && ref.target.kind === "media" && ref.target.projectAssetId === assetId);
-      const added = existing || createModelMediaInput({
-        modelId: before.state.modelId,
-        model: enabledModelCatalog.find((entry) => entry.model.id === before.state.modelId)?.model,
-        inputs: refs, kind: modality, projectAssetId: assetId, endpoint,
-      });
-      const next = endpoint ? refs.filter((ref) => ref.slot !== added.slot) : refs;
-      const persistentInputRefs = existing ? refs : endpoint === "start" ? [added, ...next] : [...next, added];
-      let state = before.state;
-      {
-        const parts = modelPromptPartsWithInputs(state, refs).filter((part) => !endpoint || part.type !== "input" || part.slot !== added.slot);
-        // Picking an already attached Asset does not invent another occurrence.
-        if (!existing || !parts.some((part) => part.type === "input" && part.slot === added.slot && part.itemKey === added.itemKey)) {
-          parts.push({ type: "input", slot: added.slot, ...(added.itemKey ? { itemKey: added.itemKey } : {}), label: "" });
+      if (node?.type === "text") {
+        try {
+          const edit = createModelTextReferenceEdit(
+            node,
+            typeof node.data?.label === "string" ? node.data.label : "Text",
+          );
+          const asset = canvasAssetRevision(node);
+          const placement = loroSync?.doc?.getMap("nodes").get(id) as
+            { canvasId?: string } | undefined;
+          void nativeDraft
+            .editDraft((before) => ({
+              ...edit(before),
+              ...(asset
+                ? {
+                    canvasInputConnections: placement ? [
+                      {
+                        canvasId: placement?.canvasId ?? "main",
+                        sourceNodeId,
+                        targetNodeId: id,
+                        asset,
+                      },
+                    ] : undefined,
+                  }
+                : {}),
+            }))
+            .catch((error) =>
+              setError(error instanceof Error ? error.message : String(error)),
+            );
+        } catch (error) {
+          setError(error instanceof Error ? error.message : String(error));
         }
-        state = withModelPromptParts(state, parts);
+        return;
       }
-      return { state, persistentInputRefs, canvasInputConnections: [{ canvasId: placement?.canvasId ?? "main", sourceNodeId, targetNodeId: id, asset: { kind: "media" as const, projectAssetId: assetId } }] };
-    }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
-  }, [nativeDraft, getNode, loroSync, id, enabledModelCatalog, isCustom, customDef]);
+      const assetId = node && referenceAssetId(node);
+      const modality = node && referenceModality(node);
+      if (!assetId || !modality || modality === "text") {
+        setError(
+          "This reference needs an applied media Asset before it can be attached.",
+        );
+        return;
+      }
+      const placement = loroSync?.doc?.getMap("nodes").get(id) as
+        { canvasId?: string } | undefined;
+      void nativeDraft
+        .editDraft((before) => {
+          const model = enabledModelCatalog.find(
+            (entry) => entry.model.id === before.state.modelId,
+          )?.model;
+          if (model?.input.presentation?.type === "keyframes") {
+            if (modality !== "image")
+              throw new Error("Keyframes require image Assets.");
+            return {
+              ...editModelKeyframes(before, model, {
+                type: "add",
+                projectAssetId: assetId,
+                position: endpoint ?? "append",
+              }),
+              canvasInputConnections: placement ? [
+                {
+                  canvasId: placement?.canvasId ?? "main",
+                  sourceNodeId,
+                  targetNodeId: id,
+                  asset: { kind: "media" as const, projectAssetId: assetId },
+                },
+              ] : undefined,
+            };
+          }
+          const refs = before.persistentInputRefs;
+          const existing =
+            !endpoint &&
+            refs.find(
+              (ref) =>
+                "kind" in ref.target &&
+                ref.target.kind === "media" &&
+                ref.target.projectAssetId === assetId,
+            );
+          const added =
+            existing ||
+            createModelMediaInput({
+              modelId: before.state.modelId,
+              model: enabledModelCatalog.find(
+                (entry) => entry.model.id === before.state.modelId,
+              )?.model,
+              inputs: refs,
+              kind: modality,
+              projectAssetId: assetId,
+              endpoint,
+            });
+          const next = endpoint
+            ? refs.filter((ref) => ref.slot !== added.slot)
+            : refs;
+          const persistentInputRefs = existing
+            ? refs
+            : endpoint === "start"
+              ? [added, ...next]
+              : [...next, added];
+          let state = before.state;
+          {
+            const parts = modelPromptPartsWithInputs(state, refs).filter(
+              (part) =>
+                !endpoint || part.type !== "input" || part.slot !== added.slot,
+            );
+            // Picking an already attached Asset does not invent another occurrence.
+            if (
+              !existing ||
+              !parts.some(
+                (part) =>
+                  part.type === "input" &&
+                  part.slot === added.slot &&
+                  part.itemKey === added.itemKey,
+              )
+            ) {
+              parts.push({
+                type: "input",
+                slot: added.slot,
+                ...(added.itemKey ? { itemKey: added.itemKey } : {}),
+                label: "",
+              });
+            }
+            state = withModelPromptParts(state, parts);
+          }
+          return {
+            state,
+            persistentInputRefs,
+            canvasInputConnections: placement ? [
+              {
+                canvasId: placement?.canvasId ?? "main",
+                sourceNodeId,
+                targetNodeId: id,
+                asset: { kind: "media" as const, projectAssetId: assetId },
+              },
+            ] : undefined,
+          };
+        })
+        .catch((error) =>
+          setError(error instanceof Error ? error.message : String(error)),
+        );
+    },
+    [
+      nativeDraft,
+      getNode,
+      loroSync,
+      id,
+      enabledModelCatalog,
+      isCustom,
+      customDef,
+    ],
+  );
 
   const addRefNode = useCallback(
     (sourceNodeId: string) => {
-      if (nativeDraft) { addNativeMediaReference(sourceNodeId); return; }
+      if (nativeDraft) {
+        addNativeMediaReference(sourceNodeId);
+        return;
+      }
       // Deterministic edgeId means re-adding the same source is a no-op
       // *iff* we early-return when the edge already exists. Without this
       // guard reactflow's setEdges still grows the array (it dedups on
@@ -1483,7 +1723,14 @@ const PromptActionNode = ({
         });
       }
     },
-    [id, connectedEdges, addEdges, loroSync, nativeDraft, addNativeMediaReference],
+    [
+      id,
+      connectedEdges,
+      addEdges,
+      loroSync,
+      nativeDraft,
+      addNativeMediaReference,
+    ],
   );
 
   const removeRefNode = useCallback(
@@ -1492,9 +1739,35 @@ const PromptActionNode = ({
         const source = getNode(sourceNodeId);
         const assetId = source && referenceAssetId(source);
         if (!assetId) return;
-        const removed = nativeDraft.projection?.revision.persistentInputRefs.filter((ref) => (!endpointSlot || ref.slot === endpointSlot) && "kind" in ref.target && ref.target.kind === "media" && ref.target.projectAssetId === assetId) ?? [];
-        void nativeDraft.edit((state) => isCustom ? state : removed.reduce((next, ref) => removeModelPromptInput(next, ref), state), (refs) => refs.filter((ref) => !removed.some((item) => item.slot === ref.slot && item.itemKey === ref.itemKey)))
-          .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        const removed =
+          nativeDraft.projection?.revision.persistentInputRefs.filter(
+            (ref) =>
+              (!endpointSlot || ref.slot === endpointSlot) &&
+              "kind" in ref.target &&
+              ref.target.kind === "media" &&
+              ref.target.projectAssetId === assetId,
+          ) ?? [];
+        void nativeDraft
+          .edit(
+            (state) =>
+              isCustom
+                ? state
+                : removed.reduce(
+                    (next, ref) => removeModelPromptInput(next, ref),
+                    state,
+                  ),
+            (refs) =>
+              refs.filter(
+                (ref) =>
+                  !removed.some(
+                    (item) =>
+                      item.slot === ref.slot && item.itemKey === ref.itemKey,
+                  ),
+              ),
+          )
+          .catch((error) =>
+            setError(error instanceof Error ? error.message : String(error)),
+          );
         return;
       }
       const edgeIds = connectedEdges
@@ -1521,13 +1794,29 @@ const PromptActionNode = ({
     (sourceNodeId: string) => {
       if (nativeDraft) {
         const input = keyframeInputs.get(sourceNodeId);
-        const projectAssetId = input && "kind" in input.target && input.target.kind === "media" ? input.target.projectAssetId : undefined;
+        const projectAssetId =
+          input && "kind" in input.target && input.target.kind === "media"
+            ? input.target.projectAssetId
+            : undefined;
         if (!projectAssetId) return;
-        void nativeDraft.editDraft(before => {
-          const model = enabledModelCatalog.find(entry => entry.model.id === before.state.modelId)?.model;
-          if (!model) throw new Error("The Model is unavailable. Read the draft again.");
-          return editModelKeyframes(before, model, { type: "remove", projectAssetId, input });
-        }).catch(error => setError(error instanceof Error ? error.message : String(error)));
+        void nativeDraft
+          .editDraft((before) => {
+            const model = enabledModelCatalog.find(
+              (entry) => entry.model.id === before.state.modelId,
+            )?.model;
+            if (!model)
+              throw new Error(
+                "The Model is unavailable. Read the draft again.",
+              );
+            return editModelKeyframes(before, model, {
+              type: "remove",
+              projectAssetId,
+              input,
+            });
+          })
+          .catch((error) =>
+            setError(error instanceof Error ? error.message : String(error)),
+          );
         return;
       }
       const removedIndex = refNodeIds.indexOf(sourceNodeId);
@@ -1551,7 +1840,9 @@ const PromptActionNode = ({
       removeRefNode(sourceNodeId);
     },
     [
-      nativeDraft, keyframeInputs, enabledModelCatalog,
+      nativeDraft,
+      keyframeInputs,
+      enabledModelCatalog,
       keyframeFrames,
       keyframeLastFrame,
       keyframeTimingCustomized,
@@ -1634,11 +1925,19 @@ const PromptActionNode = ({
       const t = referenceModality(n);
       if (attached.has(n.id)) return false;
       if (t === "text") {
-        const reference = n.data?.documentRevision as { documentAssetId?: unknown; revisionId?: unknown } | undefined;
-        if (reference && isCustom && !customDef?.generator?.inputSlots.text) return false;
-        const alreadyAttached = reference && nativeDraft?.projection?.revision.persistentInputRefs.some(ref =>
-          "kind" in ref.target && ref.target.kind === "document" &&
-          ref.target.documentAssetId === reference.documentAssetId && ref.target.revisionId === reference.revisionId);
+        const reference = n.data?.documentRevision as
+          { documentAssetId?: unknown; revisionId?: unknown } | undefined;
+        if (reference && isCustom && !customDef?.generator?.inputSlots.text)
+          return false;
+        const alreadyAttached =
+          reference &&
+          nativeDraft?.projection?.revision.persistentInputRefs.some(
+            (ref) =>
+              "kind" in ref.target &&
+              ref.target.kind === "document" &&
+              ref.target.documentAssetId === reference.documentAssetId &&
+              ref.target.revisionId === reference.revisionId,
+          );
         return acceptsTextRef && !alreadyAttached;
       }
       if (t === "image") return acceptsImageRef;
@@ -1679,7 +1978,10 @@ const PromptActionNode = ({
       )
         return;
       if (nativeDraft) {
-        addNativeMediaReference(sourceNodeId, target === "append" ? undefined : target);
+        addNativeMediaReference(
+          sourceNodeId,
+          target === "append" ? undefined : target,
+        );
         return;
       }
       addRefNode(sourceNodeId);
@@ -1725,7 +2027,8 @@ const PromptActionNode = ({
       isKeyframePresentation,
       keyframeFrames,
       keyframeLastFrame,
-      keyframeLimit, keyframeKeys.length,
+      keyframeLimit,
+      keyframeKeys.length,
       keyframeTimingCustomized,
       persistKeyframeFrames,
       refNodeIds,
@@ -1882,12 +2185,17 @@ const PromptActionNode = ({
   }, [showPanel]);
 
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveNativePrompt = useCallback(async (raw: string) => {
-    if (!nativeDraft) throw new Error("Native draft is unavailable.");
-    return isCustom && customDef?.generator
-      ? nativeDraft.prepare(createActionCardPromptEdit(raw, customDef.generator, getNode))
-      : nativeDraft.editDraft(createModelPromptEdit(raw, getNode));
-  }, [nativeDraft, getNode, isCustom, customDef]);
+  const saveNativePrompt = useCallback(
+    async (raw: string) => {
+      if (!nativeDraft) throw new Error("Native draft is unavailable.");
+      return isCustom && customDef?.generator
+        ? nativeDraft.prepare(
+            createActionCardPromptEdit(raw, customDef.generator, getNode),
+          )
+        : nativeDraft.editDraft(createModelPromptEdit(raw, getNode));
+    },
+    [nativeDraft, getNode, isCustom, customDef],
+  );
 
   const handleEditorInput = useCallback(() => {
     const el = editorRef.current;
@@ -1900,7 +2208,9 @@ const PromptActionNode = ({
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => {
       if (nativeDraft) {
-        void saveNativePrompt(raw).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        void saveNativePrompt(raw).catch((error) =>
+          setError(error instanceof Error ? error.message : String(error)),
+        );
         return;
       }
       setNodes((nds) =>
@@ -1975,8 +2285,13 @@ const PromptActionNode = ({
       setContent(raw);
       setShowMentionMenu(false);
       if (nativeDraft) {
-        if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null; }
-        void saveNativePrompt(raw).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        if (syncTimerRef.current) {
+          clearTimeout(syncTimerRef.current);
+          syncTimerRef.current = null;
+        }
+        void saveNativePrompt(raw).catch((error) =>
+          setError(error instanceof Error ? error.message : String(error)),
+        );
         return;
       }
       const edgeId = `${node.id}-${id}`;
@@ -1990,7 +2305,15 @@ const PromptActionNode = ({
         });
       }
     },
-    [contentToHtml, htmlToContent, id, addEdges, loroSync, nativeDraft, saveNativePrompt],
+    [
+      contentToHtml,
+      htmlToContent,
+      id,
+      addEdges,
+      loroSync,
+      nativeDraft,
+      saveNativePrompt,
+    ],
   );
 
   const mentionCombobox = useComboboxStore({
@@ -2040,7 +2363,11 @@ const PromptActionNode = ({
         ExecutablePluginBinding | undefined = effectivePluginBinding,
     ) => {
       if (nativeDraft) {
-        void nativeDraft.edit({ modelId: nextModelId, params: nextParams }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        void nativeDraft
+          .edit({ modelId: nextModelId, params: nextParams })
+          .catch((error) =>
+            setError(error instanceof Error ? error.message : String(error)),
+          );
         return;
       }
       setNodes((nds) =>
@@ -2093,7 +2420,11 @@ const PromptActionNode = ({
   );
 
   useEffect(() => {
-    if (nativeDraft || !routePluginBinding || !resolvedPluginBinding.persistRouteBinding)
+    if (
+      nativeDraft ||
+      !routePluginBinding ||
+      !resolvedPluginBinding.persistRouteBinding
+    )
       return;
     syncModelState(modelId, modelParams, routePluginBinding);
   }, [
@@ -2202,7 +2533,11 @@ const PromptActionNode = ({
           : { ...customActionParams, [paramId]: value };
         setCustomActionParams(next);
         if (nativeDraft) {
-          void nativeDraft.edit(next).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+          void nativeDraft
+            .edit(next)
+            .catch((error) =>
+              setError(error instanceof Error ? error.message : String(error)),
+            );
           return;
         }
         syncActionState({ customActionParams: next });
@@ -2250,7 +2585,11 @@ const PromptActionNode = ({
     (nextLyrics: string) => {
       setLyrics(nextLyrics);
       if (nativeDraft) {
-        void nativeDraft.edit({ lyrics: nextLyrics }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
+        void nativeDraft
+          .edit({ lyrics: nextLyrics })
+          .catch((error) =>
+            setError(error instanceof Error ? error.message : String(error)),
+          );
         return;
       }
       setNodes((nodes) =>
@@ -2410,8 +2749,16 @@ const PromptActionNode = ({
   const handleSave = useCallback(() => {
     setShowModal(false);
     if (nativeDraft) {
-      void (isCustom || nativeDraft.projection?.revision.state.contentParts === undefined ? saveNativePrompt(content) : nativeDraft.flush()).then(() => loroSync?.updateNode(id, { data: { label } }))
-        .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+      void (
+        isCustom ||
+        nativeDraft.projection?.revision.state.contentParts === undefined
+          ? saveNativePrompt(content)
+          : nativeDraft.flush()
+      )
+        .then(() => loroSync?.updateNode(id, { data: { label } }))
+        .catch((error) =>
+          setError(error instanceof Error ? error.message : String(error)),
+        );
       return;
     }
     setNodes((nds) =>
@@ -2425,7 +2772,16 @@ const PromptActionNode = ({
     if (loroSync) {
       loroSync.updateNode(id, { data: { label, content } });
     }
-  }, [id, label, content, setNodes, loroSync, nativeDraft, saveNativePrompt, isCustom]);
+  }, [
+    id,
+    label,
+    content,
+    setNodes,
+    loroSync,
+    nativeDraft,
+    saveNativePrompt,
+    isCustom,
+  ]);
 
   const handleCancel = useCallback(() => {
     setShowModal(false);
@@ -2436,11 +2792,33 @@ const PromptActionNode = ({
   const handleCopy = useCallback(async () => {
     if (nativeDraft) {
       try {
-        if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null; }
-        await nativeDraft.copy({ sourceNodeId: id, nodeId: await generateSemanticId(projectId), label,
-          ...(isCustom && customDef?.generator ? { draftEdit: createActionCardPromptEdit(content, customDef.generator, getNode) }
-            : nativeDraft.projection?.revision.state.contentParts === undefined ? { draftEdit: createModelPromptEdit(content, getNode) } : {}),
-          statePatch: isCustom ? customActionParams : { modelId, params: modelParams, ...(isMusicModel ? { lyrics } : {}) } });
+        if (syncTimerRef.current) {
+          clearTimeout(syncTimerRef.current);
+          syncTimerRef.current = null;
+        }
+        await nativeDraft.copy({
+          sourceNodeId: id,
+          nodeId: await generateSemanticId(projectId),
+          label,
+          ...(isCustom && customDef?.generator
+            ? {
+                draftEdit: createActionCardPromptEdit(
+                  content,
+                  customDef.generator,
+                  getNode,
+                ),
+              }
+            : nativeDraft.projection?.revision.state.contentParts === undefined
+              ? { draftEdit: createModelPromptEdit(content, getNode) }
+              : {}),
+          statePatch: isCustom
+            ? customActionParams
+            : {
+                modelId,
+                params: modelParams,
+                ...(isMusicModel ? { lyrics } : {}),
+              },
+        });
         setShowModal(false);
         closeActionPanel();
       } catch (error) {
@@ -2469,8 +2847,7 @@ const PromptActionNode = ({
           ? {
               customActionId,
               customActionParams,
-              pluginBinding:
-                currentCustomPluginBinding ?? storedPluginBinding,
+              pluginBinding: currentCustomPluginBinding ?? storedPluginBinding,
             }
           : {}),
         referenceImageOrder: refNodeIds,
@@ -2524,8 +2901,12 @@ const PromptActionNode = ({
   const handleUpdateCustomAction = useCallback(() => {
     if (!currentCustomPluginBinding || isCheckpointLocked) return;
     if (nativeDraft) {
-      void nativeDraft.prepare((before) => before).then(() => setError(null))
-        .catch((error) => setError(error instanceof Error ? error.message : String(error)));
+      void nativeDraft
+        .prepare((before) => before)
+        .then(() => setError(null))
+        .catch((error) =>
+          setError(error instanceof Error ? error.message : String(error)),
+        );
       return;
     }
     setNodes((nodes) =>
@@ -2545,7 +2926,14 @@ const PromptActionNode = ({
       data: { pluginBinding: currentCustomPluginBinding },
     });
     setError(null);
-  }, [currentCustomPluginBinding, id, isCheckpointLocked, loroSync, setNodes, nativeDraft]);
+  }, [
+    currentCustomPluginBinding,
+    id,
+    isCheckpointLocked,
+    loroSync,
+    setNodes,
+    nativeDraft,
+  ]);
 
   const handleLabelChange = (evt: React.ChangeEvent<HTMLInputElement>) => {
     const newLabel = evt.target.value;
@@ -2554,15 +2942,48 @@ const PromptActionNode = ({
 
   const prepareNativeRevision = useCallback(async () => {
     if (!nativeDraft) throw new Error("Native Generator draft is unavailable.");
-    if (syncTimerRef.current) { clearTimeout(syncTimerRef.current); syncTimerRef.current = null; }
-    const updatePrompt: GeneratorDraftEdit | null = isCustom && customDef?.generator ? createActionCardPromptEdit(content, customDef.generator, getNode)
-      : nativeDraft.projection?.revision.state.contentParts === undefined ? createModelPromptEdit(content, getNode) : null;
+    if (syncTimerRef.current) {
+      clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = null;
+    }
+    const updatePrompt: GeneratorDraftEdit | null =
+      isCustom && customDef?.generator
+        ? createActionCardPromptEdit(content, customDef.generator, getNode)
+        : nativeDraft.projection?.revision.state.contentParts === undefined
+          ? createModelPromptEdit(content, getNode)
+          : null;
     const accepted = await nativeDraft.prepare((before, definition) => {
       const next = updatePrompt ? updatePrompt(before, definition) : before;
-      return { state: { ...next.state, ...(isCustom ? customActionParams : { modelId, params: modelParams, ...(isMusicModel ? { lyrics } : {}) }) }, persistentInputRefs: next.persistentInputRefs };
+      return {
+        state: {
+          ...next.state,
+          ...(isCustom
+            ? customActionParams
+            : {
+                modelId,
+                params: modelParams,
+                ...(isMusicModel ? { lyrics } : {}),
+              }),
+        },
+        persistentInputRefs: next.persistentInputRefs,
+      };
     });
-    return { generatorId: accepted.generator.id, generatorRevisionId: accepted.revision.id };
-  }, [nativeDraft, modelId, content, modelParams, getNode, isMusicModel, lyrics, isCustom, customDef, customActionParams]);
+    return {
+      generatorId: accepted.generator.id,
+      generatorRevisionId: accepted.revision.id,
+    };
+  }, [
+    nativeDraft,
+    modelId,
+    content,
+    modelParams,
+    getNode,
+    isMusicModel,
+    lyrics,
+    isCustom,
+    customDef,
+    customActionParams,
+  ]);
 
   // Shared pending-asset primitives. Run always creates a fresh pending
   // output; only a draft node's Build action may adopt that draft.
@@ -2601,10 +3022,18 @@ const PromptActionNode = ({
       if (customActionDefinitionUpdated) {
         throw new Error(ACTION_DEFINITION_UPDATED_RUN_LABEL);
       }
-      if (!nativeDraft && referenceValidationError) throw new Error(referenceValidationError);
-      let generatorRevision: { generatorId: string; generatorRevisionId: string } | undefined;
+      if (!nativeDraft && referenceValidationError)
+        throw new Error(referenceValidationError);
+      let generatorRevision:
+        { generatorId: string; generatorRevisionId: string } | undefined;
       if (nativeDraft) {
         generatorRevision = await prepareNativeRevision();
+      }
+      if (onExecuteRevision) {
+        if (!generatorRevision)
+          throw new Error("A native Generator revision is required.");
+        await onExecuteRevision(generatorRevision);
+        return;
       }
       // Capture and clear pre-allocated asset ID (provided by backend; treat as single-use)
       const preAllocatedAssetId = data.preAllocatedAssetId as
@@ -2728,7 +3157,11 @@ const PromptActionNode = ({
           const labelOverride =
             batchCount > 1 ? `${baseLabel} (${i + 1})` : baseLabel;
           const assetId = i === 0 ? preAllocatedAssetId : undefined;
-          const created = await spawnPending({ assetId, labelOverride, ...(generatorRevision ? { generatorRevision } : {}) });
+          const created = await spawnPending({
+            assetId,
+            labelOverride,
+            ...(generatorRevision ? { generatorRevision } : {}),
+          });
           if (!created && i === 0) {
             throw new Error("Failed to create pending node.");
           }
@@ -2782,6 +3215,7 @@ const PromptActionNode = ({
     referenceValidationError,
     nativeDraft,
     prepareNativeRevision,
+    onExecuteRevision,
   ]);
 
   // Helper to extract meaningful label from prompt content (already moved outside)
@@ -3070,7 +3504,10 @@ const PromptActionNode = ({
             shape="rounded"
             onClick={() =>
               persistKeyframeFrames(
-                evenlySpacedFrameIndices(keyframeKeys.length, keyframeLastFrame),
+                evenlySpacedFrameIndices(
+                  keyframeKeys.length,
+                  keyframeLastFrame,
+                ),
                 false,
               )
             }
@@ -3252,7 +3689,8 @@ const PromptActionNode = ({
     aspectRatioPresentedValue,
   );
   const aspectRatioCurrentLabel =
-    resolvedAspectRatioLabel === "auto" || resolvedAspectRatioLabel === "adaptive"
+    resolvedAspectRatioLabel === "auto" ||
+    resolvedAspectRatioLabel === "adaptive"
       ? "Auto"
       : (resolvedAspectRatioLabel ?? String(aspectRatioPresentedValue ?? ""));
   const actionAspectRatioOptions = aspectRatioParameter
@@ -3302,88 +3740,471 @@ const PromptActionNode = ({
   // follows node drag and viewport transforms without a floating-ui poll.
   const configPanel = (
     <motion.div
-      initial={{ y: 16, opacity: 0 }}
+      initial={composer ? false : { y: 16, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ type: "spring", damping: 30, stiffness: 400 }}
       data-action-config-panel={id}
-      className="w-[min(42rem,calc(100vw-2rem))] max-w-none flex flex-col items-start"
+      className={
+        composer
+          ? "w-full min-w-0 flex flex-col items-start"
+          : "w-[min(42rem,calc(100vw-2rem))] max-w-none flex flex-col items-start"
+      }
     >
       {/* Reference images strip above the prompt panel.
                         - startEnd models: two labeled Start/End slots joined by ⇌, always visible.
                         - Other models: Reorder.Group of numbered thumbs (drag to reorder, × to detach). */}
-      {nativeDraft?.projection && (() => {
-        const revision = nativeDraft.projection.revision;
-        const inputs = revision.persistentInputRefs.filter(input => "kind" in input.target && input.target.kind === "document");
-        if (inputs.length === 0) return null;
-        const parts = !isCustom && revision.state.contentParts !== undefined ? modelPromptParts(revision.state) : [];
-        return <ul aria-label="Text references" className="mb-2 flex w-full flex-col gap-1">
-          {inputs.map(input => {
-            const part = parts.find(part => part.type === "input" && part.slot === input.slot && part.itemKey === input.itemKey);
-            const label = part?.type === "input" && part.label ? part.label : "Text";
-            return <NativeDocumentReference key={JSON.stringify([input.slot, input.itemKey ?? null])} projectId={projectId} input={input} label={label}
-              onRemove={isCheckpointLocked ? undefined : removed => {
-                void nativeDraft.editDraft(before => ({
-                  state: isCustom ? before.state : removeModelPromptInput(before.state, removed),
-                  persistentInputRefs: before.persistentInputRefs.filter(ref => ref.slot !== removed.slot || ref.itemKey !== removed.itemKey),
-                })).catch(error => setError(error instanceof Error ? error.message : String(error)));
-              }} />;
-          })}
-        </ul>;
-      })()}
-      {nativeDraft?.projection && (() => {
-        const placedAssets = new Set(getNodes().flatMap((node) => { const assetId = referenceAssetId(node); return assetId ? [assetId] : []; }));
-        const revision = nativeDraft.projection.revision;
-        const inputs = (isCustom ? revision.persistentInputRefs : modelInputRefsInPromptOrder(revision.state, revision.persistentInputRefs)).filter((input) => "kind" in input.target && input.target.kind === "media" && !placedAssets.has(input.target.projectAssetId) && !(isKeyframePresentation && input.slot === "image"));
-        if (inputs.length === 0) return null;
-        return <ul aria-label="Media references" className="mb-2 flex w-full flex-col gap-1">
-          {inputs.map((input) => <NativeMediaReference key={JSON.stringify([input.slot, input.itemKey ?? null])} projectId={projectId} input={input}
-            onRemove={isCheckpointLocked ? undefined : (removed) => {
-              void nativeDraft.editDraft(before => {
-                const model = isCustom ? undefined : enabledModelCatalog.find(entry => entry.model.id === before.state.modelId)?.model;
-                if (model?.input.presentation?.type === "keyframes" && removed.slot === "image" && "kind" in removed.target && removed.target.kind === "media") {
-                  return editModelKeyframes(before, model, { type: "remove", projectAssetId: removed.target.projectAssetId, input: removed });
+      <div
+        className={composer ? "flex flex-wrap items-start gap-2" : "contents"}
+      >
+        {nativeDraft?.projection &&
+          (() => {
+            const revision = nativeDraft.projection.revision;
+            const inputs = revision.persistentInputRefs.filter(
+              (input) =>
+                "kind" in input.target && input.target.kind === "document",
+            );
+            if (inputs.length === 0) return null;
+            const parts =
+              !isCustom && revision.state.contentParts !== undefined
+                ? modelPromptParts(revision.state)
+                : [];
+            return (
+              <ul
+                aria-label="Text references"
+                className={`mb-2 flex gap-2 ${composer ? "w-auto flex-wrap" : "w-full flex-col"}`}
+              >
+                {inputs.map((input) => {
+                  const part = parts.find(
+                    (part) =>
+                      part.type === "input" &&
+                      part.slot === input.slot &&
+                      part.itemKey === input.itemKey,
+                  );
+                  const label =
+                    part?.type === "input" && part.label ? part.label : "Text";
+                  return (
+                    <NativeDocumentReference
+                      key={JSON.stringify([input.slot, input.itemKey ?? null])}
+                      projectId={projectId}
+                      input={input}
+                      label={label}
+                      onRemove={
+                        isCheckpointLocked
+                          ? undefined
+                          : (removed) => {
+                              void nativeDraft
+                                .editDraft((before) => ({
+                                  state: isCustom
+                                    ? before.state
+                                    : removeModelPromptInput(
+                                        before.state,
+                                        removed,
+                                      ),
+                                  persistentInputRefs:
+                                    before.persistentInputRefs.filter(
+                                      (ref) =>
+                                        ref.slot !== removed.slot ||
+                                        ref.itemKey !== removed.itemKey,
+                                    ),
+                                }))
+                                .catch((error) =>
+                                  setError(
+                                    error instanceof Error
+                                      ? error.message
+                                      : String(error),
+                                  ),
+                                );
+                            }
+                      }
+                    />
+                  );
+                })}
+              </ul>
+            );
+          })()}
+        {nativeDraft?.projection &&
+          (() => {
+            const placedAssets = new Set(
+              getNodes().flatMap((node) => {
+                const assetId = referenceAssetId(node);
+                return assetId ? [assetId] : [];
+              }),
+            );
+            const revision = nativeDraft.projection.revision;
+            const inputs = (
+              isCustom
+                ? revision.persistentInputRefs
+                : modelInputRefsInPromptOrder(
+                    revision.state,
+                    revision.persistentInputRefs,
+                  )
+            ).filter(
+              (input) =>
+                "kind" in input.target &&
+                input.target.kind === "media" &&
+                !placedAssets.has(input.target.projectAssetId) &&
+                !(isKeyframePresentation && input.slot === "image"),
+            );
+            if (inputs.length === 0) return null;
+            return (
+              <ul
+                aria-label="Media references"
+                className={`mb-2 flex gap-2 ${composer ? "w-auto flex-wrap" : "w-full flex-col"}`}
+              >
+                {inputs.map((input, index) => (
+                  <NativeMediaReference
+                    compactLabel={
+                      composer ? `Reference ${index + 1}` : undefined
+                    }
+                    key={JSON.stringify([input.slot, input.itemKey ?? null])}
+                    projectId={projectId}
+                    input={input}
+                    onRemove={
+                      isCheckpointLocked
+                        ? undefined
+                        : (removed) => {
+                            void nativeDraft
+                              .editDraft((before) => {
+                                const model = isCustom
+                                  ? undefined
+                                  : enabledModelCatalog.find(
+                                      (entry) =>
+                                        entry.model.id === before.state.modelId,
+                                    )?.model;
+                                if (
+                                  model?.input.presentation?.type ===
+                                    "keyframes" &&
+                                  removed.slot === "image" &&
+                                  "kind" in removed.target &&
+                                  removed.target.kind === "media"
+                                ) {
+                                  return editModelKeyframes(before, model, {
+                                    type: "remove",
+                                    projectAssetId:
+                                      removed.target.projectAssetId,
+                                    input: removed,
+                                  });
+                                }
+                                return {
+                                  state: isCustom
+                                    ? before.state
+                                    : removeModelPromptInput(
+                                        before.state,
+                                        removed,
+                                      ),
+                                  persistentInputRefs:
+                                    before.persistentInputRefs.filter(
+                                      (ref) =>
+                                        ref.slot !== removed.slot ||
+                                        ref.itemKey !== removed.itemKey,
+                                    ),
+                                };
+                              })
+                              .catch((error) =>
+                                setError(
+                                  error instanceof Error
+                                    ? error.message
+                                    : String(error),
+                                ),
+                              );
+                          }
+                    }
+                  />
+                ))}
+              </ul>
+            );
+          })()}
+        {isKeyframePresentation ? (
+          (() => {
+            const startNodeId = keyframeKeys[0];
+            const endNodeId =
+              keyframeKeys.length >= 2
+                ? keyframeKeys[keyframeKeys.length - 1]
+                : undefined;
+            const middleNodeIds =
+              keyframeKeys.length > 2 ? keyframeKeys.slice(1, -1) : [];
+            const pickerSlot = (
+              slot: "start" | "end",
+              label: string,
+              timeLabel: string,
+              disabled = false,
+            ) => (
+              <FrameReferenceSlot
+                filled={false}
+                label={label}
+                timeLabel={timeLabel}
+                emptyControl={
+                  <Popover
+                    open={refPickerTarget === slot}
+                    onOpenChange={(open) =>
+                      setRefPickerTarget(open ? slot : null)
+                    }
+                  >
+                    <PopoverTrigger asChild>
+                      <IconButton
+                        label={`Pick ${label} keyframe`}
+                        title={`Up to ${keyframeLimit} keyframes · exact positions at ${keyframeFrameRate} fps`}
+                        icon={<Plus size={14} weight="bold" />}
+                        size="lg"
+                        shape="rounded"
+                        disabled={isCheckpointLocked || disabled}
+                        className="h-10 min-h-10 w-10 min-w-10 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
+                      />
+                    </PopoverTrigger>
+                    <PopoverContent
+                      side="top"
+                      align="start"
+                      className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <RefPickerContent
+                        projectId={projectId}
+                        title={`Pick ${label.toLowerCase()} keyframe`}
+                        candidates={refPickerCandidates}
+                        onPick={(nodeId) => {
+                          attachRefToSlot(nodeId, slot);
+                          setRefPickerTarget(null);
+                        }}
+                      />
+                    </PopoverContent>
+                  </Popover>
                 }
-                return { state: isCustom ? before.state : removeModelPromptInput(before.state, removed), persistentInputRefs: before.persistentInputRefs.filter(ref => ref.slot !== removed.slot || ref.itemKey !== removed.itemKey) };
-              }).catch((error) => setError(error instanceof Error ? error.message : String(error)));
-            }} />)}
-        </ul>;
-      })()}
-      {isKeyframePresentation ? (
-        (() => {
-          const startNodeId = keyframeKeys[0];
-          const endNodeId =
-            keyframeKeys.length >= 2
-              ? keyframeKeys[keyframeKeys.length - 1]
-              : undefined;
-          const middleNodeIds =
-            keyframeKeys.length > 2 ? keyframeKeys.slice(1, -1) : [];
-          const pickerSlot = (
-            slot: "start" | "end",
-            label: string,
-            timeLabel: string,
-            disabled = false,
-          ) => (
-            <FrameReferenceSlot
-              filled={false}
-              label={label}
-              timeLabel={timeLabel}
-              emptyControl={
+              />
+            );
+
+            return (
+              <FrameReferenceStrip
+                ariaLabel="FLUX 3 keyframes"
+                layout="scroll"
+                trailingControl={
+                  keyframeKeys.length >= 2 ? (
+                    <IconButton
+                      label="Edit keyframe timing"
+                      title="Edit keyframe timing"
+                      icon={<SlidersHorizontal size={15} weight="bold" />}
+                      size="md"
+                      shape="rounded"
+                      onClick={() => setKeyframeTimelineOpen(true)}
+                      className={`${NODE_INTERACTION_BOUNDARY_CLASS} h-7 min-h-7 w-7 min-w-7 border border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:bg-warm-muted hover:text-content-primary`}
+                    />
+                  ) : undefined
+                }
+                message={
+                  startEndMismatch ? (
+                    <p className="mt-1.5 text-[10px] leading-tight text-amber-600">
+                      Start and end frames have different aspect ratios (
+                      {formatRatio(startEndMismatch.s.w, startEndMismatch.s.h)}{" "}
+                      vs{" "}
+                      {formatRatio(startEndMismatch.e.w, startEndMismatch.e.h)}
+                      ). Use frames with matching dimensions.
+                    </p>
+                  ) : undefined
+                }
+              >
+                <div role="listitem">
+                  {startNodeId ? (
+                    <FrameReferenceSlot
+                      filled
+                      label="Start"
+                      thumb={refThumbByNodeId.get(startNodeId)}
+                      assetReference={keyframeAssetReference(startNodeId)}
+                      timeLabel="0s"
+                      onRemove={
+                        isCheckpointLocked
+                          ? undefined
+                          : () => removeKeyframeRef(startNodeId)
+                      }
+                      removeLabel="Remove start keyframe"
+                    />
+                  ) : (
+                    pickerSlot("start", "Start", "0s")
+                  )}
+                </div>
+
+                {middleNodeIds.map((nodeId, middleIndex) => {
+                  const sequenceIndex = middleIndex + 1;
+                  return (
+                    <div
+                      key={nodeId}
+                      role="listitem"
+                      aria-label={`Frame ${sequenceIndex + 1} at ${formatFrameTime(keyframeFrames[sequenceIndex], keyframeFrameRate)}`}
+                    >
+                      <FrameReferenceSlot
+                        filled
+                        label={`Frame ${sequenceIndex + 1}`}
+                        thumb={refThumbByNodeId.get(nodeId)}
+                        assetReference={keyframeAssetReference(nodeId)}
+                        timeLabel={formatFrameTime(
+                          keyframeFrames[sequenceIndex],
+                          keyframeFrameRate,
+                        )}
+                        onRemove={
+                          isCheckpointLocked
+                            ? undefined
+                            : () => removeKeyframeRef(nodeId)
+                        }
+                        removeLabel={`Remove frame ${sequenceIndex + 1} keyframe`}
+                      />
+                    </div>
+                  );
+                })}
+
+                {!isCheckpointLocked &&
+                  endNodeId &&
+                  keyframeKeys.length < keyframeLimit && (
+                    <div role="listitem" className="w-10 flex-shrink-0">
+                      <Popover
+                        open={refPickerTarget === "append"}
+                        onOpenChange={(open) =>
+                          setRefPickerTarget(open ? "append" : null)
+                        }
+                      >
+                        <PopoverTrigger asChild>
+                          <IconButton
+                            label="Add middle keyframe"
+                            title={`Up to ${keyframeLimit} keyframes`}
+                            icon={<Plus size={14} weight="bold" />}
+                            size="lg"
+                            shape="rounded"
+                            className="h-10 min-h-10 w-10 min-w-10 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
+                          />
+                        </PopoverTrigger>
+                        <PopoverContent
+                          side="top"
+                          align="start"
+                          className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <RefPickerContent
+                            projectId={projectId}
+                            title="Pick a middle keyframe"
+                            candidates={refPickerCandidates}
+                            onPick={(nodeId) => {
+                              attachRefToSlot(nodeId, "append");
+                              setSelectedKeyframeId(nodeId);
+                              setRefPickerTarget(null);
+                              if (keyframeTimingCustomized)
+                                setKeyframeTimelineOpen(true);
+                            }}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                  )}
+
+                <div role="listitem">
+                  {endNodeId ? (
+                    <FrameReferenceSlot
+                      filled
+                      label="End"
+                      thumb={refThumbByNodeId.get(endNodeId)}
+                      assetReference={keyframeAssetReference(endNodeId)}
+                      timeLabel={formatFrameTime(
+                        keyframeLastFrame,
+                        keyframeFrameRate,
+                      )}
+                      onRemove={
+                        isCheckpointLocked
+                          ? undefined
+                          : () => removeKeyframeRef(endNodeId)
+                      }
+                      removeLabel="Remove end keyframe"
+                    />
+                  ) : (
+                    pickerSlot(
+                      "end",
+                      "End",
+                      formatFrameTime(keyframeLastFrame, keyframeFrameRate),
+                      !startNodeId,
+                    )
+                  )}
+                </div>
+              </FrameReferenceStrip>
+            );
+          })()
+        ) : isContinuationPresentation ? (
+          <div className="pointer-events-auto mb-2 min-w-[18rem] rounded-xl border border-warm-border bg-warm-surface px-3 py-2.5 shadow-sm">
+            <div className="mb-2">
+              <div className="text-[11px] font-semibold text-content-primary">
+                {continuationVideoLimit === 1
+                  ? "Source video"
+                  : "Source videos"}
+              </div>
+              <div className="text-[10px] text-content-secondary">
+                {continuationVideoSummary}
+              </div>
+            </div>
+            {refNodeIds.length > 0 && (
+              <div
+                className="mb-2 flex max-w-[30rem] flex-wrap gap-2"
+                role="list"
+                aria-label="Source videos"
+              >
+                {refNodeIds.map((sourceNodeId, index) => {
+                  const sourceNode = getNode(sourceNodeId);
+                  const thumb = refThumbByNodeId.get(sourceNodeId);
+                  return (
+                    <div
+                      key={sourceNodeId}
+                      role="listitem"
+                      className="group/thumb relative flex w-52 items-center gap-2 rounded-lg border border-warm-border bg-warm-muted p-1.5"
+                    >
+                      <div className="flex h-10 w-14 flex-shrink-0 items-center justify-center overflow-hidden rounded-md bg-video/15 text-video">
+                        {thumb ? (
+                          <ProjectedImage
+                            src={thumb}
+                            alt={`Source video ${index + 1}`}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <VideoCamera size={16} weight="bold" />
+                        )}
+                      </div>
+                      <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-content-primary">
+                        {(sourceNode?.data?.label as string | undefined) ??
+                          sourceNodeId}
+                      </span>
+                      {!isCheckpointLocked && (
+                        <IconButton
+                          label={`Remove source video ${index + 1}`}
+                          icon="×"
+                          size="sm"
+                          shape="circle"
+                          onClick={() => removeContinuationRef(sourceNodeId)}
+                          className={`${NODE_INTERACTION_BOUNDARY_CLASS} h-6 min-h-6 w-6 min-w-6 text-[11px]`}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {!isCheckpointLocked &&
+              refNodeIds.length < continuationVideoLimit && (
                 <Popover
-                  open={refPickerTarget === slot}
+                  open={refPickerTarget === "append"}
                   onOpenChange={(open) =>
-                    setRefPickerTarget(open ? slot : null)
+                    setRefPickerTarget(open ? "append" : null)
                   }
                 >
                   <PopoverTrigger asChild>
-                    <IconButton
-                      label={`Pick ${label} keyframe`}
-                      title={`Up to ${keyframeLimit} keyframes · exact positions at ${keyframeFrameRate} fps`}
-                      icon={<Plus size={14} weight="bold" />}
-                      size="lg"
+                    <Button
+                      aria-label={
+                        refNodeIds.length === 0
+                          ? "Choose source video"
+                          : "Add source video"
+                      }
+                      size="sm"
                       shape="rounded"
-                      disabled={isCheckpointLocked || disabled}
-                      className="h-10 min-h-10 w-10 min-w-10 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
-                    />
+                      leftIcon={<Plus size={14} weight="bold" />}
+                      className="border border-dashed border-warm-border bg-transparent text-content-secondary shadow-none hover:bg-warm-muted hover:text-content-primary"
+                    >
+                      {refNodeIds.length === 0
+                        ? "Choose source video"
+                        : "Add source video"}
+                    </Button>
                   </PopoverTrigger>
                   <PopoverContent
                     side="top"
@@ -3394,472 +4215,238 @@ const PromptActionNode = ({
                   >
                     <RefPickerContent
                       projectId={projectId}
-                      title={`Pick ${label.toLowerCase()} keyframe`}
+                      title="Pick a source video"
                       candidates={refPickerCandidates}
                       onPick={(nodeId) => {
-                        attachRefToSlot(nodeId, slot);
-                        setRefPickerTarget(null);
-                      }}
-                    />
-                  </PopoverContent>
-                </Popover>
-              }
-            />
-          );
-
-          return (
-            <FrameReferenceStrip
-              ariaLabel="FLUX 3 keyframes"
-              layout="scroll"
-              trailingControl={
-                keyframeKeys.length >= 2 ? (
-                  <IconButton
-                    label="Edit keyframe timing"
-                    title="Edit keyframe timing"
-                    icon={<SlidersHorizontal size={15} weight="bold" />}
-                    size="md"
-                    shape="rounded"
-                    onClick={() => setKeyframeTimelineOpen(true)}
-                    className={`${NODE_INTERACTION_BOUNDARY_CLASS} h-7 min-h-7 w-7 min-w-7 border border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:bg-warm-muted hover:text-content-primary`}
-                  />
-                ) : undefined
-              }
-              message={
-                startEndMismatch ? (
-                  <p className="mt-1.5 text-[10px] leading-tight text-amber-600">
-                    Start and end frames have different aspect ratios (
-                    {formatRatio(startEndMismatch.s.w, startEndMismatch.s.h)} vs{" "}
-                    {formatRatio(startEndMismatch.e.w, startEndMismatch.e.h)}).
-                    Use frames with matching dimensions.
-                  </p>
-                ) : undefined
-              }
-            >
-              <div role="listitem">
-                {startNodeId ? (
-                  <FrameReferenceSlot
-                    filled
-                    label="Start"
-                    thumb={refThumbByNodeId.get(startNodeId)}
-                    assetReference={keyframeAssetReference(startNodeId)}
-                    timeLabel="0s"
-                    onRemove={
-                      isCheckpointLocked
-                        ? undefined
-                        : () => removeKeyframeRef(startNodeId)
-                    }
-                    removeLabel="Remove start keyframe"
-                  />
-                ) : (
-                  pickerSlot("start", "Start", "0s")
-                )}
-              </div>
-
-              {middleNodeIds.map((nodeId, middleIndex) => {
-                const sequenceIndex = middleIndex + 1;
-                return (
-                  <div
-                    key={nodeId}
-                    role="listitem"
-                    aria-label={`Frame ${sequenceIndex + 1} at ${formatFrameTime(keyframeFrames[sequenceIndex], keyframeFrameRate)}`}
-                  >
-                    <FrameReferenceSlot
-                      filled
-                      label={`Frame ${sequenceIndex + 1}`}
-                      thumb={refThumbByNodeId.get(nodeId)}
-                    assetReference={keyframeAssetReference(nodeId)}
-                      timeLabel={formatFrameTime(
-                        keyframeFrames[sequenceIndex],
-                        keyframeFrameRate,
-                      )}
-                      onRemove={
-                        isCheckpointLocked
-                          ? undefined
-                          : () => removeKeyframeRef(nodeId)
-                      }
-                      removeLabel={`Remove frame ${sequenceIndex + 1} keyframe`}
-                    />
-                  </div>
-                );
-              })}
-
-              {!isCheckpointLocked &&
-                endNodeId &&
-                keyframeKeys.length < keyframeLimit && (
-                  <div role="listitem" className="w-10 flex-shrink-0">
-                    <Popover
-                      open={refPickerTarget === "append"}
-                      onOpenChange={(open) =>
-                        setRefPickerTarget(open ? "append" : null)
-                      }
-                    >
-                      <PopoverTrigger asChild>
-                        <IconButton
-                          label="Add middle keyframe"
-                          title={`Up to ${keyframeLimit} keyframes`}
-                          icon={<Plus size={14} weight="bold" />}
-                          size="lg"
-                          shape="rounded"
-                          className="h-10 min-h-10 w-10 min-w-10 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
-                        />
-                      </PopoverTrigger>
-                      <PopoverContent
-                        side="top"
-                        align="start"
-                        className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => event.stopPropagation()}
-                      >
-                        <RefPickerContent
-                          projectId={projectId}
-                          title="Pick a middle keyframe"
-                          candidates={refPickerCandidates}
-                          onPick={(nodeId) => {
-                            attachRefToSlot(nodeId, "append");
-                            setSelectedKeyframeId(nodeId);
-                            setRefPickerTarget(null);
-                            if (keyframeTimingCustomized)
-                              setKeyframeTimelineOpen(true);
-                          }}
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                )}
-
-              <div role="listitem">
-                {endNodeId ? (
-                  <FrameReferenceSlot
-                    filled
-                    label="End"
-                    thumb={refThumbByNodeId.get(endNodeId)}
-                    assetReference={keyframeAssetReference(endNodeId)}
-                    timeLabel={formatFrameTime(
-                      keyframeLastFrame,
-                      keyframeFrameRate,
-                    )}
-                    onRemove={
-                      isCheckpointLocked
-                        ? undefined
-                        : () => removeKeyframeRef(endNodeId)
-                    }
-                    removeLabel="Remove end keyframe"
-                  />
-                ) : (
-                  pickerSlot(
-                    "end",
-                    "End",
-                    formatFrameTime(keyframeLastFrame, keyframeFrameRate),
-                    !startNodeId,
-                  )
-                )}
-              </div>
-            </FrameReferenceStrip>
-          );
-        })()
-      ) : isContinuationPresentation ? (
-        <div className="pointer-events-auto mb-2 min-w-[18rem] rounded-xl border border-warm-border bg-warm-surface px-3 py-2.5 shadow-sm">
-          <div className="mb-2">
-            <div className="text-[11px] font-semibold text-content-primary">
-              {continuationVideoLimit === 1 ? "Source video" : "Source videos"}
-            </div>
-            <div className="text-[10px] text-content-secondary">
-              {continuationVideoSummary}
-            </div>
-          </div>
-          {refNodeIds.length > 0 && (
-            <div
-              className="mb-2 flex max-w-[30rem] flex-wrap gap-2"
-              role="list"
-              aria-label="Source videos"
-            >
-              {refNodeIds.map((sourceNodeId, index) => {
-                const sourceNode = getNode(sourceNodeId);
-                const thumb = refThumbByNodeId.get(sourceNodeId);
-                return (
-                  <div
-                    key={sourceNodeId}
-                    role="listitem"
-                    className="group/thumb relative flex w-52 items-center gap-2 rounded-lg border border-warm-border bg-warm-muted p-1.5"
-                  >
-                    <div className="flex h-10 w-14 flex-shrink-0 items-center justify-center overflow-hidden rounded-md bg-video/15 text-video">
-                      {thumb ? (
-                        <ProjectedImage
-                          src={thumb}
-                          alt={`Source video ${index + 1}`}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <VideoCamera size={16} weight="bold" />
-                      )}
-                    </div>
-                    <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-content-primary">
-                      {(sourceNode?.data?.label as string | undefined) ??
-                        sourceNodeId}
-                    </span>
-                    {!isCheckpointLocked && (
-                      <IconButton
-                        label={`Remove source video ${index + 1}`}
-                        icon="×"
-                        size="sm"
-                        shape="circle"
-                        onClick={() => removeContinuationRef(sourceNodeId)}
-                        className={`${NODE_INTERACTION_BOUNDARY_CLASS} h-6 min-h-6 w-6 min-w-6 text-[11px]`}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {!isCheckpointLocked &&
-            refNodeIds.length < continuationVideoLimit && (
-              <Popover
-                open={refPickerTarget === "append"}
-                onOpenChange={(open) =>
-                  setRefPickerTarget(open ? "append" : null)
-                }
-              >
-                <PopoverTrigger asChild>
-                  <Button
-                    aria-label={
-                      refNodeIds.length === 0
-                        ? "Choose source video"
-                        : "Add source video"
-                    }
-                    size="sm"
-                    shape="rounded"
-                    leftIcon={<Plus size={14} weight="bold" />}
-                    className="border border-dashed border-warm-border bg-transparent text-content-secondary shadow-none hover:bg-warm-muted hover:text-content-primary"
-                  >
-                    {refNodeIds.length === 0
-                      ? "Choose source video"
-                      : "Add source video"}
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  side="top"
-                  align="start"
-                  className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <RefPickerContent
-                    projectId={projectId}
-                    title="Pick a source video"
-                    candidates={refPickerCandidates}
-                    onPick={(nodeId) => {
-                      attachRefToSlot(nodeId, "append");
-                      setRefPickerTarget(null);
-                    }}
-                  />
-                </PopoverContent>
-              </Popover>
-            )}
-        </div>
-      ) : isStartEnd ? (
-        <FrameReferenceStrip
-          ariaLabel="Start and end frames"
-          layout="fixed"
-          message={
-            startEndMismatch ? (
-              <p className="mt-1.5 text-[10px] leading-tight text-amber-600">
-                Start and end frames have different aspect ratios (
-                {formatRatio(startEndMismatch.s.w, startEndMismatch.s.h)} vs{" "}
-                {formatRatio(startEndMismatch.e.w, startEndMismatch.e.h)}).
-                Output will likely be distorted — use frames with matching
-                dimensions.
-              </p>
-            ) : undefined
-          }
-        >
-          {(["start", "end"] as const).map((slot, slotIdx) => {
-            const endpointSlot = slot === "start" ? "startFrame" : "endFrame";
-            const input = nativeDraft?.projection?.revision.persistentInputRefs.find((ref) => ref.slot === endpointSlot);
-            const assetId = input && "kind" in input.target && input.target.kind === "media" ? input.target.projectAssetId : null;
-            const nodeId = nativeDraft ? getNodes().find((node) => assetId && referenceAssetId(node) === assetId)?.id : refNodeIds[slotIdx];
-            const node = nodeId ? getNode(nodeId) : undefined;
-            const thumb = nodeId ? refThumbByNodeId.get(nodeId) : undefined;
-            const badge = slot === "start" ? "S" : "E";
-            const fullLabel = slot === "start" ? "Start" : "End";
-
-            return (
-              <Fragment key={slot}>
-                {slotIdx === 1 && (
-                  <span
-                    className="text-slate-700 dark:text-slate-300 text-xs select-none px-0.5"
-                    aria-hidden
-                  >
-                    ⇌
-                  </span>
-                )}
-                <div role="listitem">
-                  <FrameReferenceSlot
-                    badge={badge}
-                    filled={Boolean(node)}
-                    label={fullLabel}
-                    thumb={thumb}
-                    onRemove={
-                      !isCheckpointLocked && nodeId
-                        ? () => removeRefNode(nodeId, nativeDraft ? endpointSlot : undefined)
-                        : undefined
-                    }
-                    removeLabel={`Clear ${fullLabel} frame`}
-                    emptyControl={
-                      node ? undefined : (
-                        <Popover
-                          open={refPickerTarget === slot}
-                          onOpenChange={(open) =>
-                            setRefPickerTarget(open ? slot : null)
-                          }
-                        >
-                          <PopoverTrigger asChild>
-                            <IconButton
-                              label={`Pick ${fullLabel} frame`}
-                              icon={<Plus size={14} weight="bold" />}
-                              size="lg"
-                              shape="rounded"
-                              disabled={isCheckpointLocked}
-                              className="h-10 min-h-10 w-10 min-w-10 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
-                            />
-                          </PopoverTrigger>
-                          <PopoverContent
-                            side="top"
-                            align="start"
-                            className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
-                            onPointerDown={(e) => e.stopPropagation()}
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <RefPickerContent
-                              projectId={projectId}
-                              candidates={refPickerCandidates}
-                              onPick={(nid) => {
-                                attachRefToSlot(nid, slot);
-                                setRefPickerTarget(null);
-                              }}
-                            />
-                          </PopoverContent>
-                        </Popover>
-                      )
-                    }
-                  />
-                </div>
-              </Fragment>
-            );
-          })}
-        </FrameReferenceStrip>
-      ) : (
-        acceptsAnyRef && (
-          <div className="pointer-events-auto mb-2 px-1 relative">
-            <div className="flex items-center gap-1.5">
-              <Reorder.Group
-                axis="x"
-                values={refNodeIds}
-                onReorder={persistRefOrder}
-                className="flex gap-1.5"
-                as="div"
-              >
-                {refNodeIds.map((nodeId, i) => {
-                  const node = getNode(nodeId);
-                  if (!node) return null;
-                  // The current Host resolves the stable Project Asset identity
-                  // above. A video whose bytes are not ready yet renders as an
-                  // icon tile via the `isVideo` fallback below.
-                  const thumb = refThumbByNodeId.get(nodeId);
-                  const isText = node.type === "text";
-                  const isAudio = node.type === "audio";
-                  const isVideo = node.type === "video";
-                  if (!thumb && !isText && !isAudio && !isVideo) return null;
-                  const badge = `${i + 1}`;
-                  return (
-                    <Reorder.Item
-                      key={nodeId}
-                      value={nodeId}
-                      drag={isCheckpointLocked ? false : "x"}
-                      as="div"
-                      className="relative group/thumb flex-shrink-0"
-                      whileDrag={{ scale: 1.08, zIndex: 10 }}
-                      style={{
-                        cursor: isCheckpointLocked ? "default" : "grab",
-                      }}
-                    >
-                      {isText ? (
-                        <div className="h-10 w-10 rounded-lg bg-warm-muted border border-warm-border shadow-sm flex items-center justify-center text-slate-700 dark:text-slate-300 pointer-events-none">
-                          <TextT size={16} weight="bold" />
-                        </div>
-                      ) : isAudio ? (
-                        <div className="h-10 w-10 rounded-lg bg-audio/15 border border-warm-border shadow-sm flex items-center justify-center text-audio text-lg pointer-events-none">
-                          ♪
-                        </div>
-                      ) : isVideo && !thumb ? (
-                        <div className="h-10 w-10 rounded-lg bg-video/15 border border-warm-border shadow-sm flex items-center justify-center text-video pointer-events-none">
-                          <VideoCamera size={14} weight="bold" />
-                        </div>
-                      ) : (
-                        <ProjectedImage
-                          src={thumb!}
-                          alt={(node.data.label as string) || nodeId}
-                          className="h-10 w-10 rounded-lg object-cover border border-warm-border shadow-sm pointer-events-none"
-                        />
-                      )}
-                      <span className="clash-node-ref-index absolute -top-1 -left-1 text-[9px] font-bold rounded px-1 min-w-[14px] text-center leading-[14px] pointer-events-none">
-                        {badge}
-                      </span>
-                      {!isCheckpointLocked && (
-                        <IconButton
-                          label={`Remove reference ${i + 1}`}
-                          icon="×"
-                          size="sm"
-                          shape="circle"
-                          onClick={() => removeRefNode(nodeId)}
-                          className={`${NODE_INTERACTION_BOUNDARY_CLASS} clash-node-ref-remove absolute -top-1 -right-1 hidden h-5 min-h-5 w-5 min-w-5 text-[11px] leading-none group-hover/thumb:flex`}
-                        />
-                      )}
-                    </Reorder.Item>
-                  );
-                })}
-              </Reorder.Group>
-              {!isCheckpointLocked && (
-                <Popover
-                  open={refPickerTarget === "append"}
-                  onOpenChange={(open) =>
-                    setRefPickerTarget(open ? "append" : null)
-                  }
-                >
-                  <PopoverTrigger asChild>
-                    <IconButton
-                      label="Add reference from canvas"
-                      icon={<Plus size={14} weight="bold" />}
-                      size="lg"
-                      shape="rounded"
-                      className="h-10 min-h-10 w-10 min-w-10 flex-shrink-0 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
-                    />
-                  </PopoverTrigger>
-                  <PopoverContent
-                    side="top"
-                    align="start"
-                    className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
-                    onPointerDown={(e) => e.stopPropagation()}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <RefPickerContent
-                      projectId={projectId}
-                      candidates={refPickerCandidates}
-                      onPick={(nid) => {
-                        attachRefToSlot(nid, "append");
+                        attachRefToSlot(nodeId, "append");
                         setRefPickerTarget(null);
                       }}
                     />
                   </PopoverContent>
                 </Popover>
               )}
-            </div>
           </div>
-        )
-      )}
+        ) : isStartEnd ? (
+          <FrameReferenceStrip
+            ariaLabel="Start and end frames"
+            layout="fixed"
+            message={
+              startEndMismatch ? (
+                <p className="mt-1.5 text-[10px] leading-tight text-amber-600">
+                  Start and end frames have different aspect ratios (
+                  {formatRatio(startEndMismatch.s.w, startEndMismatch.s.h)} vs{" "}
+                  {formatRatio(startEndMismatch.e.w, startEndMismatch.e.h)}).
+                  Output will likely be distorted — use frames with matching
+                  dimensions.
+                </p>
+              ) : undefined
+            }
+          >
+            {(["start", "end"] as const).map((slot, slotIdx) => {
+              const endpointSlot = slot === "start" ? "startFrame" : "endFrame";
+              const input =
+                nativeDraft?.projection?.revision.persistentInputRefs.find(
+                  (ref) => ref.slot === endpointSlot,
+                );
+              const assetId =
+                input && "kind" in input.target && input.target.kind === "media"
+                  ? input.target.projectAssetId
+                  : null;
+              const nodeId = nativeDraft
+                ? getNodes().find(
+                    (node) => assetId && referenceAssetId(node) === assetId,
+                  )?.id
+                : refNodeIds[slotIdx];
+              const node = nodeId ? getNode(nodeId) : undefined;
+              const thumb = nodeId ? refThumbByNodeId.get(nodeId) : undefined;
+              const badge = slot === "start" ? "S" : "E";
+              const fullLabel = slot === "start" ? "Start" : "End";
 
+              return (
+                <Fragment key={slot}>
+                  {slotIdx === 1 && (
+                    <span
+                      className="text-slate-700 dark:text-slate-300 text-xs select-none px-0.5"
+                      aria-hidden
+                    >
+                      ⇌
+                    </span>
+                  )}
+                  <div role="listitem">
+                    <FrameReferenceSlot
+                      badge={badge}
+                      filled={Boolean(node)}
+                      label={fullLabel}
+                      thumb={thumb}
+                      onRemove={
+                        !isCheckpointLocked && nodeId
+                          ? () =>
+                              removeRefNode(
+                                nodeId,
+                                nativeDraft ? endpointSlot : undefined,
+                              )
+                          : undefined
+                      }
+                      removeLabel={`Clear ${fullLabel} frame`}
+                      emptyControl={
+                        node ? undefined : (
+                          <Popover
+                            open={refPickerTarget === slot}
+                            onOpenChange={(open) =>
+                              setRefPickerTarget(open ? slot : null)
+                            }
+                          >
+                            <PopoverTrigger asChild>
+                              <IconButton
+                                label={`Pick ${fullLabel} frame`}
+                                icon={<Plus size={14} weight="bold" />}
+                                size="lg"
+                                shape="rounded"
+                                disabled={isCheckpointLocked}
+                                className="h-10 min-h-10 w-10 min-w-10 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
+                              />
+                            </PopoverTrigger>
+                            <PopoverContent
+                              side="top"
+                              align="start"
+                              className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <RefPickerContent
+                                projectId={projectId}
+                                candidates={refPickerCandidates}
+                                onPick={(nid) => {
+                                  attachRefToSlot(nid, slot);
+                                  setRefPickerTarget(null);
+                                }}
+                              />
+                            </PopoverContent>
+                          </Popover>
+                        )
+                      }
+                    />
+                  </div>
+                </Fragment>
+              );
+            })}
+          </FrameReferenceStrip>
+        ) : (
+          acceptsAnyRef && (
+            <div className="pointer-events-auto mb-2 px-1 relative">
+              <div className="flex items-center gap-1.5">
+                <Reorder.Group
+                  axis="x"
+                  values={refNodeIds}
+                  onReorder={persistRefOrder}
+                  className="flex gap-1.5"
+                  as="div"
+                >
+                  {refNodeIds.map((nodeId, i) => {
+                    const node = getNode(nodeId);
+                    if (!node) return null;
+                    // The current Host resolves the stable Project Asset identity
+                    // above. A video whose bytes are not ready yet renders as an
+                    // icon tile via the `isVideo` fallback below.
+                    const thumb = refThumbByNodeId.get(nodeId);
+                    const isText = node.type === "text";
+                    const isAudio = node.type === "audio";
+                    const isVideo = node.type === "video";
+                    if (!thumb && !isText && !isAudio && !isVideo) return null;
+                    const badge = `${i + 1}`;
+                    return (
+                      <Reorder.Item
+                        key={nodeId}
+                        value={nodeId}
+                        drag={isCheckpointLocked ? false : "x"}
+                        as="div"
+                        className="relative group/thumb flex-shrink-0"
+                        whileDrag={{ scale: 1.08, zIndex: 10 }}
+                        style={{
+                          cursor: isCheckpointLocked ? "default" : "grab",
+                        }}
+                      >
+                        {isText ? (
+                          <div className="h-10 w-10 rounded-lg bg-warm-muted border border-warm-border shadow-sm flex items-center justify-center text-slate-700 dark:text-slate-300 pointer-events-none">
+                            <TextT size={16} weight="bold" />
+                          </div>
+                        ) : isAudio ? (
+                          <div className="h-10 w-10 rounded-lg bg-audio/15 border border-warm-border shadow-sm flex items-center justify-center text-audio text-lg pointer-events-none">
+                            ♪
+                          </div>
+                        ) : isVideo && !thumb ? (
+                          <div className="h-10 w-10 rounded-lg bg-video/15 border border-warm-border shadow-sm flex items-center justify-center text-video pointer-events-none">
+                            <VideoCamera size={14} weight="bold" />
+                          </div>
+                        ) : (
+                          <ProjectedImage
+                            src={thumb!}
+                            alt={(node.data.label as string) || nodeId}
+                            className="h-10 w-10 rounded-lg object-cover border border-warm-border shadow-sm pointer-events-none"
+                          />
+                        )}
+                        <span className="clash-node-ref-index absolute -top-1 -left-1 text-[9px] font-bold rounded px-1 min-w-[14px] text-center leading-[14px] pointer-events-none">
+                          {badge}
+                        </span>
+                        {!isCheckpointLocked && (
+                          <IconButton
+                            label={`Remove reference ${i + 1}`}
+                            icon="×"
+                            size="sm"
+                            shape="circle"
+                            onClick={() => removeRefNode(nodeId)}
+                            className={`${NODE_INTERACTION_BOUNDARY_CLASS} clash-node-ref-remove absolute -top-1 -right-1 hidden h-5 min-h-5 w-5 min-w-5 text-[11px] leading-none group-hover/thumb:flex`}
+                          />
+                        )}
+                      </Reorder.Item>
+                    );
+                  })}
+                </Reorder.Group>
+                {!isCheckpointLocked && (
+                  <Popover
+                    open={refPickerTarget === "append"}
+                    onOpenChange={(open) =>
+                      setRefPickerTarget(open ? "append" : null)
+                    }
+                  >
+                    <PopoverTrigger asChild>
+                      <IconButton
+                        label="Add reference from canvas"
+                        icon={<Plus size={14} weight="bold" />}
+                        size="lg"
+                        shape="rounded"
+                        className="h-10 min-h-10 w-10 min-w-10 flex-shrink-0 rounded-lg border border-dashed border-warm-border bg-warm-surface text-content-secondary shadow-sm hover:border-brand/45 hover:bg-warm-muted hover:text-content-primary"
+                      />
+                    </PopoverTrigger>
+                    <PopoverContent
+                      side="top"
+                      align="start"
+                      className="z-[9999] w-[320px] overflow-hidden rounded-xl p-0"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <RefPickerContent
+                        projectId={projectId}
+                        candidates={refPickerCandidates}
+                        onPick={(nid) => {
+                          attachRefToSlot(nid, "append");
+                          setRefPickerTarget(null);
+                        }}
+                      />
+                    </PopoverContent>
+                  </Popover>
+                )}
+              </div>
+            </div>
+          )
+        )}
+      </div>
       <div
-        className="pointer-events-auto w-full rounded-2xl bg-warm-surface shadow-2xl border border-warm-border overflow-visible"
+        className={
+          composer
+            ? "pointer-events-auto w-full overflow-visible rounded-2xl border border-warm-border bg-warm-surface shadow-sm"
+            : "pointer-events-auto w-full rounded-2xl bg-warm-surface shadow-2xl border border-warm-border overflow-visible"
+        }
         onClick={() => {
           setParamsPopoverOpen(false);
           setAspectRatioPopoverOpen(false);
@@ -3872,23 +4459,30 @@ const PromptActionNode = ({
           <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-content-secondary">
             Prompt
           </div>
-          {!isCustom && nativeDraft?.projection?.revision.state.contentParts !== undefined ? <NativeOrderedPrompt
-            state={nativeDraft.projection.revision.state} disabled={isCheckpointLocked} edit={nativeDraft.edit}
-          /> : <div
-            ref={editorRef}
-            aria-label="Prompt"
-            contentEditable={!isCheckpointLocked}
-            suppressContentEditableWarning
-            className={`${NODE_INTERACTION_BOUNDARY_CLASS} w-full max-h-[40vh] overflow-y-auto text-sm focus:outline-none leading-relaxed empty:before:content-[attr(data-placeholder)] empty:before:text-stone-400 ${
-              isCheckpointLocked
-                ? "text-stone-700 dark:text-stone-300 cursor-default select-text"
-                : "text-slate-900 dark:text-slate-50"
-            }`}
-            style={{ minHeight: "3em" }}
-            data-placeholder="Describe anything you want to generate... (@ to ref assets)"
-            onInput={isCheckpointLocked ? undefined : handleEditorInput}
-            onKeyDown={isCheckpointLocked ? undefined : handleEditorKeyDown}
-          />}
+          {!isCustom &&
+          nativeDraft?.projection?.revision.state.contentParts !== undefined ? (
+            <NativeOrderedPrompt
+              state={nativeDraft.projection.revision.state}
+              disabled={isCheckpointLocked}
+              edit={nativeDraft.edit}
+            />
+          ) : (
+            <div
+              ref={editorRef}
+              aria-label="Prompt"
+              contentEditable={!isCheckpointLocked}
+              suppressContentEditableWarning
+              className={`${NODE_INTERACTION_BOUNDARY_CLASS} w-full max-h-[40vh] overflow-y-auto text-sm focus:outline-none leading-relaxed empty:before:content-[attr(data-placeholder)] empty:before:text-stone-400 ${
+                isCheckpointLocked
+                  ? "text-stone-700 dark:text-stone-300 cursor-default select-text"
+                  : "text-slate-900 dark:text-slate-50"
+              }`}
+              style={{ minHeight: "3em" }}
+              data-placeholder="Describe anything you want to generate... (@ to ref assets)"
+              onInput={isCheckpointLocked ? undefined : handleEditorInput}
+              onKeyDown={isCheckpointLocked ? undefined : handleEditorKeyDown}
+            />
+          )}
           {showMentionMenu && filteredMentionNodes.length > 0 && (
             <ActionMentionPicker
               nodes={filteredMentionNodes}
@@ -3920,7 +4514,9 @@ const PromptActionNode = ({
         )}
 
         {/* Bottom toolbar: model selector + clickable param chips */}
-        <div className="flex items-center gap-1.5 px-3 pb-3 flex-nowrap overflow-visible">
+        <div
+          className={`flex min-w-0 items-center gap-1.5 px-3 pb-3 overflow-visible ${composer ? "flex-wrap [&>*]:max-w-full" : "flex-nowrap"}`}
+        >
           {/* Model / Custom Action selector. Keep it available when
                             the current custom runtime is offline so the user can
                             switch back to another model or installed action. */}
@@ -3928,43 +4524,56 @@ const PromptActionNode = ({
             className="relative"
             style={customActionOffline ? { opacity: 0.5 } : undefined}
           >
-            {modelUnavailable && availableModels.length === 0 && configureModels ? (
-              <Button size="sm" shape="pill" onClick={(event) => { event.stopPropagation(); configureModels(); }}>Configure models in Settings</Button>
-            ) : <Tooltip label={modelPickerLabel}>
-              <span className="inline-flex min-w-0">
-                <SelectMenu<string>
-                  className="relative"
-                  triggerClassName="px-2.5 py-1 text-xs"
-                  value={
-                    isCustom ? `action:${customActionId}` : `model:${modelId}`
-                  }
-                  options={generationChoices.map((choice) => ({
-                    value: choice.value,
-                    label: choice.label,
-                    description:
-                      choice.kind === "action"
-                        ? `Custom Action · ${choice.description ?? "Marketplace integration"}`
-                        : getModelDropdownSecondaryText(true),
-                  }))}
-                  onValueChange={(nextChoice) => {
-                    void handleGenerationChoiceChange(nextChoice);
-                    setParamsPopoverOpen(false);
-                    setAspectRatioPopoverOpen(false);
-                  }}
-                  ariaLabel="Model"
-                  triggerLabel={modelDisplay}
-                  triggerPrefix={
-                    <Icon size={12} weight="bold" className={colorClass} />
-                  }
-                  variant="pill"
-                  size="sm"
-                  placement="top"
-                  menuWidth={240}
-                  maxMenuHeight={192}
-                  stopPropagation
-                />
-              </span>
-            </Tooltip>}
+            {modelUnavailable &&
+            availableModels.length === 0 &&
+            configureModels ? (
+              <Button
+                size="sm"
+                shape="pill"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  configureModels();
+                }}
+              >
+                Configure models in Settings
+              </Button>
+            ) : (
+              <Tooltip label={modelPickerLabel}>
+                <span className="inline-flex min-w-0">
+                  <SelectMenu<string>
+                    className="relative"
+                    triggerClassName="px-2.5 py-1 text-xs"
+                    value={
+                      isCustom ? `action:${customActionId}` : `model:${modelId}`
+                    }
+                    options={generationChoices.map((choice) => ({
+                      value: choice.value,
+                      label: choice.label,
+                      description:
+                        choice.kind === "action"
+                          ? `Custom Action · ${choice.description ?? "Marketplace integration"}`
+                          : getModelDropdownSecondaryText(true),
+                    }))}
+                    onValueChange={(nextChoice) => {
+                      void handleGenerationChoiceChange(nextChoice);
+                      setParamsPopoverOpen(false);
+                      setAspectRatioPopoverOpen(false);
+                    }}
+                    ariaLabel="Model"
+                    triggerLabel={modelDisplay}
+                    triggerPrefix={
+                      <Icon size={12} weight="bold" className={colorClass} />
+                    }
+                    variant="pill"
+                    size="sm"
+                    placement="top"
+                    menuWidth={240}
+                    maxMenuHeight={192}
+                    stopPropagation
+                  />
+                </span>
+              </Tooltip>
+            )}
             {customActionOffline && (
               <span className="ml-2 text-[10px] text-slate-700 dark:text-slate-300 align-middle">
                 {RUNTIME_OFFLINE_LABEL}
@@ -4259,10 +4868,34 @@ const PromptActionNode = ({
             />
           )}
 
+          {composer && !isCheckpointLocked && (
+            <Button
+              aria-label={panelRunLabel}
+              variant="primary"
+              className="ml-auto shrink-0 bg-brand text-white shadow-none hover:bg-brand/90"
+              disabled={
+                isExecuting ||
+                modelUnavailable ||
+                customActionOffline ||
+                customActionDefinitionUpdated ||
+                !!referenceValidationError
+              }
+              onClick={() => void handleExecute()}
+            >
+              {isExecuting ? "Generating…" : "Generate"}
+            </Button>
+          )}
+
           {/* Materialized-checkpoint lock: Run again or copy into a fresh revision. */}
           {isCheckpointLocked && (
             <>
-              <Tooltip label={nativeDraft ? "Create an independent Generator copy" : "Duplicate this panel and open the copy"}>
+              <Tooltip
+                label={
+                  nativeDraft
+                    ? "Create an independent Generator copy"
+                    : "Duplicate this panel and open the copy"
+                }
+              >
                 <Button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -4273,19 +4906,27 @@ const PromptActionNode = ({
                   size="sm"
                   shape="pill"
                   className="h-7 min-h-7 flex-shrink-0 border-0 bg-warm-muted px-2.5 text-xs font-medium text-stone-800 shadow-none hover:bg-warm-hover dark:text-stone-200"
-                  aria-label={nativeDraft ? "Create an independent Generator copy" : "Duplicate this panel and open the copy"}
+                  aria-label={
+                    nativeDraft
+                      ? "Create an independent Generator copy"
+                      : "Duplicate this panel and open the copy"
+                  }
                 >
                   {nativeDraft ? "Copy" : "Copy & open"}
                 </Button>
               </Tooltip>
-              <Tooltip label={modelUnavailable ? modelUnavailableReason : checkpointRunLabel}>
+              <Tooltip
+                label={
+                  modelUnavailable ? modelUnavailableReason : checkpointRunLabel
+                }
+              >
                 <span className="inline-flex flex-shrink-0">
                   <Button
                     onClick={(e) => {
                       e.stopPropagation();
                       if (
                         modelUnavailable ||
-                      customActionOffline ||
+                        customActionOffline ||
                         customActionDefinitionUpdated
                       )
                         return;
@@ -4332,6 +4973,25 @@ const PromptActionNode = ({
     </motion.div>
   );
 
+  if (composer)
+    return (
+      <div
+        className="flex min-h-0 flex-1 flex-col overflow-auto p-4"
+        data-generator-composer={id}
+      >
+        <div className="mx-auto w-full max-w-2xl">
+          {configPanel}
+          {(referenceValidationError || error) && (
+            <p role="alert" className="mt-3 text-sm text-red-700">
+              {referenceValidationError || error}
+            </p>
+          )}
+        </div>
+        {modalContent}
+        {keyframeTimelineDialog}
+      </div>
+    );
+
   return (
     <>
       {/* Outer width matches the capsule so left/right handles snap to
@@ -4372,7 +5032,9 @@ const PromptActionNode = ({
                   {label || "Action"}
                 </span>
                 <span className="text-[10px] text-slate-700 dark:text-slate-300 truncate leading-none">
-                  {modelUnavailable ? "No available model selected" : badgeDisplayName}
+                  {modelUnavailable
+                    ? "No available model selected"
+                    : badgeDisplayName}
                 </span>
 
                 {/* Phase 0 attribution — only renders when actor info is populated. */}
@@ -4385,7 +5047,11 @@ const PromptActionNode = ({
             </Button>
             <div className="flex flex-shrink-0 items-center pr-3.5">
               {/* Run button — separate click target */}
-              <Tooltip label={modelUnavailable ? modelUnavailableReason : panelRunLabel}>
+              <Tooltip
+                label={
+                  modelUnavailable ? modelUnavailableReason : panelRunLabel
+                }
+              >
                 <span className="inline-flex flex-shrink-0">
                   <Button
                     className={`nodrag h-7 min-h-7 flex-shrink-0 rounded-lg px-3 text-xs font-semibold text-white transition-transform hover:scale-[1.02] active:scale-95 ${btnClass}`}
@@ -4393,7 +5059,7 @@ const PromptActionNode = ({
                       e.stopPropagation();
                       if (
                         modelUnavailable ||
-                      customActionOffline ||
+                        customActionOffline ||
                         customActionDefinitionUpdated
                       )
                         return;
@@ -4621,25 +5287,68 @@ function RefPickerOptionButton({
   );
 }
 
-function ActionBadgeNode(props: NodeProps<RFNode<Record<string, any>>>) {
+function ActionBadgeNode(props: ActionEditorProps) {
   const { projectId } = useProject();
   const cards = useProjectCustomActions();
   const loroSync = useOptionalLoroSyncContext();
-  const native = useNativeGeneratorDraft({ projectId, doc: loroSync?.doc ?? null,
-    generatorId: typeof props.data.generatorId === "string" ? props.data.generatorId : null });
+  const native = useNativeGeneratorDraft({
+    projectId,
+    doc: loroSync?.doc ?? null,
+    generatorId:
+      typeof props.data.generatorId === "string"
+        ? props.data.generatorId
+        : null,
+  });
+  if (typeof props.data.actionRunId === "string" && !props.data.generatorOutputSlot) {
+    return <NativeActionRunNode projectId={projectId} doc={loroSync?.doc ?? null} actionRunId={props.data.actionRunId} label={typeof props.data.label === "string" ? props.data.label : undefined} />;
+  }
   if (!native) return <PromptActionNode {...props} />;
-  if (native.error || !native.projection) return <div role="alert" className="rounded-xl border border-red-300 bg-warm-surface p-4 text-sm text-red-600">{native.error}</div>;
+  if (native.error || !native.projection)
+    return (
+      <div
+        role="alert"
+        className="rounded-xl border border-red-300 bg-warm-surface p-4 text-sm text-red-600"
+      >
+        {native.error}
+      </div>
+    );
   let data: Record<string, unknown>;
   try {
-    data = canvasModelGeneratorRevisionData(props.data, native.projection.revision);
+    data = canvasModelGeneratorRevisionData(
+      props.data,
+      native.projection.revision,
+    );
     if (typeof props.data.actionCardId === "string") {
       const card = cards.find((entry) => entry.id === props.data.actionCardId);
       const ref = native.projection.revision.definitionRef;
-      if (!card?.generator || card.pluginBinding?.pluginId !== ref.pluginId || card.generator.definitionId !== ref.definitionId) throw new Error("The Action Card for this Generator is unavailable.");
-      data.pluginBinding = { pluginId: ref.pluginId, version: ref.version, schemaHash: ref.schemaHash, exportId: card.pluginBinding.exportId };
+      if (
+        !card?.generator ||
+        card.pluginBinding?.pluginId !== ref.pluginId ||
+        card.generator.definitionId !== ref.definitionId
+      )
+        throw new Error("The Action Card for this Generator is unavailable.");
+      data.pluginBinding = {
+        pluginId: ref.pluginId,
+        version: ref.version,
+        schemaHash: ref.schemaHash,
+        exportId: card.pluginBinding.exportId,
+      };
     }
+  } catch (error) {
+    return (
+      <div
+        role="alert"
+        className="rounded-xl border border-red-300 bg-warm-surface p-4 text-sm text-red-600"
+      >
+        {error instanceof Error ? error.message : String(error)}
+      </div>
+    );
   }
-  catch (error) { return <div role="alert" className="rounded-xl border border-red-300 bg-warm-surface p-4 text-sm text-red-600">{error instanceof Error ? error.message : String(error)}</div>; }
   return <PromptActionNode {...props} data={data} nativeDraft={native} />;
+}
+export function GeneratorComposer(
+  props: Omit<ActionEditorProps, "composer" | "selected">,
+) {
+  return <ActionBadgeNode {...props} composer selected />;
 }
 export default memo(ActionBadgeNode);

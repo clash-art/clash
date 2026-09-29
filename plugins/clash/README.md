@@ -1,13 +1,28 @@
 # Clash
 
-One headless npm package for the complete local Clash workspace:
+One distribution for the complete local Clash workspace:
 
 - `clash <command>` runs the CLI client;
 - `clash mcp` runs the peer stdio MCP client;
 - the packaged `local-api` host is an internal runtime, started on demand.
 
-Install it globally with `npm install -g clash`, or configure an MCP client to
-run `npx -y clash mcp`.
+Public npm installation is not ready. The public registry name `clash` currently
+belongs to an unrelated package; do not install or execute it for this product.
+The package in this repository is a distribution source, not evidence of a
+published artifact. Maintainer-provided Desktop candidates carry this runtime;
+external agent setup must be verified against the selected candidate before it
+is presented as an installation path. No replacement npm name is advertised.
+
+Maintainers package a built candidate with
+`pnpm --dir plugins/clash pack:distribution /absolute/artifact-directory`.
+This materializes and bundles the complete production dependency tree, retaining
+the resolved dependency lock beside the tarball. A plain workspace `pnpm pack`
+does not produce the standalone plugin payload: a Codex plugin cache has no
+parent npm dependency directory. The installed acceptance test copies the
+package to an unrelated directory before exercising CLI/MCP and draft creation.
+The tarball includes native dependencies for the packaging machine and declares
+that OS/architecture. The first-release verification runner is macOS ARM64;
+these local artifacts do not claim cross-platform portability.
 
 ## Runtime model
 
@@ -50,20 +65,17 @@ package- or Desktop-specific project database.
 
 ## GUI model
 
-The package's MCP runtime contains several focused MCP Apps:
-
-- `ui://clash/studio` — host and project overview;
-- `ui://clash/canvas` — interactive node Canvas;
-- `ui://clash/timeline` — Timeline editor;
-- `ui://clash/director` — Director Stage editor.
+The unified runtime registers `clash_project_open` and `ui://clash/project`,
+one Project App backed by the existing editor and the same local Host. Its
+display requires an MCP client that supports Apps. The former standalone
+Studio, Canvas, Timeline, and Director mini Apps are disabled in this runtime.
 
 Assets, models, tasks, actions, text, production, effects, audit, auth, and
 diagnostics are exposed through typed or exact-argv MCP tools. New GUI surfaces
 should be added only after they have a real view model and mutation contract.
 
-The Studio App is the entry surface. Opening Canvas, Timeline, or Director does
-not launch a hidden Desktop window or iframe the web app; each is an MCP App
-backed by the same tools and host state.
+Headless tools do not depend on App rendering. A successful MCP handshake does
+not by itself verify that an external client can display the Project App.
 
 ## Hosted agent working trees
 

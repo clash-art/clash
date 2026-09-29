@@ -1,4 +1,6 @@
 import React from 'react';
+import { timelineItemsOverlap } from '@clash/shared-types';
+import { FontFamilyPicker } from './FontFamilyPicker';
 import { flushSync } from 'react-dom';
 import {
   AUDIO_GAIN_DB_MAX,
@@ -55,6 +57,7 @@ import {
 import {
   RemotionButton,
   RemotionInput,
+  RemotionNumberInput,
   RemotionSelect,
   RemotionTextarea,
 } from './ui/controls';
@@ -357,6 +360,7 @@ type KeyframeControlHeaderProps = {
   active: boolean;
   itemFrom: number;
   itemLocalFrame: number;
+  canEditKeyframes: boolean;
   currentKey: { interpolation: 'hold' | 'linear' } | undefined;
   previousFrame: number | null;
   nextFrame: number | null;
@@ -369,6 +373,7 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
   active,
   itemFrom,
   itemLocalFrame,
+  canEditKeyframes,
   currentKey,
   previousFrame,
   nextFrame,
@@ -389,9 +394,10 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
       <RemotionButton
         type="button"
         aria-label={`${currentKey ? 'Remove' : 'Add'} ${label} keyframe at current frame`}
-        title={`${currentKey ? 'Remove' : 'Add'} ${label} keyframe at frame ${itemLocalFrame}`}
+        title={canEditKeyframes ? `${currentKey ? 'Remove' : 'Add'} ${label} keyframe at frame ${itemLocalFrame}` : 'Move the playhead onto the selected clip to edit keyframes'}
+        disabled={!canEditKeyframes}
         onClick={onToggle}
-        className={`flex h-6 w-6 items-center justify-center ${controlRadiusClassName} border ${
+        className={`flex min-h-7 items-center justify-center gap-1 px-2 text-xs ${controlRadiusClassName} border ${
           currentKey
             ? 'border-brand/60 bg-brand-light text-brand'
             : active
@@ -399,8 +405,10 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
               : 'border-warm-border bg-warm-page/40 text-stone-400'
         }`}
       >
-        {currentKey ? '◆' : '◇'}
+        <span aria-hidden="true">{currentKey ? '◆' : '◇'}</span>
+        {currentKey ? 'Remove keyframe' : 'Add keyframe'}
       </RemotionButton>
+      {!canEditKeyframes ? <span className="col-span-2 text-xs text-stone-500">Move the playhead onto this clip to edit keyframes.</span> : active && <span className="col-span-2 text-xs text-stone-500">{currentKey ? 'On keyframe' : 'Between keyframes'} · clip frame {itemLocalFrame}</span>}
       {active && (
       <div className="col-span-2 flex min-w-0 items-center gap-1">
         <RemotionButton
@@ -411,7 +419,7 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
           onClick={() => navigate(previousFrame)}
           className={`flex h-6 min-w-6 items-center justify-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 px-1 text-stone-500 disabled:cursor-not-allowed disabled:opacity-35`}
         >
-          ‹
+          ‹ Previous
         </RemotionButton>
         <RemotionButton
           type="button"
@@ -421,7 +429,7 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
           onClick={() => navigate(nextFrame)}
           className={`flex h-6 min-w-6 items-center justify-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 px-1 text-stone-500 disabled:cursor-not-allowed disabled:opacity-35`}
         >
-          ›
+          Next ›
         </RemotionButton>
         {currentKey && (
           <RemotionSelect
@@ -443,16 +451,23 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
   );
 };
 
+function useItemKeyframePlayhead(item: Item) {
+  const { currentFrame } = useEditorPlayback();
+  // Preserve the actual local frame for navigation; clamping makes an outside
+  // playhead target a boundary key and skips it when navigating into the clip.
+  const itemLocalFrame = currentFrame - item.from;
+  return {
+    itemLocalFrame,
+    canEditKeyframes: itemLocalFrame >= 0 && itemLocalFrame < item.durationInFrames,
+  };
+}
+
 const PositionKeyframeControl: React.FC<{
   trackId: string;
   item: Item;
 }> = React.memo(({ trackId, item }) => {
   const dispatch = useEditorDispatch();
-  const { currentFrame } = useEditorPlayback();
-  const itemLocalFrame = Math.max(
-    0,
-    Math.min(item.durationInFrames - 1, currentFrame - item.from),
-  );
+  const { itemLocalFrame, canEditKeyframes } = useItemKeyframePlayhead(item);
   const properties = item.properties ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties;
   const sampled = sampleTimelineKeyframes(item.keyframes, itemLocalFrame, {
     position: [properties.x, properties.y],
@@ -470,6 +485,7 @@ const PositionKeyframeControl: React.FC<{
     itemLocalFrame,
   );
   const updateItem = (updates: Partial<Item>) => {
+    if (!canEditKeyframes && 'keyframes' in updates) return;
     dispatch({
       type: 'UPDATE_ITEM',
       payload: { trackId, itemId: item.id, updates },
@@ -524,6 +540,7 @@ const PositionKeyframeControl: React.FC<{
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
+        canEditKeyframes={canEditKeyframes}
         currentKey={currentKey}
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
@@ -537,12 +554,13 @@ const PositionKeyframeControl: React.FC<{
             className={`grid grid-cols-[18px_minmax(0,1fr)] items-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 pl-2 text-stone-400`}
           >
             <span className={editorTypeClassName.caption}>{axisLabel}</span>
-            <RemotionInput
+            <RemotionNumberInput
+              key={`${item.id}:${itemLocalFrame}`}
               aria-label={`${axisLabel} position in pixels`}
-              type="number"
+              disabled={active && !canEditKeyframes}
               step="1"
               value={sampled.position[axis]}
-              onChange={(event) => updateAxis(axis as 0 | 1, parseFloat(event.target.value) || 0)}
+              onValueChange={(value) => updateAxis(axis as 0 | 1, value)}
               className={`${fieldClassName} border-0 bg-transparent pl-0 focus:ring-0`}
             />
           </label>
@@ -557,11 +575,7 @@ const ScaleKeyframeControl: React.FC<{
   item: Item;
 }> = React.memo(({ trackId, item }) => {
   const dispatch = useEditorDispatch();
-  const { currentFrame } = useEditorPlayback();
-  const itemLocalFrame = Math.max(
-    0,
-    Math.min(item.durationInFrames - 1, currentFrame - item.from),
-  );
+  const { itemLocalFrame, canEditKeyframes } = useItemKeyframePlayhead(item);
   const properties = {
     x: item.properties?.x ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.x,
     y: item.properties?.y ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.y,
@@ -581,10 +595,10 @@ const ScaleKeyframeControl: React.FC<{
     (keyframe) => keyframe.frame === itemLocalFrame,
   );
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, 'scale', itemLocalFrame);
-  const updateItem = (updates: Partial<Item>) => dispatch({
-    type: 'UPDATE_ITEM',
-    payload: { trackId, itemId: item.id, updates },
-  });
+  const updateItem = (updates: Partial<Item>) => {
+    if (!canEditKeyframes && 'keyframes' in updates) return;
+    dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
+  };
   const toggleCurrentKeyframe = () => updateItem({
     keyframes: currentKey
       ? removeTimelineKeyframe(item.keyframes, 'scale', itemLocalFrame)
@@ -622,6 +636,7 @@ const ScaleKeyframeControl: React.FC<{
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
+        canEditKeyframes={canEditKeyframes}
         currentKey={currentKey}
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
@@ -635,14 +650,14 @@ const ScaleKeyframeControl: React.FC<{
             className={`grid grid-cols-[18px_minmax(0,1fr)] items-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 pl-2 text-stone-400`}
           >
             <span className={editorTypeClassName.caption}>{axisLabel}</span>
-            <RemotionInput
+            <RemotionNumberInput
+              key={`${item.id}:${itemLocalFrame}`}
               aria-label={`${axisLabel} animated scale`}
-              type="number"
               step="0.01"
               min="0"
-              disabled={!active}
+              disabled={!active || !canEditKeyframes}
               value={sampled.scale[axis]}
-              onChange={(event) => updateAxis(axis as 0 | 1, parseFloat(event.target.value) || 0)}
+              onValueChange={(value) => updateAxis(axis as 0 | 1, value)}
               className={`${fieldClassName} border-0 bg-transparent pl-0 focus:ring-0`}
             />
           </label>
@@ -674,11 +689,7 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
   max,
 }) => {
   const dispatch = useEditorDispatch();
-  const { currentFrame } = useEditorPlayback();
-  const itemLocalFrame = Math.max(
-    0,
-    Math.min(item.durationInFrames - 1, currentFrame - item.from),
-  );
+  const { itemLocalFrame, canEditKeyframes } = useItemKeyframePlayhead(item);
   const properties = {
     x: item.properties?.x ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.x,
     y: item.properties?.y ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.y,
@@ -698,10 +709,10 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
   const currentKey = channelKeys?.find((keyframe) => keyframe.frame === itemLocalFrame);
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, channel, itemLocalFrame);
   const value = sampled[channel];
-  const updateItem = (updates: Partial<Item>) => dispatch({
-    type: 'UPDATE_ITEM',
-    payload: { trackId, itemId: item.id, updates },
-  });
+  const updateItem = (updates: Partial<Item>) => {
+    if (!canEditKeyframes && 'keyframes' in updates) return;
+    dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
+  };
   const toggleCurrentKeyframe = () => updateItem({
     keyframes: currentKey
       ? removeTimelineKeyframe(item.keyframes, channel, itemLocalFrame)
@@ -746,20 +757,22 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
+        canEditKeyframes={canEditKeyframes}
         currentKey={currentKey}
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
         onToggle={toggleCurrentKeyframe}
         onInterpolationChange={updateInterpolation}
       />
-      <RemotionInput
+      <RemotionNumberInput
+        key={`${item.id}:${itemLocalFrame}`}
         aria-label={ariaLabel}
-        type="number"
+        disabled={active && !canEditKeyframes}
         step={step}
         min={min}
         max={max}
         value={value}
-        onChange={(event) => updateValue(parseFloat(event.target.value) || 0)}
+        onValueChange={updateValue}
         className={fieldClassName}
       />
     </div>
@@ -780,23 +793,19 @@ const MaskVectorKeyframeControl: React.FC<{
   binding: TimelineMaskVectorAnimationBinding;
 }> = React.memo(({ trackId, item, binding }) => {
   const dispatch = useEditorDispatch();
-  const { currentFrame } = useEditorPlayback();
+  const { itemLocalFrame, canEditKeyframes } = useItemKeyframePlayhead(item);
   if (!item.mask) return null;
   const { channel, field, label, axisLabels, axisAriaLabels, axisInputs } = binding;
-  const itemLocalFrame = Math.max(
-    0,
-    Math.min(item.durationInFrames - 1, currentFrame - item.from),
-  );
   const sampled = sampleTimelineMaskKeyframes(item.keyframes, itemLocalFrame, item.mask);
   const channelKeys = item.keyframes?.[channel];
   const active = (channelKeys?.length ?? 0) > 0;
   const currentKey = channelKeys?.find((keyframe) => keyframe.frame === itemLocalFrame);
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, channel, itemLocalFrame);
   const value = sampled[field];
-  const updateItem = (updates: Partial<Item>) => dispatch({
-    type: 'UPDATE_ITEM',
-    payload: { trackId, itemId: item.id, updates },
-  });
+  const updateItem = (updates: Partial<Item>) => {
+    if (!canEditKeyframes && 'keyframes' in updates) return;
+    dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
+  };
   const toggleCurrentKeyframe = () => updateItem({
     keyframes: currentKey
       ? removeTimelineKeyframe(item.keyframes, channel, itemLocalFrame)
@@ -843,6 +852,7 @@ const MaskVectorKeyframeControl: React.FC<{
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
+        canEditKeyframes={canEditKeyframes}
         currentKey={currentKey}
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
@@ -858,6 +868,7 @@ const MaskVectorKeyframeControl: React.FC<{
             <span className={editorTypeClassName.caption}>{axisLabel}</span>
             <RemotionInput
               aria-label={axisAriaLabels[axis]}
+              disabled={active && !canEditKeyframes}
               type="number"
               step={axisInputs[axis].step}
               min={axisInputs[axis].min}
@@ -882,23 +893,19 @@ const MaskScalarKeyframeControl: React.FC<{
   binding: TimelineMaskScalarAnimationBinding;
 }> = React.memo(({ trackId, item, binding }) => {
   const dispatch = useEditorDispatch();
-  const { currentFrame } = useEditorPlayback();
+  const { itemLocalFrame, canEditKeyframes } = useItemKeyframePlayhead(item);
   if (!item.mask) return null;
   const { channel, field, label, ariaLabel, input } = binding;
-  const itemLocalFrame = Math.max(
-    0,
-    Math.min(item.durationInFrames - 1, currentFrame - item.from),
-  );
   const sampled = sampleTimelineMaskKeyframes(item.keyframes, itemLocalFrame, item.mask);
   const channelKeys = item.keyframes?.[channel];
   const active = (channelKeys?.length ?? 0) > 0;
   const currentKey = channelKeys?.find((keyframe) => keyframe.frame === itemLocalFrame);
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, channel, itemLocalFrame);
   const value = sampled[field];
-  const updateItem = (updates: Partial<Item>) => dispatch({
-    type: 'UPDATE_ITEM',
-    payload: { trackId, itemId: item.id, updates },
-  });
+  const updateItem = (updates: Partial<Item>) => {
+    if (!canEditKeyframes && 'keyframes' in updates) return;
+    dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
+  };
   const toggleCurrentKeyframe = () => updateItem({
     keyframes: currentKey
       ? removeTimelineKeyframe(item.keyframes, channel, itemLocalFrame)
@@ -944,6 +951,7 @@ const MaskScalarKeyframeControl: React.FC<{
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
+        canEditKeyframes={canEditKeyframes}
         currentKey={currentKey}
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
@@ -952,6 +960,7 @@ const MaskScalarKeyframeControl: React.FC<{
       />
       <RemotionInput
         aria-label={ariaLabel}
+        disabled={active && !canEditKeyframes}
         type="number"
         step={input.step}
         min={input.min}
@@ -1104,6 +1113,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   headerAction,
 }) => {
   const dispatch = useEditorDispatch();
+  const textSectionRef = React.useRef<HTMLDivElement>(null);
+  const transformSectionRef = React.useRef<HTMLDivElement>(null);
   const {
     tracks,
     assets,
@@ -1240,6 +1251,22 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
     });
   };
 
+  const updateTiming = (event: React.ChangeEvent<HTMLInputElement>, field: 'from' | 'durationInFrames') => {
+    const input = event.currentTarget;
+    input.setCustomValidity('');
+    if (!input.value.trim()) return;
+    const value = Number(input.value);
+    if (!Number.isInteger(value) || value < (field === 'from' ? 0 : 1)) return;
+    const candidate = { ...item, [field]: value };
+    const conflict = selectedTrack?.items.find(other => other.id !== item.id && timelineItemsOverlap(candidate, other));
+    if (conflict) {
+      input.setCustomValidity('This range overlaps another clip. Use a free range or move the clip to a separate track.');
+      input.reportValidity();
+      return;
+    }
+    updateItem({ [field]: value });
+  };
+
   const updateVideoAnimation = (
     phase: 'entrance' | 'exit',
     updates: { type?: ClipAnimationType | 'none'; durationInFrames?: number },
@@ -1277,10 +1304,12 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
   return (
     <div className={panelClassName}>
       {showHeader && (
-      <div className={panelHeaderClassName}>
-        <h2 className={`m-0 font-bold text-slate-900 dark:text-stone-100 ${editorTypeClassName.heading}`}>{title}</h2>
-        <div className="flex gap-2">
+      <div className={`${panelHeaderClassName} flex-wrap`}>
+        <div className="flex w-full min-w-0 items-center justify-between gap-2">
+          <h2 className={`m-0 min-w-0 font-bold text-slate-900 dark:text-stone-100 ${editorTypeClassName.heading}`}>{title}</h2>
           {headerAction}
+        </div>
+        <div className="flex w-full flex-wrap justify-end gap-2">
           {item.type !== 'transition' && (
             <SplitButton
               itemFrom={item.from}
@@ -1299,12 +1328,148 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
       </div>
       )}
 
+      {(item.type === 'text' || supportsVisualTransform) && (
+        <nav aria-label="Properties sections" className="flex shrink-0 gap-2 border-b border-warm-border px-4 py-2">
+          {item.type === 'text' && <RemotionButton className="rounded-md border border-warm-border px-3 py-1.5 text-xs hover:bg-warm-hover" onClick={() => textSectionRef.current?.scrollIntoView({ block: 'start' })}>Font & text</RemotionButton>}
+          {supportsVisualTransform && <RemotionButton className="rounded-md border border-warm-border px-3 py-1.5 text-xs hover:bg-warm-hover" onClick={() => transformSectionRef.current?.scrollIntoView({ block: 'start' })}>Keyframes</RemotionButton>}
+        </nav>
+      )}
       <div className={panelScrollClassName}>
+        {/* Plain Text items are editable overlays. Timed subtitles remain Text
+            in the DSL but expose their cue-backed presentation separately. */}
+        {item.type === 'text' && !subtitleItem && (
+          <div ref={textSectionRef} className={inspectorSectionClassName}>
+            <h3 className={sectionTitleClassName}>Text</h3>
+            <div className="mb-3 block">
+              <span className={labelClassName}>Font family</span>
+              <FontFamilyPicker
+                ariaLabel="Text font family"
+                value={(item as TextItem).fontFamily || TIMELINE_SHARED_DEFAULTS.text.fontFamily}
+                onChange={(fontFamily) => updateItem({ fontFamily })}
+                className={fieldClassName}
+              />
+            </div>
+            <div className="mb-3 block">
+              <span className={labelClassName}>Font weight</span>
+              <RemotionSelect
+                ariaLabel="Text font weight"
+                value={String((item as TextItem).fontWeight || TIMELINE_SHARED_DEFAULTS.text.fontWeight)}
+                onValueChange={(nextValue) => updateItem({ fontWeight: nextValue })}
+                options={[
+                  { value: 'normal', label: 'Normal' },
+                  { value: 'bold', label: 'Bold' },
+                  { value: 'lighter', label: 'Lighter' },
+                  { value: 'bolder', label: 'Bolder' },
+                  ...[...new Set(['100', '200', '300', '400', '500', '600', '700', '800', '900', String((item as TextItem).fontWeight || TIMELINE_SHARED_DEFAULTS.text.fontWeight)])].filter(value => !['normal', 'bold', 'lighter', 'bolder'].includes(value)).map(value => ({ value, label: value })),
+                ]}
+                className={fieldClassName}
+              />
+            </div>
+
+            <div className="mb-3">
+              <label className={labelClassName}>Content</label>
+              <RemotionTextarea
+                aria-label="Text content"
+                value={(item as TextItem).text}
+                onChange={(e) => updateItem({ text: e.target.value })}
+                className={`${fieldClassName} min-h-[80px] resize-y`}
+              />
+            </div>
+            <div className="mb-3">
+              <label className={labelClassName}>Color</label>
+              <div className="flex gap-2 items-center">
+                <RemotionInput
+                  type="color"
+                  value={(item as TextItem).color}
+                  onChange={(e) => updateItem({ color: e.target.value })}
+                  className={colorFieldClassName}
+                />
+                <RemotionInput
+                  type="text"
+                  value={(item as TextItem).color}
+                  onChange={(e) => updateItem({ color: e.target.value })}
+                  className={`flex-1 ${fieldClassName}`}
+                />
+              </div>
+            </div>
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              <label>
+                <span className={labelClassName}>Font size</span>
+                <RemotionInput
+                  aria-label="Text font size"
+                  type="number"
+                  min={1}
+                  value={(item as TextItem).fontSize || TIMELINE_SHARED_DEFAULTS.text.fontSize}
+                  onChange={(e) =>
+                    updateItem({
+                      fontSize: Math.max(
+                        1,
+                        parseInt(e.target.value, 10) || TIMELINE_SHARED_DEFAULTS.text.fontSize,
+                      ),
+                    })
+                  }
+                  className={fieldClassName}
+                />
+              </label>
+              <div>
+                <span className={labelClassName}>Alignment</span>
+                <RemotionSelect
+                  ariaLabel="Text alignment"
+                  value={(item as TextItem).textAlign ?? TIMELINE_SHARED_DEFAULTS.text.textAlign}
+                  onValueChange={(nextValue) => updateItem({
+                    textAlign: nextValue as TextItem['textAlign'],
+                  })}
+                  options={[
+                    { value: 'left', label: 'Left' },
+                    { value: 'center', label: 'Center' },
+                    { value: 'right', label: 'Right' },
+                  ]}
+                  className={fieldClassName}
+                />
+              </div>
+            </div>
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              <label>
+                <span className={labelClassName}>Letter spacing</span>
+                <RemotionInput
+                  aria-label="Text letter spacing in pixels"
+                  type="number"
+                  step={0.1}
+                  value={(item as TextItem).letterSpacingPx ?? TIMELINE_SHARED_DEFAULTS.text.letterSpacingPx}
+                  onChange={(event) => updateItem({
+                    letterSpacingPx: Number(event.target.value)
+                      || TIMELINE_SHARED_DEFAULTS.text.letterSpacingPx,
+                  })}
+                  className={fieldClassName}
+                />
+              </label>
+              <label>
+                <span className={labelClassName}>Line height</span>
+                <RemotionInput
+                  aria-label="Text line height"
+                  type="number"
+                  min={0.5}
+                  step={0.05}
+                  value={(item as TextItem).lineHeight ?? TIMELINE_SHARED_DEFAULTS.text.lineHeight}
+                  onChange={(event) => updateItem({
+                    lineHeight: Math.max(
+                      0.5,
+                      Number(event.target.value) || TIMELINE_SHARED_DEFAULTS.text.lineHeight,
+                    ),
+                  })}
+                  className={fieldClassName}
+                />
+              </label>
+            </div>
+
+          </div>
+        )}
 
         {/* Transform Properties */}
         {supportsVisualTransform && (
-        <div className={inspectorSectionClassName}>
+        <div ref={transformSectionRef} className={inspectorSectionClassName}>
           <h3 className={sectionTitleClassName}>Transform</h3>
+          <p className={`mb-3 text-stone-500 ${editorTypeClassName.caption}`}>Move the playhead, add a keyframe, then change its value. Move to another time and add another keyframe to animate.</p>
           <div className="space-y-3">
             <PositionKeyframeControl trackId={trackId} item={item} />
             <div>
@@ -1441,7 +1606,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                     aria-label="Start frame"
                     type="number"
                     value={item.from}
-                    onChange={(e) => updateItem({ from: parseInt(e.target.value, 10) || 0 })}
+                    min={0}
+                    onChange={(e) => updateTiming(e, 'from')}
                     className={fieldClassName}
                   />
                 </label>
@@ -1452,9 +1618,7 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                     type="number"
                     min={1}
                     value={item.durationInFrames}
-                    onChange={(e) =>
-                      updateItem({ durationInFrames: Math.max(1, parseInt(e.target.value, 10) || 1) })
-                    }
+                    onChange={(e) => updateTiming(e, 'durationInFrames')}
                     className={fieldClassName}
                   />
                 </label>
@@ -1918,143 +2082,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
           </div>
         )}
 
-        {/* Plain Text items are editable overlays. Timed subtitles remain Text
-            in the DSL but expose their cue-backed presentation separately. */}
-        {item.type === 'text' && !subtitleItem && (
-          <div className={inspectorSectionClassName}>
-            <h3 className={sectionTitleClassName}>Text</h3>
-            <div className="mb-3">
-              <label className={labelClassName}>Content</label>
-              <RemotionTextarea
-                aria-label="Text content"
-                value={(item as TextItem).text}
-                onChange={(e) => updateItem({ text: e.target.value })}
-                className={`${fieldClassName} min-h-[80px] resize-y`}
-              />
-            </div>
-            <div className="mb-3">
-              <label className={labelClassName}>Color</label>
-              <div className="flex gap-2 items-center">
-                <RemotionInput
-                  type="color"
-                  value={(item as TextItem).color}
-                  onChange={(e) => updateItem({ color: e.target.value })}
-                  className={colorFieldClassName}
-                />
-                <RemotionInput
-                  type="text"
-                  value={(item as TextItem).color}
-                  onChange={(e) => updateItem({ color: e.target.value })}
-                  className={`flex-1 ${fieldClassName}`}
-                />
-              </div>
-            </div>
-            <div className="mb-3 grid grid-cols-2 gap-2">
-              <label>
-                <span className={labelClassName}>Font size</span>
-                <RemotionInput
-                  aria-label="Text font size"
-                  type="number"
-                  min={1}
-                  value={(item as TextItem).fontSize || TIMELINE_SHARED_DEFAULTS.text.fontSize}
-                  onChange={(e) =>
-                    updateItem({
-                      fontSize: Math.max(
-                        1,
-                        parseInt(e.target.value, 10) || TIMELINE_SHARED_DEFAULTS.text.fontSize,
-                      ),
-                    })
-                  }
-                  className={fieldClassName}
-                />
-              </label>
-              <div>
-                <span className={labelClassName}>Alignment</span>
-                <RemotionSelect
-                  ariaLabel="Text alignment"
-                  value={(item as TextItem).textAlign ?? TIMELINE_SHARED_DEFAULTS.text.textAlign}
-                  onValueChange={(nextValue) => updateItem({
-                    textAlign: nextValue as TextItem['textAlign'],
-                  })}
-                  options={[
-                    { value: 'left', label: 'Left' },
-                    { value: 'center', label: 'Center' },
-                    { value: 'right', label: 'Right' },
-                  ]}
-                  className={fieldClassName}
-                />
-              </div>
-            </div>
-            <div className="mb-3 grid grid-cols-2 gap-2">
-              <label>
-                <span className={labelClassName}>Letter spacing</span>
-                <RemotionInput
-                  aria-label="Text letter spacing in pixels"
-                  type="number"
-                  step={0.1}
-                  value={(item as TextItem).letterSpacingPx ?? TIMELINE_SHARED_DEFAULTS.text.letterSpacingPx}
-                  onChange={(event) => updateItem({
-                    letterSpacingPx: Number(event.target.value)
-                      || TIMELINE_SHARED_DEFAULTS.text.letterSpacingPx,
-                  })}
-                  className={fieldClassName}
-                />
-              </label>
-              <label>
-                <span className={labelClassName}>Line height</span>
-                <RemotionInput
-                  aria-label="Text line height"
-                  type="number"
-                  min={0.5}
-                  step={0.05}
-                  value={(item as TextItem).lineHeight ?? TIMELINE_SHARED_DEFAULTS.text.lineHeight}
-                  onChange={(event) => updateItem({
-                    lineHeight: Math.max(
-                      0.5,
-                      Number(event.target.value) || TIMELINE_SHARED_DEFAULTS.text.lineHeight,
-                    ),
-                  })}
-                  className={fieldClassName}
-                />
-              </label>
-            </div>
-            <div className="mb-3 block">
-              <span className={labelClassName}>Font family</span>
-              <RemotionSelect
-                ariaLabel="Text font family"
-                value={(item as TextItem).fontFamily || TIMELINE_SHARED_DEFAULTS.text.fontFamily}
-                onValueChange={(nextValue) => updateItem({ fontFamily: nextValue })}
-                options={[
-                  { value: 'Arial', label: 'Arial' },
-                  { value: 'Helvetica', label: 'Helvetica' },
-                  { value: 'Times New Roman', label: 'Times New Roman' },
-                  { value: 'Georgia', label: 'Georgia' },
-                  { value: 'Courier New', label: 'Courier New' },
-                  { value: 'Verdana', label: 'Verdana' },
-                ]}
-                className={fieldClassName}
-              />
-            </div>
-            <div className="block">
-              <span className={labelClassName}>Font weight</span>
-              <RemotionSelect
-                ariaLabel="Text font weight"
-                value={(item as TextItem).fontWeight || TIMELINE_SHARED_DEFAULTS.text.fontWeight}
-                onValueChange={(nextValue) => updateItem({ fontWeight: nextValue })}
-                options={[
-                  { value: 'normal', label: 'Normal' },
-                  { value: 'bold', label: 'Bold' },
-                  { value: 'lighter', label: 'Lighter' },
-                  { value: 'bolder', label: 'Bolder' },
-                ]}
-                className={fieldClassName}
-              />
-            </div>
-          </div>
-        )}
-
         {subtitleItem && (
-          <div className={inspectorSectionClassName}>
+          <div ref={textSectionRef} className={inspectorSectionClassName}>
             <div className="mb-3 flex items-baseline justify-between gap-3">
               <h3 className="m-0 font-semibold tracking-[-0.01em] text-slate-800 dark:text-stone-200">
                 Captions
@@ -2134,12 +2163,11 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             </div>
             <label className="block">
               <span className={labelClassName}>Font family</span>
-              <RemotionInput
-                aria-label="Caption font family"
-                type="text"
+              <FontFamilyPicker
+                ariaLabel="Caption font family"
                 value={subtitleItem.style?.fontFamily ?? TIMELINE_CAPTION_STYLE_DEFAULTS.fontFamily}
-                onChange={(event) => updateItem({
-                  style: { ...subtitleItem.style, fontFamily: event.target.value },
+                onChange={(fontFamily) => updateItem({
+                  style: { ...subtitleItem.style, fontFamily },
                 })}
                 className={fieldClassName}
               />
@@ -2162,6 +2190,9 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
                   { value: '700', label: 'Bold' },
                   { value: '800', label: 'Extra bold' },
                   { value: '900', label: 'Black' },
+                  ...(!['400', '500', '600', '700', '800', '900'].includes(String(subtitleItem.style?.fontWeight ?? TIMELINE_CAPTION_STYLE_DEFAULTS.fontWeight))
+                    ? [{ value: String(subtitleItem.style?.fontWeight ?? TIMELINE_CAPTION_STYLE_DEFAULTS.fontWeight), label: String(subtitleItem.style?.fontWeight ?? TIMELINE_CAPTION_STYLE_DEFAULTS.fontWeight) }]
+                    : []),
                 ]}
                 className={fieldClassName}
               />

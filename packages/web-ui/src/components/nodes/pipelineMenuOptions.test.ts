@@ -5,6 +5,19 @@ import { PIPELINE_MENU_OPTIONS } from "./pipelineMenuOptions";
 const ENABLED_CATALOG = MODEL_CARDS.map((model) => ({ model })) as ModelCatalogEntry[];
 
 describe("PIPELINE_MENU_OPTIONS", () => {
+    it("checks capabilities without rebuilding provider routes for an already resolved catalog", () => {
+        const catalog = ENABLED_CATALOG.map((entry) => ({
+            ...entry,
+            model: Object.defineProperty({ ...entry.model }, "providerImplementations", {
+                get() { throw new Error("Provider routing was already resolved by the Host"); },
+            }),
+        }));
+        for (const option of PIPELINE_MENU_OPTIONS) {
+            expect(option.isCompatibleWithSource("image", catalog)).toBe(
+                option.isCompatibleWithSource("image", ENABLED_CATALOG),
+            );
+        }
+    });
     it("exposes every built-in AIGC generation chain, including 3D models", () => {
         expect(PIPELINE_MENU_OPTIONS.map((option) => option.id)).toEqual(
             expect.arrayContaining(["image-gen", "video-gen", "audio-gen", "text-gen", "model-gen"]),

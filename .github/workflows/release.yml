@@ -4,13 +4,18 @@ on:
   push:
     branches:
       - master
+  workflow_dispatch:
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  desktop-checks:
+    uses: ./.github/workflows/ci.yml
+
   package-desktop:
     name: Package Desktop (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    needs: [desktop-checks]
     strategy:
       fail-fast: false
       matrix:
@@ -37,12 +42,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Checkout OpenMA common for the desktop renderer
-        shell: bash
-        run: |
-          git clone --filter=blob:none https://github.com/openma-ai/openma-common.git ../openma-common
-          git -C ../openma-common checkout 00358ff9c1e4a694171f5617a4715602c61433e7
-
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v7
@@ -50,8 +49,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
-      - name: Install OpenMA common runtime dependencies
-        run: pnpm --dir ../openma-common install --frozen-lockfile
+      - uses: ./.github/actions/setup-common
 
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
@@ -59,6 +57,26 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm run ${{ matrix.script }}
+
+      - name: Verify macOS candidate seal
+        if: matrix.platform == 'macOS-arm64'
+        run: codesign --verify --deep --strict --verbose=2 apps/desktop/release/mac-arm64/Clash.app
+
+      - name: Verify local integrity after packaging
+        if: matrix.platform == 'macOS-arm64'
+        run: pnpm --dir apps/desktop test:e2e:agent-first-local-v1
+
+      - name: Upload local integrity evidence
+        if: always() && matrix.platform == 'macOS-arm64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-integrity-${{ github.sha }}
+          path: |
+            .tmp/agent-first-local-v1-gate/**
+            .tmp/agent-first-cas/**
+            .tmp/project-workspace-cli/**
+            .tmp/storage-doctor-repair/**
+            .tmp/short-drama-timeline/**
 
       - name: Upload desktop installer
         uses: actions/upload-artifact@v7
@@ -71,6 +89,10 @@ jobs:
     name: Publish Desktop Preview
     runs-on: ubuntu-latest
     needs: [package-desktop]
+    # Packaging is automatic; publication requires installed-app acceptance
+    # for these exact artifacts and approval in this protected environment.
+    if: github.event_name == 'workflow_dispatch' && vars.CLASH_PREVIEW_PUBLICATION_ENABLED == 'true'
+    environment: desktop-preview-acceptance
     permissions:
       contents: write
     steps:

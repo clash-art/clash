@@ -40,6 +40,19 @@ const timeline = {
   state: { tracks: [] },
 };
 
+test("Timeline discovery omits clip bodies while explicit full list and get retain them", async () => {
+  const { createTimelineAdapter } = await import("./adapter.js");
+  const { TIMELINE_MCP_EXECUTORS } = await import("./timeline-mcp-executors.js");
+  const full = { ...timeline, state: { fps: 30, durationInFrames: 90, tracks: [{ id: "titles", items: [{ id: "title", text: "large private clip content" }] }] } };
+  const adapter = createTimelineAdapter({ client: hostClient([], () => ({ timelines: [full], versions: { [full.id]: "receipt" } })) });
+  const listed = await adapter.list({});
+  assert.equal("state" in listed[0], false);
+  assert.equal((listed[0] as { itemCount?: number }).itemCount, 1);
+  assert.equal(TIMELINE_MCP_EXECUTORS["timeline.list"].outputSchema.safeParse({ items: listed }).success, true);
+  assert.deepEqual(await adapter.list({ full: true } as any), [full]);
+  assert.deepEqual(await adapter.get({ timelineId: full.id }), full);
+});
+
 for (const operation of ["create", "attach", "detach", "copy"] as const) test(`Timeline ${operation} exposes the persisted entity from the Host receipt`, async () => {
   const { createTimelineAdapter } = await import("./adapter.js");
   const { TIMELINE_MCP_EXECUTORS } = await import("./timeline-mcp-executors.js");

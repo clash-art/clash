@@ -1,11 +1,13 @@
+import { nodeBackendProxy } from "./dev-backend";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 import wasm from "vite-plugin-wasm";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { recordRendererInputs } from "../../scripts/project-renderer-freshness.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -76,8 +78,8 @@ export const DEV_SOURCE_ALIASES = [
     replacement: resolve(openmaCommonRoot, "src/session-ui/index.tsx"),
   },
   {
-    find: /^@clash\/action-sdk\/browser$/,
-    replacement: resolve(repoRoot, "packages/action-sdk/src/browser.ts"),
+    find: /^@clash\/action-sdk\/(browser|ui)$/,
+    replacement: resolve(repoRoot, "packages/action-sdk/src/$1.ts"),
   },
   {
     find: /^@clash\/asset-sdk$/,
@@ -185,9 +187,11 @@ export const DEV_WATCH_IGNORES = ["**/dist/**", "**/release/**", "**/.tmp/**"];
 // the project's own wrangler.toml — or the wrapper wrangler.toml in
 // clash-hosted/apps/web-hosted) bundles workers/app.ts itself.
 export default defineConfig(async ({ command, isPreview }) => {
+  const nodeProxy = nodeBackendProxy(process.env.CLASH_NODE_API_URL);
   const cloudflarePlugins =
     command === "serve" &&
     !isPreview &&
+    !nodeProxy &&
     process.env.CLASH_WEB_E2E_NO_CLOUDFLARE !== "1"
       ? [
           (await import("@cloudflare/vite-plugin")).cloudflare({
@@ -204,6 +208,33 @@ export default defineConfig(async ({ command, isPreview }) => {
 
   return {
     plugins: [
+      {
+        name: "clash-project-renderer-inputs",
+        apply: "build",
+        writeBundle(output) {
+          if (!output.dir) throw new Error("Project renderer requires an output directory");
+          const rendererDir = resolve(output.dir);
+          const inputs = new Set([
+            resolve(__dirname, "app"),
+            resolve(__dirname, "public"),
+            resolve(__dirname, "index.html"),
+            resolve(__dirname, "vite.config.ts"),
+            rendererDir,
+            resolve(repoRoot, "scripts/project-renderer-freshness.ts"),
+            resolve(repoRoot, "pnpm-lock.yaml"),
+          ]);
+          for (const id of this.getModuleIds()) {
+            const path = id.split("?")[0];
+            if (!path.startsWith("/") || path.includes("/node_modules/") || !existsSync(path)) continue;
+            inputs.add(path);
+            // Workspace exports may resolve to dist. Record their authored sources
+            // too, so a direct Host rebuild cannot silently reuse an old editor.
+            const workspace = path.match(/^(.*\/(?:packages|apps)\/[^/]+)\//)?.[1];
+            if (workspace && existsSync(resolve(workspace, "src"))) inputs.add(resolve(workspace, "src"));
+          }
+          recordRendererInputs(resolve(rendererDir, "../project-renderer-inputs.json"), [...inputs]);
+        },
+      } satisfies Plugin,
       // command is 'serve' for `vite dev` and `vite preview`; `isPreview`
       // distinguishes static preview from the development server.
       // Skip plugin in build so deploys (which read wrangler.toml directly) get
@@ -255,6 +286,7 @@ export default defineConfig(async ({ command, isPreview }) => {
       ],
     },
     server: {
+      proxy: nodeProxy,
       port: 3000,
       host: "0.0.0.0",
       // Vite restricts dev fs to cwd by default; in our pnpm monorepo,

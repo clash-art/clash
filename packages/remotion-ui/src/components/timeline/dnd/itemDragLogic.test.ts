@@ -59,16 +59,34 @@ describe('resolveNonOverlapInTrack', () => {
     expect(resolveNonOverlapInTrack(track, 100, 50, 'me')).toBe(100);
   });
 
-  it('pushes the candidate to immediately after a single overlapping neighbor', () => {
+  it('uses the closest free position before an overlapping neighbor', () => {
     const track = makeTrack('t', [makeVideo('a', 100, 50)]);
-    // Candidate [80..130) overlaps [100..150) — push to start at 150.
-    expect(resolveNonOverlapInTrack(track, 80, 50, 'me')).toBe(150);
+    expect(resolveNonOverlapInTrack(track, 80, 50, 'me')).toBe(50);
   });
 
-  it('walks past chained overlapping neighbors', () => {
+  it('does not push a small move past a chain when a closer free position exists', () => {
     const track = makeTrack('t', [makeVideo('a', 100, 50), makeVideo('b', 150, 50)]);
-    // Initial overlap with `a`, get pushed to 150 — now overlap `b`, push to 200.
-    expect(resolveNonOverlapInTrack(track, 80, 30, 'me')).toBe(200);
+    expect(resolveNonOverlapInTrack(track, 80, 30, 'me')).toBe(70);
+  });
+
+  it('keeps the captured campaign small drag near its original cut instead of jumping to frame 1587', () => {
+    // Captured installed fixture: track-window-final-state.json, titles-layer-3.
+    const ranges = [[44, 100], [144, 303], [447, 222], [669, 175], [844, 121],
+      [965, 81], [1046, 136], [1182, 199], [1381, 94], [1475, 112],
+      [1697, 178], [2207, 131], [2460, 90]];
+    const track = makeTrack('campaign', ranges.map(([from, duration], index) =>
+      makeVideo(index === 0 ? 'me' : `neighbor-${index}`, from, duration)));
+    expect(resolveNonOverlapInTrack(track, 84, 100, 'me')).toBe(44);
+    expect(resolveNonOverlapInTrack(track, 14, 100, 'me')).toBe(14);
+    expect(resolveNonOverlapInTrack(track, 84, 100, 'me'))
+      .toBe(resolveNonOverlapInTrack({ ...track, items: [...track.items].reverse() }, 84, 100, 'me'));
+  });
+
+  it('uses the following gap when closer, and skips gaps too short for the clip', () => {
+    const track = makeTrack('t', [makeVideo('a', 0, 100), makeVideo('b', 120, 30)]);
+    expect(resolveNonOverlapInTrack(track, 110, 40, 'me')).toBe(150);
+    expect(resolveNonOverlapInTrack(track, 110, 10, 'me')).toBe(110);
+    expect(resolveNonOverlapInTrack(makeTrack('t', [makeVideo('a', 100, 50)]), 145, 30, 'me')).toBe(150);
   });
 
   it('clamps to >= 0 even if input is negative', () => {
@@ -151,10 +169,10 @@ describe('buildPreview — vertical routing (matches asset-panel mental model)',
 });
 
 // ──────────────────────────────────────────────────────────────────
-//  buildPreview — overlap push only when not creating a new track
+//  buildPreview — overlap resolution only when not creating a new track
 // ──────────────────────────────────────────────────────────────────
-describe('buildPreview — overlap push semantics', () => {
-  it('when moving into a track with a neighbor, the candidate is pushed past the neighbor', () => {
+describe('buildPreview — overlap resolution', () => {
+  it('when moving into a track with a neighbor, uses the closest free position', () => {
     const t1 = makeTrack('t1', [makeVideo('me', 0, 30)]);
     const t2 = makeTrack('t2', [makeVideo('blocker', 100, 50)]);
     const r = buildPreview({
@@ -171,8 +189,8 @@ describe('buildPreview — overlap push semantics', () => {
       insertThresholdPx: 8,
     });
     expect(r.previewTrackId).toBe('t2');
-    expect(r.previewFrame).toBe(150); // pushed past blocker [100..150)
-    expect(r.snapGuideFrame).toBeNull(); // pushed → no guide
+    expect(r.previewFrame).toBe(70); // right edge meets blocker start
+    expect(r.snapGuideFrame).toBeNull(); // resolved position differs from the snap
   });
 
   it('overlap push is NOT applied when creating a new track', () => {

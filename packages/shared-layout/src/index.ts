@@ -95,4 +95,5 @@ export {
     processAutoLayoutNodes,
     getOverlappingSiblings,
 } from './auto-insert';
+export { calculateScaledDimensions } from './auto-insert';
 export type { AutoInsertResult } from './auto-insert';

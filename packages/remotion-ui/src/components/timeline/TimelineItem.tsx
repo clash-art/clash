@@ -9,7 +9,6 @@ import {
   getItemResolvedSrc,
   getItemResolvedType,
   getItemSourceNodeId,
-  inferTrackCategory,
   isSpokenMediaTrack,
   loadAudioWaveform,
   resolveAudioFadeInFrames,
@@ -41,7 +40,6 @@ import { getTimelineItemDisplayLabel } from './itemDisplayLabel';
 import {
   colors,
   getTimelineItemTone,
-  getTimelineTrackHeight,
   shadows,
   timeline,
 } from './styles';
@@ -57,6 +55,7 @@ import {
 } from './waveformPresentation';
 import { createTimelineTextEditUpdates } from './textItemEditing';
 import { AudioFadeEnvelope } from './AudioFadeEnvelope';
+import { getTrackHeightForTrack, getTextKeyframeBandHeight } from './trackGeometry';
 
 export type TimelineKeyframeMarker = {
   channels: Array<(typeof TIMELINE_KEYFRAME_CHANNELS)[number]>;
@@ -184,9 +183,6 @@ interface TimelineItemProps {
   onRollEdit?: (edge: 'left' | 'right', deltaFrames: number) => void; // Roll edit with adjacent item
   hasAdjacentItemOnLeft?: boolean;
   hasAdjacentItemOnRight?: boolean;
-  shouldHighlightLeft?: boolean;
-  shouldHighlightRight?: boolean;
-  onHoverChange?: (isHovered: boolean) => void;
   onResizeEnd?: () => void;
   style?: CSSProperties;
   // DragOverlay mode: disable positioning, let DragOverlay handle it
@@ -217,9 +213,6 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
   onRollEdit,
   hasAdjacentItemOnLeft,
   hasAdjacentItemOnRight,
-  shouldHighlightLeft = false,
-  shouldHighlightRight = false,
-  onHoverChange,
   style: customStyle,
   isDragOverlay = false,
   onAnnotationTargetContextMenu,
@@ -231,6 +224,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
   const dispatch = useEditorDispatch();
   const [isHovered, setIsHovered] = useState(false);
   const [resizingEdge, setResizingEdge] = useState<'left' | 'right' | null>(null);
+  const [hoveredResizeEdge, setHoveredResizeEdge] = useState<'left' | 'right' | null>(null);
   const [draggingFade, setDraggingFade] = useState<{ type: 'in' | 'out' } | null>(null);
   const [draggingVolumeDb, setDraggingVolumeDb] = useState<number | null>(null);
   const [isEditingText, setIsEditingText] = useState(false);
@@ -356,7 +350,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
   // must never change clip geometry or move the fade/dB controls.
   const hasEmbeddedVideoAudio = resolvedItemType === 'video' && hasWaveform;
   const trackHeight = presentationTrackHeight
-    ?? getTimelineTrackHeight(inferTrackCategory(track, primaryTrackId));
+    ?? getTrackHeightForTrack(track, primaryTrackId);
   const reservesTranscriptWordbar = presentationReservesTranscriptWordbar
     ?? (!isDragOverlay && isSpokenMediaTrack(track, primaryTrackId));
   const maxItemHeight = trackHeight
@@ -703,6 +697,16 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
     assetName: asset?.name,
   });
 
+  // Keep sample geometry independent of zoom. SVG maps these source-sample
+  // coordinates to the current width without regenerating thousands of points.
+  const waveformCoordinateWidth = Math.max(1, (itemWaveform?.length ?? 0) - 1);
+  const envelopePath = React.useMemo(() => itemWaveform ? createOneSidedWaveformPath({
+    waveform: itemWaveform,
+    width: waveformCoordinateWidth,
+    height: waveformHeight,
+    volume: 1,
+  }) : '', [itemWaveform, waveformCoordinateWidth, waveformHeight]);
+
   const renderWaveform = (
     waveform: number[],
     height: number
@@ -712,17 +716,12 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
     const fullWidth = frameToPixels(fullVideoFrames, pixelsPerFrame);
 
     const waveformColor = colors.audio.waveform;
-    const envelopePath = createOneSidedWaveformPath({
-      waveform,
-      width: fullWidth,
-      height,
-      volume: 1,
-    });
 
     return (
       <svg
         width={fullWidth}
         height={height}
+        viewBox={`0 0 ${waveformCoordinateWidth} ${height}`}
         data-waveform-renderer="one-sided-area"
         data-waveform-sample-count={waveform.length}
         style={{
@@ -736,7 +735,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
         <line
           data-waveform-baseline=""
           x1={0}
-          x2={fullWidth}
+          x2={waveformCoordinateWidth}
           y1={Math.max(0, height - 0.5)}
           y2={Math.max(0, height - 0.5)}
           stroke={waveformColor}
@@ -857,22 +856,32 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
     onSelect();
   }, [onSelect]);
 
+  const resizeOrigin = React.useRef<{
+    pixelsPerFrame: number;
+    onResize: typeof onResize;
+    onRollEdit: typeof onRollEdit;
+  } | null>(null);
   const resizeGestureBind = useDragGesture<PointerEvent>(
     ({ first, last, movement: [movementX], args: [edge, isRollEdit], event }) => {
       event.preventDefault();
       event.stopPropagation();
 
       if (first) {
+        // use-gesture movement is measured from pointer-down. Keep the geometry
+        // captured by these callbacks, even as each update renders new props.
+        resizeOrigin.current = { pixelsPerFrame, onResize, onRollEdit };
         setResizingEdge(edge);
         onResizeStart?.(edge);
       }
 
-      const deltaFrames = Math.round(movementX / pixelsPerFrame);
+      const origin = resizeOrigin.current;
+      if (!origin) return;
+      const deltaFrames = Math.round(movementX / origin.pixelsPerFrame);
 
-      if (isRollEdit && onRollEdit) {
-        onRollEdit(edge, deltaFrames);
+      if (isRollEdit && origin.onRollEdit) {
+        origin.onRollEdit(edge, deltaFrames);
       } else {
-        onResize?.(edge, deltaFrames);
+        origin.onResize?.(edge, deltaFrames);
       }
 
       const viewportEl = (event.currentTarget as HTMLElement | null)?.closest('.tracks-viewport') as HTMLDivElement | null;
@@ -895,6 +904,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
       }
 
       if (last) {
+        resizeOrigin.current = null;
         setResizingEdge(null);
         onResizeEnd?.();
       }
@@ -954,11 +964,10 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
       className="timeline-item"
       onMouseEnter={() => {
         setIsHovered(true);
-        onHoverChange?.(true);
       }}
       onMouseLeave={() => {
         setIsHovered(false);
-        onHoverChange?.(false);
+        setHoveredResizeEdge(null);
       }}
       onClick={handleClick}
       onDoubleClick={handleTextEdit}
@@ -1039,7 +1048,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
         {/* New renderer (image/text) */}
         {useNewRenderer && (
           <div style={{ position: 'absolute', inset: 0 }}>
-            <Renderer item={resolvedItemForRenderer} asset={asset} width={width} height={itemHeight} pixelsPerFrame={pixelsPerFrame} />
+            <Renderer item={resolvedItemForRenderer} asset={asset} width={width} height={resolvedItemType === 'text' ? availableHeight - getTextKeyframeBandHeight(track, primaryTrackId) : itemHeight} pixelsPerFrame={pixelsPerFrame} />
           </div>
         )}
 
@@ -1505,14 +1514,15 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
       </span> : null}
 
       {/* Resize handles */}
-      {/* Roll Edit 模式：hover 时且相邻时，显示高亮手柄 */}
-      {/* 普通模式：hover 时显示手柄 */}
-      {/* 联动显示：相邻 item hover 时也显示 */}
-      {(isHovered || shouldHighlightLeft || shouldHighlightRight) && (
+      {/* Stable transparent targets; only the edge under the pointer lights up. */}
+      {!isDragOverlay && (
         <>
           {/* 左边缘手柄 - 向左延伸,覆盖边界 */}
           <div
             {...resizeGestureBind('left', Boolean(hasAdjacentItemOnLeft && onRollEdit))}
+            data-timeline-resize-edge="left"
+            onPointerEnter={() => setHoveredResizeEdge('left')}
+            onPointerLeave={() => setHoveredResizeEdge(null)}
             style={{
               position: 'absolute',
               left: -6,  // 向左延伸 6px,覆盖边界
@@ -1521,15 +1531,18 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
               width: 12,
               cursor: 'ew-resize',
               zIndex: 10,
-              backgroundColor: shouldHighlightLeft
-                ? 'rgba(255, 165, 0, 0.6)'  // Roll Edit: 橙色高亮
-                : resizingEdge === 'left' ? 'rgba(0, 102, 255, 0.3)' : 'transparent',
+              backgroundColor: 'transparent',
               touchAction: 'none', // 防止触摸事件干扰
             }}
-          />
+          >
+            {(hoveredResizeEdge === 'left' || resizingEdge === 'left') && <div data-resize-edge-line="" style={{ position: 'absolute', left: 6, top: 4, bottom: 4, width: 2, borderRadius: 1, background: colors.accent.primary, pointerEvents: 'none' }} />}
+          </div>
           {/* 右边缘手柄 - 向右延伸,覆盖边界 */}
           <div
             {...resizeGestureBind('right', Boolean(hasAdjacentItemOnRight && onRollEdit))}
+            data-timeline-resize-edge="right"
+            onPointerEnter={() => setHoveredResizeEdge('right')}
+            onPointerLeave={() => setHoveredResizeEdge(null)}
             style={{
               position: 'absolute',
               right: -6,  // 向右延伸 6px,覆盖边界
@@ -1538,12 +1551,12 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
               width: 12,
               cursor: 'ew-resize',
               zIndex: 10,
-              backgroundColor: shouldHighlightRight
-                ? 'rgba(255, 165, 0, 0.6)'  // Roll Edit: 橙色高亮
-                : resizingEdge === 'right' ? 'rgba(0, 102, 255, 0.3)' : 'transparent',
+              backgroundColor: 'transparent',
               touchAction: 'none', // 防止触摸事件干扰
             }}
-          />
+          >
+            {(hoveredResizeEdge === 'right' || resizingEdge === 'right') && <div data-resize-edge-line="" style={{ position: 'absolute', right: 6, top: 4, bottom: 4, width: 2, borderRadius: 1, background: colors.accent.primary, pointerEvents: 'none' }} />}
+          </div>
         </>
       )}
 

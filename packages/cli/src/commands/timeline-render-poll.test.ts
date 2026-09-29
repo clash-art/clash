@@ -113,6 +113,7 @@ it("polls a standalone Timeline render through the Host render readback", async 
       completed: false,
       renderNodeId: "render-1",
       status: "pending",
+      actionRunId: "render-1",
     });
     expect(requests).toHaveLength(2);
     expect(requests[1]).toEqual({
@@ -191,6 +192,7 @@ it("polls a Canvas-owned Timeline render through native render readback", async 
       completed: false,
       renderNodeId: "render-2",
       status: "pending",
+      actionRunId: "render-2",
     });
     expect(requests[1]).toEqual({
       action: "list_timeline_renders",

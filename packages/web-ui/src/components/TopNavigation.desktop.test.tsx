@@ -772,3 +772,16 @@ describe("TopNavigation desktop chrome", () => {
     expect(screen.queryByRole("button", { name: "New Tab" })).toBeNull();
   });
 });
+
+it("uses vertical shared navigation on hosted Web", () => {
+  render(
+    <MemoryRouter initialEntries={["/"]}>
+      <TopNavigation />
+      <LocationEcho />
+    </MemoryRouter>,
+  );
+  const nav = screen.getByRole("navigation", { name: "Primary" });
+  expect(nav.getAttribute("data-orientation")).toBe("vertical");
+  fireEvent.click(within(nav).getByRole("link", { name: "Assets" }));
+  expect(screen.getByLabelText("location").textContent).toBe("/assets");
+});

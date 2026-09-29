@@ -218,22 +218,32 @@ export const ExecutableActionPresentationSchema = z.discriminatedUnion("type", [
 ]);
 
 /** A text form input consumes a plain-text Document, not an arbitrary typed record. */
-export function executableActionCardInputAcceptsType(type: GeneratorInputType, modality: string): boolean {
+export function executableActionCardInputAcceptsType(
+  type: GeneratorInputType,
+  modality: string,
+): boolean {
   return modality === "text"
-    ? type.kind === "document" && type.documentKind === "text.plain" && type.schemaVersion === 1
+    ? type.kind === "document" &&
+        type.documentKind === "text.plain" &&
+        type.schemaVersion === 1
     : type.kind === "media" && type.mediaKind === modality;
 }
 
-export const ExecutableActionCardGeneratorSchema = z.object({
-  definitionId: z.string().trim().min(1),
-  actionId: z.string().trim().min(1),
-  inputSlots: z.object({
-    text: z.string().trim().min(1).optional(),
-    image: z.string().trim().min(1).optional(),
-    video: z.string().trim().min(1).optional(),
-    audio: z.string().trim().min(1).optional(),
-  }).strict().default({}),
-}).strict();
+export const ExecutableActionCardGeneratorSchema = z
+  .object({
+    definitionId: z.string().trim().min(1),
+    actionId: z.string().trim().min(1),
+    inputSlots: z
+      .object({
+        text: z.string().trim().min(1).optional(),
+        image: z.string().trim().min(1).optional(),
+        video: z.string().trim().min(1).optional(),
+        audio: z.string().trim().min(1).optional(),
+      })
+      .strict()
+      .default({}),
+  })
+  .strict();
 
 export const ExecutableActionCardSchema = z
   .object({
@@ -424,11 +434,11 @@ export type ExecutablePluginGeneratorDocument = z.infer<
   typeof ExecutablePluginGeneratorDocumentSchema
 >;
 
-/** One immutable Project Asset offered as a candidate for a View material slot. */
-export const StoryboardViewResourceSchema = z
+/** A persisted occurrence of an immutable Project Asset consumed by a plugin View. */
+export const PluginViewResourceSchema = z
   .object({
-    id: z.string().trim().min(1),
-    projectAssetId: z.string().trim().min(1),
+    id: z.string().trim().min(1).describe("Stable reference occurrence id within its collection, not an Asset or Canvas node id."),
+    projectAssetId: z.string().trim().min(1).describe("Consumed immutable Project Asset. All persisted occurrences are references, including unselected candidates."),
     mediaKind: z.enum(["image", "video", "audio", "model"]),
     modelName: z.string().trim().min(1).optional(),
     generatedBy: z
@@ -443,17 +453,39 @@ export const StoryboardViewResourceSchema = z
       .optional(),
   })
   .strict();
-export type StoryboardViewResource = z.infer<typeof StoryboardViewResourceSchema>;
+export type PluginViewResource = z.infer<typeof PluginViewResourceSchema>;
 
-export const StoryboardViewDescriptionPartSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("text"), text: z.string() }).strict(),
-  z
-    .object({
-      type: z.literal("entity-reference"),
-      entityId: z.string().trim().min(1),
-    })
-    .strict(),
-]);
+/** Existing Storyboard names remain source-compatible; there is one resource contract. */
+export const StoryboardViewResourceSchema = PluginViewResourceSchema;
+export type StoryboardViewResource = PluginViewResource;
+
+export const StoryboardViewDescriptionPartSchema = z.discriminatedUnion(
+  "type",
+  [
+    z.object({ type: z.literal("text"), text: z.string() }).strict(),
+    z
+      .object({
+        type: z.literal("entity-reference"),
+        entityId: z.string().trim().min(1),
+      })
+      .strict(),
+  ],
+);
+
+/** A pending output is a reference to a durable run, never a provisional Asset. */
+export const PendingGeneratorOutputSchema = z
+  .object({
+    generatorId: z.string().trim().min(1),
+    generatorRevisionId: z.string().trim().min(1),
+    actionRunId: z.string().trim().min(1),
+    outputSlot: z.string().trim().min(1),
+    mediaKind: z.enum(["image", "video", "audio", "model"]),
+    modelName: z.string().optional(),
+  })
+  .strict();
+export type PendingGeneratorOutput = z.infer<
+  typeof PendingGeneratorOutputSchema
+>;
 
 export const StoryboardViewMaterialSchema = z
   .object({
@@ -468,6 +500,7 @@ export const StoryboardViewMaterialSchema = z
       .strict()
       .optional(),
     candidates: z.array(StoryboardViewResourceSchema).default([]),
+    pendingOutputs: z.array(PendingGeneratorOutputSchema).optional(),
     selectedCandidateId: z.string().trim().min(1).optional(),
   })
   .strict()
@@ -503,7 +536,9 @@ export const StoryboardViewMaterialSchema = z
       }
     });
   });
-export type StoryboardViewMaterial = z.infer<typeof StoryboardViewMaterialSchema>;
+export type StoryboardViewMaterial = z.infer<
+  typeof StoryboardViewMaterialSchema
+>;
 
 const StoryboardViewItemBaseSchema = z.object({
   id: z.string().trim().min(1),
@@ -534,6 +569,49 @@ export const StoryboardViewStateSchema = z
   .strict();
 export type StoryboardViewState = z.infer<typeof StoryboardViewStateSchema>;
 
+/** clash.view/v1 currently supports the native Storyboard state contract only. */
+export const ExecutablePluginViewStateSchema = StoryboardViewStateSchema;
+export type ExecutablePluginViewState = z.infer<typeof ExecutablePluginViewStateSchema>;
+
+export type PluginViewAssetReference = {
+  resource: PluginViewResource;
+  location:
+    | { section: "uncategorized"; resourceId: string }
+    | {
+        section: "keyElements" | "shots" | "audioLayers";
+        itemId: string;
+        materialId: string;
+        resourceId: string;
+      };
+};
+
+/**
+ * Protocol-owned reference enumeration, independent of Canvas placements and UI selection.
+ * Preserve occurrences for authoring; graph consumers may deduplicate by Asset identity.
+ * Pending outputs, entity mentions, prompt text and generatedBy are not Asset consumption.
+ */
+export function listPluginViewAssetReferences(
+  state: ExecutablePluginViewState,
+): PluginViewAssetReference[] {
+  const references: PluginViewAssetReference[] = [];
+  for (const section of ["keyElements", "shots", "audioLayers"] as const) {
+    for (const item of state[section]) {
+      for (const material of item.materials) {
+        for (const resource of material.candidates) {
+          references.push({
+            resource,
+            location: { section, itemId: item.id, materialId: material.id, resourceId: resource.id },
+          });
+        }
+      }
+    }
+  }
+  for (const resource of state.uncategorized) {
+    references.push({ resource, location: { section: "uncategorized", resourceId: resource.id } });
+  }
+  return references;
+}
+
 export const ExecutablePluginViewDocumentSchema = z
   .object({
     apiVersion: z.literal("clash.view/v1"),
@@ -544,7 +622,7 @@ export const ExecutablePluginViewDocumentSchema = z
         name: z.string().trim().min(1),
         description: z.string().trim().min(1).optional(),
         presentation: z.object({ type: z.literal("storyboard") }).strict(),
-        initialState: StoryboardViewStateSchema,
+        initialState: ExecutablePluginViewStateSchema,
       })
       .strict(),
   })
@@ -1434,31 +1512,34 @@ export const ExecutableVideoEnhanceOperationSchema = z
   })
   .strict();
 
-export const ExecutableVideoEnhanceResultSchema = z.discriminatedUnion("status", [
-  z
-    .object({
-      status: z.literal("completed"),
-      provider: z.string().trim().min(1),
-      route: z.string().trim().min(1),
-      underlyingModel: z.string().trim().min(1),
-      /**
-       * A Host staging receipt from the Provider implementation's own single upload -- not yet
-       * a published, immutable Project Asset. Publication requires the Host to verify this
-       * receipt's plugin/version/account/slot/task against the frozen Run authority first.
-       */
-      asset: ExecutablePluginAssetHandleObjectSchema.extend({
-        kind: z.literal("video"),
-      }).strict(),
-    })
-    .strict(),
-  z
-    .object({
-      status: z.literal("accepted"),
-      poll: ExecutablePluginJsonValueSchema,
-      retryAfterMs: z.number().int().positive().optional(),
-    })
-    .strict(),
-]);
+export const ExecutableVideoEnhanceResultSchema = z.discriminatedUnion(
+  "status",
+  [
+    z
+      .object({
+        status: z.literal("completed"),
+        provider: z.string().trim().min(1),
+        route: z.string().trim().min(1),
+        underlyingModel: z.string().trim().min(1),
+        /**
+         * A Host staging receipt from the Provider implementation's own single upload -- not yet
+         * a published, immutable Project Asset. Publication requires the Host to verify this
+         * receipt's plugin/version/account/slot/task against the frozen Run authority first.
+         */
+        asset: ExecutablePluginAssetHandleObjectSchema.extend({
+          kind: z.literal("video"),
+        }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        status: z.literal("accepted"),
+        poll: ExecutablePluginJsonValueSchema,
+        retryAfterMs: z.number().int().positive().optional(),
+      })
+      .strict(),
+  ],
+);
 
 /** Credential-free request from an ASR plugin to the Host-owned speech runtime. */
 export const ExecutableSpeechTranscriptionOperationSchema = z
@@ -1496,43 +1577,75 @@ export const ExecutableDirectorStageCaptureOperationSchema = z
     kind: z.literal("director.stage.capture-frame"),
     /** Exact source Document bodies resolved from the frozen Director inputs. */
     codeSources: z.record(z.string().min(1)).optional(),
-    stage: z.object({
-      name: z.string(),
-      owner: z.union([
-        z.object({ kind: z.literal("project") }).strict(),
-        z.object({ kind: z.literal("canvas-action"), canvasId: z.string().min(1), actionNodeId: z.string().min(1) }).strict(),
-      ]),
-      state: ExecutablePluginJsonValueSchema.refine(
-        (value) => value !== null && typeof value === "object" && !Array.isArray(value),
-        "Director Stage state must be an object.",
-      ),
-    }).strict(),
+    stage: z
+      .object({
+        name: z.string(),
+        owner: z.union([
+          z.object({ kind: z.literal("project") }).strict(),
+          z
+            .object({
+              kind: z.literal("canvas-action"),
+              canvasId: z.string().min(1),
+              actionNodeId: z.string().min(1),
+            })
+            .strict(),
+        ]),
+        state: ExecutablePluginJsonValueSchema.refine(
+          (value) =>
+            value !== null &&
+            typeof value === "object" &&
+            !Array.isArray(value),
+          "Director Stage state must be an object.",
+        ),
+      })
+      .strict(),
     label: z.string().trim().min(1),
     timeSeconds: z.number().finite().nonnegative(),
     aspectRatio: z.enum(["16:9", "9:16", "4:3", "3:4", "1:1"]),
     longEdge: z.number().int().min(256).max(4096),
-  }).strict();
+  })
+  .strict();
 
-export const ExecutableDirectorStageCaptureResultSchema = z.object({
-  mediaType: z.literal("image/png"),
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  bytesBase64: z.string().min(1),
-}).strict();
+export const ExecutableDirectorStageCaptureResultSchema = z
+  .object({
+    mediaType: z.literal("image/png"),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    bytesBase64: z.string().min(1),
+  })
+  .strict();
 
 /** Runs text through a configured local agent; Project scope comes from the invocation. */
-export const ExecutableAgentTextOperationSchema = z.object({
-  kind: z.literal("agent.text.generate"),
-  prompt: z.string().refine((text) => text.trim().length > 0, "Agent text requires a prompt."),
-  agentId: z.string().trim().min(1).optional(),
-  modelId: z.string().trim().min(1).optional(),
-  systemPrompt: z.string().optional(),
-}).strict();
-export type ExecutableAgentTextOperation = z.infer<typeof ExecutableAgentTextOperationSchema>;
-export const ExecutableAgentTextResultSchema = z.object({
-  text: z.string().refine((text) => text.trim().length > 0, "Agent text requires a non-empty result."),
-}).strict();
-export type ExecutableAgentTextResult = z.infer<typeof ExecutableAgentTextResultSchema>;
+export const ExecutableAgentTextOperationSchema = z
+  .object({
+    kind: z.literal("agent.text.generate"),
+    prompt: z
+      .string()
+      .refine(
+        (text) => text.trim().length > 0,
+        "Agent text requires a prompt.",
+      ),
+    agentId: z.string().trim().min(1).optional(),
+    modelId: z.string().trim().min(1).optional(),
+    systemPrompt: z.string().optional(),
+  })
+  .strict();
+export type ExecutableAgentTextOperation = z.infer<
+  typeof ExecutableAgentTextOperationSchema
+>;
+export const ExecutableAgentTextResultSchema = z
+  .object({
+    text: z
+      .string()
+      .refine(
+        (text) => text.trim().length > 0,
+        "Agent text requires a non-empty result.",
+      ),
+  })
+  .strict();
+export type ExecutableAgentTextResult = z.infer<
+  typeof ExecutableAgentTextResultSchema
+>;
 
 export const ExecutablePluginBrokerOperationSchema = z.union([
   ExecutableAgentTextOperationSchema,
@@ -1856,7 +1969,16 @@ export const ExecutablePluginContributionsSchema = z
     views: z.array(ExecutablePluginViewExportSchema).default([]),
     functions: z.array(ExecutablePluginFunctionExportSchema).default([]),
     hostTools: z
-      .array(z.enum(["codex.imagegen", "speech.transcribe", "media.analyze", "director.stage.capture-frame", "video.enhance", "agent.text"]))
+      .array(
+        z.enum([
+          "codex.imagegen",
+          "speech.transcribe",
+          "media.analyze",
+          "director.stage.capture-frame",
+          "video.enhance",
+          "agent.text",
+        ]),
+      )
       .default([]),
   })
   .strict();
@@ -2249,7 +2371,9 @@ export function validateExecutablePluginPackage(
     }
     for (const action of generator.spec.actions) {
       if (action.modelExecution) continue;
-      const implementation = action.executorExportId ? functions.get(action.executorExportId) : undefined;
+      const implementation = action.executorExportId
+        ? functions.get(action.executorExportId)
+        : undefined;
       if (!implementation || implementation.kind !== "action") {
         throw new Error(
           `Generator Action ${action.id} requires action export ${action.executorExportId}.`,
@@ -2264,7 +2388,10 @@ export function validateExecutablePluginPackage(
     const definition = Object.values(generators).find(
       (entry) => entry.spec.definitionId === card.spec.generator!.definitionId,
     );
-    if (!definition) throw new Error(`Action Card ${card.spec.id} names an undeclared Generator.`);
+    if (!definition)
+      throw new Error(
+        `Action Card ${card.spec.id} names an undeclared Generator.`,
+      );
     resolveExecutableActionCardGenerator(card.spec, definition.spec);
   }
 
@@ -2330,30 +2457,61 @@ export function resolveExecutableActionCardGenerator(
   }
   const action = definition.actions.find((entry) => entry.id === link.actionId);
   if (!action || action.executorExportId !== card.functionExportId) {
-    throw new Error(`Action Card ${card.id} must address an Action backed by its declared executor.`);
+    throw new Error(
+      `Action Card ${card.id} must address an Action backed by its declared executor.`,
+    );
   }
   const output = action.outputs[0];
-  if (action.outputs.length !== 1 || !output || output.cardinality.minItems !== 1 ||
-      (card.outputType === "text"
-        ? output.assetType.kind !== "document" || output.assetType.documentKind !== "text.plain"
-        : output.assetType.kind !== "media" || output.assetType.mediaKind !== card.outputType)) {
-    throw new Error(`Action Card ${card.id} requires one matching media or plain-text Document output.`);
+  if (
+    action.outputs.length !== 1 ||
+    !output ||
+    output.cardinality.minItems !== 1 ||
+    (card.outputType === "text"
+      ? output.assetType.kind !== "document" ||
+        output.assetType.documentKind !== "text.plain"
+      : output.assetType.kind !== "media" ||
+        output.assetType.mediaKind !== card.outputType)
+  ) {
+    throw new Error(
+      `Action Card ${card.id} requires one matching media or plain-text Document output.`,
+    );
   }
-  if (action.invocationInputs.some((port) => port.cardinality.minItems > 0) ||
-      (Array.isArray(action.parametersSchema.required) && action.parametersSchema.required.length > 0) ||
-      action.modelConsumer || action.selectOutputsByParameter) {
-    throw new Error(`Action Card ${card.id} cannot supply additional invocation parameters or inputs.`);
+  if (
+    action.invocationInputs.some((port) => port.cardinality.minItems > 0) ||
+    (Array.isArray(action.parametersSchema.required) &&
+      action.parametersSchema.required.length > 0) ||
+    action.modelConsumer ||
+    action.selectOutputsByParameter
+  ) {
+    throw new Error(
+      `Action Card ${card.id} cannot supply additional invocation parameters or inputs.`,
+    );
   }
   const used = new Set<string>();
   for (const [modality, slot] of Object.entries(link.inputSlots)) {
-    const port = definition.persistentInputs.find((entry) => entry.slot === slot);
-    if (!port?.accepts.some((type) => executableActionCardInputAcceptsType(type, modality)) || used.has(slot)) {
-      throw new Error(`Action Card ${card.id} has an invalid persistent input mapping for ${modality}.`);
+    const port = definition.persistentInputs.find(
+      (entry) => entry.slot === slot,
+    );
+    if (
+      !port?.accepts.some((type) =>
+        executableActionCardInputAcceptsType(type, modality),
+      ) ||
+      used.has(slot)
+    ) {
+      throw new Error(
+        `Action Card ${card.id} has an invalid persistent input mapping for ${modality}.`,
+      );
     }
     used.add(slot);
   }
-  if (definition.persistentInputs.some((port) => port.cardinality.minItems > 0 && !used.has(port.slot))) {
-    throw new Error(`Action Card ${card.id} cannot supply a required persistent input.`);
+  if (
+    definition.persistentInputs.some(
+      (port) => port.cardinality.minItems > 0 && !used.has(port.slot),
+    )
+  ) {
+    throw new Error(
+      `Action Card ${card.id} cannot supply a required persistent input.`,
+    );
   }
   return { action, output };
 }

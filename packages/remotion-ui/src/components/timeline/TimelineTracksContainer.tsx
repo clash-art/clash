@@ -12,16 +12,17 @@ import {
 } from '@clash/remotion-core';
 import type { Asset, Item, Track, TrackCategory, TransitionItem } from '@clash/remotion-core';
 import type { AgentAnnotationObjectRef } from '@clash/shared-types';
+import { ScrollViewport } from '@clash/gui/components/ui/scroll-viewport';
 import { colors, timeline, spacing, shadows, typography } from './styles';
 import { secondsToFrames } from './utils/timeFormatter';
 import { TimelineItem } from './TimelineItem';
+import { indexItemNeighbors } from './itemNeighbors';
 import { currentDraggedAsset, currentAssetDragOffset } from '../AssetPanel';
 import { resolveAssetDropPayload } from './assetDropPayload';
 import { calculateResizeSnap } from './utils/snapCalculator';
 import { getTrackHeightForTrack } from './trackGeometry';
 import { getContinuousTransitionBoundaries } from '../../library/applyTimelineLibraryItem';
 import { PrimaryTranscriptWordbar } from './PrimaryTranscriptWordbar';
-import { createWheelAxisLock } from './wheelAxisLock';
 import {
   createTimelineInsertProperties,
   TIMELINE_INSERT_MEDIA_FIT,
@@ -159,7 +160,7 @@ const TrackCategoryIcon: React.FC<{ category: TrackCategory; isPrimary: boolean 
   );
 };
 
-const TrackLaneBubbleSurface: React.FC<{ selected: boolean }> = ({ selected }) => (
+const TrackLaneBubbleSurface: React.FC = () => (
   <div
     data-track-bubble-surface=""
     data-track-bubble-edge="lane"
@@ -171,10 +172,9 @@ const TrackLaneBubbleSurface: React.FC<{ selected: boolean }> = ({ selected }) =
       left: 0,
       right: 0,
       borderRadius: timeline.trackBubbleRadius,
-      backgroundColor: selected ? colors.bg.selected : colors.bg.secondary,
+      backgroundColor: colors.bg.secondary,
       boxShadow: shadows.trackBubble,
       pointerEvents: 'none',
-      transition: 'background-color 150ms ease, box-shadow 150ms ease',
     }}
   />
 );
@@ -418,7 +418,6 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
   pixelsPerFrame,
   fps,
   snapEnabled = true,
-  selectedTrackId,
   selectedItemId,
   assets,
   onSelectTrack,
@@ -449,8 +448,6 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
   const { tracks, primaryTrackId } = useEditorStaticState();
   const { currentFrameRef } = useEditorPlaybackRefs();
 
-  // Track which item is being hovered for roll edit highlighting
-  const [hoveredItemId, setHoveredItemId] = useState<string | null>(null);
 
   // Debug: log when assetDragPreview changes
   useEffect(() => {
@@ -477,6 +474,13 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
   const displayTracks = React.useMemo(
     () => tracks.filter((track) => track.role !== 'transition'),
     [tracks],
+  );
+  // Lane DOM identities survive item edits. Only membership/order changes need
+  // new observations; the browser already observes geometry changes in place.
+  const displayTrackIdsKey = JSON.stringify(displayTracks.map(track => track.id));
+  const neighborsByTrack = React.useMemo(
+    () => new Map(displayTracks.map(track => [track.id, indexItemNeighbors(track.items)])),
+    [displayTracks],
   );
   const getPresentationTrackHeight = useCallback(
     (track: Track) => getTrackHeightForTrack(track, primaryTrackId),
@@ -545,18 +549,39 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
   const containerRef = useRef<HTMLDivElement>(null);
   const labelsRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const wheelAxisLockRef = useRef(createWheelAxisLock());
+  const [observedViewport, setObservedViewport] = useState<HTMLDivElement | null>(null);
+  const [distantTracks, setDistantTracks] = useState<ReadonlySet<string>>(() => new Set());
   const handleInsertDropRef = useRef<((e: React.DragEvent, position: number) => void) | null>(null);
-
-  const [viewportNode, setViewportNode] = useState<HTMLDivElement | null>(null);
 
   const setViewportElement = useCallback((node: HTMLDivElement | null) => {
     viewportRef.current = node;
-    setViewportNode(node);
+    setObservedViewport(node);
     onViewportElementChange?.(node);
   }, [onViewportElementChange]);
 
-  const [, setScrollSync] = useState({ x: 0, y: 0 });
+  useEffect(() => {
+    setDistantTracks(new Set());
+    if (!observedViewport || typeof IntersectionObserver === 'undefined') return;
+    let active = true;
+    const observer = new IntersectionObserver((entries) => {
+      if (!active) return;
+      setDistantTracks((previous) => {
+        const next = new Set(previous);
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.timelineTrackId;
+          if (!id) continue;
+          if (entry.isIntersecting) next.delete(id);
+          else next.add(id);
+        }
+        return next.size === previous.size && [...next].every(id => previous.has(id)) ? previous : next;
+      });
+    }, { root: observedViewport, rootMargin: '200px 0px' });
+    // Keep lane shells mounted: their authored heights remain the source of
+    // scroll and drop geometry, while distant clip controls can be released.
+    observedViewport.querySelectorAll('[data-timeline-track-id]').forEach(lane => observer.observe(lane));
+    return () => { active = false; observer.disconnect(); };
+  }, [observedViewport, displayTrackIdsKey]);
+
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [insertPosition, setInsertPosition] = useState<number | null>(null);
   // Show insert guideline only while a drag is actually active
@@ -600,11 +625,9 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     if (viewportRef.current && labelsRef.current) {
       const scrollTop = viewportRef.current.scrollTop;
       labelsRef.current.scrollTop = scrollTop;
-      setScrollSync(prev => ({ ...prev, y: scrollTop }));
 
       // Sync horizontal scroll to consumers (ruler, playhead, etc.)
       const scrollLeft = viewportRef.current.scrollLeft;
-      setScrollSync(prev => ({ ...prev, x: scrollLeft }));
       onScrollXChange?.(scrollLeft);
       // Re-measure in case scrollbar visibility changed while scrolling
       measureScrollbars();
@@ -615,44 +638,8 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     if (labelsRef.current && viewportRef.current) {
       const scrollTop = labelsRef.current.scrollTop;
       viewportRef.current.scrollTop = scrollTop;
-      setScrollSync(prev => ({ ...prev, y: scrollTop }));
     }
   }, []);
-
-  // React registers JSX wheel handlers as passive, so preventDefault there
-  // cannot stop the browser's native diagonal scroll. The axis lock must run
-  // on a native non-passive listener to keep scrolling single-axis.
-  useEffect(() => {
-    const viewport = viewportNode;
-    if (!viewport) return undefined;
-
-    const handleWheel = (event: WheelEvent) => {
-      // Preserve Timeline's ctrl/meta-wheel zoom behavior on the parent.
-      if (event.ctrlKey || event.metaKey) return;
-
-      const resolved = wheelAxisLockRef.current.resolve({
-        deltaX: event.deltaX,
-        deltaY: event.deltaY,
-        now: event.timeStamp,
-        shiftKey: event.shiftKey,
-      });
-      const deltaModeScale = event.deltaMode === 1
-        ? 16
-        : event.deltaMode === 2
-          ? (resolved.axis === 'x' ? viewport.clientWidth : viewport.clientHeight)
-          : 1;
-
-      event.preventDefault();
-      if (resolved.axis === 'x') {
-        viewport.scrollLeft += resolved.delta * deltaModeScale;
-      } else {
-        viewport.scrollTop += resolved.delta * deltaModeScale;
-      }
-    };
-
-    viewport.addEventListener('wheel', handleWheel, { passive: false });
-    return () => viewport.removeEventListener('wheel', handleWheel);
-  }, [viewportNode]);
 
   // Measure on mount and whenever layout-affecting props change
   useEffect(() => {
@@ -1121,19 +1108,17 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
       )}
 
       {/* 右侧轨道视口 */}
-      <div
+      <ScrollViewport
+        containerStyle={{ flex: 1 }}
         data-timeline-editing-canvas=""
         ref={setViewportElement}
         className="tracks-viewport bg-transparent"
         style={{
           flex: 1,
-          overflowX: 'auto',
-          overflowY: 'auto',
           position: 'relative',
           minWidth: 0,
           minHeight: 0,
           background: colors.bg.primary,
-          scrollbarGutter: 'stable',
           paddingLeft: contentInsetLeftPx ?? 0,
         }}
         onScroll={handleViewportScroll}
@@ -1201,6 +1186,12 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
               const trackIndex = tracks.findIndex((candidate) => candidate.id === track.id);
               const insertBeforeIndex = trackIndex;
               const transitionBoundaries = getContinuousTransitionBoundaries(track);
+              const keepTrackContents = !distantTracks.has(track.id)
+                || track.items.some(item => item.id === selectedItemId)
+                || dragPreview?.originalTrackId === track.id
+                || window.currentDraggedItem?.trackId === track.id
+                || transitionBoundaries.some(boundary => transitionItems.some(({ item }) =>
+                  item.id === selectedItemId && item.fromItemId === boundary.fromItem.id && item.toItemId === boundary.toItem.id));
               return (
               <Fragment key={track.id}>
                 {/* 插入指示器 - 轨道上方 */}
@@ -1233,6 +1224,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
 
                 <div
                   data-track-lane=""
+                  data-timeline-track-id={track.id}
                   data-primary-track={isPrimary || undefined}
                   style={{
                     height: trackHeight,
@@ -1288,9 +1280,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                     }
                   }}
                 >
-                  <TrackLaneBubbleSurface
-                    selected={selectedTrackId === track.id}
-                  />
+                  <TrackLaneBubbleSurface />
                   <div
                     data-track-leading-gutter=""
                     aria-hidden="true"
@@ -1305,7 +1295,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                       pointerEvents: 'none',
                     }}
                   />
-                  {transitionBoundaries.map((boundary) => {
+                  {keepTrackContents && transitionBoundaries.map((boundary) => {
                     const boundTransition = transitionItems.find(({ item }) => (
                       item.fromItemId === boundary.fromItem.id
                       && item.toItemId === boundary.toItem.id
@@ -1341,12 +1331,11 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                     );
                   })}
                   {/* 使用 TimelineItem 组件保留所有功能 */}
-                  {track.items.map((item) => {
+                  {keepTrackContents && track.items.map((item) => {
                     // 检测相邻的 item（用于 Roll Edit）
-                    const sortedItems = [...track.items].sort((a, b) => a.from - b.from);
-                    const currentIndex = sortedItems.findIndex(i => i.id === item.id);
-                    const leftItem = currentIndex > 0 ? sortedItems[currentIndex - 1] : null;
-                    const rightItem = currentIndex < sortedItems.length - 1 ? sortedItems[currentIndex + 1] : null;
+                    const neighbors = neighborsByTrack.get(track.id)?.get(item.id);
+                    const leftItem = neighbors?.left ?? null;
+                    const rightItem = neighbors?.right ?? null;
 
                     const hasAdjacentLeft = leftItem && (leftItem.from + leftItem.durationInFrames === item.from);
                     const hasAdjacentRight = rightItem && (item.from + item.durationInFrames === rightItem.from);
@@ -1355,9 +1344,6 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                     const isInRollEditLeft = hasAdjacentLeft && selectedItemId !== item.id && selectedItemId !== leftItem.id;
                     const isInRollEditRight = hasAdjacentRight && selectedItemId !== item.id && selectedItemId !== rightItem.id;
 
-                    // 检测是否应该显示高亮：自己被 hover 或相邻的 item 被 hover
-                    const shouldHighlightLeft = isInRollEditLeft && (hoveredItemId === item.id || hoveredItemId === leftItem?.id);
-                    const shouldHighlightRight = isInRollEditRight && (hoveredItemId === item.id || hoveredItemId === rightItem?.id);
 
                     return (<TimelineItem
                       key={item.id}
@@ -1376,9 +1362,6 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                       onDragEnd={onItemDragEnd}
                       hasAdjacentItemOnLeft={isInRollEditLeft || undefined}
                       hasAdjacentItemOnRight={isInRollEditRight || undefined}
-                      shouldHighlightLeft={shouldHighlightLeft || undefined}
-                      shouldHighlightRight={shouldHighlightRight || undefined}
-                      onHoverChange={(isHovered) => setHoveredItemId(isHovered ? item.id : null)}
                       onResizeStart={beginHistoryGroup}
                       onResizeEnd={endHistoryGroup}
                       onAnnotationTargetContextMenu={onAnnotationTargetContextMenu}
@@ -1482,58 +1465,13 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                         }
                       }}
                       onRollEdit={(edge, deltaFrames) => {
-                        // Roll Edit: 同时调整当前 item 和相邻 item，总时长不变
-                        if (edge === 'left' && isInRollEditLeft && leftItem) {
-                          // 左边缘 Roll Edit
-                          // 当前 item: from 减少，duration 增加，sourceStartInFrames 减少
-                          // 左侧 item: duration 减少
-
-                          const currentOffset = (item as any).sourceStartInFrames || 0;
-                          const newCurrentFrom = Math.max(0, item.from + deltaFrames);
-                          const currentDeltaFrames = newCurrentFrom - item.from; // 负数表示向左
-
-                          // 计算新的源偏移
-                          const newCurrentOffset = Math.max(0, currentOffset + currentDeltaFrames);
-                          const newCurrentDuration = item.durationInFrames - currentDeltaFrames;
-
-                          // 左侧 item 的时长相应减少
-                          const newLeftDuration = Math.max(15, leftItem.durationInFrames + currentDeltaFrames);
-
-                          // 同时更新两个 item
-                          onUpdateItem(track.id, item.id, {
-                            from: newCurrentFrom,
-                            durationInFrames: newCurrentDuration,
-                            ...(item.type === 'video' || item.type === 'audio' ? { sourceStartInFrames: newCurrentOffset } : {}),
-                          } as any);
-
-                          onUpdateItem(track.id, leftItem.id, {
-                            durationInFrames: newLeftDuration,
-                          } as any);
-
-                        } else if (edge === 'right' && isInRollEditRight && rightItem) {
-                          // 右边缘 Roll Edit
-                          // 当前 item: duration 变化
-                          // 右侧 item: from 变化，duration 反向变化，sourceStartInFrames 变化
-
-                          const rawNewDuration = Math.max(15, item.durationInFrames + deltaFrames);
-                          const actualDelta = rawNewDuration - item.durationInFrames;
-
-                          const rightOffset = (rightItem as any).sourceStartInFrames || 0;
-                          const newRightFrom = rightItem.from + actualDelta;
-                          const newRightOffset = Math.max(0, rightOffset + actualDelta);
-                          const newRightDuration = Math.max(15, rightItem.durationInFrames - actualDelta);
-
-                          // 同时更新两个 item
-                          onUpdateItem(track.id, item.id, {
-                            durationInFrames: rawNewDuration,
-                          } as any);
-
-                          onUpdateItem(track.id, rightItem.id, {
-                            from: newRightFrom,
-                            durationInFrames: newRightDuration,
-                            ...(rightItem.type === 'video' || rightItem.type === 'audio' ? { sourceStartInFrames: newRightOffset } : {}),
-                          } as any);
-                        }
+                        const left = edge === 'left' ? leftItem : item;
+                        const right = edge === 'left' ? item : rightItem;
+                        if (!left || !right) return;
+                        dispatch({ type: 'ROLL_EDIT', payload: {
+                          trackId: track.id, leftItemId: left.id, rightItemId: right.id,
+                          boundaryFrame: right.from + deltaFrames,
+                        } });
                       }}
                     />
                   );
@@ -1634,7 +1572,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                 position: 'relative',
               }}
             >
-              <TrackLaneBubbleSurface selected={false} />
+              <TrackLaneBubbleSurface />
               {primaryTranscriptSourceTrack ? (
                 <PrimaryTranscriptWordbar
                   trackId={primaryTranscriptSourceTrack.id}
@@ -1675,7 +1613,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             />
           )}
         </div>
-      </div>
+      </ScrollViewport>
 
       {/* 拖放指示器 */}
       {isDraggingOver && tracks.length === 0 && (

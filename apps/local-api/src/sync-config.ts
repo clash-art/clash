@@ -1,3 +1,4 @@
+import { createCloudAccounts } from "./cloud-accounts.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import {
   createHttpRemoteLoroPersistence,
@@ -50,7 +51,9 @@ export interface LocalSyncConfigStore {
   resolveRemotePersistence(
     projectId?: string,
   ): Promise<RemoteLoroPersistence | undefined>;
-  getProjectCloudAdmission?(projectId: string): Promise<ProjectCloudAdmission | null>;
+  getProjectCloudAdmission?(
+    projectId: string,
+  ): Promise<ProjectCloudAdmission | null>;
 }
 
 export class LocalSyncConfigError extends Error {
@@ -220,6 +223,7 @@ async function readConfig(
       ? (record.remote_loro as Record<string, unknown>)
       : {};
   const credentials = await store.getCredentials();
+  const server = await store.getSection<{ url?: string }>("server");
   return {
     version: 1,
     mode: normalizeMode(record.mode),
@@ -228,7 +232,11 @@ async function readConfig(
     // for the project-scoped admission/Loro transport without changing the
     // process-wide sync mode.
     remoteLoroToken: trimToNull(
-      credentials.syncRemoteLoroToken ?? credentials.cliApiKey,
+      credentials.syncRemoteLoroToken ??
+        (normalizeRemoteUrl(server?.url) === normalizeRemoteUrl(remote.url) &&
+        normalizeRemoteUrl(remote.url)
+          ? credentials.cliApiKey
+          : undefined),
     ),
     capabilities: normalizeCapabilities(record.capabilities),
     updatedAt:
@@ -242,8 +250,24 @@ async function writeConfig(
   store: ClashUserConfigStore,
   config: LocalSyncConfigFile,
 ): Promise<void> {
+  const previous = await store.getSection<{ remote_loro?: { url?: string } }>(
+    "sync",
+  );
   await store.updateCredentials((current) => {
     const next = { ...current };
+    const tokens =
+      current.syncRemoteLoroTokens &&
+      typeof current.syncRemoteLoroTokens === "object"
+        ? { ...(current.syncRemoteLoroTokens as Record<string, unknown>) }
+        : {};
+    if (
+      previous?.remote_loro?.url &&
+      typeof current.syncRemoteLoroToken === "string"
+    )
+      tokens[previous.remote_loro.url] = current.syncRemoteLoroToken;
+    if (config.remoteLoroUrl && config.remoteLoroToken)
+      tokens[config.remoteLoroUrl] = config.remoteLoroToken;
+    next.syncRemoteLoroTokens = tokens;
     if (config.remoteLoroToken) {
       next.syncRemoteLoroToken = config.remoteLoroToken;
     } else {
@@ -265,6 +289,7 @@ export function createLocalSyncConfigStore(
   options: LocalSyncConfigStoreOptions,
 ): LocalSyncConfigStore {
   const configStore = createClashUserConfigStore(options.dataDir);
+  const accounts = createCloudAccounts(options.dataDir);
   const legacyStore = createSqliteLocalConfigStore(options.dataDir);
   const metadataStore = createLocalMetadataStore(options.dataDir);
   const env = options.env ?? {};
@@ -308,7 +333,10 @@ export function createLocalSyncConfigStore(
     },
 
     async getProjectCloudAdmission(projectId: string) {
-      return metadataStore.getProjectCloudAdmission(projectId, await getLocalReplicaId(options.dataDir));
+      return metadataStore.getProjectCloudAdmission(
+        projectId,
+        await getLocalReplicaId(options.dataDir),
+      );
     },
 
     async updateFromRequest(input) {
@@ -335,7 +363,9 @@ export function createLocalSyncConfigStore(
         "remote_loro_token",
       )
         ? trimToNull(input.remote_loro_token)
-        : current.remoteLoroToken;
+        : remoteLoroUrl === current.remoteLoroUrl
+          ? current.remoteLoroToken
+          : null;
 
       if (mode === "cloud-sync" && !remoteLoroUrl) {
         throw new LocalSyncConfigError(
@@ -367,41 +397,82 @@ export function createLocalSyncConfigStore(
     },
 
     async resolveRemotePersistence(projectId?: string) {
-      const config = await effective();
+      await effective();
       if (!projectId) return undefined;
       const replicaId = await getLocalReplicaId(options.dataDir);
-      const admission = await metadataStore.getProjectCloudAdmission(projectId, replicaId);
-      if (!admission || admission.status === "local-only" || !admission.capabilities.canvas) return undefined;
+      const admission = await metadataStore.getProjectCloudAdmission(
+        projectId,
+        replicaId,
+      );
+      if (
+        !admission ||
+        admission.status === "local-only" ||
+        !admission.capabilities.canvas
+      )
+        return undefined;
       const assertAdmitted = async () => {
-        const current = await metadataStore.getProjectCloudAdmission(projectId, replicaId);
-        if (!current || current.status === "local-only" || current.syncBaseUrl !== admission.syncBaseUrl || !current.capabilities.canvas) {
+        const current = await metadataStore.getProjectCloudAdmission(
+          projectId,
+          replicaId,
+        );
+        if (
+          !current ||
+          current.status === "local-only" ||
+          current.syncBaseUrl !== admission.syncBaseUrl ||
+          !current.capabilities.canvas
+        ) {
           throw new Error("Project cloud admission was revoked or changed");
         }
       };
-      const credentials = await configStore.getCredentials();
-      const token =
-        config.remoteLoroToken ??
-        trimToNull(credentials.syncRemoteLoroToken ?? credentials.cliApiKey);
+      const token = await accounts.resolveToken(admission.syncBaseUrl, {
+        env,
+        expectedUserId: admission.userId,
+      });
+      if (!token) return undefined;
+      const assertCredential = async () => {
+        if (
+          (await accounts.resolveToken(admission.syncBaseUrl, {
+            env,
+            expectedUserId: admission.userId,
+          })) !== token
+        )
+          throw Error("Cloud account changed; reconnect this Project");
+      };
       const remote = createHttpRemoteLoroPersistence({
         baseUrl: admission.syncBaseUrl,
         token: token ?? undefined,
         fetch: async (input, init) => {
           await assertAdmitted();
+          await assertCredential();
           return (options.fetch ?? fetch)(input, init);
         },
       });
       return {
         ...remote,
         createLink(input) {
-          const link = remote.createLink!({ ...input, commit: async (...args) => {
-            await assertAdmitted();
-            await input.commit(...args);
-          } });
+          const link = remote.createLink!({
+            ...input,
+            commit: async (...args) => {
+              await assertAdmitted();
+              await assertCredential();
+              await input.commit(...args);
+            },
+          });
           return {
-            start: async () => { await assertAdmitted(); await link.start(); },
+            start: async () => {
+              await assertAdmitted();
+              await assertCredential();
+              await link.start();
+            },
             publish: async (update) => {
-              try { await assertAdmitted(); await link.publish(update); }
-              catch (error) { await link.close(); throw error; }
+              try {
+                await assertAdmitted();
+                await assertCredential();
+                await link.publish(update);
+              } catch (error) {
+                await link.close();
+                throw error;
+              }
             },
             close: () => link.close(),
           };

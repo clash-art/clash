@@ -9,8 +9,10 @@ agent operations, and routing metadata. Complex UI controls and renderer behavio
 explicit adapters, with compile-time/test coverage gates against descriptor
 drift.
 
-The current release is schema version `13`
-with fingerprint `fnv1a32:d4911874`. Version 13
+The current release is schema version `14`
+with fingerprint `fnv1a32:3f67eb58`. Version 14
+documents compact Timeline list reads and atomic shared-boundary roll edits.
+Authored Timeline YAML remains compatible. Version 13
 clarifies that create, save, and apply validate automatically before mutation
 and reserves the explicit validator for diagnostic-only workflows where no
 write is intended. Version 12 adds compact reference-based authoring discovery
@@ -219,7 +221,7 @@ are generated from the executable operation registry embedded in
 | `timeline.open` | yes | read | none | records-observation | mcp:clash_timeline_open | mcp, timeline-app, agent-runtime | Open the interactive Timeline app with an optionally selected Project Timeline. Preconditions: The current cwd resolves to a Project replica. |
 | `timeline.schema` | yes | read | none | none | cli:timeline schema, mcp:clash_timeline_schema | cli, mcp, agent-runtime, documentation-generator | Return compact Timeline authoring discovery by default, or the complete machine-readable contract on request. Preconditions: The installed Timeline contract is available. |
 | `timeline.validate` | yes | read | none | none | cli:timeline validate, mcp:clash_timeline_validate | cli, mcp, agent-runtime, timeline-semantics | Diagnose authored Timeline DSL without applying or mutating a Project Timeline, only when no write is intended. Do not use it as a preflight for create, save, or apply; those writes run the same validation automatically. Preconditions: The authored document is syntactically readable as YAML, JSON, or an object. |
-| `timeline.list` | yes | read | none | records-observation | cli:timeline list, mcp:clash_timeline_list | cli, mcp, local-host, agent-runtime | List Project Timeline entities and record observations for later writes. Preconditions: The current cwd resolves to a Project replica. |
+| `timeline.list` | yes | read | none | records-observation | cli:timeline list, mcp:clash_timeline_list | cli, mcp, local-host, agent-runtime | List Timeline identity, ownership, revision, dimensions and item counts. Read a chosen Timeline for clip details; request full explicitly to include every complete state. Records observations for later writes. Preconditions: The current cwd resolves to a Project replica. |
 | `timeline.get` | yes | read | none | records-observation | mcp:clash_timeline_get | mcp, local-host, agent-runtime | Read one complete Project Timeline state and its revision for a later typed save. Preconditions: The requested Timeline exists in the current Project replica. |
 | `timeline.create` | yes | write | host-enforced | none | cli:timeline create, mcp:clash_timeline_create | cli, mcp, local-host, project-workspace | Automatically validate and create a standalone Project Timeline through the authoritative local host; invalid state leaves Project state unchanged. Preconditions: The Project-scoped Timeline id does not already exist. |
 | `timeline.save` | yes | write | host-enforced | requires-observation | mcp:clash_timeline_save | mcp, local-host, agent-runtime, timeline-semantics | Automatically validate and atomically save a complete typed Timeline state with an explicit base revision; invalid state leaves the Timeline revision unchanged. Preconditions: The Timeline was read and baseRevisionId still matches its current revision. The complete state passes the canonical structural and semantic contract. |
@@ -252,6 +254,7 @@ are generated from the executable operation registry embedded in
 | `timeline.action.MOVE_ITEM` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Move an item between compatible tracks at an absolute frame. Preconditions: Both tracks and the item exist, and the target track accepts the item type. |
 | `timeline.action.REMOVE_ITEM` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Remove an item and reconcile its parent track. Preconditions: The target track and item exist. |
 | `timeline.action.UPDATE_ITEM` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Update authored fields on one Timeline item. Preconditions: The target item exists and the update remains valid for its discriminated item type. |
+| `timeline.action.ROLL_EDIT` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Move a shared clip boundary atomically, preserving the pair's total span and attached transition. Preconditions: Both clips are adjacent on the same track; the boundary is clamped to available source handles. |
 | `timeline.action.SPLIT_ITEM` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Split an item at an absolute Timeline frame and slice its keyframes. Preconditions: The split frame lies strictly inside the target item bounds. |
 | `timeline.action.RIPPLE_DELETE_RANGE` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Delete an absolute frame range and close the resulting gap. Preconditions: The requested range is non-empty and lies within the editable Timeline. |
 | `timeline.action.RESTORE_TIMELINE_SNAPSHOT` | no | write | none | none | internal | remotion-core, remotion-ui, editor-history | Restore persistent Timeline fields from an editor history snapshot. Preconditions: The snapshot was produced by the current editor history contract. |

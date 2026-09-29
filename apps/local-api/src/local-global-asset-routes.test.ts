@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createLocalApiApp } from "./app.js";
 import {
   createLocalAssetInspectionService,
+  createLocalFfprobeAssetInspector,
   type LocalAssetInspector,
 } from "./local-asset-inspections.js";
 import {
@@ -27,7 +28,7 @@ import { createLocalGlobalAssetService } from "./local-global-assets.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import { createLocalProjectAssetService } from "./local-project-assets.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
-import { localFfmpegPath } from "./local-media-binaries.js";
+import { localFfmpegPath, localFfprobePath } from "./local-media-binaries.js";
 
 const temporaryDirectories: string[] = [];
 const representationServices: LocalAssetRepresentationService[] = [];
@@ -49,9 +50,7 @@ async function fixture(
             width: 1,
             height: 1,
             rotationDegrees: 0,
-            ...(resource.contentType
-              ? { contentType: resource.contentType }
-              : {}),
+            contentType: resource.contentType ?? "image/png",
           }
         : resource.kind === "video"
           ? {
@@ -62,9 +61,7 @@ async function fixture(
               frameRate: 24,
               videoCodec: "h264",
               hasAudio: false,
-              ...(resource.contentType
-                ? { contentType: resource.contentType }
-                : {}),
+              contentType: resource.contentType ?? "video/mp4",
             }
           : resource.kind === "audio"
             ? {
@@ -74,9 +71,7 @@ async function fixture(
                 sampleRate: 48_000,
                 channelCount: 2,
                 channelLayout: "stereo",
-                ...(resource.contentType
-                  ? { contentType: resource.contentType }
-                  : {}),
+                contentType: resource.contentType ?? "audio/mpeg",
               }
             : resource.contentType
               ? { contentType: resource.contentType }
@@ -224,42 +219,15 @@ describe("personal Global Asset routes", () => {
     await expect(listed.json()).resolves.toEqual({ assets: [] });
   });
 
-  it("supplies canonical media assertions for supported empty-MIME browser uploads", async () => {
-    const observed = new Map<string, string | undefined>();
-    const { app } = await fixture({
-      inspectAssetResource: async ({ resource }) => {
-        observed.set(resource.kind, resource.contentType);
-        if (resource.kind === "video") {
-          if (resource.contentType !== "video/mp4") {
-            throw new Error("M4V must enter the MP4 byte probe");
-          }
-          return {
-            contentType: "video/mp4",
-            width: 1,
-            height: 1,
-            rotationDegrees: 0,
-            durationMs: 1_000,
-            frameRate: 24,
-            videoCodec: "h264",
-            hasAudio: false,
-          };
-        }
-        if (resource.contentType !== "audio/ogg") {
-          throw new Error("Ogg must enter the Ogg byte probe");
-        }
-        return {
-          contentType: "audio/ogg",
-          durationMs: 1_000,
-          hasAudio: true,
-          audioCodec: "vorbis",
-          sampleRate: 48_000,
-          channelCount: 2,
-          channelLayout: "stereo",
-        };
-      },
+  it("derives canonical media types from bytes for empty-MIME browser uploads", async () => {
+    const { app, clashRoot } = await fixture({
+      inspectAssetResource: createLocalFfprobeAssetInspector({ ffprobePath: localFfprobePath()! }),
     });
     const collection = `${origin}/api/v1/libraries/personal/assets`;
-
+    const videoPath = join(clashRoot, "clip.m4v");
+    const audioPath = join(clashRoot, "voice.ogg");
+    await execFileAsync(localFfmpegPath()!, ["-v", "error", "-f", "lavfi", "-i", "color=s=32x24:d=0.2", "-pix_fmt", "yuv420p", "-f", "mp4", videoPath]);
+    await execFileAsync(localFfmpegPath()!, ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2", "-c:a", "libvorbis", audioPath]);
     const video = await app.request(`${collection}/import-file`, {
       method: "POST",
       body: globalMediaForm(
@@ -267,7 +235,7 @@ describe("personal Global Asset routes", () => {
         "clip.m4v",
         "",
         "video",
-        "m4v bytes",
+        await readFile(videoPath),
       ),
     });
     const audio = await app.request(`${collection}/import-file`, {
@@ -277,18 +245,14 @@ describe("personal Global Asset routes", () => {
         "voice.ogg",
         "",
         "audio",
-        "ogg bytes",
+        await readFile(audioPath),
       ),
     });
 
     expect(video.status, await video.clone().text()).toBe(201);
     expect(audio.status, await audio.clone().text()).toBe(201);
-    expect(observed).toEqual(
-      new Map([
-        ["video", "video/mp4"],
-        ["audio", "audio/ogg"],
-      ]),
-    );
+    expect((await video.json()).metadata.contentType).toBe("video/mp4");
+    expect((await audio.json()).metadata.contentType).toBe("audio/ogg");
   });
 
   it("enriches Project and Global entries from one Resource inspection without synchronizing storage facts", async () => {
@@ -297,6 +261,7 @@ describe("personal Global Asset routes", () => {
       inspectAssetResource: async () => {
         probes += 1;
         return {
+          contentType: "video/mp4",
           width: 1280,
           height: 720,
           rotationDegrees: 0,
@@ -358,6 +323,7 @@ describe("personal Global Asset routes", () => {
         probes += 1;
         if (probes === 1) throw new Error("temporary decoder failure");
         return {
+          contentType: "video/mp4",
           width: 1_280,
           height: 720,
           rotationDegrees: 0,

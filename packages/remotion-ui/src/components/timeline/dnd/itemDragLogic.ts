@@ -11,7 +11,7 @@ export type InsertDecision = {
 export type PreviewResult = {
   previewTrackId: string;
   previewFrame: number; // adjusted for overlap when moving into a track
-  rawPreviewFrame: number; // before overlap push (used when creating new track)
+  rawPreviewFrame: number; // before overlap resolution (used when creating new track)
   insertIndex: number | null;
   willCreateNewTrack: boolean;
   snapGuideFrame: number | null; // vertical guide line (only for item-edge snaps)
@@ -151,23 +151,31 @@ export function resolveNonOverlapInTrack(
   currentItemId: string
 ): number {
   if (!track) return Math.max(0, startFrame);
-  let start = Math.max(0, startFrame);
-  let end = start + duration;
-  let moved = true;
-  while (moved) {
-    moved = false;
-    for (const it of track.items) {
-      if (it.id === currentItemId) continue;
-      const itStart = it.from;
-      const itEnd = it.from + it.durationInFrames;
-      if (end > itStart && start < itEnd) {
-        start = itEnd;
-        end = start + duration;
-        moved = true;
-      }
+  const requested = Math.max(0, startFrame);
+  const neighbors = track.items.filter(item => item.id !== currentItemId)
+    .sort((a, b) => a.from - b.from);
+  let gapStart = 0;
+  let closest = requested;
+  let distance = Infinity;
+  const consider = (candidate: number) => {
+    const nextDistance = Math.abs(candidate - requested);
+    if (nextDistance < distance) {
+      closest = candidate;
+      distance = nextDistance;
     }
+  };
+  // Project the pointer's requested position into each legal free interval.
+  // Forward-only pushing can jump a short drag past an entire contiguous lane.
+  // Earlier gaps win exact ties; no neighbor timing is rewritten.
+  for (const item of neighbors) {
+    const lastStart = item.from - duration;
+    if (lastStart >= gapStart) {
+      consider(Math.max(gapStart, Math.min(requested, lastStart)));
+    }
+    gapStart = Math.max(gapStart, item.from + item.durationInFrames);
   }
-  return Math.max(0, start);
+  consider(Math.max(gapStart, requested));
+  return closest;
 }
 
 export function buildPreview(
@@ -243,13 +251,13 @@ export function buildPreview(
     timelineStyles.snapThreshold
   );
 
-  // Overlap push only when not creating a new track
+  // Resolve collisions only within existing lanes; a new lane has no blockers.
   const adjustedFrom = !willCreateNewTrack
     ? resolveNonOverlapInTrack(args.tracks.find((t) => t.id === previewTrackId), snapPref.from, duration, args.item.id)
     : snapPref.from;
 
-  const pushed = adjustedFrom !== snapPref.from;
-  const snapGuideFrame = pushed ? null : snapPref.guideFrame;
+  const resolved = adjustedFrom !== snapPref.from;
+  const snapGuideFrame = resolved ? null : snapPref.guideFrame;
 
   return {
     previewTrackId,

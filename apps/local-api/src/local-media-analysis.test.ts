@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createLocalMediaAnalysisService } from "./local-media-analysis.js";
+import { createMockExternalAigcService } from "./local-aigc.js";
+import { googleAdapter } from "../../../plugins/google/src/google-adapter.js";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const reference = {
   slot: "source",
@@ -31,6 +35,58 @@ function runnableOption() {
 }
 
 describe("local media analysis execution", () => {
+  it("sends the actual video and Settings sampling through strict Card validation to Google", async () => {
+    const requests: Array<Record<string, any>> = [];
+    vi.stubGlobal("fetch", async (_url: string, init: { body: string }) => {
+      requests.push(JSON.parse(init.body));
+      return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({
+        candidates: [{ content: { parts: [{ text: '{"text":"A train arrives."}' }] } }],
+      }) };
+    });
+    const route = { providerId: "official", accountId: "google-test", upstreamId: "google-ai-studio",
+      upstreamModel: "gemini-3.1-pro-preview", apiShape: "google-ai-studio",
+      executorPluginId: "clash.google", executorExportId: "google-execute" };
+    const aigc = createMockExternalAigcService({
+      providerAccounts: async () => [{ id: "google-test", providerId: "official", upstreamId: "google-ai-studio",
+        enabled: true, configuredCredentials: ["apiKey"], region: "global" }],
+      providerPluginExecutor: async (request) => {
+        const result = await googleAdapter.submit({ invocationId: request.taskId,
+          input: { ...request.input, values: { ...request.input.values, kind: request.kind } },
+        } as never, {
+          store: { get: async (key: string) => ({ apiKey: "test-key", service: "ai-studio" })[key],
+            put: async () => undefined, remove: async () => undefined },
+          reference: async () => ({ form: "bytes", bytes: new Uint8Array([1, 2]), kind: "video", mediaType: "video/mp4" }),
+        } as never);
+        if (result.status !== "completed" || !("outputs" in result)) throw new Error("expected synchronous Google result");
+        const output = result.outputs[0];
+        if (output?.kind !== "value" || typeof output.value !== "string") throw new Error("expected text");
+        return { status: "completed", binding: { pluginId: request.pluginId, exportId: request.exportId,
+          version: "0.1.0", schemaHash: `sha256:${"f".repeat(64)}` },
+        output: { slot: "text", kind: "value", value: output.value } };
+      },
+    });
+    const service = createLocalMediaAnalysisService({
+      config: {
+        get: async () => ({ videoEnabled: true, modelId: "gemini-3.1-pro", allowedCategories: null,
+          video: { fps: 2, mediaResolution: "high", boundaryRefinement: { enabled: false, fps: 12, safetyMarginSeconds: 0.75 } } }),
+        assertRunnable: async () => ({ ...runnableOption(), id: "gemini-3.1-pro", consumer: { pluginId: "clash.media-analysis" }, implementation: route }),
+      }, aigc,
+    });
+    await expect(service.analyze({ projectId: "project-1", invocationId: "analysis-1", taskId: "analysis-1",
+      reference, modelId: "gemini-3.1-pro", route, category: "description", prompt: "Describe as JSON.", promptVersion: "v1",
+    })).resolves.toMatchObject({ result: { text: "A train arrives." } });
+    // Google video understanding's documented wire metadata; this catches dropped source slots as well as rejected controls.
+    expect(requests[0]?.contents).toEqual([{ role: "user", parts: [
+      { text: "Describe as JSON." },
+      { inlineData: { mimeType: "video/mp4", data: "AQI=" }, videoMetadata: { fps: 2 } },
+    ] }]);
+    expect(requests[0]?.generationConfig).toEqual({ responseModalities: ["TEXT"], mediaResolution: "MEDIA_RESOLUTION_HIGH" });
+    await expect(aigc.generateText({ taskId: "invalid-user-param", model: "gemini-3.1-pro", prompt: "Describe.",
+      providerRoute: route, modelParams: { video_processing: "auto" },
+    })).rejects.toThrow(/not declared/);
+    expect(requests).toHaveLength(1);
+  });
+
   it("returns a free-form answer without requiring model JSON or refining scenes", async () => {
     const answer = "The train enters from the left at 00:05.";
     const generateText = vi.fn(async () => ({ text: answer }));
@@ -101,7 +157,7 @@ describe("local media analysis execution", () => {
       model: "multi-route-card",
       prompt: "Describe as JSON.",
       providerRoute: frozenRoute,
-      references: [reference],
+      references: [{ ...reference, slot: "video" }],
     }));
   });
 
@@ -147,10 +203,10 @@ describe("local media analysis execution", () => {
       category: "description",
     });
     expect(generateText).toHaveBeenCalledWith(expect.objectContaining({
-      modelParams: {
-        video_processing: "auto",
-        video_fps: 2,
-        video_media_resolution: "high",
+      mediaAnalysisVideo: {
+        processing: "auto",
+        fps: 2,
+        mediaResolution: "high",
       },
     }));
   });
@@ -204,12 +260,12 @@ describe("local media analysis execution", () => {
 
     expect(generateText).toHaveBeenCalledTimes(2);
     expect(generateText.mock.calls[1]?.[0]).toMatchObject({
-      modelParams: {
-        video_processing: "static",
-        video_fps: 12,
-        video_media_resolution: "medium",
-        video_start_seconds: 3.55,
-        video_end_seconds: 6.05,
+      mediaAnalysisVideo: {
+        processing: "static",
+        fps: 12,
+        mediaResolution: "medium",
+        startSeconds: 3.55,
+        endSeconds: 6.05,
       },
     });
     expect(output.status).toBe("completed");

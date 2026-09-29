@@ -3,7 +3,7 @@ import { agentReadToken } from "./agent-read-proof.js";
 import { Canvas } from "./canvas-ops.js";
 import { commitProjectMutation } from "./project-mutation.js";
 import {
-  ExecutablePluginJsonValueSchema,
+  ExecutablePluginViewStateSchema,
   ExecutablePluginViewReferenceSchema,
   type ExecutablePluginViewReference,
 } from "./executable-plugin.js";
@@ -12,6 +12,7 @@ import {
   type TimelineDslValidationIssue,
 } from "./timeline-dsl-schema.js";
 import { normalizeProjectTimelinePersistenceState } from "./timeline-persistence.js";
+import { timelineOccupancyIssues } from "./timeline-occupancy.js";
 import {
   freezeDraftActionAssetInputBindings,
   listActionAssetBindingsForOwner,
@@ -45,16 +46,13 @@ export function projectCanvasReadToken(canvas: ProjectCanvas): string {
 }
 
 export type ProjectCanvasMutationResult =
-  | { ok: true; canvas: ProjectCanvas }
-  | { ok: false; error: string };
+  { ok: true; canvas: ProjectCanvas } | { ok: false; error: string };
 
 export type ProjectCanvasDeleteResult =
-  | { ok: true; canvasId: string }
-  | { ok: false; error: string };
+  { ok: true; canvasId: string } | { ok: false; error: string };
 
 export type ProjectPluginViewMutationResult =
-  | { ok: true; nodeId: string; canvasId: string }
-  | { ok: false; error: string };
+  { ok: true; nodeId: string; canvasId: string } | { ok: false; error: string };
 
 export type TimelineOwner =
   | { kind: "project" }
@@ -120,8 +118,8 @@ export function freezeProjectTimelineRunAssetInputs(
   actionRunIdInput: string,
 ): FreezeDraftActionAssetInputBindingsResult {
   const actionId = projectTimelineActionId(timeline.id, timeline.owner);
-  const expected = projectTimelineAssetInputs(timeline.state).sort((left, right) =>
-    left.slot.localeCompare(right.slot),
+  const expected = projectTimelineAssetInputs(timeline.state).sort(
+    (left, right) => left.slot.localeCompare(right.slot),
   );
   const current = listActionAssetBindingsForOwner(doc, {
     kind: "draft",
@@ -165,6 +163,24 @@ function syncProjectTimelineAssetInputs(
   return synced.ok ? undefined : { ok: false, error: synced.error };
 }
 
+/** Match the GUI's Project → Canvas → Timeline scope cascade for every writer. */
+function ensureTimelineMediaPlacements(
+  doc: LoroDoc,
+  timeline: ProjectTimeline,
+): void {
+  if (timeline.owner.kind !== "canvas-action") return;
+  const canvas = new Canvas(doc, () => {}, timeline.owner.canvasId);
+  const assets = new Set(
+    listActionAssetBindingsForOwner(doc, {
+      kind: "draft",
+      actionId: projectTimelineActionId(timeline.id, timeline.owner),
+    })
+      .filter((binding) => binding.direction === "input")
+      .map((binding) => binding.projectAssetId),
+  );
+  canvas.ensureMediaPlacements(assets);
+}
+
 function rehomeProjectTimelineAssetInputs(
   doc: LoroDoc,
   previous: Pick<ProjectTimeline, "id" | "owner" | "state">,
@@ -188,7 +204,10 @@ interface ProjectTimelineRevision {
   revisionId: string;
 }
 
-export function projectTimelineRevisionId(timelineId: string, state: unknown): string {
+export function projectTimelineRevisionId(
+  timelineId: string,
+  state: unknown,
+): string {
   return agentReadToken({
     namespace: "timeline-revision",
     subject: { timelineId, state },
@@ -229,29 +248,31 @@ function validateProjectTimelineMutationState(
   state: unknown,
 ): ProjectTimelineDslValidationFailure | undefined {
   const validation = validateTimelineDsl(state);
-  if (validation.ok) return undefined;
+  const issues = validation.ok ? timelineOccupancyIssues(validation.value) : validation.issues;
+  if (issues.length === 0) return undefined;
   return {
     ok: false,
     error: "Timeline DSL validation failed",
     code: "INVALID_TIMELINE_DSL",
-    issues: validation.issues,
+    issues,
   };
 }
 
 export type ProjectTimelineDeleteResult =
-  | { ok: true; timelineId: string }
-  | { ok: false; error: string };
+  { ok: true; timelineId: string } | { ok: false; error: string };
 
 export type TimelineRenderTarget =
   | { kind: "project-assets" }
   | { kind: "canvas"; canvasId: string; actionNodeId: string };
 
 function defaultCanvasName(canvasId: string): string {
-  return canvasId
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ") || "Untitled";
+  return (
+    canvasId
+      .split(/[-_\s]+/)
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ") || "Untitled"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -259,13 +280,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isLoroMap(value: unknown): value is LoroMap {
-  return value instanceof LoroMap || Boolean(
-    value &&
-    typeof value === "object" &&
-    typeof (value as { get?: unknown }).get === "function" &&
-    typeof (value as { set?: unknown }).set === "function" &&
-    typeof (value as { entries?: unknown }).entries === "function" &&
-    typeof (value as { delete?: unknown }).delete === "function",
+  return (
+    value instanceof LoroMap ||
+    Boolean(
+      value &&
+      typeof value === "object" &&
+      typeof (value as { get?: unknown }).get === "function" &&
+      typeof (value as { set?: unknown }).set === "function" &&
+      typeof (value as { entries?: unknown }).entries === "function" &&
+      typeof (value as { delete?: unknown }).delete === "function",
+    )
   );
 }
 
@@ -275,7 +299,8 @@ function timelineField(raw: unknown, field: string): unknown {
 }
 
 function timelineActionTimelineId(raw: unknown): string | null {
-  if (!isRecord(raw) || raw.type !== "video-editor" || !isRecord(raw.data)) return null;
+  if (!isRecord(raw) || raw.type !== "video-editor" || !isRecord(raw.data))
+    return null;
   return typeof raw.data.timelineId === "string" ? raw.data.timelineId : null;
 }
 
@@ -290,30 +315,37 @@ function parseTimeline(id: string, raw: unknown): ProjectTimeline | null {
   const nameValue = timelineField(raw, "name");
   const ownerField = timelineField(raw, "owner");
   const ownerValue = isRecord(ownerField) ? ownerField : {};
-  const owner: TimelineOwner = ownerValue.kind === "canvas-action" &&
+  const owner: TimelineOwner =
+    ownerValue.kind === "canvas-action" &&
     typeof ownerValue.canvasId === "string" &&
     typeof ownerValue.actionNodeId === "string"
-    ? {
-        kind: "canvas-action",
-        canvasId: ownerValue.canvasId,
-        actionNodeId: ownerValue.actionNodeId,
-      }
-    : { kind: "project" };
+      ? {
+          kind: "canvas-action",
+          canvasId: ownerValue.canvasId,
+          actionNodeId: ownerValue.actionNodeId,
+        }
+      : { kind: "project" };
   const revisionField = timelineField(raw, "revision");
   const revisionValue = isRecord(revisionField) ? revisionField : {};
-  const state = "state" in revisionValue
-    ? revisionValue.state
-    : timelineField(raw, "state");
+  const state =
+    "state" in revisionValue
+      ? revisionValue.state
+      : timelineField(raw, "state");
   const legacyRevisionId = timelineField(raw, "revisionId");
   return {
     id,
-    name: typeof nameValue === "string" && nameValue.trim() ? nameValue : "Untitled Timeline",
+    name:
+      typeof nameValue === "string" && nameValue.trim()
+        ? nameValue
+        : "Untitled Timeline",
     owner,
-    revisionId: typeof revisionValue.revisionId === "string" && revisionValue.revisionId.trim()
-      ? revisionValue.revisionId
-      : typeof legacyRevisionId === "string" && legacyRevisionId.trim()
-        ? legacyRevisionId
-        : projectTimelineRevisionId(id, state),
+    revisionId:
+      typeof revisionValue.revisionId === "string" &&
+      revisionValue.revisionId.trim()
+        ? revisionValue.revisionId
+        : typeof legacyRevisionId === "string" && legacyRevisionId.trim()
+          ? legacyRevisionId
+          : projectTimelineRevisionId(id, state),
     state,
   };
 }
@@ -375,14 +407,19 @@ export function listProjectCanvases(doc: LoroDoc): ProjectCanvas[] {
     const value = raw as Partial<ProjectCanvas>;
     canvases.push({
       id,
-      name: typeof value.name === "string" && value.name.trim()
-        ? value.name
-        : defaultCanvasName(id),
-      position: typeof value.position === "number" ? value.position : Number.MAX_SAFE_INTEGER,
+      name:
+        typeof value.name === "string" && value.name.trim()
+          ? value.name
+          : defaultCanvasName(id),
+      position:
+        typeof value.position === "number"
+          ? value.position
+          : Number.MAX_SAFE_INTEGER,
     });
   }
-  return canvases.sort((left, right) =>
-    left.position - right.position || left.id.localeCompare(right.id)
+  return canvases.sort(
+    (left, right) =>
+      left.position - right.position || left.id.localeCompare(right.id),
   );
 }
 
@@ -398,14 +435,16 @@ export function createProjectCanvas(
   if (canvases.size === 0 && id !== DEFAULT_CANVAS_ID) {
     ensureProjectCanvas(doc);
   }
-  if (canvases.get(id)) return { ok: false, error: `Canvas ${id} already exists` };
+  if (canvases.get(id))
+    return { ok: false, error: `Canvas ${id} already exists` };
   const existing = listProjectCanvases(doc);
   const canvas: ProjectCanvas = {
     id,
     name,
-    position: existing.length === 0
-      ? 0
-      : Math.max(...existing.map((candidate) => candidate.position)) + 1,
+    position:
+      existing.length === 0
+        ? 0
+        : Math.max(...existing.map((candidate) => candidate.position)) + 1,
   };
   canvases.set(id, canvas);
   return { ok: true, canvas };
@@ -429,9 +468,9 @@ export function createProjectPluginView(
   if (!label) return { ok: false, error: "View label is required" };
   const view = ExecutablePluginViewReferenceSchema.safeParse(input.view);
   if (!view.success) return { ok: false, error: view.error.message };
-  const state = ExecutablePluginJsonValueSchema.safeParse(input.state);
-  if (!state.success || state.data === null || Array.isArray(state.data)) {
-    return { ok: false, error: "View state must be a JSON object" };
+  const state = ExecutablePluginViewStateSchema.safeParse(input.state);
+  if (!state.success) {
+    return { ok: false, error: `Invalid View state: ${state.error.message}` };
   }
   const canvases = doc.getMap("canvases");
   if (canvasId === DEFAULT_CANVAS_ID && canvases.size === 0) {
@@ -475,12 +514,15 @@ export function deleteProjectCanvas(
   if (!canvases.some((canvas) => canvas.id === canvasId)) {
     return { ok: false, error: `Canvas ${canvasId} not found` };
   }
-  if (canvases.length === 1) return { ok: false, error: "Cannot delete the last Canvas" };
+  if (canvases.length === 1)
+    return { ok: false, error: "Cannot delete the last Canvas" };
   for (const [, raw] of doc.getMap("nodes").entries()) {
     if (!raw || typeof raw !== "object") continue;
     const value = raw as { canvasId?: unknown };
-    const nodeCanvasId = typeof value.canvasId === "string" ? value.canvasId : DEFAULT_CANVAS_ID;
-    if (nodeCanvasId === canvasId) return { ok: false, error: `Canvas ${canvasId} is not empty` };
+    const nodeCanvasId =
+      typeof value.canvasId === "string" ? value.canvasId : DEFAULT_CANVAS_ID;
+    if (nodeCanvasId === canvasId)
+      return { ok: false, error: `Canvas ${canvasId} is not empty` };
   }
   doc.getMap("canvases").delete(canvasId);
   return { ok: true, canvasId };
@@ -492,11 +534,16 @@ export function listProjectTimelines(doc: LoroDoc): ProjectTimeline[] {
     const timeline = parseTimeline(id, raw);
     if (timeline) timelines.push(timeline);
   }
-  return timelines.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+  return timelines.sort(
+    (left, right) =>
+      left.name.localeCompare(right.name) || left.id.localeCompare(right.id),
+  );
 }
 
 export function listStandaloneTimelines(doc: LoroDoc): ProjectTimeline[] {
-  return listProjectTimelines(doc).filter((timeline) => timeline.owner.kind === "project");
+  return listProjectTimelines(doc).filter(
+    (timeline) => timeline.owner.kind === "project",
+  );
 }
 
 export function createProjectTimeline(
@@ -508,7 +555,8 @@ export function createProjectTimeline(
   if (!id) return { ok: false, error: "Timeline id is required" };
   if (!name) return { ok: false, error: "Timeline name is required" };
   const timelines = doc.getMap("timelines");
-  if (timelines.get(id)) return { ok: false, error: `Timeline ${id} already exists` };
+  if (timelines.get(id))
+    return { ok: false, error: `Timeline ${id} already exists` };
   const persisted = normalizeProjectTimelinePersistenceState(input.state);
   if (!persisted.ok) return persisted;
   const validationError = validateProjectTimelineMutationState(persisted.state);
@@ -531,8 +579,19 @@ export function updateProjectTimelineState(
   timelineId: string,
   state: unknown,
 ): ProjectTimelineMutationResult {
+  return commitProjectMutation(doc, (draft) =>
+    updateTimelineStateInDraft(draft, timelineId, state),
+  );
+}
+
+function updateTimelineStateInDraft(
+  doc: LoroDoc,
+  timelineId: string,
+  state: unknown,
+): ProjectTimelineMutationResult {
   const timeline = readProjectTimeline(doc, timelineId);
-  if (!timeline) return { ok: false, error: `Timeline ${timelineId} not found` };
+  if (!timeline)
+    return { ok: false, error: `Timeline ${timelineId} not found` };
   const persisted = normalizeProjectTimelinePersistenceState(state);
   if (!persisted.ok) return persisted;
   const validationError = validateProjectTimelineMutationState(persisted.state);
@@ -548,6 +607,7 @@ export function updateProjectTimelineState(
     state: next.state,
     revisionId: next.revisionId,
   } satisfies ProjectTimelineRevision);
+  ensureTimelineMediaPlacements(doc, next);
   return { ok: true, timeline: next };
 }
 
@@ -557,10 +617,11 @@ export function deleteProjectTimeline(
   expectedReadToken?: string,
 ): ProjectTimelineDeleteResult {
   const timeline = readProjectTimeline(doc, timelineId);
-  if (!timeline) return { ok: false, error: `Timeline ${timelineId} not found` };
+  if (!timeline)
+    return { ok: false, error: `Timeline ${timelineId} not found` };
   if (
-    expectedReadToken
-    && expectedReadToken !== projectTimelineReadToken(timeline)
+    expectedReadToken &&
+    expectedReadToken !== projectTimelineReadToken(timeline)
   ) {
     return {
       ok: false,
@@ -593,7 +654,10 @@ export type CreateTimelineOnCanvasInput = {
   position?: { x: number; y: number };
 };
 
-export function createTimelineOnCanvas(doc: LoroDoc, input: CreateTimelineOnCanvasInput): ProjectTimelineMutationResult {
+export function createTimelineOnCanvas(
+  doc: LoroDoc,
+  input: CreateTimelineOnCanvasInput,
+): ProjectTimelineMutationResult {
   return commitProjectMutation(doc, (draft) => {
     const created = createProjectTimeline(draft, input);
     if (!created.ok) return created;
@@ -615,7 +679,9 @@ export function attachTimelineToCanvas(
     position?: { x: number; y: number };
   },
 ): ProjectTimelineMutationResult {
-  return commitProjectMutation(doc, (draft) => attachTimelineInDraft(draft, input));
+  return commitProjectMutation(doc, (draft) =>
+    attachTimelineInDraft(draft, input),
+  );
 }
 
 function attachTimelineInDraft(
@@ -628,10 +694,17 @@ function attachTimelineInDraft(
   },
 ): ProjectTimelineMutationResult {
   const timelines = doc.getMap("timelines");
-  const timeline = parseTimeline(input.timelineId, timelines.get(input.timelineId));
-  if (!timeline) return { ok: false, error: `Timeline ${input.timelineId} not found` };
+  const timeline = parseTimeline(
+    input.timelineId,
+    timelines.get(input.timelineId),
+  );
+  if (!timeline)
+    return { ok: false, error: `Timeline ${input.timelineId} not found` };
   if (timeline.owner.kind !== "project") {
-    return { ok: false, error: `Timeline ${input.timelineId} is already owned by Canvas ${timeline.owner.canvasId}` };
+    return {
+      ok: false,
+      error: `Timeline ${input.timelineId} is already owned by Canvas ${timeline.owner.canvasId}`,
+    };
   }
   const canvases = doc.getMap("canvases");
   if (input.canvasId === DEFAULT_CANVAS_ID && canvases.size === 0) {
@@ -665,7 +738,11 @@ function attachTimelineInDraft(
     hostCanvas.deleteNode(input.actionNodeId);
     return bindingError;
   }
-  ensureTimelineFields(doc, input.timelineId, timeline).set("owner", next.owner);
+  ensureTimelineFields(doc, input.timelineId, timeline).set(
+    "owner",
+    next.owner,
+  );
+  ensureTimelineMediaPlacements(doc, next);
   return { ok: true, timeline: next };
 }
 
@@ -674,7 +751,8 @@ export function detachTimelineFromCanvas(
   timelineId: string,
 ): ProjectTimelineMutationResult {
   const timeline = readProjectTimeline(doc, timelineId);
-  if (!timeline) return { ok: false, error: `Timeline ${timelineId} not found` };
+  if (!timeline)
+    return { ok: false, error: `Timeline ${timelineId} not found` };
   if (timeline.owner.kind !== "canvas-action") {
     return { ok: false, error: `Timeline ${timelineId} is already standalone` };
   }
@@ -707,11 +785,33 @@ export function copyTimelineActionToCanvas(
     position: { x: number; y: number };
   },
 ): ProjectTimelineMutationResult {
+  return commitProjectMutation(doc, (draft) =>
+    copyTimelineInDraft(draft, input),
+  );
+}
+
+function copyTimelineInDraft(
+  doc: LoroDoc,
+  input: {
+    sourceTimelineId: string;
+    targetCanvasId: string;
+    newTimelineId: string;
+    newActionNodeId: string;
+    position: { x: number; y: number };
+  },
+): ProjectTimelineMutationResult {
   const timelines = doc.getMap("timelines");
-  const source = parseTimeline(input.sourceTimelineId, timelines.get(input.sourceTimelineId));
-  if (!source) return { ok: false, error: `Timeline ${input.sourceTimelineId} not found` };
+  const source = parseTimeline(
+    input.sourceTimelineId,
+    timelines.get(input.sourceTimelineId),
+  );
+  if (!source)
+    return { ok: false, error: `Timeline ${input.sourceTimelineId} not found` };
   if (source.owner.kind !== "canvas-action") {
-    return { ok: false, error: `Timeline ${input.sourceTimelineId} is standalone` };
+    return {
+      ok: false,
+      error: `Timeline ${input.sourceTimelineId} is standalone`,
+    };
   }
   const canvases = doc.getMap("canvases");
   if (input.targetCanvasId === DEFAULT_CANVAS_ID && canvases.size === 0) {
@@ -721,7 +821,10 @@ export function copyTimelineActionToCanvas(
     return { ok: false, error: `Canvas ${input.targetCanvasId} not found` };
   }
   if (timelines.get(input.newTimelineId)) {
-    return { ok: false, error: `Timeline ${input.newTimelineId} already exists` };
+    return {
+      ok: false,
+      error: `Timeline ${input.newTimelineId} already exists`,
+    };
   }
   const nodes = doc.getMap("nodes");
   if (nodes.get(input.newActionNodeId)) {
@@ -729,9 +832,10 @@ export function copyTimelineActionToCanvas(
   }
 
   const sourceAction = nodes.get(source.owner.actionNodeId);
-  const sourceActionData = isRecord(sourceAction) && isRecord(sourceAction.data)
-    ? sourceAction.data
-    : {};
+  const sourceActionData =
+    isRecord(sourceAction) && isRecord(sourceAction.data)
+      ? sourceAction.data
+      : {};
   const timeline: ProjectTimeline = {
     id: input.newTimelineId,
     name: source.name,
@@ -745,7 +849,10 @@ export function copyTimelineActionToCanvas(
   };
   const bindingError = syncProjectTimelineAssetInputs(doc, timeline);
   if (bindingError) return bindingError;
-  setTimelineFields(timelines.ensureMergeableMap(input.newTimelineId), timeline);
+  setTimelineFields(
+    timelines.ensureMergeableMap(input.newTimelineId),
+    timeline,
+  );
   nodes.set(input.newActionNodeId, {
     canvasId: input.targetCanvasId,
     type: "video-editor",
@@ -756,6 +863,7 @@ export function copyTimelineActionToCanvas(
     },
     position: input.position,
   });
+  ensureTimelineMediaPlacements(doc, timeline);
   return { ok: true, timeline };
 }
 
@@ -788,7 +896,9 @@ export interface TimelineOwnershipReconciliation {
 export function reconcileProjectTimelineOwnership(
   doc: LoroDoc,
 ): TimelineOwnershipReconciliation {
-  const timelines = new Map(listProjectTimelines(doc).map((timeline) => [timeline.id, timeline]));
+  const timelines = new Map(
+    listProjectTimelines(doc).map((timeline) => [timeline.id, timeline]),
+  );
   const nodes = doc.getMap("nodes");
   const removedActionNodeIds: string[] = [];
 
@@ -798,7 +908,8 @@ export function reconcileProjectTimelineOwnership(
     const timeline = timelines.get(timelineId);
     if (!timeline) continue;
     const canvasId = nodeCanvasId(raw);
-    const isWinningAction = timeline.owner.kind === "canvas-action" &&
+    const isWinningAction =
+      timeline.owner.kind === "canvas-action" &&
       timeline.owner.actionNodeId === nodeId &&
       timeline.owner.canvasId === canvasId;
     if (isWinningAction) continue;
@@ -819,7 +930,8 @@ export function reconcileProjectTimelineOwnership(
   for (const timeline of timelines.values()) {
     if (timeline.owner.kind !== "canvas-action") continue;
     const rawOwner = nodes.get(timeline.owner.actionNodeId);
-    const ownerMatches = timelineActionTimelineId(rawOwner) === timeline.id &&
+    const ownerMatches =
+      timelineActionTimelineId(rawOwner) === timeline.id &&
       nodeCanvasId(rawOwner) === timeline.owner.canvasId;
     if (ownerMatches) continue;
     const detached: ProjectTimeline = {
@@ -832,7 +944,9 @@ export function reconcileProjectTimelineOwnership(
       detached,
     );
     if (bindingError) throw new Error(bindingError.error);
-    ensureTimelineFields(doc, timeline.id, timeline).set("owner", { kind: "project" });
+    ensureTimelineFields(doc, timeline.id, timeline).set("owner", {
+      kind: "project",
+    });
     detachedTimelineIds.push(timeline.id);
   }
 

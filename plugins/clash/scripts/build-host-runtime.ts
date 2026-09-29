@@ -1,5 +1,4 @@
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { build } from "esbuild";
 import {
@@ -8,15 +7,18 @@ import {
   bundledPluginPayloadFiles,
 } from "../../../apps/local-api/src/bundled-plugins.js";
 import { assertDependencyDistIsFresh } from "./host-runtime-freshness.js";
+import { assertRendererInputsAreFresh } from "../../../scripts/project-renderer-freshness.ts";
 
 const pluginRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(pluginRoot, "../..");
 const runtimeDir = resolve(pluginRoot, "runtime");
 const importMetaUrlShim = "__clash_import_meta_url";
-const require = createRequire(import.meta.url);
+
+assertRendererInputsAreFresh(resolve(repoRoot, "apps/web/dist/project-renderer-inputs.json"));
 
 assertDependencyDistIsFresh([
   resolve(import.meta.dirname, "../../../packages/cli"),
+  resolve(import.meta.dirname, "../../../packages/action-sdk"),
   resolve(import.meta.dirname, "../../../packages/shared-types"),
   resolve(import.meta.dirname, "../../../apps/local-api"),
   ...BUNDLED_PLUGINS.map((plugin) =>
@@ -69,6 +71,9 @@ await build({
   // test-harness-only dynamic import; keeping its preload module external prevents its ESM
   // top-level await from entering this production CJS bundle.
   external: [
+    // Loro's Node package owns its WASM and relative helper modules. Keep the
+    // complete installed dependency boundary, as the MCP entry already does.
+    "loro-crdt",
     "@remotion/renderer",
     "@remotion/bundler",
     "esbuild",
@@ -128,6 +133,9 @@ for (const plugin of OFFICIAL_MARKETPLACE_PLUGIN_PACKAGES) {
 await build({
   entryPoints: [resolve(repoRoot, "packages/cli/src/plugin.ts")],
   outfile: resolve(runtimeDir, "clash-cli.cjs"),
+  // Plugin drafting compiles TypeScript through esbuild's JS API, which locates
+  // its platform binary relative to its own package. Keep that runtime boundary.
+  external: ["esbuild", "loro-crdt"],
   bundle: true,
   platform: "node",
   format: "cjs",
@@ -136,6 +144,25 @@ await build({
   banner: {
     js: `#!/usr/bin/env node\n${GENERATED_BANNER}const ${importMetaUrlShim} = require("node:url").pathToFileURL(__filename).href;`,
   },
+});
+
+// Drafts outside this installation must still be able to import the same SDK
+// contract as first-party plugins. The CLI inlines these entries into each
+// activated draft; no source checkout or extra npm package is needed at runtime.
+const authoringSdkDir = resolve(runtimeDir, "plugin-sdk");
+await rm(authoringSdkDir, { recursive: true, force: true });
+await build({
+  entryPoints: Object.fromEntries(["index", "browser", "executable-failure"].map(name =>
+    [name, resolve(repoRoot, `packages/action-sdk/dist/${name}.js`)],
+  )),
+  outdir: authoringSdkDir,
+  outExtension: { ".js": ".mjs" },
+  bundle: true,
+  splitting: true,
+  platform: "node",
+  format: "esm",
+  target: "node24",
+  banner: { js: GENERATED_BANNER },
 });
 
 // Keep tracked package artefacts diff-clean even when an inlined dependency
@@ -179,7 +206,5 @@ await cp(
   { recursive: true },
 );
 
-await cp(
-  require.resolve("loro-crdt/nodejs/loro_wasm_bg.wasm"),
-  resolve(runtimeDir, "loro_wasm_bg.wasm"),
-);
+// Retired flattened copy: Node now resolves the pinned Loro package as a whole.
+await rm(resolve(runtimeDir, "loro_wasm_bg.wasm"), { force: true });

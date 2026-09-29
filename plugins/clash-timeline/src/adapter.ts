@@ -4,6 +4,7 @@ import {
   timelineDslDiscovery,
   timelineDslHash,
   validateTimelineDsl,
+  summarizeProjectTimeline,
   type ResolvedTimelineDsl,
 } from "@clash/shared-types/timeline-contract";
 import type { ProjectHostCommand } from "@clash/shared-types";
@@ -25,7 +26,14 @@ export type TimelineProjectionWriter = (
 export type TimelineAdapter = {
   schema(input: TimelineToolInput): Promise<Record<string, unknown>>;
   validate(input: TimelineToolInput): Promise<Record<string, unknown>>;
-  list(input: TimelineToolInput): Promise<TimelineEntity[]>;
+  list(
+    input: TimelineToolInput,
+  ): Promise<
+    Array<
+      | TimelineEntity
+      | ReturnType<typeof summarizeProjectTimeline<TimelineEntity>>
+    >
+  >;
   get(input: TimelineToolInput): Promise<TimelineEntity>;
   create(input: TimelineToolInput): Promise<unknown>;
   save(input: TimelineToolInput): Promise<Record<string, unknown>>;
@@ -151,7 +159,9 @@ export function createTimelineAdapter(
     return observation;
   };
 
-  const list = async (input: TimelineToolInput): Promise<TimelineEntity[]> => {
+  const listFull = async (
+    input: TimelineToolInput,
+  ): Promise<TimelineEntity[]> => {
     const { projectId, value } = await request(input, {
       action: "list_timelines",
     });
@@ -182,9 +192,14 @@ export function createTimelineAdapter(
       : timelines;
   };
 
+  const list = async (input: TimelineToolInput) => {
+    const timelines = await listFull(input);
+    return input.full ? timelines : timelines.map(summarizeProjectTimeline);
+  };
+
   const get = async (input: TimelineToolInput): Promise<TimelineEntity> => {
     const timelineId = required(input, "timelineId");
-    const timeline = (await list(input)).find(
+    const timeline = (await listFull(input)).find(
       (candidate) => candidate.id === timelineId,
     );
     if (!timeline) throw new Error(`Timeline ${timelineId} not found`);

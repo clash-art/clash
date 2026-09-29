@@ -1,6 +1,6 @@
 import type { GeneratorRevision } from "./generator-v2.js";
 import type { LoroDoc } from "loro-crdt";
-import { readGeneratorRevision, readProjectGenerator } from "./project-generators.js";
+import { readGeneratorRevision, readProjectGenerator, readProjectActionRun } from "./project-generators.js";
 
 const actionTypes: Record<string, string> = {
   image: "image-gen", video: "video-gen", audio: "audio-gen", model: "model-gen", text: "text-gen",
@@ -24,6 +24,13 @@ export function projectCanvasModelGeneratorData(
 ): Record<string, unknown> {
   if (nodeType !== "action-badge" || data.generatorId === undefined) return data;
   if (typeof data.generatorId !== "string") throw new Error("Canvas Model Generator identity is invalid.");
+  if (typeof data.actionRunId === "string") {
+    const run = readProjectActionRun(doc, data.actionRunId);
+    if (!run || run.generatorRevision.generatorId !== data.generatorId || !readGeneratorRevision(doc, run.generatorRevision))
+      throw new Error("The Canvas operation's recorded Generator Run is unavailable.");
+    return { ...canvasModelPlacementData(data), generatorRevisionId: run.generatorRevision.generatorRevisionId,
+      generatorRevision: run.generatorRevision, generatorActionId: run.actionId };
+  }
   const generator = readProjectGenerator(doc, data.generatorId);
   const revision = generator && readGeneratorRevision(doc, {
     generatorId: generator.id, generatorRevisionId: generator.headRevisionId,

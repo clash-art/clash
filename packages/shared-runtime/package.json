@@ -43,10 +43,30 @@
       "import": "./src/generator-client.ts",
       "default": "./dist/generator-client.js"
     },
+    "./action-client": {
+      "types": "./src/action-client.ts",
+      "import": "./src/action-client.ts",
+      "default": "./dist/action-client.js"
+    },
     "./document-client": {
       "types": "./src/document-client.ts",
       "import": "./src/document-client.ts",
       "default": "./dist/document-client.js"
+    },
+    "./asset-evidence-client": {
+      "types": "./src/asset-evidence-client.ts",
+      "import": "./src/asset-evidence-client.ts",
+      "default": "./dist/asset-evidence-client.js"
+    },
+    "./asset-search-client": {
+      "types": "./src/asset-search-client.ts",
+      "import": "./src/asset-search-client.ts",
+      "default": "./dist/asset-search-client.js"
+    },
+    "./project-content-client": {
+      "types": "./src/project-content-client.ts",
+      "import": "./src/project-content-client.ts",
+      "default": "./dist/project-content-client.js"
     },
     "./durable-run-engine": {
       "types": "./src/durable-run-engine.ts",
@@ -92,6 +112,61 @@
       "types": "./src/minimax-executor.ts",
       "import": "./src/minimax-executor.ts",
       "default": "./dist/minimax-executor.js"
+    },
+    "./project-authorization": {
+      "types": "./src/project-authorization.ts",
+      "import": "./src/project-authorization.ts",
+      "default": "./dist/project-authorization.js"
+    },
+    "./project-authorization-postgres": {
+      "types": "./src/project-authorization-postgres.ts",
+      "import": "./src/project-authorization-postgres.ts",
+      "default": "./dist/project-authorization-postgres.js"
+    },
+    "./project-cloud-admission": {
+      "types": "./src/project-cloud-admission.ts",
+      "import": "./src/project-cloud-admission.ts",
+      "default": "./dist/project-cloud-admission.js"
+    },
+    "./project-cloud-admission-postgres": {
+      "types": "./src/project-cloud-admission-postgres.ts",
+      "import": "./src/project-cloud-admission-postgres.ts",
+      "default": "./dist/project-cloud-admission-postgres.js"
+    },
+    "./cloud-run-journal": {
+      "types": "./src/cloud-run-journal.ts",
+      "import": "./src/cloud-run-journal.ts",
+      "default": "./dist/cloud-run-journal.js"
+    },
+    "./cloud-run-coordinator": {
+      "types": "./src/cloud-run-coordinator.ts",
+      "import": "./src/cloud-run-coordinator.ts",
+      "default": "./dist/cloud-run-coordinator.js"
+    },
+    "./hosted-generation": {
+      "types": "./src/hosted-generation.ts",
+      "import": "./src/hosted-generation.ts",
+      "default": "./dist/hosted-generation.js"
+    },
+    "./generation-params": {
+      "types": "./src/generation-params.ts",
+      "import": "./src/generation-params.ts",
+      "default": "./dist/generation-params.js"
+    },
+    "./generator-contract": {
+      "types": "./src/generator-contract.ts",
+      "import": "./src/generator-contract.ts",
+      "default": "./dist/generator-contract.js"
+    },
+    "./timeline-generator-product": {
+      "types": "./src/timeline-generator-product.ts",
+      "import": "./src/timeline-generator-product.ts",
+      "default": "./dist/timeline-generator-product.js"
+    },
+    "./executable-plugin-schema-hash": {
+      "types": "./src/executable-plugin-schema-hash.ts",
+      "import": "./src/executable-plugin-schema-hash.ts",
+      "default": "./dist/executable-plugin-schema-hash.js"
     }
   },
   "engines": {
@@ -107,12 +182,15 @@
   "dependencies": {
     "@clash/action-sdk": "workspace:*",
     "@clash/asset-sdk": "workspace:*",
-    "@clash/shared-types": "workspace:*"
+    "@clash/shared-types": "workspace:*",
+    "ajv": "^8.20.0",
+    "loro-crdt": "1.16.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "esbuild": "0.25.0",
     "typescript": "^5.0.0",
-    "vitest": "^4.1.2",
-    "esbuild": "0.25.0"
+    "vitest": "^4.1.2"
   },
   "files": [
     "dist",

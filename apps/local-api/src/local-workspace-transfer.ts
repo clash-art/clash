@@ -7,6 +7,8 @@ import { isDeepStrictEqual } from "node:util";
 
 import {
   ACTION_ASSET_BINDINGS_CONTAINER,
+  CANVAS_NODE_LAYOUTS,
+  CanvasNodeLayoutSchema,
   EDGE_IDENTITY_CONTAINER,
   DOCUMENT_ASSET_REVISIONS_CONTAINER,
   DOCUMENT_ASSET_SCHEMA_CONTAINER,
@@ -315,13 +317,25 @@ function assertPortableSnapshotHistory(snapshot: Uint8Array): void {
       error,
     );
   }
-  const updates = shallow.exportJsonUpdates() as unknown;
+  // Keep real peer IDs so register operations can be compared using Loro's
+  // causal ordering, including history retained by independent Canvas heads.
+  const updates = shallow.exportJsonUpdates(
+    undefined,
+    undefined,
+    false,
+  ) as unknown;
   if (!isRecord(updates) || !Array.isArray(updates.changes)) {
     authorityInvalid(
       "Portable Loro shallow snapshot has invalid JSON updates.",
     );
   }
-  const mapRegisterOperations = new Map<string, number>();
+  const mapRegisterOperations = new Map<
+    string,
+    Array<{
+      id: { peer: `${number}`; counter: number };
+      content: Record<string, unknown>;
+    }>
+  >();
   for (const [changeIndex, change] of updates.changes.entries()) {
     if (!isRecord(change) || !Array.isArray(change.ops)) {
       authorityInvalid(
@@ -342,10 +356,37 @@ function assertPortableSnapshotHistory(snapshot: Uint8Array): void {
         (content.type === "insert" || content.type === "delete")
       ) {
         const register = `${operation.container}\u0000${content.key}`;
-        mapRegisterOperations.set(
-          register,
-          (mapRegisterOperations.get(register) ?? 0) + 1,
+        const peer =
+          typeof change.id === "string"
+            ? /^\d+@(\d+)$/.exec(change.id)?.[1]
+            : undefined;
+        if (
+          !peer ||
+          typeof operation.counter !== "number" ||
+          !Number.isSafeInteger(operation.counter) ||
+          operation.counter < 0
+        ) {
+          authorityInvalid(
+            "Portable Loro shallow snapshot has an invalid Map operation ID.",
+          );
+        }
+        const entry = {
+          id: { peer: peer as `${number}`, counter: operation.counter },
+          content,
+        };
+        const previous = mapRegisterOperations.get(register) ?? [];
+        const order = previous.map((candidate) =>
+          shallow.cmpFrontiers([candidate.id], [entry.id]),
         );
+        // Only causally maximal writes remain unresolved. Identical concurrent
+        // initialization is harmless; older overwritten values are still
+        // inspected below so private history cannot hide behind a safe winner.
+        if (!order.some((value) => value === 1 || value === 0)) {
+          mapRegisterOperations.set(register, [
+            ...previous.filter((_, index) => order[index] !== -1),
+            entry,
+          ]);
+        }
       }
       if (content.type !== "insert") continue;
       const candidate =
@@ -362,7 +403,14 @@ function assertPortableSnapshotHistory(snapshot: Uint8Array): void {
       }
     }
   }
-  if ([...mapRegisterOperations.values()].some((count) => count > 1)) {
+  if (
+    [...mapRegisterOperations.values()].some((operations) =>
+      operations.some(
+        (operation) =>
+          !isDeepStrictEqual(operation.content, operations[0].content),
+      ),
+    )
+  ) {
     authorityInvalid(
       "Portable Loro shallow snapshot contains an unresolved Map register conflict.",
     );
@@ -683,6 +731,23 @@ function validateCanvasNodes(
     }
   }
   return nodes;
+}
+
+function validateCanvasLayouts(
+  doc: LoroDoc,
+  nodes: ReadonlyMap<string, Record<string, unknown>>,
+): void {
+  for (const [nodeId, layout] of doc.getMap(CANVAS_NODE_LAYOUTS).entries()) {
+    const label = `Canvas layout ${nodeId}`;
+    if (!nodes.has(nodeId)) {
+      authorityInvalid(`${label} has no target node.`);
+    }
+    const parsed = CanvasNodeLayoutSchema.safeParse(layout);
+    if (!parsed.success) {
+      authorityInvalid(`${label} is invalid.`, parsed.error);
+    }
+    assertPortableJson(parsed.data, label);
+  }
 }
 
 function validateCanvasGraph(
@@ -1021,6 +1086,7 @@ function validateProjectPresentation(doc: LoroDoc): void {
 }
 
 const PORTABLE_PROJECT_ROOT_CONTAINERS = new Set([
+  CANVAS_NODE_LAYOUTS,
   "actionAssetBindings",
   "actionAssetBindingSchema",
   "canvases",
@@ -1074,6 +1140,7 @@ function validatePortableProjectSurfaces(doc: LoroDoc): void {
   validateAuthoritySchemaMaps(doc);
   validateCanvasMetadata(doc);
   const nodes = validateCanvasNodes(doc);
+  validateCanvasLayouts(doc, nodes);
   validateCanvasGraph(doc, nodes);
   validateTimelineAuthority(doc, nodes);
   validateDirectorAuthority(doc, nodes);

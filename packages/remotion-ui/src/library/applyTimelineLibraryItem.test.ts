@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { timelineDslFromYaml } from "@clash/shared-types";
 import {
   editorReducer,
   normalizeEditorAsset,
@@ -441,4 +442,29 @@ describe("buildTimelineLibraryApplication", () => {
     expect(application.actions).toEqual([]);
     expect(application.disabledReason).toMatch(/structured text item/i);
   });
+});
+
+it.each(TIMELINE_LIBRARY_CATALOG.filter(entry => entry.item.category === 'text'))('creates a persistable ordinary title from $item.label', entry => {
+  const next = apply(makeState(), 'text', entry.item.label);
+  const parsed = timelineDslFromYaml(JSON.stringify(next));
+  expect(parsed.ok, parsed.ok ? undefined : parsed.error).toBe(true);
+});
+
+it('puts simultaneous library titles on different lanes, and reuses a compatible lane at a free time', () => {
+  let sequence=0;
+  const insert=(state:EditorState) => {
+    const application=buildTimelineLibraryApplication({ state,record:record('text'),createId:prefix=>`${prefix}-repeated-${++sequence}` });
+    return application.actions.reduce(editorReducer,state);
+  };
+  const one=insert(makeState());
+  const two=insert(one);
+  const original=one.tracks.flatMap(track=>track.items)[0];
+  const inserted=two.tracks.flatMap(track=>track.items).find(item=>item.id!==original.id);
+  expect(inserted).toBeDefined();
+  expect(inserted!.from).toBe(original.from);
+  expect(two.tracks.find(track=>track.items.some(item=>item.id===original.id))!.id)
+    .not.toBe(two.tracks.find(track=>track.items.some(item=>item.id===inserted!.id))!.id);
+  const later=insert({...two,currentFrame:original.from+original.durationInFrames});
+  expect(later.tracks.length).toBe(two.tracks.length);
+  expect(later.tracks.flatMap(track=>track.items)).toHaveLength(3);
 });

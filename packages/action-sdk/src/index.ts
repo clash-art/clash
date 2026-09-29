@@ -21,6 +21,15 @@ export {
   type ProviderHttpFailureInput,
 } from "./executable-failure.js";
 
+export {
+  PluginViewResourceSchema,
+  ExecutablePluginViewStateSchema,
+  listPluginViewAssetReferences,
+  type PluginViewResource,
+  type ExecutablePluginViewState,
+  type PluginViewAssetReference,
+} from "./browser.js";
+
 export type {
   AssetKind,
   ExecutablePluginAssetHandle,

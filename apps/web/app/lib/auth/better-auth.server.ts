@@ -52,7 +52,7 @@ async function sendOtpEmail(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "Clash <auth@clash.video>",
+        from: "Clash <auth@clash.art>",
         to,
         subject: "Your Clash verification code",
         html: `<p>Your code: <strong style="font-size:24px">${otp}</strong></p><p>Expires in 10 minutes.</p>`,
@@ -98,9 +98,9 @@ export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) 
         baseURL,
         trustedProxyHeaders: true,
         trustedOrigins: [
-          "https://clash.video",
-          "https://www.clash.video",
-          "https://next.clash.video",
+          "https://clash.art",
+          "https://www.clash.art",
+          "https://next.clash.art",
           ...(isLocalAuthBaseUrl(baseURL) ? devTrustedOrigins : []),
         ],
         secret,

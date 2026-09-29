@@ -132,6 +132,39 @@ const stageDefinition: GeneratorDefinition = {
 };
 
 describe("Local Generator product surface", () => {
+  it("exposes bounded Host failure diagnostics beside a Run without leaking journal secrets or changing Project state", async () => {
+    const directory = await dataDir();
+    const doc = new LoroDoc();
+    const other = new LoroDoc();
+    const authority = {
+      inspect: async <T>(id: string, read: (value: LoroDoc) => T | Promise<T>) => read(id === "project" ? doc : other),
+      mutate: async <T>(id: string, write: (value: LoroDoc, checkpoint: () => Promise<void>) => T | Promise<T>) => write(id === "project" ? doc : other, async () => undefined),
+    };
+    const app = createLocalApiApp({ dataDir: directory, userId: "user", generatorProjectAuthority: authority, resolveGeneratorDefinition: async () => stageDefinition });
+    const create = await app.request("/api/v1/projects/project/generators", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ generatorId: "stage", generatorRevisionId: "stage-r1", pluginId: stageDefinition.pluginId, definitionId: stageDefinition.definitionId, state: { scene: "courtyard" }, persistentInputRefs: [] }) });
+    expect(create.status).toBe(201);
+    const submit = await app.request("/api/v1/projects/project/generators/stage/actions/render-still/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ actionRunId: "run-diagnostics", generatorRevisionId: "stage-r1", parameters: {}, invocationInputRefs: [] }) });
+    expect(submit.status).toBe(202);
+    const journal = createSqliteDurableRunJournal(directory);
+    const identity = { actionRunId: "run-diagnostics", outputSlot: "image" };
+    const saved = (await journal.load(identity))!;
+    expect(saved).toBeDefined();
+    expect(await journal.compareAndSet(identity, saved.revision, { ...saved, revision: saved.revision + 1, phase: "finalizing", failure: { code: "publication_failed", message: "secret-provider-body apiKey=sk-private-example Authorization: Bearer secret-token /Users/private/file", retryable: true, requestState: "accepted" } })).toBe(true);
+    const before = readProjectActionRun(doc, identity.actionRunId);
+    const response = await app.request(`/api/v1/projects/project/generator-runs/${identity.actionRunId}`);
+    const result = await response.json();
+    expect(result).toMatchObject({ run: before, diagnostics: { failures: [{ outputSlot: identity.outputSlot, code: "publication_failed", phase: "finalizing", retryable: true, message: expect.any(String) }] } });
+    expect(JSON.stringify(result)).not.toMatch(/secret-provider-body|sk-private-example|secret-token|Users\/private/);
+    expect(result.diagnostics.failures[0].message).toMatch(/publish/i);
+    expect(readProjectActionRun(doc, identity.actionRunId)).toEqual(before);
+    expect((await app.request(`/api/v1/projects/other/generator-runs/${identity.actionRunId}`)).status).toBe(404);
+    const current = (await journal.load(identity))!;
+    expect(await journal.compareAndSet(identity, current.revision, { ...current, revision: current.revision + 1, phase: "failed", failure: { code: "execution_failed", message: "credentials.region is missing; apiKey=sk-private-example", retryable: false, requestState: "rejected" } })).toBe(true);
+    const configFailure = await (await app.request(`/api/v1/projects/project/generator-runs/${identity.actionRunId}`)).json();
+    expect(configFailure.diagnostics.failures[0].message).toMatch(/region/i);
+    expect(JSON.stringify(configFailure)).not.toContain("sk-private-example");
+  });
+
   it("retains exact Definition versions across journal reopen and refuses identity overwrite", async () => {
     const directory = await dataDir();
     const first = createSqliteDurableRunJournal(directory);

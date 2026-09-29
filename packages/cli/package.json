@@ -29,6 +29,7 @@
     "test:e2e": "node --test e2e/canvas-add-refs.test.ts"
   },
   "dependencies": {
+    "@clash/action-sdk": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
     "@clash/remotion-effects": "workspace:*",

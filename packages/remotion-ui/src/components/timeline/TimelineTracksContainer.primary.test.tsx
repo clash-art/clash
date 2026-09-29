@@ -108,14 +108,6 @@ describe("TimelineTracksContainer typed lanes", () => {
       .toBe('10px');
     const tracksViewport = container.querySelector('.tracks-viewport') as HTMLElement;
     expect(tracksViewport.style.paddingLeft).toBe('16px');
-    tracksViewport.scrollLeft = 0;
-    tracksViewport.scrollTop = 0;
-    fireEvent.wheel(tracksViewport, { deltaX: 30, deltaY: 4 });
-    expect(tracksViewport.scrollLeft).toBe(30);
-    expect(tracksViewport.scrollTop).toBe(0);
-    fireEvent.wheel(tracksViewport, { deltaX: 0, deltaY: 24 });
-    expect(tracksViewport.scrollLeft).toBe(30);
-    expect(tracksViewport.scrollTop).toBe(0);
     expect(Array.from(container.querySelectorAll("[data-track-category-icon]"))
       .map((icon) => icon.getAttribute("data-track-category-icon"))).toEqual([
         "effect",

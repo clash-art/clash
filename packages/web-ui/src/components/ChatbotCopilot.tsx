@@ -1,3 +1,4 @@
+import { ServiceNotice } from "./ServiceNotice";
 import type { AcpForkPoint } from "@clash/shared-types";
 import {
   memo,
@@ -37,7 +38,10 @@ import {
   ShieldCheckIcon,
   type LucideIcon,
 } from "lucide-react";
-import { createComposerDraftStore } from "@openma/common/chat-ui";
+import {
+  useCopilotComposerDraft,
+  type CopilotAssetReferenceRequest,
+} from "./copilot/useCopilotComposerDraft";
 import { useTranslation } from "react-i18next";
 import { UserMessage } from "./copilot/UserMessage";
 import { AgentCard, type AgentLog } from "./copilot/AgentCard";
@@ -223,6 +227,8 @@ interface ChatbotCopilotProps {
   /** Surface identity included with every prompt so the agent knows where the user is. */
   workspaceContext?: CopilotWorkspaceContext;
   initialPrompt?: string;
+  assetReferenceRequests?: readonly CopilotAssetReferenceRequest[];
+  onAssetReferencesConsumed?: (ids: string[]) => void;
   /** Session history + actions passed from parent */
   sessionHistory?: Array<CopilotSessionHistoryItem>;
   sessionHistoryHasMore?: boolean;
@@ -373,18 +379,9 @@ type MentionNodeRef = {
 
 const DESKTOP_LOCAL_RUNTIME_ID = "desktop-local";
 
-const COPILOT_PANEL_TRANSITION = {
-  duration: 0.24,
-  ease: [0.16, 1, 0.3, 1] as const,
-};
-const COPILOT_PANEL_COLLAPSE_TRANSITION = {
-  duration: 0.34,
-  ease: [0.22, 1, 0.36, 1] as const,
-  times: [0, 0.52, 1],
-};
 const COPILOT_LAUNCHER_ENTER_TRANSITION = {
   duration: 0.24,
-  delay: 0.12,
+  delay: 0,
   ease: [0.22, 1, 0.36, 1] as const,
 };
 const COPILOT_LAUNCHER_EXIT_TRANSITION = {
@@ -404,14 +401,14 @@ const COPILOT_PANEL_CANVAS_TRANSFORM_ORIGIN = `calc(100% - ${COPILOT_PANEL_LAUNC
 const COPILOT_PANEL_HEADER_TRANSFORM_ORIGIN =
   "calc(100% - 16px) calc(0% + 14px)";
 const COPILOT_PANEL_COLLAPSED_CANVAS_STATE = {
-  opacity: [1, 0.76, 0],
-  scale: [1, 0.56, 0.08],
-  x: [0, 0, 42],
-  y: [0, 34, 34],
+  opacity: 0,
+  scale: 1,
+  x: 8,
+  y: 0,
 };
 const COPILOT_PANEL_COLLAPSED_HEADER_STATE = {
-  opacity: [1, 0.76, 0],
-  scale: [1, 0.56, 0.08],
+  opacity: 0,
+  scale: 1,
   x: 0,
   y: 0,
 };
@@ -742,6 +739,8 @@ function ChatbotCopilot({
   mentionSources = [],
   workspaceContext,
   initialPrompt,
+  assetReferenceRequests,
+  onAssetReferencesConsumed,
   sessionHistory = [],
   sessionHistoryHasMore = false,
   sessionHistoryLoadingMore = false,
@@ -773,6 +772,24 @@ function ChatbotCopilot({
   }, [feedback, t]);
   // Below Tailwind's `lg` (1024px), the panel switches to a full-screen
   // sheet over the canvas. Desktop keeps a resizable bottom-right popover.
+  const panelTransition = useMemo(() => {
+    const tokens = getComputedStyle(document.documentElement);
+    const duration = tokens
+      .getPropertyValue("--motion-feedback-duration")
+      .trim();
+    const easing = tokens
+      .getPropertyValue("--motion-feedback-ease")
+      .match(/[\d.]+/g)
+      ?.map(Number);
+    return {
+      duration:
+        parseFloat(duration) / (duration.endsWith("ms") ? 1000 : 1) || 0,
+      ease:
+        easing?.length === 4
+          ? (easing as [number, number, number, number])
+          : ("linear" as const),
+    };
+  }, []);
   const isMobile = useIsBelowLg();
   const isDocked = !isMobile && layoutMode === "docked";
   const panelHeaderControlSize = isMobile ? "lg" : "sm";
@@ -784,37 +801,13 @@ function ChatbotCopilot({
     ? COPILOT_PANEL_COLLAPSED_HEADER_STATE
     : COPILOT_PANEL_COLLAPSED_CANVAS_STATE;
   // ─── UI State ──────────────────────────────────────────────
-  const composerDrafts = useMemo(() => {
-    let storage: Storage | undefined;
-    try {
-      storage = window.localStorage;
-    } catch {
-      storage = undefined;
-    }
-    return createComposerDraftStore({
-      namespace: "clash.project-composer",
-      storage,
-    });
-  }, []);
-  const composerDraftScope = `${projectId}:${threadId || "new"}`;
-  const [inputState, setInputState] = useState(() => {
-    const value = initialPrompt ?? composerDrafts.read(composerDraftScope);
-    if (initialPrompt !== undefined) {
-      composerDrafts.write(composerDraftScope, initialPrompt);
-    }
-    return { scope: composerDraftScope, value };
+  const { input, setInput } = useCopilotComposerDraft({
+    projectId,
+    threadId,
+    initialPrompt,
+    requests: assetReferenceRequests,
+    onConsumed: onAssetReferencesConsumed,
   });
-  const input =
-    inputState.scope === composerDraftScope
-      ? inputState.value
-      : composerDrafts.read(composerDraftScope);
-  const setInput = useCallback(
-    (value: string) => {
-      composerDrafts.write(composerDraftScope, value);
-      setInputState({ scope: composerDraftScope, value });
-    },
-    [composerDraftScope, composerDrafts],
-  );
   const [dismissedSlashCommand, setDismissedSlashCommand] = useState<
     string | null
   >(null);
@@ -1900,7 +1893,12 @@ function ChatbotCopilot({
               : {}),
             ...(patchNode.style ? { style: patchNode.style } : {}),
           });
-          if (createdNodeId && typeof createdNodeId !== "string") pendingCreates.push(createdNodeId.then((id) => onAgentCanvasTarget?.(id || patchNode.id)));
+          if (createdNodeId && typeof createdNodeId !== "string")
+            pendingCreates.push(
+              createdNodeId.then((id) =>
+                onAgentCanvasTarget?.(id || patchNode.id),
+              ),
+            );
           else onAgentCanvasTarget?.(createdNodeId || patchNode.id);
         }
       }
@@ -1913,84 +1911,92 @@ function ChatbotCopilot({
       (pendingEdgeDeletes.length > 0 && onRemoveEdge) ||
       (pendingTimelineApplies.length > 0 && onApplyTimeline)
     ) {
-      const applyPending = () => window.setTimeout(async () => {
-        if (onRemoveNode) {
-          for (const deletion of pendingNodeDeletes) {
-            onRemoveNode(
-              deletion.nodeId,
-              deletion.requiresReadProof
-                ? {
-                    actorClientType: "agent",
-                    ifMatch: deletion.ifMatch,
-                  }
-                : undefined,
-            );
+      const applyPending = () =>
+        window.setTimeout(async () => {
+          if (onRemoveNode) {
+            for (const deletion of pendingNodeDeletes) {
+              onRemoveNode(
+                deletion.nodeId,
+                deletion.requiresReadProof
+                  ? {
+                      actorClientType: "agent",
+                      ifMatch: deletion.ifMatch,
+                    }
+                  : undefined,
+              );
+            }
           }
-        }
-        if (onAddEdge) {
-          for (const patchEdge of pendingEdges) {
-            onAddEdge(
-              {
-                id: patchEdge.id,
-                source: patchEdge.source,
-                target: patchEdge.target,
-                type: patchEdge.type ?? "default",
-              },
-              patchEdge.requiresReadProof
-                ? {
-                    actorClientType: "agent",
-                    ifMatch: patchEdge.ifMatch,
-                  }
-                : undefined,
-            );
+          if (onAddEdge) {
+            for (const patchEdge of pendingEdges) {
+              onAddEdge(
+                {
+                  id: patchEdge.id,
+                  source: patchEdge.source,
+                  target: patchEdge.target,
+                  type: patchEdge.type ?? "default",
+                },
+                patchEdge.requiresReadProof
+                  ? {
+                      actorClientType: "agent",
+                      ifMatch: patchEdge.ifMatch,
+                    }
+                  : undefined,
+              );
+            }
           }
-        }
-        if (onUpdateEdge) {
-          for (const edgeUpdate of pendingEdgeUpdates) {
-            onUpdateEdge(
-              edgeUpdate.id,
-              edgeUpdate.patch,
-              edgeUpdate.requiresReadProof
-                ? {
-                    actorClientType: "agent",
-                    ifMatch: edgeUpdate.ifMatch,
-                  }
-                : undefined,
-            );
+          if (onUpdateEdge) {
+            for (const edgeUpdate of pendingEdgeUpdates) {
+              onUpdateEdge(
+                edgeUpdate.id,
+                edgeUpdate.patch,
+                edgeUpdate.requiresReadProof
+                  ? {
+                      actorClientType: "agent",
+                      ifMatch: edgeUpdate.ifMatch,
+                    }
+                  : undefined,
+              );
+            }
           }
-        }
-        if (onRemoveEdge) {
-          for (const edgeDelete of pendingEdgeDeletes) {
-            onRemoveEdge(
-              edgeDelete.id,
-              edgeDelete.requiresReadProof
-                ? {
-                    actorClientType: "agent",
-                    ifMatch: edgeDelete.ifMatch,
-                  }
-                : undefined,
-            );
+          if (onRemoveEdge) {
+            for (const edgeDelete of pendingEdgeDeletes) {
+              onRemoveEdge(
+                edgeDelete.id,
+                edgeDelete.requiresReadProof
+                  ? {
+                      actorClientType: "agent",
+                      ifMatch: edgeDelete.ifMatch,
+                    }
+                  : undefined,
+              );
+            }
           }
-        }
-        if (onApplyTimeline) {
-          for (const apply of pendingTimelineApplies) {
-            await onApplyTimeline(
-              apply.nodeId,
-              apply.dsl,
-              apply.requiresReadProof
-                ? {
-                    actorClientType: "agent",
-                    ifMatch: apply.ifMatch,
-                  }
-                : undefined,
-            );
+          if (onApplyTimeline) {
+            for (const apply of pendingTimelineApplies) {
+              await onApplyTimeline(
+                apply.nodeId,
+                apply.dsl,
+                apply.requiresReadProof
+                  ? {
+                      actorClientType: "agent",
+                      ifMatch: apply.ifMatch,
+                    }
+                  : undefined,
+              );
+            }
           }
-        }
-      }, 0);
-      if (pendingCreates.length) void Promise.all(pendingCreates).then(applyPending).catch((error) => console.error("Canvas patch could not be applied", error));
+        }, 0);
+      if (pendingCreates.length)
+        void Promise.all(pendingCreates)
+          .then(applyPending)
+          .catch((error) =>
+            console.error("Canvas patch could not be applied", error),
+          );
       else applyPending();
     } else if (pendingCreates.length) {
-      void Promise.all(pendingCreates).catch((error) => console.error("Canvas creation failed", error));
+      void Promise.all(pendingCreates).catch((error) =>
+        console.error("Canvas creation failed", error),
+      );
     }
   }, [
     actorUserId,
@@ -2110,10 +2116,13 @@ function ChatbotCopilot({
     ],
   );
 
-  const forkCurrentRuntimeSession = useCallback((point?: AcpForkPoint) => {
-    if (!runtimeHistoryItem?.supportsSessionFork) return;
-    forkRuntimeSession(runtimeHistoryItem, point);
-  }, [forkRuntimeSession, runtimeHistoryItem]);
+  const forkCurrentRuntimeSession = useCallback(
+    (point?: AcpForkPoint) => {
+      if (!runtimeHistoryItem?.supportsSessionFork) return;
+      forkRuntimeSession(runtimeHistoryItem, point);
+    },
+    [forkRuntimeSession, runtimeHistoryItem],
+  );
 
   const handleStop = async () => {
     if (chatMode === "runtime") {
@@ -2704,7 +2713,7 @@ function ChatbotCopilot({
               data-copilot-launcher-placement={collapsedLauncherPlacement}
               className={
                 collapsedLauncherPlacement === "header"
-                  ? "fixed right-2 top-[calc(var(--clash-desktop-chrome-height,0px)+0.375rem)] z-50"
+                  ? "fixed right-[var(--clash-project-chrome-gutter,0.5rem)] top-[calc(var(--clash-desktop-chrome-height,0px)+(var(--clash-project-sidebar-header-height,2.5rem)-var(--clash-project-control-height,2rem))/2+var(--clash-control-gap,0.25rem))] z-50"
                   : "fixed bottom-[max(1rem,env(safe-area-inset-bottom))] right-[max(1rem,env(safe-area-inset-right))] z-50"
               }
               initial={{ opacity: 0, scale: 0.86, y: 8 }}
@@ -2719,30 +2728,32 @@ function ChatbotCopilot({
               whileHover={{ scale: 1.035, y: -1 }}
               whileTap={{ scale: 0.965 }}
             >
-              <CollapsibleTrigger asChild>
-                <IconButton
-                  label={t("copilot.panel.expand")}
-                  size={collapsedLauncherPlacement === "header" ? "sm" : "lg"}
-                  shape="rounded"
-                  icon={
-                    <AgentMotion
-                      state="idle"
-                      className={
-                        collapsedLauncherPlacement === "header"
-                          ? "h-6 w-6"
-                          : "h-16 w-16"
-                      }
-                    />
-                  }
-                  // Clears the iPhone home-indicator gesture zone with safe-area-inset-bottom
-                  // while keeping the same bottom-right launcher position on desktop.
-                  className={
-                    collapsedLauncherPlacement === "header"
-                      ? "clash-copilot-launcher clash-copilot-launcher--header h-8 min-h-8 w-8 min-w-8 rounded-lg bg-transparent hover:bg-transparent focus-visible:ring-offset-warm-page"
-                      : "clash-copilot-launcher h-20 min-h-20 w-20 min-w-20 rounded-[26px] bg-transparent hover:bg-transparent focus-visible:ring-offset-warm-page"
-                  }
-                />
-              </CollapsibleTrigger>
+              <Tooltip label={t("copilot.panel.expand")}>
+                <CollapsibleTrigger asChild>
+                  <IconButton
+                    label={t("copilot.panel.expand")}
+                    size={collapsedLauncherPlacement === "header" ? "sm" : "lg"}
+                    shape="rounded"
+                    icon={
+                      <AgentMotion
+                        state="idle"
+                        className={
+                          collapsedLauncherPlacement === "header"
+                            ? "clash-agent-motion--compact size-[calc(var(--clash-project-control-height,2rem)-var(--clash-control-gap,0.25rem))]"
+                            : "h-16 w-16"
+                        }
+                      />
+                    }
+                    // Clears the iPhone home-indicator gesture zone with safe-area-inset-bottom
+                    // while keeping the same bottom-right launcher position on desktop.
+                    className={
+                      collapsedLauncherPlacement === "header"
+                        ? "clash-copilot-launcher clash-copilot-launcher--header text-content-secondary"
+                        : "clash-copilot-launcher h-20 min-h-20 w-20 min-w-20 rounded-[26px] text-content-secondary"
+                    }
+                  />
+                </CollapsibleTrigger>
+              </Tooltip>
             </motion.div>
           )}
         </AnimatePresence>
@@ -2782,6 +2793,7 @@ function ChatbotCopilot({
               id="clash-copilot-panel"
               aria-label={t("copilot.panel.label")}
               aria-hidden={isCollapsed}
+              inert={isCollapsed}
               tabIndex={isMobile && !isCollapsed ? -1 : undefined}
               className={
                 isMobile
@@ -2814,13 +2826,7 @@ function ChatbotCopilot({
                     : COPILOT_PANEL_EXPANDED_DESKTOP_STATE
               }
               initial={false}
-              transition={
-                isResizing
-                  ? { duration: 0 }
-                  : isCollapsed && !isMobile
-                    ? COPILOT_PANEL_COLLAPSE_TRANSITION
-                    : COPILOT_PANEL_TRANSITION
-              }
+              transition={isResizing ? { duration: 0 } : panelTransition}
             >
               {/* Screen-reader-only heading: gives heading-nav rotor users
                     a landmark to jump to. Hidden visually because the panel
@@ -2839,12 +2845,12 @@ function ChatbotCopilot({
               )}
 
               <AnimatePresence>
-                {!isCollapsed && (
+                {
                   <motion.div
-                    initial={{ opacity: 0, y: 8, scale: 0.99 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 8, scale: 0.99 }}
-                    transition={COPILOT_PANEL_TRANSITION}
+                    initial={false}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0 }}
                     className="relative flex h-full min-w-0"
                   >
                     <div
@@ -3027,7 +3033,6 @@ function ChatbotCopilot({
                         </div>
                       </div>
 
-
                       {chatMode === "runtime" && (
                         <RuntimeSessionTimeline
                           className="flex-1 min-h-0"
@@ -3037,7 +3042,11 @@ function ChatbotCopilot({
                           mentionableNodes={mentionableNodes}
                           clashEntities={clashProjectEntities}
                           onOpenClashEntity={onOpenClashEntity}
-                          onForkAtMessage={clashRt.supportsMessageFork ? forkCurrentRuntimeSession : undefined}
+                          onForkAtMessage={
+                            clashRt.supportsMessageFork
+                              ? forkCurrentRuntimeSession
+                              : undefined
+                          }
                           onFork={
                             runtimeHistoryItem?.supportsSessionFork
                               ? () => forkCurrentRuntimeSession()
@@ -3047,10 +3056,9 @@ function ChatbotCopilot({
                             empty: (
                               <>
                                 {runtimeAlertMessage && (
-                                  <InlineAlert
-                                    tone="error"
-                                    title={t("copilot.errors.warningPrefix")}
-                                    message={runtimeAlertMessage}
+                                  <ServiceNotice
+                                    service="Agent runtime"
+                                    error={runtimeAlertMessage}
                                   />
                                 )}
                                 {selectedSessionHarnessAuthTitle &&
@@ -3692,7 +3700,7 @@ function ChatbotCopilot({
                       )}
                     </div>
                   </motion.div>
-                )}
+                }
               </AnimatePresence>
             </motion.aside>
           </SheetContent>
@@ -4631,6 +4639,7 @@ export function SessionConfigSelector({
             value: JSON.stringify({ type: "noop", configId: option.id }),
             label,
             description: option.currentValue ? "On" : "Off",
+            descriptionPlacement: "inline" as const,
             hasSubmenu: true,
             submenuLabel: label,
             submenuSections: [
@@ -4665,6 +4674,7 @@ export function SessionConfigSelector({
           value: JSON.stringify({ type: "noop", configId: option.id }),
           label,
           description: selected?.name ?? String(option.currentValue),
+          descriptionPlacement: "inline" as const,
           hasSubmenu: true,
           submenuLabel: label,
           submenuSections: [

@@ -405,7 +405,7 @@ export function DesktopAutoHideSidebar({
           aria-valuenow={numericExpandedWidth}
           onPointerDown={startResize}
           onKeyDown={resizeWithKeyboard}
-          className="pointer-events-auto absolute inset-y-0 -right-1 z-50 w-2 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring after:absolute after:right-1 after:top-1/2 after:h-11 after:w-px after:-translate-y-1/2 after:rounded-full after:bg-transparent hover:after:bg-content-disabled"
+          className="pointer-events-auto absolute inset-y-0 -right-1 z-50 w-2 cursor-col-resize touch-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring after:absolute after:right-1 after:top-1/2 after:h-11 after:w-px after:-translate-y-1/2 after:rounded-full after:bg-transparent hover:after:bg-content-disabled"
         />
       ) : null}
     </div>
@@ -470,7 +470,7 @@ export function DesktopAutoHideSidebar({
               // Keyboard-equivalent affordance for the otherwise invisible
               // Linear-style edge rail.
               "pointer-events-auto absolute inset-0 h-full w-full",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-black dark:focus-visible:ring-white",
+              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-black dark:focus-visible:ring-white",
               "motion-reduce:transition-none",
               recoveryZoneClassName,
             )}

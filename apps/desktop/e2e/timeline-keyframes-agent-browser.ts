@@ -183,11 +183,9 @@ async function main() {
       20_000,
     );
 
-    evalJson(agentBrowser, `(() => {
-      window.prompt = () => "Keyframe Motion";
-      return true;
-    })()`);
     agentBrowser(["click", 'button[aria-label="New Timeline"]']);
+    agentBrowser(["fill", '[role="dialog"] input', "Keyframe Motion"]);
+    agentBrowser(["click", '[role="dialog"] button[type="submit"]']);
     await waitForEval(
       agentBrowser,
       `!!document.querySelector('[data-testid="project-timeline-editor"]')`,

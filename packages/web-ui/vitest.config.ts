@@ -28,8 +28,8 @@ export default defineConfig({
         replacement: resolve(openmaCommonRoot, "src/session-ui/index.tsx"),
       },
       {
-        find: /^@clash\/action-sdk\/browser$/,
-        replacement: resolve(__dirname, "../action-sdk/src/browser.ts"),
+        find: /^@clash\/action-sdk\/(browser|ui)$/,
+        replacement: resolve(__dirname, "../action-sdk/src/$1.ts"),
       },
       {
         find: /^react$/,

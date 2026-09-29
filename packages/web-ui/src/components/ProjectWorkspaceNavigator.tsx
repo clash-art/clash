@@ -1,3 +1,4 @@
+import { ServiceNotice } from "./ServiceNotice";
 import {
   ArrowCounterClockwise,
   CaretRight,
@@ -73,6 +74,8 @@ import {
 } from "../features/assets/media-url";
 import { CanvasIcon } from "./ProjectSurfaceIcon";
 import type { ExecutablePluginViewDefinition } from "../hooks/useExecutablePluginViews";
+import { evidenceTimeRange, preferredAssetEvidence, useAssetEvidence } from "../features/assets/useAssetEvidence";
+import type { AssetEvidenceMatch } from "@clash/shared-types";
 
 export type ProjectWorkspaceSurface =
   | { kind: "canvas"; canvasId: string }
@@ -83,6 +86,7 @@ export type ProjectWorkspaceSurface =
   | {
       kind: "asset";
       assetId: string;
+      startMs?: number;
     }
   | { kind: "browser"; browserId: string };
 
@@ -107,6 +111,7 @@ export interface ProjectPluginView {
 }
 
 interface ProjectWorkspaceNavigatorProps {
+  projectId?: string;
   header?: ReactNode;
   footer?: ReactNode;
   canvases: ProjectCanvas[];
@@ -124,7 +129,7 @@ interface ProjectWorkspaceNavigatorProps {
   onSelectPluginView?: (view: ProjectPluginView) => void;
   onSelectTimeline: (timelineId: string) => void;
   onSelectDirectorStage?: (stageId: string) => void;
-  onSelectAsset: (assetId: string) => void;
+  onSelectAsset: (assetId: string, startMs?: number) => void;
   onSelectTextAsset?: (asset: ProjectTextAsset) => void;
   onSelectBrowser?: (browserId: string) => void;
   onCreateCanvas: () => void;
@@ -217,7 +222,7 @@ function ProjectFolderSection({
                 variant={null}
                 size={null}
                 shape={null}
-                className="flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center justify-start gap-1.5 rounded-md bg-transparent pl-2 pr-1 text-left shadow-none hover:bg-warm-hover focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
+                className="flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center justify-start gap-1.5 rounded-md bg-transparent pl-2 pr-1 text-left shadow-none hover:bg-warm-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50 focus-visible:ring-offset-0"
               >
                 <CaretRight
                   className={`h-3 w-3 shrink-0 text-stone-400 transition-transform ${open ? "rotate-90" : ""}`}
@@ -326,6 +331,7 @@ type ProjectSearchResult =
       id: string;
       label: string;
       searchText: string;
+      evidence?: AssetEvidenceMatch;
     }
   | {
       kind: "text-asset";
@@ -336,10 +342,10 @@ type ProjectSearchResult =
 
 function rowClass(active: boolean): string {
   return [
-    "group/menu-button relative grid grid-cols-[1.25rem_minmax(0,1fr)] [&>svg]:justify-self-center h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-[13px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+    "group/menu-button relative grid grid-cols-[1.25rem_minmax(0,1fr)] [&>svg]:justify-self-center h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-[13px] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50",
     active
-      ? "bg-brand/[0.09] font-semibold text-slate-950 dark:text-neutral-100"
-      : "text-stone-600 hover:bg-black/[0.035] hover:text-slate-950 dark:text-neutral-400 dark:hover:bg-white/[0.045] dark:hover:text-neutral-100",
+      ? "bg-warm-hover font-medium text-content-primary"
+      : "text-content-secondary hover:bg-warm-muted hover:text-content-primary",
   ].join(" ");
 }
 
@@ -469,6 +475,7 @@ function TimelineSidebarPreview({
 }
 
 export default function ProjectWorkspaceNavigator({
+  projectId,
   header,
   footer,
   canvases,
@@ -511,6 +518,7 @@ export default function ProjectWorkspaceNavigator({
   const [searchOpen, setSearchOpen] = useState(false);
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const evidence = useAssetEvidence({ projectId, query: searchQuery, enabled: searchOpen });
   const activeAssets = useMemo(
     () => assets.filter((asset) => asset.lifecycle.state === "active"),
     [assets],
@@ -535,6 +543,7 @@ export default function ProjectWorkspaceNavigator({
   });
   const searchResults = useMemo<ProjectSearchResult[]>(() => {
     const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+    const evidenceByAsset = preferredAssetEvidence(evidence.matches);
     const results: ProjectSearchResult[] = [
       ...canvases.map((canvas) => ({
         kind: "canvas" as const,
@@ -568,11 +577,13 @@ export default function ProjectWorkspaceNavigator({
       })),
       ...activeAssets.map((asset) => {
         const { label, path } = assetNavigationLabel(asset);
+        const match = evidenceByAsset.get(asset.id);
         return {
           kind: "asset" as const,
           id: asset.id,
           label,
-          searchText: [label, path, asset.id, asset.kind, "asset assets media"]
+          evidence: match,
+          searchText: [label, path, asset.id, asset.kind, "asset assets media", match?.text]
             .filter((value): value is string => typeof value === "string")
             .join(" "),
         };
@@ -586,9 +597,7 @@ export default function ProjectWorkspaceNavigator({
     ];
 
     if (!normalizedQuery) return results;
-    return results.filter((result) =>
-      result.searchText.toLocaleLowerCase().includes(normalizedQuery),
-    );
+    return results.filter((result) => (result.kind === "asset" && result.evidence) || result.searchText.toLocaleLowerCase().includes(normalizedQuery));
   }, [
     activeAssets,
     browsers,
@@ -598,6 +607,7 @@ export default function ProjectWorkspaceNavigator({
     searchQuery,
     textAssets,
     timelines,
+    evidence.matches,
   ]);
 
   const closeSearch = useCallback(() => {
@@ -617,7 +627,12 @@ export default function ProjectWorkspaceNavigator({
       if (kind === "browser") onSelectBrowser?.(id);
       if (kind === "timeline") onSelectTimeline(id);
       if (kind === "director-stage") onSelectDirectorStage?.(id);
-      if (kind === "asset") onSelectAsset(id);
+      if (kind === "asset") {
+        const result = searchResults.find((entry) => entry.kind === "asset" && entry.id === id);
+        const startMs = result?.kind === "asset" ? result.evidence?.startMs : undefined;
+        if (startMs === undefined) onSelectAsset(id);
+        else onSelectAsset(id, startMs);
+      }
       if (kind === "text-asset") {
         const textAsset = textAssets.find((candidate) => candidate.id === id);
         if (textAsset) onSelectTextAsset?.(textAsset);
@@ -635,16 +650,13 @@ export default function ProjectWorkspaceNavigator({
       onSelectTimeline,
       pluginViews,
       textAssets,
+      searchResults,
     ],
   );
 
   const searchStore = useComboboxStore({
     value: searchQuery,
     setValue: setSearchQuery,
-    setSelectedValue: (selectedValue) => {
-      if (typeof selectedValue === "string")
-        handleSearchSelection(selectedValue);
-    },
     focusLoop: true,
     focusWrap: true,
     orientation: "vertical",
@@ -1135,7 +1147,7 @@ export default function ProjectWorkspaceNavigator({
             onToggle={() => toggleFolder("timelines")}
             onAdd={onCreateTimeline}
           >
-            {timelineError ? <p role="alert" className="px-3 py-2 text-xs text-red-600">{timelineError}</p> : null}
+            {timelineError ? <div className="px-2 py-1"><ServiceNotice service="Timelines" error={timelineError} onRetry={() => window.location.reload()} /></div> : null}
             {timelines.map((timeline) => {
               const active =
                 surface.kind === "timeline" &&
@@ -1614,7 +1626,7 @@ export default function ProjectWorkspaceNavigator({
                         () => setLibraryPickerOpen(false),
                       );
                     }}
-                    className="group w-full rounded-xl border border-warm-border bg-warm-page/50 p-2 text-left transition-colors hover:border-brand/30 hover:bg-brand/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    className="group w-full rounded-xl border border-warm-border bg-warm-page/50 p-2 text-left transition-colors hover:border-brand/30 hover:bg-brand/[0.035] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50"
                   >
                     <span className="flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg bg-warm-muted">
                       <AssetThumbnail
@@ -1645,7 +1657,7 @@ export default function ProjectWorkspaceNavigator({
             </p>
             <Link
               to="/assets"
-              className="mt-4 inline-flex min-h-9 items-center justify-center rounded-lg border border-warm-border bg-warm-surface px-3 text-sm font-semibold text-content-primary shadow-sm hover:bg-warm-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              className="mt-4 inline-flex min-h-9 items-center justify-center rounded-lg border border-warm-border bg-warm-surface px-3 text-sm font-semibold text-content-primary shadow-sm hover:bg-warm-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50"
             >
               Open Global Assets
             </Link>
@@ -1682,12 +1694,15 @@ export default function ProjectWorkspaceNavigator({
             alwaysVisible
             className="max-h-80 overflow-y-auto p-1.5"
           >
+            {evidence.loading && <p role="status" className="px-3 py-2 text-xs text-content-muted">Searching analysis…</p>}
+            {evidence.error && <p role="alert" className="px-3 py-2 text-xs text-red-600">Analysis search: {evidence.error}</p>}
+            {evidence.truncated && <p role="status" className="px-3 py-2 text-xs text-content-secondary">Search results are incomplete. Refine your search.</p>}
             {searchResults.length === 0 ? (
               <div
                 role="status"
                 className="flex h-12 items-center justify-center text-xs text-stone-400"
               >
-                No results
+                {evidence.truncated ? "No results in this partial response" : "No results"}
               </div>
             ) : (
               searchResults.map((result) => {
@@ -1722,15 +1737,18 @@ export default function ProjectWorkspaceNavigator({
                     value={value}
                     focusOnHover
                     setValueOnClick={false}
+                    selectValueOnClick={false}
+                    onClick={() => handleSearchSelection(value)}
                     aria-label={`${result.label} ${kindLabel}`}
-                    className="flex h-10 w-full cursor-default items-center gap-3 rounded-md px-2.5 text-left text-[13px] text-slate-900 outline-none hover:bg-warm-muted data-[active-item]:bg-warm-muted focus-visible:bg-warm-muted dark:text-neutral-100"
+                    className="flex min-h-10 w-full cursor-default items-center gap-3 rounded-md px-2.5 py-2 text-left text-[13px] text-slate-900 outline-none hover:bg-warm-muted data-[active-item]:bg-warm-muted focus-visible:bg-warm-muted dark:text-neutral-100"
                   >
                     <ResultIcon
                       aria-hidden="true"
                       className="h-4 w-4 shrink-0 text-stone-400"
                     />
-                    <span className="min-w-0 flex-1 truncate font-medium">
-                      {result.label}
+                    <span className="min-w-0 flex-1 font-medium">
+                      <span className="block truncate">{result.label}</span>
+                      {result.kind === "asset" && result.evidence && <span className="block truncate text-[11px] font-normal text-content-secondary">{evidenceTimeRange(result.evidence)} {result.evidence.text}</span>}
                     </span>
                     <span className="text-[11px] text-stone-400">
                       {kindLabel}

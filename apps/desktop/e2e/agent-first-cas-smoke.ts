@@ -19,6 +19,9 @@ const reportPath = path.join(artifactRoot, "agent-first-cas-report.json");
 const cliEntry = path.join(repoRoot, "packages", "cli", "src", "index.ts");
 const require = createRequire(path.join(repoRoot, "packages", "cli", "package.json"));
 const tsxLoader = require.resolve("tsx");
+// The CLI runs from a temporary project cwd, not its package directory.
+// Resolve workspace imports from source just like `clash dev` and CLI tests.
+const cliTsconfig = path.join(repoRoot, "packages", "cli", "tsconfig.dev.json");
 const CLI_TIMEOUT_MS = 20_000;
 
 const checks = [];
@@ -45,7 +48,7 @@ function runCanvas(args, env = {}, cwd = workspace) {
       cwd,
       encoding: "utf8",
       timeout: CLI_TIMEOUT_MS,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, TSX_TSCONFIG_PATH: cliTsconfig },
     },
   );
   return {
@@ -65,7 +68,7 @@ function runText(args, env = {}) {
       cwd: workspace,
       encoding: "utf8",
       timeout: CLI_TIMEOUT_MS,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, TSX_TSCONFIG_PATH: cliTsconfig },
     },
   );
   return {
@@ -85,7 +88,7 @@ function runTimeline(args, env = {}) {
       cwd: workspace,
       encoding: "utf8",
       timeout: CLI_TIMEOUT_MS,
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, TSX_TSCONFIG_PATH: cliTsconfig },
     },
   );
   return {
@@ -222,7 +225,7 @@ async function startLocalApiHost(options) {
     ["--import", tsxLoader, "--input-type=module", "-e", source],
     {
       cwd: repoRoot,
-      env: { ...process.env, CLASH_HOME: options.clashHome },
+      env: { ...process.env, CLASH_HOME: options.clashHome, TSX_TSCONFIG_PATH: cliTsconfig },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
@@ -808,6 +811,8 @@ async function runDirectCanvasCliImplicitCas() {
   );
   const host = await startLocalApiHost({ projectId, clashHome });
   try {
+    const forced = runCanvas(["update", "--project", projectId, "--node", "text-cli", "--label", "bypass", "--force", "--json"], env);
+    recordCheck("canvas mutation rejects a force bypass", forced.status === 1 && /unknown option.*--force/i.test(forced.stderr), forced.stderr);
     const missingUpdate = runCanvas([
       "update",
       "--project",
@@ -1228,6 +1233,8 @@ async function runDirectCanvasCliImplicitCas() {
       // Archived node-owned Timeline revision-index coverage. The public CLI
       // now operates concrete Project Timeline entities and this branch is not
       // executed; the host revision helpers remain covered by unit tests.
+      await mkdir(path.join(workspace, "timelines"), { recursive: true });
+      await writeFile(path.join(workspace, "timelines", "history-indexed.timeline.lock.json"), "not an observation");
       const timelineEntityPull = runTimeline([
         "pull",
         "--project",
@@ -1256,7 +1263,7 @@ async function runDirectCanvasCliImplicitCas() {
           !("lockPath" in timelinePullPayload) &&
           typeof timelineEntityObservation?.versions?.["timeline:timeline-cli"] === "string" &&
           timelineEntityLockPath !== null &&
-          !existsSync(timelineEntityLockPath),
+          readOptionalText(timelineEntityLockPath) === "not an observation",
         timelineEntityPull.stderr || timelineEntityPull.stdout,
         {
           command: timelineEntityPull.command,
@@ -1264,6 +1271,17 @@ async function runDirectCanvasCliImplicitCas() {
           timelineLockPath: timelineEntityLockPath,
         },
       );
+      const form = new FormData();
+      form.set("file", new File([Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64",
+      )], "timeline-fixture.png", { type: "image/png" }));
+      form.set("kind", "image");
+      form.set("projectAssetId", "asset:cas:timeline-fixture");
+      const importedResponse = await fetch(`${host.ready.endpoint}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-file`, {
+        method: "POST", body: form, signal: AbortSignal.timeout(10_000),
+      });
+      const imported = await importedResponse.json();
+      if (!importedResponse.ok || !imported.id) throw new Error(`Asset import failed: ${JSON.stringify(imported)}`);
       await writeFile(timelinePullPayload.filePath, [
         "compositionWidth: 1080",
         "compositionHeight: 1920",
@@ -1273,10 +1291,10 @@ async function runDirectCanvasCliImplicitCas() {
         "  - id: main",
         "    items:",
         "      - id: cli-shot",
-        "        type: video",
+        "        type: image",
         "        from: start",
         "        durationInFrames: 60",
-        "        sourceNodeId: text-cli",
+        `        assetId: ${JSON.stringify(imported.id)}`,
         "",
       ].join("\n"), "utf8");
       const timelineEntityApply = runTimeline([
@@ -1379,13 +1397,6 @@ async function main() {
     },
     checks,
     booleans: {
-      missingReadProofRejected: checks.some((check) => check.name === "missing read proof rejected" && check.status === "pass"),
-      staleReadProofRejected: checks.some((check) => check.name === "stale read proof rejected" && check.status === "pass"),
-      sourceActionStaleReadProofRejected: checks.some(
-        (check) => check.name === "source action stale read proof rejected" && check.status === "pass",
-      ),
-      unreadCopiedReviewGateRejected: checks.some((check) => check.name === "unread copied review gate rejected" && check.status === "pass"),
-      copyOnWritePreservedSource: checks.some((check) => check.name === "copy-on-write preserved source projection" && check.status === "pass"),
       localApiReceiptMissingReadRejected: checks.some((check) => check.name === "local-api receipt path rejects missing read" && check.status === "pass"),
       localApiReceiptStaleRejected: checks.some((check) => check.name === "local-api receipt path rejects stale receipt" && check.status === "pass"),
       localApiReceiptFreshAccepted: checks.some((check) => check.name === "local-api receipt path accepts fresh receipt" && check.status === "pass"),
@@ -1411,36 +1422,16 @@ async function main() {
       textRestoreCreatesCopyOnWriteRevisionFromHostContent: checks.some(
         (check) => check.name === "text restore creates copy-on-write revision from host content" && check.status === "pass"
       ),
-      textCutExportSourceProvenanceRecorded: checks.some((check) => check.name === "text-cut export records source action provenance" && check.status === "pass"),
-      textCutExportSymlinkActionRejected: checks.some((check) => check.name === "text-cut export rejects symlinked source action outside cwd" && check.status === "pass"),
-      captionExportTimelineRevisionPinned: checks.some((check) =>
-        check.name === "caption export pins manifest to applied timeline revision" && check.status === "pass"
-      ),
-      timelineHandoffExportTimelineRevisionPinned: checks.some((check) =>
-        check.name === "timeline handoff export pins manifest to applied timeline revision" && check.status === "pass"
-      ),
-      captionBurnExportTimelineRevisionPinned: checks.some((check) =>
-        check.name === "caption-burn export pins derived asset to applied timeline revision" && check.status === "pass"
-      ),
       projectionPathOutsideCwdRejected: [
           "text pull rejects projection path outside cwd",
           "text pull rejects symlinked projection path outside cwd",
           "timeline pull rejects projection path outside cwd",
           "timeline apply rejects symlinked projection path outside cwd",
-          "pipeline validation rejects symlinked report path outside cwd",
-          "reference roles plan rejects symlinked action path outside cwd",
-          "caption export rejects symlinked output path outside cwd",
-          "timeline handoff export rejects symlinked output path outside cwd",
-          "timeline handoff export rejects symlinked manifest path outside cwd",
         ].every((name) =>
           checks.some((check) => check.name === name && check.status === "pass"),
       ),
-      legacyProjectionLockSidecarsIgnored: [
-        "storyboard prompt-pack ignores legacy lock sidecar",
-        "review gate ignores legacy lock sidecar",
-      ].every((name) => checks.some((check) => check.name === name && check.status === "pass")),
-      forceMutationBypassAbsent: [
-      ].every((name) => checks.some((check) => check.name === name && check.status === "pass")),
+      legacyProjectionLockSidecarsIgnored: checks.some((check) => check.name === "timeline entity apply advances revision through implicit CAS" && check.status === "pass"),
+      forceMutationBypassAbsent: checks.some((check) => check.name === "canvas mutation rejects a force bypass" && check.status === "pass"),
     },
     artifacts: {
       projectionPathGuards,

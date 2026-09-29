@@ -1,19 +1,26 @@
-import ReactMarkdown from "react-markdown";
-import { useTextDocumentRevision } from "../hooks/useTextDocumentRevision";
+import { DocumentRevisionContent } from "./DocumentRevisionContent";
 import { Button } from "./ui/button";
 
 export function TextDocumentReadSurface({
   projectId,
   reference,
+  documentKind,
+  status,
   label,
   onClose,
 }: {
   projectId: string;
   reference: unknown;
+  documentKind?: unknown;
+  status?: unknown;
   label: string;
   onClose: () => void;
 }) {
-  const { body, error } = useTextDocumentRevision(projectId, reference);
+  const analysis =
+    typeof documentKind === "string" &&
+    documentKind.startsWith("media.analysis.");
+  const pending = reference === undefined && status !== "failed";
+  const failed = reference === undefined && status === "failed";
   return (
     <section
       aria-label="Saved text result"
@@ -24,12 +31,18 @@ export function TextDocumentReadSurface({
         <h2 className="truncate font-display font-semibold">{label}</h2>
       </header>
       <div className="prose mx-auto w-full max-w-3xl flex-1 overflow-auto whitespace-pre-wrap p-8 text-content-primary">
-        {error ? (
-          <p role="alert">{error}</p>
-        ) : body === undefined ? (
-          <p role="status">Loading text…</p>
+        {failed ? (
+          <p role="alert">
+            {analysis ? "Analysis" : "Document generation"} failed. Inspect the
+            operation for details.
+          </p>
+        ) : pending ? (
+          <p role="status">{analysis ? "Analyzing…" : "Creating document…"}</p>
         ) : (
-          <ReactMarkdown>{body}</ReactMarkdown>
+          <DocumentRevisionContent
+            projectId={projectId}
+            reference={reference}
+          />
         )}
       </div>
     </section>

@@ -1,3 +1,6 @@
+import { createCloudLogin } from "./cloud-login.js";
+import { createCloudAccounts } from "./cloud-accounts.js";
+import { createHostPluginScopes } from "./host-plugin-scope.js";
 import { createLocalProjectCloudSync } from "./project-cloud-sync.js";
 import { localProjectSyncMetadata } from "./app.js";
 import { registerProjectRenderer } from "./project-renderer.js";
@@ -5,6 +8,7 @@ import { createStructuredLogger } from "@clash/shared-runtime/logging";
 import { createLocalProjectUpgrade } from "./local-project-upgrade.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import type { Socket } from "node:net";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -65,6 +69,7 @@ import { createExecutablePluginActionInvoker } from "./plugin-action-runtime.js"
 import {
   createCodexImagegenMarketplace,
   createOfficialPluginsMarketplace,
+  readEditablePluginPackage,
 } from "./bundled-plugins.js";
 import { selectMarketplaceFeed } from "./marketplace-feed.js";
 import {
@@ -74,7 +79,6 @@ import {
 import {
   activateOrUpdateHostExecutablePluginPackage,
   listHostExecutablePluginPackages,
-  readHostExecutablePluginPackage,
   removeHostExecutablePluginPackage,
   rollbackHostExecutablePluginPackage,
   validateHostExecutablePluginPackageContracts,
@@ -1361,6 +1365,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     socketPath: pluginHostSocketPath(process.env, clashHome),
   });
   let directPluginHost: ActionsHost | null = null;
+  const pluginScopes = createHostPluginScopes(createClashUserConfigStore(options.dataDir));
   const pluginExecutionClient = {
     async listCards() {
       return directPluginHost
@@ -1411,6 +1416,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       invocation: Parameters<PluginHostClient["invoke"]>[1],
       invocationOptions?: Parameters<PluginHostClient["invoke"]>[2],
     ) {
+      if (!await pluginScopes.allows(pluginId, invocation.projectId)) throw new Error(`Plugin ${pluginId} is not installed for this project.`);
       return directPluginHost
         ? directPluginHost.invoke(pluginId, invocation, invocationOptions)
         : pluginHostClient.invoke(pluginId, invocation, invocationOptions);
@@ -1727,18 +1733,20 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     );
   };
   const clashUserConfigStore = createClashUserConfigStore(options.dataDir);
-  const resolveCloudAdmission = async () => {
+  const cloudAccounts = createCloudAccounts(options.dataDir);
+  const cloudLogin=createCloudLogin({dataDir:options.dataDir});
+  const resolveCloudAdmission = async (projectId?: string) => {
     if (options.cloudAdmission) return options.cloudAdmission;
-    const config = await syncConfig.getPublicConfig();
-    const baseUrl = config.remote_loro.url;
-    return baseUrl ? createHttpCloudAdmissionClient({
-      baseUrl,
-      token: async () => {
-        const credentials = await clashUserConfigStore.getCredentials();
-        const value = process.env.CLASH_REMOTE_LORO_TOKEN ?? credentials.syncRemoteLoroToken ?? credentials.cliApiKey;
-        return typeof value === "string" ? value : undefined;
-      },
-    }) : undefined;
+    const admission=projectId?await syncConfig.getProjectCloudAdmission?.(projectId):null;
+    const selection=await cloudAccounts.status();
+    const config=await syncConfig.getPublicConfig();
+    const bound=admission&&admission.tenantId!=='pending'&&admission.status!=='local-only'?admission:undefined;
+    const selected=await createClashUserConfigStore(options.dataDir).getSection('cloud');
+    const baseUrl=bound?.syncBaseUrl??(selected?selection.serviceUrl:config.remote_loro.url);
+    if(!baseUrl)return undefined;
+    const token=await cloudAccounts.resolveToken(baseUrl,{env:process.env,expectedUserId:bound?.userId});
+    if(!token)return undefined;
+    return createHttpCloudAdmissionClient({baseUrl,token});
   };
   const mediaAnalysisConfig = createLocalMediaAnalysisConfigStore({
     dataDir: options.dataDir,
@@ -1784,6 +1792,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     syncConfig,
     publicAssetStorage,
     resolveCloudAdmission,
+    cloudLogin,
     ensureProjectSync: async (projectId) => {
       await projectCloudSync?.schedule(projectId);
     },
@@ -1903,10 +1912,17 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     uninstallMarketplaceSkill: (skillId) =>
       npxSkillsMarketplace.uninstall(skillId),
     marketplacePlugins,
-    installMarketplacePlugin: (packageId) =>
-      codexImagegen.available && packageId === codexImagegenPluginId
-        ? codexImagegenMarketplace.install(packageId)
-        : officialPluginsMarketplace.install(packageId),
+    getPluginInstallScope: (id) => pluginScopes.get(id),
+    pluginAvailableInProject: (id, projectId) => pluginScopes.allows(id, projectId),
+    installMarketplacePlugin: async (packageId, installation = { scope: "global" }) => {
+      const result = codexImagegen.available && packageId === codexImagegenPluginId
+        ? await codexImagegenMarketplace.install(packageId)
+        : await officialPluginsMarketplace.install(packageId);
+      const item = marketplacePlugins.find(item => item.packageId === packageId);
+      if (!item) throw new Error("Unknown marketplace package");
+      await pluginScopes.set(item.id, installation);
+      return result;
+    },
     uninstallMarketplacePlugin: (pluginId) =>
       codexImagegen.available && pluginId === codexImagegenPluginId
         ? codexImagegenMarketplace.uninstall(pluginId)
@@ -1918,12 +1934,15 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
           input as HostExecutablePluginPackage,
           actionsRoot,
         ),
-      activate: (input) =>
-        activateOrUpdateHostExecutablePluginPackage(
+      activate: async (input, installation) => {
+        const activated = await activateOrUpdateHostExecutablePluginPackage(
           input as HostExecutablePluginPackage,
           actionsRoot,
-        ),
-      read: (id) => readHostExecutablePluginPackage(actionsRoot, id),
+        );
+        if (installation) await pluginScopes.set(activated.id, installation);
+        return activated;
+      },
+      read: (id) => readEditablePluginPackage(actionsRoot, id),
       rollback: (id) => rollbackHostExecutablePluginPackage(actionsRoot, id),
       remove: (id) => removeHostExecutablePluginPackage(actionsRoot, id),
     },
@@ -2030,11 +2049,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       },
       write: metadata => cloudSyncMetadata.applyProjectSyncMetadata(metadata),
     },
-    token: async () => {
-      const credentials = await clashUserConfigStore.getCredentials();
-      const value = process.env.CLASH_REMOTE_LORO_TOKEN ?? credentials.syncRemoteLoroToken ?? credentials.cliApiKey;
-      return typeof value === "string" ? value : undefined;
-    },
+    token: (baseUrl,userId) => cloudAccounts.resolveToken(baseUrl,{env:process.env,expectedUserId:userId}),
   });
   await projectCloudSync.start();
   let resolveListening!: (server: ReturnType<typeof serve>) => void;
@@ -2103,6 +2118,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     async () => {
       configWatcherClosed = true;
       stopConfigWatcher();
+      cloudLogin.close();
       await projectCloudSync?.close();
       await Promise.all([
         assetRepresentations.close(),
@@ -2173,6 +2189,13 @@ function wrapServerCloseWithLifecycleCleanup(
   runDir: string | undefined,
 ): void {
   const originalClose = server.close.bind(server);
+  // HTTP closeAllConnections excludes upgraded sockets (Project sync and ACP).
+  // Keep ownership of the underlying connections until lifecycle writes finish.
+  const connections = new Set<Socket>();
+  server.on("connection", (socket: Socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+  });
   let cleanupPromise: Promise<void> | null = null;
   const cleanup = () => {
     if (cleanupPromise) return cleanupPromise;
@@ -2189,6 +2212,13 @@ function wrapServerCloseWithLifecycleCleanup(
   };
   server.close = ((callback?: (error?: Error) => void) => {
     const lifecycleCleanup = cleanup();
+    // Stop accepting work immediately, then release HTTP and upgraded sockets
+    // once replica and worker cleanup has finished. A browser holding
+    // one connection must not keep an obsolete Host alive indefinitely.
+    void lifecycleCleanup.then(() => {
+      if ("closeAllConnections" in server) server.closeAllConnections();
+      for (const socket of connections) socket.destroy();
+    });
     return originalClose((error?: Error) => {
       void lifecycleCleanup.finally(() => callback?.(error));
     });

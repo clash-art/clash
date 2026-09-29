@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,13 +37,12 @@ describe("npx skills marketplace", () => {
     try {
       const configStore = createClashUserConfigStore(join(home, "local-api"));
       const agentsDir = join(home, "agents");
-      await mkdir(join(agentsDir, "skills/sd25-pe"), { recursive: true });
-      await writeFile(join(agentsDir, "skills/sd25-pe/SKILL.md"), "test\n");
-      await writeFile(
-        join(agentsDir, ".skill-lock.json"),
-        JSON.stringify({ skills: { "sd25-pe": { source: "test" } } }),
-      );
-      const run = vi.fn().mockResolvedValue({ stdout: "" });
+      const run = vi.fn(async (_exe, _args, options) => {
+        const skillDir = join(options.cwd, ".agents/skills/sd25-pe");
+        await mkdir(skillDir, { recursive: true });
+        await writeFile(join(skillDir, "SKILL.md"), "test\n");
+        return { stdout: "" };
+      });
       const marketplace = createNpxSkillsMarketplace({
         registry,
         agentsDir,
@@ -132,17 +131,19 @@ describe("npx skills marketplace", () => {
         const marketplace = createNpxSkillsMarketplace({
           registry: { skills: [picked] },
           run,
+          agentsDir: join(pluginRoot, "installed-agents"),
           builtinPluginRoot: () => pluginRoot,
         });
         expect(marketplace.skills).toEqual([expect.objectContaining(picked)]);
         await marketplace.install(picked.id);
-        expect(run).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.arrayContaining(["add", skillPath, "--skill", skillName]),
-        );
+        expect(await readFile(join(pluginRoot, "installed-agents", "skills", skillName, "SKILL.md"), "utf8")).toContain("Test subject views");
+        expect(await marketplace.listInstalled()).toEqual([expect.objectContaining({ skillId: picked.id })]);
+        expect(run).not.toHaveBeenCalled();
+        await marketplace.uninstall(picked.id);
+        expect(await marketplace.listInstalled()).toEqual([]);
         await rm(join(skillPath, "SKILL.md"));
         await expect(marketplace.install(picked.id)).rejects.toThrow();
-        expect(run).toHaveBeenCalledTimes(1);
+        expect(run).not.toHaveBeenCalled();
       } finally {
         await rm(pluginRoot, { recursive: true, force: true });
       }

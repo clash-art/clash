@@ -1,0 +1,11 @@
+{
+  "summary": "PostgreSQL deployment migrations, separate from historical D1 schema. No foreign keys. Apply versioned SQL once through a migration runner; covers admission, tokens, replication log/outbox, checkpoints and batch idempotency.",
+  "key_files": {
+    "0001_project_admission.sql": "Tenant, membership, project and admission tables with PostgreSQL timestamps.",
+    "0002_api_tokens.sql": "Node control-plane API-token hash authority; no browser sessions or identity provider integration.",
+    "0003_replica_log.sql": "Per-project committed cursors, binary updates and a lease-based PG outbox queue. Durable replay retained independently of notification acknowledgement.",
+    "0004_replica_checkpoint.sql": "Full Loro binary snapshot plus covered durable cursor. Independent of notification queue lifecycle; retention remains deferred.",
+    "0005_replica_batch.sql": "Project/batch payload fingerprint for atomic protocol retries; retained with event history.",
+    "0012_project_resources.sql": "Project-scoped immutable Resource registry; admitted with Loro Asset facts in one PG transaction, no foreign keys or duplicate Asset lifecycle."
+  }
+}

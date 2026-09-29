@@ -2,13 +2,15 @@ import { sourceContains, sourceMatches } from "../../../packages/gui/test-suppor
 import { describe, expect, it } from "vitest";
 import {
   ensurePackagedMediaBinariesExecutable,
+  stageBuiltinClashPlugin,
   packagedRuntimeArtifacts,
   resolveNpmInvocation,
 } from "./prepare-clash-cli.ts";
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 describe("prepare packaged Clash CLI", () => {
   it("only stages the runtime built by the root dependency graph", async () => {
@@ -93,4 +95,42 @@ describe("prepare packaged Clash CLI", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
+
+it("stages the canonical plugin manifest and skill content beside the flattened host", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "clash-plugin-payload-"));
+  try {
+    const source = path.join(root, "source");
+    const output = path.join(root, "runtime");
+    await mkdir(path.join(source, ".codex-plugin"), { recursive: true });
+    await mkdir(path.join(source, "skills", "clash"), { recursive: true });
+    const manifest = JSON.stringify({ name: "clash", skills: "./skills/", mcpServers: "./.mcp.json" });
+    await writeFile(path.join(source, ".codex-plugin", "plugin.json"), manifest);
+    await writeFile(path.join(source, ".mcp.json"), JSON.stringify({ mcpServers: {} }));
+    await writeFile(path.join(source, "package.json"), JSON.stringify({ type: "module" }));
+    await writeFile(path.join(source, "skills", "clash", "SKILL.md"), "Use the local Host.");
+    await stageBuiltinClashPlugin(source, output);
+    expect(await readFile(path.join(output, ".codex-plugin", "plugin.json"), "utf8")).toBe(manifest);
+    expect(await readFile(path.join(output, "skills", "clash", "SKILL.md"), "utf8")).toBe("Use the local Host.");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("launches the declared MCP entrypoint from the flattened Desktop payload", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "clash-packaged-mcp-"));
+  try {
+    const source = path.resolve(import.meta.dirname, "../../../plugins/clash");
+    // The runtime build is staged before plugin metadata. This probe occupies
+    // the same entrypoint as the captured installed payload.
+    await writeFile(path.join(root, "dispatcher.js"), "import process from 'node:process'; console.log(JSON.stringify(process.argv.slice(2)))");
+    await stageBuiltinClashPlugin(source, root);
+    const manifest = JSON.parse(await readFile(path.join(root, ".codex-plugin/plugin.json"), "utf8"));
+    const config = JSON.parse(await readFile(path.resolve(root, manifest.mcpServers), "utf8"));
+    const server = config.mcpServers.clash;
+    // No syntax-detection fallback: the distributed package must carry the ESM
+    // scope its real dispatcher was compiled for, independent of its parent cwd.
+    const output = execFileSync(process.execPath, ["--no-experimental-detect-module", ...server.args], {
+      cwd: path.resolve(root, server.cwd), encoding: "utf8",
+    });
+    expect(JSON.parse(output)).toEqual(["mcp"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -1,0 +1,41 @@
+{
+  "name": "@clash/api-node",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "scripts": {
+    "dev": "tsx watch --tsconfig tsconfig.check.json src/server.ts",
+    "start": "tsx --tsconfig tsconfig.check.json src/server.ts",
+    "migrate": "node src/migrate.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json",
+    "worker:outbox": "node src/outbox-worker.ts",
+    "test:cluster": "node scripts/test-cluster.ts"
+  },
+  "dependencies": {
+    "@clash/asset-sdk": "workspace:*",
+    "@clash/replica": "workspace:*",
+    "@clash/shared-runtime": "workspace:*",
+    "@clash/shared-types": "workspace:*",
+    "@hono/node-server": "^1.13.0",
+    "better-auth": "1.6.23",
+    "bullmq": "6.3.6",
+    "hono": "^4.7.10",
+    "loro-crdt": "1.16.3",
+    "pg": "^8.16.3",
+    "tsx": "^4.0.0"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@loro-dev/streams-client": "0.7.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.2",
+    "@clash/local-api": "workspace:*",
+    "@clash-plugin/remotion": "workspace:*"
+  }
+}

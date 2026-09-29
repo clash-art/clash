@@ -260,18 +260,30 @@ export class LoroProtocolServerSession {
     message: DocUpdateFragmentHeader,
   ): Promise<void> {
     const previous = this.fragments.get(message.batchId);
-    if (previous) clearTimeout(previous.timeout);
+    if (previous) {
+      clearTimeout(previous.timeout);
+      this.fragments.delete(message.batchId);
+    }
+    const reservedBytes = [...this.fragments.values()].reduce(
+      (total, batch) => total + batch.header.totalSizeBytes,
+      0,
+    );
     if (
       message.fragmentCount <= 0 ||
+      message.fragmentCount > 4096 ||
+      message.fragmentCount > message.totalSizeBytes ||
+      this.fragments.size >= 64 ||
       message.totalSizeBytes <= 0 ||
-      message.totalSizeBytes > MAX_FRAGMENT_BATCH_BYTES
+      reservedBytes + message.totalSizeBytes > MAX_FRAGMENT_BATCH_BYTES
     ) {
       await this.ack(message.batchId, UpdateStatusCode.PayloadTooLarge);
       return;
     }
     const timeout = setTimeout(() => {
       this.fragments.delete(message.batchId);
-      void this.ack(message.batchId, UpdateStatusCode.FragmentTimeout);
+      void this.ack(message.batchId, UpdateStatusCode.FragmentTimeout).catch(
+        () => {},
+      );
     }, FRAGMENT_TIMEOUT_MS);
     this.fragments.set(message.batchId, {
       header: message,
@@ -287,6 +299,20 @@ export class LoroProtocolServerSession {
       message.index < 0 ||
       message.index >= batch.header.fragmentCount
     ) {
+      await this.ack(message.batchId, UpdateStatusCode.InvalidUpdate);
+      return;
+    }
+    const bufferedBytes = [...batch.fragments.entries()].reduce(
+      (total, [index, fragment]) =>
+        total + (index === message.index ? 0 : fragment.byteLength),
+      message.fragment.byteLength,
+    );
+    if (
+      !message.fragment.byteLength ||
+      bufferedBytes > batch.header.totalSizeBytes
+    ) {
+      clearTimeout(batch.timeout);
+      this.fragments.delete(message.batchId);
       await this.ack(message.batchId, UpdateStatusCode.InvalidUpdate);
       return;
     }
@@ -363,7 +389,11 @@ export class LoroProtocolClientSession {
 
   join(auth = new Uint8Array()): void {
     if (this.recoveryRequired) {
-      this.options.onError?.(new Error("Recover the rejected local replica before starting a new sync session."));
+      this.options.onError?.(
+        new Error(
+          "Recover the rejected local replica before starting a new sync session.",
+        ),
+      );
       return;
     }
     this.joined = false;

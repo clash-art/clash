@@ -3,10 +3,12 @@ import { isDeepStrictEqual } from "node:util";
 import type { LoroDoc } from "loro-crdt";
 
 import {
+  Canvas,
   commitActionRunOutcome,
   createProjectDocumentAsset,
   ensureActionRunRequest,
   ensureDocumentAttachment,
+  getDocumentKindDefinition,
   ensureOutputCommit,
   markActionRunStarted,
   readOutputCommit,
@@ -22,6 +24,7 @@ import {
   type ProjectActionRun,
   type ProjectDocumentAsset,
   type ProjectGeneratorMutationError,
+  type GeneratorRunCanvasPlacement,
 } from "@clash/shared-types";
 
 import {
@@ -64,6 +67,7 @@ export interface LocalGeneratorRunBridge {
     entries: readonly {
       request: ActionRunRequest;
       command: LocalDurableRunCreateCommand;
+      canvasPlacement?: GeneratorRunCanvasPlacement;
     }[];
     checkpoint: () => Promise<void>;
   }): Promise<ProjectActionRun[]>;
@@ -113,6 +117,18 @@ export interface LocalGeneratorRunBridge {
 
 function generatorMutationFailure(error: ProjectGeneratorMutationError): never {
   throw new Error(`${error.code}: ${error.message}`);
+}
+
+function refreshCanvasOutputs(doc: LoroDoc, actionRunId: string): boolean {
+  const canvases = new Set<string>();
+  for (const value of doc.getMap("nodes").values()) {
+    const node = value as {canvasId?: string; data?: {actionRunId?: string; generatorOutputSlot?: string}};
+    if (node.data?.actionRunId === actionRunId && node.data.generatorOutputSlot)
+      canvases.add(node.canvasId ?? "main");
+  }
+  let changed = false;
+  for (const canvasId of canvases) changed = new Canvas(doc,()=>{},canvasId).refreshGeneratorRun(actionRunId) || changed;
+  return changed;
 }
 
 function completeSingleOutputRun(
@@ -224,6 +240,24 @@ function applyFailure(
   };
 }
 
+function attachDocumentToSources(doc: LoroDoc, revision: DocumentAssetRevision, outputSlot: string): boolean {
+  const targets = getDocumentKindDefinition(revision.documentKind, revision.schemaVersion)?.allowedAttachmentTargets;
+  if (!targets?.includes("project-asset")) return false;
+  let changed = false;
+  for (const ref of revision.sourceRefs) {
+    if (!("kind" in ref.target) || ref.target.kind !== "media") continue;
+    const attachment = ensureDocumentAttachment(doc, {
+      id: `attachment:${revision.id}:${ref.target.projectAssetId}`,
+      target: { kind: "project-asset", projectAssetId: ref.target.projectAssetId },
+      slot: outputSlot,
+      document: { kind: "document", documentAssetId: revision.documentAssetId, revisionId: revision.id },
+    });
+    if (!attachment.ok) throw new Error(`${attachment.error.code}: ${attachment.error.message}`);
+    changed ||= attachment.changed;
+  }
+  return changed;
+}
+
 function applyDocumentSuccess(
   doc: LoroDoc,
   input: {
@@ -270,13 +304,14 @@ function applyDocumentSuccess(
         "The existing Generator Document output winner is missing its immutable revision.",
       );
     }
+    const attachmentChanged = attachDocumentToSources(doc, revision, input.outputSlot);
     const completed = completeSingleOutputRun(doc, run);
     return {
       asset,
       revision,
       commit: existingCommit,
       run: completed.run,
-      changed: completed.changed,
+      changed: attachmentChanged || completed.changed,
     };
   }
 
@@ -298,27 +333,7 @@ function applyDocumentSuccess(
     resolveOutputCommitAssetType,
   );
   if (!output.ok) generatorMutationFailure(output.error);
-  let attachmentChanged = false;
-  for (const ref of input.revision.sourceRefs) {
-    if (!("kind" in ref.target) || ref.target.kind !== "media") continue;
-    const attachment = ensureDocumentAttachment(doc, {
-      id: `attachment:${input.revision.id}:${ref.target.projectAssetId}`,
-      target: {
-        kind: "project-asset",
-        projectAssetId: ref.target.projectAssetId,
-      },
-      slot: input.outputSlot,
-      document: {
-        kind: "document",
-        documentAssetId: input.revision.documentAssetId,
-        revisionId: input.revision.id,
-      },
-    });
-    if (!attachment.ok) {
-      throw new Error(`${attachment.error.code}: ${attachment.error.message}`);
-    }
-    attachmentChanged ||= attachment.changed;
-  }
+  const attachmentChanged = attachDocumentToSources(doc, input.revision, input.outputSlot);
   const completed = completeSingleOutputRun(doc, run);
   return {
     asset: document.asset,
@@ -361,10 +376,12 @@ export function createLocalGeneratorRunBridge(options: {
       // The fork validates the complete public write set, including duplicate
       // identities within this batch, before either durable authority changes.
       const validationDoc = input.doc.fork();
+      try {
       for (const entry of input.entries) {
         validatePair(entry.request, entry.command);
         const requested = ensureActionRunRequest(validationDoc, entry.request);
         if (!requested.ok) generatorMutationFailure(requested.error);
+        if (entry.canvasPlacement) new Canvas(validationDoc,()=>{},entry.canvasPlacement.canvasId).placeGeneratorRun(entry.request.actionRunId,entry.canvasPlacement);
         if (requested.run.status === "succeeded" || requested.run.status === "failed") continue;
         const existing = await options.journal.load({ actionRunId: entry.command.actionRunId, outputSlot: entry.command.outputSlot });
         if (existing) {
@@ -374,12 +391,14 @@ export function createLocalGeneratorRunBridge(options: {
         }
       }
 
+      } finally { validationDoc.free(); }
       let publicChanged = false;
       const admitted: Array<{ request: ActionRunRequest; command: LocalDurableRunCreateCommand }> = [];
       for (const entry of input.entries) {
         const requested = ensureActionRunRequest(input.doc, entry.request);
         if (!requested.ok) generatorMutationFailure(requested.error);
         publicChanged ||= requested.changed;
+        if (entry.canvasPlacement) publicChanged = new Canvas(input.doc,()=>{},entry.canvasPlacement.canvasId).placeGeneratorRun(entry.request.actionRunId,entry.canvasPlacement) || publicChanged;
         if (requested.run.status !== "succeeded" && requested.run.status !== "failed") admitted.push(entry);
       }
       if (publicChanged) await input.checkpoint();
@@ -429,6 +448,7 @@ export function createLocalGeneratorRunBridge(options: {
       // mutation and cannot strand a prefix on a contract conflict.
       applyMediaSuccess(input.doc.fork(), input);
       const published = applyMediaSuccess(input.doc, input);
+      refreshCanvasOutputs(input.doc,input.actionRunId);
       await input.checkpoint();
       return published;
     },
@@ -456,12 +476,14 @@ export function createLocalGeneratorRunBridge(options: {
       };
       apply(input.doc.fork());
       const published = apply(input.doc);
-      if (published.changed) await input.checkpoint();
+      const canvasChanged = refreshCanvasOutputs(input.doc,input.actionRunId);
+      if (published.changed || canvasChanged) await input.checkpoint();
       return published;
     },
     async publishDocumentSuccess(input) {
       applyDocumentSuccess(input.doc.fork(), input);
       const published = applyDocumentSuccess(input.doc, input);
+      refreshCanvasOutputs(input.doc,input.actionRunId);
       await input.checkpoint();
       return published;
     },
@@ -482,6 +504,7 @@ export function createLocalGeneratorRunBridge(options: {
     async publishFailure(input) {
       applyFailure(input.doc.fork(), input.actionRunId);
       const published = applyFailure(input.doc, input.actionRunId);
+      refreshCanvasOutputs(input.doc,input.actionRunId);
       await input.checkpoint();
       return published;
     },

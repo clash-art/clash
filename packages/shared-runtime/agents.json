@@ -1,6 +1,11 @@
 {
   "description": "Runtime clients and execution helpers shared by Clash product surfaces.",
   "modules": {
+    "src/workspace-init.ts": "Preserves the canonical directory marker and optionally registers its identity through the caller's Host request. Public CLI/MCP supply that request; offline fixtures may prepare markers only. Registration failures retain identity for idempotent retry; conflicting markers are never rebound.",
+    "src/project-content-client.ts": "Shared list/search/read transport for Project content: GET/POST the scoped content route, then read existing Media or exact Document revision authorities using returned refs. Validates bounded query/result contracts without introducing another reference format.",
+    "src/action-client.ts": "Operation-oriented discovery, invocation and bounded wait shared by CLI/MCP; reuse native Generator/Run/output contracts, project scope and frozen input refs. A timeout retains the same Run identity rather than resubmitting.",
+    "src/asset-evidence-client.ts": "One-call external evidence recording through existing Document create/read/attach APIs; stable record ids repair attachment retries, while changed content is rejected. Detail is never executed.",
+    "src/asset-search-client.ts": "Browser-safe Project content search adapter plus the shared Asset-evidence projection used by the compatibility Host route; retains exact Document revisions and times only for the actual source Asset.",
     "src/browser.ts": "Browser/Worker exports; never import filesystem, daemon discovery, or process helpers here.",
     "src/project-host-http.ts": "Single HTTP transport for existing project Host commands. Browser callers inject their runtime request; Node callers supply the discovered endpoint.",
     "src/project-host-client.ts": "Node workspace-marker and Host endpoint resolution, reusing project-host-http transport.",
@@ -14,6 +19,18 @@
     "src/project-cloud-sync.ts": "Platform-neutral phased Project synchronization with monotonic admission-version CAS. New writes/revocation cancel stale completion; a ready record is rechecked on reconciliation. Exposed via the narrow project-cloud-sync subpath.",
     "src/minimax-executor.ts": "Portable MiniMax submit/poll execution, shared by executable plugin and hosted adapter through a narrow subpath. No Node Buffer or credentials persistence. Provider failures come from action-sdk/executable-failure; the SDK Node root is not a portable dependency.",
     "src/gemini-omni.ts": "Google Interactions and Files one-request primitives; pending file processing returns control to the durable owner.",
-    "src/provider-browser-boundary.test.ts": "Bundles portable Provider sources and the Action SDK executable-failure subpath for browser, executes HTTP failure classification without Node globals, and verifies narrow/root class identity and published subpath resolution."
+    "src/provider-browser-boundary.test.ts": "Bundles portable Provider sources and the Action SDK executable-failure subpath for browser, executes HTTP failure classification without Node globals, and verifies narrow/root class identity and published subpath resolution.",
+    "src/project-authorization.ts": "Backend-neutral Project transport authentication and connection revalidation. D1/PostgreSQL supply authority records; signature verification and session resolution are injected trusted adapters. Narrow export only; no Node or Cloudflare dependencies.",
+    "src/project-authorization-postgres.ts": "PostgreSQL authority-record adapter via injected query port. PostgreSQL timestamptz becomes policy milliseconds. The host owns pooling/migrations; this is not a complete Node cloud server.",
+    "src/project-cloud-admission.ts": "Portable admission validation and atomic persistence port, shared by D1 and PostgreSQL.",
+    "src/project-cloud-admission-postgres.ts": "PostgreSQL admission persistence with a host-owned pinned transaction; owner/tenant arbitration and rollback.",
+    "src/cloud-run-coordinator.ts": "Shared cloud owner coordinator over DurableRunEngine, used by CF and Node; frozen journal-first creation and owner checks.",
+    "src/cloud-run-journal.ts": "Platform-neutral cloud journal record validation, serialization, frozen-field comparison and recovery scheduling; D1 and PG supply persistence.",
+    "src/hosted-generation.ts": "Portable hosted generation admission, frozen route/input validation, journal-before-schedule, retry policy, access/claim checks and lifecycle hooks. No CF/Node runtime imports.",
+    "src/generation-params.ts": "Existing hosted generation wire contract shared across adapters; historical R2-named fields remain wire compatibility, not a requirement to emulate R2.",
+    "src/generator-contract.ts": "Node-side Generator schema validation shared by Host adapters; no filesystem or database authority.",
+    "src/timeline-generator-product.ts": "Shared Timeline Generator operations over Project Loro and the installed definition. Canvas-owned create/advance/attach/copy ensure consumed media placements through Canvas; reference edges derive from native revision inputs rather than legacy Timeline bindings. Local Host compatibility exports preserve existing callers.",
+    "src/executable-plugin-schema-hash.ts": "Canonical plugin schema identity shared by Local Host and Node contract loading; preserves existing package hashing including all contributions.",
+    "src/local-daemon.ts": "Single-writer detached Host bootstrap and upgrade detection. Runtime fingerprints include adjacent immutable bundled-plugin payloads and the staged runtime-dependencies.sha256 identity because imported modules remain cached until the Host restarts."
   }
 }

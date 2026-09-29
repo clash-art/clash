@@ -56,8 +56,8 @@ test("CLI keeps the browser authorization origin separate from the API origin", 
   assert.equal(typeof auth.resolveCliBrowserOrigin, "function");
   if (!auth.resolveCliBrowserOrigin) return;
   assert.equal(
-    auth.resolveCliBrowserOrigin("https://api.clash.video", {}),
-    "https://clash.video",
+    auth.resolveCliBrowserOrigin("https://api.clash.art", {}),
+    "https://clash.art",
   );
   assert.equal(
     auth.resolveCliBrowserOrigin("http://127.0.0.1:8789", {
@@ -90,17 +90,17 @@ test("CLI binds loopback before opening the browser, validates state, then excha
   }) as typeof fetch;
 
   const result = await auth.runCliLogin({
-    serverUrl: "https://api.clash.video",
-    browserOrigin: "https://clash.video",
+    serverUrl: "https://api.clash.art",
+    browserOrigin: "https://clash.art",
     timeoutMs: 5_000,
     fetchImpl,
-    loadConfig: () => ({ serverUrl: "https://api.clash.video" }),
+    loadConfig: () => ({ serverUrl: "https://api.clash.art" }),
     saveConfig: (config) => saved.push(config),
     log: () => {},
     openBrowser: async (target) => {
       authorizationUrl = target;
       const authorization = new URL(target);
-      assert.equal(authorization.origin, "https://clash.video");
+      assert.equal(authorization.origin, "https://clash.art");
       assert.equal(authorization.pathname, "/auth/cli");
       assert.equal(authorization.searchParams.get("response_type"), "code");
       assert.equal(authorization.searchParams.get("client_id"), "clash-cli");
@@ -145,7 +145,7 @@ test("CLI binds loopback before opening the browser, validates state, then excha
   assert.equal(result.authorizationUrl, authorizationUrl);
   assert.equal(
     tokenRequest?.url,
-    "https://api.clash.video/api/v1/cli-auth/token",
+    "https://api.clash.art/api/v1/cli-auth/token",
   );
   assert.equal(tokenRequest?.body.get("grant_type"), "authorization_code");
   assert.equal(tokenRequest?.body.get("code"), "one_time_code");

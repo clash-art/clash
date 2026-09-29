@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useReducer, ReactNode } from 'react';
+import { timelineOccupancyIssues } from '@clash/shared-types';
+import { getItemAssetDurationInFrames } from '../utils/itemRefs';
 import type {
   CaptionWordReference,
   EditorState,
@@ -476,7 +478,50 @@ function unhandledEditorAction(action: never): never {
 // Reducer function — exported for unit tests; in app code consumers should
 // dispatch through useEditorDispatch and let the provider drive it.
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
+  const next = applyEditorAction(state, action);
+  if (next.tracks === state.tracks) return next;
+  // Playback, zoom and appearance edits never scan clip geometry. DnD already
+  // resolves collisions; this also protects direct inserts and numeric edits.
+  if (action.type === 'UPDATE_ITEM' && !('from' in action.payload.updates) && !('durationInFrames' in action.payload.updates)) return next;
+  const changedTracks = next.tracks.filter(track => !state.tracks.includes(track));
+  return timelineOccupancyIssues({ tracks: changedTracks }).length ? state : next;
+}
+
+function applyEditorAction(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
+    case 'ROLL_EDIT': {
+      const { trackId, leftItemId, rightItemId, boundaryFrame } = action.payload;
+      const track = state.tracks.find(candidate => candidate.id === trackId);
+      const left = track?.items.find(item => item.id === leftItemId);
+      const right = track?.items.find(item => item.id === rightItemId);
+      if (!left || !right || !Number.isFinite(boundaryFrame) || left.from + left.durationInFrames !== right.from) return state;
+      const leftMedia = left.type === 'video' || left.type === 'audio';
+      const rightMedia = right.type === 'video' || right.type === 'audio';
+      const rightOffset = rightMedia ? right.sourceStartInFrames ?? 0 : 0;
+      const leftSourceEnd = leftMedia ? getItemAssetDurationInFrames(left, state.assets, state.fps) : undefined;
+      const min = Math.max(left.from + 1, rightMedia ? right.from - rightOffset : 0);
+      const max = Math.min(right.from + right.durationInFrames - 1,
+        leftSourceEnd === undefined ? Infinity : left.from + leftSourceEnd - (leftMedia ? left.sourceStartInFrames ?? 0 : 0));
+      if (min > max) return state;
+      const boundary = Math.max(min, Math.min(max, Math.round(boundaryFrame)));
+      if (boundary === right.from) return state;
+      // Validate only the completed edit. Either intermediate update can overlap
+      // its neighbor; neither intermediate state is published or enters history.
+      let next = applyEditorAction(state, { type: 'UPDATE_ITEM', payload: { trackId, itemId: left.id,
+        updates: { durationInFrames: boundary - left.from } } });
+      next = applyEditorAction(next, { type: 'UPDATE_ITEM', payload: { trackId, itemId: right.id,
+        updates: { from: boundary, durationInFrames: right.from + right.durationInFrames - boundary,
+          ...(rightMedia ? { sourceStartInFrames: rightOffset + boundary - right.from } : {}) } } });
+      for (const candidateTrack of next.tracks) {
+        for (const item of candidateTrack.items) {
+          if (item.type !== 'transition' || item.fromItemId !== left.id || item.toItemId !== right.id) continue;
+          const duration = Math.min(item.durationInFrames, (boundary - left.from) * 2, (right.from + right.durationInFrames - boundary) * 2);
+          next = applyEditorAction(next, { type: 'UPDATE_ITEM', payload: { trackId: candidateTrack.id, itemId: item.id,
+            updates: { from: boundary - Math.floor(duration / 2), durationInFrames: duration } } });
+        }
+      }
+      return next;
+    }
     case 'ADD_TRACK':
       return {
         ...state,
@@ -1015,6 +1060,7 @@ const TIMELINE_HISTORY_ACTIONS = new Set<EditorAction['type']>([
   'REORDER_TRACKS',
   'ADD_ITEM',
   'MOVE_ITEM',
+  'ROLL_EDIT',
   'REMOVE_ITEM',
   'UPDATE_ITEM',
   'SPLIT_ITEM',
@@ -1182,7 +1228,7 @@ export function EditorProvider({ children, initialState: providedInitialState, o
 
   // Legacy onStateChange support - prefer using stateRef in Editor component instead
   // This still has some overhead, but much less than before (only runs on persistable changes)
-  const prevPersistableRef = React.useRef<string | null>(null);
+  const prevPersistableRef = React.useRef<{ content: string; zoom: number } | null>(null);
   const stateRef = React.useRef(state);
   const currentFrameRef = React.useRef(state.currentFrame);
   const playingRef = React.useRef(state.playing);
@@ -1269,15 +1315,24 @@ export function EditorProvider({ children, initialState: providedInitialState, o
     [dispatch, historyState.future.length, historyState.groupChanged, historyState.past.length],
   );
 
-  React.useEffect(() => {
-    if (!onStateChange) return;
+  // Zoom changes frequently without changing any authored content. Retain the
+  // content comparison across those changes instead of traversing every clip
+  // and media payload again for each wheel tick.
+  const observesState = Boolean(onStateChange);
+  const persistableContent = React.useMemo(() => observesState
+    ? JSON.stringify({ tracks, primaryTrackId, compositionWidth, compositionHeight, fps, durationInFrames, assets, assetTranscripts })
+    : null,
+  [observesState, tracks, primaryTrackId, compositionWidth, compositionHeight, fps, durationInFrames, assets, assetTranscripts]);
 
-    const persistableJson = JSON.stringify({ tracks, primaryTrackId, compositionWidth, compositionHeight, fps, durationInFrames, assets, assetTranscripts, zoom });
-    if (prevPersistableRef.current !== persistableJson) {
-      prevPersistableRef.current = persistableJson;
+  React.useEffect(() => {
+    if (!onStateChange || persistableContent === null) return;
+
+    const previous = prevPersistableRef.current;
+    if (previous?.content !== persistableContent || previous.zoom !== zoom) {
+      prevPersistableRef.current = { content: persistableContent, zoom };
       onStateChange(stateRef.current);
     }
-  }, [onStateChange, tracks, primaryTrackId, compositionWidth, compositionHeight, fps, durationInFrames, assets, assetTranscripts, zoom]);
+  }, [onStateChange, persistableContent, zoom]);
 
   return (
     <EditorHistoryContext.Provider value={historyContext}>

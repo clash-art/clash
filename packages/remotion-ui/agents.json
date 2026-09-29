@@ -6,9 +6,12 @@
     "Poster, waveform, and filmstrip state is frontend-derived, scoped, bounded, disposable device cache state and never synchronized Timeline facts or Durable output."
   ],
   "key_files": {
+    "src/components/ui/controls.tsx": "Native editor controls. RemotionNumberInput keeps incomplete numeric drafts out of Timeline facts; keyframe fields reset drafts when the item or playhead changes.",
     "src/components/InteractiveCanvas.tsx": "Canonical interactive composition preview.",
     "src/components/timeline/TimelineItem.tsx": "Timeline item presentation and ephemeral editor-only caches.",
+    "src/components/timeline/TimelineTracksContainer.tsx": "Keeps all lane shells for scroll/drop geometry; IntersectionObserver releases distant clip controls with overscan while retaining selected and dragged content.",
     "src/components/timeline/waveformCache.ts": "Bounded LRU/TTL cache for device-derived Timeline waveform samples.",
-    "src/components/timeline/items/renderers/ImageRenderer.tsx": "Image Timeline renderer over projected media URLs."
+    "src/components/timeline/items/renderers/ImageRenderer.tsx": "Image Timeline renderer over projected media URLs.",
+    "src/components/FontFamilyPicker.tsx": "User-initiated Local Font Access picker over installed families, shared by text and captions. The family name persists in Timeline; font bytes are not embedded or synchronized."
   }
 }

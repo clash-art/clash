@@ -7,7 +7,7 @@ Clash separates brand expression from product chrome. Marketing and identity sur
 ## Color
 
 - Brand signature: `--clash-brand`, currently `#FF6B50`.
-- Coral: `--clash-coral`, reserved for errors, destructive attention, keyboard focus, and the Clash signature.
+- Coral: `--clash-coral`, reserved for errors, destructive attention, and the Clash signature.
 - Information blue: `--clash-blue`, a pale blue counterpart reserved for information, selection, and in-progress state. It is never an ambient page tint.
 - Product surfaces: `--clash-warm-page`, `--clash-warm-surface`, `--clash-warm-muted`, `--clash-warm-hover`, and `--clash-warm-border`.
 - Text: `--clash-content-primary`, `--clash-content-secondary`, `--clash-content-muted`, and `--clash-content-disabled`.
@@ -89,4 +89,8 @@ Settings is calm and form-readable; Director is compact technical chrome around 
 
 ## Brand Usage
 
-Clash coral may appear on the logo, primary actions, focus rings, selected states, unread dots, and meaningful status details. It must not tint the page background, card grid, empty previews, or inactive navigation.
+Clash coral may appear on the logo, primary actions, unread dots, and meaningful status details. It must not tint the page background, card grid, empty previews, or inactive navigation.
+
+## Focus and selection
+
+Product controls use the semantic neutral `--ring` token. Keyboard focus uses a thin inset edge so scroll and collapsible containers cannot clip it. Text fields use a quiet border and surface highlight; sidebar selection uses the existing neutral hover surface. Pointer selection must not add an external halo. Preserve the shared primitive keyboard and focus behavior.

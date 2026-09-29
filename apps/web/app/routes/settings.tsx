@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import {
   SettingsSurface,
   isSettingsSection,
@@ -9,7 +9,12 @@ import {
 import type { SettingsSection } from "@clash/web-ui/components/SettingsClient";
 
 export default function SettingsRoute() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const projectId = searchParams.get("project");
+  const returnTo = searchParams.get("returnTo");
+  const projectPath = projectId ? `/projects/${encodeURIComponent(projectId)}` : null;
+  const backToProject = projectPath && returnTo && (returnTo === projectPath || returnTo.startsWith(`${projectPath}?`)) ? returnTo : projectPath;
   const sectionParam = searchParams.get("section");
   const active: SettingsSection = isSettingsSection(sectionParam)
     ? sectionParam
@@ -37,7 +42,7 @@ export default function SettingsRoute() {
 
   return (
     <main className="h-full min-h-[100dvh] w-full overflow-hidden bg-warm-page text-slate-950 dark:text-slate-50 md:min-h-full">
-      <SettingsSurface active={active} onActiveChange={handleActiveChange} variant="page" />
+      <SettingsSurface projectId={projectId ?? undefined} active={active} onActiveChange={handleActiveChange} variant="page" onClose={backToProject ? () => navigate(backToProject) : undefined} />
     </main>
   );
 }

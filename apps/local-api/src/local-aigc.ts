@@ -70,6 +70,14 @@ export interface MockMediaGenerationInput {
    */
   duration?: number | string;
   modelParams?: Record<string, unknown>;
+  /** Host-owned media-analysis Settings, not user-authored Model Card parameters. */
+  mediaAnalysisVideo?: {
+    processing: "auto" | "static";
+    fps: number;
+    mediaResolution: "low" | "medium" | "high";
+    startSeconds?: number;
+    endSeconds?: number;
+  };
   /** Host-private account selection. It is never copied into plugin-visible modelParams. */
   providerAccountId?: string;
   /**
@@ -77,6 +85,8 @@ export interface MockMediaGenerationInput {
    * use this implementation or fail; it never falls back to another route.
    */
   providerRoute?: FrozenModelRoutePin;
+  /** Host attempt deadline for nested calls; never a provider-visible model value. */
+  deadlineAt?: number;
   /** Frozen typed inputs. Media bytes/URLs are resolved only through context.reference. */
   references?: ExecutablePluginReference[];
   /** Exact plugin contract selected when the node was authored. */
@@ -543,11 +553,24 @@ function providerPluginExecutorRequest(
         `route executor ${route.executorPluginId}/${route.executorExportId}.`,
     );
   }
+  // These execution controls already belong to Google's video-understanding
+  // adapter. Keep them out of Model Card validation and fail closed for another
+  // executor, rather than silently ignoring the user's sampling/window settings.
+  const video = input.mediaAnalysisVideo;
+  if (video && (kind !== "text" || route.executorPluginId !== "clash.google"
+    || route.executorExportId !== "google-execute")) {
+    throw new Error(`Provider executor ${route.executorPluginId}/${route.executorExportId} does not support media-analysis video controls.`);
+  }
+  const remainingMs = input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
+  if (remainingMs !== undefined && (!Number.isFinite(remainingMs) || remainingMs <= 0)) {
+    throw new Error("Media generation Host deadline has elapsed before Provider dispatch.");
+  }
   return {
     pluginId: route.executorPluginId,
     exportId: route.executorExportId,
     ...(route.accountId ? { accountId: route.accountId } : {}),
     kind,
+    ...(remainingMs === undefined ? {} : { timeoutMs: Math.max(1, Math.ceil(remainingMs)) }),
     taskId: input.taskId,
     projectId: input.projectId ?? "local",
     ...(input.nodeId ? { nodeId: input.nodeId } : {}),
@@ -567,7 +590,16 @@ function providerPluginExecutorRequest(
           ? { aspectRatio: input.aspectRatio }
           : {}),
         ...(input.duration !== undefined ? { duration: input.duration } : {}),
-        modelParams: providerVisibleModelParams(input.modelParams),
+        modelParams: {
+          ...providerVisibleModelParams(input.modelParams),
+          ...(video ? {
+            video_processing: video.processing,
+            video_fps: video.fps,
+            video_media_resolution: video.mediaResolution,
+            ...(video.startSeconds === undefined ? {} : { video_start_seconds: video.startSeconds }),
+            ...(video.endSeconds === undefined ? {} : { video_end_seconds: video.endSeconds }),
+          } : {}),
+        },
       },
       references: [...(input.references ?? [])],
     },

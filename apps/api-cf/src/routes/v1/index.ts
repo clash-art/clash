@@ -1,3 +1,4 @@
+import { cloudRoutes } from "./cloud";
 import { Hono } from "hono";
 import type { Env } from "../../config";
 import { createProjectContentRoutes } from "./project-content";
@@ -12,6 +13,8 @@ import { modelProviderRoutes } from "./model-providers";
 import { providerUsageRoutes } from "./provider-usage";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
+
+v1Routes.route("/cloud", cloudRoutes);
 
 v1Routes.route("/projects", createProjectContentRoutes());
 v1Routes.route("/projects", projectRoutes);

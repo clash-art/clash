@@ -121,6 +121,7 @@ describe("local sync config", () => {
       updatedAt: "2026-09-04T00:00:00.000Z",
       lastError: null,
     });
+    await createClashUserConfigStore(dataDir).setSection("server",{url:"https://cloud.example"});
     await createClashUserConfigStore(dataDir).updateCredentials((current) => ({
       ...current,
       cliApiKey: "clsh_test",
@@ -151,4 +152,15 @@ it("never resolves a global transport for an unadmitted Project or another repli
     admittedAt: "2026-09-04T00:00:00Z", updatedAt: "2026-09-04T00:00:00Z", lastError: null,
   });
   expect(await store.resolveRemotePersistence("private-project")).toBeUndefined();
+});
+
+it('does not create a project transport after its cloud account signs out',async()=>{
+ const {createCloudAccounts}=await import('./cloud-accounts.js');
+ const accounts=createCloudAccounts(dataDir);
+ await accounts.save('https://cloud.example',{token:'test-token',user:{id:'u',name:'User',email:'u@example.test'}});
+ await createLocalMetadataStore(dataDir).upsertProjectCloudAdmission({schemaVersion:1,projectId:'p',tenantId:'t',userId:'u',localReplicaId:await getLocalReplicaId(dataDir),syncBaseUrl:'https://cloud.example',status:'ready',capabilities:{canvas:true,projectMetadata:true,resources:true},admittedAt:null,updatedAt:new Date().toISOString(),lastError:null});
+ const sync=createLocalSyncConfigStore({dataDir,env:{}});
+ expect(await sync.resolveRemotePersistence('p')).toBeDefined();
+ await accounts.logout('https://cloud.example');
+ expect(await sync.resolveRemotePersistence('p')).toBeUndefined();
 });

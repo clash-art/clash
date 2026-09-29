@@ -1365,13 +1365,11 @@ async function main() {
     if (!typeComposer(agentBrowser, draftMarker)) {
       throw new Error("Could not type persistent chat draft");
     }
-    evalJson(`(() => {
-      window.prompt = () => "E2E Rough Cut";
-      return true;
-    })()`);
     if (!clickButtonByLabel(agentBrowser, "New Timeline")) {
       throw new Error("Could not create Timeline from the project navigator");
     }
+    agentBrowser(["fill", '[role="dialog"] input', "E2E Rough Cut"]);
+    agentBrowser(["click", '[role="dialog"] button[type="submit"]']);
     await waitForEval(
       `document.querySelector('[data-testid="project-timeline-editor"]') &&
        document.querySelector('[data-layout="embedded"]') &&
@@ -1475,15 +1473,13 @@ async function main() {
     );
     agentBrowser(["screenshot", timelineDockScreenshot]);
 
-    evalJson(`(() => {
-      window.prompt = () => "Review Canvas";
-      return true;
-    })()`);
     if (!clickButtonByLabel(agentBrowser, "New Canvas")) {
       throw new Error(
         "Could not create a second Canvas for explicit asset placement",
       );
     }
+    agentBrowser(["fill", '[role="dialog"] input', "Review Canvas"]);
+    agentBrowser(["click", '[role="dialog"] button[type="submit"]']);
     await waitForEval(
       `document.querySelector('[aria-label="Project navigator"] [role="tab"][aria-selected="true"]')?.textContent?.includes("Review Canvas") === true &&
        document.querySelector('#project-workspace-shell')?.getAttribute('data-copilot-layout') === 'overlay' &&
@@ -1694,13 +1690,11 @@ async function main() {
       );
     }
 
-    evalJson(`(() => {
-      window.prompt = () => "Asset Drop Timeline";
-      return true;
-    })()`);
     if (!clickButtonByLabel(agentBrowser, "New Timeline")) {
       throw new Error("Could not create an empty Timeline for asset drag");
     }
+    agentBrowser(["fill", '[role="dialog"] input', "Asset Drop Timeline"]);
+    agentBrowser(["click", '[role="dialog"] button[type="submit"]']);
     await waitForEval(
       `!!document.querySelector('[data-testid="project-timeline-editor"] .tracks-viewport') &&
        document.querySelectorAll('[aria-label^="image:"]').length === 0`,

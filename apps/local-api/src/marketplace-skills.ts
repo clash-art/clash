@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access, cp, mkdir, rm, readFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -36,6 +36,7 @@ interface InstalledSkillLockEntry {
 type CommandRunner = (
   executable: string,
   args: string[],
+  options?: { cwd?: string },
 ) => Promise<{ stdout: string }>;
 
 const execFileAsync = promisify(execFile);
@@ -43,8 +44,10 @@ const execFileAsync = promisify(execFile);
 async function defaultCommandRunner(
   executable: string,
   args: string[],
+  options?: { cwd?: string },
 ): Promise<{ stdout: string }> {
   const result = await execFileAsync(executable, args, {
+    ...options,
     encoding: "utf8",
     timeout: 30 * 60 * 1000,
     maxBuffer: 10 * 1024 * 1024,
@@ -134,6 +137,7 @@ export function createNpxSkillsMarketplace({
   const skills = rawSkills
     .map(asLazyMarketplaceSkill)
     .filter((skill): skill is NpxSkillsMarketplaceItem => skill !== null);
+  const managedRoot = configStore ? join(configStore.clashHome, "plugin-skills") : join(agentsDir, "skills");
   const byId = new Map(skills.map((skill) => [skill.id, skill]));
   const executable = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -151,8 +155,9 @@ export function createNpxSkillsMarketplace({
       const installed = await Promise.all(
         skills.map(async (skill) => {
           const lockEntry = installedByName[skill.install.skill];
-          if (!lockEntry) return null;
-          const path = join(agentsDir, "skills", skill.install.skill);
+          const managedPath = join(managedRoot, skill.install.skill);
+          const path = (await stat(join(managedPath, "SKILL.md")).catch(() => null))?.isFile() ? managedPath : join(agentsDir, "skills", skill.install.skill);
+          if (!lockEntry && skill.install.kind !== "bundled-skill" && !scopes[skill.install.skill]) return null;
           try {
             await access(join(path, "SKILL.md"));
           } catch {
@@ -167,9 +172,9 @@ export function createNpxSkillsMarketplace({
             scope: scopes[skill.install.skill]?.scope ?? "global",
             installation: scopes[skill.install.skill] ?? { scope: "global" },
             source:
-              typeof lockEntry.source === "string" ? lockEntry.source : null,
+              typeof lockEntry?.source === "string" ? lockEntry.source : null,
             sourceUrl:
-              typeof lockEntry.sourceUrl === "string"
+              typeof lockEntry?.sourceUrl === "string"
                 ? lockEntry.sourceUrl
                 : skill.install.kind === "npx-skills"
                   ? skill.install.source
@@ -185,23 +190,47 @@ export function createNpxSkillsMarketplace({
       const installation = HostInstallScopeSchema.parse(target);
       if (installation.scope === "projects" && !configStore) throw new Error("Host configuration is required for project-scoped skill installation");
       const skill = requireSkill(id);
+      const targetPath = join(managedRoot, skill.install.skill);
+      const legacyPath = join(agentsDir, "skills", skill.install.skill);
+      if (configStore && await stat(legacyPath).catch(() => null)) {
+        const previous = HostSkillInstallationsSchema.parse(await configStore.getSection("skills") ?? {});
+        if (previous[skill.install.skill] && !await stat(targetPath).catch(() => null)) {
+          await mkdir(managedRoot, { recursive: true });
+          await rename(legacyPath, targetPath);
+        } else if (installation.scope === "projects") {
+          throw new Error("This skill is also installed globally outside Clash. Remove that global installation before limiting it to selected projects.");
+        }
+      }
+      if (!configStore || !(await stat(join(targetPath, "SKILL.md")).catch(() => null))?.isFile()) {
       const source =
         skill.install.kind === "bundled-skill"
           ? join(builtinPluginRoot(), "skills", skill.install.skill)
           : skill.install.source;
       if (skill.install.kind === "bundled-skill") {
         await access(join(source, "SKILL.md"));
-      }
-      await run(executable, [
+        await mkdir(managedRoot, { recursive: true });
+        await cp(source, targetPath, { recursive: true, dereference: true });
+      } else {
+      const installerHome = configStore ? join(configStore.clashHome, "skill-installer") : undefined;
+      if (installerHome) await mkdir(installerHome, { recursive: true });
+      const args = [
         "--yes",
         "skills@latest",
         "add",
         source,
         "--skill",
         skill.install.skill,
-        "--global",
+        ...(installerHome ? [] : ["--global"]),
         "--yes",
-      ]);
+      ];
+      if (installerHome) await run(executable, args, { cwd: installerHome });
+      else await run(executable, args);
+      if (installerHome) {
+        await mkdir(managedRoot, { recursive: true });
+        await cp(join(installerHome, ".agents", "skills", skill.install.skill), targetPath, { recursive: true, dereference: true });
+      }
+      }
+      }
       await configStore?.updateSection("skills", (current) => ({
         ...HostSkillInstallationsSchema.parse(current ?? {}),
         [skill.install.skill]: installation,
@@ -216,6 +245,9 @@ export function createNpxSkillsMarketplace({
     },
     async uninstall(id: string): Promise<void> {
       const skill = requireSkill(id);
+      if (configStore || skill.install.kind === "bundled-skill") {
+        await rm(join(managedRoot, skill.install.skill), { recursive: true, force: true });
+      } else {
       await run(executable, [
         "--yes",
         "skills@latest",
@@ -224,6 +256,7 @@ export function createNpxSkillsMarketplace({
         "--global",
         "--yes",
       ]);
+      }
       await configStore?.updateSection("skills", (current) => {
         const scopes = HostSkillInstallationsSchema.parse(current ?? {});
         delete scopes[skill.install.skill];

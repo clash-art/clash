@@ -458,6 +458,7 @@ export type EditorAction =
   | { type: 'REORDER_TRACKS'; payload: Track[] }
   | { type: 'ADD_ITEM'; payload: { trackId: string; item: Item } }
   | { type: 'MOVE_ITEM'; payload: { sourceTrackId: string; targetTrackId: string; itemId: string; from: number } }
+  | { type: 'ROLL_EDIT'; payload: { trackId: string; leftItemId: string; rightItemId: string; boundaryFrame: number } }
   | { type: 'REMOVE_ITEM'; payload: { trackId: string; itemId: string } }
   | { type: 'UPDATE_ITEM'; payload: { trackId: string; itemId: string; updates: Partial<Item> } }
   | { type: 'SPLIT_ITEM'; payload: { trackId: string; itemId: string; splitFrame: number } }

@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+  stat,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -45,6 +52,28 @@ async function publish(
 }
 
 describe("local daemon bootstrap", () => {
+  it("starts the Host in its writable data directory instead of the desktop launcher's cwd", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-daemon-cwd-"));
+    const dataDir = join(root, "local-api");
+    let spawnedCwd: string | URL | undefined;
+    try {
+      launchDetachedLocalDaemon({
+        entryPath: "/opt/clash/clashd.cjs",
+        dataDir,
+        runDir: join(root, "run"),
+        cliEntryPath: "/opt/clash/clash.cjs",
+        spawnProcess: (_command, _args, options) => {
+          spawnedCwd = options.cwd;
+          return { pid: 4242, unref() {} };
+        },
+      });
+      expect(spawnedCwd).toBe(dataDir);
+      expect((await stat(dataDir)).isDirectory()).toBe(true);
+      await mkdir(join(dataDir, ".renderer-cache"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   it("fingerprints the runtime artifact content instead of its filesystem location", async () => {
     const root = await mkdtemp(join(tmpdir(), "clash-daemon-fingerprint-"));
     const first = join(root, "first.cjs");
@@ -57,6 +86,82 @@ describe("local daemon bootstrap", () => {
 
     await writeFile(second, "module.exports = 'changed';\n", "utf8");
     expect(resolveLocalDaemonRuntimeFingerprint(second)).not.toBe(before);
+  });
+
+  it("invalidates a packaged Host when an adjacent bundled plugin changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-plugin-fingerprint-"));
+    try {
+      const first = join(root, "first");
+      const second = join(root, "second");
+      for (const directory of [first, second]) {
+        await mkdir(join(directory, "bundled-plugins", "asset-edit", "dist"), {
+          recursive: true,
+        });
+        await writeFile(
+          join(directory, "local-api.cjs"),
+          "host entry stays unchanged",
+        );
+        await writeFile(
+          join(directory, "bundled-plugins", "asset-edit", "dist", "stdio.mjs"),
+          "old adapter",
+        );
+      }
+      const before = resolveLocalDaemonRuntimeFingerprint(
+        join(first, "local-api.cjs"),
+      );
+      expect(
+        resolveLocalDaemonRuntimeFingerprint(join(second, "local-api.cjs")),
+      ).toBe(before);
+      await writeFile(
+        join(second, "bundled-plugins", "asset-edit", "dist", "stdio.mjs"),
+        "fixed adapter",
+      );
+      expect(
+        resolveLocalDaemonRuntimeFingerprint(join(second, "local-api.cjs")),
+      ).not.toBe(before);
+      await rm(join(second, "bundled-plugins"), { recursive: true });
+      expect(
+        resolveLocalDaemonRuntimeFingerprint(join(second, "local-api.cjs")),
+      ).not.toBe(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates a Host when only its served project renderer changes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-renderer-fingerprint-"));
+    try {
+      const entry = join(root, "local-api.cjs");
+      await writeFile(entry, "unchanged host entry");
+      await mkdir(join(root, "project-ui", "_app"), { recursive: true });
+      const editor = join(root, "project-ui", "_app", "editor.js");
+      await writeFile(editor, "old scroll implementation");
+      const before = resolveLocalDaemonRuntimeFingerprint(entry);
+      await writeFile(editor, "fixed scroll implementation");
+      expect(resolveLocalDaemonRuntimeFingerprint(entry)).not.toBe(before);
+      await rm(join(root, "project-ui"), { recursive: true });
+      expect(resolveLocalDaemonRuntimeFingerprint(entry)).not.toBe(before);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retires a Host when the staged dependency identity changes without changing its entry", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-dependency-fingerprint-"));
+    try {
+      const entry = join(root, "local-api.cjs");
+      const identity = join(root, "runtime-dependencies.sha256");
+      await writeFile(entry, "unchanged host entry");
+      const legacy = resolveLocalDaemonRuntimeFingerprint(entry);
+      await writeFile(identity, "first staged dependency payload\n");
+      const first = resolveLocalDaemonRuntimeFingerprint(entry);
+      expect(first).not.toBe(legacy);
+      expect(resolveLocalDaemonRuntimeFingerprint(entry)).toBe(first);
+      await writeFile(identity, "fixed staged dependency payload\n");
+      expect(resolveLocalDaemonRuntimeFingerprint(entry)).not.toBe(first);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("launches a detached daemon that outlives the initiating client", async () => {

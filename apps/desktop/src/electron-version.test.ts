@@ -112,7 +112,7 @@ describe("desktop Electron runtime", () => {
       const packageScript = script.startsWith("pack:desktop:")
         ? manifest.scripts?.[script.replace("pack:desktop:", "pack:")]
         : manifest.scripts?.[script];
-      expect(packageScript ?? "").toContain(
+      expect(packageScript ?? "").not.toContain(
         "pnpm --dir ../.. prepare:desktop-pack",
       );
     }
@@ -124,7 +124,7 @@ describe("desktop Electron runtime", () => {
       "pack:desktop:win",
       "pack:desktop:linux",
     ]) {
-      expect(rootManifest.scripts?.[script] ?? "").not.toContain(
+      expect(rootManifest.scripts?.[script] ?? "").toContain(
         "pnpm prepare:desktop-pack",
       );
     }
@@ -259,23 +259,26 @@ describe("desktop Electron runtime", () => {
       new URL("../../../.github/workflows/release.yml", import.meta.url),
       "utf8",
     );
-    const commonCheckout = release.indexOf(
-      "git clone --filter=blob:none https://github.com/openma-ai/openma-common.git ../openma-common",
+    const commonSetup = readFileSync(
+      new URL("../../../.github/actions/setup-common/action.yml", import.meta.url), "utf8",
     );
-    const commonRevision = release.indexOf(
-      "git -C ../openma-common checkout 00358ff9c1e4a694171f5617a4715602c61433e7",
+    const steps = [
+      /git clone .*https:\/\/github\.com\/openma-ai\/openma-common\.git/,
+      /git -C \.\.\/openma-common checkout [a-f0-9]{40}/,
+      /pnpm --dir \.\.\/openma-common install --frozen-lockfile/,
+      /pnpm --dir \.\.\/openma-common verify/,
+    ];
+    let previous = -1;
+    for (const step of steps) {
+      expect(sourceMatches(commonSetup, step)).toBe(true);
+      const position = commonSetup.search(step);
+      expect(position).toBeGreaterThan(previous);
+      previous = position;
+    }
+    expect(release.indexOf("uses: ./.github/actions/setup-common")).toBeGreaterThan(-1);
+    expect(release.indexOf("pnpm install --frozen-lockfile")).toBeGreaterThan(
+      release.indexOf("uses: ./.github/actions/setup-common"),
     );
-    const commonInstallCommand =
-      "pnpm --dir ../openma-common install --frozen-lockfile";
-    const commonInstall = release.indexOf(commonInstallCommand);
-    const install = release.indexOf("pnpm install --frozen-lockfile");
-
-    expect(commonCheckout).toBeGreaterThan(-1);
-    expect(commonRevision).toBeGreaterThan(commonCheckout);
-    expect(release).toContain(`run: ${commonInstallCommand}\n`);
-    expect(release).not.toContain(`${commonInstallCommand} --prod`);
-    expect(commonInstall).toBeGreaterThan(commonRevision);
-    expect(install).toBeGreaterThan(commonInstall);
   });
 
   it("keeps self-hosted ACP runtimes out of immutable desktop resources", () => {

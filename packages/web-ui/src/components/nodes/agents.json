@@ -1,10 +1,13 @@
 {
   "summary": "Canvas node views and authoring adapters. Shared Canvas and Host Generator APIs own persisted semantics.",
   "key_files": {
+    "PluginViewNode.tsx": "Storyboard workspace placement with a non-connectable target handle for shared Asset-reference projections and the existing Open View action.",
     "ActionBadge.tsx": "Model and mapped Action forms. Native authoring commits Generator revisions; input references retain immutable Asset identities.",
     "NativeOrderedPrompt.tsx": "Edits ordered prompt text while preserving revision input identities.",
     "NativeMediaReference.tsx": "Displays an applied media input without requiring a Canvas placement.",
     "NativeDocumentReference.tsx": "Reads the exact plain-text Document input revision and removes it through the parent revision editor.",
-    "TextDocumentNode.tsx": "Read-only Canvas placement for a generated text Document revision. No editable body shadow."
+    "TextDocumentNode.tsx": "Read-only Canvas placement for plain text and structured analysis Documents. Pending/failed outputs remain visible without inventing a Document; completed placements read the exact revision.",
+    "NativeActionRunNode.tsx": "Read-only generic native Run placement: frozen input references, parameters, status and committed outputs; never invokes a model composer or changes historical parameters when the Generator head advances.",
+    "GeneratorReferenceThumbnail.tsx": "Shared native reference thumbnail used by Canvas and embedded Generator Composer."
   }
 }

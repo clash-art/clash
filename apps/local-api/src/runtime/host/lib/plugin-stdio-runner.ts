@@ -32,6 +32,8 @@ export interface PluginBroker {
        * binding lives with the pending invocation rather than with the process.
        */
       accountId?: string;
+      /** Host-owned absolute attempt deadline; plugins cannot extend it through broker input. */
+      deadlineAt?: number;
     },
   ): Promise<ExecutablePluginJsonValue>;
   /** Host-only terminal hook. It never crosses the plugin wire. */
@@ -50,6 +52,7 @@ export interface PluginStdioSessionOptions {
 interface PendingInvocation {
   invocation: ExecutablePluginInvocation;
   accountId?: string;
+  deadlineAt: number;
   resolve: (result: ExecutablePluginResult) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
@@ -127,6 +130,8 @@ export class PluginStdioSession {
       );
     }
 
+    const timeoutMs = options.timeoutMs ?? 120_000;
+    const deadlineAt = Date.now() + timeoutMs;
     return new Promise<ExecutablePluginResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         void this.finishInvocation(invocation.invocationId, pending, () => {
@@ -136,9 +141,10 @@ export class PluginStdioSession {
             ),
           );
         });
-      }, options.timeoutMs ?? 120_000);
+      }, timeoutMs);
       const pending: PendingInvocation = {
         invocation,
+        deadlineAt,
         ...(options.accountId ? { accountId: options.accountId } : {}),
         resolve,
         reject,
@@ -226,6 +232,7 @@ export class PluginStdioSession {
       const result = await this.broker(request, {
         manifest: this.manifest,
         invocation: pending.invocation,
+        deadlineAt: pending.deadlineAt,
         ...(pending.accountId ? { accountId: pending.accountId } : {}),
       });
       this.write(

@@ -47,6 +47,17 @@ To read a committed text result, call `clash_assets` with operation
 The CLI equivalent is `clash assets documents get <documentAssetId> --revision <revisionId>`.
 Both read the exact body and its provenance without creating a Canvas text copy.
 
+For a one-off operation, prefer `actions_list` with a specific query followed
+by `action_invoke` on `clash_generators` (CLI: `actions list --query ...`, then
+`actions run <key>`). Pass discovered state, parameters and input references.
+The shared client creates the frozen Generator revision and Run, waits within
+the requested bound, and returns committed output refs or an existing Run to
+continue with `action_wait`. It also places the native operation on Canvas.
+There is no need to repeat these steps with the lower-level operations below.
+
+Use the lower-level Generator workflow when the task needs to retain/edit a
+Generator draft or explicitly operate on an existing frozen revision:
+
 1. Discover the matching definition with `definitions_list` and read the exact
    one with `definition_get` when it is not already known.
 2. Create or read the Project Generator with `create` or `get`, preserving its

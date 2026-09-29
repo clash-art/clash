@@ -2,9 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  createHttpCloudAdmissionClient,
-} from "./project-cloud-admission.js";
+import { createHttpCloudAdmissionClient } from "./project-cloud-admission.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 
 describe("HTTP project cloud admission client", () => {
@@ -56,10 +54,34 @@ describe("HTTP project cloud admission client", () => {
     });
 
     expect(response.admission.status).toBe("pending");
+    const unexpected = { ...response, syncBaseUrl: "https://other.example" };
+    const switched = createHttpCloudAdmissionClient({
+      baseUrl: "https://cloud.example.com",
+      token: "clsh_token",
+      fetch: async () => Response.json(unexpected),
+    });
+    await expect(
+      switched.admit({
+        schemaVersion: 1,
+        projectId: "project-1",
+        localReplicaId: "replica-1",
+        metadata: {
+          projectId: "project-1",
+          name: "Demo",
+          description: null,
+          createdAt: "2026-09-04T00:00:00.000Z",
+          updatedAt: "2026-09-04T00:00:00.000Z",
+          deletedAt: null,
+        },
+        resourceIds: [],
+      }),
+    ).rejects.toThrow(/origin/i);
+
     expect(fetch).toHaveBeenCalledWith(
       "https://cloud.example.com/api/v1/projects/project-1/cloud-admission",
       expect.objectContaining({
         method: "POST",
+        redirect: "error",
         headers: expect.any(Headers),
       }),
     );
@@ -104,18 +126,47 @@ it("does not commit stale readiness over a revoked admission", async () => {
   try {
     const store = createLocalMetadataStore(root);
     const admission = {
-      schemaVersion: 1 as const, projectId: "p", tenantId: "t", userId: "u", localReplicaId: "r",
-      syncBaseUrl: "https://cloud.example", status: "syncing" as const,
-      capabilities: { canvas: true, projectMetadata: true, resources: true }, admittedAt: null,
-      updatedAt: "2026-09-04T00:00:00Z", lastError: null,
+      schemaVersion: 1 as const,
+      projectId: "p",
+      tenantId: "t",
+      userId: "u",
+      localReplicaId: "r",
+      syncBaseUrl: "https://cloud.example",
+      status: "syncing" as const,
+      capabilities: { canvas: true, projectMetadata: true, resources: true },
+      admittedAt: null,
+      updatedAt: "2026-09-04T00:00:00Z",
+      lastError: null,
     };
     await store.upsertProjectCloudAdmission(admission);
     const observed = (await store.getProjectCloudSyncState("p", "r"))!;
-    expect(await store.compareAndSetProjectCloudAdmission(observed, { ...admission, status: "ready" })).not.toBeNull();
-    await store.upsertProjectCloudAdmission({ ...admission, status: "local-only" });
-    expect(await store.compareAndSetProjectCloudAdmission(observed, { ...admission, status: "ready" })).toBeNull();
-    expect((await store.getProjectCloudAdmission("p", "r"))?.status).toBe("local-only");
+    expect(
+      await store.compareAndSetProjectCloudAdmission(observed, {
+        ...admission,
+        status: "ready",
+      }),
+    ).not.toBeNull();
+    await store.upsertProjectCloudAdmission({
+      ...admission,
+      status: "local-only",
+    });
+    expect(
+      await store.compareAndSetProjectCloudAdmission(observed, {
+        ...admission,
+        status: "ready",
+      }),
+    ).toBeNull();
+    expect((await store.getProjectCloudAdmission("p", "r"))?.status).toBe(
+      "local-only",
+    );
     await store.upsertProjectCloudAdmission(admission);
-    expect(await store.compareAndSetProjectCloudAdmission(observed, { ...admission, status: "ready" })).toBeNull();
-  } finally { await rm(root, { recursive: true, force: true }); }
+    expect(
+      await store.compareAndSetProjectCloudAdmission(observed, {
+        ...admission,
+        status: "ready",
+      }),
+    ).toBeNull();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

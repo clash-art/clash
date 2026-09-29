@@ -14,6 +14,15 @@ import type {
 } from "./define-plugin.js";
 import { unsupportedAcceptedOperation } from "./executable-failure.js";
 
+export {
+  PluginViewResourceSchema,
+  ExecutablePluginViewStateSchema,
+  listPluginViewAssetReferences,
+  type PluginViewResource,
+  type ExecutablePluginViewState,
+  type PluginViewAssetReference,
+} from "@clash/shared-types/executable-plugin";
+
 export type {
   ExecutorContext,
   ExecutorContextOverrides,
@@ -127,7 +136,9 @@ function contextFrom(
       remove: async () => unavailable("store"),
     },
     hostTools: {
-      agentText: hostTools.agentText ?? (async () => unavailable("agent text Host tool")),
+      agentText:
+        hostTools.agentText ??
+        (async () => unavailable("agent text Host tool")),
       codexImagegen: hostTools.codexImagegen ?? {
         generate: async () => unavailable("codex.imagegen Host tool"),
       },

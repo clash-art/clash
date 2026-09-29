@@ -412,16 +412,20 @@ export function ensureActionRunRequest(
       },
     };
   }
-  const selectedModelExecutor = request.data.modelSelection?.route.executorBinding;
-  const usesSelectedModelExecutor = selectedModelExecutor !== undefined &&
+  const selectedModelExecutor =
+    request.data.modelSelection?.route.executorBinding;
+  const usesSelectedModelExecutor =
+    selectedModelExecutor !== undefined &&
     sameImmutableFact(request.data.executor, selectedModelExecutor);
-  if (!usesSelectedModelExecutor && (
-    request.data.executor.pluginId !==
+  if (
+    !usesSelectedModelExecutor &&
+    (request.data.executor.pluginId !==
       generatorRevision.definitionRef.pluginId ||
-    request.data.executor.version !== generatorRevision.definitionRef.version ||
-    request.data.executor.schemaHash !==
-      generatorRevision.definitionRef.schemaHash
-  )) {
+      request.data.executor.version !==
+        generatorRevision.definitionRef.version ||
+      request.data.executor.schemaHash !==
+        generatorRevision.definitionRef.schemaHash)
+  ) {
     return {
       ok: false,
       error: {
@@ -525,6 +529,39 @@ export function readOutputCommit(
     return null;
   }
   return commit.data;
+}
+
+export interface MediaAssetGeneration {
+  run: ProjectActionRun;
+  revision: GeneratorRevision;
+}
+
+/** Read immutable producer facts for a committed Media Asset, never the current head. */
+export function readMediaAssetGeneration(
+  doc: LoroDoc,
+  input: { projectAssetId: string; actionRunId: string },
+): MediaAssetGeneration | null {
+  const run = readProjectActionRun(doc, input.actionRunId);
+  if (!run) return null;
+  const revision = readGeneratorRevision(doc, run.generatorRevision);
+  if (!revision) return null;
+  const commits = doc
+    .getMap(GENERATOR_OUTPUT_COMMITS_CONTAINER)
+    .get(run.actionRunId);
+  if (!isLoroMap(commits)) return null;
+  for (const [, value] of commits.entries()) {
+    const parsed = OutputCommitSchema.safeParse(value);
+    if (!parsed.success || parsed.data.actionRunId !== run.actionRunId)
+      continue;
+    const commit = readOutputCommit(doc, parsed.data);
+    if (
+      commit?.asset.kind === "media" &&
+      commit.asset.projectAssetId === input.projectAssetId
+    ) {
+      return { run, revision };
+    }
+  }
+  return null;
 }
 
 /**

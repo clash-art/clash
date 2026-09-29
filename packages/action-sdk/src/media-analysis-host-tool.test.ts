@@ -61,4 +61,12 @@ describe("media analysis SDK Host tool", () => {
       }),
     ).rejects.toThrow(/invalid media analysis result/i);
   });
+
+  it("preserves a Host execution error instead of reporting it as an invalid result", async () => {
+    const failure = Object.assign(new Error("Provider account is missing a region."), { code: "PROVIDER_CONFIGURATION_INCOMPLETE" });
+    const context = createExecutorContext({}, async () => { throw failure; });
+    await expect(context.hostTools.mediaAnalyze({
+      reference, modelId: "configured-analysis", category: "description", prompt: "Describe.", promptVersion: "v1",
+    })).rejects.toBe(failure);
+  });
 });

@@ -9,7 +9,7 @@ import {
   type ClashWorkspaceInitialization,
   type ProjectStatus as SharedProjectStatus,
 } from "@clash/shared-runtime";
-import { apiJson } from "../lib/api";
+import { apiFetch, apiJson } from "../lib/api";
 import { requireDestructiveConfirmation } from "../lib/destructive-guardrails";
 import { resolveClashRoot } from "../lib/clash-home";
 import { readProductReplicationState } from "../lib/product-replication-state";
@@ -83,6 +83,7 @@ export async function linkProject(
 export async function initProject(options: {
   cwd?: string;
   projectId?: string;
+  request?: (path: string, init?: RequestInit) => Promise<Response>;
 } = {}): Promise<ClashWorkspaceInitialization> {
   return initializeClashWorkspace(options);
 }
@@ -179,11 +180,11 @@ export function buildProjectStatus(
 }
 
 export const initCommand = new Command("init")
-  .description("Initialize a local Clash project marker in this directory")
+  .description("Initialize this directory and register its local project with the Host; safe to retry")
   .option("--project <id>", "Use an existing project id instead of generating a local id")
   .option("--json", "Output as JSON")
   .action(async (options) => {
-    const result = await initProject({ projectId: options.project });
+    const result = await initProject({ projectId: options.project, request: apiFetch });
     if (isJsonMode(options)) {
       printJson(result);
     } else {
@@ -279,11 +280,9 @@ projectsCommand
         }),
       }
     );
-    await recordAgentObservation({
-      entityKind: "project",
-      entityId: data.id,
-      revision: data.readToken,
-    });
+    // Creating a project is not a read in the current workspace. That workspace
+    // may be unbound or belong to another project. Bind and read the new project
+    // before subsequent mutations instead of recording its receipt here.
 
     if (isJsonMode(options)) {
       printJson(publicProjectResult(data));

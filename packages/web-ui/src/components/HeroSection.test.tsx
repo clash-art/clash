@@ -30,6 +30,8 @@ function emptyAgentUIRuntime() {
 
 const mocks = vi.hoisted(() => ({
   runtimeState: {
+    noAgents: false,
+    startupStatus: "ready" as UseClashRuntimeReturn["startupStatus"],
     selectedAgentId: null as string | null,
     sessionConfigOptions: [] as UseClashRuntimeReturn["sessionConfigOptions"],
   },
@@ -113,13 +115,15 @@ vi.mock("@clash/web-ui/hooks/useClashRuntime", () => ({
         machine_id: "desktop-local",
         hostname: "This Mac",
         os: "darwin/arm64",
-        agents: [
-          {
-            id: "codex-acp",
-            label: "Codex",
-            config_options: [modeOption, modelOption],
-          },
-        ],
+        agents: mocks.runtimeState.noAgents
+          ? []
+          : [
+              {
+                id: "codex-acp",
+                label: "Codex",
+                config_options: [modeOption, modelOption],
+              },
+            ],
         preferences: {
           agent_id: "codex-acp",
           config_by_agent: {},
@@ -131,7 +135,7 @@ vi.mock("@clash/web-ui/hooks/useClashRuntime", () => ({
         created_at: Date.now(),
       },
     ],
-    startupStatus: "ready",
+    startupStatus: mocks.runtimeState.startupStatus,
     selectedRuntimeId: null,
     selectedAgentId: mocks.runtimeState.selectedAgentId,
     sessionId: null,
@@ -326,6 +330,8 @@ describe("dashboard composer runtime", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    mocks.runtimeState.noAgents = false;
+    mocks.runtimeState.startupStatus = "ready";
     mocks.runtimeState.selectedAgentId = null;
     mocks.runtimeState.sessionConfigOptions = [];
     delete document.documentElement.dataset.dashboardComposerTransition;
@@ -337,6 +343,25 @@ describe("dashboard composer runtime", () => {
       configurable: true,
       value: undefined,
     });
+  });
+
+  it("takes an unconfigured user to Agent settings from the composer", () => {
+    mocks.runtimeState.noAgents = true;
+    renderComposer();
+
+    const setup = screen.getByRole("link", { name: "Configure Agent" });
+    fireEvent.click(setup);
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      "/settings?section=agents",
+    );
+    expect(screen.queryByTestId("session-harness-config-trigger")).toBeNull();
+  });
+
+  it("does not mistake startup loading for an unconfigured agent", () => {
+    mocks.runtimeState.noAgents = true;
+    mocks.runtimeState.startupStatus = "loading";
+    renderComposer();
+    expect(screen.queryByRole("link", { name: "Configure Agent" })).toBeNull();
   });
 
   it("shares the Backchat permission/model rail and an explicit focus action", async () => {

@@ -315,6 +315,32 @@ describe("PropertiesPanel item type coverage", () => {
     });
   });
 
+  it.each([0, 100])("does not silently edit a boundary key when the playhead is outside the selected clip at %s", (currentFrame) => {
+    const image: ImageItem = {
+      id: "outside-clip",
+      type: "image",
+      src: "image.png",
+      from: 30,
+      durationInFrames: 40,
+      keyframes: {
+        position: [
+          { frame: 0, value: [15, 20], interpolation: "linear" },
+          { frame: 39, value: [200, 20], interpolation: "linear" },
+        ],
+      },
+    };
+    const stateRef = renderInspector(image, { currentFrame });
+    const toggle = screen.getByRole("button", {name: /Position keyframe at current frame/}) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect((screen.getByRole("spinbutton", {name: "X position in pixels"}) as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(toggle);
+    expect(latestItem<ImageItem>(stateRef).keyframes).toEqual(image.keyframes);
+    // Navigation must enter the nearest key, including the first/last frame.
+    fireEvent.click(screen.getByRole("button", {name: currentFrame < image.from ? "Next Position keyframe" : "Previous Position keyframe"}));
+    expect((screen.getByRole("spinbutton", {name: "X position in pixels"}) as HTMLInputElement).value).toBe(currentFrame < image.from ? "15" : "200");
+    expect((screen.getByRole("button", {name: "Remove Position keyframe at current frame"}) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("keeps keyframe actions readable in the narrow Inspector layout", () => {
     const image: ImageItem = {
       id: "compact-keyframes",

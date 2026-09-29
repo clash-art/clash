@@ -1,6 +1,6 @@
 import { Image as ImageIcon, VideoCamera, FilmSlate, SpeakerHigh, TextT, PencilSimple, FilmStrip, Cube } from '@phosphor-icons/react';
 import {
-    listCompatibleModelCatalogEntries,
+    findCompatibleModels,
     pickDefaultModel,
     type AigcActionKind,
     type ModelCatalogEntry,
@@ -67,10 +67,12 @@ function hasCompatibleGenerationModel(
     sourceKind?: Modality,
     catalog: ReadonlyArray<ModelCatalogEntry> = [],
 ): boolean {
-    return listCompatibleModelCatalogEntries({
+    // The Host has already resolved this catalog. Menu visibility is a
+    // capability check, not another Provider routing/credential lookup.
+    return findCompatibleModels({
         outputKind,
         sourceKind,
-        models: catalog.map((entry) => entry.model),
+        cards: catalog.map((entry) => entry.model),
     }).length > 0;
 }
 

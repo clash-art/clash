@@ -218,10 +218,10 @@ flowchart LR
 The graph owns transition rules, checkpoint meaning, idempotency keys, and
 recovery decisions. An adapter owns persistence and byte staging only:
 
-| Realm | Journal                 | Byte staging                    | Project publication                           | Delivery status |
-| ----- | ----------------------- | ------------------------------- | --------------------------------------------- | --------------- |
-| Local | SQLite run/step journal | Local content-addressed storage | Native Run/Output Commit or legacy projection | Current work    |
-| Cloud | D1 private journal + Workflow scheduling | R2 bytes + immutable receipts | Hosted legacy D1 Asset + sequenced Canvas projection | Delivered legacy path |
+| Realm | Journal                                  | Byte staging                    | Project publication                                  | Delivery status       |
+| ----- | ---------------------------------------- | ------------------------------- | ---------------------------------------------------- | --------------------- |
+| Local | SQLite run/step journal                  | Local content-addressed storage | Native Run/Output Commit or legacy projection        | Current work          |
+| Cloud | D1 private journal + Workflow scheduling | R2 bytes + immutable receipts   | Hosted legacy D1 Asset + sequenced Canvas projection | Delivered legacy path |
 
 Cloud must implement these three ports together: **Workflow journal + OSS
 staging + ProjectPublisher**. A Workflow that bypasses the shared graph, writes
@@ -273,6 +273,27 @@ be reconstructed, so migration must not blindly submit another paid request.
 D1 migrations, R2/Workflow/ProjectRoom bindings, recovery scheduling and configured
 provider accounts are deployment prerequisites; local tests are not live provider
 or deployment evidence.
+
+### Node execution adapter (2026-09-17)
+
+CF and Node also share `hosted-generation`: admission ordering, frozen account/input
+validation, lifecycle hooks and retry classification. Platform ports provide
+access checks, routing/credentials, staging, publication and scheduling. Node
+binds these through `createNodeGenerationService`; CF uses its existing adapters.
+The historical generation wire field names remain compatible.
+
+Node can drive the same cloud coordinator and DurableRunEngine through BullMQ
+6.3.6 PostgreSQL Flows. Provider, stage and publish are queue dependency boundaries;
+the shared journal remains the business authority. CF retains Workflow scheduling
+and D1 persistence; Node supplies PostgreSQL CAS persistence and stable-ID outbox
+handoff. Local retains its own coordinator over the same engine.
+
+The Node checkpoint CLI is connected to BullMQ worker threads. The generation
+runtime currently requires injected product ports: authenticated admission,
+credentials, durable output staging and Project publication are not connected to
+the Node service. Real PostgreSQL fixture tests establish execution and crash
+recovery, not a deployed end-to-end Node generation product. See
+[Node service](../../../api-node/README.md#node-generation-execution-adapter).
 
 ### Native Cloud adapter extension contract
 

@@ -23,7 +23,8 @@ import {
   MODEL_CARDS,
 } from "@clash/shared-types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLocalApiApp, type LocalAcpAgentServersConfig } from "./app";
+import { type LocalAcpAgentServersConfig } from "./app";
+import { managedLocalApiApps } from "./local-api-app.test-fixtures";
 import { createLocalAudioConfigStore } from "./audio-config";
 import { createMockFalQueueService } from "./fal-mock";
 import { FileReplicaStore } from "./loro/file-replica-store";
@@ -33,10 +34,31 @@ import { createLocalPluginAssetStagingStore } from "./local-plugin-asset-staging
 import type { LocalAssetRepresentationService } from "./local-asset-representations";
 import { localFfmpegPath } from "./local-media-binaries";
 import { openPluginStore } from "./plugin-store";
+import { createLocalMetadataStore } from "./local-metadata-store";
+import { getLocalReplicaId } from "./local-replica-identity";
 
 const execFileAsync = promisify(execFile);
 
 let dataDir = "";
+const { createApp: createLocalApiApp, close: closeApps } = managedLocalApiApps();
+
+// Status/recovery tests begin from Host-owned admission records. Global sync
+// preferences cannot admit a Project or attest completed replication.
+async function seedProjectAdmission(projectId: string, status: "pending" | "ready") {
+  await createLocalMetadataStore(dataDir).upsertProjectCloudAdmission({
+    schemaVersion: 1,
+    projectId,
+    tenantId: "personal:local-user",
+    userId: "local-user",
+    localReplicaId: await getLocalReplicaId(dataDir),
+    syncBaseUrl: "https://api.example.com",
+    status,
+    capabilities: { canvas: true, projectMetadata: true, resources: true },
+    admittedAt: status === "ready" ? "2026-09-04T00:00:00.000Z" : null,
+    updatedAt: "2026-09-04T00:00:00.000Z",
+    lastError: null,
+  });
+}
 
 function openSqlite() {
   const require = createRequire(import.meta.url);
@@ -116,6 +138,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await closeApps();
   if (dataDir) await rm(dataDir, { recursive: true, force: true });
 });
 
@@ -1662,7 +1685,7 @@ describe("local API app", () => {
     }
   });
 
-  it("does not expose hosted action or skill install mutations locally", async () => {
+  it("rejects retired Action installation and unsupported hosted skill writes locally", async () => {
     const app = createLocalApiApp({ dataDir, userId: "local-user" });
 
     for (const path of [
@@ -1699,7 +1722,12 @@ describe("local API app", () => {
         headers: { "content-type": "application/json" },
         body: body ? JSON.stringify(body) : undefined,
       });
-      expect(res.status).toBe(404);
+      if (method === "POST" && path === "/api/settings/actions") {
+        expect(res.status).toBe(410);
+        expect(await res.json()).toMatchObject({ code: "LEGACY_ACTION_INSTALL_RETIRED" });
+      } else {
+        expect(res.status).toBe(404);
+      }
     }
   });
 
@@ -1987,7 +2015,7 @@ describe("local API app", () => {
     }
   });
 
-  it("persists one stable Project Asset id as the project cover", async () => {
+  it("persists the legacy cover identity without overriding automatic preview order", async () => {
     const app = createLocalApiApp({ dataDir, userId: "local-user" });
     const created = await app.request("/api/v1/projects", {
       method: "POST",
@@ -2020,7 +2048,7 @@ describe("local API app", () => {
       projects: Array<{
         coverAssetId: string | null;
         assetCount: number;
-        assets: Array<{ kind: string }>;
+        assets: Array<{ id: string; kind: string }>;
       }>;
     };
     expect(beforeCoverBody).toMatchObject({
@@ -2055,8 +2083,10 @@ describe("local API app", () => {
     expect(listedBody.projects[0]).toMatchObject({
       coverAssetId: "asset-z-cover",
       assetCount: 2,
-      assets: [{ id: "asset-z-cover" }, { id: "asset-first" }],
     });
+    expect(listedBody.projects[0]?.assets.map((asset) => asset.id)).toEqual(
+      beforeCoverBody.projects[0]?.assets.map((asset) => asset.id),
+    );
 
     const reopened = createLocalApiApp({ dataDir, userId: "local-user" });
     const detail = await reopened.request(`/api/v1/projects/${projectId}`);
@@ -2555,7 +2585,7 @@ describe("local API app", () => {
     await expect(listed.json()).resolves.toEqual({ assets: [] });
   });
 
-  it("does not publish decoded PNG bytes under a false JPEG media type", async () => {
+  it("imports a mislabeled image under its decoded PNG media type", async () => {
     const app = createLocalApiApp({ dataDir, userId: "local-user" });
     const created = await app.request("/api/v1/projects", {
       method: "POST",
@@ -2579,11 +2609,14 @@ describe("local API app", () => {
       `/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-file`,
       { method: "POST", body: form },
     );
-    expect(imported.status).not.toBe(201);
+    expect(imported.status, await imported.clone().text()).toBe(201);
+    expect((await imported.json()).metadata.contentType).toBe("image/png");
     const listed = await app.request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/assets`,
     );
-    await expect(listed.json()).resolves.toEqual({ assets: [] });
+    expect((await listed.json()).assets).toMatchObject([
+      { id: "asset:false-jpeg", metadata: { contentType: "image/png" } },
+    ]);
   });
 
   it("keeps all concurrent project creates instead of last-write-wins overwriting metadata", async () => {
@@ -8968,6 +9001,7 @@ describe("local API app", () => {
     expect(listHarnesses).toHaveBeenCalledWith({
       probe: "auth",
       refresh: true,
+      checkUpdates: false,
     });
     expect(await listed.json()).toMatchObject({
       harnesses: [
@@ -11583,6 +11617,12 @@ describe("local API app", () => {
       headers: { "content-type": "application/json" },
     });
     const project = (await created.json()) as { id: string };
+    expect(await (await app.request(`/api/v1/projects/${project.id}/status`)).json()).toMatchObject({
+      syncMode: "local-only",
+      collaboration: { mode: "local-only", webOpenable: false },
+    });
+    await seedProjectAdmission(project.id, "pending");
+
 
     const statusRes = await app.request(
       `/api/v1/projects/${project.id}/status`,
@@ -11686,6 +11726,12 @@ describe("local API app", () => {
       headers: { "content-type": "application/json" },
     });
     const project = (await created.json()) as { id: string };
+    expect(await (await app.request(`/api/v1/projects/${project.id}/status`)).json()).toMatchObject({
+      syncMode: "local-only",
+      collaboration: { mode: "local-only", webOpenable: false },
+    });
+    await seedProjectAdmission(project.id, "ready");
+
 
     const statusRes = await app.request(
       `/api/v1/projects/${project.id}/status`,
@@ -12086,14 +12132,31 @@ describe("local API app", () => {
     const app = createLocalApiApp({
       dataDir,
       userId: "local-user",
-      syncConfig,
+      syncConfig: { ...syncConfig, resolveRemotePersistence: async () => undefined },
     });
+    const other = await app.request("/api/v1/projects", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Unadmitted local project" }),
+    });
+    const otherProject = await other.json() as { id: string };
+    const otherDeleted = await app.request(`/api/v1/projects/${otherProject.id}`, { method: "DELETE" });
+    expect(otherDeleted.status).toBe(200);
+    expect(await otherDeleted.json()).toMatchObject({ recoveryPolicy: {
+      collaborationMode: "local-only", requiresCloudConflictReview: false,
+      syncReadinessStatus: "disabled", cloudStateMutated: false,
+    } });
     const created = await app.request("/api/v1/projects", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "Cloud Sync Local Recovery Project" }),
     });
     const project = (await created.json()) as { id: string; readToken: string };
+    expect(await (await app.request(`/api/v1/projects/${project.id}/status`)).json()).toMatchObject({
+      syncMode: "local-only",
+      collaboration: { mode: "local-only", webOpenable: false },
+    });
+    await seedProjectAdmission(project.id, "ready");
+
     const expectedPolicy = {
       scope: "local-canonical-replica",
       collaborationMode: "synced",

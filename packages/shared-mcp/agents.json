@@ -1,6 +1,9 @@
 {
   "summary": "Shared MCP registration, command dispatch, and schema compatibility boundary. Tool families describe product entities; leaf adapters call the existing Host authority.",
   "key_files": {
+    "src/content-tools.ts": "Assets content_list/content_search/content_read use the same shared project content client as CLI and GUI. Returned exact refs preserve revision identity; validation happens before Host requests.",
+    "src/content-tools.test.ts": "Runs content discovery and browse/search/read through the actual Assets dispatcher, including cwd project resolution and malformed-ref rejection.",
+    "src/action-tools.ts": "Operation discovery/invoke/wait and Asset evidence search/record tools; use the same clients as the CLI and resolve the bound cwd Project. External records never execute their detail or pretend to be native Runs.",
     "src/server.ts": "Clash command dispatchers, including Assets and Generators, with live contract disclosure.",
     "src/generator-tools.ts": "Generator, Revision, Action Run, and Output Commit HTTP operations.",
     "src/document-tools.ts": "Read-only Assets operation for exact Document revision bodies and provenance. Registered by the production MCP server using its authenticated Host request transport. Shared Document envelope sanitation removes internal observation receipts from public results while preserving body content.",

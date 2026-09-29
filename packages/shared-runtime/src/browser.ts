@@ -141,3 +141,6 @@ export {
   type PikaCatalogQuote,
   type PikaQuoteComponent,
 } from "./pika-pricing.js";
+export { createAssetSearchClient } from "./asset-search-client.js";
+export { createProjectContentClient } from "./project-content-client.js";
+export { createAssetEvidenceClient, AssetEvidenceRecordingError, type RecordMediaOperationInput, type RecordMediaObservationInput, type RecordedAssetEvidence } from "./asset-evidence-client.js";

@@ -12,14 +12,14 @@
   "scripts": {
     "build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && vite build --config vite.renderer.config.ts",
     "dev": "electron-forge start",
-    "pack:dir": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --dir --config electron-builder.yml",
-    "pack:dmg": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --mac dmg --arm64 --config electron-builder.yml --publish never",
+    "pack:dir": "electron-builder --dir --config electron-builder.yml",
+    "pack:dmg": "electron-builder --mac dmg --arm64 --config electron-builder.yml --publish never",
     "pack:mac": "pnpm pack:mac:arm64",
-    "pack:mac:arm64": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --mac dmg --arm64 --config electron-builder.yml --publish never",
-    "pack:mac:x64": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --mac dmg --x64 --config electron-builder.yml --publish never",
-    "pack:mac:universal": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --mac dmg --universal --config electron-builder.yml --publish never",
-    "pack:win": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --win nsis --x64 --config electron-builder.yml --publish never",
-    "pack:linux": "pnpm --dir ../.. prepare:desktop-pack && electron-builder --linux AppImage --x64 --config electron-builder.yml --publish never",
+    "pack:mac:arm64": "electron-builder --mac dmg --arm64 --config electron-builder.yml --publish never",
+    "pack:mac:x64": "electron-builder --mac dmg --x64 --config electron-builder.yml --publish never",
+    "pack:mac:universal": "electron-builder --mac dmg --universal --config electron-builder.yml --publish never",
+    "pack:win": "electron-builder --win nsis --x64 --config electron-builder.yml --publish never",
+    "pack:linux": "electron-builder --linux AppImage --x64 --config electron-builder.yml --publish never",
     "prepare:harnesses": "node scripts/prepare-acp-harnesses.ts",
     "prepare:pack": "node scripts/prepare-clash-cli.ts",
     "start": "electron . --desktop-static-renderer",
@@ -69,6 +69,8 @@
     "tsx": "^4.23.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "@clash/gui": "workspace:*",
+    "@clash/web": "workspace:*"
   }
 }

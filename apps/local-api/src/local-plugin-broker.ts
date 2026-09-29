@@ -231,6 +231,7 @@ export interface LocalExecutablePluginBrokerOptions {
     prompt: string;
     promptVersion: string;
     responseFormat?: "json" | "text";
+    deadlineAt?: number;
   }) => Promise<ExecutableMediaAnalysisResult>;
   transcribeSpeech?: (input: {
     projectId: string;
@@ -725,6 +726,7 @@ export function createLocalExecutablePluginBroker(
             prompt: operation.prompt,
             promptVersion: operation.promptVersion,
             ...(operation.responseFormat ? { responseFormat: operation.responseFormat } : {}),
+            ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
           }),
         ) as ExecutablePluginJsonValue;
       } else if (operation.kind === "speech.transcribe") {

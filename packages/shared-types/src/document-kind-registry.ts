@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MediaObservationSchema, MediaOperationTraceSchema } from "./asset-evidence.js";
 import { MODEL_TEXT_DOCUMENT_KIND, MODEL_TEXT_DOCUMENT_SCHEMA_VERSION } from "./model-output-contract.js";
 
 import {
@@ -118,9 +119,33 @@ registerDocumentKind({
     mutability: "versioned",
     projection: { format: "text", editable: true },
     allowedAttachmentTargets: ["generator-revision", "action-run"],
-    productConsumers: [],
+    productConsumers: ["search"],
   },
   schema: z.string().refine((value) => value.trim().length > 0, "Generated text must not be empty."),
+});
+
+registerDocumentKind({
+  definition: {
+    kind: "media.operation-trace",
+    schemaVersion: 1,
+    mutability: "immutable",
+    projection: { format: "json", editable: false },
+    allowedAttachmentTargets: ["project-asset"],
+    productConsumers: ["provenance", "search", "agent-context"],
+  },
+  schema: MediaOperationTraceSchema,
+});
+
+registerDocumentKind({
+  definition: {
+    kind: "media.observation",
+    schemaVersion: 1,
+    mutability: "versioned",
+    projection: { format: "json", editable: true },
+    allowedAttachmentTargets: ["project-asset"],
+    productConsumers: ["search", "agent-context"],
+  },
+  schema: MediaObservationSchema,
 });
 
 registerDocumentKind({

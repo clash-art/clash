@@ -187,7 +187,9 @@ explicit adapters, with compile-time/test coverage gates against descriptor
 drift.
 
 The current release is schema version \`${TIMELINE_DSL_DEFINITION.schemaVersion}\`
-with fingerprint \`${TIMELINE_DSL_DEFINITION.contractFingerprint}\`. Version 13
+with fingerprint \`${TIMELINE_DSL_DEFINITION.contractFingerprint}\`. Version 14
+documents compact Timeline list reads and atomic shared-boundary roll edits.
+Authored Timeline YAML remains compatible. Version 13
 clarifies that create, save, and apply validate automatically before mutation
 and reserves the explicit validator for diagnostic-only workflows where no
 write is intended. Version 12 adds compact reference-based authoring discovery

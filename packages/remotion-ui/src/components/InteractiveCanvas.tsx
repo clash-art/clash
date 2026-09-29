@@ -327,49 +327,6 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
     return null;
   }, [tracks, selectedItemId]);
 
-  // 自动初始化 properties（如果不存在）- 智能填充逻辑
-  // 注意：后端 patch_dsl 已经会自动计算并设置 properties，这里只是作为兜底
-  // 使用 ref 来跟踪已处理的 item，避免重复初始化
-  const initializedItemsRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    // 筛选出没有 properties 的 item，且未被初始化过
-    const uninitializedItems = tracks
-      .flatMap((t) => t.items.map((i) => ({ trackId: t.id, item: i })))
-      .filter(
-        (x) =>
-          isCanvasTransformableItem(x.item) &&
-          !x.item.properties &&
-          !initializedItemsRef.current.has(x.item.id),
-      );
-
-    if (uninitializedItems.length === 0) return;
-
-    uninitializedItems.forEach(async ({ trackId, item }) => {
-      // 标记为正在初始化，防止重复处理
-      initializedItemsRef.current.add(item.id);
-
-      const width = 1;
-      const height = 1;
-
-      // width=1, height=1 means "Contain Fit" (scale to fit within canvas while preserving aspect ratio)
-      // This ensures the asset is fully visible and maximized within the canvas by default
-
-      const defaultProperties: ItemProperties = {
-        x: 0,
-        y: 0,
-        width,
-        height,
-        rotation: 0,
-        opacity: 1,
-      };
-
-      onUpdateItem(trackId, item.id, {
-        properties: defaultProperties,
-      });
-    });
-  }, [tracks, onUpdateItem]);
-
   // 准备 Player 的 inputProps
   const inputProps = React.useMemo(
     () => ({
@@ -1184,7 +1141,7 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
   // width=1, height=1 means 100% of media's natural size (not composition size)
   const getItemRenderInfo = useCallback(
     (item: Item) => {
-      if (!item.properties) return null;
+      // Resolve implicit transforms for interaction without committing an edit.
       const visibleProperties = resolveCanvasTransformProperties(
         item,
         currentFrame,
@@ -1273,7 +1230,6 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
     for (const track of tracks) {
       for (const item of track.items) {
         if (!isCanvasTransformableItem(item)) continue;
-        if (!item.properties) continue;
         if (
           currentFrame < item.from ||
           currentFrame >= item.from + item.durationInFrames

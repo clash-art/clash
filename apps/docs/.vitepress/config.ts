@@ -56,6 +56,10 @@ export default withMermaid(defineConfig({
             { text: "Authoring Workflow", link: "/plugins/authoring" },
             { text: "Identity", link: "/plugins/identity" },
             { text: "Manifest & Artifacts", link: "/plugins/manifest" },
+            {
+              text: "View & Asset Reference Protocol",
+              link: "/plugins/view-generator-spec",
+            },
             { text: "Choosing a Strategy", link: "/plugins/strategies" },
             { text: "Waiting for a Provider", link: "/plugins/waiting" },
             { text: "Provider Auth", link: "/plugins/plugin-provider-auth" },

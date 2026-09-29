@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { describeClashTool } from "@clash/shared-mcp";
 
 export type DccInput = {
   app: "blender" | "maya";
@@ -281,7 +282,14 @@ export function registerClashDccMcp(
       `clash_plugin_dcc_${definition.action}`,
       {
         title: definition.title,
-        description: `${definition.description} No separate Blender/Maya MCP setup is required.`,
+        description: describeClashTool({
+          useWhen: `the connected Blender or Maya project needs: ${definition.title}`,
+          effect: definition.description,
+          returns: "the native operation result, or a structured connection, scope, or execution error",
+          next: definition.readOnly
+            ? "use the returned scene or capability facts to choose the next operation; no separate Blender/Maya MCP setup is required"
+            : "inspect the scene and Assets after an uncertain result before retrying a mutation; no separate Blender/Maya MCP setup is required",
+        }),
         inputSchema: { ...scope, ...definition.schema },
         annotations: {
           readOnlyHint: definition.readOnly === true,

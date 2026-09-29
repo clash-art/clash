@@ -22,11 +22,11 @@ describe("root route primitives", () => {
       'content="Where agents co-create, humans are welcome too. A desktop creative platform that gives agents real tools for planning, editing, directing, and producing."',
     );
     expect(html).toContain(
-      '<link rel="canonical" href="https://clash.video/" />',
+      '<link rel="canonical" href="https://clash.art/" />',
     );
     expect(html).toContain('<meta property="og:type" content="website" />');
     expect(html).toContain(
-      '<meta property="og:url" content="https://clash.video/" />',
+      '<meta property="og:url" content="https://clash.art/" />',
     );
     expect(manifest.description).toBe(
       "Where agents co-create, humans are welcome too.",
@@ -53,10 +53,10 @@ describe("root route primitives", () => {
 
     expect(robots).toContain("User-agent: *");
     expect(robots).toContain("Allow: /");
-    expect(robots).toContain("Sitemap: https://clash.video/sitemap.xml");
-    expect(sitemap).toContain("<loc>https://clash.video/</loc>");
-    expect(sitemap).toContain("<loc>https://clash.video/download</loc>");
-    expect(sitemap).toContain("<loc>https://clash.video/docs</loc>");
+    expect(robots).toContain("Sitemap: https://clash.art/sitemap.xml");
+    expect(sitemap).toContain("<loc>https://clash.art/</loc>");
+    expect(sitemap).toContain("<loc>https://clash.art/download</loc>");
+    expect(sitemap).toContain("<loc>https://clash.art/docs</loc>");
     expect(sitemap).not.toContain("/login");
   });
 

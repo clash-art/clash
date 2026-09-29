@@ -48,8 +48,8 @@ export function resolveCliBrowserOrigin(
   const configured = env.CLASH_AUTH_URL?.trim();
   if (configured) return normalizeHttpOrigin(configured, "CLASH_AUTH_URL");
   const apiOrigin = new URL(normalizeHttpOrigin(serverUrl, "Clash API URL"));
-  if (apiOrigin.hostname === "api.clash.video") {
-    apiOrigin.hostname = "clash.video";
+  if (apiOrigin.hostname === "api.clash.art") {
+    apiOrigin.hostname = "clash.art";
   }
   return apiOrigin.origin;
 }

@@ -1,0 +1,6 @@
+{
+  "summary": "Native Node 24 opt-in acceptance launchers. No release builds or production changes.",
+  "key_files": {
+    "test-cluster.ts": "Starts a disposable loopback PostgreSQL cluster using PG_BIN or PATH, runs multi-process integration and cleans up its own cluster. Requires initdb/pg_ctl and pnpm; does not install services."
+  }
+}

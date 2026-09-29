@@ -44,7 +44,7 @@ import { stripSrcFromTracks } from "@clash/web-ui/lib/timelineDsl";
 import { resolveAssetMediaUrl } from "../features/assets/media-url";
 import { assetAvailabilityLabel } from "../features/assets/availability";
 import { getAsset } from "@clash/web-ui/lib/hooks/useAsset";
-import { CanvasIcon } from "./ProjectSurfaceIcon";
+import { ParentCanvasButton } from "./ParentCanvasButton";
 import {
   hasProjectAssetDragData,
   readProjectAssetDragId,
@@ -342,6 +342,7 @@ export function ProjectAssetSurface({
   inspector,
   headerAction,
   headerEndInset = 0,
+  seekRequest,
 }: {
   asset: ResolvedAsset;
   renderEditor?: (
@@ -351,7 +352,9 @@ export function ProjectAssetSurface({
   inspector?: ReactNode;
   headerAction?: ReactNode;
   headerEndInset?: number;
+  seekRequest?: { startMs: number };
 }) {
+  const mediaRef = useRef<HTMLMediaElement | null>(null);
   const [failed, setFailed] = useState(false);
   const [mediaMetadata, setMediaMetadata] =
     useState<ProjectAssetEditMetadata | null>(null);
@@ -361,6 +364,12 @@ export function ProjectAssetSurface({
   const ready = asset.status === "ready";
   const previewUrl = ready ? (resolveAssetMediaUrl(asset.url) ?? "") : "";
   const availabilityLabel = assetAvailabilityLabel(asset);
+  const seekToEvidence = useCallback((media: HTMLMediaElement) => {
+    if (!seekRequest || !Number.isFinite(seekRequest.startMs) || seekRequest.startMs < 0) return;
+    const seconds = seekRequest.startMs / 1000;
+    media.currentTime = Number.isFinite(media.duration) ? Math.min(seconds, media.duration) : seconds;
+  }, [seekRequest]);
+  useEffect(() => { if (mediaRef.current) seekToEvidence(mediaRef.current); }, [seekToEvidence, asset.id, previewUrl]);
 
   useEffect(() => {
     setFailed(false);
@@ -449,17 +458,19 @@ export function ProjectAssetSurface({
           ) : asset.kind === "video" ? (
             <div className="flex h-full w-full items-center justify-center bg-stone-950 p-6">
               <video
+                ref={(element) => { mediaRef.current = element; }}
                 src={previewUrl}
                 aria-label={label}
                 className="max-h-full max-w-full bg-black object-contain shadow-2xl"
                 controls
                 playsInline
                 preload="metadata"
-                onLoadedMetadata={(event) =>
+                onLoadedMetadata={(event) => {
                   setMediaMetadata({
                     durationSec: event.currentTarget.duration,
-                  })
-                }
+                  });
+                  seekToEvidence(event.currentTarget);
+                }}
                 onError={() => setFailed(true)}
               />
             </div>
@@ -467,11 +478,13 @@ export function ProjectAssetSurface({
             <div className="flex h-full items-center justify-center p-6">
               <div className="w-full max-w-xl rounded-2xl border border-warm-border bg-warm-surface p-5 shadow-sm">
                 <audio
+                  ref={(element) => { mediaRef.current = element; }}
                   src={previewUrl}
                   aria-label={label}
                   className="w-full"
                   controls
                   preload="metadata"
+                  onLoadedMetadata={(event) => seekToEvidence(event.currentTarget)}
                   onError={() => setFailed(true)}
                 />
               </div>
@@ -557,6 +570,7 @@ export function ProjectTimelineEditorSurface({
   const lastIncomingRevisionRef = useRef(timeline.revisionId);
   const editorBaseReadTokenRef = useRef(projectTimelineReadToken(timeline));
   const lastObservedProjectionRef = useRef<string | null>(null);
+  const lastProjectionInputRef = useRef<EditorState | null>(null);
   const hasLocalTimelineChangesRef = useRef(false);
   const saveInFlightRef = useRef<Promise<boolean> | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(
@@ -701,7 +715,9 @@ export function ProjectTimelineEditorSurface({
       // A child editor can emit its initial projection before our parent effect.
       // Recognize a genuinely new incoming revision, not an old prop left behind
       // briefly after our own asynchronous save acknowledgement.
-      if (timeline.revisionId !== lastIncomingRevisionRef.current && !hasLocalTimelineChangesRef.current) {
+      if (timeline.revisionId !== lastIncomingRevisionRef.current &&
+          timeline.revisionId !== editorBaseRevisionRef.current &&
+          !hasLocalTimelineChangesRef.current) {
         if (saveTimerRef.current !== null) {
           globalThis.clearTimeout(saveTimerRef.current);
           saveTimerRef.current = null;
@@ -713,6 +729,19 @@ export function ProjectTimelineEditorSurface({
         setEditorRevisionKey(timeline.revisionId);
       }
       editorStateRef.current = state;
+      const previous = lastProjectionInputRef.current;
+      // Zoom/selection are editor presentation. Immutable authored fields that
+      // have not changed cannot produce a different persisted Timeline hash.
+      // A new incoming revision clears the projection and must still be read.
+      if (lastObservedProjectionRef.current !== null && previous &&
+          previous.tracks === state.tracks &&
+          previous.primaryTrackId === state.primaryTrackId &&
+          previous.compositionWidth === state.compositionWidth &&
+          previous.compositionHeight === state.compositionHeight &&
+          previous.fps === state.fps &&
+          previous.durationInFrames === state.durationInFrames &&
+          previous.assetTranscripts === state.assetTranscripts) return;
+      lastProjectionInputRef.current = state;
       const projectionRevision = projectTimelineRevisionId(
         timeline.id,
         persistedTimelineState(state, false),
@@ -902,16 +931,7 @@ export function ProjectTimelineEditorSurface({
     ? canvases.find((canvas) => canvas.id === parentCanvasId)
     : undefined;
   const parentCanvasAction = parentCanvas ? (
-    <Tooltip label={`Open parent Canvas ${parentCanvas.name}`}>
-      <IconButton
-        label={`Open parent Canvas ${parentCanvas.name}`}
-        icon={<CanvasIcon className="h-4 w-4" weight="regular" />}
-        size="sm"
-        shape="rounded"
-        onClick={() => onOpenCanvas(parentCanvas.id)}
-        className="h-8 min-h-8 w-8 min-w-8 rounded-md text-content-muted hover:bg-warm-hover hover:text-content-primary"
-      />
-    </Tooltip>
+    <ParentCanvasButton canvas={parentCanvas} onOpenCanvas={onOpenCanvas} />
   ) : undefined;
   const handleProjectAssetDragOver = useCallback(
     (event: DragEvent<HTMLElement>) => {

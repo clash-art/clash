@@ -353,6 +353,19 @@ describe("Project workspace model", () => {
       .readNode("storyboard-draft")?.data).not.toHaveProperty("generatorId");
   });
 
+  it("does not create the implicit Canvas when a View has invalid resource references", () => {
+    const doc = new LoroDoc();
+    const before = doc.toJSON();
+    const result = workspace.createProjectPluginView(doc, {
+      nodeId: "invalid-view",
+      label: "Invalid View",
+      view: { pluginId: "community.storyboard", definitionId: "storyboard", version: "1.0.0", schemaHash: `sha256:${"a".repeat(64)}` },
+      state: { keyElements: [], shots: [], audioLayers: [], uncategorized: [{ id: "resource-without-asset", mediaKind: "image" }] },
+    });
+    expect(result.ok).toBe(false);
+    expect(doc.toJSON()).toEqual(before);
+  });
+
   it("does not register a Canvas merely because a scoped reader was constructed", () => {
     const doc = new LoroDoc();
     const missing = new Canvas(doc, () => {}, "typo");

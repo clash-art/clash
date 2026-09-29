@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2022"
+    ],
     "jsx": "react-jsx",
     "strict": true,
     "skipLibCheck": true,
@@ -15,21 +19,52 @@
     "noEmit": true,
     "incremental": true,
     "tsBuildInfoFile": "./.cache/typecheck.tsbuildinfo",
-    "types": ["node", "vitest/globals", "@testing-library/jest-dom"],
+    "types": [
+      "node",
+      "vitest/globals",
+      "@testing-library/jest-dom"
+    ],
     "baseUrl": "src",
     "paths": {
-      "@/*": ["./*"],
-      "@clash/action-sdk/browser": ["../../action-sdk/src/browser.ts"],
-      "@clash/asset-sdk": ["../../asset-sdk/src/index.ts"],
-      "@clash/gui": ["../../gui/src/index.ts"],
-      "@clash/gui/*": ["../../gui/src/*"],
-      "@clash/shared-layout": ["../../shared-layout/src/index.ts"],
-      "@clash/shared-types": ["../../shared-types/src/index.ts"],
-      "@clash/shared-types/*": ["../../shared-types/src/*.ts"],
-      "@clash/shared-runtime": ["../../shared-runtime/src/browser.ts"],
-      "@clash/shared-runtime/*": ["../../shared-runtime/src/*.ts"],
-      "@clash/replica/*": ["../../shared-replica/src/*.ts"]
+      "@/*": [
+        "./*"
+      ],
+      "@clash/action-sdk/browser": [
+        "../../action-sdk/src/browser.ts"
+      ],
+      "@clash/asset-sdk": [
+        "../../asset-sdk/src/index.ts"
+      ],
+      "@clash/gui": [
+        "../../gui/src/index.ts"
+      ],
+      "@clash/gui/*": [
+        "../../gui/src/*"
+      ],
+      "@clash/shared-layout": [
+        "../../shared-layout/src/index.ts"
+      ],
+      "@clash/shared-types": [
+        "../../shared-types/src/index.ts"
+      ],
+      "@clash/shared-types/*": [
+        "../../shared-types/src/*.ts"
+      ],
+      "@clash/shared-runtime": [
+        "../../shared-runtime/src/browser.ts"
+      ],
+      "@clash/shared-runtime/*": [
+        "../../shared-runtime/src/*.ts"
+      ],
+      "@clash/replica/*": [
+        "../../shared-replica/src/*.ts"
+      ],
+      "@clash/action-sdk/ui": [
+        "../../action-sdk/src/ui.ts"
+      ]
     }
   },
-  "include": ["src/**/*"]
+  "include": [
+    "src/**/*"
+  ]
 }

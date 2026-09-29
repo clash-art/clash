@@ -37,7 +37,7 @@ const mocks = vi.hoisted(() => ({
                     type: string;
                     from: number;
                     durationInFrames: number;
-                    sourceNodeId: string;
+                    sourceNodeId?: string;
                     assetId?: string;
                 }>,
             },
@@ -83,6 +83,11 @@ vi.mock('../ProjectContext', () => ({
 
 vi.mock('../LoroSyncContext', () => ({
     useOptionalLoroSyncContext: () => ({
+        timelines: [{
+            id: 'timeline-1',
+            revisionId: 'revision-1',
+            state: mocks.timelineState,
+        }],
         doc: {
             subscribe: () => () => undefined,
             getMap: () => ({
@@ -90,19 +95,6 @@ vi.mock('../LoroSyncContext', () => ({
             }),
         },
     }),
-}));
-
-// Replacing the whole module dropped every other export the component tree reads,
-// so keep the real module and override only the lookup this test controls.
-vi.mock('@clash/shared-types', async (importOriginal) => ({
-    ...(await importOriginal<typeof import('@clash/shared-types')>()),
-    listProjectTimelines: () => [
-        {
-            id: 'timeline-1',
-            revisionId: 'revision-1',
-            state: mocks.timelineState,
-        },
-    ],
 }));
 
 vi.mock('@clash/web-ui/lib/hooks/useAsset', () => ({
@@ -151,6 +143,16 @@ afterEach(() => {
 });
 
 describe('VideoEditorNode cover', () => {
+    it('resolves an Asset-only clip without persisting a synthetic Canvas hint', async () => {
+        mocks.nodes = [];
+        mocks.timelineState.tracks[0].items = [{
+            id: 'asset-only', type: 'video', assetId: 'video-asset', from: 0, durationInFrames: 60,
+        }];
+        render(<VideoEditorNode {...baseNodeProps} id="timeline-action" type="videoEditor" data={{ timelineId: 'timeline-1' }} />);
+        await waitFor(() => expect(document.querySelector('img')?.getAttribute('src')).toBe(mocks.asset.thumbnailUrl));
+        expect(mocks.timelineState.tracks[0].items[0]).not.toHaveProperty('sourceNodeId');
+    });
+
     it('uses the Host-projected thumbnail without reconstructing a storage locator', () => {
         expect(assetPreviewMedia(mocks.asset as never)).toEqual({
             kind: 'image',

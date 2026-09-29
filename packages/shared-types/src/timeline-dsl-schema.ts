@@ -527,7 +527,7 @@ function timelineDslContractFingerprint(value: unknown): string {
 }
 
 const timelineDslSerializableDefinition = {
-  schemaVersion: 13,
+  schemaVersion: 14,
   format: "clash.timeline.yaml",
   description:
     "Agent-facing Timeline YAML DSL. Pull before editing and apply with the matching read proof.",

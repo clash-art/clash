@@ -1,411 +1,510 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router";
-import { motion } from "framer-motion";
-import { GoogleLogo } from "@phosphor-icons/react";
+import "./login.css";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
+import { GoogleLogo, ArrowLeft } from "@phosphor-icons/react";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
-import Background from "@clash/gui/components/Background";
+import { runtimeApiUrl } from "@clash/web-ui/lib/runtimeConfig";
 import { Button } from "@clash/gui/components/ui/button";
-import { InlineAlert } from "@clash/gui/components/ui/feedback";
 import { Input } from "@clash/gui/components/ui/input";
+import { InlineAlert } from "@clash/gui/components/ui/feedback";
 import { BrandAsset } from "@clash/web-ui/components/BrandAsset";
+import { continueWithEmail } from "../lib/auth/continue-with-email";
+import { loginReturnPath } from "../lib/auth/login-return";
 
-type Stage = "email" | "otp" | "password";
-type PwAction = "signin" | "signup";
-
-function canonicalLocalAuthUrl(path: string): string | null {
-  if (typeof window === "undefined") return null;
-  if (window.location.protocol !== "http:") return null;
-  if (window.location.hostname !== "127.0.0.1" && window.location.hostname !== "::1") return null;
-  return `http://localhost:${window.location.port || "80"}${path}`;
-}
-
-const authInputClass =
-  "clash-auth-input w-full rounded-2xl px-5 py-3 text-base text-content-primary focus:outline-none";
-const authPrimaryClass =
-  "clash-auth-primary flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 text-base font-semibold disabled:cursor-not-allowed";
-const authSecondaryClass =
-  "clash-auth-secondary flex w-full items-center justify-center gap-3 rounded-2xl px-6 py-4 text-base font-medium disabled:cursor-not-allowed";
-const authTextButtonClass =
-  "text-stone-600 transition-colors hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-page dark:text-neutral-400";
-const authInlineLinkClass =
-  "font-medium text-slate-950 transition-colors hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-page dark:text-neutral-100";
+type Methods = { password: boolean; emailOtp: boolean; google: boolean };
+type Stage = "name" | "quick" | "signin" | "email" | "code";
+const errorMessage = (error: unknown) =>
+  error instanceof Error
+    ? error.message
+    : "Could not connect. Please try again.";
 
 export default function LoginRoute() {
-  const [stage, setStage] = useState<Stage>("email");
-  const [pwAction, setPwAction] = useState<PwAction>("signin");
-  const [email, setEmail] = useState("");
-  const [otp, setOtp] = useState("");
-  const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
-  const [resendAt, setResendAt] = useState<number>(0);
-  const [now, setNow] = useState<number>(Date.now());
+  const [params] = useSearchParams();
   const navigate = useNavigate();
+  const returnTo = loginReturnPath(params.get("returnTo"));
+  const desktop = returnTo.startsWith("/auth/cli?");
   const session = betterAuthClient.useSession();
-  const otpInputRef = useRef<HTMLInputElement>(null);
+  const [methods, setMethods] = useState<Methods | null>(null);
+  const [reload, setReload] = useState(0);
+  const [stage, setStage] = useState<Stage>("signin");
+  const reduceMotion = useReducedMotion();
+  const [direction, setDirection] = useState(1);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const focusAfterSwitch = useRef(false);
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const needsName = useRef(false);
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [resendAt, setResendAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
+  const codeInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    const canonical = canonicalLocalAuthUrl(currentPath);
-    if (canonical) window.location.replace(canonical);
-  }, []);
-
+    if (session.data?.user && !inFlight.current && !needsName.current)
+      navigate(returnTo, { replace: true });
+  }, [session.data, navigate, returnTo]);
   useEffect(() => {
-    if (session.data?.user) navigate("/", { replace: true });
-  }, [session.data, navigate]);
-
-  // tick once a second to update the resend countdown
-  useEffect(() => {
-    if (stage !== "otp") return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [stage]);
-
-  useEffect(() => {
-    if (stage === "otp") otpInputRef.current?.focus();
-  }, [stage]);
-
-  const secondsUntilResend = Math.max(0, Math.ceil((resendAt - now) / 1000));
-
-  const sendCode = async (resend = false) => {
+    const controller = new AbortController();
+    let active = true;
     setError(null);
-    setInfo(null);
-    setIsLoading(true);
-    try {
-      const { error: err } = await (betterAuthClient as any).emailOtp.sendVerificationOtp({
-        email,
-        type: "sign-in",
+    void fetch(runtimeApiUrl("/api/better-auth/options"), {
+      signal: controller.signal,
+      credentials: "include",
+    })
+      .then(async (response) => {
+        if (!response.ok) throw Error("Sign-in is unavailable. Please retry.");
+        const value = (await response.json()) as Partial<Methods>;
+        if (
+          typeof value.password !== "boolean" ||
+          typeof value.emailOtp !== "boolean" ||
+          typeof value.google !== "boolean"
+        )
+          throw Error("This service needs an update before you can sign in.");
+        if (active) {
+          setMethods(value as Methods);
+          setStage(
+            value.emailOtp ? "email" : value.google ? "quick" : "signin",
+          );
+        }
+      })
+      .catch((cause) => {
+        if (active) setError(errorMessage(cause));
       });
-      if (err) throw new Error(err.message || "Failed to send code");
-      setStage("otp");
-      setResendAt(Date.now() + 60_000);
-      setInfo(
-        resend
-          ? "Code re-sent. Check the vite console in dev."
-          : "Code sent. Check the vite console in dev (or your inbox when email is configured).",
-      );
-    } catch (e) {
-      setError((e as Error).message);
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [reload]);
+  useEffect(() => {
+    if (stage !== "code") return;
+    codeInput.current?.focus();
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [stage]);
+  const changeStage = (next: Stage) => {
+    setDirection(next === "email" || next === "quick" ? -1 : 1);
+    focusAfterSwitch.current =
+      panelRef.current?.contains(document.activeElement) === true;
+    setStage(next);
+    setError(null);
+    setPassword("");
+    setCode("");
+  };
+  const run = async (action: () => Promise<void>) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (cause) {
+      setError(errorMessage(cause));
     } finally {
-      setIsLoading(false);
+      inFlight.current = false;
+      setBusy(false);
     }
   };
-
-  const handleEmailSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    await sendCode(false);
+  const sendCode = async () => {
+    const result = await betterAuthClient.emailOtp.sendVerificationOtp({
+      email: email.trim(),
+      type: "sign-in",
+    });
+    if (result.error)
+      throw Error(result.error.message || "Could not send a code.");
+    setCode("");
+    setStage("code");
+    setNow(Date.now());
+    setResendAt(Date.now() + 60000);
   };
-
-  const handleVerify = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
-    setInfo(null);
-    setIsLoading(true);
-    try {
-      const { error: err } = await (betterAuthClient as any).signIn.emailOtp({
-        email,
-        otp,
-      });
-      if (err) throw new Error(err.message || "Invalid code");
-      navigate("/", { replace: true });
-    } catch (e) {
-      setError((e as Error).message);
-      setIsLoading(false);
-    }
-  };
-
-  const handlePassword = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setError(null);
-    setInfo(null);
-    setIsLoading(true);
-    try {
-      if (pwAction === "signin") {
-        const { error: err } = await betterAuthClient.signIn.email({
-          email,
-          password,
-        });
-        if (err) throw new Error(err.message || "Sign in failed");
-      } else {
-        const { error: err } = await betterAuthClient.signUp.email({
-          email,
-          password,
-          name: name || email.split("@")[0],
-        });
-        if (err) throw new Error(err.message || "Sign up failed");
-      }
-      navigate("/", { replace: true });
-    } catch (e) {
-      setError((e as Error).message);
-      setIsLoading(false);
-    }
-  };
-
-  const handleGoogleSignIn = async () => {
-    setError(null);
-    setIsLoading(true);
-    try {
-      const canonical = canonicalLocalAuthUrl("/login");
-      if (canonical) {
-        window.location.href = canonical;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    void run(async () => {
+      if (stage === "name") {
+        if (!name.trim()) throw Error("Please enter your name.");
+        const result = await betterAuthClient.updateUser({ name: name.trim() });
+        if (result.error)
+          throw Error(
+            result.error.message || "Could not save your name. Please retry.",
+          );
+        needsName.current = false;
+        navigate(returnTo, { replace: true });
         return;
       }
-      await betterAuthClient.signIn.social({
-        provider: "google",
-        callbackURL: "/",
-      });
-    } catch (e) {
-      setError((e as Error).message);
-      setIsLoading(false);
-    }
+      if (stage === "email") {
+        await sendCode();
+        return;
+      }
+      if (stage === "code") {
+        const result = await betterAuthClient.signIn.emailOtp({
+          email: email.trim(),
+          otp: code,
+        });
+        if (result.error)
+          throw Error(result.error.message || "Could not verify your code.");
+      } else {
+        const result = await continueWithEmail(betterAuthClient, {
+          email: email.trim(),
+          password,
+        });
+        if (result.created) {
+          needsName.current = true;
+          changeStage("name");
+          return;
+        }
+      }
+      navigate(returnTo, { replace: true });
+    });
   };
-
+  const seconds = Math.max(0, Math.ceil((resendAt - now) / 1000));
+  const heading =
+    stage === "name"
+      ? "What should we call you?"
+      : stage === "code"
+        ? "Check your email"
+        : "Continue to Clash";
+  const linkClass =
+    "border-0 bg-transparent p-0 text-sm shadow-none hover:bg-transparent underline-offset-4 hover:underline";
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden px-5 py-12">
-      <Background />
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5 }}
-        className="clash-auth-panel relative z-10 w-full max-w-[440px] rounded-[28px] px-6 py-7 sm:px-8 sm:py-8"
-      >
-        <div className="mb-8 text-center">
-          <Link to="/" className="group mb-6 inline-block">
+    <main className="login-page bg-background text-foreground">
+      <div className="login-layout bg-background">
+        <aside className="login-art" aria-label="Clash creative workspace">
+          <img
+            src="/art/login-frames-to-film-dark.webp"
+            alt="Colorful glass frames coming together into a continuous film strip."
+            className="login-art-image"
+            width="1086"
+            height="1448"
+          />
+        </aside>
+        <section aria-label="Your Clash account" className="login-form-panel">
+          <div className="login-form-content">
+            <Link
+              to="/"
+              aria-label="Clash home"
+              className="login-brand items-center gap-2 font-display text-xl font-semibold"
+            >
+              <BrandAsset name="mark" alt="" className="size-8" />
+              Clash
+            </Link>
             <motion.div
-              className="flex items-center justify-center gap-2.5"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
+              layout="size"
+              transition={{ duration: reduceMotion ? 0 : 0.24 }}
+              style={{ overflow: "hidden", padding: 4, margin: -4 }}
             >
-              <span className="relative block h-10 w-10">
-                <BrandAsset
-                  name="mark"
-                  alt=""
-                  className="h-10 w-10 object-contain dark:hidden"
-                />
-                <BrandAsset
-                  name="markDark"
-                  alt=""
-                  className="hidden h-10 w-10 object-contain dark:block"
-                />
-              </span>
-              <span className="font-display text-2xl font-semibold leading-none text-slate-950 dark:text-neutral-50">
-                Clash
-              </span>
+              <AnimatePresence initial={false} mode="wait" custom={direction}>
+                <motion.div
+                  key={methods ? stage : "loading"}
+                  ref={panelRef}
+                  custom={direction}
+                  variants={{
+                    enter: (d: number) => ({
+                      opacity: reduceMotion ? 1 : 0,
+                      x: reduceMotion ? 0 : d * 14,
+                    }),
+                    visible: { opacity: 1, x: 0 },
+                    leave: (d: number) => ({
+                      opacity: reduceMotion ? 1 : 0,
+                      x: reduceMotion ? 0 : -d * 10,
+                    }),
+                  }}
+                  initial="enter"
+                  animate="visible"
+                  exit="leave"
+                  transition={{
+                    duration: reduceMotion ? 0 : 0.18,
+                    ease: [0.22, 1, 0.36, 1],
+                  }}
+                  onAnimationComplete={(definition) => {
+                    if (definition === "visible" && focusAfterSwitch.current) {
+                      panelRef.current
+                        ?.querySelector<HTMLElement>("h1")
+                        ?.focus({ preventScroll: true });
+                      focusAfterSwitch.current = false;
+                    }
+                  }}
+                >
+                  <h1
+                    tabIndex={-1}
+                    className="font-display text-3xl font-semibold tracking-tight outline-none"
+                  >
+                    {heading}
+                  </h1>
+                  <p className="mt-1 text-sm leading-5 text-muted-foreground">
+                    {stage === "name" ? (
+                      "Your account is ready. Add your name to finish."
+                    ) : stage === "code" ? (
+                      <>
+                        Enter the code sent to{" "}
+                        <strong className="break-all font-medium text-foreground">
+                          {email.trim()}
+                        </strong>
+                        .
+                      </>
+                    ) : desktop ? (
+                      "Sign in to connect your desktop app. Your local projects stay local until you enable sync."
+                    ) : (
+                      "Sign in or create an account to start creating."
+                    )}
+                  </p>
+                  {error && (!methods || stage === "quick") ? (
+                    <InlineAlert
+                      tone="error"
+                      title="Couldn't continue"
+                      message={error}
+                      className="mt-6"
+                    />
+                  ) : null}
+                  {!methods ? (
+                    <div className="mt-8">
+                      {error ? (
+                        <Button onClick={() => setReload((value) => value + 1)}>
+                          Retry connection
+                        </Button>
+                      ) : (
+                        <p
+                          role="status"
+                          className="text-sm text-muted-foreground"
+                        >
+                          Loading sign-in options…
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      {methods.google &&
+                      (stage === "quick" || stage === "email") ? (
+                        <>
+                          <Button
+                            disabled={busy}
+                            className="mt-5 min-h-11 w-full"
+                            onClick={() =>
+                              void run(async () => {
+                                const result =
+                                  await betterAuthClient.signIn.social({
+                                    provider: "google",
+                                    callbackURL: returnTo,
+                                  });
+                                if (result.error)
+                                  throw Error(
+                                    result.error.message ||
+                                      "Google sign-in failed.",
+                                  );
+                              })
+                            }
+                          >
+                            <GoogleLogo size={20} />
+                            Continue with Google
+                          </Button>
+                          {methods.emailOtp ? (
+                            <div className="my-4 flex items-center gap-3 text-xs text-muted-foreground">
+                              <span className="h-px flex-1 bg-border" />
+                              or use email
+                              <span className="h-px flex-1 bg-border" />
+                            </div>
+                          ) : null}
+                        </>
+                      ) : null}
+                      {stage === "name" ||
+                      (methods.password && stage === "signin") ||
+                      (methods.emailOtp &&
+                        (stage === "email" || stage === "code")) ? (
+                        <form
+                          onSubmit={submit}
+                          className="mt-5 space-y-3"
+                          aria-label={heading}
+                          aria-busy={busy}
+                        >
+                          <fieldset disabled={busy} className="space-y-3">
+                            {stage !== "code" && stage !== "name" ? (
+                              <div className="space-y-1.5">
+                                <label
+                                  htmlFor="login-email"
+                                  className="text-sm font-medium"
+                                >
+                                  Email
+                                </label>
+                                <Input
+                                  id="login-email"
+                                  type="email"
+                                  autoComplete="email"
+                                  placeholder="you@example.com"
+                                  value={email}
+                                  onChange={(event) =>
+                                    setEmail(event.target.value)
+                                  }
+                                  required
+                                  className="min-h-11 w-full"
+                                />
+                              </div>
+                            ) : null}
+                            {stage === "name" ? (
+                              <div className="space-y-1.5">
+                                <label
+                                  htmlFor="login-name"
+                                  className="text-sm font-medium"
+                                >
+                                  Name
+                                </label>
+                                <Input
+                                  id="login-name"
+                                  autoComplete="name"
+                                  value={name}
+                                  onChange={(event) =>
+                                    setName(event.target.value)
+                                  }
+                                  required
+                                  maxLength={100}
+                                  className="min-h-11 w-full"
+                                />
+                              </div>
+                            ) : null}
+                            {stage === "signin" ? (
+                              <div className="space-y-1.5">
+                                <label
+                                  htmlFor="login-password"
+                                  className="text-sm font-medium"
+                                >
+                                  Password
+                                </label>
+                                <Input
+                                  id="login-password"
+                                  aria-invalid={stage === "signin" && !!error}
+                                  aria-describedby={
+                                    error ? "login-submit-error" : undefined
+                                  }
+                                  type="password"
+                                  autoComplete="current-password"
+                                  placeholder="Enter your password"
+                                  value={password}
+                                  onChange={(event) =>
+                                    setPassword(event.target.value)
+                                  }
+                                  required
+                                  className="min-h-11 w-full"
+                                />
+                              </div>
+                            ) : null}
+                            {stage === "code" ? (
+                              <div className="space-y-1.5">
+                                <label
+                                  htmlFor="login-code"
+                                  className="text-sm font-medium"
+                                >
+                                  Verification code
+                                </label>
+                                <Input
+                                  ref={codeInput}
+                                  id="login-code"
+                                  inputMode="numeric"
+                                  autoComplete="one-time-code"
+                                  pattern="[0-9]{6}"
+                                  maxLength={6}
+                                  value={code}
+                                  onChange={(event) =>
+                                    setCode(
+                                      event.target.value.replace(/\D/g, ""),
+                                    )
+                                  }
+                                  required
+                                  className="min-h-11 w-full font-mono text-lg tracking-widest"
+                                />
+                              </div>
+                            ) : null}
+                            {error ? (
+                              <p
+                                id="login-submit-error"
+                                role="alert"
+                                className="text-sm text-destructive"
+                              >
+                                {error}
+                              </p>
+                            ) : null}
+                            <Button
+                              type="submit"
+                              variant="primary"
+                              disabled={busy}
+                              className="min-h-11 w-full"
+                            >
+                              {busy
+                                ? "Please wait…"
+                                : stage === "code"
+                                  ? "Verify and continue"
+                                  : stage === "email"
+                                    ? "Send verification code"
+                                    : "Continue"}
+                            </Button>
+                          </fieldset>
+                        </form>
+                      ) : !methods.google &&
+                        !methods.password &&
+                        !methods.emailOtp ? (
+                        <p className="mt-8 text-sm">
+                          Sign-in is not enabled on this service.
+                        </p>
+                      ) : null}
+                      <div className="login-account-actions mt-3 flex flex-wrap items-center justify-center gap-4">
+                        {stage === "code" ? (
+                          <>
+                            <Button
+                              disabled={busy}
+                              className={linkClass}
+                              onClick={() => changeStage("email")}
+                            >
+                              <ArrowLeft />
+                              Change email
+                            </Button>
+                            <Button
+                              disabled={busy || seconds > 0}
+                              className={linkClass}
+                              onClick={() => void run(sendCode)}
+                            >
+                              {seconds > 0
+                                ? `Resend in ${seconds}s`
+                                : "Resend code"}
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            {methods.password &&
+                            (stage === "email" || stage === "quick") ? (
+                              <Button
+                                disabled={busy}
+                                className={linkClass}
+                                onClick={() => changeStage("signin")}
+                              >
+                                Use email and password
+                              </Button>
+                            ) : null}
+                            {(methods.emailOtp || methods.google) &&
+                            stage === "signin" ? (
+                              <Button
+                                disabled={busy}
+                                className={linkClass}
+                                onClick={() =>
+                                  changeStage(
+                                    methods.emailOtp ? "email" : "quick",
+                                  )
+                                }
+                              >
+                                <ArrowLeft /> Back to quick sign-in
+                              </Button>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </motion.div>
+              </AnimatePresence>
             </motion.div>
-          </Link>
-          <h1 className="mb-2 font-display text-2xl font-bold text-slate-950 dark:text-neutral-50">
-            {stage === "otp"
-              ? "Check your email"
-              : stage === "password"
-                ? pwAction === "signin"
-                  ? "Welcome back"
-                  : "Create account"
-                : "Welcome"}
-          </h1>
-          <p className="text-stone-600 dark:text-neutral-400">
-            {stage === "otp"
-              ? `We sent a 6-digit code to ${email}`
-              : stage === "password"
-                ? pwAction === "signin"
-                  ? "Sign in with your email and password"
-                  : "Pick an email and password to get started"
-                : "Sign in or create an account with your email"}
-          </p>
-        </div>
-
-        {error && (
-          <InlineAlert tone="error" title={error} className="mb-4" />
-        )}
-        {info && !error && (
-          <InlineAlert tone="info" title={info} className="mb-4" />
-        )}
-
-        {stage === "email" ? (
-          <form onSubmit={handleEmailSubmit} className="space-y-3">
-            <Input
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              required
-              className={authInputClass}
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={isLoading || !email}
-              className={authPrimaryClass}
-            >
-              {isLoading && (
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              )}
-              <span>{isLoading ? "Sending code..." : "Send code"}</span>
-            </Button>
-            <Button
-              onClick={() => {
-                setStage("password");
-                setError(null);
-                setInfo(null);
-              }}
-              className={`${authTextButtonClass} min-h-0 w-full border-0 bg-transparent px-0 pb-0 pt-2 text-center text-sm shadow-none hover:bg-transparent`}
-            >
-              Use password instead →
-            </Button>
-          </form>
-        ) : stage === "password" ? (
-          <form onSubmit={handlePassword} className="space-y-3">
-            <Input
-              type="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              required
-              className={authInputClass}
-            />
-            {pwAction === "signup" && (
-              <Input
-                type="text"
-                placeholder="Display name (optional)"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                autoComplete="name"
-                className={authInputClass}
-              />
-            )}
-            <Input
-              type="password"
-              placeholder="Password (min 8 chars)"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete={pwAction === "signin" ? "current-password" : "new-password"}
-              minLength={8}
-              required
-              className={authInputClass}
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={isLoading || !email || password.length < 8}
-              className={authPrimaryClass}
-            >
-              {isLoading && (
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              )}
-              <span>
-                {isLoading
-                  ? pwAction === "signin" ? "Signing in..." : "Creating..."
-                  : pwAction === "signin" ? "Sign in" : "Create account"}
-              </span>
-            </Button>
-
-            <div className="flex items-center justify-between pt-2 text-sm">
-              <Button
-                onClick={() => {
-                  setStage("email");
-                  setPassword("");
-                  setName("");
-                  setError(null);
-                  setInfo(null);
-                }}
-                className={`${authTextButtonClass} min-h-0 border-0 bg-transparent p-0 shadow-none hover:bg-transparent`}
-              >
-                ← Use email code
-              </Button>
-              <Button
-                onClick={() => {
-                  setPwAction((a) => (a === "signin" ? "signup" : "signin"));
-                  setError(null);
-                }}
-                className={`${authInlineLinkClass} min-h-0 border-0 bg-transparent p-0 shadow-none hover:bg-transparent`}
-              >
-                {pwAction === "signin" ? "Create account" : "Have an account?"}
-              </Button>
-            </div>
-          </form>
-        ) : (
-          <form onSubmit={handleVerify} className="space-y-3">
-            <Input
-              ref={otpInputRef}
-              inputMode="numeric"
-              pattern="[0-9]*"
-              maxLength={6}
-              placeholder="6-digit code"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))}
-              autoComplete="one-time-code"
-              required
-              className={`${authInputClass} text-center font-mono text-xl tracking-[0.4em]`}
-            />
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={isLoading || otp.length !== 6}
-              className={authPrimaryClass}
-            >
-              {isLoading && (
-                <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              )}
-              <span>{isLoading ? "Verifying..." : "Verify & continue"}</span>
-            </Button>
-
-            <div className="flex items-center justify-between pt-2 text-sm">
-              <Button
-                onClick={() => {
-                  setStage("email");
-                  setOtp("");
-                  setError(null);
-                  setInfo(null);
-                }}
-                className={`${authTextButtonClass} min-h-0 border-0 bg-transparent p-0 shadow-none hover:bg-transparent`}
-              >
-                ← Change email
-              </Button>
-              <Button
-                disabled={isLoading || secondsUntilResend > 0}
-                onClick={() => sendCode(true)}
-                className={`${authInlineLinkClass} min-h-0 border-0 bg-transparent p-0 shadow-none hover:bg-transparent disabled:cursor-not-allowed disabled:text-stone-400`}
-              >
-                {secondsUntilResend > 0
-                  ? `Resend in ${secondsUntilResend}s`
-                  : "Resend code"}
-              </Button>
-            </div>
-          </form>
-        )}
-
-        <div className="my-6 flex items-center gap-3">
-          <div className="h-px flex-1 bg-warm-border" />
-          <span className="text-xs uppercase tracking-wide text-stone-400">
-            or
-          </span>
-          <div className="h-px flex-1 bg-warm-border" />
-        </div>
-
-        <Button
-          onClick={handleGoogleSignIn}
-          disabled={isLoading}
-          className={authSecondaryClass}
-        >
-          <GoogleLogo weight="bold" className="h-5 w-5" />
-          <span>Continue with Google</span>
-        </Button>
-
-        <p className="mt-6 text-center text-xs text-stone-500 dark:text-neutral-500">
-          By continuing, you agree to our{" "}
-          <Link to="/terms" className={authInlineLinkClass}>
-            Terms of Service
-          </Link>{" "}
-          and{" "}
-          <Link to="/privacy" className={authInlineLinkClass}>
-            Privacy Policy
-          </Link>
-          .
-        </p>
-      </motion.div>
-    </div>
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }

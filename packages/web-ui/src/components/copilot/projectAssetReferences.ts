@@ -30,8 +30,12 @@ function projectAssetIdFromMarker(value: string): string | null {
   }
 }
 
-function projectAssetMention(label: string, projectAssetId: string): string {
-  return `@[${label}](project-asset:${encodeURIComponent(projectAssetId)})`;
+export function projectAssetMention(
+  label: string,
+  projectAssetId: string,
+): string {
+  const escaped = label.replace(/\\/g, "\\\\").replace(/\]/g, "\\]");
+  return `@[${escaped}](project-asset:${encodeURIComponent(projectAssetId)})`;
 }
 
 /**
@@ -43,7 +47,9 @@ export function normalizeCopilotAssetComposerValue(
   markdown: string,
   candidates: readonly CopilotAssetMentionCandidate[],
 ): NormalizedCopilotAssetComposerValue {
-  const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const byId = new Map(
+    candidates.map((candidate) => [candidate.id, candidate]),
+  );
   const assets: CopilotProjectAssetReference[] = [];
   const byProjectAssetId = new Map<string, CopilotProjectAssetReference>();
 
@@ -103,13 +109,17 @@ export function normalizeCopilotAssetComposerValue(
   );
 
   for (const match of text.matchAll(
-    /@\[([^\]]*)\]\(project-asset:([^\s)]+)(?:\s+"[^"]*")?\)/g,
+    /@\[((?:\\.|[^\]\\])*)\]\(project-asset:([^\s)]+)(?:\s+"[^"]*")?\)/g,
   )) {
     const projectAssetId = projectAssetIdFromMarker(match[2]);
     if (!projectAssetId || byProjectAssetId.has(projectAssetId)) continue;
     const candidate = byId.get(projectAssetId);
     if (candidate?.kind !== "asset") continue;
-    add(projectAssetId, candidate.type, match[1] || candidate.label);
+    add(
+      projectAssetId,
+      candidate.type,
+      match[1].replace(/\\([\\\]])/g, "$1") || candidate.label,
+    );
   }
 
   return { text: text.trim(), assets };

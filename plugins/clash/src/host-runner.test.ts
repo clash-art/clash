@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,9 +31,10 @@ async function workspace(projectId: string): Promise<string> {
   return root;
 }
 
-test("MCP sends a typed command directly to the ensured local-api endpoint", async () => {
+test("MCP sends a typed command directly to the ensured local-api endpoint", async (t) => {
   const { createMcpProjectHostClient } = await import("./host-runner.js");
   const cwd = await workspace("project-workspace");
+  t.after(() => rm(cwd, { recursive: true, force: true }));
   const requests: Array<{ url: string; body: unknown }> = [];
   let ensures = 0;
   const client = createMcpProjectHostClient({
@@ -69,12 +70,15 @@ test("MCP sends a typed command directly to the ensured local-api endpoint", asy
   assert.deepEqual(result.value, { nodes: [] });
 });
 
-test("an explicit API URL bypasses daemon startup and forwards its API token", async () => {
+test("an explicit API URL bypasses daemon startup and forwards its API token", async (t) => {
   const { createMcpProjectHostClient } = await import("./host-runner.js");
+  const cwd = await mkdtemp(join(tmpdir(), "clash-mcp-unbound-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
   let ensures = 0;
   let authorization = "";
   const client = createMcpProjectHostClient({
     env: {
+      CLASH_WORKSPACE_ROOT: cwd,
       CLASH_API_URL: "https://clash.example.test",
       CLASH_API_KEY: "clsh_direct",
       CLASH_PROJECT_ID: "project-env",

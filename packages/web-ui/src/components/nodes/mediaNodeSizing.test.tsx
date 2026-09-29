@@ -8,6 +8,8 @@ import VideoNode from "./VideoNode";
 
 const reactFlowMock = vi.hoisted(() => ({
   setNodes: vi.fn(),
+  getEdges: vi.fn(() => [] as Array<{source: string; target: string}>),
+  asset: undefined as {metadata: {width: number; height: number}} | undefined,
 }));
 
 vi.mock("@xyflow/react", () => ({
@@ -20,6 +22,7 @@ vi.mock("@xyflow/react", () => ({
   },
   useReactFlow: () => ({
     setNodes: reactFlowMock.setNodes,
+    getEdges: reactFlowMock.getEdges,
   }),
 }));
 
@@ -58,7 +61,7 @@ vi.mock("./AttributionLine", () => ({
 }));
 
 vi.mock("@clash/web-ui/lib/hooks/useAsset", () => ({
-  useAsset: () => undefined,
+  useAsset: () => reactFlowMock.asset,
   invalidateAsset: vi.fn(),
 }));
 
@@ -81,6 +84,20 @@ const baseNodeProps = {
 describe("media node sizing", () => {
   beforeEach(() => {
     reactFlowMock.setNodes.mockReset();
+    reactFlowMock.getEdges.mockReturnValue([]);
+    reactFlowMock.asset = undefined;
+  });
+
+  it.each([ImageNode, VideoNode])("does not rewrite the geometry of a referenced media node", (MediaNode) => {
+    reactFlowMock.getEdges.mockReturnValue([{source: "reference", target: "generator"}]);
+    reactFlowMock.asset = {metadata: {width: 1024, height: 512}};
+    render(
+      <ProjectProvider projectId="project-test" initialModelCatalog={[]}>
+        <MediaNode {...baseNodeProps} id="reference" type="image" width={400} height={400}
+          data={{assetId: "asset", status: "completed", customActionParams: {aspect_ratio: "2:1"}}} />
+      </ProjectProvider>,
+    );
+    expect(reactFlowMock.setNodes).not.toHaveBeenCalled();
   });
 
   it("repairs an existing custom image node from its saved aspect-ratio parameter", async () => {

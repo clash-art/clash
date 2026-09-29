@@ -1,3 +1,5 @@
+import { resolveProjectContext } from "../lib/project-context";
+import type { HostInstallScope } from "@clash/shared-types";
 import { pluginIdSchema } from "@clash/shared-types";
 import { Command } from "commander";
 import { resolve } from "node:path";
@@ -11,7 +13,7 @@ import {
   createLocalPluginHostRequest,
   rollbackDownloadedActionPackage,
   scaffoldExecutablePluginDraft,
-  tryInstallLocalMarketplaceAction,
+  tryInstallLocalMarketplacePlugin,
   validateExecutablePluginDraft,
 } from "../lib/plugin-lifecycle";
 
@@ -94,7 +96,7 @@ pluginCommand
 pluginCommand
   .command("checkout")
   .description(
-    "Copy an attested active plugin to a separate agent-editable draft",
+    "Copy an attested user-installed plugin to an editable draft; use plugin create with a new plugin id for a custom Action",
   )
   .argument("<id>", "Active executable plugin id")
   .argument("<directory>", "New draft directory (must not already exist)")
@@ -162,13 +164,20 @@ pluginCommand
     "Validate, contract-test, and atomically activate a plugin draft",
   )
   .argument("<directory>", "Unpacked plugin draft directory")
+  .option("--global", "Make the activated plugin available to all projects")
+  .option("--project <ids...>", "Make the activated plugin available only to the selected projects")
   .option("--json", "Output as JSON")
   .action(async (directory: string, options) => {
     const pluginDir = resolve(directory);
     try {
       assertDraftOutsideManagedStorage(pluginDir);
+      if (options.global && options.project?.length) throw new Error("Choose --global or --project, not both.");
+      const installation: HostInstallScope | undefined = options.global
+        ? { scope: "global" }
+        : options.project?.length ? { scope: "projects", projectIds: options.project } : undefined;
       const activated = await activateExecutablePluginDraft({
         pluginDir,
+        ...(installation ? { installation } : {}),
       });
       const result = {
         activated: true,
@@ -177,6 +186,7 @@ pluginCommand
         path: activated.targetDir,
         rollbackPath: activated.rollbackDir,
         contractTests: activated.contractTests,
+        ...(installation ? { installation } : {}),
       };
       if (isJsonMode(options)) printJson(result);
       else {
@@ -197,8 +207,10 @@ pluginCommand
 
 pluginCommand
   .command("install")
-  .description("Install an executable plugin from the local host marketplace")
-  .argument("<id>", "Marketplace plugin package id")
+  .description("Install a plugin, including skills, from the local Host marketplace")
+  .argument("<id>", "Marketplace plugin or package id")
+  .option("--global", "Install for all projects")
+  .option("--project <ids...>", "Install for the selected project ids (defaults to current project)")
   .option("--json", "Output as JSON")
   .action(async (id: string, options) => {
     await installFromMarketplace(id, options);
@@ -321,12 +333,17 @@ pluginCommand
  */
 async function installFromMarketplace(
   id: string,
-  options: { json?: boolean },
+  options: { json?: boolean; global?: boolean; project?: string[] },
 ): Promise<void> {
+  if (options.global && options.project?.length) throw new Error("Choose --global or --project, not both.");
+  const installation: HostInstallScope = options.global
+    ? { scope: "global" }
+    : { scope: "projects", projectIds: options.project?.length ? options.project : [(await resolveProjectContext()).projectId] };
   const serverUrl = getServerUrl();
-  const marketplaceInstall = await tryInstallLocalMarketplaceAction({
+  const marketplaceInstall = await tryInstallLocalMarketplacePlugin({
     packageId: id,
     serverUrl,
+    installation,
   }).catch((error) => {
     console.error(
       `Failed to install local marketplace plugin: ${(error as Error).message}`,
@@ -340,13 +357,7 @@ async function installFromMarketplace(
   if (isJsonMode(options)) {
     printJson(marketplaceInstall);
   } else {
-    const verb = marketplaceInstall.installed
-      ? "Installed"
-      : "Already installed";
-    console.log(
-      `${verb} ${marketplaceInstall.actionId} from ${marketplaceInstall.packageId}.`,
-    );
-    console.log(`Path: ${marketplaceInstall.targetDir}`);
+    console.log(`Installed ${marketplaceInstall.id} ${installation.scope === "global" ? "for all projects" : `for projects: ${installation.projectIds.join(", ")}`}.`);
   }
 }
 

@@ -122,10 +122,11 @@ export function selectTimelineMediaInputs(input: {
 }
 
 /**
- * Rebinds media items to the canonical reference of their target scope.
+ * Rebinds existing navigation hints to their target scope.
  * Native Timeline DnD remains responsible for `from`; this only replaces the
  * Project-sidebar identity after the scope cascade has materialized the direct
- * Timeline reference or Canvas placement.
+ * Timeline reference or Canvas placement. Asset-only items already have a
+ * complete media reference; unrelated edits must not add presentation IDs.
  */
 export function canonicalizeTimelineItemScopeRefs<
   TTrack extends { items: TimelineItemScopeRef[] },
@@ -146,7 +147,7 @@ export function canonicalizeTimelineItemScopeRefs<
   return tracks.map((track) => ({
     ...track,
     items: track.items.map((item) => {
-      if (!item.assetId) return item;
+      if (!item.assetId || !item.sourceNodeId) return item;
       const sourceNodeId = sourceNodeIdByProjectAssetId.get(item.assetId);
       return !sourceNodeId || sourceNodeId === item.sourceNodeId
         ? item

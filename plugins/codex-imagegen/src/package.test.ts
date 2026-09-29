@@ -10,6 +10,42 @@ import * as imagegen from "./stdio";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("Codex ImageGen executable action package", () => {
+  it("uses the shipped card default when an optional ratio is omitted", async () => {
+    const card = JSON.parse(
+      await readFile(join(root, "cards/codex-imagegen.json"), "utf8"),
+    );
+    const contract = JSON.parse(
+      await readFile(join(root, "contract-tests/generate-image.json"), "utf8"),
+    );
+    delete contract.input.values.aspect_ratio;
+    const generate = vi.fn(async () => contract.expect.outputs[0].asset);
+    await imagegen.runCodexImageGeneration(
+      {
+        protocol: "clash.plugin.invoke/v1",
+        invocationId: "default-ratio",
+        taskId: "default-ratio-task",
+        projectId: "project-1",
+        target: {
+          pluginId: "clash.codex-imagegen",
+          version: "0.1.1",
+          exportId: "generate-image",
+          schemaHash: `sha256:${"a".repeat(64)}`,
+          kind: "action",
+        },
+        input: contract.input,
+        actor: { kind: "user", id: "user-1" },
+      },
+      { hostTools: { codexImagegen: { generate } } },
+    );
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        aspectRatio: card.spec.parameters.find(
+          (parameter: { id: string }) => parameter.id === "aspect_ratio",
+        ).defaultValue,
+      }),
+    );
+  });
+
   it("ships a local action Card backed by an installable stdio plugin", async () => {
     const manifestPath = join(root, "manifest.json");
     const cardPath = join(root, "cards", "codex-imagegen.json");

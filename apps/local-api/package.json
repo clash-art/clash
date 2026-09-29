@@ -38,16 +38,17 @@
     "@agentclientprotocol/sdk": "^0.28.1",
     "@aws-sdk/client-s3": "^3.1109.0",
     "@aws-sdk/s3-request-presigner": "^3.1109.0",
-    "@clash-plugin/asset-edit": "workspace:*",
-    "@clash-plugin/asr": "workspace:*",
-    "@clash-plugin/media-analysis": "workspace:*",
-    "@clash-plugin/model-generation": "workspace:*",
     "@clash-plugin/agent-text": "workspace:*",
+    "@clash-plugin/asr": "workspace:*",
+    "@clash-plugin/asset-edit": "workspace:*",
     "@clash-plugin/codex-imagegen": "workspace:*",
     "@clash-plugin/fal": "workspace:*",
     "@clash-plugin/google": "workspace:*",
+    "@clash-plugin/gpt-image": "workspace:*",
+    "@clash-plugin/media-analysis": "workspace:*",
     "@clash-plugin/meshy": "workspace:*",
     "@clash-plugin/minimax": "workspace:*",
+    "@clash-plugin/model-generation": "workspace:*",
     "@clash-plugin/move-ai": "workspace:*",
     "@clash-plugin/pika": "workspace:*",
     "@clash-plugin/remotion": "workspace:*",
@@ -56,8 +57,8 @@
     "@clash-plugin/volcengine": "workspace:*",
     "@clash/action-sdk": "workspace:*",
     "@clash/asset-sdk": "workspace:*",
-    "@clash/sdk": "workspace:*",
     "@clash/replica": "workspace:*",
+    "@clash/sdk": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
     "@ffmpeg-installer/ffmpeg": "1.1.0",
@@ -66,12 +67,11 @@
     "@openma/common": "github:openma-ai/openma-common#codex/acp-lifecycle-v05",
     "ajv": "^8.20.0",
     "hono": "^4.7.10",
-    "loro-crdt": "^1.10.3",
+    "loro-crdt": "1.16.3",
     "saxes": "6.0.0",
     "sharp": "^0.34.5",
     "ws": "^8.18.0",
-    "yaml": "^2.6.0",
-    "@clash-plugin/gpt-image": "workspace:*"
+    "yaml": "^2.6.0"
   },
   "devDependencies": {
     "@mswjs/interceptors": "^0.42.3",
@@ -79,6 +79,8 @@
     "@types/ws": "^8.5.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.4"
+    "vitest": "^4.1.4",
+    "@clash/cli": "workspace:*",
+    "@clash/shared-mcp": "workspace:*"
   }
 }

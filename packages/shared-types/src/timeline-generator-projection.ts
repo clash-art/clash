@@ -11,6 +11,7 @@ import type { ExecutablePluginJsonValue } from "./plugin-json-value.js";
 import type { ProjectTimeline, TimelineOwner } from "./project-workspace.js";
 import { normalizeProjectTimelinePersistenceState } from "./timeline-persistence.js";
 import { validateTimelineDsl } from "./timeline-dsl-schema.js";
+import { timelineOccupancyIssues } from "./timeline-occupancy.js";
 
 export {
   ProjectTimelineEnvelopeSchema,
@@ -80,6 +81,11 @@ export function projectTimelineToGeneratorRevisionState(
       code: "PROJECT_TIMELINE_DSL_INVALID",
       message: sourceValidated.issues.map((issue) => issue.message).join("; "),
     };
+  }
+
+  const occupancyIssues = timelineOccupancyIssues(sourceValidated.value);
+  if (occupancyIssues.length) {
+    return { ok: false, code: 'TIMELINE_TRACK_OVERLAP', message: occupancyIssues.map(issue => issue.message).join('; ') };
   }
 
   const sourceTracks = isRecord(sourceValidated.value)

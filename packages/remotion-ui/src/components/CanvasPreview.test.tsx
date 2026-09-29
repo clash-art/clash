@@ -13,6 +13,7 @@ import {
 import {
   EditorProvider,
   useEditorHistory,
+  useEditorDispatch,
   useEditorPlayback,
   useEditorStaticState,
 } from "@clash/remotion-core";
@@ -31,10 +32,12 @@ vi.mock("./InteractiveCanvas", () => ({
     onTransformStart?: () => void;
     onTransformEnd?: () => void;
     onUpdateItem?: (trackId: string, itemId: string, updates: unknown) => void;
+    durationInFrames?: number;
   }) => (
     <>
       <div
         data-testid="interactive-canvas"
+        data-duration={props.durationInFrames}
         data-runtime-node-ids={[...(props.allNodesMap?.keys() ?? [])].join(",")}
         data-viewport-command={
           props.viewportCommand
@@ -127,6 +130,7 @@ function renderPreview(
     <EditorProvider
       initialState={{
         fps: 30,
+        durationInFrames: 90,
         currentFrame: 0,
         playing: false,
         compositionWidth: 1920,
@@ -162,6 +166,55 @@ afterEach(() => {
 });
 
 describe("CanvasPreview transport", () => {
+  it("previews the authored composition duration, including empty tail frames and later duration edits", () => {
+    const DurationControl = () => {
+      const dispatch = useEditorDispatch();
+      return (
+        <button onClick={() => dispatch({ type: "SET_DURATION", payload: 60 })}>
+          Change duration
+        </button>
+      );
+    };
+    render(
+      <EditorProvider
+        initialState={{
+          fps: 30,
+          durationInFrames: 180,
+          tracks: [
+            {
+              id: "visual",
+              name: "Visual",
+              items: [
+                {
+                  id: "short",
+                  type: "solid",
+                  color: "red",
+                  from: 0,
+                  durationInFrames: 30,
+                },
+              ],
+            },
+          ],
+        }}
+      >
+        <CanvasPreview />
+        <DurationControl />
+      </EditorProvider>,
+    );
+    expect(screen.getByLabelText("Duration timecode").textContent).toBe(
+      "00:00:06:00",
+    );
+    expect(
+      screen.getByTestId("interactive-canvas").getAttribute("data-duration"),
+    ).toBe("180");
+    fireEvent.click(screen.getByText("Change duration"));
+    expect(screen.getByLabelText("Duration timecode").textContent).toBe(
+      "00:00:02:00",
+    );
+    expect(
+      screen.getByTestId("interactive-canvas").getAttribute("data-duration"),
+    ).toBe("60");
+  });
   it("passes live non-media runtime nodes into the shared VideoComposition resolver", () => {
     renderPreview({
       runtimeNodes: [

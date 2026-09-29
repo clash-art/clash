@@ -85,7 +85,7 @@
   },
   "dependencies": {
     "@clash/shared-layout": "workspace:^",
-    "loro-crdt": "^1.10.3",
+    "loro-crdt": "1.16.3",
     "yaml": "^2.6.0",
     "zod": "^3.23.0",
     "zod-to-json-schema": "3.24.6"

@@ -59,7 +59,7 @@ const TIMELINE_TOOL_GUIDANCE = {
     useWhen:
       "discovering Timeline identifiers or choosing among existing Timelines",
     effect: "reads Timeline summaries without changing product state",
-    returns: "the Timelines visible in the resolved project scope",
+    returns: "identity, revision, ownership, dimensions and item counts; full true includes complete states",
     next: "read the chosen Timeline before planning or applying an edit",
   },
   "timeline.get": {

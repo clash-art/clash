@@ -18,8 +18,9 @@ export interface ExecutablePluginViewDefinition extends ExecutablePluginViewRefe
 export async function loadExecutablePluginViews(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   signal?: AbortSignal,
+  projectId?: string,
 ): Promise<ExecutablePluginViewDefinition[]> {
-  const response = await fetchImpl(runtimeApiUrl("/api/v1/plugin-views"), {
+  const response = await fetchImpl(runtimeApiUrl(`/api/v1/plugin-views${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`), {
     credentials: "include",
     ...(signal ? { signal } : {}),
   });
@@ -61,6 +62,7 @@ export async function loadExecutablePluginViews(
 /** Retains the last valid activated View catalog while the local bridge restarts. */
 export function useExecutablePluginViews(
   refreshIntervalMs = 2_000,
+  projectId?: string,
 ): ExecutablePluginViewDefinition[] {
   const [views, setViews] = useState<ExecutablePluginViewDefinition[]>([]);
   const snapshotRef = useRef("[]");
@@ -74,6 +76,7 @@ export function useExecutablePluginViews(
         const next = await loadExecutablePluginViews(
           globalThis.fetch,
           controller.signal,
+          projectId,
         );
         const snapshot = JSON.stringify(next);
         if (active && snapshot !== snapshotRef.current) {
@@ -95,6 +98,6 @@ export function useExecutablePluginViews(
       controller?.abort();
       globalThis.clearInterval(interval);
     };
-  }, [refreshIntervalMs]);
+  }, [refreshIntervalMs, projectId]);
   return views;
 }

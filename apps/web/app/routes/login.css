@@ -1,0 +1,69 @@
+.login-page {
+  min-height: 100svh;
+}
+.login-layout {
+  min-height: 100svh;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.login-art {
+  display: none;
+}
+.login-form-panel {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: max(24px, calc((100svh - 576px) / 2)) 24px 24px;
+}
+.login-form-content {
+  width: 100%;
+  max-width: 360px;
+}
+.login-brand {
+  display: inline-flex;
+  margin-bottom: 20px;
+}
+.login-form-content h1 {
+  font-size: 24px;
+  line-height: 32px;
+}
+.login-form-content form {
+  margin-top: 20px;
+}
+
+.login-form-panel input {
+  min-height: 44px;
+  font-size: 16px;
+}
+.login-form-panel input:focus-visible:not([aria-invalid="true"]) {
+  border-color: color-mix(in srgb, var(--ring) 55%, var(--input));
+  box-shadow: none;
+  background-color: color-mix(in srgb, var(--ring) 4%, var(--background));
+}
+.login-form-panel button[type="submit"] {
+  min-height: 44px;
+}
+@media (min-width: 900px) {
+  .login-layout {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .login-art {
+    display: block;
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+    background: var(--muted);
+  }
+  .login-art-image {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center;
+  }
+  .login-form-panel {
+    padding: max(32px, calc((100svh - 576px) / 2)) 40px 32px;
+  }
+}

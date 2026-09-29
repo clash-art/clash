@@ -6,6 +6,30 @@ import { describe, expect, it } from "vitest";
 import { initializeClashWorkspace } from "./workspace-init";
 
 describe("initializeClashWorkspace", () => {
+  it("retries Host registration with the preserved marker identity after a failed request", async () => {
+    const workspace = join(tmpdir(), `clash-init-registration-${process.pid}-${Date.now()}`);
+    await mkdir(workspace);
+    const requests: string[] = [];
+    let unavailable = true;
+    const request = async (path: string, init?: RequestInit) => {
+      requests.push(path);
+      expect(init?.method).toBe("POST");
+      return unavailable ? Response.json({ error: "Host unavailable" }, { status: 503 }) : Response.json({});
+    };
+    await expect(initializeClashWorkspace({ cwd: workspace, request })).rejects.toThrow(/Host unavailable/);
+    const marker = await readFile(join(workspace, ".clash/project.toml"), "utf8");
+    unavailable = false;
+    const result = await initializeClashWorkspace({ cwd: workspace, request });
+    expect(result.reused).toBe(true);
+    expect(requests).toEqual([
+      `/api/v1/projects/${result.projectId}/initialize`,
+      `/api/v1/projects/${result.projectId}/initialize`,
+    ]);
+    expect(await readFile(result.markerPath, "utf8")).toBe(marker);
+    await expect(initializeClashWorkspace({ cwd: workspace, projectId: "conflicting-project", request }))
+      .rejects.toThrow(/already bound/);
+    expect(requests).toHaveLength(2);
+  });
   it("creates the canonical managed project marker used by CLI and MCP", async () => {
     const workspace = join(
       tmpdir(),

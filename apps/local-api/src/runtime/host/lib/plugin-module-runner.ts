@@ -96,6 +96,7 @@ export class ModulePluginEndpoint implements PluginExecutionEndpoint {
       );
     }
     const timeoutMs = options.timeoutMs ?? 120_000;
+    const deadlineAt = Date.now() + timeoutMs;
 
     return await new Promise<ExecutablePluginResult>((resolve, reject) => {
       const token = Symbol(invocation.invocationId);
@@ -128,6 +129,7 @@ export class ModulePluginEndpoint implements PluginExecutionEndpoint {
       void this.executeModule(
         invocation,
         options,
+        deadlineAt,
         () => this.pending.get(invocation.invocationId)?.token === token,
       ).then((result) => {
         settleIfActive(() => resolve(result));
@@ -146,6 +148,7 @@ export class ModulePluginEndpoint implements PluginExecutionEndpoint {
   private async executeModule(
     invocation: ReturnType<typeof ExecutablePluginInvocationSchema.parse>,
     options: PluginExecutionOptions,
+    deadlineAt: number,
     isActive: () => boolean,
   ): Promise<ExecutablePluginResult> {
     const context = createExecutorContext({}, async (operation) => {
@@ -163,6 +166,7 @@ export class ModulePluginEndpoint implements PluginExecutionEndpoint {
       return await this.broker(request, {
         manifest: this.manifest,
         invocation,
+        deadlineAt,
         ...(options.accountId ? { accountId: options.accountId } : {}),
       });
     });

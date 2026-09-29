@@ -1,5 +1,6 @@
 import { LoroMap, type LoroDoc } from "loro-crdt";
 import type { UpstreamRef } from "./canvas.js";
+import { isCanvasAssetReferenceEdge, listCanvasAssetReferenceEdges } from "./canvas-asset-references.js";
 
 export const NODE_UPSTREAMS_CONTAINER = "nodeUpstreams";
 export const EDGE_IDENTITY_CONTAINER = "edgeIdentity";
@@ -229,12 +230,16 @@ export function readNodeUpstreamRefs(
   rawNode?: unknown,
 ): UpstreamRef[] {
   const refs = rawNodeUpstreamRefs(doc, nodeId, rawNode);
-  if (!graphIdentityEnabled(doc)) return refs;
   const identities = doc.getMap(EDGE_IDENTITY_CONTAINER);
-  return refs.filter((ref) => {
+  const stored = !graphIdentityEnabled(doc) ? refs : refs.filter((ref) => {
     const identity = parseEdgeIdentity(identities.get(ref.edgeId));
     return identity !== null && "target" in identity && identity.target === nodeId;
   });
+  const sources = new Set(stored.map((ref) => ref.nodeId));
+  return [...stored, ...listCanvasAssetReferenceEdges(doc, { nodeId })
+    .filter((edge) => !sources.has(edge.source))
+    .map((edge) => ({ nodeId: edge.source, edgeId: edge.id, type: edge.type }))]
+    .sort((left, right) => left.edgeId.localeCompare(right.edgeId));
 }
 
 export function listNodeOwnedEdges(
@@ -261,7 +266,7 @@ export function listNodeOwnedEdges(
       })
     : legacyEdges(doc);
 
-  return candidates.filter((edge) => {
+  const stored = candidates.filter((edge) => {
     const rawSource = nodes.get(edge.source);
     const rawTarget = nodes.get(edge.target);
     if (!rawSource || !rawTarget) return false;
@@ -269,7 +274,11 @@ export function listNodeOwnedEdges(
     const targetCanvasId = nodeCanvasId(rawTarget);
     if (sourceCanvasId !== targetCanvasId) return false;
     return !canvasId || targetCanvasId === canvasId;
-  }).sort((left, right) => left.id.localeCompare(right.id));
+  });
+  const pairs = new Set(stored.map((edge) => JSON.stringify([edge.source, edge.target])));
+  return [...stored, ...listCanvasAssetReferenceEdges(doc, { canvasId })
+    .filter((edge) => !pairs.has(JSON.stringify([edge.source, edge.target])))
+  ].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function upsertNodeUpstreamRef(
@@ -278,6 +287,9 @@ export function upsertNodeUpstreamRef(
   ref: UpstreamRef,
   rawNode?: unknown,
 ): void {
+  if (isCanvasAssetReferenceEdge(ref.edgeId)) {
+    throw new Error("Timeline and View Asset connections follow their material references. Edit the reference in the Timeline or View instead.");
+  }
   ensureCanvasGraphIdentity(doc);
   removeAllRefsForEdge(doc, ref.edgeId);
   ensureUpstreamMap(doc, nodeId, rawNode).set(ref.edgeId, ref);
@@ -290,6 +302,8 @@ export function deleteNodeUpstreamRef(
   edgeId: string,
   rawNode?: unknown,
 ): boolean {
+  // Deleting a placement/View removes its projection without graph tombstones.
+  if (isCanvasAssetReferenceEdge(edgeId)) return false;
   ensureCanvasGraphIdentity(doc);
   const identity = parseEdgeIdentity(doc.getMap(EDGE_IDENTITY_CONTAINER).get(edgeId));
   const existed = Boolean(identity && "target" in identity) ||

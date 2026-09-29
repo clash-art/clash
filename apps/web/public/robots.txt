@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://clash.video/sitemap.xml
+Sitemap: https://clash.art/sitemap.xml

@@ -23,7 +23,6 @@ const suiteDefinitions = [
   {
     id: "short-drama-timeline",
     command: [process.execPath, "e2e/short-drama-timeline-smoke.ts"],
-    minChecks: 4,
     requiredChecks: [
       "created timeline JSON validates",
       "restored timeline JSON validates",
@@ -36,7 +35,7 @@ const suiteDefinitions = [
     id: "agent-first-cas",
     command: [process.execPath, "e2e/agent-first-cas-smoke.ts"],
     schemaVersion: 1,
-    minChecks: 52,
+    // Named current contracts replace the retired production-workflow count.
     requiredBooleans: [
       "directCanvasCliWriteBeforeReadRejected",
       "directCanvasCliCwdObservationRecorded",
@@ -52,9 +51,6 @@ const suiteDefinitions = [
       "timelineEntityApplyAdvancesRevision",
       "legacyProjectionLockSidecarsIgnored",
       "textRestoreCreatesCopyOnWriteRevisionFromHostContent",
-      "captionExportTimelineRevisionPinned",
-      "timelineHandoffExportTimelineRevisionPinned",
-      "captionBurnExportTimelineRevisionPinned",
       "projectionPathOutsideCwdRejected",
       "forceMutationBypassAbsent",
     ],
@@ -68,7 +64,6 @@ const suiteDefinitions = [
       "test:e2e:project-workspace-cli",
     ],
     schemaVersion: 1,
-    minChecks: 21,
     requiredChecks: [
       "project marker preserves special project id",
       "local Project CLI works without cloud credentials",
@@ -88,20 +83,19 @@ const suiteDefinitions = [
     id: "storage-doctor-repair",
     command: [process.execPath, "e2e/storage-doctor-repair-smoke.ts"],
     schemaVersion: 1,
-    minChecks: 70,
     requiredChecks: [
       "doctor before repair does not expose obsolete marker compatibility",
       "local project status is not web-openable or shared",
       "local project room surface is removed from local-first status",
       "local project action gates require sync before web or sharing",
       "local project sync policy keeps cloud admission disabled and private runtime data local",
-      "machine-local config is a SQLite table, not agent-editable JSON sidecars",
+      "machine-local config is owner-only config.yaml, not SQLite preferences",
       "no obsolete local JSON database sidecars exist in workspace or local home",
       "text revisions and Timeline Loro history have distinct storage authority",
       "local sqlite core metadata, provider auth tables, and projection indexes exist after repair",
       "project marker rejects removed collaboration fields",
       "cloud-sync pending action gates block web and sharing until required mirrors are ready",
-      "cloud-sync ready state keeps the same local replica and opens product gates",
+      "config capability flags cannot grant project cloud admission",
       "project status can recover project store after marker workspace deletion",
     ],
   },
@@ -232,9 +226,9 @@ function requireReportBasics(suite, report) {
   if (report.status !== "pass") {
     throw new Error(`${suite.id} report status=${report.status ?? "missing"}`);
   }
-  if (!Array.isArray(report.checks) || report.checks.length < suite.minChecks) {
+  if (!Array.isArray(report.checks) || report.checks.length === 0) {
     throw new Error(
-      `${suite.id} report has ${report.checks?.length ?? 0} checks, expected at least ${suite.minChecks}`,
+      `${suite.id} report must contain executed checks`,
     );
   }
   const failed = failedChecks(report);

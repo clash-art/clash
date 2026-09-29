@@ -12,6 +12,7 @@
   },
   "key_files": {
     "manifest.json": "Bundled Generator and Action exports plus source media delivery contracts.",
-    "src/stdio.ts": "Node media adapter and direct-execution stdio compatibility entrypoint."
+    "src/stdio.ts": "Node media adapter and direct-execution stdio compatibility entrypoint. Checks crop/frame/trim bounds against decoded source facts; video trims preserve source variable-frame-rate timestamps instead of synthesizing nominal-rate frames.",
+    "src/variable-frame-rate.test.ts": "Real FFmpeg/ffprobe regression compares trimmed frame timestamps to the corresponding source interval."
   }
 }

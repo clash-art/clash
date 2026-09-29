@@ -317,6 +317,16 @@ describe("selectTimelineMediaInputs", () => {
     ]);
   });
 
+  it.each(["timeline-asset:asset-video", "canvas-video"])(
+    "does not add a navigation hint to an Asset-only item during unrelated edits (%s)",
+    (sourceNodeId) => {
+      const tracks = [{ id: "media", items: [{ id: "clip", assetId: "asset-video", from: 14, durationInFrames: 100 }] }];
+      expect(canonicalizeTimelineItemScopeRefs(tracks, [{
+        sourceNodeId, projectAssetId: "asset-video", type: "video", src: "/video.mp4",
+      }])).toEqual(tracks);
+    },
+  );
+
   it("rewrites only the scope identity and preserves the native cursor frame", () => {
     const tracks = [
       {

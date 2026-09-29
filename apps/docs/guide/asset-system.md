@@ -388,6 +388,13 @@ well-formed, DOCTYPE-free SVG XML document and are verified from their root
 `width`/`height` or positive `viewBox` without executing document content.
 Compatible caller MIME aliases (for example `audio/x-wav`) are normalized
 before comparison, while the decoded Host media type is the sealed L0 fact.
+User file imports treat filenames and browser `File.type` as selection hints,
+not registered MIME assertions. The Project and personal Global import routes
+leave MIME discovery to the mandatory Host byte probe: a QuickTime movie named
+`.MP4` retains its original name and bytes but is published and served as
+`video/quicktime`. Invalid bytes and a mismatch with the selected Asset kind still
+fail publication. Explicit assertions on internal Resource/publication paths
+remain strict; import does not redefine one container type as another.
 Matroska/WebM family media is distinguished by the EBML `DocType` stored in the
 bytes rather than by a filename or FFprobe's shared demuxer name. When FFprobe
 omits a WAV channel layout, v4 may derive only mono/stereo from a verified
@@ -665,6 +672,18 @@ Timeline is an Action, not a special media reference subsystem.
   writes that slot's ActionAssetBinding in the same Project mutation.
 - The binding resolves to a ProjectAssetEntry.
 - Rendering freezes a Timeline Action revision and produces an output binding.
+
+Attaching, copying, or saving a Canvas-owned Timeline also ensures placements
+for its active input media on that Canvas, reusing existing placements. This
+applies to native file/CLI edits as well as the GUI scope cascade. Standalone
+Timelines do not create Canvas placements. Existing projects gain missing
+placements on their next Timeline apply/save, not during a read.
+
+Canvas derives media → Timeline connections from the current draft Action
+bindings. Repeated clips share a placement/connection; removing the final use
+removes the projected connection but keeps reusable media on the Canvas. These
+connections cannot be deleted or rewired independently of Timeline items and
+are not stored as a second graph authority.
 
 Current Local writes persist `assetId` as the Project Asset identity and never
 persist an external runtime `src`: the shared Project authority strips Host

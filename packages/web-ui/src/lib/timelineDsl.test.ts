@@ -3,6 +3,11 @@ import type { Track } from '@clash/remotion-core';
 import { stripSrcFromTracks } from './timelineDsl';
 
 describe('stripSrcFromTracks', () => {
+    it('does not turn an Asset lookup fallback into an authored Canvas reference', () => {
+        const item = { id: 'video', type: 'video' as const, assetId: 'asset-video', from: 20, durationInFrames: 60 };
+        expect(stripSrcFromTracks([{ id: 'media', name: 'Media', items: [{ ...item, src: '/resolved-video.mp4' }] }])[0]!.items[0]).toEqual(item);
+    });
+
     it('preserves self-contained data sources while stripping external media URLs', () => {
         const tracks: Track[] = [{
             id: 'visuals',

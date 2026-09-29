@@ -153,6 +153,7 @@ describe("Codex ImageGen kernel adapter", () => {
         );
         expect(args).not.toContain("--ignore-user-config");
         expect(args.filter((value) => value === "-i")).toHaveLength(1);
+        expect(args.at(-2)).toBe("--");
         expect(args.at(-1)).toContain("Aspect ratio: 16:9");
         await writeFile(
           `${options.cwd}/result.png`,

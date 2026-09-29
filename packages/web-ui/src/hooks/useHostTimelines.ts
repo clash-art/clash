@@ -95,13 +95,13 @@ export function useHostTimelines(options: {
       return { ok: true as const, timelineId: id };
     } catch (error) { return { ok: false as const, error: report(error) }; }
   }, [state, observe, publish, report]);
-  const applyTimelineState = useCallback(async (id: string, dsl: unknown, write?: WriteOptions): Promise<ProjectTimeline | false> => {
+  const applyTimelineState = useCallback(async (id: string, dsl: unknown, write?: WriteOptions): Promise<ProjectTimelineMutationResult> => {
     const before = state.observations.find((item) => item.timeline.id === id);
     const envelope = { operation: "timeline_apply" as const, entity: { kind: "timeline" as const, id }, expectedReadToken: write?.ifMatch,
       ...(before ? { beforeReadToken: projectTimelineReadToken(before.timeline) } : {}) };
     const result = await mutate(() => state.client.apply(observe(id, write), dsl));
     onMutation.current?.(result.ok ? hostMutationSucceeded(envelope, { resultEntityId: id, afterReadToken: projectTimelineReadToken(result.timeline) }) : hostMutationRejected(envelope, result.error));
-    return result.ok ? result.timeline : false;
+    return result;
   }, [state, mutate, observe]);
   const requestTimelineRender = useCallback(async (id: string, actor: { actorUserId: string; actorAgentId?: string }) => {
     try { return { ok: true as const, ...await state.client.render(observe(id), actor.actorAgentId) }; }

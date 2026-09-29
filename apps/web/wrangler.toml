@@ -1,4 +1,4 @@
-# OSS reference config for self-hosters. The hosted clash.video deploy lives
+# OSS reference config for self-hosters. The hosted clash.art deploy lives
 # in clash-hosted/apps/web-hosted/wrangler.toml — that one points its `main`
 # at this directory's workers/app.ts via the OSS git submodule.
 

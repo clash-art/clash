@@ -25,6 +25,7 @@ export type TimelineToolInput = {
   cwd?: string;
   projectId?: string;
   standalone?: boolean;
+  full?: boolean;
   id?: string;
   timelineId?: string;
   sourceTimelineId?: string;
@@ -81,6 +82,7 @@ export function buildTimelineCliArgs(
     case "clash_timeline_list":
       args.push("list");
       if (input.standalone) args.push("--standalone");
+      if (input.full) args.push("--full");
       break;
     case "clash_timeline_create":
       args.push(

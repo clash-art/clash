@@ -17,7 +17,10 @@ export interface LocalMarketplaceOptions {
   marketplaceFeed?: Item[];
   installMarketplacePlugin?: (
     packageId: string,
+    installation?: HostInstallScope,
   ) => Promise<Record<string, unknown>>;
+  getPluginInstallScope?: (id: string) => Promise<HostInstallScope>;
+  validateInstallProjects?: (ids: string[]) => Promise<boolean>;
   uninstallMarketplacePlugin?: (id: string) => Promise<void>;
   installMarketplaceSkill?: (
     id: string,
@@ -28,6 +31,7 @@ export interface LocalMarketplaceOptions {
     Array<Record<string, unknown>>
   >;
   uninstallMarketplaceAction?: (id: string) => Promise<void>;
+  reconcileSkillProjects?: () => Promise<void>;
   readInstalledPlugin?: (id: string) => Promise<object>;
 }
 export function legacyActionInstallRetired() {
@@ -119,6 +123,11 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
       await options.uninstallMarketplaceAction!(item.id);
       return new Response(null, { status: 204 });
     });
+  app.get("/api/marketplace/plugins/:packageId/install", async (c) => {
+    const item = plugin(c.req.param("packageId"));
+    if (!item) return c.json({ error: "Unknown local marketplace plugin" }, 404);
+    return c.json(await options.getPluginInstallScope?.(item.id) ?? { scope: "global" });
+  });
   app.post("/api/marketplace/plugins/:packageId/install", async (c) => {
     const item = plugin(c.req.param("packageId"));
     if (!item)
@@ -131,7 +140,20 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
         },
         409,
       );
-    await options.installMarketplacePlugin!(item.packageId);
+    const raw = await c.req.text();
+    let installation: HostInstallScope = { scope: "global" };
+    if (raw.trim()) {
+      let value: unknown;
+      try { value = JSON.parse(raw); } catch { return c.json({ error: "Invalid installation scope" }, 400); }
+      const parsed = HostInstallScopeSchema.safeParse(value);
+      if (!parsed.success) return c.json({ error: "Invalid installation scope" }, 400);
+      installation = parsed.data;
+    }
+    if (installation.scope === "projects" && (!options.validateInstallProjects || !await options.validateInstallProjects(installation.projectIds))) {
+      return c.json({ error: "Choose existing projects" }, 400);
+    }
+    if (raw.trim()) await options.installMarketplacePlugin!(item.packageId, installation);
+    else await options.installMarketplacePlugin!(item.packageId);
     const active = (await options.readInstalledPlugin!(item.id)) as {
       id?: unknown;
       version?: unknown;
@@ -159,6 +181,12 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
       await options.uninstallMarketplacePlugin!(item.id);
       return new Response(null, { status: 204 });
     });
+  app.get("/api/marketplace/skills/:skillId/install", async c => {
+    const id = c.req.param("skillId");
+    if (!skill(id)) return c.json({ error: "Unknown skill plugin" }, 404);
+    const record = (await options.listInstalledMarketplaceSkills?.() ?? []).find(item => item.skillId === id);
+    return c.json(record?.installation ?? { scope: "global" });
+  });
   app.post("/api/marketplace/skills/:skillId/install", async (c) => {
     const id = c.req.param("skillId"),
       item = skill(id);
@@ -188,9 +216,11 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
         );
       scope = parsed.data;
     }
+    if (scope?.scope === "projects" && (!options.validateInstallProjects || !await options.validateInstallProjects(scope.projectIds))) return c.json({ error: "Choose existing projects" }, 400);
     const result = scope
       ? await options.installMarketplaceSkill!(id, scope)
       : await options.installMarketplaceSkill!(id);
+    await options.reconcileSkillProjects?.();
     const installed = (await options.listInstalledMarketplaceSkills!()).find(
       (record) => record.skillId === id,
     );
@@ -204,6 +234,7 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
       if (!skill(id))
         return c.json({ error: "Unknown local marketplace skill" }, 404);
       await options.uninstallMarketplaceSkill!(id);
+      await options.reconcileSkillProjects?.();
       return new Response(null, { status: 204 });
     });
   return app;

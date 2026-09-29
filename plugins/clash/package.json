@@ -33,6 +33,7 @@
     "skill-packs.json"
   ],
   "scripts": {
+    "pack:distribution": "node scripts/pack-distribution.ts",
     "build:host": "tsx scripts/build-host-runtime.ts",
     "build:core": "tsup && pnpm build:host && tsx scripts/copy-app-bundles.ts",
     "bundle:agents": "tsx scripts/bundle-agent-runtime.ts",
@@ -47,18 +48,20 @@
     "@ffprobe-installer/ffprobe": "2.1.2",
     "@remotion/renderer": "4.0.507",
     "esbuild": "^0.25.0",
-    "loro-crdt": "^1.10.3",
+    "loro-crdt": "1.16.3",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
     "sharp": "0.34.5",
     "yaml": "^2.6.0"
   },
   "devDependencies": {
+    "@clash-plugin/asset-edit": "workspace:*",
+    "@clash-plugin/remotion": "workspace:*",
     "@clash/cli": "workspace:*",
     "@clash/director-plugin": "workspace:*",
     "@clash/gui": "workspace:*",
     "@clash/local-api": "workspace:*",
     "@clash/mcp-server": "workspace:*",
-    "@clash-plugin/asset-edit": "workspace:*",
-    "@clash-plugin/remotion": "workspace:*",
     "@clash/render-server": "workspace:*",
     "@clash/shared-mcp": "workspace:*",
     "@clash/shared-runtime": "workspace:*",

@@ -1,8 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
-import { chmod, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +20,7 @@ const reportPath = path.join(artifactRoot, "storage-doctor-repair-report.json");
 const cliEntry = path.join(repoRoot, "packages", "cli", "src", "index.ts");
 const require = createRequire(path.join(repoRoot, "packages", "cli", "package.json"));
 const tsxLoader = require.resolve("tsx");
+const cliTsconfig = path.join(repoRoot, "packages", "cli", "tsconfig.dev.json");
 const checks = [];
 
 function now() {
@@ -53,6 +55,7 @@ function runCli(args, cwd = workspace) {
       env: {
         ...process.env,
         CLASH_HOME: clashHome,
+        TSX_TSCONFIG_PATH: cliTsconfig,
       },
     },
   );
@@ -1163,10 +1166,10 @@ async function main() {
       revision_content: true,
     },
   });
-  const readyCloudSyncWorkspace = path.join(artifactRoot, "ready-cloud-sync-workspace");
-  await mkdir(path.join(readyCloudSyncWorkspace, ".clash"), { recursive: true });
+  const claimedReadyCloudSyncWorkspace = path.join(artifactRoot, "claimed-ready-cloud-sync-workspace");
+  await mkdir(path.join(claimedReadyCloudSyncWorkspace, ".clash"), { recursive: true });
   await writeFile(
-    path.join(readyCloudSyncWorkspace, ".clash", "project.toml"),
+    path.join(claimedReadyCloudSyncWorkspace, ".clash", "project.toml"),
     [
       "schema_version = 1",
       `project_id = ${JSON.stringify(projectId)}`,
@@ -1175,48 +1178,48 @@ async function main() {
     ].join("\n"),
     "utf8",
   );
-  const readyCloudSyncStatusResult = runCli(["project", "status", "--json"], readyCloudSyncWorkspace);
+  const claimedReadyCloudSyncStatusResult = runCli(["project", "status", "--json"], claimedReadyCloudSyncWorkspace);
   recordCheck(
-    "cloud-sync ready project status succeeds from product replication state",
-    readyCloudSyncStatusResult.status === 0,
-    readyCloudSyncStatusResult.stderr || readyCloudSyncStatusResult.stdout,
-    { command: readyCloudSyncStatusResult.command, cwd: readyCloudSyncStatusResult.cwd },
+    "cloud-sync status tolerates a config claiming readiness",
+    claimedReadyCloudSyncStatusResult.status === 0,
+    claimedReadyCloudSyncStatusResult.stderr || claimedReadyCloudSyncStatusResult.stdout,
+    { command: claimedReadyCloudSyncStatusResult.command, cwd: claimedReadyCloudSyncStatusResult.cwd },
   );
-  const readyCloudSyncStatus = parseStdoutJson(readyCloudSyncStatusResult);
+  const claimedReadyCloudSyncStatus = parseStdoutJson(claimedReadyCloudSyncStatusResult);
   recordCheck(
-    "cloud-sync ready state keeps the same local replica and opens product gates",
-    readyCloudSyncStatus?.projectId === projectId &&
-      readyCloudSyncStatus?.mode === "local" &&
-      readyCloudSyncStatus?.syncMode === "cloud-sync" &&
-      readyCloudSyncStatus?.projectWorkspaceRoot === cloudSyncStatus?.projectWorkspaceRoot &&
-      readyCloudSyncStatus?.loro?.replicaRoot === cloudSyncStatus?.loro?.replicaRoot &&
+    "config capability flags cannot grant project cloud admission",
+    claimedReadyCloudSyncStatus?.projectId === projectId &&
+      claimedReadyCloudSyncStatus?.mode === "local" &&
+      claimedReadyCloudSyncStatus?.syncMode === "cloud-sync" &&
+      claimedReadyCloudSyncStatus?.projectWorkspaceRoot === cloudSyncStatus?.projectWorkspaceRoot &&
+      claimedReadyCloudSyncStatus?.loro?.replicaRoot === cloudSyncStatus?.loro?.replicaRoot &&
       cloudSyncStatus?.storage?.workspace?.root === workspace &&
-      readyCloudSyncStatus?.storage?.workspace?.root === readyCloudSyncWorkspace &&
-      readyCloudSyncStatus?.collaboration?.mode === "synced" &&
-      readyCloudSyncStatus?.collaboration?.webOpenable === true &&
-      readyCloudSyncStatus?.collaboration?.multiUser === false &&
-      readyCloudSyncStatus?.collaboration?.roomAuthority === "local-with-cloud-mirror" &&
-      readyCloudSyncStatus?.collaboration?.cloudProjectRoom === "disabled" &&
-      readyCloudSyncStatus?.collaboration?.syncReadiness?.status === "ready" &&
-      readyCloudSyncStatus?.collaboration?.syncReadiness?.ready === true &&
-      Array.isArray(readyCloudSyncStatus?.collaboration?.syncReadiness?.missing) &&
-      readyCloudSyncStatus.collaboration.syncReadiness.missing.length === 0 &&
-      readyCloudSyncStatus?.collaboration?.actions?.openInWeb?.allowed === true &&
-      readyCloudSyncStatus?.collaboration?.actions?.shareProject?.allowed === true &&
-      readyCloudSyncStatus?.collaboration?.actions?.runLocalAgent?.allowed === true &&
-      readyCloudSyncStatus?.currentWorkspace?.markerRoot === readyCloudSyncWorkspace &&
-      readyCloudSyncStatus?.currentWorkspace?.deletionDeletesProjectState === false,
+      claimedReadyCloudSyncStatus?.storage?.workspace?.root === claimedReadyCloudSyncWorkspace &&
+      claimedReadyCloudSyncStatus?.collaboration?.mode === "synced" &&
+      claimedReadyCloudSyncStatus?.collaboration?.webOpenable === false &&
+      claimedReadyCloudSyncStatus?.collaboration?.multiUser === false &&
+      claimedReadyCloudSyncStatus?.collaboration?.roomAuthority === "local" &&
+      claimedReadyCloudSyncStatus?.collaboration?.cloudProjectRoom === "disabled" &&
+      claimedReadyCloudSyncStatus?.collaboration?.syncReadiness?.status === "pending" &&
+      claimedReadyCloudSyncStatus?.collaboration?.syncReadiness?.ready === false &&
+      Array.isArray(claimedReadyCloudSyncStatus?.collaboration?.syncReadiness?.missing) &&
+      claimedReadyCloudSyncStatus.collaboration.syncReadiness.missing.includes("canvas") &&
+      claimedReadyCloudSyncStatus?.collaboration?.actions?.openInWeb?.allowed === false &&
+      claimedReadyCloudSyncStatus?.collaboration?.actions?.shareProject?.allowed === false &&
+      claimedReadyCloudSyncStatus?.collaboration?.actions?.runLocalAgent?.allowed === true &&
+      claimedReadyCloudSyncStatus?.currentWorkspace?.markerRoot === claimedReadyCloudSyncWorkspace &&
+      claimedReadyCloudSyncStatus?.currentWorkspace?.deletionDeletesProjectState === false,
     JSON.stringify({
-      collaboration: readyCloudSyncStatus?.collaboration,
-      currentWorkspace: readyCloudSyncStatus?.currentWorkspace,
+      collaboration: claimedReadyCloudSyncStatus?.collaboration,
+      currentWorkspace: claimedReadyCloudSyncStatus?.currentWorkspace,
     }),
   );
   recordCheck(
-    "cloud-sync ready sync policy admits local mirror instead of cloud sequencer authority",
-    readyCloudSyncStatus?.collaboration?.syncPolicy?.cloudAdmission === "ready-local-with-cloud-mirror" &&
-      readyCloudSyncStatus?.collaboration?.syncPolicy?.mirror?.assetMetadata?.mediaBlobsIncluded === false &&
-      readyCloudSyncStatus?.collaboration?.syncPolicy?.excluded?.rawAgentTraces?.optInRequiredForSync === true,
-    JSON.stringify(readyCloudSyncStatus?.collaboration?.syncPolicy),
+    "unadmitted cloud-sync policy keeps cloud gates closed and private traces local",
+    claimedReadyCloudSyncStatus?.collaboration?.syncPolicy?.cloudAdmission === "blocked-until-requirements-ready" &&
+      claimedReadyCloudSyncStatus?.collaboration?.syncPolicy?.mirror?.assetMetadata?.mediaBlobsIncluded === false &&
+      claimedReadyCloudSyncStatus?.collaboration?.syncPolicy?.excluded?.rawAgentTraces?.optInRequiredForSync === true,
+    JSON.stringify(claimedReadyCloudSyncStatus?.collaboration?.syncPolicy),
   );
   const cloudSyncRecoveryList = runCli(["doctor", "storage-recovery", "list", "--json"]);
   recordCheck(
@@ -1230,8 +1233,8 @@ async function main() {
     "cloud-sync storage recovery reports local replica recovery policy",
     cloudSyncRecoveryListReport?.recoveryPolicy?.collaborationMode === "synced" &&
       cloudSyncRecoveryListReport?.recoveryPolicy?.rawSyncMode === "cloud-sync" &&
-      cloudSyncRecoveryListReport?.recoveryPolicy?.roomAuthority === "local-with-cloud-mirror" &&
-      cloudSyncRecoveryListReport?.recoveryPolicy?.syncReadinessStatus === "ready" &&
+      cloudSyncRecoveryListReport?.recoveryPolicy?.roomAuthority === "local" &&
+      cloudSyncRecoveryListReport?.recoveryPolicy?.syncReadinessStatus === "pending" &&
       cloudSyncRecoveryListReport?.recoveryPolicy?.localRestoreAllowed === true &&
       cloudSyncRecoveryListReport?.recoveryPolicy?.cloudStateIncluded === false &&
       cloudSyncRecoveryListReport?.recoveryPolicy?.cloudStateMutated === false &&
@@ -1240,10 +1243,12 @@ async function main() {
     JSON.stringify(cloudSyncRecoveryListReport?.recoveryPolicy),
   );
 
-  const detachedWorkspace = path.join(artifactRoot, "detached-workspace");
+  // This check requires no ancestor marker, including the developer checkout marker.
+  const detachedWorkspace = await realpath(await mkdtemp(path.join(tmpdir(), "clash-detached-workspace-")));
   await mkdir(detachedWorkspace, { recursive: true });
   await rm(workspace, { recursive: true, force: true });
   const detachedStatusResult = runCli(["project", "status", "--project", projectId, "--json"], detachedWorkspace);
+  await rm(detachedWorkspace, { recursive: true, force: true });
   recordCheck(
     "project status can recover project store after marker workspace deletion",
     detachedStatusResult.status === 0,
@@ -1305,7 +1310,7 @@ async function main() {
       invalidRecoveryDoctor,
       forgedMarkerStatusResult,
       cloudSyncStatusResult,
-      readyCloudSyncStatusResult,
+      claimedReadyCloudSyncStatusResult,
       cloudSyncRecoveryList,
       detachedStatusResult,
     ].map((result) => ({

@@ -1,6 +1,21 @@
 import { build, type Message } from "esbuild";
 import { mkdir, access } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+async function resolveAuthoringSdk(specifier: string): Promise<string> {
+  const entry = specifier === "@clash/action-sdk" ? "index" : specifier.slice("@clash/action-sdk/".length);
+  const bundled = fileURLToPath(new URL(`./plugin-sdk/${entry}.mjs`, import.meta.url));
+  try {
+    await access(bundled);
+    return bundled;
+  } catch {
+    // Source/standalone CLI development uses its declared workspace dependency.
+    // Installed distributions resolve the versioned SDK shipped beside the CLI.
+    return createRequire(import.meta.url).resolve(specifier);
+  }
+}
 
 /**
  * Compiling a plugin entrypoint.
@@ -116,9 +131,19 @@ export async function buildPluginEntrypoint(
     // Only builtins may stay external; nothing else is resolvable at runtime.
     packages: "bundle",
     external: [],
+    plugins: [{
+      name: "clash-authoring-sdk",
+      setup(builder) {
+        builder.onResolve({ filter: /^@clash\/action-sdk(?:\/(?:browser|executable-failure))?$/ }, async ({ path }) => ({ path: await resolveAuthoringSdk(path) }));
+      },
+    }],
     logLevel: "silent",
     absWorkingDir: pluginDir,
     sourcemap: false,
+    // esbuild's readable module-header comments contain relative installation
+    // paths. They must not change immutable plugin bytes when the CLI moves.
+    // Keep identifiers/syntax intact and retain esbuild's legal comments.
+    minifyWhitespace: true,
     write: true,
   }).catch((error: unknown) => {
     const errors = (error as { errors?: Message[] }).errors ?? [];

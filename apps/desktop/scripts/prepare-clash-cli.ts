@@ -11,6 +11,7 @@ import {
 import { constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { writeRuntimeDependencyIdentity } from "../../../scripts/runtime-dependency-identity.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(__dirname, "..");
@@ -112,6 +113,42 @@ function runNpm(args: string[], { cwd, ...options }: { cwd: string; env?: NodeJS
   }
 }
 
+/** Keep the canonical plugin discoverable beside the flattened Host bundle. */
+export async function stageBuiltinClashPlugin(sourceRoot: string, targetRoot: string) {
+  for (const entry of [".codex-plugin", "skills"]) {
+    await cp(path.join(sourceRoot, entry), path.join(targetRoot, entry), {
+      recursive: true, dereference: true, force: true,
+    });
+  }
+  const sourcePackage = JSON.parse(
+    await readFile(path.join(sourceRoot, "package.json"), "utf8"),
+  );
+  // Flattening runtime/ must preserve the package's module scope. Do not copy
+  // source exports/bin paths: those still refer to the unflattened layout.
+  await writeFile(
+    path.join(targetRoot, "package.json"),
+    `${JSON.stringify({ private: true, type: sourcePackage.type }, null, 2)}\n`,
+  );
+  const manifest = JSON.parse(
+    await readFile(path.join(sourceRoot, ".codex-plugin", "plugin.json"), "utf8"),
+  );
+  const config = JSON.parse(
+    await readFile(path.join(sourceRoot, manifest.mcpServers), "utf8"),
+  ) as { mcpServers: Record<string, { args?: string[] }> };
+  for (const server of Object.values(config.mcpServers)) {
+    server.args = await Promise.all((server.args ?? []).map(async (arg) => {
+      if (!arg.startsWith("./runtime/")) return arg;
+      const flattened = `./${arg.slice("./runtime/".length)}`;
+      await access(path.join(targetRoot, flattened));
+      return flattened;
+    }));
+  }
+  await writeFile(
+    path.join(targetRoot, manifest.mcpServers),
+    `${JSON.stringify(config, null, 2)}\n`,
+  );
+}
+
 export async function prepareClashCli({
   env = process.env,
   platform = process.platform,
@@ -143,6 +180,7 @@ export async function prepareClashCli({
     dereference: true,
     force: true,
   });
+  await stageBuiltinClashPlugin(runtimeRoot, outputDir);
   await writeFile(
     path.join(outputDir, "runtime-manifest.json"),
     `${JSON.stringify(
@@ -198,6 +236,7 @@ export async function prepareClashCli({
       platform,
       arch: env.npm_config_arch ?? process.arch,
     });
+    await writeRuntimeDependencyIdentity(path.join(outputDir, "node_modules"), outputDir);
   } finally {
     await rm(dependencyDir, { recursive: true, force: true });
   }

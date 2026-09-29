@@ -24,6 +24,9 @@ A View-only plugin may contribute no functions or Generators. Its View can
 still consume installed native Generators through Clash product commands and
 store their Output Commit Project Assets in its structured state.
 
+View 的引用、SDK 和 Canvas 关系见 [View、素材引用与 Generator 协议](./view-generator-spec.md)；尚未实现的 Agent 调用扩展在其中单独标明。
+View 保留独立状态并引用基础 Generator 的产物；声明式调用、参考输入和持久结果关联是待实现扩展，不要求 View 自身成为 Generator。
+
 ## Lifecycle
 
 ```sh
@@ -100,3 +103,6 @@ See [Manifest & Artifacts](/plugins/manifest) and [Host-scoped SDK
 context](/plugins/sdk-context). Native Generator semantics and current product
 migration status are documented in
 [Asset + Generator Model](/guide/asset-generator-model).
+Views consume those Assets through the shared
+[View reference protocol](/plugins/view-generator-spec), which also defines the
+SDK reader and derived Canvas connections.

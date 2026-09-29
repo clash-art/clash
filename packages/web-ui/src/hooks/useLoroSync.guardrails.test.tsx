@@ -838,6 +838,23 @@ describe("useLoroSync guardrails", () => {
     });
   });
 
+  it("projects layout changes without rewriting a referenced node", async () => {
+    const onNodesChange = vi.fn();
+    const { result } = renderHook(() => useLoroSync({ projectId: "layout-presentation", onNodesChange }));
+    await waitFor(() => expect(result.current.isInitialized).toBe(true));
+    act(() => {
+      for (const id of ["source", "target"])
+        result.current.addNode(id, { type: "text", position: { x: 0, y: 0 }, data: { content: id } });
+      result.current.addEdge("reference", { source: "source", target: "target" });
+    });
+    const source = result.current.doc?.getMap("nodes").get("source");
+    act(() => { expect(result.current.applyLayout([{ id: "source", patch: { position: { x: 210, y: 90 } } }])).toBe(true); });
+    expect(onNodesChange.mock.lastCall?.[0]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "source", position: { x: 210, y: 90 } }),
+    ]));
+    expect(result.current.doc?.getMap("nodes").get("source")).toEqual(source);
+  });
+
   it("restores the Canvas projection after rejecting an entire layout", async () => {
     const onNodesChange = vi.fn();
     const onMutation = vi.fn();
@@ -858,7 +875,7 @@ describe("useLoroSync guardrails", () => {
     act(() => {
       expect(result.current.applyLayout([
         { id: "editable", patch: { position: { x: 100, y: 100 } } },
-        { id: "source", patch: { position: { x: 200, y: 100 } } },
+        { id: "source", patch: { position: { x: 200, y: 100 }, parentId: "target" } },
       ])).toBe(false);
     });
     expect(result.current.doc?.toJSON()).toEqual(before);
@@ -972,6 +989,29 @@ describe("useLoroSync guardrails", () => {
     await waitFor(() =>
       expect(projectedNodeIds.at(-1)).toEqual(["shots-node"]),
     );
+  });
+
+  it("refreshes read-only Storyboard reference edges when material state changes", async () => {
+    const onEdgesChange = vi.fn();
+    const { result } = renderHook(() => useLoroSync({
+      projectId: "view-asset-connections", onEdgesChange,
+    }));
+    await waitFor(() => expect(result.current.isInitialized).toBe(true));
+    const empty = { keyElements: [], shots: [], audioLayers: [], uncategorized: [] };
+    act(() => {
+      result.current.addNode("asset", { type: "image", data: { assetId: "lamp" }, position: { x: 0, y: 0 } });
+      result.current.addNode("view", { type: "plugin-view", data: { state: empty }, position: { x: 400, y: 0 } });
+      result.current.updateNode("view", { data: { state: {
+        ...empty, uncategorized: [{ id: "lamp", mediaKind: "image", projectAssetId: "lamp" }],
+      } } });
+    });
+    expect(onEdgesChange.mock.lastCall?.[0]).toEqual([
+      expect.objectContaining({ source: "asset", target: "view", type: "reference", deletable: false, reconnectable: false }),
+    ]);
+    act(() => {
+      result.current.updateNode("view", { data: { state: empty } });
+    });
+    expect(onEdgesChange.mock.lastCall?.[0]).toEqual([]);
   });
 
   it("stores UI edge mutations as downstream upstream references", async () => {

@@ -775,24 +775,27 @@ describe("ChatbotCopilot desktop local mode", () => {
     );
   });
 
-
   it("uses an expiring shared toast for model fallback without repeating on rerender", async () => {
     vi.useFakeTimers();
     globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "desktop" };
     Element.prototype.scrollIntoView = vi.fn();
-    mocks.useClashRuntime.mockReturnValue(runtimeState({
-      sessionId: "fallback-session",
-      selectedRuntimeId: "desktop-local",
-      status: "connected",
-      ready: true,
-      modelFallback: { from: "unknown-model", to: "supported-model" },
-    }));
+    mocks.useClashRuntime.mockReturnValue(
+      runtimeState({
+        sessionId: "fallback-session",
+        selectedRuntimeId: "desktop-local",
+        status: "connected",
+        ready: true,
+        modelFallback: { from: "unknown-model", to: "supported-model" },
+      }),
+    );
     mocks.useAgentCopilot.mockReturnValue(cloudState());
     try {
       const view = renderDesktopCopilotWithFeedback();
       const notice = screen.getByText("已切换至 supported-model");
       expect(notice.closest('[data-ui="toast-viewport"]')).not.toBeNull();
-      await act(async () => { await vi.advanceTimersByTimeAsync(8_000); });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8_000);
+      });
       expect(screen.queryByText("已切换至 supported-model")).toBeNull();
       view.rerender(copilotWithFeedbackElement());
       expect(screen.queryByText("已切换至 supported-model")).toBeNull();
@@ -3292,7 +3295,7 @@ describe("ChatbotCopilot desktop local mode", () => {
     }
   });
 
-  it("moves the collapsed Clash agent into the production editor header", () => {
+  it("opens Chat from the existing persona in the compact production header control", () => {
     globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "desktop" };
     vi.stubGlobal(
       "IntersectionObserver",
@@ -3311,9 +3314,11 @@ describe("ChatbotCopilot desktop local mode", () => {
     );
     mocks.useAgentCopilot.mockReturnValue(cloudState());
 
+    const onCollapseChange = vi.fn();
     const { container } = renderDesktopCopilot({
       isCollapsed: true,
       collapsedLauncherPlacement: "header",
+      onCollapseChange,
     });
 
     const launcher = container.querySelector<HTMLElement>(
@@ -3321,13 +3326,13 @@ describe("ChatbotCopilot desktop local mode", () => {
     );
     const panel = container.querySelector<HTMLElement>("#clash-copilot-panel");
     expect(launcher).toBeTruthy();
-    expect(launcher?.className).toContain(
-      "top-[calc(var(--clash-desktop-chrome-height,0px)+0.375rem)]",
-    );
     expect(
-      screen.getByRole("button", { name: "copilot.panel.expand" }).className,
-    ).toContain("h-8");
-    expect(launcher?.querySelector(".clash-agent-motion")).toBeTruthy();
+      launcher?.querySelector(".clash-agent-motion--compact"),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "copilot.panel.expand" }),
+    );
+    expect(onCollapseChange).toHaveBeenCalledWith(false);
     expect(panel?.style.transformOrigin).toBe(
       "calc(100% - 16px) calc(0% + 14px)",
     );
@@ -5919,7 +5924,9 @@ describe("ChatbotCopilot desktop local mode", () => {
     );
     expect(payload.projectId).toBe("project-one");
     expect(payload.activeSurface).toEqual({
-      kind: "canvas", id: "canvas-main", name: "Main Storyboard",
+      kind: "canvas",
+      id: "canvas-main",
+      name: "Main Storyboard",
     });
   });
 

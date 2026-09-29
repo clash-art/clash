@@ -1,21 +1,24 @@
 {
   "name": "Clash Action SDK",
   "purpose": "Define and assemble executable Plugin contributions against the shared invocation, Host-context, and result ABI.",
-  "runtimeBoundary": "PluginModule is transport-neutral and browser-safe through the ./browser entrypoint. The runner chooses local, cloud, or client; servePluginStdio adapts the same module to process/stdio. Realm and transport never enter Plugin invocation or Generator semantic identity. Provider error contracts use ./executable-failure, a pure implementation shared with the Node root export; portable consumers must not import the root assemble/stdio entrypoint.",
+  "runtimeBoundary": "PluginModule is transport-neutral and browser-safe through the ./browser entrypoint. The runner chooses local, cloud, or client; servePluginStdio adapts the same module to process/stdio. Realm and transport never enter Plugin invocation or Generator semantic identity. Provider error contracts use ./executable-failure, shared with the Node root export. Separately bundled module errors carry a global symbol brand plus schema-validated failure, since instanceof does not span bundles. Portable consumers must not import the root assemble/stdio entrypoint.",
   "entrypoints": [
     "src/index.ts",
     "src/browser.ts",
     "src/assemble.ts",
     "src/define-plugin.ts",
     "src/stdio-plugin.ts",
-    "src/executable-failure.ts"
+    "src/executable-failure.ts",
+    "src/ui.ts"
   ],
   "invariants": [
     "Manifest declarations and implementation contributions must match exactly before invocation.",
     "Every invocation receives Host-scoped capabilities; Plugin code never chooses another Plugin or account scope.",
     "Local, cloud, client, and stdio execution share one module dispatch and result-normalization path.",
     "Generator Actions use kind=action in both realms: defineAction is submit-only compatibility sugar, while defineActionExecutor exposes durable submit/poll/callback through the same ABI.",
-    "Importing or invoking a PluginModule does not start or access a transport."
+    "Importing or invoking a PluginModule does not start or access a transport.",
+    "The optional ./ui React entrypoint delegates GeneratorComposer to the host provider; executable Plugin modules do not import UI.",
+    "Node and browser entries re-export the shared View resource schema and reference enumerator. GeneratorOutputAsset extends that resource contract rather than duplicating Asset identity or provenance."
   ],
   "verification": [
     "pnpm --dir packages/action-sdk test",

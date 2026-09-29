@@ -31,7 +31,16 @@ vi.mock("@clash/web-ui/lib/clientActions", () => ({
   marketplaceInstallSkill: marketplaceApi.installSkill,
   marketplaceUninstallAction: marketplaceApi.uninstallAction,
   marketplaceUninstallSkill: marketplaceApi.uninstallSkill,
+  listProjects: async () => [],
+  marketplacePluginScope: async () => ({ scope: "global" }),
 }));
+
+// Existing catalog flows select global scope; dedicated scope tests cover project choices.
+function clickAndConfirmGlobalInstallation(target: Parameters<typeof fireEvent.click>[0]) {
+  fireEvent.click(target);
+  const save = screen.queryByRole("button", { name: "Save" });
+  if (save) fireEvent.click(save);
+}
 
 const items = [
   {
@@ -105,9 +114,9 @@ describe("MarketplaceClient interactions", () => {
     expect(screen.getByRole("heading", { name: "Official Picks" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Seedance guide" })).toBeNull();
     const card = screen.getByRole("heading", { name: picked.name }).closest("li")!;
-    fireEvent.click(within(card).getByRole("button", { name: "Install" }));
+    clickAndConfirmGlobalInstallation(within(card).getByRole("button", { name: "Install" }));
     await waitFor(() =>
-      expect(marketplaceApi.installSkill).toHaveBeenCalledWith(picked),
+      expect(marketplaceApi.installSkill).toHaveBeenCalledWith(picked, { scope: "global" }),
     );
     expect(within(card).getByText("Installed")).toBeTruthy();
   });
@@ -150,10 +159,10 @@ describe("MarketplaceClient interactions", () => {
     const storyboard = screen
       .getByRole("heading", { name: "Storyboard" })
       .closest('[data-slot="marketplace-item"]') as HTMLElement;
-    fireEvent.click(within(storyboard).getByRole("button", { name: "Install" }));
+    clickAndConfirmGlobalInstallation(within(storyboard).getByRole("button", { name: "Install" }));
     await waitFor(() =>
       expect(marketplaceApi.installPlugin).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "clash.storyboard" }),
+        expect.objectContaining({ id: "clash.storyboard" }), { scope: "global" },
       ),
     );
   });
@@ -178,8 +187,8 @@ describe("MarketplaceClient interactions", () => {
       name: "Filter",
     });
     fireEvent.pointerDown(filter, { button: 0, ctrlKey: false });
-    fireEvent.click(screen.getByRole("menuitem", { name: "Type" }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Actions" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("menuitem", { name: "Type" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("menuitemcheckbox", { name: "Actions" }));
     expect(
       screen.getByRole("heading", { name: "Codex ImageGen" }),
     ).toBeTruthy();
@@ -188,7 +197,7 @@ describe("MarketplaceClient interactions", () => {
     ).toBeNull();
     expect(screen.getByText("Type · Actions")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Skills" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("menuitemcheckbox", { name: "Skills" }));
     expect(
       screen.queryByRole("heading", { name: "Codex ImageGen" }),
     ).toBeNull();
@@ -203,7 +212,7 @@ describe("MarketplaceClient interactions", () => {
       }),
     ).toBeTruthy();
 
-    fireEvent.click(
+    clickAndConfirmGlobalInstallation(
       screen.getByRole("button", { name: "Remove Type filter: Actions" }),
     );
 
@@ -420,7 +429,7 @@ describe("MarketplaceClient interactions", () => {
       </Routes>,
     );
 
-    fireEvent.click(
+    clickAndConfirmGlobalInstallation(
       screen.getByRole("link", { name: "View Workflow skill details" }),
     );
     expect(screen.getByLabelText("Current route")).toHaveTextContent(
@@ -459,7 +468,7 @@ describe("MarketplaceClient interactions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Install" }));
 
     expect(await screen.findByText("Installed")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Installed" })).toBeNull();
@@ -480,7 +489,7 @@ describe("MarketplaceClient interactions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Install" }));
     expect(
       await screen.findByRole("button", { name: "Installing…" }),
     ).toBeDisabled();
@@ -499,7 +508,7 @@ describe("MarketplaceClient interactions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Install" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Install" }));
 
     const status = await screen.findByRole("status");
     expect(status).toHaveTextContent("Install failed");
@@ -521,8 +530,8 @@ describe("MarketplaceClient interactions", () => {
     );
 
     const add = screen.getByRole("button", { name: "Add to Composer" });
-    fireEvent.click(add);
-    fireEvent.click(add);
+    clickAndConfirmGlobalInstallation(add);
+    clickAndConfirmGlobalInstallation(add);
 
     await waitFor(() => expect(onAddReference).toHaveBeenCalledOnce());
     expect(marketplaceApi.installSkill).not.toHaveBeenCalled();
@@ -545,20 +554,20 @@ describe("MarketplaceClient interactions", () => {
       </DashboardComposerProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to Composer" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Add to Composer" }));
     expect(await screen.findByText("Added to Composer")).toBeTruthy();
     expect(screen.getByLabelText("Composer skills")).toHaveTextContent(
       "Seedance guide",
     );
 
-    fireEvent.click(
+    clickAndConfirmGlobalInstallation(
       screen.getByRole("button", { name: "Remove Composer skill" }),
     );
     expect(
       await screen.findByRole("button", { name: "Add to Composer" }),
     ).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to Composer" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Add to Composer" }));
     expect(await screen.findByText("Added to Composer")).toBeTruthy();
   });
 
@@ -580,7 +589,7 @@ describe("MarketplaceClient interactions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to Composer" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Add to Composer" }));
 
     await waitFor(() => expect(onAddReference).toHaveBeenCalledOnce());
     expect(order).toEqual(["install", "reference"]);
@@ -603,7 +612,7 @@ describe("MarketplaceClient interactions", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Add to Composer" }));
+    clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Add to Composer" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Host could not install this skill",
@@ -712,7 +721,7 @@ it("allows referencing an already installed skill from a read-only catalog witho
   const onAddReference = vi.fn();
   const { installation: _capability, ...skill } = items[1];
   render(<MarketplaceClient items={[skill]} installedActionIds={[]} installedSkillIds={[skill.id]} canAddReference onAddReference={onAddReference} />);
-  fireEvent.click(screen.getByRole("button", { name: "Add to Composer" }));
+  clickAndConfirmGlobalInstallation(screen.getByRole("button", { name: "Add to Composer" }));
   await waitFor(() => expect(onAddReference).toHaveBeenCalled());
   expect(marketplaceApi.installSkill).not.toHaveBeenCalled();
 });

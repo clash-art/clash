@@ -14,14 +14,29 @@
       "default": "./dist/index.js"
     },
     "./loro": {
-      "types": "./dist/loro.d.ts",
-      "import": "./dist/loro.js",
+      "types": "./src/loro.ts",
+      "import": "./src/loro.ts",
       "default": "./dist/loro.js"
     },
     "./loro-protocol": {
-      "types": "./dist/loro-protocol.d.ts",
-      "import": "./dist/loro-protocol.js",
+      "types": "./src/loro-protocol.ts",
+      "import": "./src/loro-protocol.ts",
       "default": "./dist/loro-protocol.js"
+    },
+    "./replica-relay": {
+      "types": "./src/replica-relay.ts",
+      "import": "./src/replica-relay.ts",
+      "default": "./dist/replica-relay.js"
+    },
+    "./replica-stream-client": {
+      "types": "./src/replica-stream-client.ts",
+      "import": "./src/replica-stream-client.ts",
+      "default": "./dist/replica-stream-client.js"
+    },
+    "./loro-stream-session": {
+      "types": "./src/loro-stream-session.ts",
+      "import": "./src/loro-stream-session.ts",
+      "default": "./dist/loro-stream-session.js"
     }
   },
   "engines": {
@@ -35,7 +50,8 @@
     "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
   "dependencies": {
-    "loro-crdt": "^1.10.3",
+    "@loro-dev/streams-client": "0.7.0",
+    "loro-crdt": "1.16.3",
     "loro-protocol": "^0.3.0"
   },
   "devDependencies": {

@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "Clash",
     "shortDescription": "Run your local Clash workspace from Codex",
-    "longDescription": "Run Clash as a local-first Codex client. The plugin reuses the selected dev or production Desktop/local-api host when available, or starts its bundled local-api runtime on first use. MCP App surfaces are temporarily unavailable; Canvas, Timeline, Director, assets, models, tasks, text, and production remain available through CLI-compatible MCP tools.",
+    "longDescription": "Run Clash as a local-first Codex client. The plugin reuses the selected dev or production Desktop/local-api host when available, or starts its bundled local-api runtime on first use. Typed MCP tools operate on the same project. Compatible MCP clients can open the complete Project App; the former standalone mini Apps are disabled. External client App rendering requires separate acceptance.",
     "developerName": "Clash",
     "category": "Productivity",
     "capabilities": [

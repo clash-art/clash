@@ -140,31 +140,69 @@ describe("LoroProtocolClientSession", () => {
     const sent: Uint8Array[] = [];
     const rejected = vi.fn();
     const errors = vi.fn();
-    const client = new LoroProtocolClientSession({ roomId: "project", doc,
-      send: frame => { sent.push(frame); }, onUpdateRejected: rejected, onError: errors });
+    const client = new LoroProtocolClientSession({
+      roomId: "project",
+      doc,
+      send: (frame) => {
+        sent.push(frame);
+      },
+      onUpdateRejected: rejected,
+      onError: errors,
+    });
     const version = doc.version();
     try {
       client.join();
-      await client.receive(encode({ type: MessageType.JoinResponseOk, crdt: CrdtType.Loro,
-        roomId: "project", permission: "write", version: version.encode() }));
+      await client.receive(
+        encode({
+          type: MessageType.JoinResponseOk,
+          crdt: CrdtType.Loro,
+          roomId: "project",
+          permission: "write",
+          version: version.encode(),
+        }),
+      );
       doc.getMap("nodes").set("rejected", { label: "Local draft" });
       doc.commit();
       const update = decode(sent.at(-1)!);
-      if (update.type !== MessageType.DocUpdate) throw new Error("Expected local update");
-      await client.receive(encode({ type: MessageType.Ack, crdt: CrdtType.Loro, roomId: "project",
-        refId: update.batchId, status: UpdateStatusCode.AppError }));
-      expect(rejected).toHaveBeenCalledWith(update.batchId, UpdateStatusCode.AppError, update.updates);
+      if (update.type !== MessageType.DocUpdate)
+        throw new Error("Expected local update");
+      await client.receive(
+        encode({
+          type: MessageType.Ack,
+          crdt: CrdtType.Loro,
+          roomId: "project",
+          refId: update.batchId,
+          status: UpdateStatusCode.AppError,
+        }),
+      );
+      expect(rejected).toHaveBeenCalledWith(
+        update.batchId,
+        UpdateStatusCode.AppError,
+        update.updates,
+      );
       expect(client.isJoined()).toBe(false);
       const previousFrames = sent.slice();
       doc.getMap("nodes").set("later", { label: "Keep for recovery" });
       doc.commit();
-      expect(client.sendExternalUpdate(doc.export({ mode: "update" }))).toBe(false);
+      expect(client.sendExternalUpdate(doc.export({ mode: "update" }))).toBe(
+        false,
+      );
       client.join();
       expect(sent).toEqual(previousFrames);
-      expect(errors).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringMatching(/recover/i) }));
-      expect(doc.getMap("nodes").get("rejected")).toEqual({ label: "Local draft" });
-      expect(doc.getMap("nodes").get("later")).toEqual({ label: "Keep for recovery" });
-    } finally { version.free(); client.destroy(); doc.free(); }
+      expect(errors).toHaveBeenCalledWith(
+        expect.objectContaining({ message: expect.stringMatching(/recover/i) }),
+      );
+      expect(doc.getMap("nodes").get("rejected")).toEqual({
+        label: "Local draft",
+      });
+      expect(doc.getMap("nodes").get("later")).toEqual({
+        label: "Keep for recovery",
+      });
+    } finally {
+      version.free();
+      client.destroy();
+      doc.free();
+    }
   });
 
   it("joins from its VersionVector and uploads state missing on the server", async () => {
@@ -312,4 +350,90 @@ describe("LoroProtocolClientSession", () => {
     expect(statuses).toEqual([UpdateStatusCode.Ok]);
     expect(doc.getMap("nodes").get("cloud")).toEqual({ label: "Cloud" });
   });
+});
+
+describe("server fragment resource limits", () => {
+  it("rejects fragment bytes beyond their declared reservation before buffering the rest", async () => {
+    const doc = new LoroDoc();
+    const sent: Uint8Array[] = [];
+    const session = new LoroProtocolServerSession({
+      roomId: "p",
+      doc: () => doc,
+      commit: async () => {},
+      send: (frame) => {
+        sent.push(frame);
+      },
+    });
+    try {
+      await session.receive(
+        encode({
+          type: MessageType.DocUpdateFragmentHeader,
+          crdt: CrdtType.Loro,
+          roomId: "p",
+          batchId: "0x0123456789abcdef",
+          fragmentCount: 2,
+          totalSizeBytes: 2,
+        }),
+      );
+      await session.receive(
+        encode({
+          type: MessageType.DocUpdateFragment,
+          crdt: CrdtType.Loro,
+          roomId: "p",
+          batchId: "0x0123456789abcdef",
+          index: 0,
+          fragment: new Uint8Array([1, 2, 3]),
+        }),
+      );
+      expect(sent.map(decode)).toContainEqual(
+        expect.objectContaining({
+          type: MessageType.Ack,
+          status: UpdateStatusCode.InvalidUpdate,
+        }),
+      );
+    } finally {
+      session.destroy();
+      doc.free();
+    }
+  });
+});
+
+it("reserves the session byte budget across unfinished batches", async () => {
+  const doc = new LoroDoc();
+  const sent: Uint8Array[] = [];
+  const session = new LoroProtocolServerSession({
+    roomId: "p",
+    doc: () => doc,
+    commit: async () => {},
+    send: (frame) => {
+      sent.push(frame);
+    },
+  });
+  try {
+    for (const batchId of [
+      "0x0000000000000001",
+      "0x0000000000000002",
+    ] as const) {
+      await session.receive(
+        encode({
+          type: MessageType.DocUpdateFragmentHeader,
+          crdt: CrdtType.Loro,
+          roomId: "p",
+          batchId,
+          fragmentCount: 1,
+          totalSizeBytes: 40 * 1024 * 1024,
+        }),
+      );
+    }
+    expect(sent.map(decode)).toContainEqual(
+      expect.objectContaining({
+        type: MessageType.Ack,
+        refId: "0x0000000000000002",
+        status: UpdateStatusCode.PayloadTooLarge,
+      }),
+    );
+  } finally {
+    session.destroy();
+    doc.free();
+  }
 });

@@ -2,6 +2,17 @@
 
 This file guides coding agents working in this repository. Current product guides under `apps/docs/guide/` describe the supported architecture; older design material may describe retired paths.
 
+## Desktop First Release Freeze
+
+Desktop first-release scope is frozen as of 2026-09-14. Read
+[`apps/docs/guide/desktop-first-release.md`](apps/docs/guide/desktop-first-release.md)
+before desktop release work. Target macOS Apple Silicon and the local video
+creation workflow. Prioritize release blockers, reliability, installation,
+onboarding, and acceptance evidence. Defer new features, providers, broad
+refactors, and additional platform commitments unless the user explicitly
+changes scope. Routine fixes within this scope need no additional approval.
+The freeze does not certify a release candidate or authorize publishing.
+
 ## Critical Rules
 
 - **No foreign keys.** Never add `REFERENCES`, `FOREIGN KEY`, or `.references()` in schema definitions or migrations. D1 enables foreign key enforcement and it causes issues with user IDs across auth boundaries.
@@ -56,6 +67,10 @@ must extend this model without creating a second local workflow.
   `clash canvas copy --node <id>` is the uniform copy-on-write escape hatch;
   existing downstream references remain on the source until explicitly
   rewired.
+  Display geometry is stored separately in Project Loro `canvasNodeLayouts`;
+  Auto Layout and dragging change that presentation record through `Canvas`
+  without rewriting the node, Generator revision, or edges. Parent/group
+  ownership remains part of the protected node record.
 - `project status` is diagnostic only. It may report working-tree dirtiness,
   conflicts, recovery state, or product-internal replication health, but an
   agent must be able to read and modify the project without calling it first.
@@ -122,6 +137,7 @@ pnpm workspaces + Turborepo. Hosted Web/API use Cloudflare Workers; Desktop and 
 | ----------------------------- | ----------------------------------------------------- | ----------------------------- |
 | `apps/web`                    | Vite + React Router 7 SPA, integrated gateway        | Cloudflare Worker + browser    |
 | `apps/api-cf`                 | Hono API + Durable Objects + Workflows                | Cloudflare Workers            |
+| `apps/api-node`               | Hosted PG admission, opaque relay and checkpoint workers | Node.js                    |
 | `apps/local-api`              | Persistent local Project Host and plugin runtime    | Node.js                       |
 | `apps/desktop`                | Desktop GUI and machine integration                 | Electron                      |
 | `apps/render-server`          | Remotion video rendering (Node.js)                    | Cloudflare Containers         |
@@ -158,6 +174,13 @@ Desktop, CLI, and local agents operate that same replica. Canvas graph payloads
 are downstream-owned entries in mergeable `nodeUpstreams` containers; a
 mergeable `edgeIdentity` register resolves each edge ID to one downstream node
 or deletion tombstone.
+Plugin View Asset references remain in typed View state; their shared schema and
+`listPluginViewAssetReferences` enumerator define consumption, not a GUI-specific
+field scan. Read [the View reference protocol](apps/docs/plugins/view-generator-spec.md)
+before changing this relationship. Shared Canvas readers derive
+same-Canvas media-to-View edges from those facts; these projections must not be
+persisted as a second edge authority or detached independently of the material
+reference. Pending Runs do not stand in for Asset identities.
 
 When cloud collaboration is enabled, the local host replicates admitted product
 state with the hosted `ProjectRoom` Durable Object. `ProjectRoom` is the remote

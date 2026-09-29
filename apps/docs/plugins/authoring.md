@@ -8,6 +8,17 @@ clash plugin create ~/plugins/my-gateway
 clash plugin checkout my-gateway ~/plugins/my-gateway
 ```
 
+TypeScript drafts import `@clash/action-sdk` (or its `/browser` and
+`/executable-failure` entries). `plugin validate` and `plugin activate` bundle
+the SDK shipped with Clash automatically, including when the draft lives outside
+the installation. No separate SDK npm install or Clash source checkout is needed.
+The generated handler uses `definePlugin`; `context.reference` reads frozen
+inputs and `context.upload` publishes media through the Host.
+
+`checkout` currently copies attested user-installed plugins; built-in packages
+are not stored in that installation area. For a new project-specific operation,
+start with `plugin create` and activate using `--project <project-id>`.
+
 ## 2. Study the official upstream docs first
 
 Before writing any request builder, collect for **every model you bind**:

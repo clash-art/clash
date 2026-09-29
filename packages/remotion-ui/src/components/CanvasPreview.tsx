@@ -178,6 +178,7 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
       compositionWidth,
       compositionHeight,
       fps,
+      durationInFrames: timelineDuration,
     } = useEditorStaticState();
     const { currentFrame, playing } = useEditorPlayback();
     const { currentFrameRef, playingRef } = useEditorPlaybackRefs();
@@ -193,16 +194,6 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
       audioMeterStore?.getSnapshot ?? getSilentAudioLevels,
       audioMeterStore?.getSnapshot ?? getSilentAudioLevels,
     );
-
-    const timelineDuration = useMemo(() => {
-      let maxEnd = 0;
-      for (const track of tracks) {
-        for (const item of track.items) {
-          maxEnd = Math.max(maxEnd, item.from + item.durationInFrames);
-        }
-      }
-      return maxEnd > 0 ? maxEnd : 300;
-    }, [tracks]);
 
     const allNodesMap = useMemo(() => {
       const map = new Map<string, any>();

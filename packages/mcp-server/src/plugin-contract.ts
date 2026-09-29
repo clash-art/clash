@@ -1,3 +1,4 @@
+import type { HostInstallScope } from "@clash/shared-types";
 export const PLUGIN_MCP_TOOL_NAMES = [
   "clash_plugin_activate",
   "clash_plugin_checkout",
@@ -13,6 +14,7 @@ export type PluginMcpToolName = (typeof PLUGIN_MCP_TOOL_NAMES)[number];
 
 export type PluginToolInput = {
   cwd?: string;
+  installation?: HostInstallScope;
   directory?: string;
   id?: string;
   name?: string;

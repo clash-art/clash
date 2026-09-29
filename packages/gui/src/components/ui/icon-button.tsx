@@ -22,7 +22,7 @@ import { Button } from './button';
  *   lg — 44 px (meets AAA 2.5.5; use for primary mobile-touch CTAs)
  */
 export const iconButtonVariants = cva(
-    'inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-40 disabled:cursor-not-allowed',
+    'inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-offset-0 disabled:opacity-40 disabled:cursor-not-allowed',
     {
         variants: {
             variant: {

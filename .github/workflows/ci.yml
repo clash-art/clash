@@ -6,9 +6,10 @@ on:
   pull_request:
     branches: [master, main]
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-desktop-checks-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -26,6 +27,14 @@ jobs:
           cache: pnpm
 
       - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - uses: ./.github/actions/setup-common
       - run: pnpm install --frozen-lockfile
       - run: make lint
+      - run: node --test scripts/runtime-dependency-identity.test.ts
       - run: pnpm --filter @clash/desktop test
+      - name: Verify Storyboard references and chat drafts
+        run: pnpm --dir packages/web-ui exec vitest run src/components/PluginStoryboardSurface.test.tsx src/components/copilot/useCopilotComposerDraft.test.tsx src/components/copilot/projectAssetReferences.test.ts src/components/copilot/ChatInput.test.tsx
+      - name: Verify workspace controls and native Asset provenance
+        run: pnpm --dir packages/web-ui exec vitest run src/components/CloudConnection.test.tsx src/components/ChatbotCopilot.desktop.test.tsx src/components/visualLanguage.test.tsx src/features/assets/AssetWorkspace.test.tsx src/features/assets/relations.test.ts
+      - name: Verify current Timeline render and cloud admission contracts
+        run: pnpm --dir apps/local-api exec vitest run src/local-timeline-references.test.ts src/timeline-durable-workflow.test.ts src/local-timeline-generator-product.test.ts src/project-cloud-admission-route.test.ts

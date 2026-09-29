@@ -8,6 +8,29 @@ shape" now exist; the Postgres/Kafka alternatives remain selection guidance.
 This document does not replace the local-first contract in
 `local-loro-host-architecture.md`.
 
+## Node implementation update — 2026-09-15
+
+The initial Node deployment now chooses PostgreSQL for the durable event log,
+transactional outbox queue and `LISTEN/NOTIFY` wake-up transport. A separate Redis
+service is deferred; the notification publisher remains replaceable. The older
+Redis diagrams below describe the original alternative, not a deployment dependency.
+
+`apps/api-node` now exposes the product's snapshot/log HTTP and SSE profile to
+`@loro-dev/streams-client@0.7.0`. Gateways hold no LoroDoc. The SDK reads snapshots,
+appends and catches up by opaque offset, and receives actual log batches over SSE.
+Clash persists the entire batch before saving its offset. This replaces the first
+`eventsource-client` hint-only iteration. Separate outbox and full-Loro-checkpoint
+workers retain the PG design. Only the SDK operations the product uses are
+implemented; producer epochs, stream lifecycle, multipart bootstrap and long-poll
+are not advertised. See the current cloud-sync guide for that boundary.
+The earlier materializing WebSocket gateway was removed after profiling showed
+whole-document fork/import growth. Cloudflare's existing protocol remains separate.
+
+Local TCP PostgreSQL multi-process tests and fault injection are recorded in the
+launch roadmap. Event retention/GC, poisoned-log repair, large offline-history upload,
+browser auth/resources and real deployment acceptance remain unfinished. No claim
+of PG HA or production capacity follows from loopback tests.
+
 ## Scope
 
 This document studies a traditional distributed backend for Loro/CRDT sync:
@@ -1354,3 +1377,44 @@ introduce it when the durable stream itself has become the workload.
 - [Dapr actors on Kubernetes](https://docs.dapr.io/developing-applications/sdks/js/js-actors/)
   is an example of an actor runtime option when unique activation and
   serialized object behavior are actually required.
+
+
+## Implemented client checkpoint delegation (2026-09-15)
+
+The Node path now follows remote-compaction separation: PG assigns an immutable
+log range, admitted Local Hosts compute a candidate snapshot, and PG publishes
+bytes plus covered cursor. Official Loro Streams SDK handles snapshot/read/upload
+transport; application code retains leases, authorization and publication ordering.
+The worker reconstructs a separate document rather than exporting mutable local
+state. Cloud remains opaque and trusts admitted snapshot producers; retained logs
+support independent reconstruction. No automatic truncation is introduced.
+See `apps/api-node/README.md` for the active protocol, limits and maintenance tool.
+
+
+### Superseded by autonomous producers
+
+The latest implementation removes task dispatch and leases. Hosts periodically
+produce snapshots of fully imported remote log prefixes with randomized intervals;
+cloud accepts only committed offsets and monotonically publishes the newest one.
+Equal/older results are no-ops. The isolated document, trust boundary and retained
+logs remain. Migration 0007 removes the historical task table.
+
+
+### Final decision: backend asynchronous checkpoints
+
+To simplify coordination, routine snapshot maintenance now runs in a separate Node
+worker. Dirty heads are the work set; full snapshot plus captured log prefix yields
+a candidate that is published monotonically. Multiple workers may compute redundantly.
+Client snapshot scheduling, jitter, pre-upload checks and public upload were removed.
+Local Host remains the local working replica authority. Background maintenance needs
+no online client, task table or lease. See the current api-node README for deployment.
+
+
+### Durable scheduling integration (2026-09-16)
+
+The separate checkpoint polling process is retired. Node append transactions now
+register/coalesce a delayed checkpoint in the existing PostgreSQL outbox. The
+existing executor owns claims, retries and lease-fenced acknowledgement; the
+handler returns the actual covered offset so concurrent tails remain scheduled.
+Migration 0008 upgrades/backfills existing data. This is Node durable delayed work,
+not a generic cron API or the CF-only scheduled entrypoint.

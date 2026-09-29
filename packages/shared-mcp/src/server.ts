@@ -415,7 +415,7 @@ export class ClashMcpServer extends McpServer {
             "returns live Generators contracts when operation is omitted, or validates and executes one registered Generators leaf exactly once",
           returns:
             "typed Generators operation contracts or the selected leaf operation's exact result",
-          next: "choose the smallest matching operation, submit and poll the Action Run, then read its output commit; never claim complete, finished, or successful project media without that persisted readback",
+          next: "use actions_list to find project Actions and action_invoke to submit, wait and read usable outputs in one call; continue unfinished work with action_wait using the returned Run identity",
         }),
         inputSchema: {
           operation: z

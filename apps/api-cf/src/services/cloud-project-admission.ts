@@ -1,25 +1,12 @@
 import {
-  ProjectCloudAdmissionRequestSchema,
-  ProjectCloudAdmissionResponseSchema,
   ProjectCloudAdmissionSchema,
   type ProjectCloudAdmission,
-  type ProjectCloudAdmissionRequest,
-  type ProjectCloudAdmissionResponse,
 } from "@clash/shared-types";
 import type { Env } from "../config";
 
-export interface CloudProjectAdmissionStore {
-  admit(input: {
-    userId: string;
-    request: ProjectCloudAdmissionRequest;
-    syncBaseUrl: string;
-  }): Promise<ProjectCloudAdmissionResponse>;
-  read(input: {
-    userId: string;
-    projectId: string;
-    localReplicaId: string;
-  }): Promise<ProjectCloudAdmission | null>;
-}
+import { createCloudProjectAdmissionStore } from "@clash/shared-runtime/project-cloud-admission";
+import type { CloudProjectAdmissionStore } from "@clash/shared-runtime/project-cloud-admission";
+export type { CloudProjectAdmissionStore } from "@clash/shared-runtime/project-cloud-admission";
 
 type ProjectRow = {
   id: string;
@@ -39,14 +26,6 @@ function epoch(value: number | string | null): number {
 
 function iso(value: number | string | null): string {
   return new Date(epoch(value) * 1_000).toISOString();
-}
-
-function personalTenantId(userId: string): string {
-  return `personal:${userId}`;
-}
-
-function capabilities() {
-  return { canvas: true, projectMetadata: true, resources: true } as const;
 }
 
 function admissionFromRow(row: Record<string, unknown>): ProjectCloudAdmission {
@@ -71,10 +50,14 @@ function admissionFromRow(row: Record<string, unknown>): ProjectCloudAdmission {
 export function createD1CloudProjectAdmissionStore(
   db: D1Database,
 ): CloudProjectAdmissionStore {
-  return {
-    async admit({ userId, request, syncBaseUrl }) {
-      const parsed = ProjectCloudAdmissionRequestSchema.parse(request);
-      const tenantId = personalTenantId(userId);
+  return createCloudProjectAdmissionStore({
+    async persist({
+      userId,
+      request: parsed,
+      syncBaseUrl,
+      tenantId,
+      capabilities,
+    }) {
       const now = Math.floor(Date.now() / 1_000);
       const existing = await db
         .prepare(
@@ -84,7 +67,12 @@ export function createD1CloudProjectAdmissionStore(
         )
         .bind(parsed.projectId)
         .first<ProjectRow>();
-      if (existing && existing.owner_id !== userId) {
+      if (
+        existing &&
+        (existing.owner_id !== userId ||
+          existing.deleted_at !== null ||
+          (existing.tenant_id !== null && existing.tenant_id !== tenantId))
+      ) {
         throw new Error("Forbidden");
       }
 
@@ -108,7 +96,7 @@ export function createD1CloudProjectAdmissionStore(
         statements.push(
           db
             .prepare(
-              `INSERT INTO project
+              `INSERT OR IGNORE INTO project
                  (id, owner_id, tenant_id, name, description, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)`,
             )
@@ -128,9 +116,9 @@ export function createD1CloudProjectAdmissionStore(
             .prepare(
               `UPDATE project
                   SET tenant_id = COALESCE(tenant_id, ?)
-                WHERE id = ? AND owner_id = ?`,
+                WHERE id = ? AND owner_id = ? AND deleted_at IS NULL AND (tenant_id IS NULL OR tenant_id = ?)`,
             )
-            .bind(tenantId, parsed.projectId, userId),
+            .bind(tenantId, parsed.projectId, userId, tenantId),
         );
       }
       statements.push(
@@ -139,7 +127,8 @@ export function createD1CloudProjectAdmissionStore(
             `INSERT INTO project_cloud_admission
                (project_id, tenant_id, user_id, local_replica_id, status,
                 sync_base_url, capabilities_json, admitted_at, updated_at, last_error)
-             VALUES (?, ?, ?, ?, 'pending', ?, ?, NULL, ?, NULL)
+             SELECT ?, ?, ?, ?, 'pending', ?, ?, NULL, ?, NULL FROM project p
+              WHERE p.id = ? AND p.owner_id = ? AND p.tenant_id = ? AND p.deleted_at IS NULL
              ON CONFLICT(project_id, local_replica_id) DO UPDATE SET
                tenant_id = excluded.tenant_id,
                user_id = excluded.user_id,
@@ -157,27 +146,25 @@ export function createD1CloudProjectAdmissionStore(
             userId,
             parsed.localReplicaId,
             syncBaseUrl.replace(/\/+$/u, ""),
-            JSON.stringify(capabilities()),
+            JSON.stringify(capabilities),
             now,
+            parsed.projectId,
+            userId,
+            tenantId,
           ),
       );
       await db.batch(statements);
 
       const row = await db
         .prepare(
-          `SELECT project_id, tenant_id, user_id, local_replica_id, sync_base_url,
-                  status, capabilities_json, admitted_at, updated_at, last_error
-             FROM project_cloud_admission
-            WHERE project_id = ? AND local_replica_id = ? LIMIT 1`,
+          `SELECT a.* FROM project_cloud_admission a JOIN project p ON p.id = a.project_id
+            WHERE a.project_id = ? AND a.local_replica_id = ? AND a.user_id = ?
+              AND p.owner_id = a.user_id AND p.tenant_id = a.tenant_id AND p.deleted_at IS NULL LIMIT 1`,
         )
-        .bind(parsed.projectId, parsed.localReplicaId)
+        .bind(parsed.projectId, parsed.localReplicaId, userId)
         .first<Record<string, unknown>>();
-      if (!row) throw new Error("Cloud admission was not persisted");
-      return ProjectCloudAdmissionResponseSchema.parse({
-        schemaVersion: 1,
-        admission: admissionFromRow(row),
-        syncBaseUrl: syncBaseUrl.replace(/\/+$/u, ""),
-      });
+      if (!row) throw new Error("Forbidden");
+      return admissionFromRow(row);
     },
 
     async read({ userId, projectId, localReplicaId }) {
@@ -189,13 +176,14 @@ export function createD1CloudProjectAdmissionStore(
              FROM project_cloud_admission a
              JOIN project p ON p.id = a.project_id
             WHERE a.project_id = ? AND a.local_replica_id = ?
-              AND p.owner_id = ? LIMIT 1`,
+              AND p.owner_id = ? AND a.user_id = ? AND p.deleted_at IS NULL
+              AND p.tenant_id = a.tenant_id LIMIT 1`,
         )
-        .bind(projectId, localReplicaId, userId)
+        .bind(projectId, localReplicaId, userId, userId)
         .first<Record<string, unknown>>();
       return row ? admissionFromRow(row) : null;
     },
-  };
+  });
 }
 
 export function cloudSyncBaseUrl(request: Request, env: Env): string {

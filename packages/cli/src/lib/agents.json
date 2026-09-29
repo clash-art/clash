@@ -1,6 +1,7 @@
 {
   "description": "CLI filesystem and transport adapters. Shared domain contracts and Host authority own product mutations.",
   "modules": {
+    "plugin-build.ts": "Compiles a declared draft entrypoint to self-contained ESM. Resolves documented action-sdk imports from the shipped plugin-sdk payload, or the CLI's declared SDK dependency in development; drafts need no repository node_modules.",
     "api.ts": "Discovered/configured Host HTTP transport preserving all HeadersInit forms and optional hosted authentication.",
     "document-worktree.ts": "Native Document file projection and internal observed.json evidence. Each file retains its own original baseline; apply never refreshes it with a get. No sidecar locks, force or manifest fallback.",
     "legacy-metadata-body.ts": "Read-only compatibility for historical manifest and Timeline metadata bodies in the existing body store.",

@@ -1,15 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   activateDownloadedActionPackage,
+  activateExecutablePluginDraft,
   checkoutExecutablePluginDraft,
   rollbackDownloadedActionPackage,
   scaffoldExecutablePluginDraft,
-  tryInstallLocalMarketplaceAction,
+  tryInstallLocalMarketplacePlugin,
   validateDownloadedActionPackage,
 } from "../lib/plugin-lifecycle";
 import { pluginCommand } from "./plugin";
@@ -94,31 +95,34 @@ test("plugin CLI exposes draft and lifecycle commands", () => {
   }
 });
 
-test("plugin install delegates to the local marketplace endpoint", async () => {
-  const calls: string[] = [];
-  const result = await tryInstallLocalMarketplaceAction({
-    packageId: "clash.codex-imagegen",
-    serverUrl: "http://127.0.0.1:49321",
-    apiKey: "local-token",
-    request: async (input) => {
-      calls.push(String(input));
-      return new Response(
-        JSON.stringify({
-          actionId: "codex-imagegen",
-          packageId: "clash.codex-imagegen",
-          installed: true,
-          targetDir: "/tmp/actions/clash.codex-imagegen",
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    },
+for (const kind of ["skill", "executable-plugin"] as const) {
+  test(`plugin install routes ${kind} through its Host descriptor with project scope`, async () => {
+    const item = kind === "skill"
+      ? { id: "test.skill", type: "skill", installation: { kind, skillId: "test.skill" } }
+      : { id: "test.plugin", type: "plugin", runtime: "local", packageId: "test.package", installation: { kind, pluginId: "test.plugin", packageId: "test.package" } };
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const scope = { scope: "projects" as const, projectIds: ["project-a"] };
+    const result = await tryInstallLocalMarketplacePlugin({
+      packageId: item.id,
+      serverUrl: "http://127.0.0.1:49321",
+      installation: scope,
+      apiKey: "local-token",
+      request: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return Response.json(calls.length === 1
+          ? { skills: kind === "skill" ? [item] : [], plugins: kind === "skill" ? [] : [item] }
+          : { installed: true, ...(kind === "skill" ? { skillId: item.id } : { id: item.id }) });
+      },
+    });
+    assert.equal(calls[0]?.url, "http://127.0.0.1:49321/api/marketplace/registry");
+    assert.equal(calls[1]?.url, kind === "skill"
+      ? "http://127.0.0.1:49321/api/marketplace/skills/test.skill/install"
+      : "http://127.0.0.1:49321/api/marketplace/plugins/test.package/install");
+    assert.deepEqual(JSON.parse(String(calls[1]?.init?.body)), scope);
+    assert.equal(result?.id, item.id);
+    assert.equal(result?.installed, true);
   });
-  assert.equal(
-    calls[0],
-    "http://127.0.0.1:49321/api/marketplace/actions/clash.codex-imagegen/install",
-  );
-  assert.equal(result?.installed, true);
-});
+}
 
 test("downloaded executable packages are validated before reaching the host", () => {
   const validated = validateDownloadedActionPackage(executablePackage());
@@ -260,4 +264,26 @@ test("plugin scaffold asks local-api to validate the generated package", async (
     globalThis.fetch = originalFetch;
     delete process.env.CLASH_API_URL;
   }
+});
+
+
+test("plugin draft activation forwards explicit scope and leaves omitted scope unchanged", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "clash-plugin-activation-scope-"));
+  try {
+    const pkg = executablePackage();
+    await writeFile(join(dir, "manifest.json"), JSON.stringify(pkg.manifest));
+    await writeFile(join(dir, "handler.mjs"), Buffer.from(pkg.files["handler.mjs"], "base64"));
+    const bodies: Record<string, unknown>[] = [];
+    const hostRequest = async <T>(_path: string, init?: RequestInit): Promise<T> => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return { id: pkg.id, version: "1.0.0", targetDir: "/host/actions/test.plugin" } as T;
+    };
+    await activateExecutablePluginDraft({ pluginDir: dir, hostRequest, installation: { scope: "projects", projectIds: ["project-a"] } });
+    await activateExecutablePluginDraft({ pluginDir: dir, hostRequest });
+    assert.deepEqual(bodies[0]?.installation, { scope: "projects", projectIds: ["project-a"] });
+    assert.equal(Object.hasOwn(bodies[1]!, "installation"), false);
+    const activate = pluginCommand.commands.find(command => command.name() === "activate")!;
+    assert.ok(activate.options.some(option => option.long === "--project"));
+    assert.ok(activate.options.some(option => option.long === "--global"));
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

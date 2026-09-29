@@ -8,7 +8,7 @@ import {
   symlink,
   unlink,
 } from "node:fs/promises";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const pending = new Map<string, Promise<void>>();
 
@@ -18,6 +18,8 @@ export async function ensureProjectSkillLinks(options: {
   nativeDirectories: readonly string[];
   initialSkills: ReadonlyMap<string, string>;
   installedSkills?: ReadonlyMap<string, string>;
+  managedSkillsRoot?: string;
+  legacySkillsRoot?: string;
 }): Promise<void> {
   const previous = pending.get(options.cwd) ?? Promise.resolve();
   const work = previous.catch(() => undefined).then(() => install(options));
@@ -34,6 +36,8 @@ async function install({
   nativeDirectories,
   initialSkills,
   installedSkills,
+  managedSkillsRoot,
+  legacySkillsRoot,
 }: Parameters<typeof ensureProjectSkillLinks>[0]) {
   const canonical = join(cwd, ".agents", "skills");
   await localDirectory(dirname(canonical));
@@ -54,8 +58,15 @@ async function install({
       }
     }
   }
-  // Host configuration owns installation scope. This only materializes links;
-  // stale files are never interpreted as configuration or automatically pruned.
+  // Remove only Host-owned symlinks. Real project files remain agent-owned.
+  if (managedSkillsRoot) for (const name of await readdir(canonical)) {
+    const target = join(canonical, name);
+    if (!(await entry(target))?.isSymbolicLink()) continue;
+    const source = resolve(canonical, await readlink(target));
+    const managed = source.startsWith(resolve(managedSkillsRoot) + sep);
+    const migrated = legacySkillsRoot && source === join(legacySkillsRoot, name) && await entry(join(managedSkillsRoot, name));
+    if ((managed || migrated) && source !== installedSkills?.get(name)) await unlink(target);
+  }
   for (const [name, source] of installedSkills ?? []) {
     const target = join(canonical, name);
     const existing = await entry(target);

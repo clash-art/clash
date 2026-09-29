@@ -10,6 +10,7 @@ import type {
   TransitionType,
 } from "@clash/remotion-core";
 import { isSubtitleTextItem, resolveAudioGainDb } from "@clash/remotion-core";
+import { timelineItemsOverlap } from '@clash/shared-types';
 import type { TimelineLibraryCatalogRecord } from "./timelineLibraryCatalog";
 
 export type TimelineLibraryApplication = {
@@ -127,15 +128,18 @@ function firstTrack(
   state: EditorState,
   category: TrackCategory,
   role: Track["role"],
+  item: Item,
   targetTrackId?: string,
 ): Track | undefined {
   const target = targetTrackId
     ? state.tracks.find((track) => track.id === targetTrackId)
     : undefined;
-  return target?.category === category && target.role === role
+  const accepts = (track: Track) => track.category === category && track.role === role
+    && !track.items.some(existing => timelineItemsOverlap(existing, item));
+  return target && accepts(target)
     ? target
     : state.tracks.find(
-        (track) => track.category === category && track.role === role,
+        accepts,
       );
 }
 
@@ -152,6 +156,7 @@ function appendItemActions(options: {
     options.state,
     options.category,
     options.role,
+    options.item,
     options.targetTrackId,
   );
   const actions: EditorAction[] = existing
@@ -245,7 +250,7 @@ export function buildTimelineLibraryApplication({
           createId,
           category: "text",
           trackName: "Text",
-          role: "subtitle",
+          role: undefined,
           item,
           targetTrackId,
         }),

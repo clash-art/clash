@@ -10,7 +10,9 @@
 > exact Document graph add/rewire/remove/copy for Models and mapped Agent Text
 > Actions are delivered. CLI native Document create/read/history/copy/attachments
 > and pull/edit/apply now use the Local Host authority with implicit observations.
-> MCP authoring, legacy ASR consumer migration, and automatic legacy metadata
+> Project content list/search/read shares the existing Media and exact Document
+> references across CLI, MCP, and Local HTTP.
+> General MCP Document authoring, legacy ASR consumer migration, and automatic legacy metadata
 > migration remain outside the delivered boundary.
 
 A **Document Asset** is structured, typed product content with a stable head
@@ -59,10 +61,12 @@ The delivered built-in declarations include:
 
 | Kind                     | Policy      | Projection     | Declared consumers                   |
 | ------------------------ | ----------- | -------------- | ------------------------------------ |
-| `text.plain@1`           | `versioned` | editable text  | storage/projection contract          |
+| `text.plain@1`           | `versioned` | editable text  | search                               |
 | `media.transcript@1`     | `versioned` | editable JSON  | captions, transcript editing, search |
 | `media.description@1`    | `versioned` | editable JSON  | search, agent context                |
 | `media.render-lineage@1` | `immutable` | read-only JSON | provenance                           |
+| `media.operation-trace@1` | `immutable` | read-only JSON | provenance, search, agent context |
+| `media.observation@1` | `versioned` | editable JSON | search, agent context |
 
 The registry can accept additional declarations in code. There is not yet a
 plugin contribution artifact or Host loader for third-party Document kinds, so
@@ -137,7 +141,7 @@ Run.
 The ABI, publication bridge, and Local HTTP compiler from validated Generator
 state/references to a native invocation are delivered. The Local Generator API
 also supports observed-head advancement and the explicit-create COW path.
-Native Document CLI authoring is delivered separately below. MCP authoring and
+Native Document CLI authoring is delivered separately below. General MCP Document authoring and
 a general Document GUI editor are not implied by these Generator APIs.
 
 ## Current Local Host service and HTTP surface
@@ -212,6 +216,106 @@ attachment inside the serial Host mutation. Cross-Document in-place reattach
 is not supported: explicitly attach a copied Document as a new relation;
 existing attachments and downstream inputs are preserved.
 
+## Browse, search, and read Project content
+
+Start with an overview, search when a name or phrase is known, then read the
+exact reference returned by either operation:
+
+```bash
+clash ls --json
+clash ls --kind video --limit 100 --json
+clash search "folding clothes" --kind video --json
+# Pass an items[].ref or matches[].document object from the result verbatim.
+clash read '{"kind":"document","documentAssetId":"<id>","revisionId":"<revision>"}' --json
+clash search "left sleeve" --within '{"kind":"media","projectAssetId":"<id>"}' --json
+```
+
+These top-level commands resolve the Project from the working-tree marker, or
+accept `--project <id>`. `ls` returns active Media Assets and current Document
+heads as `items` with `ref`, `name`, `kind`, lightweight `info`, and empty
+`matches`. It does not load Document bodies. Supported kind filters are
+`image`, `video`, `audio`, `model`, and `document`.
+
+`search` matches names and declared human-readable Document fields using
+Unicode-normalized, case-insensitive literal text. It reads searchable
+Documents directly and the exact searchable Document revisions attached to
+Media Assets. This includes plain text, descriptions, transcripts, supported
+media-analysis prose, observations, and operation records. It does not search
+serialized metadata or provide embeddings, semantic ranking, or inferred
+descriptions of unanalysed media. Documents currently use their Asset identity
+as the listed name; body text is searched separately.
+
+A content match includes the matching text, exact `document` reference,
+`documentKind`, producer, and source references; attached evidence also carries
+its attachment identity. If evidence contains a valid time range and identifies
+one source video or audio Asset, `location` names that source Asset and its
+`startMs`/`endMs`. A source time range is never reassigned to an output merely
+because the evidence is attached there. Advancing a Document head does not
+advance an attachment's pinned revision.
+
+`read` reuses the existing Media read or exact Document-revision read authority.
+A Media read returns its descriptor and delivery information; a Document read
+returns the validated body and provenance at the supplied revision. It does not
+follow a newer head. `search --within` accepts the same reference, including a
+historical Document revision. These are existing `AssetRevisionRef` objects,
+not filesystem paths, a virtual filesystem, or a new reference format.
+
+List and search return up to 50 items by default; `--limit` accepts 1–200.
+`countsByKind` always includes `image`, `video`, `audio`, `model`, and `document`,
+with zero for absent kinds. It counts unique objects matching the Project,
+query, and `within` scope before applying the kind filter or result limit;
+multiple matching fragments in one object count once. List computes these
+counts from overview facts without reading Document bodies.
+`truncated: true` means another page exists. Repeat the same query, kind and
+`within` scope with `--cursor '<nextCursor>'` until `nextCursor` is null. The
+limit may change between pages. Cursors bind to the Project, operation, filters
+and matching results. If these change, `CONTENT_CURSOR_STALE` (409) asks the
+caller to restart without the cursor; malformed cursors return 400. Unrelated
+Project edits do not invalidate unchanged results. Counts describe the full
+matching set, not the remaining page.
+`matchMode` is `null` for list and `"literal-text"` for search. Results remain
+inside the selected Project and exclude inactive Media Assets.
+
+The Local Host exposes `GET /api/v1/projects/:projectId/content` for list
+(`kinds` as a comma-separated filter and optional `query`, `limit`, `cursor`) and `POST` on the
+same path for search (`query`, `kinds`, `within`, `limit`, and `cursor` in JSON). Reading
+still uses the existing Media and Document routes. MCP exposes
+`content_list`, `content_search`, and `content_read` on the Assets dispatcher;
+MCP passes `within` and `ref` as objects rather than CLI JSON strings. CLI and
+MCP reuse the shared Project content client.
+
+## External observations and processing records
+
+External work can use the existing Document authority without inventing a
+successful Action Run. `clash actions observe --asset <id> --file <json-file>`
+stores a `media.observation@1` body with `summary`, optional `tool`/`model`, and
+optional `observations` entries containing `text` and paired source
+`startMs`/`endMs`. The revision's Host-derived actor and exact source reference
+identify who recorded it and which Asset it describes.
+
+`clash actions record --source <ids...> --output <ids...> --title <text>
+--detail-file <path>` stores `media.operation-trace@1`: an immutable
+`{title, detail}` body, source/output Asset references in revision `sourceRefs`,
+and attachments to the imported output Assets. Use `--detail` instead of
+`--detail-file` for inline notes. This is a record of external execution;
+its detail is never run, and it is not an executable custom Action. Project
+custom Actions use the [native invocation path](/guide/asset-generator-model#task-oriented-action-invocation).
+
+Both conveniences use create, exact-revision read and attach. They return a
+`recordId`, exact Document reference and attachments. A supplied `--record-id`
+can replay identical content after an interrupted save; failures with an
+automatically allocated ID expose it for recovery too. Changed replay content
+fails instead of overwriting history. MCP provides the same scoped operations
+as `record_operation` and `record_observation` on the Assets dispatcher;
+general-purpose Document authoring is a separate capability.
+
+The narrower compatibility command `clash assets search [query]
+--asset <optional-asset-id>` remains available for attached native evidence.
+Use the Project content workflow above to browse or search both Media Assets
+and Documents, then read the exact returned reference. Both search surfaces
+preserve attachment revision identity and use declared prose rather than
+serialized metadata.
+
 ## Legacy metadata boundary
 
 Two systems currently coexist during migration:
@@ -234,10 +338,11 @@ In particular:
   guidance; the HTTP writer returns 410;
 - `assets metadata list/get/kinds/validate`, the historical index GET, and old
   Timeline transcript body reads remain available;
-- CLI Document authoring is connected, while MCP authoring remains unimplemented;
+- CLI Document authoring and scoped MCP external-record/observation authoring are connected; general MCP Document authoring remains unimplemented;
 - native Document deletion, trash, restore, and purge lifecycle is not defined;
-- declared product consumers do not automatically wire captions, search, or
-  agent context.
+- declared product consumers do not automatically wire every UI or agent-context
+  surface; the explicit content reader above searches supported Document fields
+  and revision-pinned attachments.
 
 No manifest is automatically imported, replaced, or made authoritative. A user
 can read/export a legacy body, validate it against an appropriate native kind,

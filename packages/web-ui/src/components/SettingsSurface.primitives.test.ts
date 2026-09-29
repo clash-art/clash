@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { sourceMatches } from "../test-support/source-match";
 
 describe("SettingsSurface primitives", () => {
   it("uses the same compact identity and navigation rhythm as the project sidebar", () => {
@@ -13,9 +14,8 @@ describe("SettingsSurface primitives", () => {
     expect(source).toContain(
       'className="clash-settings-sidebar-header flex h-10 shrink-0 items-center px-2"',
     );
-    expect(source).toContain(
-      "relative flex h-8 w-full items-center gap-2 rounded-md",
-    );
+    expect(sourceMatches(source, /<TabList\s/)).toBe(true);
+    expect(sourceMatches(source, /<Tab\s/)).toBe(true);
     expect(source).not.toContain("Workspace controls");
     expect(source).not.toContain("px-4 py-4");
   });
@@ -44,7 +44,9 @@ describe("SettingsSurface primitives", () => {
     );
 
     expect(source).toContain("./ui/button");
-    expect(source).toMatch(/<Button[\s\S]*onClick=\{handleSignOut\}[\s\S]*Sign out/);
+    expect(source).toMatch(
+      /<Button[\s\S]*onClick=\{handleSignOut\}[\s\S]*Sign out/,
+    );
     expect(source).not.toMatch(/<button[\s\S]*onClick=\{handleSignOut\}/);
   });
 
@@ -54,7 +56,9 @@ describe("SettingsSurface primitives", () => {
       "utf8",
     );
 
-    expect(source).toContain("border-border bg-accent text-foreground shadow-xs");
+    expect(source).toContain(
+      "border-border bg-accent text-foreground shadow-xs",
+    );
     expect(source).not.toContain("dark:text-brand-light");
   });
 

@@ -20,7 +20,8 @@ export async function resolveHostProjectSkills(
       !installation.projectIds.includes(projectId)
     )
       continue;
-    const source = join(homedir(), ".agents", "skills", name);
+    const managed = join(store.clashHome, "plugin-skills", name);
+    const source = (await stat(join(managed, "SKILL.md")).catch(() => null))?.isFile() ? managed : join(homedir(), ".agents", "skills", name);
     if (!(await stat(join(source, "SKILL.md")).catch(() => null))?.isFile()) {
       throw new Error(
         `Host-configured skill '${name}' is not installed at ${source}. Install it or update ${store.configPath}.`,

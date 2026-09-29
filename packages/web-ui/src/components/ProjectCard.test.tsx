@@ -113,6 +113,15 @@ describe("ProjectCard", () => {
     );
   }
 
+  it("keeps Desktop project navigation in its application tab",()=>{
+    globalThis.__CLASH_RUNTIME_CONFIG__={mode:"desktop"};
+    renderCard();
+    const link=screen.getByRole("link",{name:/storyboard draft/i});
+    expect(link.getAttribute("target")).toBeNull();
+    fireEvent.click(link);
+    expect(screen.getByLabelText("Current location").textContent).toBe("/projects/project-1");
+  });
+
   function visualAsset(id: string, createdAt: number): ResolvedAsset {
     return {
       id,
@@ -176,10 +185,9 @@ describe("ProjectCard", () => {
     const onDragStart = vi.fn();
     renderCard({}, { onAddProjectReference: vi.fn() }, onDragStart);
 
-    fireEvent.click(screen.getByRole("link", { name: /storyboard draft/i }));
-    expect(screen.getByLabelText("Current location").textContent).toBe(
-      "/projects/project-1",
-    );
+    const projectLink=screen.getByRole("link", {name:/storyboard draft/i});
+    expect(projectLink.getAttribute("target")).toBe("_blank");
+    expect(projectLink.getAttribute("rel")).toContain("noopener");
     expect(onDragStart).not.toHaveBeenCalled();
 
     fireEvent.click(

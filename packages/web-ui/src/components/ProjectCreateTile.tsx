@@ -35,6 +35,7 @@ export default function ProjectCreateTile({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (pending) return;
     const projectName = name.trim();
 
     if (!projectName) {
@@ -43,7 +44,6 @@ export default function ProjectCreateTile({
     }
 
     setPending(true);
-    setError(null);
 
     try {
       await onCreate(projectName);
@@ -128,7 +128,7 @@ export default function ProjectCreateTile({
             <Button
               type="submit"
               variant="primary"
-              className="rounded-md px-4 shadow-none"
+              className="min-w-28 rounded-md px-4 shadow-none"
               disabled={!name.trim() || pending}
             >
               {pending ? "Creating…" : "Create"}

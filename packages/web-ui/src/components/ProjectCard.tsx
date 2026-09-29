@@ -1,3 +1,4 @@
+import { isDesktopRuntime } from "../lib/runtimeConfig";
 /* eslint-disable @next/next/no-img-element */
 
 import { motion } from "framer-motion";
@@ -450,7 +451,12 @@ export default function ProjectCard({
       className="group/project-card relative"
       data-project-reference-dragging={isDragging || undefined}
     >
-      <Link to={`/projects/${project.id}`} className="block">
+      <Link
+        to={`/projects/${project.id}`}
+        target={isDesktopRuntime() ? undefined : "_blank"}
+        rel={isDesktopRuntime() ? undefined : "noopener noreferrer"}
+        className="block"
+      >
         <Card
           asChild
           interaction="border"

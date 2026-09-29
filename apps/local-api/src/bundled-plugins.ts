@@ -9,6 +9,7 @@ import { ExecutablePluginManifestSchema } from "@clash/shared-types";
 import {
   activateHostExecutablePluginPackage,
   listHostExecutablePluginPackages,
+  readHostExecutablePluginPackage,
   removeHostExecutablePluginPackage,
 } from "./runtime/plugin-package.js";
 
@@ -74,6 +75,16 @@ export class BuiltinPluginImmutableError extends Error {
     );
     this.name = "BuiltinPluginImmutableError";
   }
+}
+
+/** Checkout exports attested user packages; built-in module payloads are not editable drafts. */
+export async function readEditablePluginPackage(actionsRoot: string, pluginId: string) {
+  if (BUNDLED_PLUGINS.some(plugin => plugin.id === pluginId)) {
+    throw Object.assign(new Error(
+      `Built-in plugin ${pluginId} cannot be checked out as an editable draft. Use its installed Actions, or run clash plugin create ./draft --id project.my-action to create a separate project Action.`,
+    ), { code: "BUILTIN_PLUGIN_CHECKOUT_UNSUPPORTED" });
+  }
+  return readHostExecutablePluginPackage(actionsRoot, pluginId);
 }
 
 /**
@@ -281,31 +292,6 @@ export function bundledPluginPaths(
   }
 }
 
-function bundledCodexImagegenPaths(): {
-  manifestPath: string;
-  entrypointPath: string;
-} {
-  const require = createRequire(import.meta.url);
-  try {
-    return {
-      manifestPath:
-        require.resolve("@clash-plugin/codex-imagegen/manifest.json"),
-      entrypointPath: require.resolve("@clash-plugin/codex-imagegen/stdio"),
-    };
-  } catch (error) {
-    const workspacePlugin = resolve(
-      dirname(fileURLToPath(import.meta.url)),
-      "../../../plugins/codex-imagegen",
-    );
-    const manifestPath = join(workspacePlugin, "manifest.json");
-    const entrypointPath = join(workspacePlugin, "dist", "stdio.mjs");
-    if (existsSync(manifestPath) && existsSync(entrypointPath)) {
-      return { manifestPath, entrypointPath };
-    }
-    throw error;
-  }
-}
-
 export function officialStoryboardPluginPaths(
   moduleUrl: string = import.meta.url,
 ): { manifestPath: string; entrypointPath: string } {
@@ -335,12 +321,13 @@ export function officialStoryboardPluginPaths(
 
 export function createCodexImagegenMarketplace(options: {
   actionsRoot: string;
+  moduleUrl?: string;
   manifestPath?: string;
   entrypointPath?: string;
 }) {
   const readBundledManifest = async () => {
     const manifestPath =
-      options.manifestPath ?? bundledCodexImagegenPaths().manifestPath;
+      options.manifestPath ?? bundledPluginPaths(CODEX_IMAGEGEN_PLUGIN_ID, options.moduleUrl).manifestPath;
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
       id?: string;
       version?: string;

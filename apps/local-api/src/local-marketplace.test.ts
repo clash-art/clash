@@ -104,3 +104,24 @@ it("retires Action writes even when a legacy injection is present, preserving hi
   ).toBe(204);
   expect(remove).toHaveBeenCalledWith("old");
 });
+
+it("rejects a project-scoped plugin install targeting a nonexistent project", async () => {
+  const install = vi.fn();
+  const host = await app({ marketplacePlugins: [plugin], installMarketplacePlugin: install, pluginPackages: { read: async () => ({}) } });
+  const response = await host.request(`/api/marketplace/plugins/${plugin.packageId}/install`, {
+    method: "POST", body: JSON.stringify({ scope: "projects", projectIds: ["missing"] }),
+  });
+  expect(response.status).toBe(400);
+  expect(install).not.toHaveBeenCalled();
+});
+
+it("filters project-scoped views from other projects and global discovery", async () => {
+  const host = await app({
+    listPluginViews: async () => [{ pluginId: plugin.id, version: "test", schemaHash: "test", document: { spec: { definitionId: "board" } } }],
+    pluginAvailableInProject: async (_id: string, projectId?: string) => projectId === "a",
+  });
+  const visible = await (await host.request("/api/v1/plugin-views?projectId=a")).json();
+  expect(visible.views).toEqual([expect.objectContaining({ pluginId: plugin.id })]);
+  expect(await (await host.request("/api/v1/plugin-views?projectId=b")).json()).toEqual({ views: [] });
+  expect(await (await host.request("/api/v1/plugin-views")).json()).toEqual({ views: [] });
+});

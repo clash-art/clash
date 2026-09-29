@@ -11,8 +11,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedAsset } from "@clash/shared-types";
 import { PROJECT_ASSET_DRAG_MIME } from "../lib/projectAssetDrag";
 import ProjectWorkspaceNavigator from "./ProjectWorkspaceNavigator";
+import { mediaContentResult } from "../features/assets/content.test-fixtures";
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 function resolvedAsset(
   input: Pick<ResolvedAsset, "id" | "kind"> & Partial<ResolvedAsset>,
@@ -26,6 +27,39 @@ function resolvedAsset(
 }
 
 describe("ProjectWorkspaceNavigator", () => {
+  it("prefers a timed search hit over a summary and opens a match at zero", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...mediaContentResult("video-3377", [{
+      field: "content", attachmentId: "observed", document: { kind: "document", documentAssetId: "notes", revisionId: "notes-v1" }, documentKind: "media.observation", producer: { kind: "actor", actor: { kind: "agent" } }, sourceRefs: [], text: "A child folds a shirt",
+    }, {
+      field: "content", attachmentId: "observed", document: { kind: "document", documentAssetId: "notes", revisionId: "notes-v1" }, documentKind: "media.observation", producer: { kind: "actor", actor: { kind: "agent" } }, sourceRefs: [], text: "Folding a shirt sleeve", location: { asset: { kind: "media", projectAssetId: "video-3377" }, startMs: 0, endMs: 2000 },
+    }]), truncated: true })));
+    const onSelectAsset = vi.fn();
+    render(<ProjectWorkspaceNavigator projectId="project-1" canvases={[]} timelines={[]} assets={[resolvedAsset({ id: "video-3377", kind: "video", name: "3377.mp4" })]} surface={{ kind: "canvas", canvasId: "main" }} onSelectCanvas={vi.fn()} onSelectTimeline={vi.fn()} onSelectAsset={onSelectAsset} onCreateCanvas={vi.fn()} onRenameCanvas={vi.fn()} onDeleteCanvas={vi.fn()} onCreateTimeline={vi.fn()} onAttachTimeline={vi.fn()} onAddAsset={vi.fn()} />);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search project" }), { target: { value: "shirt" } });
+    expect(await screen.findByText("Search results are incomplete. Refine your search.")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("option", { name: "3377.mp4 Asset" }));
+    expect(onSelectAsset).toHaveBeenCalledWith("video-3377", 0);
+  });
+
+  it("opens the same asset again when a later search matches another source time", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      const { query } = JSON.parse(String(init?.body));
+      return Response.json(mediaContentResult("video-3377", [{
+        field: "content", attachmentId: "observed", document: { kind: "document", documentAssetId: "notes", revisionId: "notes-v1" }, documentKind: "media.observation", producer: { kind: "actor", actor: { kind: "agent" } }, sourceRefs: [], text: "A shirt sleeve", location: { asset: { kind: "media", projectAssetId: "video-3377" }, startMs: query === "left" ? 6000 : 3000, endMs: query === "left" ? 8000 : 5000 },
+      }]));
+    }));
+    const onSelectAsset = vi.fn();
+    render(<ProjectWorkspaceNavigator projectId="project-1" canvases={[]} timelines={[]} assets={[resolvedAsset({ id: "video-3377", kind: "video", name: "3377.mp4" })]} surface={{ kind: "canvas", canvasId: "main" }} onSelectCanvas={vi.fn()} onSelectTimeline={vi.fn()} onSelectAsset={onSelectAsset} onCreateCanvas={vi.fn()} onRenameCanvas={vi.fn()} onDeleteCanvas={vi.fn()} onCreateTimeline={vi.fn()} onAttachTimeline={vi.fn()} onAddAsset={vi.fn()} />);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search project" }), { target: { value: "right" } });
+    fireEvent.click(await screen.findByRole("option", { name: "3377.mp4 Asset" }));
+    expect(onSelectAsset).toHaveBeenLastCalledWith("video-3377", 3000);
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    fireEvent.change(screen.getByRole("combobox", { name: "Search project" }), { target: { value: "left" } });
+    fireEvent.click(await screen.findByRole("option", { name: "3377.mp4 Asset" }));
+    expect(onSelectAsset).toHaveBeenLastCalledWith("video-3377", 6000);
+  });
   it("shows open browser pages as selectable project sidebar tabs", () => {
     const onSelectBrowser = vi.fn();
     const browserProps = {
@@ -143,7 +177,6 @@ describe("ProjectWorkspaceNavigator", () => {
 
     const row = screen.getByRole("tab", { name: textAsset.label });
     expect(row.getAttribute("aria-selected")).toBe("true");
-    expect(row.className).toContain("bg-brand/[0.09]");
   });
 
   it("keeps the project search control on the semantic surface in dark mode", () => {

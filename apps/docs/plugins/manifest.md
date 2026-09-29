@@ -166,6 +166,15 @@ media, the product invokes an independently installed native Generator and
 attaches its Output Commit Project Asset as a candidate; the View package does
 not acquire Generator ownership.
 
+`presentation.type: "storyboard"` selects the current v1 state and reference
+contract. `PluginViewResourceSchema` declares each consumed Project Asset in
+`candidates` or `uncategorized`; `selectedCandidateId` does not limit reference
+membership. The shared `listPluginViewAssetReferences` reader owns enumeration,
+and Canvas derives same-Canvas media → View edges from it. Plugins must not write
+a second reference list or persist those derived edges. See the normative
+[View, Asset reference and Generator protocol](./view-generator-spec.md) for
+identity, lifecycle, SDK, graph mutation and compatibility requirements.
+
 ## Provider definition (`clash.provider/v1`)
 
 ```json

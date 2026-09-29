@@ -375,3 +375,6 @@ export {
   type DaemonNodeRuntime,
   type DaemonNodeRuntimeSource,
 } from "./local-daemon-runtime.js";
+export { createAssetSearchClient } from "./asset-search-client.js";
+export { createProjectContentClient } from "./project-content-client.js";
+export { createAssetEvidenceClient, AssetEvidenceRecordingError, type RecordMediaOperationInput, type RecordMediaObservationInput, type RecordedAssetEvidence } from "./asset-evidence-client.js";

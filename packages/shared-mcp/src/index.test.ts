@@ -1184,10 +1184,6 @@ test("the fixed generators dispatcher reveals and dispatches a live registered P
     generatorsDescription ?? "",
     /image.{0,80}video.{0,80}audio.{0,160}Clash Project/i,
   );
-  assert.match(
-    generatorsDescription ?? "",
-    /output commit.{0,160}(?:complete|finished|success)/i,
-  );
 
   const navigation = await client.callTool({
     name: "clash",

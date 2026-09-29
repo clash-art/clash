@@ -4,9 +4,15 @@ import {
   type SpawnOptions,
 } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+} from "node:fs";
 import { mkdir, open, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   LOCAL_HOST_PROTOCOL_VERSION,
   isCompatibleHost,
@@ -88,7 +94,47 @@ export interface LocalDaemonBootstrapOptions {
 export function resolveLocalDaemonRuntimeFingerprint(
   entryPath: string,
 ): string {
-  return `sha256:${createHash("sha256").update(readFileSync(entryPath)).digest("hex")}`;
+  const hash = createHash("sha256").update(readFileSync(entryPath));
+  // Both packagers materialize dependencies and compute their content identity.
+  // A same-path dependency-only upgrade must retire cached module registrations.
+  const dependencyIdentity = join(dirname(entryPath), "runtime-dependencies.sha256");
+  try {
+    const identity = readFileSync(dependencyIdentity);
+    hash.update("\0runtime-dependencies\0").update(identity);
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+  }
+  // Bundled PluginModules are imported into the long-lived Host. Updating only
+  // their adjacent payload must retire the Host too, or Node keeps the old module.
+  const visit = (directory: string, prefix: string): void => {
+    const entries = readdirSync(directory, { withFileTypes: true }).sort(
+      (a, b) => a.name.localeCompare(b.name),
+    );
+    for (const entry of entries) {
+      const relative = `${prefix}/${entry.name}`;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path, relative);
+      else if (entry.isFile()) {
+        hash.update(`\0${relative}\0`).update(readFileSync(path));
+      } else {
+        throw new Error(
+          `Bundled runtime payload must be a regular file: ${path}`,
+        );
+      }
+    }
+  };
+  // The Host also retains the renderer's installation path. A renderer-only
+  // upgrade must stop serving the previous installation's project page.
+  for (const name of ["bundled-plugins", "project-ui"]) {
+    const payloadRoot = join(dirname(entryPath), name);
+    try {
+      visit(payloadRoot, name);
+    } catch (error) {
+      // Source entrypoints and older standalone distributions have no payload dir.
+      if (!(isMissingFile(error) && (error as NodeJS.ErrnoException).path === payloadRoot)) throw error;
+    }
+  }
+  return `sha256:${hash.digest("hex")}`;
 }
 
 function isMissingFile(error: unknown): boolean {
@@ -159,17 +205,23 @@ export function launchDetachedLocalDaemon(
   }
   let child: Pick<ChildProcess, "pid" | "unref">;
   try {
+    // A Finder-launched Desktop inherits `/`. Libraries with cwd-based caches
+    // (including Remotion's browser download) need a stable writable Host cwd.
+    // Project/agent working trees are resolved separately from their identities.
+    const workingDirectory = resolve(options.dataDir);
+    mkdirSync(workingDirectory, { recursive: true, mode: 0o700 });
     child = spawnProcess(
       runtime.nodePath,
-      [...(options.nodeArgs ?? []), options.entryPath],
+      [...(options.nodeArgs ?? []), resolve(options.entryPath)],
       {
         detached: true,
+        cwd: workingDirectory,
         env: {
           ...env,
           ...(options.daemonEnv ?? {}),
-          CLASH_LOCAL_DATA_DIR: options.dataDir,
-          CLASH_HOST_RUN_DIR: options.runDir,
-          CLASH_CLI_ENTRY_PATH: options.cliEntryPath,
+          CLASH_LOCAL_DATA_DIR: workingDirectory,
+          CLASH_HOST_RUN_DIR: resolve(options.runDir),
+          CLASH_CLI_ENTRY_PATH: resolve(options.cliEntryPath),
           CLASH_LOCAL_API_WRAPPER_ENTRY: "1",
           // The watcher, rather than its replaceable child, owns discovery.
           CLASH_DAEMON_SOURCE_WATCH: sourceWatchSupervisor ? "1" : undefined,

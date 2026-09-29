@@ -527,7 +527,10 @@ describe("desktop startup test suite", () => {
 
     expect(releaseWorkflow).toContain("package-desktop:");
     expect(releaseWorkflow).toContain("publish-desktop-preview:");
-    expect(releaseWorkflow).not.toContain("agent-first-local-v1");
+    expect(sourceContains(releaseWorkflow, "needs: [desktop-checks]")).toBe(true);
+    expect(sourceContains(releaseWorkflow, "test:e2e:agent-first-local-v1")).toBe(true);
+    expect(sourceContains(releaseWorkflow, "needs: [package-desktop]")).toBe(true);
+    expect(sourceContains(releaseWorkflow, "vars.CLASH_PREVIEW_PUBLICATION_ENABLED == 'true'")).toBe(true);
     expect(releaseWorkflow).not.toContain("changesets/action");
     expect(
       existsSync(

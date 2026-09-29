@@ -9,8 +9,8 @@ directories:
   output: release
 
 files:
-  - dist/**/*
-  - package.json
+  - &desktopDist dist/**/*
+  - &desktopManifest package.json
   - "!src/**/*"
   - "!e2e/**/*"
   - "!*.test.*"
@@ -41,10 +41,16 @@ extraResources:
 mac:
   category: public.app-category.video
   icon: build/icon.icns
-  identity: null
+  # Invited preview: seal the complete app instead of retaining Electron's
+  # invalid pre-package signature. Public Beta still needs Developer ID/notary.
+  identity: "-"
   artifactName: Clash-Desktop-macOS-${arch}.${ext}
   x64ArchFiles: "**/node_modules/{@anthropic-ai/claude-agent-sdk-*,@esbuild/*,@remotion/compositor-*}/**"
   files:
+    # An exclusion-only platform matcher defaults to **/* independently of
+    # the normalized root fileset, admitting old releases and dev caches.
+    - *desktopDist
+    - *desktopManifest
     - "!node_modules/@anthropic-ai/claude-agent-sdk-{linux,win32}-*/**"
     - "!node_modules/@esbuild/{aix-*,android-*,freebsd-*,linux-*,netbsd-*,openbsd-*,sunos-*,win32-*}/**"
     - "!node_modules/@remotion/compositor-{linux,win32}-*/**"
@@ -57,6 +63,8 @@ win:
   executableName: clash
   artifactName: Clash-Desktop-Windows-${arch}.${ext}
   files:
+    - *desktopDist
+    - *desktopManifest
     - "!node_modules/@anthropic-ai/claude-agent-sdk-{darwin,linux}-*/**"
     - "!node_modules/@esbuild/{aix-*,android-*,darwin-*,freebsd-*,linux-*,netbsd-*,openbsd-*,sunos-*}/**"
     - "!node_modules/@remotion/compositor-{darwin,linux}-*/**"
@@ -69,6 +77,8 @@ linux:
   executableName: clash
   artifactName: Clash-Desktop-Linux-x64.${ext}
   files:
+    - *desktopDist
+    - *desktopManifest
     - "!node_modules/@anthropic-ai/claude-agent-sdk-{darwin-*,win32-*,linux-arm64,linux-arm64-musl}/**"
     - "!node_modules/@esbuild/{aix-*,android-*,darwin-*,freebsd-*,linux-arm*,linux-ia32,linux-loong64,linux-mips64el,linux-ppc64,linux-riscv64,linux-s390x,netbsd-*,openbsd-*,sunos-*,win32-*}/**"
     - "!node_modules/@remotion/compositor-{darwin-*,win32-*,linux-arm64-*}/**"

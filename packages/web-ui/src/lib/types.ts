@@ -5,6 +5,7 @@ import type {
 } from "@clash/shared-types";
 
 export interface Project {
+  syncTransport?: "streams";
   id: string;
   ownerId: string;
   name: string;

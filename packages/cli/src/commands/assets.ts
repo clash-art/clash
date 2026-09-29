@@ -27,6 +27,7 @@ import { requireDestructiveConfirmation } from "../lib/destructive-guardrails";
 import { isJsonMode, printJson } from "../lib/output";
 import { assetMetadataCommand } from "./asset-metadata";
 import { createAssetDocumentsCommand } from "./asset-documents";
+import { createAssetSearchCommand } from "./asset-search";
 import { resolveProjectStatus } from "./projects";
 import {
   forgetAgentObservation,
@@ -1273,3 +1274,4 @@ personalGlobalAssetsCommand
 assetsCommand.addCommand(personalGlobalAssetsCommand);
 assetsCommand.addCommand(assetMetadataCommand);
 assetsCommand.addCommand(createAssetDocumentsCommand());
+assetsCommand.addCommand(createAssetSearchCommand());

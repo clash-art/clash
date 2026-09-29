@@ -11,9 +11,9 @@ const cardVariants = cva(
       interaction: {
         none: "",
         border:
-          "transition-[border-color] duration-[var(--motion-feedback-duration)] ease-[var(--motion-feedback-ease)] hover:border-[var(--surface-card-hover-border)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-page motion-reduce:transition-none",
+          "transition-[border-color] duration-[var(--motion-feedback-duration)] ease-[var(--motion-feedback-ease)] hover:border-[var(--surface-card-hover-border)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-page motion-reduce:transition-none",
         surface:
-          "transition-[border-color,background-color] duration-[var(--motion-feedback-duration)] ease-[var(--motion-feedback-ease)] hover:border-[var(--surface-card-hover-border)] hover:bg-[var(--surface-card-hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-page motion-reduce:transition-none",
+          "transition-[border-color,background-color] duration-[var(--motion-feedback-duration)] ease-[var(--motion-feedback-ease)] hover:border-[var(--surface-card-hover-border)] hover:bg-[var(--surface-card-hover-bg)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-page motion-reduce:transition-none",
       },
       padding: {
         none: "",

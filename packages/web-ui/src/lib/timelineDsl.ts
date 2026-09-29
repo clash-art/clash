@@ -1,11 +1,11 @@
 /**
  * Timeline DSL normalization helpers.
  *
- * Persistence contract: items stored in Loro carry `item.sourceNodeId`
- * (the canvas node that owns the media) and, when known, `item.assetId`
- * (the stable Project Asset id, matching canvas node data.assetId). Concrete src /
- * type / dimensions are resolved at editor-open time from the canvas node
- * and asset row, not persisted in the timeline.
+ * Persistence contract: `item.assetId` identifies the stable Project Asset.
+ * An existing `item.sourceNodeId` may supply a Canvas navigation hint. A lookup
+ * fallback is not an authored reference and must not be copied into that field
+ * on save. Legacy lookup compatibility remains in the reader. External media
+ * URLs and disposable waveform data are resolved when opening the editor.
  *
  * These helpers handle:
  *  - final enforcement (strip external `src` on save)
@@ -15,11 +15,7 @@
  * can call them without entangling lifecycles.
  */
 
-import {
-  getItemSourceNodeId,
-  type Track,
-  type Item,
-} from "@clash/remotion-core";
+import type { Track, Item } from "@clash/remotion-core";
 
 /**
  * Strip external `src` values from every item. Used both on save
@@ -33,7 +29,6 @@ export function stripSrcFromTracks(tracks: Track[]): Track[] {
   return tracks.map((track) => ({
     ...track,
     items: track.items.map((item) => {
-      const sourceNodeId = getItemSourceNodeId(item);
       const {
         src: _src,
         justInserted: _justInserted,
@@ -49,7 +44,6 @@ export function stripSrcFromTracks(tracks: Track[]): Track[] {
         ...(typeof _src === "string" && _src.startsWith("data:")
           ? { src: _src }
           : {}),
-        ...(sourceNodeId ? { sourceNodeId } : {}),
       } as Item;
     }),
   }));

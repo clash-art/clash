@@ -24,6 +24,11 @@
       "types": "./dist/executable-failure.d.ts",
       "import": "./dist/executable-failure.js",
       "default": "./dist/executable-failure.js"
+    },
+    "./ui": {
+      "types": "./dist/ui.d.ts",
+      "import": "./dist/ui.js",
+      "default": "./dist/ui.js"
     }
   },
   "scripts": {
@@ -41,6 +46,10 @@
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "@types/react": "^19.2.0"
+  },
+  "peerDependencies": {
+    "react": "^19.2.5"
   }
 }

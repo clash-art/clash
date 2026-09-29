@@ -10,7 +10,15 @@ export type TimelineTrackBand = {
 };
 
 export function getTrackHeightForTrack(track: Track, primaryTrackId?: string | null): number {
-  return getTimelineTrackHeight(inferTrackCategory(track, primaryTrackId));
+  return getTimelineTrackHeight(inferTrackCategory(track, primaryTrackId)) + getTextKeyframeBandHeight(track, primaryTrackId);
+}
+
+// Reserve a separate interaction row so markers never cover the clip label.
+// Geometry is independent of selection, keeping DnD and scroll positions stable.
+export function getTextKeyframeBandHeight(track: Track, primaryTrackId?: string | null): number {
+  return inferTrackCategory(track, primaryTrackId) === 'text'
+    && track.items.some(item => Object.values(item.keyframes ?? {}).some(keys => keys.length > 0))
+    ? 24 : 0;
 }
 
 export function getTimelineTrackHeights(

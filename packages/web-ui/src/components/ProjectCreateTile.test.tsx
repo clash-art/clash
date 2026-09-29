@@ -93,6 +93,22 @@ describe("ProjectCreateTile", () => {
     );
   });
 
+  it("keeps failure feedback mounted while a retry is pending", async () => {
+    let rejectRetry!: (error: Error) => void;
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error("offline"))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { rejectRetry = reject; }));
+    render(<ProjectCreateTile ariaLabel="New project" onCreate={onCreate} />);
+    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "随便什么吧" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    const alert = await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect(screen.getByRole("alert")).toBe(alert);
+    rejectRetry(new Error("offline"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
+    expect(screen.getByRole("textbox")).toHaveValue("随便什么吧");
+  });
+
   it("renders creation failures through the shared feedback contract", async () => {
     const onCreate = vi.fn().mockRejectedValue(new Error("offline"));
 

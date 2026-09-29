@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsSurface } from "./SettingsSurface";
@@ -36,4 +36,13 @@ describe("SettingsSurface page layout", () => {
       container.querySelector(".clash-settings-page-content"),
     ).toContainElement(page as HTMLElement);
   });
+});
+
+it("offers expansion only when the embedding surface provides it", () => {
+  const onExpand = vi.fn();
+  const { rerender } = render(<SettingsSurface active="agents" onActiveChange={() => undefined} onExpand={onExpand} />);
+  fireEvent.click(screen.getByRole("button", { name: "Open settings page" }));
+  expect(onExpand).toHaveBeenCalledOnce();
+  rerender(<SettingsSurface active="agents" onActiveChange={() => undefined} />);
+  expect(screen.queryByRole("button", { name: "Open settings page" })).not.toBeInTheDocument();
 });

@@ -10,7 +10,8 @@ import {
 } from "../services/assets";
 import type { GenerationParams } from "./params";
 
-export class GenerationPublicationConflict extends Error {}
+import { GenerationPublicationConflict } from "@clash/shared-runtime/hosted-generation";
+export { GenerationPublicationConflict };
 export interface HostedGenerationPublication {
   updates: Record<string, unknown>;
   asset?: CreateAssetParams;

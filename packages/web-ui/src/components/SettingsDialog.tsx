@@ -12,15 +12,17 @@ import type { SettingsSection } from './SettingsClient';
 
 export interface SettingsDialogProps {
   open: boolean;
+  projectId?: string;
   onClose: () => void;
   initialSection?: SettingsSection;
+  onExpand?: (section: SettingsSection) => void;
 }
 
 function resolveDialogInitialSection(initialSection: SettingsSection | undefined): SettingsSection {
   return initialSection ?? readLastSettingsSection() ?? 'agents';
 }
 
-export function SettingsDialog({ open, onClose, initialSection }: SettingsDialogProps) {
+export function SettingsDialog({ open, onClose, initialSection, onExpand, projectId }: SettingsDialogProps) {
   const [active, setActive] = useState<SettingsSection>(() => resolveDialogInitialSection(initialSection));
 
   useEffect(() => {
@@ -37,7 +39,7 @@ export function SettingsDialog({ open, onClose, initialSection }: SettingsDialog
 
   return (
     <Dialog open={open} onClose={onClose} ariaLabel="Settings" size="xl" unstyled>
-      <SettingsSurface active={active} onActiveChange={handleActiveChange} onClose={onClose} />
+      <SettingsSurface projectId={projectId} active={active} onActiveChange={handleActiveChange} onClose={onClose} onExpand={onExpand ? () => onExpand(active) : undefined} />
     </Dialog>
   );
 }

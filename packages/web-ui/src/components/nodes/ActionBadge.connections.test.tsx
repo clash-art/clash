@@ -8,9 +8,14 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
+import { ACTION_BADGE_NODE_SIZE } from "@clash/shared-layout";
 import {
   createProjectGenerator,
+  advanceProjectGeneratorHead,
+  ensureActionRunRequest,
+  commitActionRunOutcome,
   generatorDefinitionFromExecutablePluginRegistration,
   ExecutablePluginGeneratorDocumentSchema,
   CustomActionDefinitionSchema,
@@ -21,6 +26,7 @@ import {
 } from "@clash/shared-types";
 
 import PromptActionNode, {
+  GeneratorComposer,
   normalizeActionAspectRatioOptions,
   planKeyframeInsertion,
 } from "./ActionBadge";
@@ -74,7 +80,7 @@ const refPickerAssetMock = vi.hoisted(() => ({
 }));
 
 vi.mock("@xyflow/react", () => ({
-  Handle: ({ type, position, ...props }: any) => (
+  Handle: ({ type, position, isConnectable: _isConnectable, ...props }: any) => (
     <div data-testid={`handle-${type}-${position}`} {...props} />
   ),
   Position: {
@@ -207,6 +213,40 @@ const baseNodeProps = {
 };
 
 describe("ActionBadge canvas subscriptions", () => {
+  it("shows a placed native operation's frozen inputs and parameters without a model composer", async () => {
+    const doc = new LoroDoc();
+    const ref = { pluginId: "clash.asset-edit", definitionId: "asset-edit", version: "1.0.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision: GeneratorRevision = { id: "crop-revision", generatorId: "crop", definitionRef: ref, state: {}, persistentInputRefs: [] };
+    expect(createProjectGenerator(doc, { head: { id: "crop", headRevisionId: revision.id }, revision }).ok).toBe(true);
+    expect(ensureActionRunRequest(doc, {
+      actionRunId: "crop-run", generatorRevision: { generatorId: "crop", generatorRevisionId: revision.id }, actionId: "crop",
+      executor: { pluginId: ref.pluginId, version: ref.version, schemaHash: ref.schemaHash, exportId: "crop-video" }, invocationFingerprint: `sha256:${"b".repeat(64)}`,
+      parameters: { startSec: 2, endSec: 8 }, invocationInputRefs: [{ slot: "source", target: { kind: "media", projectAssetId: "folding-video" } }],
+      outputContract: [{ slot: "output", assetType: { kind: "media", mediaKind: "video" }, cardinality: { minItems: 1, maxItems: 1 } }],
+    }).ok).toBe(true);
+    expect(advanceProjectGeneratorHead(doc, { generatorId: "crop", expectedHeadRevisionId: revision.id, editPolicy: "advance-head", revision: { ...revision, id: "later", parentRevisionId: revision.id, state: { startSec: 99 } } }).ok).toBe(true);
+    nativeLoroMock.value = { doc };
+    render(<CanvasTransientUiProvider><PromptActionNode {...baseNodeProps} id="crop-node" type="action-badge" data={{ generatorId: "crop", actionRunId: "crop-run", label: "Select folding clothes" }} /></CanvasTransientUiProvider>);
+    expect(screen.getByText("Select folding clothes")).toBeTruthy();
+    const capsule = screen.getByRole("article", { name: "Select folding clothes" });
+    expect(capsule).toHaveStyle({ width: `${ACTION_BADGE_NODE_SIZE.width}px`, height: `${ACTION_BADGE_NODE_SIZE.height}px` });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Operation details" }));
+    const details = screen.getByRole("dialog", { name: "Select folding clothes operation details" });
+    expect(within(details).getByText("folding-video")).toBeTruthy();
+    expect(screen.getByText(/"startSec": 2/)).toBeTruthy();
+    expect(within(capsule).queryByText(/"startSec": 2/)).toBeNull();
+    expect(screen.queryByText(/"startSec": 99/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Run/ })).toBeNull();
+    const failure = { outputSlot: "output", code: "output_persistence_failed", phase: "finalizing", retryable: true, message: "Result is staged but could not be saved." };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ run: { actionRunId: "crop-run" }, diagnostics: { failures: [failure] } })));
+    act(() => { expect(commitActionRunOutcome(doc, { actionRunId: "crop-run", status: "failed" }).ok).toBe(true); doc.commit(); });
+    expect(await screen.findByText(failure.message)).toBeTruthy();
+    expect(capsule).toHaveStyle({ width: `${ACTION_BADGE_NODE_SIZE.width}px`, height: `${ACTION_BADGE_NODE_SIZE.height}px` });
+    expect(within(capsule).queryByText(failure.message)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close operation details" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
   it("removes presentation aliases before Action passes ratio options to its picker", () => {
     expect(
       normalizeActionAspectRatioOptions({
@@ -1616,6 +1656,7 @@ describe("ActionBadge canvas subscriptions", () => {
 
   it.each([{ kind: "image", attached: false }, { kind: "image", attached: true }, { kind: "text", attached: false }, { kind: "document", attached: false }] as const)("saves a picked $kind reference (attached=$attached) through the native revision", async ({ kind, attached }) => {
     const doc = new LoroDoc();
+    doc.getMap("nodes").set("placement", { id: "placement", canvasId: "main", type: "action-badge", data: { generatorId: "native" } });
     const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
     const revision: import("@clash/shared-types").GeneratorRevision = { id: "before", generatorId: "native", definitionRef,
       state: { modelId: "minimax-h3", prompt: "Native prompt", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" }, ...(attached ? { contentParts: [{ type: "text", text: "Native prompt" }, { type: "input", slot: "image", itemKey: "existing", label: "" }] } : {}) }, persistentInputRefs: attached ? [{ slot: "image", itemKey: "existing", target: { kind: "media" as const, projectAssetId: "image-asset" } }] : [] };
@@ -1683,6 +1724,7 @@ describe("ActionBadge canvas subscriptions", () => {
 
   it.each([true, false])("offers exact Document inputs only for mapped Action ports (mapped=%s)", async (mapped) => {
     const doc = new LoroDoc();
+    doc.getMap("nodes").set("placement", { id: "placement", canvasId: "main", type: "action-badge", data: { generatorId: "agent-draft" } });
     const definition = generatorDefinitionFromExecutablePluginRegistration({ pluginId: "clash.agent-text", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}`, document: ExecutablePluginGeneratorDocumentSchema.parse(agentTextGenerator) });
     const definitionRef = { pluginId: definition.pluginId, definitionId: definition.definitionId, version: definition.version, schemaHash: definition.schemaHash };
     const card = { ...agentTextCard.spec, generator: { ...agentTextCard.spec.generator, inputSlots: mapped ? agentTextCard.spec.generator.inputSlots : {} } };
@@ -1926,6 +1968,42 @@ describe("ActionBadge canvas subscriptions", () => {
     await waitFor(() => expect(spawnAssetMock.spawnPending).toHaveBeenCalledWith(expect.objectContaining({
       generatorRevision: { generatorId: "native", generatorRevisionId: input.generatorRevisionId },
     })));
+  });
+
+  it("submits a prepared revision through the embedded composer without creating a Canvas output", async () => {
+    const doc = new LoroDoc();
+    const definitionRef = { pluginId: "clash.model-generation", definitionId: "video", version: "0.1.0", schemaHash: `sha256:${"a".repeat(64)}` };
+    const revision = { id: "before", generatorId: "native", definitionRef,
+      state: { modelId: "minimax-h3", prompt: "Native prompt", params: { resolution: "768P", duration: 5, aspect_ratio: "16:9" } }, persistentInputRefs: [] };
+    const created = createProjectGenerator(doc, { head: { id: "native", headRevisionId: "before" }, revision });
+    if (!created.ok) throw new Error(created.error.message);
+    nativeLoroMock.value = { doc, updateNode: vi.fn() };
+    let release!: (value: Response) => void;
+    const request = vi.fn(async (path: string, _init?: RequestInit) => {
+      if (path.includes("/generator-definitions/")) return Response.json({ definition: definitionRef });
+      return new Promise<Response>((resolve) => { release = resolve; });
+    });
+    vi.stubGlobal("fetch", request);
+    const submit = vi.fn(async () => {});
+    render(<CanvasTransientUiProvider><GeneratorComposer onExecuteRevision={submit} {...baseNodeProps} id="placement" type="action-badge"
+      data={{ generatorId: "native", content: "Stale Canvas prompt", label: "Native draft" }} /></CanvasTransientUiProvider>);
+    expect(spawnAssetMock.latestInput.content).toBe(revision.state.prompt);
+    expect(screen.queryByRole("button", { name: "Configure action" })).toBeNull();
+    const prompt = screen.getByLabelText("Prompt");
+    prompt.textContent = "Edited immediately before Run";
+    fireEvent.input(prompt);
+    fireEvent.click(screen.getAllByRole("button", { name: "Run action" }).at(-1)!);
+    await waitFor(() => expect(request.mock.calls.some((call) => call[1]?.body)).toBe(true));
+    expect(spawnAssetMock.spawnPending).not.toHaveBeenCalled();
+    const input = JSON.parse((request.mock.calls.find((call) => call[1]?.body) as unknown as [string, RequestInit])[1].body as string);
+    expect(input.state.prompt).toBe("Edited immediately before Run");
+    await act(async () => {
+      release(Response.json({ generator: { ...created.generator, headRevisionId: input.generatorRevisionId }, revision: {
+        ...revision, id: input.generatorRevisionId, parentRevisionId: "before", state: input.state,
+      } }));
+    });
+    await waitFor(() => expect(submit).toHaveBeenCalledWith({ generatorId: "native", generatorRevisionId: input.generatorRevisionId }));
+    expect(spawnAssetMock.spawnPending).not.toHaveBeenCalled();
   });
 
   it("Run creates a fresh pending output instead of adopting a downstream draft", async () => {

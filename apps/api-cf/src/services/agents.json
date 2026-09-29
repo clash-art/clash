@@ -2,7 +2,7 @@
   "summary": "Cloudflare service adapters; domain authority and transport-neutral ports stay in shared packages.",
   "key_files": {
     "project-content.ts": "Default D1 exact-admission/owner/tenant/deletion authorization, ProjectRoom snapshot reader, tenant-scoped immutable R2 Resource registry, and capability-use resolver. Registry facts are private infrastructure, not another Asset authority.",
-    "cloud-project-admission.ts": "D1 Project admission control plane with injectable store contract.",
+    "cloud-project-admission.ts": "D1 atomic-batch persistence adapter over shared cloud admission service; guards owner, tenant and deletion.",
     "cloud-asset-delivery.ts": "Cloud signing-secret and external-origin adapter for Resource capabilities.",
     "provider-task-boundaries.test.ts": "Captured protocol regressions for explicit hosted provider submit/status checks, opaque token reuse and transient HTTP classification.",
     "minimax-video.ts": "Hosted request/credential translation over the shared portable MiniMax executor; no blocking poll loop.",

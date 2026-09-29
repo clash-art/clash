@@ -49,6 +49,38 @@ export const RemotionInput = React.forwardRef<HTMLInputElement, RemotionInputPro
   },
 );
 
+type RemotionNumberInputProps = Omit<RemotionInputProps, 'type' | 'value' | 'defaultValue' | 'onChange'> & {
+  value: number;
+  onValueChange: (value: number) => void;
+};
+
+// Keep native number-input editing (including an unfinished minus or decimal)
+// separate from the finite numbers persisted in the Timeline.
+export function RemotionNumberInput({ value, onValueChange, onBlur, ...props }: RemotionNumberInputProps) {
+  const [edit, setEdit] = React.useState({ observed: value, draft: String(value) });
+  let draft = edit.draft;
+  if (!Object.is(edit.observed, value)) {
+    draft = String(value);
+    setEdit({ observed: value, draft });
+  }
+  return (
+    <input
+      {...props}
+      type="number"
+      value={draft}
+      onChange={(event) => {
+        setEdit({ observed: value, draft: event.target.value });
+        const next = event.target.valueAsNumber;
+        if (Number.isFinite(next)) onValueChange(next);
+      }}
+      onBlur={(event) => {
+        setEdit({ observed: value, draft: String(value) });
+        onBlur?.(event);
+      }}
+    />
+  );
+}
+
 export type RemotionSelectProps<Value extends SelectValue = string> = {
   value: Value;
   options: ReadonlyArray<SelectOption<Value>>;

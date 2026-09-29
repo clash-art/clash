@@ -1,5 +1,6 @@
 packages:
   - 'apps/api-cf'
+  - 'apps/api-node'
   - 'apps/desktop'
   - 'apps/docs'
   - 'apps/local-api'

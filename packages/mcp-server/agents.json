@@ -1,6 +1,7 @@
 {
   "summary": "Bundled Clash MCP tools for Assets, Canvas, plugin lifecycle, and native Blender/Maya control.",
   "architecture_notes": [
+    "Workspace initialization uses the same discovered Host request as native Generator tools to register the marker identity. A missing transport fails before writing; it must not report a marker-only project as ready.",
     "ClashMcpServer owns the fixed progressive-disclosure dispatchers. Native DCC operations are clash_plugin_dcc_* leaves under the existing clash_plugin dispatcher, never a separate user-configured MCP service.",
     "dcc.ts discovers the native addon for the requested real working folder through machine-private ~/.clash/dcc-connections records. It only connects to loopback, binds app/workspace/session identity, and never returns session credentials to the agent.",
     "Native Python execution is full local application access, not a sandbox. Unknown mutation outcomes are never retried automatically.",

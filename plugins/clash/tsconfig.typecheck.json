@@ -8,5 +8,6 @@
     "incremental": true,
     "tsBuildInfoFile": "./.cache/typecheck.tsbuildinfo",
     "declaration": false
-  }
+  },
+  "include": ["src/**/*.ts", "scripts/pack-distribution.ts"]
 }

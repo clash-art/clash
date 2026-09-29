@@ -2,6 +2,7 @@ import type { LoroDoc } from "loro-crdt";
 import { isDeepStrictEqual } from "node:util";
 import {
   Canvas,
+  assertCanvasLayoutMutation,
   canvasModelPlacementData,
   isCanvasNodeImmutable,
   canvasAssetRevision,
@@ -48,6 +49,7 @@ export function assertLocalPeerModelProjectionMutation(
   current: LoroDoc,
   candidate: LoroDoc,
 ): void {
+  assertCanvasLayoutMutation(current, candidate);
   const before = current.getMap("nodes");
   const after = candidate.getMap("nodes");
   const deletedIds = [...before.keys()].filter(

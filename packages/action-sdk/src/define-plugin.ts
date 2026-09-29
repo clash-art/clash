@@ -610,10 +610,9 @@ export function createExecutorContext(
       mediaAnalyze:
         merged.hostTools?.mediaAnalyze ??
         (async (request) => {
+          const result = await host({ kind: "media.analyze", ...request });
           try {
-            return ExecutableMediaAnalysisResultSchema.parse(
-              await host({ kind: "media.analyze", ...request }),
-            );
+            return ExecutableMediaAnalysisResultSchema.parse(result);
           } catch (error) {
             throw new Error("The Host returned an invalid media analysis result.", {
               cause: error,

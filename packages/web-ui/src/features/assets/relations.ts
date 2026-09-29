@@ -2,6 +2,7 @@ import {
   projectTimelineActionId,
   type ActionAssetBinding,
   type ActionBindingOwner,
+  type MediaAssetGeneration,
   type ProjectCanvas,
   type ProjectTimeline,
   type ResolvedAsset,
@@ -53,6 +54,14 @@ export interface AssetPromptRelation {
 }
 
 export interface AssetRelationSummary {
+  generation?: {
+    actionRunId: string;
+    producer?: {
+      pluginId: string;
+      actionId: string;
+      timeline?: { id: string; name: string };
+    };
+  };
   origin?: Omit<AssetCanvasRelation, "nodeCount" | "role">;
   canvases: AssetCanvasRelation[];
   timelines: AssetTimelineRelation[];
@@ -70,6 +79,7 @@ export interface BuildAssetRelationSummaryInput {
   nodes: AssetRelationNode[];
   edges: AssetRelationEdge[];
   bindings: ActionAssetBinding[];
+  generation?: MediaAssetGeneration | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -320,19 +330,31 @@ export function buildAssetRelationSummary(
   for (const asset of input.projectAssets) {
     projectAssetById.set(asset.id, asset);
   }
-  const lineageSources = targetOutputBindings.flatMap((output) =>
-    input.bindings
-      .filter(
-        (binding) =>
-          binding.direction === "input" &&
-          binding.projectAssetId !== input.assetId &&
-          sameBindingOwner(binding.owner, output.owner),
+  const generation = input.generation;
+  const lineageSources = generation
+    ? [
+        ...generation.revision.persistentInputRefs,
+        ...generation.run.invocationInputRefs,
+      ].flatMap(({ target }) =>
+        "kind" in target &&
+        target.kind === "media" &&
+        target.projectAssetId !== input.assetId
+          ? [{ assetId: target.projectAssetId, role: "reference" as const }]
+          : [],
       )
-      .map((binding) => ({
-        assetId: binding.projectAssetId,
-        role: upstreamRole(binding.role),
-      })),
-  );
+    : targetOutputBindings.flatMap((output) =>
+        input.bindings
+          .filter(
+            (binding) =>
+              binding.direction === "input" &&
+              binding.projectAssetId !== input.assetId &&
+              sameBindingOwner(binding.owner, output.owner),
+          )
+          .map((binding) => ({
+            assetId: binding.projectAssetId,
+            role: upstreamRole(binding.role),
+          })),
+      );
   const seenLineage = new Set<string>();
   const upstreamAssets = lineageSources.flatMap(
     (source): UpstreamAssetRelation[] => {
@@ -355,9 +377,32 @@ export function buildAssetRelationSummary(
   const prompts: AssetPromptRelation[] = prompt
     ? [{ label: "Prompt", value: prompt }]
     : [];
-  const sourceModel = input.asset?.provenance?.model?.trim() || undefined;
+  const sourceModel =
+    generation?.run.modelSelection?.modelId ||
+    input.asset?.provenance?.model?.trim() ||
+    undefined;
+  const originTimeline = generation
+    ? input.timelines.find(
+        (timeline) => timeline.id === generation.revision.generatorId,
+      )
+    : undefined;
+  const actionRunId = input.asset?.provenance?.actionRunId;
 
   return {
+    generation: actionRunId
+      ? {
+          actionRunId,
+          producer: generation
+            ? {
+                pluginId: generation.run.executor.pluginId,
+                actionId: generation.run.actionId,
+                timeline: originTimeline
+                  ? { id: originTimeline.id, name: originTimeline.name }
+                  : undefined,
+              }
+            : undefined,
+        }
+      : undefined,
     origin,
     canvases,
     timelines,

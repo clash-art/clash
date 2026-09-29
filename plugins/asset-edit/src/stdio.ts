@@ -7,7 +7,12 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
-import { servePluginStdio, type ResolvedReference } from "@clash/action-sdk";
+import ffprobeInstaller from "@ffprobe-installer/ffprobe";
+import {
+  ProviderExecutionError,
+  servePluginStdio,
+  type ResolvedReference,
+} from "@clash/action-sdk";
 import {
   createAssetEditPluginModule,
   type AssetEditExecutionInput,
@@ -15,6 +20,16 @@ import {
 import sharp from "sharp";
 
 const execFileAsync = promisify(execFile);
+
+function invalidRange(providerCode: string, message: string): never {
+  throw new ProviderExecutionError({
+    code: "invalid_request",
+    providerCode,
+    message,
+    retryable: false,
+    requestState: "rejected",
+  });
+}
 
 async function resolvedBytes(
   reference: ResolvedReference,
@@ -41,6 +56,18 @@ async function renderImage(input: AssetEditExecutionInput, bytes: Uint8Array) {
   let pipeline = sharp(bytes);
   if (input.invocation.params.crop) {
     const { x, y, width, height } = input.invocation.params.crop;
+    const source = await pipeline.metadata();
+    if (
+      !source.width ||
+      !source.height ||
+      x + width > source.width ||
+      y + height > source.height
+    ) {
+      invalidRange(
+        "ASSET_EDIT_CROP_OUT_OF_BOUNDS",
+        "Crop rectangle must stay within the source image dimensions.",
+      );
+    }
     pipeline = pipeline.extract({ left: x, top: y, width, height });
   }
   if (input.invocation.params.rotation) {
@@ -63,6 +90,50 @@ async function renderVideo(
   await writeFile(sourcePath, bytes);
   try {
     const params = input.invocation.params;
+    const probe = JSON.parse(
+      (
+        await execFileAsync(ffprobeInstaller.path, [
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-show_entries",
+          "stream=duration:format=duration",
+          "-of",
+          "json",
+          sourcePath,
+        ])
+      ).stdout,
+    ) as {
+      streams?: Array<{ duration?: string }>;
+      format?: { duration?: string };
+    };
+    const streamDuration = Number(probe.streams?.[0]?.duration);
+    const duration =
+      Number.isFinite(streamDuration) && streamDuration > 0
+        ? streamDuration
+        : Number(probe.format?.duration);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      invalidRange(
+        "ASSET_EDIT_DURATION_UNAVAILABLE",
+        "The source video duration could not be determined; use a video with a finite duration.",
+      );
+    }
+    if (params.mode === "screenshot" && params.frameTimeSec >= duration) {
+      invalidRange(
+        "ASSET_EDIT_FRAME_OUT_OF_RANGE",
+        "Frame time must be before the source video duration.",
+      );
+    }
+    if (
+      params.mode === "crop" &&
+      (params.startSec >= duration || params.endSec > duration)
+    ) {
+      invalidRange(
+        "ASSET_EDIT_TRIM_OUT_OF_RANGE",
+        "Trim start and end must lie within the source video duration.",
+      );
+    }
     await execFileAsync(
       ffmpegInstaller.path,
       params.mode === "screenshot"
@@ -84,18 +155,43 @@ async function renderVideo(
             sourcePath,
             "-t",
             String(params.endSec - params.startSec),
+            // Decode the seek boundary: stream-copy retains keyframe preroll and
+            // can publish a clip longer than the requested frame interval.
             "-map",
-            "0",
-            "-c",
-            "copy",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            // Preserve VFR frames instead of filling the nominal frame rate.
+            // The bundled FFmpeg 4.4 uses -vsync rather than -fps_mode.
+            "-vsync",
+            "passthrough",
+            // Keep the source timebase so VFR timestamps are not rounded to
+            // 1/nominal-fps by the encoder (FFmpeg 4.4 -enc_time_base contract).
+            "-enc_time_base:v",
+            "-1",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
             "-movflags",
             "+faststart",
             outputPath,
           ],
       { maxBuffer: 4 * 1024 * 1024 },
     );
+    const output = await readFile(outputPath).catch((error) => {
+      if (screenshot && (error as NodeJS.ErrnoException).code === "ENOENT") {
+        invalidRange(
+          "ASSET_EDIT_FRAME_UNAVAILABLE",
+          "No decodable frame exists at this time; choose an earlier frame time within the source video duration.",
+        );
+      }
+      throw error;
+    });
     return {
-      bytes: new Uint8Array(await readFile(outputPath)),
+      bytes: new Uint8Array(output),
       kind: screenshot ? "image" : "video",
       mediaType: screenshot ? "image/png" : "video/mp4",
     };

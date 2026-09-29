@@ -18,6 +18,8 @@ and content-addressed Resources. Structured, revisioned content is represented
 by [Document Assets](/guide/document-assets). A Generator Action may currently
 materialize either one Media Asset or one Document Asset.
 
+A View does not become a Generator merely by offering generation controls. Storyboard keeps its workspace state and references outputs from actual Generators. The [View reference protocol](../plugins/view-generator-spec.md) defines the implemented typed resource and shared Canvas relationship contract, and separately marks planned invocation and durable result-association extensions. It does not require a parent Storyboard Generator.
+
 ## Vocabulary
 
 | Concept              | Identity and mutability                                                                 | Delivered meaning                                                                                                               |
@@ -90,6 +92,21 @@ The current Generator v2 profile requires exactly one output port with
 `minItems: 1` and `maxItems: 1`. The types retain slot and item-key structure so
 the contract can be extended deliberately later, but current code must not
 claim multi-output execution.
+
+## Media provenance reads
+
+A generated Media Asset records its producer `actionRunId`. Consumers use
+`readMediaAssetGeneration` to verify that an Output Commit from that Run names
+the same Asset, then read the Run's exact Generator Revision. The Asset inspector
+uses that revision's `persistentInputRefs` together with the Run's
+`invocationInputRefs` for source media. Advancing the Generator head must not
+change an old output's displayed inputs. Timeline navigation can point to its
+current workspace, but does not replace the frozen provenance facts.
+
+A recorded Run whose details are unavailable is distinct from absent provenance.
+Do not infer a producer from the current Timeline payload, a coincidental Canvas
+edge, or an unrelated Run's output. Legacy Action Asset bindings remain a
+compatibility source for producers that have not migrated.
 
 ## Versioning and copy-on-write
 
@@ -244,17 +261,17 @@ normal Host bootstrap, without a connection lifecycle or version-token ritual.
 | Generator v2 schemas and Project Loro authority | Delivered: heads, immutable revisions, COW rules, public Runs, output commits, peer-write guards                                                                                                                                                                                                                                                                                                                                                                           |
 | Local Run bridge                                | Delivered for native Generator requests: public request before private Task, public running after Task creation, replay-safe Media and Document publication, and coherent batch admission/running checkpoint boundaries with replay repair of missing private tasks                                                                                                                                                                                                        |
 | Plugin artifact and ABI                         | Delivered: Generator manifest contribution, Definition validation, semantic executor pinning, one module ABI across both Local realms                                                                                                                                                                                                                                                                                                                                      |
-| Codex ImageGen | Its Action Card creates a native Generator placement through GUI and CLI. Compatible legacy drafts migrate at room load and peer/command admission. Prompt/parameter/reference edits, copy, and execution use the same Revision/Run authority as the generic HTTP surface. |
+| Codex ImageGen                                  | Its Action Card creates a native Generator placement through GUI and CLI. Compatible legacy drafts migrate at room load and peer/command admission. Prompt/parameter/reference edits, copy, and execution use the same Revision/Run authority as the generic HTTP surface.                                                                                                                                                                                                 |
 | Local Host HTTP product surface                 | Delivered: list/read Definitions; create/read a Project Generator; observed-head revision advance; explicit create with optional fork lineage; submit/read a Run; and read an Output Commit. Host derives edit policy, provenance, executor, fingerprint, deadline, and realm-private Task facts. Project Generator collection listing, delete, and a standalone fork route are absent.                                                                                    |
-| Generic Generator CLI and MCP | Delivered: Definition list/read; Project Generator create/read/advance; Action Run submit/read; Output Commit read; live request schemas. Model cards and Timeline have native specialized GUIs. A generic Generator browser, collection list/delete, standalone fork route, and generic working-tree projection remain absent. |
+| Generic Generator CLI and MCP                   | Delivered: Definition list/read; Project Generator create/read/advance; Action Run submit/read; Output Commit read; live request schemas. Model cards and Timeline have native specialized GUIs. A generic Generator browser, collection list/delete, standalone fork route, and generic working-tree projection remain absent.                                                                                                                                            |
 | v1 compatibility adapters                       | Delivered as fail-closed conversion helpers and tests; they do not by themselves migrate live product data or routes                                                                                                                                                                                                                                                                                                                                                       |
-| Canvas Models | Native media and Provider-backed text drafts, legacy draft admission, and Run/output projection share the Local Generator authority. GUI and Host Canvas creation return the Generator identity immediately. Media reference editing/copy, exact Document mentions, and Document picker/graph add/read/remove/copy are migrated. Mapped Actions also accept exact text Documents through declared input ports; specialized graph cases remain below. |
-| Timeline | Delivered as the native `clash.timeline` projection: legacy state import, CRUD/CAS, acknowledged editor saves, CLI/MCP, and Remotion Runs/Output Commits. Editor export waits for queued edits. The real Hilo output was opened, played, and edited through this frontend with Host readback. |
+| Canvas Models                                   | Native media and Provider-backed text drafts, legacy draft admission, and Run/output projection share the Local Generator authority. GUI and Host Canvas creation return the Generator identity immediately. Media reference editing/copy, exact Document mentions, and Document picker/graph add/read/remove/copy are migrated. Mapped Actions also accept exact text Documents through declared input ports; specialized graph cases remain below.                       |
+| Timeline                                        | Delivered as the native `clash.timeline` projection: legacy state import, CRUD/CAS, acknowledged editor saves, CLI/MCP, and Remotion Runs/Output Commits. Editor export waits for queued edits. The real Hilo output was opened, played, and edited through this frontend with Host readback.                                                                                                                                                                              |
 | Director Stage                                  | Migrated as a specialized projection using the `clash.director` executable plugin and `clash.director-stage` surface. Stage CRUD, owner semantics, and observed-head CAS are native. `capture-frame` creates one Action Run and output per frame; multi-frame public intent admission and running checkpoints are atomic, with replay repair. The renderer Host tool is reserved and bound to the frozen invocation. Native outputs create no legacy `ActionAssetBinding`. |
 | Inline crop/frame/edit Actions                  | Not migrated; current paths retain their existing synchronous/CAS semantics                                                                                                                                                                                                                                                                                                                                                                                                |
 | ASR native Generator path                       | Delivered: the strict `speech.transcribe` Broker/SDK ABI, reserved Local broker path, `clash.asr` bundled module and `speech-analysis` Definition, runtime model mapping, and an end-to-end native Run that publishes a timed `media.transcript@1` Document                                                                                                                                                                                                                |
 | ASR legacy consumer migration                   | Not delivered: the legacy transcription route, Timeline transcript cache/editor, and other existing consumers have not been rewired to native Generator Runs and Document revisions                                                                                                                                                                                                                                                                                        |
-| Human or agent Document authoring | The Local HTTP API can create/read/list/version/attach typed Documents with Host-derived actor provenance. CLI/MCP read exact revisions, and Canvas displays plain-text Document results. CLI/MCP authoring, native file projection, and remaining consumer migration are not delivered. |
+| Human or agent Document authoring               | The Local HTTP API can create/read/list/version/attach typed Documents with Host-derived actor provenance. CLI/MCP read exact revisions, and Canvas displays plain-text Document results. CLI/MCP authoring, native file projection, and remaining consumer migration are not delivered.                                                                                                                                                                                   |
 | Cloud Generator execution                       | Not delivered; only the Local durable adapter exists                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
 “Supported by the model” and “available in the product” are intentionally
@@ -398,13 +415,13 @@ still used. A real local Run read an existing generated Document, correctly
 returned its requested second Chinese character, and committed a new Document
 with the exact input provenance. No Model Provider is involved in this Action.
 
-| Requirement | Current boundary and evidence needed |
-| --- | --- |
+| Requirement                                                   | Current boundary and evidence needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | One generation authority across existing product entry points | Native media, Provider-backed text, mapped Action Cards (including compatible legacy drafts and Canvas commands) and production local-ACP text execution use Generator admission and Output Commit. Local-agent drafts use the shipped Agent Text Action Card. A stale legacy Card can recover through the existing explicit plugin rollback API when the original package is retained; an absent original artifact cannot be synthesized. Migration failures preserve the checkpoint and reach the frontend with an explicit retry. |
-| Equivalent native reference editing | Media add/remove, ordered/keyframe state, exact Document mention/picker inputs, and Document graph add/rewire/remove/copy are covered for Models and mapped Agent Text Actions. Behavior checks cover fixed Start/End slots, keyframe image reorder, same-edge replacement at Start/Middle/End, custom timing, and replacement with an already used Asset. REST rewiring retains input occurrence and prompt order rather than deleting and re-appending the reference. |
-| Reliable admission and immutable history | Native creation/migration, archived Definitions, frozen Run replay, immutable placement metadata and copy-on-write are covered by Host regressions and recorded live readbacks. A rejected peer edit keeps the local draft for explicit recovery; expected room-load migration failures disclose their cause and offer retry after dependency restoration. |
-| Agent scope after context lifecycle changes | First turn, failed delivery and explicit compact are covered. Automatic compaction needs a supported harness signal before the same guarantee can be made. |
-| Complete acceptance | The recorded real product session generated Hilo video and edited the same Asset into a three-second Timeline. Fresh public readback confirms the original Run, Output Commit, Asset and restored Timeline are unchanged. Native generation, migration, reference editing and recovery have Host/UI regression coverage. This verifies local Model generation; the distinct product features listed as not delivered above remain separate work. |
+| Equivalent native reference editing                           | Media add/remove, ordered/keyframe state, exact Document mention/picker inputs, and Document graph add/rewire/remove/copy are covered for Models and mapped Agent Text Actions. Behavior checks cover fixed Start/End slots, keyframe image reorder, same-edge replacement at Start/Middle/End, custom timing, and replacement with an already used Asset. REST rewiring retains input occurrence and prompt order rather than deleting and re-appending the reference.                                                              |
+| Reliable admission and immutable history                      | Native creation/migration, archived Definitions, frozen Run replay, immutable placement metadata and copy-on-write are covered by Host regressions and recorded live readbacks. A rejected peer edit keeps the local draft for explicit recovery; expected room-load migration failures disclose their cause and offer retry after dependency restoration.                                                                                                                                                                           |
+| Agent scope after context lifecycle changes                   | First turn, failed delivery and explicit compact are covered. Automatic compaction needs a supported harness signal before the same guarantee can be made.                                                                                                                                                                                                                                                                                                                                                                           |
+| Complete acceptance                                           | The recorded real product session generated Hilo video and edited the same Asset into a three-second Timeline. Fresh public readback confirms the original Run, Output Commit, Asset and restored Timeline are unchanged. Native generation, migration, reference editing and recovery have Host/UI regression coverage. This verifies local Model generation; the distinct product features listed as not delivered above remain separate work.                                                                                     |
 
 Generic Generator browsing/file projections and cloud execution in the delivery
 table are separate product gaps; their absence must not be confused with a second
@@ -423,7 +440,6 @@ local generation authority.
 7. Copy-on-write preserves existing downstream references until an explicit
    rewire.
 8. A plugin process is not a sandbox, and a bundled module is not a second ABI.
-
 
 ### Legacy Canvas draft cutover
 
@@ -465,7 +481,6 @@ Music drafts now retain separate Prompt and Lyrics in the native Revision and
 round-trip through the native card editor. Model Card musicInput mapping happens
 only when planning execution, preserving authored values during migration and editing.
 
-
 Audio Model revisions may carry a `lyrics` string alongside `prompt`. Native
 Lyrics edits use the same acknowledged CAS queue, and Run/Copy preserve the latest
 edit. Planning maps Lyrics to the Model's declared parameter or prompt location,
@@ -493,7 +508,6 @@ the real rollback route, then reopens the same Host room and persisted replica.
 The original contract, prompt, historical output and edges are preserved. This
 does not recover a missing artifact or synthesize a never-archived contract.
 
-
 The formal `clash canvas copy` operation forks native Model Generators rather
 than duplicating a placement's Generator pointer. The copy retains the exact
 source contract, authored state and persistent inputs and records `forkedFrom`.
@@ -501,7 +515,6 @@ Generator, initial Revision, placement and copy lineage commit atomically;
 existing downstream edges remain on the source. Duplicate placement IDs reject
 the transaction without orphan Generators. Editing the copy follows the normal
 Generator revision contract; Run preparation can bind a newer installed contract.
-
 
 The normal `clash canvas update` command adapts native Model prompt/content,
 model/modelId, modelParams and lyrics edits to the same Host revision mutation
@@ -512,7 +525,6 @@ invalid parameters and unsupported semantic fields reject without partial label
 updates. Input pruning preserves copy-on-write lineage. Formal media and exact
 Document edge adapters and peer admission are covered below.
 
-
 Canvas REST node/edge reads, delete planning and all six mutation handlers now
 use the injected Project replica shared with Host commands. They do not recover
 or mutate a sibling file snapshot beside a connected local room. The existing
@@ -521,7 +533,6 @@ A real-room regression verifies node update/delete, edge add/rewire/delete and
 batch deletion against live state and after reopening the room. This fixes the storage-authority split. Generic Asset edge endpoints now also
 update native Model inputs atomically. Raw peer admission upgrades legacy media
 graphs and rejects unauthorized native semantic changes.
-
 
 Generic Canvas REST media and Document edge add, rewire and delete derive native Model inputs
 in the same transaction as the graph change. The adapter uses effective Model
@@ -534,13 +545,20 @@ change back. Explicit frame-handle role changes remain to be audited; this
 adapter does not submit a Run. Incoming legacy graph batches are admitted through
 the upgrade boundary described below.
 
-
 Raw local peer updates cannot introduce/rewire a native Model placement's
 Generator pointer, change its semantic shadow fields, or change connected media
 Asset identities or exact Document revisions. Those operations use Host commands or Generator APIs. Normal
 presentation edits remain supported for unreferenced drafts. Once a native Model
 placement has any downstream edge, raw peer changes to the whole node, including
 label and position, reject with `IMMUTABLE_NODE`; the Host copy workflow is required.
+Display geometry now has a separate Project Loro `canvasNodeLayouts` record.
+Auto Layout and dragging publish validated position/size/z-index patches there,
+so referenced nodes can be arranged without changing their protected records,
+Generator revisions or edges. Canvas reads and the GUI resolve this presentation
+over the original node geometry; old projects need no eager rewrite. Layout
+batches commit atomically and survive reopen. Parent/group ownership and content
+are excluded from this presentation contract. Peer admission rejects extra
+fields, non-finite positions and layouts for missing nodes.
 Pending-output projection remains supported without rewriting that placement. Node deletion
 uses the existing batch-delete rule: a referenced source cannot be deleted alone,
 while a complete selected chain can be removed without changing its historical
@@ -579,7 +597,6 @@ were not independently retrieved in that browser run.
 The Host `move` command now applies the same any-downstream immutability rule as
 node updates and peer admission. Referenced nodes reject with `IMMUTABLE_NODE`
 without changing the replica; unreferenced moves retain normal read/CAS behavior.
-
 
 Canvas REST node PATCH and the CLI Host update now share the native Model
 Canvas authoring adapter. Neither writes authored state into placement shadow
@@ -631,6 +648,61 @@ component tests, while live GUI click-through is still pending.
 ### Agent contract discovery across transports
 
 The CLI exposes `generators contract create|advance|submit`, deriving JSON Schema from the same shared request validators used by Host HTTP and MCP. It runs without project discovery or a Host request. Use the Definition and Model Card for state/model-specific details. Existing Model cards expose their Generator identity; editing them must reuse that identity rather than inventing an alternate Canvas generation state.
+
+### Task-oriented Action invocation
+
+`clash actions` is a convenience entry point over the same native Generator,
+Action Run and Output Commit authority. It discovers installed Actions available
+to the selected Project, including project custom Actions. A custom Action uses
+its declared executable contract; logging an external command does not create
+that contract or execute it.
+
+```bash
+clash actions list --query rotation --json
+clash actions run image-editor.transform --asset SOURCE_IMAGE_ASSET_ID \
+  --params '{"rotation":90}' --label 'Rotate source image' \
+  --request-id rotate-source-1 --wait-ms 30000
+clash actions wait RETURNED_ACTION_RUN_ID --wait-ms 0
+clash assets search '叠衣服' --json
+```
+
+Replace the example identities with actual Project Asset and Run IDs. The
+example Action and rotation values come from the bundled `image-editor`
+Definition; `actions list` returns the live state, parameter, input and output
+contracts for installed custom Actions too. `run` accepts the fully qualified
+`plugin/definition/action` key or an unambiguous `definition.action` name.
+`--asset` is shorthand for an Action with one input slot. For multiple or
+Document inputs, use `--inputs` with declared slot names and exact
+`{kind:"document", documentAssetId, revisionId}` references. `--state` supplies
+required custom Generator state; `--params` supplies Action parameters.
+
+Invocation creates a visible native Run on `--canvas` (default `main`) and
+returns committed output references, including exact Document revisions.
+`--wait-ms` is bounded to 0–60000 milliseconds. A pending or running result is
+resumed with `actions wait`, which never submits a new operation. After an
+uncertain submission, inspect the returned recovery Run identity; replay an
+incomplete admission with the same `--request-id` and unchanged inputs. Provider
+selection for model-backed Actions can use `--account`.
+
+For already completed external work, import its result and retain the processing
+relationship without claiming native execution:
+
+```bash
+clash actions record --source SOURCE_ASSET_ID --output IMPORTED_OUTPUT_ASSET_ID \
+  --title 'External rotation' --detail-file operation.txt --record-id external-rotation-1
+clash actions observe --asset SOURCE_VIDEO_ASSET_ID --file observation.json \
+  --record-id observed-scene-1
+clash assets search --asset SOURCE_VIDEO_ASSET_ID
+```
+
+`record` accepts either `--detail` or `--detail-file`; the detail remains inert
+text. It writes an immutable actor-authored Document with real source/output
+references and attaches it to each output Asset. `observe` accepts JSON such as
+`{"summary":"生活片段","tool":"manual-review","observations":[{"text":"叠衣服","startMs":2000,"endMs":8000}]}`.
+Times refer to the original source and require both endpoints. Tool/model fields
+are optional and describe the actual external work. Both commands support
+`--record-id`; interrupted saves expose the identity needed to retry without
+duplicating the record. See [Document Assets](/guide/document-assets#external-observations-and-processing-records).
 
 ### Frozen Run replay after plugin changes
 

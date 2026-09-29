@@ -348,6 +348,8 @@ export function createCodexImageGenerator(
         "-s",
         "workspace-write",
         ...referencePaths.flatMap((path) => ["-i", path]),
+        // --image accepts multiple values; terminate options before the prompt.
+        "--",
         codexPrompt(input, outputPath),
       ];
       try {

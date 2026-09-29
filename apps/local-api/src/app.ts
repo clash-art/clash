@@ -1,3 +1,8 @@
+import { projectCloudJourney } from "./project-cloud-journey.js";
+import { createCloudRoutes } from "./cloud-routes.js";
+import { createCloudLogin } from "./cloud-login.js";
+import { cloudOrigin } from "./cloud-accounts.js";
+import { LocalProjectUpgradeError } from "./local-project-upgrade.js";
 import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./local-marketplace.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
@@ -7,7 +12,7 @@ import { commitProjectMutation } from "@clash/shared-types";
 import { migrateLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
 import { migrateLegacyProjectTimelines } from "./local-timeline-migration.js";
 import { AcpForkPointSchema, type AcpForkPoint } from "@clash/shared-types";
-import { type HostInstallScope } from "@clash/shared-types";
+import { HostInstallScopeSchema, type HostInstallScope } from "@clash/shared-types";
 import {
   mkdtemp,
   mkdir,
@@ -290,6 +295,7 @@ import {
 } from "./local-generator-product.js";
 import type { LocalDocumentProjectAuthority } from "./local-document-product.js";
 import { createLocalDocumentRoutes } from "./local-document-routes.js";
+import { createLocalAssetSearchRoutes } from "./asset-evidence-search.js";
 import {
   LocalWorkspaceProjectOperationLease,
   LocalWorkspaceTransferError,
@@ -365,12 +371,13 @@ export interface LocalApiOptions {
   audioConfig?: LocalAudioConfigStore;
   mediaAnalysisConfig?: LocalMediaAnalysisConfigStore;
   syncConfig?: LocalSyncConfigStore;
+  cloudLogin?: ReturnType<typeof createCloudLogin>;
   /** Machine-level public Asset storage shared by Desktop, CLI, MCP and plugins. */
   publicAssetStorage?: PublicAssetStorageService;
   syncEnv?: RemoteLoroPersistenceEnv;
   /** Optional cloud control-plane adapter. Admission is project-scoped and does not enable global sync. */
   cloudAdmission?: LocalCloudAdmissionClient;
-  resolveCloudAdmission?: () => Promise<LocalCloudAdmissionClient | undefined>;
+  resolveCloudAdmission?: (projectId?: string) => Promise<LocalCloudAdmissionClient | undefined>;
   /** Starts the project room after admission so the initial Loro replica can be mirrored. */
   ensureProjectSync?: (projectId: string) => Promise<void>;
   onProjectChanged?: (projectId: string) => Promise<void>;
@@ -444,12 +451,16 @@ export interface LocalApiOptions {
   >;
   installMarketplacePlugin?: (
     packageId: string,
+    installation?: HostInstallScope,
   ) => Promise<Record<string, unknown>>;
+  getPluginInstallScope?: (id: string) => Promise<HostInstallScope>;
+  validateInstallProjects?: (ids: string[]) => Promise<boolean>;
+  pluginAvailableInProject?: (id: string, projectId?: string) => Promise<boolean>;
   uninstallMarketplacePlugin?: (pluginId: string) => Promise<void>;
   pluginPackages?: {
     list(): Promise<object>;
     validate(input: unknown): Promise<object>;
-    activate(input: unknown): Promise<object>;
+    activate(input: unknown, installation?: HostInstallScope): Promise<object>;
     read(id: string): Promise<object>;
     rollback(id: string): Promise<object>;
     remove(id: string): Promise<object>;
@@ -849,24 +860,6 @@ function publicLocalSession(session: LocalSession) {
     updatedAt: session.updatedAt,
     readToken: sessionReceiptReadToken(session),
   };
-}
-
-async function projectRecoveryPolicy(
-  syncConfig: LocalSyncConfigStore,
-  options: { localRestoreAllowed?: boolean } = {},
-): Promise<ProjectRecoveryPolicy> {
-  const sync = await syncConfig.getPublicConfig();
-  return buildProjectRecoveryPolicy(
-    buildProjectStatus(
-      { projectId: "_project_recovery_policy", source: "explicit" },
-      {
-        clashRoot: "/clash",
-        localApiDataDir: "/clash/local-api",
-        replicationState: { mode: sync.mode, capabilities: sync.capabilities },
-      },
-    ),
-    options,
-  );
 }
 
 async function localSyncReadState(
@@ -3956,6 +3949,27 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       dataDir: options.dataDir,
       env: options.syncEnv ?? process.env,
     });
+  const readProjectStatus = async (projectId: string) => {
+    const replicaId = await localReplicaId();
+    const admission = await db.getProjectCloudAdmission(projectId, replicaId);
+    return buildProjectStatus(
+      { projectId, source: "explicit" },
+      {
+        clashRoot,
+        localApiDataDir,
+        replicationState: {
+          mode: admission && admission.status !== "local-only" ? "cloud-sync" : "local-only",
+          localReplicaId: replicaId,
+          admission,
+        },
+      },
+    );
+  };
+  const projectRecoveryPolicy = async (
+    projectId: string,
+    policyOptions: { localRestoreAllowed?: boolean } = {},
+  ): Promise<ProjectRecoveryPolicy> =>
+    buildProjectRecoveryPolicy(await readProjectStatus(projectId), policyOptions);
   const projectMetadataReplication = createLocalProjectMetadataReplication({
     syncConfig,
     local: {
@@ -4409,9 +4423,18 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       return c.json({ error: "Generator registry is unavailable" }, 503);
     }
     try {
-      const definitions = (await options.listPluginGenerators()).map(
-        generatorDefinitionFromExecutablePluginRegistration,
+      const registrations = await options.listPluginGenerators();
+      const available = await Promise.all(
+        registrations.map(async (registration) =>
+          await options.pluginAvailableInProject?.(
+            registration.pluginId,
+            c.req.query("projectId"),
+          ) === false ? null : registration,
+        ),
       );
+      const definitions = available
+        .filter((registration) => registration !== null)
+        .map(generatorDefinitionFromExecutablePluginRegistration);
       return c.json({ definitions });
     } catch (error) {
       return c.json(
@@ -4428,6 +4451,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         return c.json({ error: "Generator registry is unavailable" }, 503);
       }
       try {
+        if (await options.pluginAvailableInProject?.(
+          c.req.param("pluginId"),
+          c.req.query("projectId"),
+        ) === false) {
+          return c.json({ error: "Generator Definition not found" }, 404);
+        }
         const definition = await options.resolveGeneratorDefinition(
           c.req.param("pluginId"),
           c.req.param("definitionId"),
@@ -4556,7 +4585,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         c.req.param("actionRunId"),
       );
       return run
-        ? c.json({ run })
+        ? c.json({ run, diagnostics: await generatorProduct.readRunDiagnostics(c.req.param("projectId"), run.actionRunId) })
         : c.json({ error: "Generator Action Run not found" }, 404);
     },
   );
@@ -4584,6 +4613,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   );
 
   app.route("/", createLocalDocumentRoutes({ dataDir: options.dataDir, userId, authority: options.documentProjectAuthority }));
+  app.route("/", createLocalAssetSearchRoutes({ dataDir: options.dataDir, authority: options.documentProjectAuthority }));
 
   app.get("/api/v1/projects/:projectId/assets", async (c) => {
     try {
@@ -4670,18 +4700,13 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
 
     try {
-      const declaredContentType = file.type.trim().toLowerCase();
-      const contentType =
-        !declaredContentType ||
-        declaredContentType === "application/octet-stream"
-          ? contentTypeForPath(file.name)
-          : declaredContentType;
+      // A user's filename/File.type is a format hint, not a byte assertion.
+      // The mandatory Host probe seals the decoded MIME before publication.
       const asset = await projectAssetServiceAt(requestOrigin(c)).installOwned({
         projectId: c.req.param("projectId"),
         projectAssetId: projectAssetIdValue.trim(),
         kind: kind.data,
         bytes: new Uint8Array(await file.arrayBuffer()),
-        contentType,
         name: file.name,
         metadata: {},
         provenance: { kind: "import" },
@@ -5020,18 +5045,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
 
     try {
-      const declaredContentType = file.type.trim().toLowerCase();
-      const contentType =
-        !declaredContentType ||
-        declaredContentType === "application/octet-stream"
-          ? contentTypeForPath(file.name)
-          : declaredContentType;
+      // Use the same byte-derived import authority as Project Assets.
       const asset = await globalAssetServiceAt(requestOrigin(c)).importBytes({
         libraryId: PERSONAL_GLOBAL_ASSET_LIBRARY_ID,
         globalAssetId: globalAssetIdValue.trim(),
         kind: kind.data,
         bytes: new Uint8Array(await file.arrayBuffer()),
-        contentType,
         originalName: file.name,
         name: file.name,
         provenance: { kind: "import" },
@@ -6861,7 +6880,19 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       );
     }
     try {
-      return c.json(await options.pluginPackages.activate(await c.req.json()));
+      const body = await c.req.json();
+      const { installation: rawInstallation, ...pkg } = z.record(z.string(), z.unknown()).parse(body);
+      if (rawInstallation === undefined) return c.json(await options.pluginPackages.activate(pkg));
+      const parsed = HostInstallScopeSchema.safeParse(rawInstallation);
+      if (!parsed.success) return c.json({ error: "Invalid plugin installation scope" }, 400);
+      const installation = parsed.data;
+      if (installation.scope === "projects") {
+        const state = await db.load();
+        if (!installation.projectIds.every(id => findActiveProject(state, id))) {
+          return c.json({ error: "Choose existing projects" }, 400);
+        }
+      }
+      return c.json(await options.pluginPackages.activate(pkg, installation));
     } catch (error) {
       return c.json(
         { error: error instanceof Error ? error.message : String(error) },
@@ -6880,6 +6911,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       return c.json(await options.pluginPackages.read(c.req.param("id")));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (error && typeof error === "object" && "code" in error && error.code === "BUILTIN_PLUGIN_CHECKOUT_UNSUPPORTED") {
+        return c.json({ error: message, code: error.code }, 409);
+      }
       return c.json(
         { error: message },
         /ENOENT|not found/i.test(message) ? 404 : 409,
@@ -6924,7 +6958,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       ? await options.listPluginCards()
       : [];
     return c.json({
-      actions: executablePluginActionDefinitions(registrations),
+      actions: executablePluginActionDefinitions((await Promise.all(registrations.map(async registration => await options.pluginAvailableInProject?.(registration.pluginId, c.req.query("projectId")) === false ? null : registration))).filter(registration => registration !== null)),
     });
   });
   app.get("/api/v1/plugin-views", async (c) => {
@@ -6932,7 +6966,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       ? await options.listPluginViews()
       : [];
     return c.json({
-      views: registrations.map((registration) => ({
+      views: (await Promise.all(registrations.map(async registration => await options.pluginAvailableInProject?.(registration.pluginId, c.req.query("projectId")) === false ? null : registration))).filter(registration => registration !== null).map((registration) => ({
         pluginId: registration.pluginId,
         version: registration.version,
         schemaHash: registration.schemaHash,
@@ -7109,7 +7143,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     });
     return new Response(null, { status: 204 });
   });
-  app.route("/", createLocalMarketplaceRoutes({ ...options, readInstalledPlugin: options.pluginPackages ? id => options.pluginPackages!.read(id) : undefined }));
+  app.route("/", createLocalMarketplaceRoutes({ ...options, reconcileSkillProjects: async () => { for (const project of activeProjects(await db.load())) await options.prepareProjectWorkspace?.(project.id); }, validateInstallProjects: async ids => { const state = await db.load(); return ids.every(id => activeProjects(state).some(project => project.id === id)); }, readInstalledPlugin: options.pluginPackages ? id => options.pluginPackages!.read(id) : undefined }));
+  app.route("/api/v1/local/cloud",createCloudRoutes({dataDir:options.dataDir,login:options.cloudLogin??createCloudLogin({dataDir:options.dataDir})}));
   app.get("/api/v1/local/sync", async (c) =>
     c.json(publicLocalSyncConfig(await localSyncReadState(syncConfig))),
   );
@@ -9264,6 +9299,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       return c.json({
         projects: await Promise.all(
           visibleProjects.map(async (project) => {
+            try {
             const [assets, coverAssetId, canvasPreviewEntry] =
               await Promise.all([
                 service.list(project.id),
@@ -9292,12 +9328,59 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
               canvasPreviewEntry.preview,
               canvasThumbnail,
             );
+            } catch (error) {
+              // A project's recovery failure must not hide other projects or
+              // prevent navigation to its existing recovery workflow.
+              if (!(error instanceof LocalProjectUpgradeError)) throw error;
+              return toV1Project(project, []);
+            }
           }),
         ),
       });
     } catch (error) {
       return localProjectAssetErrorResponse(error);
     }
+  });
+
+  // Marker initialization is idempotent and local-only. It creates metadata for
+  // the exact identity, never rewrites an existing project or its Loro replica.
+  app.post("/api/v1/projects/:id/initialize", async (c) => {
+    const parsed = z.object({
+      id: z.string().trim().min(1).refine(id => id !== "." && id !== ".."),
+      name: z.string().trim().min(1).max(256),
+    }).safeParse({ ...(await c.req.json().catch(() => ({}))), id: c.req.param("id") });
+    if (!parsed.success) return c.json({ error: "Valid project id and name are required", issues: parsed.error.issues }, 400);
+    const { id, name } = parsed.data;
+    const result = await db.update(async (state) => {
+      const existing = state.projects.find(project => project.id === id);
+      if (existing) {
+        if (existing.ownerId !== userId || !isActiveProject(existing)) return { conflict: true } as const;
+        return { project: existing, created: false } as const;
+      }
+      await options.prepareProjectWorkspace?.(id);
+      const timestamp = nowIso();
+      const project: LocalProject = {
+        id, ownerId: userId, name, description: null,
+        createdAt: timestamp, updatedAt: timestamp, assets: [],
+      };
+      state.projects.unshift(project);
+      return { project, created: true } as const;
+    });
+    if ("conflict" in result) return c.json({
+      code: "PROJECT_INITIALIZATION_CONFLICT",
+      error: "This project is archived or belongs to another owner. Initialization cannot restore or replace it.",
+    }, 409);
+    if (result.created) {
+      await db.appendMutationAudit(mutationAuditRecord({
+        mutation: hostMutationSucceeded(
+          { operation: "project_create", entity: { kind: "project", id } },
+          { resultEntityId: id, afterReadToken: projectReceiptReadToken(result.project) },
+        ),
+        actorClientType: requestProjectWritePreconditions(c, {}).actorClientType,
+        reason: "workspace initialization",
+      }));
+    }
+    return c.json({ id: result.project.id, name: result.project.name, reused: !result.created }, result.created ? 201 : 200);
   });
 
   app.post("/api/v1/projects", async (c) => {
@@ -9362,27 +9445,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const project = findActiveProject(state, projectId, userId);
     if (!project) return c.json({ error: "not found" }, 404);
     syncProjectMetadataInBackground(project.id);
-    const admission = await db.getProjectCloudAdmission(
-      projectId,
-      await localReplicaId(),
-    );
-    return c.json(
-      buildProjectStatus(
-        { projectId, source: "explicit" },
-        {
-          clashRoot,
-          localApiDataDir,
-          replicationState: {
-            mode:
-              admission && admission.status !== "local-only"
-                ? "cloud-sync"
-                : "local-only",
-            localReplicaId: await localReplicaId(),
-            admission,
-          },
-        },
-      ),
-    );
+    return c.json(await readProjectStatus(projectId));
   });
 
   app.get("/api/v1/projects/:projectId/cloud-admission", async (c) => {
@@ -9393,11 +9456,19 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       projectId,
       c.req.query("localReplicaId")?.trim() || await localReplicaId(),
     );
-    return c.json({ admission });
+    return c.json(await projectCloudJourney(options.dataDir,admission));
   });
 
+  const pendingCloudAdmissions = new Set<string>();
+  app.use("/api/v1/projects/:projectId/cloud-admission", async (c, next) => {
+    if (c.req.method !== "POST") return next();
+    const projectId = c.req.param("projectId")!;
+    if (pendingCloudAdmissions.has(projectId)) return c.json({error:"Cloud admission is already in progress",code:"CLOUD_ADMISSION_PENDING"},409);
+    pendingCloudAdmissions.add(projectId);
+    try { await next(); } finally { pendingCloudAdmissions.delete(projectId); }
+  });
   app.post("/api/v1/projects/:projectId/cloud-admission", async (c) => {
-    const admissionClient = await options.resolveCloudAdmission?.() ?? cloudAdmission;
+    const admissionClient = await options.resolveCloudAdmission?.(c.req.param("projectId")) ?? cloudAdmission;
     if (!admissionClient) {
       return c.json(
         {
@@ -9434,6 +9505,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       metadata: localProjectSyncMetadata(project),
       resourceIds: [...new Set(requestedResourceIds)],
     });
+    const previousAdmission=await db.getProjectCloudAdmission(projectId,requestedReplicaId);
+    const bound=previousAdmission&&previousAdmission.tenantId!=='pending'&&previousAdmission.status!=='local-only'?previousAdmission:null;
     try {
       const response = ProjectCloudAdmissionResponseSchema.parse(
         await admissionClient.admit(request),
@@ -9446,6 +9519,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           "Cloud admission identity does not match this Project and replica",
         );
       }
+      if(bound&&(cloudOrigin(response.admission.syncBaseUrl)!==cloudOrigin(bound.syncBaseUrl)||response.admission.userId!==bound.userId||response.admission.tenantId!==bound.tenantId))throw Error('Project is already bound to a different cloud service or account');
       // Remote admission proves access, not that this Host mirrored its current
       // Loro state, metadata, and immutable bytes. The synchronizer owns ready.
       response.admission = {
@@ -9473,7 +9547,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       return c.json(ProjectCloudAdmissionResponseSchema.parse(response), 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const failed = {
+      const failed = bound ? {...bound,status:"failed" as const,updatedAt:nowIso(),lastError:message} : {
         schemaVersion: 1 as const,
         projectId,
         tenantId: "pending",
@@ -11236,7 +11310,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const projectId = c.req.param("id");
     const body = (await c.req.json().catch(() => ({}))) as ProjectWriteBody;
     const preconditions = requestProjectWritePreconditions(c, body);
-    const recoveryPolicy = await projectRecoveryPolicy(syncConfig);
+    const recoveryPolicy = await projectRecoveryPolicy(projectId);
     const result = await db.update((state) => {
       const project = findActiveProject(state, projectId);
       if (!project) {
@@ -11316,7 +11390,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     const projectId = c.req.param("id");
     const body = (await c.req.json().catch(() => ({}))) as ProjectWriteBody;
     const preconditions = requestProjectWritePreconditions(c, body);
-    const recoveryPolicy = await projectRecoveryPolicy(syncConfig);
+    const recoveryPolicy = await projectRecoveryPolicy(projectId);
     const result = await db.update((state) => {
       const project = state.projects.find(
         (candidate) =>
@@ -11399,7 +11473,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       confirm?: unknown;
     };
     const preconditions = requestProjectWritePreconditions(c, body);
-    const recoveryPolicy = await projectRecoveryPolicy(syncConfig);
+    const recoveryPolicy = await projectRecoveryPolicy(projectId);
     const purgedRecoveryPolicy = {
       ...recoveryPolicy,
       localRestoreAllowed: false,

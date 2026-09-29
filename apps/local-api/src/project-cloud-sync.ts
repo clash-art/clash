@@ -51,7 +51,7 @@ export interface LocalProjectCloudSyncOptions {
     read(projectId: string): Promise<ProjectMetadata | null>;
     write(metadata: ProjectMetadata): Promise<void>;
   };
-  token(): Promise<string | undefined>;
+  token(baseUrl: string, userId: string): Promise<string | undefined>;
   inspection: Pick<LocalAssetInspectionService, "finalize">;
   fetch?: typeof globalThis.fetch;
   retryMs?: number;
@@ -111,12 +111,13 @@ export function createLocalProjectCloudSync(
     const authenticated = async (path: string, init: RequestInit = {}) => {
       await assertCurrent();
       const headers = new Headers(init.headers);
-      const token = await options.token();
-      if (token) headers.set("authorization", `Bearer ${token}`);
+      const token = await options.token(initial.admission.syncBaseUrl, initial.admission.userId);
+      if (!token) throw new Error("Sign in to the Project cloud account to resume sync");
+      headers.set("authorization", `Bearer ${token}`);
       headers.set("x-local-replica-id", replicaId);
       const response = await fetcher(
         `${initial.admission.syncBaseUrl.replace(/\/+$/, "")}${path}`,
-        { ...init, headers, signal },
+        { ...init, headers, signal, redirect: "error" },
       );
       if (response.status === 413) {
         const limit = await readContentTransferLimitError(response);

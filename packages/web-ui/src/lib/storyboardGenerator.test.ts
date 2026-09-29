@@ -30,17 +30,21 @@ describe("runStoryboardMaterialGenerator", () => {
       },
       editPolicy: "fork-when-materialized",
       persistentInputs: [],
-      actions: [{
-        id: "generate",
-        executorExportId: "generate-image",
-        parametersSchema: { type: "object" },
-        invocationInputs: [],
-        outputs: [{
-          slot: "image",
-          assetType: { kind: "media", mediaKind: "image" },
-          cardinality: { minItems: 1, maxItems: 1 },
-        }],
-      }],
+      actions: [
+        {
+          id: "generate",
+          executorExportId: "generate-image",
+          parametersSchema: { type: "object" },
+          invocationInputs: [],
+          outputs: [
+            {
+              slot: "image",
+              assetType: { kind: "media", mediaKind: "image" },
+              cardinality: { minItems: 1, maxItems: 1 },
+            },
+          ],
+        },
+      ],
     } as const;
 
     const result = await runStoryboardMaterialGenerator({
@@ -58,22 +62,79 @@ describe("runStoryboardMaterialGenerator", () => {
       sleep: async () => undefined,
     });
 
-    expect(client.createGenerator).toHaveBeenCalledWith("project-1", expect.objectContaining({
-      pluginId: "clash.codex-imagegen",
-      state: { prompt: "weathered football player" },
-    }));
+    expect(client.createGenerator).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        pluginId: "clash.codex-imagegen",
+        state: { prompt: "weathered football player" },
+      }),
+    );
     expect(client.submitActionRun).toHaveBeenCalledWith(
       "project-1",
       "generator-1",
       "generate",
       expect.objectContaining({ generatorRevisionId: "generator-1:r1" }),
     );
-    expect(result).toEqual(expect.objectContaining({
-      projectAssetId: "asset-1",
-      generatedBy: expect.objectContaining({
-        outputCommitId: "output-commit-1",
-        outputSlot: "image",
+    expect(result).toEqual(
+      expect.objectContaining({
+        projectAssetId: "asset-1",
+        generatedBy: expect.objectContaining({
+          outputCommitId: "output-commit-1",
+          outputSlot: "image",
+        }),
       }),
-    }));
+    );
   });
+});
+
+it("submits an existing composer revision without creating a prompt-only replacement", async () => {
+  const client = {
+    createGenerator: vi.fn(),
+    submitActionRun: vi.fn(),
+    getActionRun: vi.fn(async () => ({ run: { status: "succeeded" } })),
+    getOutputCommit: vi.fn(async () => ({
+      commit: { asset: { kind: "media", projectAssetId: "result" } },
+    })),
+  };
+  const refs = [
+    {
+      slot: "reference",
+      target: { kind: "media", projectAssetId: "original" },
+    },
+  ];
+  await runStoryboardMaterialGenerator({
+    client: client as never,
+    projectId: "p",
+    definition: {
+      definitionId: "image",
+      actions: [
+        {
+          id: "generate",
+          outputs: [
+            { slot: "image", assetType: { kind: "media", mediaKind: "image" } },
+          ],
+        },
+      ],
+    } as never,
+    actionId: "generate",
+    outputSlot: "image",
+    prompt: "",
+    ids: {
+      generatorId: "composer",
+      generatorRevisionId: "edited-revision",
+      actionRunId: "new-run",
+    },
+    existingRevision: true,
+    invocationInputRefs: refs,
+  } as never);
+  expect(client.createGenerator).not.toHaveBeenCalled();
+  expect(client.submitActionRun).toHaveBeenCalledWith(
+    "p",
+    "composer",
+    "generate",
+    expect.objectContaining({
+      generatorRevisionId: "edited-revision",
+      invocationInputRefs: refs,
+    }),
+  );
 });

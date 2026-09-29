@@ -54,7 +54,7 @@ describe("ProjectEditor workspace model", () => {
     ).toBe(true);
     expect(sourceContains(source, "header={"), "mechanism missing").toBe(true);
     expect(
-      sourceContains(source, "footer={<UserControls compact />}"),
+      sourceMatches(source, /footer=\{[\s\S]*?<UserControls\s+compact\s*\/>/),
       "mechanism missing",
     ).toBe(true);
     expect(
@@ -492,10 +492,10 @@ describe("ProjectEditor workspace model", () => {
     ).toBe(true);
     const timelineSurface =
       source.match(/<ProjectTimelineEditorSurface[\s\S]*?\/>/)?.[0] ?? "";
-    expect(timelineSurface).toContain("mediaInputs={timelineMediaInputs}");
+    expect(sourceContains(timelineSurface, "mediaInputs={timelineMediaInputs}")).toBe(true);
     expect(timelineSurface).toContain("key={selectedTimeline.id}");
     expect(timelineSurface).not.toContain("assets={projectAssets}");
-    expect(timelineSurface).toContain("onRequestAsset={() =>");
+    expect(sourceContains(timelineSurface, "onRequestAsset={() =>")).toBe(true);
   });
 
   it("attributes Timeline exports to the signed-in user with a local owner fallback", () => {
@@ -539,9 +539,9 @@ describe("ProjectEditor workspace model", () => {
   });
 
   it("keeps collapsed editors full-width and reserves padding for the rounded floating Copilot", () => {
-    expect(source).toMatch(
-      /const shouldReserveCopilotSpace\s*=\s*workspaceSurface\.kind !== "canvas" && !isSidebarCollapsed/,
-    );
+    expect(sourceMatches(source,
+      /const shouldReserveCopilotSpace\s*=\s*(?:!nativeAgent\s*&&\s*)?workspaceSurface\.kind !== "canvas" && !isSidebarCollapsed/,
+    )).toBe(true);
     expect(source).toMatch(
       /const copilotWorkspaceRight\s*=\s*shouldReserveCopilotSpace[\s\S]*?sidebarWidth \+ COPILOT_PANEL_GUTTER_PX \* 2[\s\S]*?: 0/,
     );
@@ -662,7 +662,7 @@ describe("ProjectEditor workspace model", () => {
 
   it("selects one project asset at a time and accepts sidebar asset drops on Canvas", () => {
     expect(
-      sourceContains(source, "onSelectAsset={(assetId) =>"),
+      sourceMatches(source, /onSelectAsset=\{\(assetId(?:,\s*\w+)?\)\s*=>/),
       "mechanism missing",
     ).toBe(true);
     expect(

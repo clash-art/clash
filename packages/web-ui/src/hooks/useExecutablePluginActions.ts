@@ -8,8 +8,9 @@ import { runtimeApiUrl } from "../lib/runtimeConfig";
 export async function loadExecutablePluginActions(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
   signal?: AbortSignal,
+  projectId?: string,
 ): Promise<CustomActionDefinition[]> {
-  const response = await fetchImpl(runtimeApiUrl("/api/v1/plugin-actions"), {
+  const response = await fetchImpl(runtimeApiUrl(`/api/v1/plugin-actions${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`), {
     credentials: "include",
     ...(signal ? { signal } : {}),
   });
@@ -37,6 +38,7 @@ export async function loadExecutablePluginActions(
  * the last valid snapshot so a transient Bridge restart does not flicker UI. */
 export function useExecutablePluginActions(
   refreshIntervalMs = 2_000,
+  projectId?: string,
 ): CustomActionDefinition[] {
   const [actions, setActions] = useState<CustomActionDefinition[]>([]);
   const snapshotRef = useRef("[]");
@@ -51,6 +53,7 @@ export function useExecutablePluginActions(
         const next = await loadExecutablePluginActions(
           globalThis.fetch,
           controller.signal,
+          projectId,
         );
         const snapshot = JSON.stringify(next);
         if (active && snapshot !== snapshotRef.current) {
@@ -74,7 +77,7 @@ export function useExecutablePluginActions(
       controller?.abort();
       globalThis.clearInterval(interval);
     };
-  }, [refreshIntervalMs]);
+  }, [refreshIntervalMs, projectId]);
 
   return actions;
 }

@@ -1,0 +1,8 @@
+{
+  "summary": "Opt-in real network PostgreSQL acceptance. Owns an ephemeral database, child gateway/worker processes and failure injection; never point at production.",
+  "key_files": {
+    "cluster.integration.test.ts": "Three gateways, two existing durable outbox executors, four writers and real PG. Advances pending checkpoint due times only; checks snapshot convergence, recovery and notification isolation.",
+    "gateway-process.ts": "Independent HTTP/SSE relay process with real PG pool and dedicated LISTEN; IPC readiness evidence only, no Loro import.",
+    "loro-cost.ts": "Standalone diagnostic comparing full Loro fork costs as update and peer counts grow. Prints measurements, not timing assertions."
+  }
+}

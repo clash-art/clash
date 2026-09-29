@@ -94,6 +94,23 @@ afterEach(() => {
 });
 
 describe("InteractiveCanvas selection geometry", () => {
+  it("opens and selects a clip with implicit transforms without writing defaults", async () => {
+    const onUpdateItem = vi.fn();
+    const clip = { id: "implicit", type: "video" as const, src: "/clip.mp4", from: 0, durationInFrames: 90 };
+    const tracks = [{ id: "main", name: "Media", items: [clip] }];
+    const { container, rerender } = render(
+      <InteractiveCanvas {...baseProps} tracks={tracks} selectedItemId={clip.id} onUpdateItem={onUpdateItem} />,
+    );
+    await waitFor(() => expect(notifyResize).toBeTypeOf("function"));
+    rerender(
+      <InteractiveCanvas {...baseProps} tracks={tracks} currentFrame={20} selectedItemId={clip.id} onUpdateItem={onUpdateItem} />,
+    );
+    expect(onUpdateItem).not.toHaveBeenCalled();
+    expect(container.querySelector(".item-clickable")).not.toBeNull();
+    expect(container.querySelector(".canvas-controls")).not.toBeNull();
+    expect(clip).not.toHaveProperty("properties");
+  });
+
   it("keeps the preview player mounted when the canvas ratio changes", () => {
     const { rerender } = render(
       <InteractiveCanvas

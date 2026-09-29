@@ -1,9 +1,10 @@
 {
   "summary": "Framework-independent frontend helpers and product adapters. Product state mutations use the existing Host APIs.",
   "key_files": {
+    "documentResultNode.ts": "Shared typed Document result detection for Canvas and workspace previews; pending and failed native outputs remain read-only before their exact revision is published.",
     "canvasElementReconciliation.ts": "Projects fixed Action capsule bounds without mutating the received node, and reuses unchanged frontend nodes/edges across snapshots. Stored historical dimensions are not rewritten during reads.",
     "canvasNodeOrder.ts": "Parent ordering, structural-change classification and z-index projection. User resize changes are identified by ReactFlow gesture metadata; ResizeObserver measurements stay view-local.",
-    "loroNodeSync.ts": "Collects layout-only patches and submits them through useLoroSync.applyLayout. Validates the whole batch, including whole-node downstream immutability, on a detached Project mutation and publishes one complete update through Canvas operations. Rejected layouts leave the live replica unchanged.",
+    "loroNodeSync.ts": "Atomic layout batches persist display geometry independently of protected node records; parent/group changes retain node guardrails.",
     "syncRecovery.ts": "IndexedDB recovery archive used by useLoroSync and SyncRecoveryDialog. Atomically stores a rejected local Loro snapshot and latest-backup pointer before removing only that project's automatic-sync cache. Resolves only after transaction completion; abort preserves the prior cache and backup.",
     "generatorDraftEditor.ts": "Serial native Generator draft edits. Each request uses the previous Host acknowledgement for CAS; flush waits for queued edits and propagates failure. A failed editor must be replaced after an explicit fresh read. State and input updater functions run against the previous acknowledged input list in the same queue as state edits. Unchanged state and inputs reuse the current revision. Native ActionBadge prompt/model/parameter edits use this queue, and Run waits for its acknowledged revision. Verified against the live Host and actual GUI. The exported acknowledgement parser also validates native copy responses. Full draft updater transactions derive state and inputs from the same acknowledged revision. Run preparation resolves current Definition identity inside the edit queue. Contract changes force a new CAS revision while preserving authored state/inputs; unchanged contracts reuse the head. Lookup, CAS, or acknowledgement contract mismatch stops preparation.",
     "timelineDsl.ts": "Timeline persistence normalization; retain immutable Project Asset identity while removing transient delivery fields.",
@@ -15,6 +16,7 @@
     "addCanvasGraph.ts": "Atomically publishes a copied Canvas graph through shared Canvas operations on a detached mutation. Rejects duplicate identities and edges outside the copied graph; prevents Host admission before input edges exist.",
     "logger.ts": "Browser adapter for shared-runtime/logging. Stable module loggers, opt-in clash.logLevel and pagehide summary flush; no separate web.log file.",
     "useDirectorCodeSources.ts": "Loads exact Document revisions selected by the Director component registry; errors and source loading gate the viewport.",
-    "marketplaceCatalog.ts": "Validates untrusted marketplace entries and retains only installation descriptors matching their product kind, runtime and identity; shared by cloud/local loaders."
+    "marketplaceCatalog.ts": "Validates untrusted marketplace entries and retains only installation descriptors matching their product kind, runtime and identity; shared by cloud/local loaders.",
+    "storyboardViewState.ts": "Validated Storyboard state adapter for the framework-node patch accepted by useLoroSync.updateNode. Writes data.state; persistence regression reopens a real Loro snapshot."
   }
 }

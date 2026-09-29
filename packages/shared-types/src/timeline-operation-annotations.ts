@@ -90,6 +90,55 @@ const ProjectTimelineEntitySchema = z
   })
   .passthrough();
 
+/** Discovery carries identity and size; clip bodies are an explicit detail read. */
+export function summarizeProjectTimeline<T extends { state: unknown }>(
+  timeline: T,
+) {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const { state, ...identity } = timeline;
+  const data = isRecord(state) ? state : {};
+  const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+  const dimensions: Partial<
+    Record<
+      "fps" | "durationInFrames" | "compositionWidth" | "compositionHeight",
+      number
+    >
+  > = {};
+  for (const field of [
+    "fps",
+    "durationInFrames",
+    "compositionWidth",
+    "compositionHeight",
+  ] as const) {
+    const value = data[field];
+    if (typeof value === "number" && Number.isFinite(value))
+      dimensions[field] = value;
+  }
+  return {
+    ...identity,
+    ...dimensions,
+    trackCount: tracks.length,
+    itemCount: tracks.reduce(
+      (count: number, track: unknown) =>
+        count +
+        (isRecord(track) && Array.isArray(track.items)
+          ? track.items.length
+          : 0),
+      0,
+    ),
+  };
+}
+
+const ProjectTimelineSummarySchema = ProjectTimelineEntitySchema.omit({ state: true }).extend({
+  trackCount: FrameSchema,
+  itemCount: FrameSchema,
+  fps: FiniteNumberSchema.optional(),
+  durationInFrames: FrameSchema.optional(),
+  compositionWidth: FiniteNumberSchema.optional(),
+  compositionHeight: FiniteNumberSchema.optional(),
+}).strict();
+
 const TimelineIssueSchema = z
   .object({
     severity: z.enum(["error", "warning"]).optional(),
@@ -365,15 +414,15 @@ const agent = {
   "timeline.list": agentOperation({
     id: "timeline.list",
     kind: "entity",
-    inputSchema: z.object({ standalone: z.boolean().optional() }).strict(),
-    outputSchema: z.array(ProjectTimelineEntitySchema),
+    inputSchema: z.object({ standalone: z.boolean().optional(), full: z.boolean().optional() }).strict(),
+    outputSchema: z.array(z.union([ProjectTimelineSummarySchema, ProjectTimelineEntitySchema])),
     access: "read",
     readOnly: true,
     cas: "none",
     readProof: "records-observation",
     preconditions: ["The current cwd resolves to a Project replica."],
     description:
-      "List Project Timeline entities and record observations for later writes.",
+      "List Timeline identity, ownership, revision, dimensions and item counts. Read a chosen Timeline for clip details; request full explicitly to include every complete state. Records observations for later writes.",
     runtimeConsumers: ["cli", "mcp", "local-host", "agent-runtime"],
     surfaceBindings: ["cli:timeline list", "mcp:clash_timeline_list"],
     agentCallable: true,
@@ -876,6 +925,20 @@ const editorActions = {
     [
       "The target item exists and the update remains valid for its discriminated item type.",
     ],
+  ),
+  "timeline.action.ROLL_EDIT": editorAction(
+    "timeline.action.ROLL_EDIT",
+    actionWithPayload(
+      "ROLL_EDIT",
+      z.object({
+        trackId: IdentifierSchema,
+        leftItemId: IdentifierSchema,
+        rightItemId: IdentifierSchema,
+        boundaryFrame: FrameSchema,
+      }).strict(),
+    ),
+    "Move a shared clip boundary atomically, preserving the pair's total span and attached transition.",
+    ["Both clips are adjacent on the same track; the boundary is clamped to available source handles."],
   ),
   "timeline.action.SPLIT_ITEM": editorAction(
     "timeline.action.SPLIT_ITEM",

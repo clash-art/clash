@@ -142,6 +142,8 @@
       "uploadFailed": "⚠️ Failed to upload {{name}} "
     },
     "dashboardComposer": {
+      "configureAgent": "Configure Agent",
+      "agentSetupHint": "Configure an Agent to start creating.",
       "newProject": "Create new project",
       "newProjectHint": "Created when you send",
       "chooseProject": "Choose a project",

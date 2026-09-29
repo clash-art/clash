@@ -97,12 +97,13 @@ describe("media analysis plugin broker", () => {
       category: "scene-shot",
       prompt: "Return scenes as JSON.",
       promptVersion: "media-analysis/v1",
-    }), context())).resolves.toMatchObject({ provider: "dummy-provider" });
+    }), { ...context(), deadlineAt: 42_000 })).resolves.toMatchObject({ provider: "dummy-provider" });
     expect(analyzeMedia).toHaveBeenCalledWith(expect.objectContaining({
       reference,
       modelId: "analysis-card",
       category: "scene-shot",
       route: frozenRoute,
+      deadlineAt: 42_000,
     }));
     expect(analyzeMedia.mock.calls[0]![0]).not.toHaveProperty("upstreamModel");
   });

@@ -13,6 +13,7 @@ import { useRevisionHistory } from "@clash/web-ui/hooks/useRevisionHistory";
 import { RevisionHistoryBadge } from "./RevisionHistoryBadge";
 import { useOptionalTextNodeEditorContext } from "../TextNodeEditorContext";
 import { TextDocumentNode } from "./TextDocumentNode";
+import { isDocumentResultNode } from "../../lib/documentResultNode";
 
 const TextNode = ({
   data,
@@ -123,6 +124,6 @@ const MarkdownPreview = ({ content }: { content: string }) => {
   );
 };
 
-export default memo((props: NodeProps<Node<Record<string, any>>>) => props.data.documentRevision !== undefined
+export default memo((props: NodeProps<Node<Record<string, any>>>) => isDocumentResultNode(props.data)
   ? <TextDocumentNode {...props} />
   : <TextNode {...props} />);

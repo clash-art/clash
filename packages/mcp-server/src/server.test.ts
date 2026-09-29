@@ -44,8 +44,10 @@ test("server keeps Studio and Canvas App surfaces quarantined", async () => {
     },
     canvasJavascript: string,
     studioJavascript: string,
+    options?: { workspaceRequest: (path: string, init?: RequestInit) => Promise<Response> },
   ) => void;
   const calls: Array<{ name: string; input: Record<string, unknown> }> = [];
+  const workspaceRequests: string[] = [];
   register(
     fakeServer as never,
     {
@@ -58,6 +60,11 @@ test("server keeps Studio and Canvas App surfaces quarantined", async () => {
     },
     "window.__CLASH_CANVAS__ = true;",
     "window.__CLASH_STUDIO__ = true;",
+    { workspaceRequest: async (path, init) => {
+      workspaceRequests.push(path);
+      assert.equal(init?.method, "POST");
+      return Response.json({});
+    } },
   );
 
   assert.equal(tools.has("clash_studio_open"), false);
@@ -102,6 +109,7 @@ test("server keeps Studio and Canvas App surfaces quarantined", async () => {
     markerPath: join(workspace, ".clash", "project.toml"),
     reused: false,
   });
+  assert.deepEqual(workspaceRequests, ["/api/v1/projects/benchmark-project/initialize"]);
   assert.deepEqual(initialized?.content, [
     {
       type: "text",
@@ -210,24 +218,10 @@ test("bundled MCP gives Assets a lightweight operation index before execution", 
       operations: Array<Record<string, unknown> & { operation: string }>;
     }
   ).operations;
-  assert.deepEqual(
-    indexedOperations.map(({ operation }) => operation),
-    [
-      "admit",
-      "get",
-      "global_get",
-      "global_import_file",
-      "global_list",
-      "global_restore",
-      "global_trash",
-      "import_file",
-      "list",
-      "publish",
-      "references",
-      "restore",
-      "trash",
-    ],
-  );
+  const operationNames = indexedOperations.map(({ operation }) => operation);
+  for (const needed of ["import_file", "list", "get"])
+    assert.ok(operationNames.includes(needed), `index must make ${needed} discoverable`);
+  assert.deepEqual(operationNames, [...new Set(operationNames)].sort());
   for (const operation of indexedOperations) {
     assert.equal("description" in operation, false);
     assert.equal("inputSchema" in operation, false);
@@ -338,6 +332,54 @@ test("bundled MCP registers Generator leaves with the authenticated Host API tra
       authorization: "Bearer secret",
     },
   ]);
+});
+
+test("bundled MCP retains evidence actor and observation headers through the authenticated transport", async (t) => {
+  const { createClashMcpServer } = await import("./server");
+  const requests: Request[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    if (request.url.endsWith("/document-attachments")) {
+      return Response.json({ attachment: await request.json(), readToken: "attachment-receipt" });
+    }
+    return Response.json({ readToken: "document-receipt" });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const server = createClashMcpServer({
+    client: {
+      resolveConnection: async () => ({ endpoint: "http://host.test/", token: "secret" }),
+      resolveContext: async () => ({ projectId: "p", source: "explicit" }),
+      request: async <T extends Record<string, unknown>>() => ({ projectId: "p", value: {} as T }),
+    },
+    bundledAppJavascript: "",
+    bundledStudioAppJavascript: "",
+    gateway: { invoke: async () => [] },
+    assetGateway: { invoke: async () => [] },
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "external-evidence-test", version: "1" });
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const result = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "record_observation", arguments: {
+      projectId: "p", assetId: "source", recordId: "review",
+      body: { summary: "External agent review", tool: "visual-analysis" },
+    } },
+  });
+  assert.notEqual(result.isError, true);
+  const create = requests.find((request) => request.url.endsWith("/documents"));
+  const attach = requests.find((request) => request.url.endsWith("/document-attachments"));
+  assert.ok(create);
+  assert.ok(attach);
+  assert.equal(create.headers.get("x-clash-client-type"), "agent");
+  assert.equal(create.headers.get("content-type"), "application/json");
+  assert.equal(attach.headers.get("x-clash-if-match"), "document-receipt");
+  assert.equal(attach.headers.get("x-clash-client-type"), "agent");
+  for (const request of requests) assert.equal(request.headers.get("authorization"), "Bearer secret");
 });
 
 test("bundled MCP exposes executable plugin lifecycle through the fixed plugin dispatcher", async (t) => {

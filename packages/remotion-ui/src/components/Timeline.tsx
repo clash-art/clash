@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useSyncExternalStore,
 } from "react";
 import {
   DndContext,
@@ -116,6 +117,36 @@ const TIMELINE_ZOOM_LIMITS = {
   max: timelineStyles.zoomMax,
 };
 
+// Scroll offsets are presentation state. Only ruler/playhead subscribe; putting
+// them on Timeline itself rerenders every clip through the DnD context.
+function createTimelineScrollPosition() {
+  let left = 0;
+  const listeners = new Set<() => void>();
+  return {
+    getSnapshot: () => left,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    set: (next: number) => {
+      if (next === left) return;
+      left = next;
+      for (const listener of listeners) listener();
+    },
+  };
+}
+type TimelineScrollPosition = ReturnType<typeof createTimelineScrollPosition>;
+
+function ScrollSynchronizedRuler({
+  scrollPosition,
+  ...props
+}: Omit<React.ComponentProps<typeof TimelineRuler>, 'scrollLeft'> & {
+  scrollPosition: TimelineScrollPosition;
+}) {
+  const scrollLeft = useSyncExternalStore(scrollPosition.subscribe, scrollPosition.getSnapshot);
+  return <TimelineRuler {...props} scrollLeft={scrollLeft} />;
+}
+
 type TimelineHeaderControlsProps = {
   zoom: number;
   snapEnabled: boolean;
@@ -190,7 +221,7 @@ type TimelinePlayheadOverlayProps = {
   fps: number;
   timelineHeight: number;
   onSeek: (frame: number) => void;
-  scrollLeft: number;
+  scrollPosition: TimelineScrollPosition;
   leftOffset: number;
   durationInFrames: number;
   onPlayEnd: () => void;
@@ -200,6 +231,8 @@ const TimelinePlayheadOverlay: React.FC<TimelinePlayheadOverlayProps> =
   React.memo((props) => {
     const { currentFrame } = useEditorPlayback();
 
+    const scrollLeft = useSyncExternalStore(props.scrollPosition.subscribe, props.scrollPosition.getSnapshot);
+
     return (
       <TimelinePlayhead
         currentFrame={currentFrame}
@@ -207,7 +240,7 @@ const TimelinePlayheadOverlay: React.FC<TimelinePlayheadOverlayProps> =
         fps={props.fps}
         timelineHeight={props.timelineHeight}
         onSeek={props.onSeek}
-        scrollLeft={props.scrollLeft}
+        scrollLeft={scrollLeft}
         leftOffset={props.leftOffset}
         durationInFrames={props.durationInFrames}
         onPlayEnd={props.onPlayEnd}
@@ -367,6 +400,7 @@ export const Timeline: React.FC<{
     onInsertAssetRequestHandled?.(insertAssetRequest.requestId);
   }, [insertAssetRequest, insertRequestCommitted, onInsertAssetRequestHandled]);
   const workspaceRef = useRef<HTMLDivElement>(null);
+  const zoomWheelTargetRef = useRef<HTMLDivElement>(null);
   const tracksViewportRef = useRef<HTMLDivElement | null>(null);
   // Mount point for labels (left column) when externalized from tracks container
   const labelsPortalRef = useRef<HTMLDivElement>(null);
@@ -387,7 +421,7 @@ export const Timeline: React.FC<{
   }, []);
 
   // Sync horizontal scroll position of tracks viewport with ruler and playhead
-  const [scrollLeft, setScrollLeft] = useState(0);
+  const [scrollPosition] = useState(createTimelineScrollPosition);
   const [viewportContentWidth, setViewportContentWidth] = useState(0);
   const pendingZoomAnchorRef = useRef<{
     targetZoom: number;
@@ -751,12 +785,12 @@ export const Timeline: React.FC<{
           options?.anchorOffset ??
           (viewport?.clientWidth ?? viewportContentWidth) / 2,
         oldPixelsPerFrame: pixelsPerFrame,
-        oldScrollLeft: viewport?.scrollLeft ?? scrollLeft,
+        oldScrollLeft: viewport?.scrollLeft ?? scrollPosition.getSnapshot(),
         resetScroll: options?.resetScroll ?? false,
       };
       dispatch({ type: "SET_ZOOM", payload: nextZoom });
     },
-    [dispatch, pixelsPerFrame, scrollLeft, viewportContentWidth, zoom],
+    [dispatch, pixelsPerFrame, scrollPosition, viewportContentWidth, zoom],
   );
 
   useLayoutEffect(() => {
@@ -781,9 +815,9 @@ export const Timeline: React.FC<{
           ),
         });
     viewport.scrollLeft = nextScrollLeft;
-    setScrollLeft(nextScrollLeft);
+    scrollPosition.set(nextScrollLeft);
     pendingZoomAnchorRef.current = null;
-  }, [pixelsPerFrame, zoom]);
+  }, [pixelsPerFrame, scrollPosition, zoom]);
 
   const handleZoomIn = useCallback(() => {
     applyZoom(
@@ -826,7 +860,7 @@ export const Timeline: React.FC<{
   );
 
   const handleZoomWheel = useCallback(
-    (event: React.WheelEvent) => {
+    (event: WheelEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
       const viewport = tracksViewportRef.current;
       if (!viewport) return;
@@ -841,6 +875,13 @@ export const Timeline: React.FC<{
     },
     [applyZoom, zoom],
   );
+
+  useEffect(() => {
+    const target = zoomWheelTargetRef.current;
+    if (!target) return;
+    target.addEventListener("wheel", handleZoomWheel, { passive: false });
+    return () => target.removeEventListener("wheel", handleZoomWheel);
+  }, [handleZoomWheel]);
 
   // ==================== 播放头控制 ====================
   const handleSeek = useCallback(
@@ -1738,7 +1779,7 @@ export const Timeline: React.FC<{
             background: colors.bg.primary,
           }}
           data-playhead-container
-          onWheel={handleZoomWheel}
+          ref={zoomWheelTargetRef}
         >
           {/* 标尺 */}
           <div
@@ -1752,13 +1793,13 @@ export const Timeline: React.FC<{
               overflow: "hidden",
             }}
           >
-            <TimelineRuler
+            <ScrollSynchronizedRuler
               durationInFrames={displayDurationInFrames}
               pixelsPerFrame={pixelsPerFrame}
               fps={fps}
               onSeek={handleSeek}
               zoom={zoom}
-              scrollLeft={scrollLeft}
+              scrollPosition={scrollPosition}
               viewportWidth={viewportContentWidth}
               leftOffset={contentInsetLeftPx}
             />
@@ -1800,7 +1841,7 @@ export const Timeline: React.FC<{
               onItemDragEnd={handleItemDragEnd}
               dragPreview={dragPreview}
               assetDragPreview={assetDragPreview}
-              onScrollXChange={setScrollLeft}
+              onScrollXChange={scrollPosition.set}
               onViewportElementChange={handleTracksViewportElementChange}
               viewportWidth={viewportContentWidth}
               labelsPortal={labelsPortalEl}
@@ -1862,7 +1903,7 @@ export const Timeline: React.FC<{
                 timelineStyles.rulerHeight
               }
               onSeek={handleSeek}
-              scrollLeft={scrollLeft}
+              scrollPosition={scrollPosition}
               leftOffset={contentInsetLeftPx}
               durationInFrames={durationInFrames}
               onPlayEnd={() =>

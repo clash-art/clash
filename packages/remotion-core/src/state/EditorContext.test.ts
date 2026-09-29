@@ -608,7 +608,7 @@ describe("editorReducer — item ops", () => {
   it("UPDATE_ITEM merges partial updates without disturbing siblings", () => {
     const s = editorReducer(
       seedState([
-        makeTrack("t", [makeVideo("a", 0, 30), makeVideo("b", 30, 30)]),
+        makeTrack("t", [makeVideo("a", 0, 30), makeVideo("b", 60, 30)]),
       ]),
       {
         type: "UPDATE_ITEM",
@@ -1274,5 +1274,21 @@ describe("editorReducer — selection / playback / scalars", () => {
     expect(textItem.wordRefs[1].text).toBe("一句");
     expect(textItem.cues[0].text).toBe("删掉一句");
     expect(textItem.text).toBe("删掉一句");
+  });
+});
+
+describe('single-lane edit safety', () => {
+  it('refuses a move or trim into a neighboring clip, but accepts touching boundaries', () => {
+    const state = seedState([makeTrack('lane', [makeVideo('a', 0, 30), makeVideo('b', 40, 30)])]);
+    for (const updates of [{ from: 20 }, { durationInFrames: 50 }]) {
+      const itemId = 'from' in updates ? 'b' : 'a';
+      expect(editorReducer(state, { type: 'UPDATE_ITEM', payload: { trackId: 'lane', itemId, updates } })).toBe(state);
+    }
+    const moved = editorReducer(state, { type: 'UPDATE_ITEM', payload: { trackId: 'lane', itemId: 'b', updates: { from: 30 } } });
+    expect(moved.tracks[0].items[1].from).toBe(30);
+  });
+  it('refuses an overlapping insert without dropping any existing item', () => {
+    const state = seedState([makeTrack('lane', [makeVideo('a', 0, 30)])]);
+    expect(editorReducer(state, { type: 'ADD_ITEM', payload: { trackId: 'lane', item: makeVideo('b', 20, 30) } })).toBe(state);
   });
 });

@@ -1,3 +1,4 @@
+import { createLoroStreamSession } from "@clash/replica/loro-stream-session";
 import { createLogger } from "../lib/logger";
 import { addCanvasGraph } from "../lib/addCanvasGraph";
 import { applyCanvasLayout, type NodePatch } from "../lib/loroNodeSync";
@@ -19,6 +20,8 @@ import type {
 } from "@clash/shared-types";
 import {
   Canvas,
+  projectCanvasNodeLayout,
+  isCanvasAssetReferenceEdge,
   isCanvasNodeImmutable,
   projectVisibleNodeData,
   canvasGraphReconciliationChanged,
@@ -98,6 +101,7 @@ interface LoroSyncOptions {
   projectId: string;
   canvasId?: string;
   syncServerUrl?: string;
+  syncTransport?: "streams";
   onNodesChange?: (nodes: Node[]) => void;
   onEdgesChange?: (edges: Edge[]) => void;
   onTaskUpdate?: (taskId: string, taskData: any) => void;
@@ -208,7 +212,7 @@ export interface UseLoroSyncReturn {
     timelineId: string,
     timelineDsl: unknown,
     options?: LoroHostWriteOptions,
-  ) => Promise<ProjectTimeline | false>;
+  ) => Promise<ProjectTimelineMutationResult>;
   applyTimelineDsl: (
     nodeId: string,
     timelineDsl: unknown,
@@ -442,6 +446,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     projectId,
     canvasId = DEFAULT_CANVAS_ID,
     syncServerUrl,
+    syncTransport,
     onNodesChange,
     onEdgesChange,
     onTaskUpdate,
@@ -489,6 +494,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
+  const streamRef = useRef<ReturnType<typeof createLoroStreamSession> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const protocolSessionRef = useRef<LoroProtocolClientSession | null>(null);
   const [connected, setConnected] = useState(false);
@@ -583,7 +589,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     const nodes: Node[] = [];
 
     for (const [key, value] of nodesMap.entries()) {
-      const nodeData = value as any;
+      const nodeData = projectCanvasNodeLayout(doc, key, value as any);
       // Validate parentId - remove if parent doesn't exist to prevent ReactFlow errors
       if (!nodeIds.has(key)) continue;
       // Validate parentId - remove if parent doesn't exist to prevent ReactFlow errors
@@ -605,7 +611,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         interactionWidth: 30,
         focusable: true,
         selectable: true,
-        deletable: true,
+        deletable: !isCanvasAssetReferenceEdge(edge.id),
+        reconnectable: !isCanvasAssetReferenceEdge(edge.id),
       }));
 
     const tasks: Array<{ id: string; data: any }> = [];
@@ -763,6 +770,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   }, [replica, doc, projectId]);
 
   const disconnect = useCallback(() => {
+    void streamRef.current?.close();
+    streamRef.current = null;
     const ws = wsRef.current;
     wsRef.current = null;
     protocolSessionRef.current?.destroy();
@@ -830,6 +839,26 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     if (isUnmountingRef.current || rejectedSyncRef.current || projectLoadFailedRef.current) return;
 
     disconnect();
+
+    if (syncTransport === "streams") {
+      const session = createLoroStreamSession({
+        doc,
+        url: new URL(`/api/v1/projects/${encodeURIComponent(projectId)}/replica`, window.location.origin).href,
+        fetch: (input, init) => fetch(input, { ...init, credentials: "include" }),
+        onReady: () => { if (streamRef.current === session) { setConnected(true); retryCountRef.current = 0; } },
+        onDisconnected: () => { if (streamRef.current === session) setConnected(false); },
+        onError: (error) => {
+          if (streamRef.current !== session || isUnmountingRef.current) return;
+          syncLog.warn("sync.stream_failed", { projectId, error });
+          setConnected(false);
+          disconnect();
+          scheduleReconnect();
+        },
+      });
+      streamRef.current = session;
+      void session.start();
+      return;
+    }
 
     const baseWsUrl = syncServerUrl
       ? `${syncServerUrl.replace(/\/+$/, "")}/sync/${encodeURIComponent(projectId)}`
@@ -945,7 +974,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         scheduleReconnect();
       }
     };
-  }, [projectId, syncServerUrl, doc, scheduleReconnect, disconnect]);
+  }, [projectId, syncServerUrl, syncTransport, doc, scheduleReconnect, disconnect]);
 
   // Keep ref updated
   useEffect(() => {
@@ -1477,7 +1506,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         return false;
       }
 
-      return Boolean(await applyTimelineState(timelineId, timelineDsl, options));
+      return (await applyTimelineState(timelineId, timelineDsl, options)).ok;
     },
     [applyTimelineState, doc],
   );

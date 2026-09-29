@@ -65,7 +65,7 @@ export const TIMELINE_MCP_EXECUTORS = {
     inputSchema: timelineOperationInputSchema("timeline.open"),
     outputSchema: timelineOperationOutputSchema("timeline.open"),
     async execute(input, adapter) {
-      const timelines = await adapter.list(input);
+      const timelines = await adapter.list({ ...input, full: true });
       const selected = input.timelineId
         ? timelines.find((timeline) => timeline.id === input.timelineId)
         : timelines[0];

@@ -15,6 +15,7 @@
     "src/plugin-mcp-gateway.ts",
     "src/local-api-entry.ts",
     "scripts/build-host-runtime.ts",
+    "scripts/pack-distribution.ts",
     "skills/clash/SKILL.md",
     "skills/clash/references/tools.md",
     "skills/clash/references/generation.md",
@@ -41,6 +42,7 @@
     "skill-packs.json"
   ],
   "typecheckBoundary": "typecheck uses the generated tsconfig.check.json profile, preserving tsconfig.typecheck.json runtime libraries and strict source/test coverage while resolving workspace imports from the root source map. Sparse distribution-specific aliases live in source-check-profiles.json; pnpm quality:configs:check rejects drift. The root lint gate runs this source check once through Turbo, without release builds or stale dist declarations. Incremental metadata remains package-local and dependency-aware. Release artifact consistency remains a separate package-boundary test.",
+  "distributionPackaging": "Build the runtime, then use pack:distribution to materialize and bundle production dependencies, including Remotion's React peers. The tarball declares the packaging host OS/architecture and retains a resolved dependency lock beside it. Installed acceptance copies the plugin directory outside npm's parent dependency tree, matching a Codex plugin cache boundary.",
   "verification": [
     "pnpm test:package clash",
     "pnpm typecheck:package clash",

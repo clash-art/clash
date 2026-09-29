@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -100,94 +100,125 @@ describe("Asset Edit bundled PluginModule", () => {
     });
   });
 
-  it("executes Agent video crop through the same native Generator module", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "clash-edit-test-"));
-    const sourcePath = join(directory, "source.mp4");
-    try {
-      await execFileAsync(ffmpegInstaller.path, [
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=blue:s=16x16:d=1",
-        "-pix_fmt",
-        "yuv420p",
-        sourcePath,
-      ]);
-      const source = new Uint8Array(await readFile(sourcePath));
-      let uploaded: Uint8Array | undefined;
+  it.each([false, true])(
+    "crops the requested range accurately (audio: %s)",
+    async (withAudio) => {
+      const directory = await mkdtemp(join(tmpdir(), "clash-edit-test-"));
+      const sourcePath = join(directory, "source.mp4");
+      try {
+        await execFileAsync(ffmpegInstaller.path, [
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          "color=c=blue:s=16x16:r=25:d=2",
+          ...(withAudio
+            ? ["-f", "lavfi", "-i", "sine=frequency=440:duration=2"]
+            : []),
+          "-pix_fmt",
+          "yuv420p",
+          sourcePath,
+        ]);
+        const source = new Uint8Array(await readFile(sourcePath));
+        let uploaded: Uint8Array | undefined;
 
-      const result = await plugin.invoke(
-        {
-          protocol: "clash.plugin.invoke/v1",
-          invocationId: "invocation-crop",
-          taskId: "run-crop",
-          projectId: "project-1",
-          target: {
-            pluginId: "clash.asset-edit",
-            version: "1.0.0",
-            exportId: "video-clipper",
-            schemaHash: `sha256:${"d".repeat(64)}`,
-            kind: "action",
-          },
-          operation: "submit",
-          input: {
-            values: {
-              __generatorActionId: "crop",
-              startSec: 0,
-              endSec: 0.5,
+        const result = await plugin.invoke(
+          {
+            protocol: "clash.plugin.invoke/v1",
+            invocationId: "invocation-crop",
+            taskId: "run-crop",
+            projectId: "project-1",
+            target: {
+              pluginId: "clash.asset-edit",
+              version: "1.0.0",
+              exportId: "video-clipper",
+              schemaHash: `sha256:${"d".repeat(64)}`,
+              kind: "action",
             },
-            references: [
-              {
-                slot: "source",
-                index: 0,
+            operation: "submit",
+            input: {
+              values: {
+                __generatorActionId: "crop",
+                startSec: 0.4,
+                endSec: 1.4,
+              },
+              references: [
+                {
+                  slot: "source",
+                  index: 0,
+                  asset: {
+                    assetId: "asset:source-video",
+                    uri: "clash-asset://asset:source-video",
+                    kind: "video",
+                    mediaType: "video/mp4",
+                  },
+                },
+              ],
+            },
+            assetInputs: [],
+            actor: { kind: "agent", id: "agent-1" },
+          },
+          {
+            reference: async () => ({
+              form: "bytes",
+              bytes: source,
+              kind: "video",
+              mediaType: "video/mp4",
+            }),
+            upload: async (request) => {
+              uploaded = request.bytes;
+              return {
+                slot: "output",
+                kind: "asset",
                 asset: {
-                  assetId: "asset:source-video",
-                  uri: "clash-asset://asset:source-video",
+                  assetId: "asset:cropped",
+                  uri: "clash-asset://asset:cropped",
                   kind: "video",
                   mediaType: "video/mp4",
                 },
-              },
-            ],
+              };
+            },
           },
-          assetInputs: [],
-          actor: { kind: "agent", id: "agent-1" },
-        },
-        {
-          reference: async () => ({
-            form: "bytes",
-            bytes: source,
-            kind: "video",
-            mediaType: "video/mp4",
-          }),
-          upload: async (request) => {
-            uploaded = request.bytes;
-            return {
-              slot: "output",
-              kind: "asset",
-              asset: {
-                assetId: "asset:cropped",
-                uri: "clash-asset://asset:cropped",
-                kind: "video",
-                mediaType: "video/mp4",
-              },
-            };
-          },
-        },
-      );
+        );
 
-      expect(result).toMatchObject({
-        status: "completed",
-        outputs: [{ asset: { assetId: "asset:cropped", kind: "video" } }],
-      });
-      expect(uploaded?.byteLength).toBeGreaterThan(0);
-      expect(
-        Buffer.from(uploaded ?? [])
-          .subarray(4, 8)
-          .toString("ascii"),
-      ).toBe("ftyp");
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
+        expect(result).toMatchObject({
+          status: "completed",
+          outputs: [{ asset: { assetId: "asset:cropped", kind: "video" } }],
+        });
+        expect(uploaded?.byteLength).toBeGreaterThan(0);
+        expect(
+          Buffer.from(uploaded ?? [])
+            .subarray(4, 8)
+            .toString("ascii"),
+        ).toBe("ftyp");
+        const outputPath = join(directory, "cropped.mp4");
+        await writeFile(outputPath, uploaded!);
+        const decoded = await execFileAsync(
+          ffmpegInstaller.path,
+          [
+            "-i",
+            outputPath,
+            "-map",
+            "0:v:0",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "pipe:1",
+          ],
+          { encoding: "buffer" },
+        );
+        // The fixture has 25 frames/second; a one-second crop must decode to 25 frames.
+        expect(decoded.stdout.byteLength / (16 * 16 * 3)).toBe(25);
+        const metadata = decoded.stderr.toString();
+        const duration = Number(
+          metadata.match(/Duration: 00:00:(\d+\.\d+)/)?.[1],
+        );
+        expect(Math.abs(duration - 1)).toBeLessThan(1 / 25);
+        expect(metadata.includes("Audio:")).toBe(withAudio);
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });

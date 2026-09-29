@@ -104,7 +104,13 @@ export default function LayoutContent({
   ) {
     return (
       <ConfirmDialogProvider>
-        <AppFeedbackProvider>{children}</AppFeedbackProvider>
+        <AppFeedbackProvider>
+          {isProjectDetailPage && !isDesktop ? (
+            <main className="fixed inset-0 min-h-0 overflow-hidden [--clash-project-editor-height:100dvh]">
+              {children}
+            </main>
+          ) : children}
+        </AppFeedbackProvider>
       </ConfirmDialogProvider>
     );
   }
@@ -119,7 +125,7 @@ export default function LayoutContent({
             ? "box-border mt-[var(--clash-desktop-chrome-height)] h-[calc(100dvh-var(--clash-desktop-chrome-height))] overflow-hidden [--clash-desktop-chrome-height:2.5rem]"
             : isDesktop
               ? "clash-desktop-scroll-root box-border mt-10 h-[calc(100dvh-2.5rem)] min-h-0 overflow-y-auto overflow-x-hidden pl-[var(--clash-app-sidebar-width)] pt-0 [--app-page-sticky-header-top:0px] transition-[padding-left] duration-200 ease-out motion-reduce:transition-none"
-              : "min-h-screen pt-24"
+              : "clash-web-main min-h-screen pl-[var(--clash-app-sidebar-width)] transition-[padding-left] duration-200 motion-reduce:transition-none"
       }${showsDashboardComposer ? " clash-dashboard-has-composer" : ""}`}
     >
       {children}

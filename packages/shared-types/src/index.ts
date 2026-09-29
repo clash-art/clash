@@ -178,7 +178,11 @@ export {
   type GeneratorV1CompatOptions,
   type GeneratorV1TextOutputType,
 } from "./generator-v1-compat.js";
-export { appendActionCardInput, createActionCardPromptEdit, reorderActionCardInputs } from "./action-card-draft.js";
+export {
+  appendActionCardInput,
+  createActionCardPromptEdit,
+  reorderActionCardInputs,
+} from "./action-card-draft.js";
 
 export {
   GENERATOR_ACTION_RUNS_CONTAINER,
@@ -198,6 +202,8 @@ export {
   markGeneratorAuthority,
   markActionRunStarted,
   readOutputCommit,
+  readMediaAssetGeneration,
+  type MediaAssetGeneration,
   readProjectActionRun,
   readGeneratorRevision,
   readProjectGenerator,
@@ -273,6 +279,7 @@ export {
   type TimelineOperationId,
   type TimelineOperationKind,
   type TimelineOperationReadProof,
+  summarizeProjectTimeline,
 } from "./timeline-operation-annotations.js";
 
 export {
@@ -520,12 +527,16 @@ export {
   ExecutablePluginGeneratorDocumentSchema,
   ExecutablePluginGeneratorRegistrationSchema,
   ExecutablePluginViewDocumentSchema,
+  ExecutablePluginViewStateSchema,
+  PluginViewResourceSchema,
+  listPluginViewAssetReferences,
   ExecutablePluginViewReferenceSchema,
   ExecutablePluginViewRegistrationSchema,
   StoryboardViewDescriptionPartSchema,
   StoryboardViewItemSchema,
   StoryboardViewMaterialSchema,
   StoryboardViewResourceSchema,
+  PendingGeneratorOutputSchema,
   StoryboardViewShotSchema,
   StoryboardViewStateSchema,
   ExecutablePluginContractTestDocumentSchema,
@@ -586,9 +597,13 @@ export {
   type ExecutablePluginGeneratorDocument,
   type ExecutablePluginGeneratorRegistration,
   type ExecutablePluginViewDocument,
+  type ExecutablePluginViewState,
+  type PluginViewResource,
+  type PluginViewAssetReference,
   type ExecutablePluginViewReference,
   type ExecutablePluginViewRegistration,
   type StoryboardViewResource,
+  type PendingGeneratorOutput,
   type StoryboardViewItem,
   type StoryboardViewMaterial,
   type StoryboardViewShot,
@@ -1133,7 +1148,10 @@ export {
 
 // Canvas operations class
 export { Canvas, projectVisibleNodeData } from "./canvas-ops.js";
-export { canvasModelGeneratorRevisionData, projectCanvasModelGeneratorData } from "./canvas-model-generator.js";
+export {
+  canvasModelGeneratorRevisionData,
+  projectCanvasModelGeneratorData,
+} from "./canvas-model-generator.js";
 export type { ExecuteGenerationResult } from "./canvas-ops.js";
 
 // Re-export types from Canvas for convenience
@@ -1252,6 +1270,8 @@ export {
   type CanvasGraphReconciliation,
   type NodeOwnedEdge,
 } from "./node-upstreams.js";
+
+export { isViewAssetReferenceEdge } from "./canvas-view-references.js";
 
 // Loro sync client
 export { LoroSyncClient, loroSyncUpdateId } from "./loro-client.js";
@@ -1652,7 +1672,11 @@ export {
   type WorkspaceTransferFileCapability,
 } from "./workspace-bundle.js";
 
-export { AcpForkPointSchema, supportsAcpMessageFork, type AcpForkPoint } from "./acp-fork.js";
+export {
+  AcpForkPointSchema,
+  supportsAcpMessageFork,
+  type AcpForkPoint,
+} from "./acp-fork.js";
 
 export * from "./generator-requests.js";
 export { commitProjectMutation } from "./project-mutation.js";
@@ -1664,11 +1688,57 @@ export { canvasModelPlacementData } from "./canvas-model-generator.js";
 export { canvasActionAssetInputs } from "./canvas-action-asset-inputs.js";
 
 export * from "./model-prompt-content.js";
-export { createModelPromptEdit, createModelTextReferenceEdit } from "./model-prompt-mentions.js";
-export { canvasAssetRevision, assetRevisionKey } from "./canvas-asset-reference.js";
+export {
+  createModelPromptEdit,
+  createModelTextReferenceEdit,
+} from "./model-prompt-mentions.js";
+export {
+  canvasAssetRevision,
+  assetRevisionKey,
+} from "./canvas-asset-reference.js";
 
 export * from "./model-keyframes.js";
 export * from "./model-output-contract.js";
 export type { McpProjectRequest, McpProjectResponse } from "./mcp-project.js";
 export * from "./director-code.js";
-export { HostInstallScopeSchema, HostSkillInstallationsSchema, type HostInstallScope } from "./host-install-scope.js";
+export {
+  HostInstallScopeSchema,
+  HostSkillInstallationsSchema,
+  type HostInstallScope,
+} from "./host-install-scope.js";
+export {
+  CANVAS_NODE_LAYOUTS,
+  CanvasNodeLayoutSchema,
+  projectCanvasNodeLayout,
+  assertCanvasLayoutMutation,
+  type CanvasNodeLayout,
+} from "./canvas-layout.js";
+export {
+  CloudServiceSchema,
+  CloudAccountSchema,
+  OFFICIAL_CLOUD_URL,
+  CloudConnectionStatusSchema,
+  type CloudConnectionStatus,
+  type CloudService,
+} from "./cloud-connection";
+export {
+  ProjectCloudJourneySchema,
+  type ProjectCloudJourney,
+} from "./cloud-connection";
+export {
+  MediaOperationTraceSchema,
+  MediaObservationSchema,
+  AssetEvidenceQuerySchema,
+  AssetEvidenceMatchSchema,
+  AssetEvidenceSearchResultSchema,
+  type MediaOperationTrace,
+  type MediaObservation,
+  type AssetEvidenceQuery,
+  type AssetEvidenceMatch,
+  type AssetEvidenceSearchResult,
+} from "./asset-evidence.js";
+export { GeneratorRunDiagnosticsSchema, type GeneratorRunDiagnostics } from "./generator-run-diagnostics.js";
+export * from "./project-content.js";
+
+export { isCanvasAssetReferenceEdge } from "./canvas-asset-references.js";
+export { timelineOccupancyIssues, timelineItemsOverlap } from './timeline-occupancy.js';

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { projectWorkspaceId } from "./project-status.js";
 
@@ -47,7 +47,7 @@ async function existingInitialization(
   return { projectId, markerPath, workspaceId, reused: true };
 }
 
-export async function initializeClashWorkspace(options: {
+async function initializeClashWorkspaceMarker(options: {
   cwd?: string;
   projectId?: string;
 } = {}): Promise<ClashWorkspaceInitialization> {
@@ -76,4 +76,28 @@ export async function initializeClashWorkspace(options: {
     throw error;
   }
   return { projectId, markerPath, workspaceId, reused: false };
+}
+
+export async function initializeClashWorkspace(options: {
+  cwd?: string;
+  projectId?: string;
+  /** Public transports supply their discovered Host request. Omit only for offline marker preparation. */
+  request?: (path: string, init?: RequestInit) => Promise<Response>;
+} = {}): Promise<ClashWorkspaceInitialization> {
+  // Persist identity first: a failed/lost Host response can be retried without
+  // creating a second project. Existing markers are also registered, repairing
+  // earlier marker-only initialization without rebinding their Loro data.
+  const initialized = await initializeClashWorkspaceMarker(options);
+  if (options.request) {
+    const response = await options.request(
+      `/api/v1/projects/${encodeURIComponent(initialized.projectId)}/initialize`,
+      { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: basename(resolve(options.cwd ?? process.cwd())) || initialized.projectId }) },
+    );
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Project registration failed (${response.status}): ${detail}. The existing project marker is preserved; retry init with the same directory.`);
+    }
+  }
+  return initialized;
 }

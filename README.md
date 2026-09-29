@@ -13,7 +13,7 @@ Today, Clash lives on the desktop. Canvas, Timeline, Director Stage, Codex,
 ACP, MCP, and the CLI are tools inside that environment—not the definition of
 the product.
 
-**[Website](https://clash.video)** ·
+**[Website](https://clash.art)** ·
 **[Quick start](#quick-start)** ·
 **[Self-hosting](#self-hosting)** ·
 **[Architecture](#architecture)**
@@ -42,8 +42,8 @@ they are applied.
   Assets, and Copilot surfaces.
 - **CLI:** inspect and operate projects, assets, Canvas, Timeline, Director,
   models, tasks, text, and production workflows from the terminal.
-- **MCP and Codex plugins:** open focused Studio, Canvas, Timeline, and Director
-  apps backed by typed tools instead of a hidden browser automation layer.
+- **MCP and Codex plugins:** use typed project tools and the Project App in
+  compatible MCP clients. The former standalone mini Apps are disabled.
 - **JavaScript and Python SDKs:** integrate project operations and local model
   runtimes into custom agents and pipelines.
 
@@ -51,13 +51,12 @@ they are applied.
 
 Clash uses Node.js 24.18+ (Node 24.x) and pnpm 10+.
 
-Install the unified command package for CLI and MCP use:
-
-```bash
-npm install -g clash
-clash --help
-# MCP clients run: npx -y clash mcp
-```
+CLI, MCP, skills, and the local Host share one distribution. Public npm
+installation is not available yet: the registry package named `clash` belongs
+to another project. Do not install or execute it for this product. Use a
+maintainer-provided Desktop candidate; external agent setup still requires
+verification against that exact candidate. See the
+[distribution guide](plugins/clash/README.md) for runtime boundaries and source use.
 
 For repository development:
 
@@ -75,7 +74,7 @@ Run the Electron app during local development:
 pnpm dev:package @clash/desktop
 ```
 
-`clash.video` runs from a private overlay
+`clash.art` runs from a private overlay
 ([`clash-space/clash-hosted`](https://github.com/clash-space/clash-hosted))
 that vendors this repository as a submodule and adds billing. Everything in
 this repository runs without that overlay.

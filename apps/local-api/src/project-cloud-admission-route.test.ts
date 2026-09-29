@@ -77,7 +77,12 @@ describe("local Project cloud admission route", () => {
         ),
       ).resolves.toMatchObject({ status: 200 });
     } finally {
-      await rm(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      await rm(dataDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
     }
   });
 
@@ -194,7 +199,12 @@ describe("local Project cloud admission route", () => {
         collaboration: { mode: "local-only", webOpenable: false },
       });
     } finally {
-      await rm(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      await rm(dataDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
     }
   });
 
@@ -240,7 +250,137 @@ describe("local Project cloud admission route", () => {
         ),
       ).resolves.toMatchObject({ status: 200 });
     } finally {
-      await rm(dataDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      await rm(dataDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 100,
+      });
     }
   });
+});
+
+it("preserves the project service and account binding when retry fails or returns a different service", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "clash-cloud-binding-"));
+  let mode: "ok" | "fail" | "move" = "ok";
+  try {
+    const app = createLocalApiApp({
+      dataDir,
+      cloudAdmission: {
+        admit: async (request) => {
+          if (mode === "fail") throw Error("Temporary outage");
+          const syncBaseUrl =
+            mode === "move"
+              ? "https://different.example"
+              : "https://bound.example";
+          return {
+            schemaVersion: 1,
+            syncBaseUrl,
+            admission: {
+              schemaVersion: 1,
+              projectId: request.projectId,
+              localReplicaId: request.localReplicaId,
+              tenantId: "t",
+              userId: "u",
+              syncBaseUrl,
+              status: "pending",
+              capabilities: {
+                canvas: true,
+                projectMetadata: true,
+                resources: true,
+              },
+              admittedAt: null,
+              updatedAt: new Date().toISOString(),
+              lastError: null,
+            },
+          };
+        },
+      },
+    });
+    const created = await app.request("/api/v1/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Bound project" }),
+    });
+    const { id } = await created.json();
+    const path = `/api/v1/projects/${id}/cloud-admission`;
+    const admit = () =>
+      app.request(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+    expect((await admit()).status).toBe(201);
+    mode = "fail";
+    expect((await admit()).status).toBe(502);
+    expect((await (await app.request(path)).json()).admission).toMatchObject({
+      syncBaseUrl: "https://bound.example",
+      userId: "u",
+      tenantId: "t",
+    });
+    mode = "move";
+    expect((await admit()).status).toBe(502);
+    expect((await (await app.request(path)).json()).admission).toMatchObject({
+      syncBaseUrl: "https://bound.example",
+      userId: "u",
+    });
+  } finally {
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100,
+    });
+  }
+});
+it("rejects overlapping admissions until the first project binding is recorded", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "clash-cloud-overlap-"));
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered = false;
+  try {
+    const app = createLocalApiApp({
+      dataDir,
+      cloudAdmission: {
+        admit: async () => {
+          entered = true;
+          await pending;
+          throw Error("Offline");
+        },
+      },
+    });
+    const { id } = await (
+      await app.request("/api/v1/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Concurrent project" }),
+      })
+    ).json();
+    const post = () =>
+      app.request(`/api/v1/projects/${id}/cloud-admission`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+    const first = post();
+    await vi.waitFor(() => expect(entered).toBe(true));
+    const second = post();
+    const result = await Promise.race([
+      second,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+    ]);
+    release();
+    await Promise.all([first, second]);
+    expect(result?.status).toBe(409);
+  } finally {
+    release?.();
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 100,
+    });
+  }
 });

@@ -4,7 +4,8 @@
     "The plugin id is clash.storyboard and its only contribution is views/storyboard.json",
     "This package is registered in the official Marketplace catalog but intentionally absent from BUNDLED_PLUGINS; users activate it explicitly",
     "View material slots may contain many Project Asset candidates and one selected candidate",
-    "Generated candidates must come from a native Generator Output Commit; this plugin never executes generation"
+    "Generated candidates must come from a native Generator Output Commit; this plugin never executes generation",
+    "Read SPEC.md and the linked View reference protocol before changing ownership. Typed resources are the sole consumption facts; Canvas edges are shared projections, and future invocation extensions remain explicitly separate."
   ],
   "subdirectories": {
     "views": "Declarative View definitions and initial state.",
@@ -12,9 +13,8 @@
   },
   "key_files": {
     "manifest.json": "Versioned executable package with one View contribution.",
-    "views/storyboard.json": "Four-section Storyboard definition and empty initial state."
+    "views/storyboard.json": "Four-section Storyboard definition and empty initial state.",
+    "SPEC.md": "Package-specific declaration and acceptance mapping into the canonical View reference protocol; no duplicated protocol rules."
   },
-  "verification": [
-    "pnpm --filter @clash-plugin/storyboard test"
-  ]
+  "verification": ["pnpm --filter @clash-plugin/storyboard test"]
 }

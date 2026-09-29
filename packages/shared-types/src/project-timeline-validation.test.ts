@@ -62,3 +62,14 @@ describe("Project Timeline mutation validation", () => {
     );
   });
 });
+
+it('refuses overlapping lane writes without changing the saved revision', () => {
+  const doc = new LoroDoc();
+  const clip = (id: string, from: number) => ({ id, type: 'text', text: id, from, durationInFrames: 30 });
+  const created = createProjectTimeline(doc, { id: 'lane', name: 'Lane', state: { tracks: [{ id: 'titles', category: 'text', items: [clip('one', 0), clip('two', 30)] }] } });
+  expect(created.ok).toBe(true);
+  if (!created.ok) throw Error(created.error);
+  const result = updateProjectTimelineState(doc, 'lane', { tracks: [{ id: 'titles', category: 'text', items: [clip('one', 0), clip('two', 20)] }] });
+  expect(result).toMatchObject({ ok: false, issues: [{ ruleId: 'timeline.track.overlap', path: ['tracks', 0, 'items', 1, 'from'] }] });
+  expect(readProjectTimeline(doc, 'lane')).toEqual(created.timeline);
+});

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { motion } from "framer-motion";
 import { Link, useLocation, useNavigate } from "react-router";
 import {
   desktopChromeMetrics,
@@ -34,10 +33,7 @@ import { Tooltip } from "./ui/tooltip";
 import { HarnessUpdateNotifier } from "./HarnessUpdateNotifier";
 import { BrandAsset } from "./BrandAsset";
 import { AgentMotion } from "./copilot/AgentMotion";
-import {
-  ProductNavIcon,
-  type ProductNavIconKind,
-} from "./ProductNavIcon";
+import { ProductNavIcon, type ProductNavIconKind } from "./ProductNavIcon";
 import { isDesktopRuntime } from "../lib/runtimeConfig";
 import {
   activateDesktopPath,
@@ -196,7 +192,7 @@ function DesktopCommandPalette({
       shape={null}
       onClick={() => setOpen(true)}
       className={[
-        "h-[var(--clash-app-sidebar-search-height)] justify-start rounded-lg border border-warm-border bg-warm-surface text-[13px] font-normal text-content-muted shadow-none hover:bg-warm-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0",
+        "h-[var(--clash-app-sidebar-search-height)] justify-start rounded-lg border border-warm-border bg-warm-surface text-[13px] font-normal text-content-muted shadow-none hover:bg-warm-hover hover:text-content-primary focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50 focus-visible:ring-offset-0",
         collapsed ? "w-9 justify-center px-0" : "w-full gap-2 px-2.5",
       ].join(" ")}
       leftIcon={<MagnifyingGlass className="h-4 w-4" weight="regular" />}
@@ -317,11 +313,12 @@ export default function TopNavigation({
   const [activeDesktopTabId, setActiveDesktopTabId] = useState<string | null>(
     null,
   );
-  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(
-    readDesktopSidebarCollapsed,
+  const [desktopSidebarCollapsed, setDesktopSidebarCollapsed] = useState(() =>
+    !isDesktop && typeof window !== "undefined" && window.innerWidth < 768
+      ? true
+      : readDesktopSidebarCollapsed(),
   );
   useEffect(() => {
-    if (!isDesktop) return undefined;
     const root = document.documentElement;
     root.dataset.clashSidebarCollapsed = String(desktopSidebarCollapsed);
     return () => {
@@ -373,9 +370,8 @@ export default function TopNavigation({
     if (!isDesktop) return;
 
     const handleDesktopTabConnection = (event: Event) => {
-      const detail = (
-        event as CustomEvent<DesktopTabConnectionEventDetail>
-      ).detail;
+      const detail = (event as CustomEvent<DesktopTabConnectionEventDetail>)
+        .detail;
       if (!detail || typeof detail.path !== "string") return;
       setDesktopTabs((tabs) =>
         updateDesktopTabConnection(tabs, detail.path, detail.connection),
@@ -458,7 +454,7 @@ export default function TopNavigation({
               aria-label="Dashboard"
               aria-current={pathname === "/" ? "page" : undefined}
               to="/"
-              className={`desktop-no-drag inline-flex h-8 flex-none items-center gap-2 rounded-lg px-2 text-sm font-medium shadow-none outline-none transition-colors hover:bg-warm-hover hover:text-content-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-muted ${
+              className={`desktop-no-drag inline-flex h-8 flex-none items-center gap-2 rounded-lg px-2 text-sm font-medium shadow-none outline-none transition-colors hover:bg-warm-hover hover:text-content-primary focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-muted ${
                 dashboardActive
                   ? "bg-warm-hover text-content-primary"
                   : "text-content-secondary"
@@ -504,7 +500,7 @@ export default function TopNavigation({
                       <Tab
                         id={tab.id}
                         aria-label={tab.title}
-                        className="flex min-w-0 flex-1 items-center gap-2 truncate text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-warm-muted"
+                        className="flex min-w-0 flex-1 items-center gap-2 truncate text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-muted"
                       >
                         <TabIcon
                           data-workspace-tab-icon="true"
@@ -581,7 +577,7 @@ export default function TopNavigation({
               <Link
                 to="/"
                 aria-label="Clash home"
-                className="flex h-[var(--clash-project-control-height,2rem)] min-w-0 items-center gap-1.5 rounded-lg px-1.5 text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-muted"
+                className="flex h-[var(--clash-project-control-height,2rem)] min-w-0 items-center gap-1.5 rounded-lg px-1.5 text-content-primary focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-muted"
               >
                 <AgentMotion
                   state="idle"
@@ -618,7 +614,7 @@ export default function TopNavigation({
                     onClick={() => openDesktopPath(item.href)}
                     aria-label={item.name}
                     aria-current={isActive ? "page" : undefined}
-                    className={`flex h-9 min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-muted ${
+                    className={`flex h-9 min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-muted ${
                       isActive
                         ? "bg-warm-hover text-content-primary"
                         : "text-content-secondary hover:bg-warm-hover hover:text-content-primary"
@@ -644,79 +640,69 @@ export default function TopNavigation({
   }
 
   return (
-    <header className="pointer-events-none fixed top-0 left-0 right-0 z-50 pb-5 pt-[max(1.5rem,env(safe-area-inset-top))]">
-      <div className="relative flex items-center justify-between w-full pr-[max(2rem,env(safe-area-inset-right))] pl-[max(2rem,env(safe-area-inset-left))] md:px-12">
-        {/* Logo Area */}
-        <div className="desktop-no-drag pointer-events-auto z-10">
+    <>
+      {desktopSidebarCollapsed ? (
+        <div className="fixed left-3 top-3 z-40">
+          <DesktopSidebarCollapseButton
+            collapsed
+            label="Application shortcuts"
+            onCollapsedChange={setDesktopSidebarVisibility}
+          />
+        </div>
+      ) : null}
+      <DesktopAutoHideSidebar
+        collapsed={desktopSidebarCollapsed}
+        onCollapsedChange={setDesktopSidebarVisibility}
+        expandedWidth="var(--clash-app-sidebar-expanded-width)"
+        label="Application shortcuts"
+        widthStorageKey="clash.web.sidebar-width"
+        style={desktopChromeStyle}
+        className="pointer-events-none fixed inset-y-0 left-0 z-40 h-auto"
+        panelClassName="flex flex-col border-warm-border bg-warm-muted"
+      >
+        <div
+          data-sidebar-header-anchor
+          className="pointer-events-auto flex h-14 shrink-0 items-center justify-between px-3"
+        >
           <Link
             to="/"
-            className="group flex h-12 w-12 items-center justify-center"
             aria-label="Clash home"
+            className="flex items-center gap-2 font-display text-sm font-medium"
           >
-            <span className="relative block h-11 w-11">
-              <BrandAsset
-                name="mark"
-                alt=""
-                className="h-11 w-11 object-contain dark:hidden"
-              />
-              <BrandAsset
-                name="markDark"
-                alt=""
-                className="hidden h-11 w-11 object-contain dark:block"
-              />
-            </span>
+            <BrandAsset name="mark" alt="" className="size-7" />
+            Clash
           </Link>
+          <DesktopSidebarCollapseButton
+            collapsed={desktopSidebarCollapsed}
+            label="Application shortcuts"
+            onCollapsedChange={setDesktopSidebarVisibility}
+          />
         </div>
-
-        {/* Floating Center Nav */}
         <nav
           aria-label="Primary"
-          className="desktop-no-drag pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 shadow-md border border-warm-border bg-warm-surface rounded-2xl px-2 py-2 flex items-center gap-1"
+          data-orientation="vertical"
+          className="pointer-events-auto flex flex-col gap-1 px-3 py-2"
         >
-          {navItems.map((item) => {
-            const isActive = pathname === item.href;
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                aria-current={isActive ? "page" : undefined}
-              >
-                <div
-                  className={`relative flex items-center gap-2.5 rounded-xl px-5 py-2.5 text-base font-display font-medium transition-colors ${
-                    isActive
-                      ? "text-slate-900 dark:text-slate-50"
-                      : "text-slate-700 hover:text-slate-900 hover:bg-warm-muted dark:text-slate-300 dark:hover:text-slate-100"
-                  }`}
-                >
-                  {isActive && (
-                    <motion.div
-                      layoutId="nav-pill"
-                      className="absolute inset-0 bg-warm-muted rounded-xl"
-                      transition={{
-                        type: "spring",
-                        bounce: 0.15,
-                        duration: 0.4,
-                      }}
-                    />
-                  )}
-                  <span className="relative z-10 flex items-center gap-2.5">
-                    <ProductNavIcon
-                      kind={item.kind}
-                      className={`h-5 w-5 ${isActive ? "text-brand" : ""}`}
-                    />
-                    {item.name}
-                  </span>
-                </div>
-              </Link>
-            );
-          })}
+          {navItems.map((item) => (
+            <Link
+              key={item.href}
+              to={item.href}
+              aria-current={pathname === item.href ? "page" : undefined}
+              className={`flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${pathname === item.href ? "bg-warm-hover text-content-primary" : "text-content-secondary hover:bg-warm-hover"}`}
+            >
+              <ProductNavIcon
+                kind={item.kind}
+                className="size-4 shrink-0"
+                aria-hidden="true"
+              />
+              {item.name}
+            </Link>
+          ))}
         </nav>
-
-        {/* Right Actions */}
-        <div className="desktop-no-drag pointer-events-auto flex items-center gap-3 z-10">
-          <UserControls />
+        <div className="pointer-events-auto mt-auto border-t border-warm-border p-3">
+          <UserControls compact sidebarExpanded />
         </div>
-      </div>
-    </header>
+      </DesktopAutoHideSidebar>
+    </>
   );
 }

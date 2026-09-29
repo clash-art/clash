@@ -310,3 +310,13 @@ describe("Timeline <-> native Generator projection", () => {
     });
   });
 });
+
+it('rejects same-lane overlaps when proposing a new generator revision', () => {
+  const result = projectTimelineToGeneratorRevisionState(projectTimelineFixture({
+    state: { tracks: [{ id: 'titles', items: [
+      { id: 'one', type: 'text', text: 'one', from: 0, durationInFrames: 30 },
+      { id: 'two', type: 'text', text: 'two', from: 10, durationInFrames: 30 },
+    ] }] },
+  }), timelineDefinition());
+  expect(result).toMatchObject({ ok: false, code: 'TIMELINE_TRACK_OVERLAP', message: expect.stringContaining('two') });
+});

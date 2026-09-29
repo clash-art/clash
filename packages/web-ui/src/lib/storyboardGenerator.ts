@@ -1,5 +1,6 @@
 import type {
   GeneratorDefinition,
+  GeneratorInputRef,
   StoryboardViewResource,
 } from "@clash/shared-types";
 import type { GeneratorClient } from "@clash/shared-runtime/generator-client";
@@ -25,14 +26,36 @@ export function storyboardGeneratorChoices(
 ): StoryboardGeneratorChoice[] {
   const choices: StoryboardGeneratorChoice[] = [];
   for (const definition of definitions) {
-    const stateSchema = record(definition.stateSchema, "Generator state schema");
-    const required = Array.isArray(stateSchema.required) ? stateSchema.required : [];
-    const properties = record(stateSchema.properties ?? {}, "Generator state properties");
-    if (!("prompt" in properties) || required.some((field) => field !== "prompt")) continue;
+    const stateSchema = record(
+      definition.stateSchema,
+      "Generator state schema",
+    );
+    const required = Array.isArray(stateSchema.required)
+      ? stateSchema.required
+      : [];
+    const properties = record(
+      stateSchema.properties ?? {},
+      "Generator state properties",
+    );
+    if (
+      !("prompt" in properties) ||
+      required.some((field) => field !== "prompt")
+    )
+      continue;
     for (const action of definition.actions) {
-      const parameterSchema = record(action.parametersSchema, "Action parameters schema");
-      if (Array.isArray(parameterSchema.required) && parameterSchema.required.length > 0) continue;
-      if (action.invocationInputs.some((input) => input.cardinality.minItems > 0)) continue;
+      const parameterSchema = record(
+        action.parametersSchema,
+        "Action parameters schema",
+      );
+      if (
+        Array.isArray(parameterSchema.required) &&
+        parameterSchema.required.length > 0
+      )
+        continue;
+      if (
+        action.invocationInputs.some((input) => input.cardinality.minItems > 0)
+      )
+        continue;
       for (const output of action.outputs) {
         if (output.assetType.kind !== "media") continue;
         choices.push({
@@ -58,6 +81,12 @@ export async function runStoryboardMaterialGenerator(options: {
   actionId: string;
   outputSlot: string;
   prompt: string;
+  existingRevision?: boolean;
+  invocationInputRefs?: GeneratorInputRef[];
+  parameters?: Record<
+    string,
+    import("@clash/shared-types").ExecutablePluginJsonValue
+  >;
   ids: {
     generatorId: string;
     generatorRevisionId: string;
@@ -67,15 +96,17 @@ export async function runStoryboardMaterialGenerator(options: {
   timeoutMs?: number;
 }): Promise<StoryboardViewResource> {
   const prompt = options.prompt.trim();
-  if (!prompt) throw new Error("A material prompt is required");
-  await options.client.createGenerator(options.projectId, {
-    generatorId: options.ids.generatorId,
-    generatorRevisionId: options.ids.generatorRevisionId,
-    pluginId: options.definition.pluginId,
-    definitionId: options.definition.definitionId,
-    state: { prompt },
-    persistentInputRefs: [],
-  });
+  if (!options.existingRevision && !prompt)
+    throw new Error("A material prompt is required");
+  if (!options.existingRevision)
+    await options.client.createGenerator(options.projectId, {
+      generatorId: options.ids.generatorId,
+      generatorRevisionId: options.ids.generatorRevisionId,
+      pluginId: options.definition.pluginId,
+      definitionId: options.definition.definitionId,
+      state: { prompt },
+      persistentInputRefs: [],
+    });
   await options.client.submitActionRun(
     options.projectId,
     options.ids.generatorId,
@@ -83,23 +114,31 @@ export async function runStoryboardMaterialGenerator(options: {
     {
       actionRunId: options.ids.actionRunId,
       generatorRevisionId: options.ids.generatorRevisionId,
-      parameters: {},
-      invocationInputRefs: [],
+      parameters: options.parameters ?? {},
+      invocationInputRefs: options.invocationInputRefs ?? [],
     },
   );
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => {
-    globalThis.setTimeout(resolve, ms);
-  }));
-  const deadline = Date.now() + (options.timeoutMs ?? 120_000);
+  const sleep =
+    options.sleep ??
+    ((ms: number) =>
+      new Promise<void>((resolve) => {
+        globalThis.setTimeout(resolve, ms);
+      }));
+  const deadline = Date.now() + (options.timeoutMs ?? 10 * 60_000);
   for (;;) {
     const response = record(
-      await options.client.getActionRun(options.projectId, options.ids.actionRunId),
+      await options.client.getActionRun(
+        options.projectId,
+        options.ids.actionRunId,
+      ),
       "Generator Action Run",
     );
     const run = record(response.run, "Generator Action Run");
     if (run.status === "succeeded") break;
-    if (run.status === "failed") throw new Error(`Generator run ${options.ids.actionRunId} failed`);
-    if (Date.now() >= deadline) throw new Error(`Generator run ${options.ids.actionRunId} timed out`);
+    if (run.status === "failed")
+      throw new Error(`Generator run ${options.ids.actionRunId} failed`);
+    if (Date.now() >= deadline)
+      throw new Error(`Generator run ${options.ids.actionRunId} timed out`);
     await sleep(300);
   }
   const response = record(
@@ -113,16 +152,23 @@ export async function runStoryboardMaterialGenerator(options: {
   const commit = record(response.commit, "Generator Output Commit");
   const asset = record(commit.asset, "Generator Output Commit asset");
   if (asset.kind !== "media" || typeof asset.projectAssetId !== "string") {
-    throw new Error("Generator Output Commit did not contain a media Project Asset");
+    throw new Error(
+      "Generator Output Commit did not contain a media Project Asset",
+    );
   }
-  const action = options.definition.actions.find((entry) => entry.id === options.actionId);
-  const output = action?.outputs.find((entry) => entry.slot === options.outputSlot);
+  const action = options.definition.actions.find(
+    (entry) => entry.id === options.actionId,
+  );
+  const output = action?.outputs.find(
+    (entry) => entry.slot === options.outputSlot,
+  );
   if (!output || output.assetType.kind !== "media") {
     throw new Error("Generator output slot is not media");
   }
-  const outputCommitId = typeof commit.id === "string"
-    ? commit.id
-    : `${options.ids.actionRunId}:${options.outputSlot}`;
+  const outputCommitId =
+    typeof commit.id === "string"
+      ? commit.id
+      : `${options.ids.actionRunId}:${options.outputSlot}`;
   return {
     id: outputCommitId,
     projectAssetId: asset.projectAssetId,

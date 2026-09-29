@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { Command } from "commander";
 import {
   createDocumentClient,
+  agentDocumentRequest,
   publicDocumentValue,
   type DocumentRequest,
 } from "@clash/shared-runtime/document-client";
@@ -32,11 +33,7 @@ export function createAssetDocumentsCommand(
   } = {},
 ): Command {
   const request = deps.request ?? apiFetch;
-  const client = createDocumentClient((path, init) => {
-    const headers = new Headers(init?.headers);
-    headers.set("x-clash-client-type", "agent");
-    return request(path, { ...init, headers });
-  });
+  const client = createDocumentClient(agentDocumentRequest(request));
   const output = (value: unknown) =>
     (deps.output ?? printJson)(publicDocumentValue(value));
   const context = (options: { project?: string }) =>

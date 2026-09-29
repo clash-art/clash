@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
 import Background from "@clash/gui/components/Background";
 import { Button } from "@clash/gui/components/ui/button";
@@ -124,6 +124,7 @@ const authPrimaryClass =
 
 export default function AuthCliRoute() {
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const query = params.toString();
   const authorization = useMemo(() => {
     try {
@@ -181,7 +182,7 @@ export default function AuthCliRoute() {
       <div className="relative z-10 flex min-h-screen items-center justify-center p-8 text-center">
         <div className={authPanelClass}>
           <h1 className="mb-2 font-display text-xl font-semibold tracking-tight text-slate-950">
-            Authorize CLI
+            Connect to Clash
           </h1>
           {status === "loading" && (
             <p className="text-sm text-stone-500">Loading...</p>
@@ -191,13 +192,10 @@ export default function AuthCliRoute() {
               variant="primary"
               className={authPrimaryClass}
               onClick={() =>
-                betterAuthClient.signIn.social({
-                  provider: "google",
-                  callbackURL: window.location.href,
-                })
+                navigate("/login?returnTo=" + encodeURIComponent(window.location.pathname + window.location.search))
               }
             >
-              Sign in to authorize CLI
+              Sign in to Clash
             </Button>
           )}
           {status === "authorizing" && (

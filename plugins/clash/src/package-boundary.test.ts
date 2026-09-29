@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { access, readFile, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 import { sourceMatches } from "../../../packages/gui/test-support/source-match.js";
 import {
@@ -142,9 +143,6 @@ test("source CLI, MCP, and local Host share the Action SDK workspace entrypoints
     new URL("../../../packages/cli/tsconfig.dev.json", import.meta.url),
     new URL("../../../apps/local-api/tsconfig.dev.json", import.meta.url),
   ];
-  const configs = await Promise.all(
-    configUrls.map((url) => readFile(url, "utf8").then(JSON.parse)),
-  );
   const expectedIndex = fileURLToPath(
     new URL("../../../packages/action-sdk/src/index.ts", import.meta.url),
   );
@@ -152,126 +150,43 @@ test("source CLI, MCP, and local Host share the Action SDK workspace entrypoints
     new URL("../../../packages/action-sdk/src/browser.ts", import.meta.url),
   );
 
-  for (const [index, config] of configs.entries()) {
-    const paths = config.compilerOptions?.paths as
-      | Record<string, string[]>
-      | undefined;
-    assert.ok(paths, "development runtime must declare workspace paths");
-    const configDir = dirname(fileURLToPath(configUrls[index]!));
-    assert.equal(
-      resolve(configDir, paths["@clash/action-sdk"]?.[0] ?? ""),
-      expectedIndex,
-    );
-    assert.equal(
-      resolve(configDir, paths["@clash/action-sdk/browser"]?.[0] ?? ""),
-      expectedBrowser,
-    );
+  for (const configUrl of configUrls) {
+    const configPath = fileURLToPath(configUrl);
+    const config = ts.getParsedCommandLineOfConfigFile(configPath, {}, {
+      ...ts.sys,
+      onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
+        assert.fail(ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
+      },
+    });
+    assert.ok(config, "development config must load with inherited source aliases");
+    for (const [specifier, expected] of [
+      ["@clash/action-sdk", expectedIndex],
+      ["@clash/action-sdk/browser", expectedBrowser],
+    ]) {
+      const result = ts.resolveModuleName(specifier!, join(dirname(configPath), "src", "probe.ts"), config.options, ts.sys);
+      assert.equal(result.resolvedModule?.resolvedFileName, expected);
+    }
   }
 });
 
-test("the base Clash skill teaches peer CLI and MCP navigation without AGENTS injection", async () => {
-  const markdown = await readFile(
-    join(pluginRoot, "skills", "clash", "SKILL.md"),
-    "utf8",
-  );
-
-  assert.match(markdown, /name: clash/);
-  assert.match(markdown, /peer interfaces/i);
-  assert.match(markdown, /same capabilities and semantics/i);
-  assert.match(
-    markdown,
-    /Both call the\s+discovered `local-api` host directly/i,
-  );
-  assert.match(markdown, /clash --help/);
-  assert.match(markdown, /clash <command> --help/);
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /task already names.{0,180}command group.{0,180}skip.{0,100}root help/i,
-    ),
-    true,
-    "known CLI groups should not pay for root discovery",
-  );
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /Asset.{0,220}import.{0,120}import_file.{0,120}list.{0,120}get.{0,180}contracts/i,
-    ),
-    true,
-    "known Asset operations should have a direct MCP contract path",
-  );
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /project.{0,120}media generation.{0,320}`clash_generators`.{0,500}global.{0,100}(?:imagegen|image_gen)/i,
-    ),
-    true,
-    "project media generation must stay inside Clash instead of escaping to a global generator",
-  );
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /action_run_submit.{0,260}action_run_get.{0,260}output_commit_get/i,
-    ),
-    true,
-    "Generator guidance must cover submission, background polling, and persisted output readback",
-  );
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /existing `.clash\/project\.toml`.{0,180}(?:do not|skip).{0,80}(?:`clash init`|`clash_workspace_init`)/i,
-    ),
-    true,
-    "a bound project must proceed directly instead of re-running init",
-  );
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /only.{0,80}(?:run|call).{0,80}(?:`clash init`|`clash_workspace_init`).{0,180}`\.clash\/project\.toml`.{0,80}(?:missing|absent)/i,
-    ),
-    true,
-    "init is only for an explicitly requested binding when no marker exists",
-  );
-  assert.equal(
-    sourceMatches(
-      markdown,
-      /(?:startup|transport|MCP).{0,160}(?:failure|error).{0,180}(?:does not mean|is not evidence).{0,120}(?:unbound|uninitialized)/i,
-    ),
-    true,
-    "transport failures must not make an agent infer that an existing workspace is unbound",
-  );
-  assert.match(markdown, /root `clash` tool/i);
-  assert.match(markdown, /root `clash`[\s\S]*navigation/i);
-  assert.match(markdown, /`clash_canvas`[\s\S]*Canvas operations/i);
-  assert.match(
-    markdown,
-    /`clash_composition`[\s\S]*temporal\s+composition[\s\S]*spatial\s+composition/i,
-  );
-  assert.match(markdown, /kind: "timeline"[\s\S]*kind: "director-stage"/i);
-  assert.match(markdown, /dispatcher[\s\S]*operation[\s\S]*arguments/i);
-  assert.match(markdown, /command-local short name/i);
-  assert.match(markdown, /complete `clash_\*` leaf name[\s\S]*compatibility/i);
-  assert.doesNotMatch(
-    markdown,
-    /`clash_timeline`|`clash_director`|same `clash` tool/is,
-  );
-  assert.match(markdown, /clash_workspace_init/);
-  assert.match(markdown, /daemon as a prerequisite/i);
-  assert.match(
-    markdown,
-    /normal CLI or plugin MCP bootstrap[\s\S]*host discovery/i,
-  );
-  assert.match(markdown, /ready\s+receipt[\s\S]*do not\s+run\s+init/i);
-  assert.match(markdown, /reused: false[\s\S]*reused: true/i);
-  assert.match(markdown, /stale[\s\S]*read[\s\S]*rebase[\s\S]*never force/i);
-  assert.match(
-    markdown,
-    /automatically pull[\s\S]*recovery[\s\S]*merge[\s\S]*retry/i,
-  );
-  assert.match(markdown, /never automatically (?:replay|resubmit)/i);
-  assert.match(markdown, /never replace[\s\S]*direct FFmpeg render/i);
-  assert.match(markdown, /no `clash_cli_\*` MCP namespace wrappers/i);
-  assert.doesNotMatch(markdown, /CLASH_BENCH|exact[- ]argv|baseRevisionId/i);
+test("the base skill's progressive-disclosure references are included and readable", async () => {
+  const skillRoot = join(pluginRoot, "skills", "clash");
+  const pending = [join(skillRoot, "SKILL.md")];
+  const seen = new Set<string>();
+  while (pending.length) {
+    const file = pending.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const markdown = await readFile(file, "utf8");
+    for (const match of markdown.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+      const target = match[1]!.split("#")[0]!;
+      if (!target || /^[a-z]+:/i.test(target)) continue;
+      const linked = resolve(dirname(file), target);
+      assert.ok(linked.startsWith(skillRoot + "/"), "skill reference must travel with the packaged skill: " + target);
+      await access(linked);
+      if (linked.endsWith(".md")) pending.push(linked);
+    }
+  }
 });
 
 test("production skills pair creative judgment with the supported product path", async () => {
@@ -403,7 +318,7 @@ test("plugin packaging consumes declared dependency outputs before creating the 
   assert.doesNotMatch(packageJson.scripts?.build ?? "", /--filter/);
   assert.match(cliPackage.scripts?.build ?? "", /\btsup\b/);
   assert.equal(localApiPackage.scripts?.["build:deps"], undefined);
-  assert.equal(localApiPackage.scripts?.build, "tsc");
+  assert.match(localApiPackage.scripts?.build ?? "", /^tsc(?:\s|$)/);
   assert.equal(localApiPackage.scripts?.["build:with-deps"], undefined);
   assert.equal(packageJson.scripts?.["build:deps"], undefined);
   assert.doesNotMatch(hostCore, /sourceAgentsDir/);

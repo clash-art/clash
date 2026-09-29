@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish-beta:
-    name: Publish Beta
-    runs-on: ubuntu-latest
+  source-checks:
+    uses: ./.github/workflows/ci.yml
+
+  verify-package:
+    name: Verify distribution artifact
+    runs-on: macos-14
+    needs: [source-checks]
     steps:
       - uses: actions/checkout@v7
 
@@ -16,12 +20,54 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-          registry-url: https://registry.npmjs.org/
+
+      - uses: ./.github/actions/setup-common
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:package clash
+      - run: pnpm --dir packages/shared-mcp test
+      - run: pnpm --dir plugins/clash test
 
-      - name: Publish clash
-        run: pnpm --filter clash publish --tag beta --access public --no-git-checks
+      - name: Pack the verified distribution
+        working-directory: plugins/clash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/package-artifacts"
+          pnpm pack:distribution "$GITHUB_WORKSPACE/package-artifacts"
+
+      - name: Install outside the checkout and verify public CLI and stdio MCP
+        run: |
+          npm install --prefix "$RUNNER_TEMP/clash-installed" --no-audit --no-fund "$GITHUB_WORKSPACE"/package-artifacts/*.tgz
+          CLASH_TEST_PACKAGE_ROOT="$RUNNER_TEMP/clash-installed/node_modules/clash" pnpm --dir plugins/clash exec tsx --tsconfig tsconfig.dev.json --test src/runtime-smoke.test.ts
+
+      - name: Retain the exact tested artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: clash-package-${{ github.sha }}
+          path: |
+            package-artifacts/*.tgz
+            package-artifacts/runtime-dependencies.lock.json
+          if-no-files-found: error
+
+  publish-beta:
+    name: Publish accepted artifact
+    runs-on: ubuntu-latest
+    needs: [verify-package]
+    # The public name currently belongs to another project. Publishing stays
+    # disabled until identity, acquisition and candidate acceptance are resolved.
+    if: vars.CLASH_NPM_PUBLICATION_ENABLED == 'true'
+    environment: npm-beta-acceptance
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.18.0'
+          registry-url: https://registry.npmjs.org/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: clash-package-${{ github.sha }}
+          path: package-artifacts
+
+      - name: Publish the tested tarball
+        run: npm publish package-artifacts/*.tgz --tag beta --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -59,6 +59,27 @@ function brokerWithInvocationRelease(options: {
 }
 
 describe("stdio plugin Host account scope", () => {
+  it("keeps the original Host deadline on nested stdio broker requests", async () => {
+    let now = 1_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    let seenDeadline: number | undefined;
+    const session = new PluginStdioSession({ manifest, stdin, stdout,
+      broker: async (_request, context) => { seenDeadline = context.deadlineAt; return { value: null }; },
+    });
+    try {
+      const completed = session.invoke(invocation, { timeoutMs: 2_000 });
+      now = 1_500;
+      stdout.write(`${JSON.stringify({ protocol: "clash.plugin.broker-request/v1", invocationId: invocation.invocationId,
+        requestId: "nested", operation: { kind: "store.get", key: "key" } })}\n`);
+      stdout.write(`${JSON.stringify({ protocol: "clash.plugin.result/v1", invocationId: invocation.invocationId,
+        status: "completed", outputs: [] })}\n`);
+      await completed;
+      expect(seenDeadline).toBe(3_000);
+    } finally { session.close(); clock.mockRestore(); }
+  });
+
   it("releases an invocation exactly once after its result even when the session later closes", async () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();

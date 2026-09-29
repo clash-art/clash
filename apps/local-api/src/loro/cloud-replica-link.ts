@@ -1,3 +1,4 @@
+import { CursorCloudReplicaLink } from "./cursor-cloud-replica-link.js";
 import WebSocket, { type RawData } from "ws";
 import type { LoroDoc } from "loro-crdt";
 import type { ReplicaLinkPort } from "@clash/replica";
@@ -58,6 +59,9 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private retry = 0;
   private stopped = true;
+  private cursorLink: CursorCloudReplicaLink | undefined;
+  private discovery: AbortController | undefined;
+  private transport: "unknown" | "loro" | "cursor" = "unknown";
 
   constructor(private readonly options: LoroCloudReplicaLinkOptions) {}
 
@@ -70,21 +74,30 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   publish(update: Uint8Array): void {
     // If disconnected, no volatile queue is needed: join() compares VersionVectors
     // and sends every operation the cloud is missing after reconnect.
-    this.session?.sendExternalUpdate(update);
+    if (this.cursorLink) this.cursorLink.publish(update);
+    else this.session?.sendExternalUpdate(update);
   }
 
-  close(): void {
+  close(): void | Promise<void> {
     this.stopped = true;
+    this.discovery?.abort();
+    const cursorClosed = this.cursorLink?.close();
+    this.cursorLink = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.session?.destroy();
     this.session = undefined;
     this.socket?.close();
     this.socket = undefined;
+    return cursorClosed;
   }
 
   private connect(): void {
     if (this.stopped) return;
+    if (!this.options.createSocket && this.transport !== "loro") {
+      void this.discoverTransport();
+      return;
+    }
     const headers: Record<string, string> = this.options.token
       ? { authorization: `Bearer ${this.options.token}` }
       : {};
@@ -138,6 +151,51 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       if (this.socket === socket) this.socket = undefined;
       this.scheduleReconnect();
     });
+  }
+
+  private async discoverTransport(): Promise<void> {
+    const url = new URL(this.options.baseUrl);
+    if (url.protocol === "ws:") url.protocol = "http:";
+    if (url.protocol === "wss:") url.protocol = "https:";
+    url.pathname = `${url.pathname.replace(/\/+$/u, "")}/api/v1/projects/${encodeURIComponent(this.options.projectId)}/replica`;
+    const controller = new AbortController();
+    this.discovery = controller;
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(url, {
+        headers: this.options.token
+          ? { authorization: `Bearer ${this.options.token}` }
+          : {},
+        signal: controller.signal,
+      });
+      if (this.stopped || this.discovery !== controller) return;
+      if (
+        response.status === 404 ||
+        response.status === 405 ||
+        response.status === 426
+      ) {
+        this.transport = "loro";
+        this.connect();
+        return;
+      }
+      if (!response.ok)
+        throw Error(`Cloud replica discovery ${response.status}`);
+      const profile = (await response.json()) as { protocol?: string };
+      if (profile.protocol !== "loro-streams-v1")
+        throw Error("Unsupported replica protocol");
+      if (this.stopped || this.discovery !== controller) return;
+      this.transport = "cursor";
+      this.cursorLink = new CursorCloudReplicaLink(this.options, url.href);
+      this.cursorLink.start();
+    } catch (error) {
+      if (!this.stopped && this.discovery === controller) {
+        this.report(error instanceof Error ? error : Error(String(error)));
+        this.scheduleReconnect();
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (this.discovery === controller) this.discovery = undefined;
+    }
   }
 
   private scheduleReconnect(): void {

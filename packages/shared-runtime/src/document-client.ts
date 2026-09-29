@@ -10,6 +10,15 @@ export type DocumentRequest = (
   path: string,
   init?: RequestInit,
 ) => Promise<Response>;
+
+/** Agent-origin metadata for Document producers; this does not grant authority. */
+export function agentDocumentRequest(request: DocumentRequest): DocumentRequest {
+  return (path, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set("x-clash-client-type", "agent");
+    return request(path, { ...init, headers });
+  };
+}
 export interface DocumentRead {
   asset?: { id: string; headRevisionId: string };
   revision: DocumentAssetRevision;

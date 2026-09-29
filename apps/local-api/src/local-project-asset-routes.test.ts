@@ -13,7 +13,7 @@ import {
   readProjectAsset,
 } from "@clash/shared-types";
 
-import { createLocalApiApp } from "./app.js";
+import { managedLocalApiApps } from "./local-api-app.test-fixtures.js";
 import {
   createLocalAssetInspectionService,
   type LocalAssetInspector,
@@ -27,6 +27,7 @@ import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { LocalLoroRoomHub } from "./sync.js";
 
 const temporaryDirectories: string[] = [];
+const { createApp: createLocalApiApp, close: closeApps } = managedLocalApiApps();
 const PROJECT_ASSET_RECEIPT_RE =
   /^project-asset-v1:[a-f0-9]{16}:receipt:[A-Za-z0-9._~-]+$/;
 
@@ -36,7 +37,7 @@ const inspectFixtureAsset: LocalAssetInspector = async ({ resource }) =>
         width: 1,
         height: 1,
         rotationDegrees: 0,
-        ...(resource.contentType ? { contentType: resource.contentType } : {}),
+        contentType: resource.contentType ?? "image/png",
       }
     : resource.kind === "video"
       ? {
@@ -47,9 +48,7 @@ const inspectFixtureAsset: LocalAssetInspector = async ({ resource }) =>
           frameRate: 24,
           videoCodec: "h264",
           hasAudio: false,
-          ...(resource.contentType
-            ? { contentType: resource.contentType }
-            : {}),
+          contentType: resource.contentType ?? "video/mp4",
         }
       : {
           durationMs: 2_000,
@@ -58,9 +57,7 @@ const inspectFixtureAsset: LocalAssetInspector = async ({ resource }) =>
           sampleRate: 48_000,
           channelCount: 2,
           channelLayout: "stereo",
-          ...(resource.contentType
-            ? { contentType: resource.contentType }
-            : {}),
+          contentType: resource.contentType ?? "audio/mpeg",
         };
 
 function projectTrashRequest(
@@ -171,6 +168,7 @@ function editBindingCollisionReplica(input: {
 }
 
 afterEach(async () => {
+  await closeApps();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -205,7 +203,7 @@ describe("Project-scoped ResolvedAsset routes", () => {
         width: 1,
         height: 1,
         rotationDegrees: 0,
-        ...(resource.contentType ? { contentType: resource.contentType } : {}),
+        contentType: resource.contentType ?? "image/png",
       }),
     });
 
@@ -274,9 +272,9 @@ describe("Project-scoped ResolvedAsset routes", () => {
       "http://localhost:49152/api/v1/projects/project-a/assets",
     );
     expect(listed.status).toBe(200);
-    await expect(listed.json()).resolves.toEqual({
-      assets: [expected],
-    });
+    const listedBody = await listed.json();
+    expect(listedBody).toMatchObject({ assets: [expected] });
+    expect(listedBody.assets[0].createdAt).toEqual(expect.any(Number));
 
     const read = await app.request(
       `${baseUrl}/${encodeURIComponent(asset.id)}`,
@@ -285,7 +283,7 @@ describe("Project-scoped ResolvedAsset routes", () => {
     expect(read.headers.get("x-clash-read-receipt")).toMatch(
       PROJECT_ASSET_RECEIPT_RE,
     );
-    expect(await read.json()).toEqual(expected);
+    expect(await read.json()).toEqual(listedBody.assets[0]);
   });
 
   it("serves the immutable projection with Resource content type and byte ranges", async () => {
@@ -376,9 +374,11 @@ describe("Project-scoped ResolvedAsset routes", () => {
       thumbnailUrl:
         "http://127.0.0.1:49152/api/v1/projects/project-a/assets/imported%3Amultipart/media",
     };
-    await expect(first.json()).resolves.toEqual(expected);
-    await expect(second.json()).resolves.toEqual(expected);
-    expect(JSON.stringify(expected)).not.toMatch(
+    const imported = await first.json();
+    expect(imported).toMatchObject(expected);
+    expect(imported.createdAt).toEqual(expect.any(Number));
+    await expect(second.json()).resolves.toEqual(imported);
+    expect(JSON.stringify(imported)).not.toMatch(
       /storageKey|localBlobKey|signedUrl|\/Users\//,
     );
 

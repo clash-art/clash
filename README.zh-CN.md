@@ -11,7 +11,7 @@ Clash 是一款 source-available、可完整自托管的 **面向 Agent 的创�
 今天 Clash 以桌面端为主要载体。Canvas、Timeline、Director Stage、Codex、
 ACP、MCP 与 CLI 都是这个环境里的工具，而不是产品本身的定义。
 
-**[官网](https://clash.video)** ·
+**[官网](https://clash.art)** ·
 **[快速开始](#快速开始)** ·
 **[自托管](#自托管)** ·
 **[架构](#架构)**
@@ -38,8 +38,8 @@ Clash 围绕 Agent 创作来设计，不是给传统编辑器外挂一个聊天�
   工作区中完成可视化创作。
 - **CLI：** 从终端检查和操作项目、素材、Canvas、Timeline、Director、模型、
   任务、文本与生产工作流。
-- **MCP 与 Codex 插件：** 打开 Studio、Canvas、Timeline、Director 等聚焦
-  App，由类型化工具连接真实项目，而不是依赖隐藏的浏览器自动化。
+- **MCP 与 Codex 插件：** 使用类型化项目工具，以及兼容客户端中的 Project App。
+  旧版独立小 App 已禁用。
 - **JavaScript 与 Python SDK：** 把项目操作和本地模型 runtime 接入自定义
   Agent 与生产管线。
 
@@ -47,13 +47,10 @@ Clash 围绕 Agent 创作来设计，不是给传统编辑器外挂一个聊天�
 
 Clash 需要 Node.js 24.18+（Node 24.x）与 pnpm 10+。
 
-CLI 与 MCP 统一由 `clash` 包分发：
-
-```bash
-npm install -g clash
-clash --help
-# MCP 客户端配置为：npx -y clash mcp
-```
+CLI、MCP、skill 和本地 Host 使用同一分发包。目前尚无可用的公开 npm
+安装入口：registry 中名为 `clash` 的包属于另一个项目，请勿为使用本产品而
+安装或执行它。当前使用维护者提供的 Desktop 候选包；外部 agent 配置仍需针对
+该候选包完成验证。运行时边界与源码使用方式见[分发说明](plugins/clash/README.md)。
 
 参与仓库开发：
 
@@ -71,7 +68,7 @@ pnpm dev
 pnpm dev:package @clash/desktop
 ```
 
-`clash.video` 用的是私有 overlay
+`clash.art` 用的是私有 overlay
 ([`clash-space/clash-hosted`](https://github.com/clash-space/clash-hosted))，
 把这个仓库当 git submodule 套上 billing 层。本仓库本身不依赖它。
 

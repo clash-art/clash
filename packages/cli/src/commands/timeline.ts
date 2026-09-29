@@ -7,6 +7,7 @@ import {
   TIMELINE_OPERATION_CATALOG,
   TimelineDiscoveryViewSchema,
   projectTimelineReadToken,
+  summarizeProjectTimeline,
   timelineDslDiscovery,
   timelineDslToYaml,
   type TimelineAgentOperationId,
@@ -80,17 +81,42 @@ async function requireTimelineObservation(
 }
 
 export const timelineCommand = new Command("timeline")
-  .description(
-    `Manage Project Timeline entities through agent-editable YAML projections.
+  .summary("Edit and render timelines through local YAML files")
+  .description("Manage Project Timeline entities through agent-editable YAML projections.")
+  .addHelpText("after",
+    `
 
 Workflow:
+  clash timeline list --json                         # reuse an existing cut
   clash timeline create --id episode-1 --name "Episode 1"
-  clash timeline pull --timeline episode-1
-  # edit timelines/episode-1.timeline.yaml with normal file tools
-  clash timeline apply --timeline episode-1
+  clash timeline pull --timeline episode-1 --json    # returns filePath and revision
+  # edit the returned YAML file with normal file tools
+  clash timeline apply --timeline episode-1 --json   # validates and commits
+  clash timeline pull --timeline episode-1 --json    # verify committed state
 
-CAS is implicit: reads record an opaque host observation in
-.clash/observed.json; ownership changes and apply reject stale writes.`,
+Keep the pulled root fields. A minimal track for a two-second, 30 fps video is:
+  tracks:
+    - id: main
+      category: primary
+      items:
+        - id: shot
+          type: video
+          assetId: <returned-projectAssetId>
+          from: 0
+          durationInFrames: 60
+
+Set root fps, compositionWidth, compositionHeight and durationInFrames for the
+actual cut. Item from/durationInFrames use composition frames, not milliseconds.
+An Action-cropped video is a new Asset: reference its ID and start at its beginning.
+Search evidence times use milliseconds; video-clipper parameters use seconds.
+
+For additional item fields: clash timeline schema (fields.itemTypes, examples.basic).
+Use --view full only for the complete JSON Schema. Apply validates automatically;
+timeline validate --file <path> is an optional local check. A successful apply is
+saved timeline state, not a rendered video; use clash timeline render --help to export.
+
+Project comes from cwd; --project <id> overrides it. Read-before-write is automatic.
+If apply reports a stale write, inspect its recovery file, pull, merge and apply again.`,
   );
 
 type TimelineWorkspaceResult = {
@@ -110,6 +136,8 @@ export type TimelineRenderReceipt = {
   timelineId: string;
   sourceTimelineRevisionId: string;
   renderNodeId: string;
+  /** Native render identity accepted by the shared Action wait/read surface. */
+  actionRunId: string;
   target: { kind: "project-assets" } | {
     kind: "canvas";
     canvasId: string;
@@ -118,6 +146,7 @@ export type TimelineRenderReceipt = {
   status: "pending" | "completed" | "failed";
   asset?: AssetRecordResult;
   error?: string;
+  next?: string;
 };
 
 export type TimelineHostTransport = {
@@ -334,6 +363,7 @@ timelineCommand
   .description(TIMELINE_OPERATION_CATALOG.agent["timeline.list"].description)
   .option("--project <id>", "Project ID (defaults to cwd marker or $CLASH_PROJECT_ID)")
   .option("--standalone", "Show only standalone Project Timelines")
+  .option("--full", "Include complete Timeline state (default: identity, dimensions and item counts)")
   .option("--json", "Output result as JSON")
   .action(async (options) => {
     const context = await resolveCanvasProjectContext(options);
@@ -343,7 +373,7 @@ timelineCommand
       ? result.timelines.filter((timeline) => timeline.owner.kind === "project")
       : result.timelines;
     if (isJsonMode(options)) {
-      printJson(timelines);
+      printJson(options.full ? timelines : timelines.map(summarizeProjectTimeline));
       return;
     }
     printTable(timelines.map((timeline) => ({
@@ -500,6 +530,7 @@ timelineCommand
   .option("--no-wait", "Return the durable render-node receipt without waiting for completion")
   .option("--timeout-ms <milliseconds>", "Maximum completion wait in milliseconds", "1800000")
   .option("--json", "Output the render receipt as JSON")
+  .addHelpText("after", "\nTo resume a pending render, use clash actions wait <actionRunId> --json.\nThis reads the existing Run; do not submit timeline render again just to poll.\n")
   .action(async (options) => {
     const context = await resolveCanvasProjectContext(options);
     const timelineId = String(options.timeline);
@@ -529,6 +560,7 @@ timelineCommand
       timelineId,
       sourceTimelineRevisionId: submitted.sourceTimelineRevisionId,
       renderNodeId: submitted.renderNodeId,
+      actionRunId: submitted.renderNodeId,
       target: submitted.target,
     };
     const deadline = Date.now() + timeoutMs;
@@ -581,12 +613,15 @@ timelineCommand
       if (options.wait === false || Date.now() >= deadline) break;
       await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 100));
     }
+    if (!receipt.completed) {
+      receipt.next = `Read the existing render with clash actions wait ${JSON.stringify(receipt.actionRunId)} --project ${JSON.stringify(context.projectId)} --json; do not resubmit to poll.`;
+    }
     await recordTimelineObservation(context, timelineId, receipt.sourceTimelineRevisionId);
     if (isJsonMode(options)) printJson(receipt);
     else console.log(
       receipt.completed
         ? `Rendered Timeline ${timelineId}: ${receipt.asset?.id ?? receipt.renderNodeId}`
-        : `Timeline render ${receipt.renderNodeId}: ${receipt.status}`,
+        : `Timeline render ${receipt.renderNodeId}: ${receipt.status}\n${receipt.next}`,
     );
   });
 

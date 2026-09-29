@@ -2211,6 +2211,14 @@ export function createLocalWorkflowProcessor(
 
       for (const [nodeId, rawNode] of nodes.entries()) {
         const node = rawNode as Record<string, any>;
+        // An admitted Run's output is a projection, not another execution
+        // request. Recovery above advances its frozen task; the publication
+        // bridge alone resolves its Asset/Document or failure on every Canvas.
+        // This also holds when the owning task belongs to another Host.
+        if (
+          typeof node.data?.actionRunId === "string" &&
+          typeof node.data?.generatorOutputSlot === "string"
+        ) continue;
         const custom = pendingCustomNode(node);
         if (custom) {
           const data = node.data as Record<string, unknown>;

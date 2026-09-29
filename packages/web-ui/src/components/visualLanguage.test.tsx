@@ -496,6 +496,26 @@ describe("visual language surfaces", () => {
     );
     const launcherRule =
       cssSource.match(/\.clash-copilot-launcher\s*\{[\s\S]*?\}/)?.[0] ?? "";
+    const launcherSource = copilotSource.slice(
+      copilotSource.indexOf('key="copilot-launcher"'),
+      copilotSource.indexOf(
+        "<Sheet",
+        copilotSource.indexOf('key="copilot-launcher"'),
+      ),
+    );
+    const projectHeaderStart = projectSource.indexOf('id="editor-header"');
+    const projectFooterStart = projectSource.indexOf(
+      "footer={",
+      projectHeaderStart,
+    );
+    const projectHeader = projectSource.slice(
+      projectHeaderStart,
+      projectFooterStart,
+    );
+    const projectFooter = projectSource.slice(
+      projectFooterStart,
+      projectSource.indexOf("canvases={", projectFooterStart),
+    );
 
     expect(
       sourceMatches(projectSource, /aria-label="Clash home"|<Link to="\/"/),
@@ -544,9 +564,13 @@ describe("visual language surfaces", () => {
       sourceMatches(projectSource, /<PresenceBar clients=\{otherClients\} \/>/),
       "must not reappear",
     ).toBe(false);
+    expect(sourceMatches(projectHeader, /ProjectCloudButton/)).toBe(false);
+    expect(sourceContains(projectFooter, "<span>Settings</span>")).toBe(true);
     expect(
-      sourceMatches(projectSource, /footer=\{<UserControls compact \/>\}/),
-      "mechanism missing",
+      sourceContains(
+        projectFooter,
+        "<ProjectCloudButton projectId={project.id} />",
+      ),
     ).toBe(true);
     expect(
       sourceMatches(
@@ -590,15 +614,7 @@ describe("visual language surfaces", () => {
       "mechanism missing",
     ).toBe(true);
     expect(
-      sourceMatches(copilotSource, /AgentMotion/),
-      "must not reappear",
-    ).toBe(false);
-    expect(
-      sourceMatches(copilotSource, /ChatCircleDots/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceContains(copilotSource, 'data-slot="copilot-launcher-icon"'),
+      sourceMatches(launcherSource, /AgentMotion/),
       "mechanism missing",
     ).toBe(true);
     expect(
@@ -617,10 +633,7 @@ describe("visual language surfaces", () => {
       "mechanism missing",
     ).toBe(true);
     expect(
-      sourceContains(
-        copilotSource,
-        "top-[calc(var(--clash-desktop-chrome-height,0px)+0.375rem)]",
-      ),
+      sourceMatches(launcherSource, /--clash-project-sidebar-header-height/),
       "mechanism missing",
     ).toBe(true);
     expect(
@@ -707,47 +720,7 @@ describe("visual language surfaces", () => {
     expect(
       sourceMatches(
         copilotSource,
-        /const COPILOT_PANEL_COLLAPSE_TRANSITION = \{ duration: 0\.34,[\s\S]*?times: \[0, 0\.52, 1\]/,
-      ),
-      "mechanism missing",
-    ).toBe(true);
-    // The collapsed state was split alongside the transform origin: the canvas launcher
-    // sits bottom-right so the panel drifts toward it (`x: [0, 0, 42]`), while the header
-    // launcher is directly above so it collapses in place (`x: 0`). Both keep the same
-    // fade and scale curve, and the gap is bounded so the pattern cannot drift across
-    // the whole normalized file.
-    expect(
-      sourceMatches(
-        copilotSource,
-        /const COPILOT_PANEL_COLLAPSED_CANVAS_STATE = \{.{0,80}x: \[0, 0, 42\]/,
-      ),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(
-        copilotSource,
-        /const COPILOT_PANEL_COLLAPSED_HEADER_STATE = \{.{0,80}x: 0, y: 0/,
-      ),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(
-        copilotSource,
-        /opacity: \[1, 0\.76, 0\], scale: \[1, 0\.56, 0\.08\]/,
-      ),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(
-        copilotSource,
-        /transition=\{isResizing \? \{ duration: 0 \} : isCollapsed && !isMobile \? COPILOT_PANEL_COLLAPSE_TRANSITION : COPILOT_PANEL_TRANSITION\}/,
-      ),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(
-        copilotSource,
-        /const COPILOT_LAUNCHER_ENTER_TRANSITION = \{ duration: 0\.24, delay: 0\.12/,
+        /transition=\{isResizing \? \{ duration: 0 \} : panelTransition\}/,
       ),
       "mechanism missing",
     ).toBe(true);
@@ -792,8 +765,8 @@ describe("visual language surfaces", () => {
         copilotSource,
         /import \{ CopilotRailSlot \} from '\.\/copilot\/CopilotRail'/,
       ),
-      "must not reappear",
-    ).toBe(false);
+      "activity rail remains separate from the launcher",
+    ).toBe(true);
     expect(
       sourceMatches(
         copilotSource,
@@ -828,8 +801,8 @@ describe("visual language surfaces", () => {
         copilotSource,
         /<CopilotRailSlot className="h-8">[\s\S]*<AgentMotion/,
       ),
-      "must not reappear",
-    ).toBe(false);
+      "the running activity keeps the Clash persona",
+    ).toBe(true);
     expect(sourceMatches(copilotSource, /-ml-1\.5/), "must not reappear").toBe(
       false,
     );
@@ -853,8 +826,8 @@ describe("visual language surfaces", () => {
         copilotSource,
         /AgentMotion[\s\S]*state=\{state\}[\s\S]*className="clash-agent-motion--compact h-6 w-6"[\s\S]*gazeTarget=\{gazeTarget \?\? null\}/,
       ),
-      "must not reappear",
-    ).toBe(false);
+      "activity persona retains its state and gaze",
+    ).toBe(true);
     expect(
       sourceContains(copilotSource, "toolbarAccessory={"),
       "mechanism missing",
@@ -1014,7 +987,9 @@ describe("visual language surfaces", () => {
       "must not reappear",
     ).toBe(false);
     expect(sourceMatches(launcherRule, /border:\s*0/)).toBe(true);
-    expect(sourceMatches(launcherRule, /background:\s*transparent/)).toBe(true);
+    // The shared IconButton owns hover/focus feedback; an unlayered background
+    // override here would hide its hover surface.
+    expect(sourceMatches(launcherRule, /background:/)).toBe(false);
     expect(sourceMatches(launcherRule, /box-shadow:\s*none/)).toBe(true);
   });
 
@@ -1178,72 +1153,23 @@ describe("visual language surfaces", () => {
     ).toBe(true);
   });
 
-  it("keeps dashboard entry screens canvas-first without a detached hero preview", () => {
+  it("keeps authenticated entrypoints on real project and composer controls", () => {
     const source = [
       "packages/web-ui/src/components/HeroSection.tsx",
-      "packages/web-ui/src/components/landing/LandingHero.tsx",
       "packages/web-ui/src/components/ProjectsClient.tsx",
-      "apps/web/app/globals.css",
     ]
       .map((path) => readFileSync(join(process.cwd(), path), "utf8"))
       .join("\n");
 
+    // The authenticated dashboard no longer has the old hero/fake canvas.
     expect(
       sourceMatches(
         source,
-        /HeroCanvasPreview|clash-home-canvas-preview|clash-home-preview-node|Agent drafting|Neon rain/,
+        /HeroCanvasPreview|clash-home-canvas-preview|clash-home-preview-node|clash-projects-empty-canvas|clash-projects-empty-node|variant="hero"/,
       ),
-      "must not reappear",
     ).toBe(false);
-    expect(sourceMatches(source, /variant="hero"/), "mechanism missing").toBe(
-      true,
-    );
-    expect(sourceMatches(source, /clash-hero-stage/), "mechanism missing").toBe(
-      true,
-    );
-    expect(
-      sourceMatches(source, /clash-hero-prompt/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /lg:pl-(12|16)|xl:pl-(12|16)/),
-      "must not reappear",
-    ).toBe(false);
-    expect(
-      sourceMatches(source, /<BrandAsset\s+name="markAnimated"/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /clash-dashboard-shell/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /clash-projects-empty-workbench/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /clash-projects-empty-canvas/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /clash-projects-empty-edge/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /clash-projects-empty-node--agent/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(source, /clash-home-preview-edge-flow/),
-      "mechanism missing",
-    ).toBe(true);
-    expect(
-      sourceMatches(
-        source,
-        /clash-projects-empty-node--wide|clash-projects-empty-node--small|clash-projects-empty-node--accent/,
-      ),
-      "must not reappear",
-    ).toBe(false);
+    expect(sourceMatches(source, /<ChatInput/)).toBe(true);
+    expect(sourceMatches(source, /<ProjectCreateTile/)).toBe(true);
   });
 
   it("keeps the authenticated dashboard composer compact instead of turning it into a billboard", () => {
@@ -2101,20 +2027,16 @@ describe("visual language surfaces", () => {
     },
   );
 
-  it("renders sync settings with warm selected states after loading local config", async () => {
+  it("renders the current cloud account choices without legacy replica configuration", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
         async () =>
           new Response(
             JSON.stringify({
-              mode: "local-only",
-              remote_loro: {
-                enabled: false,
-                url: null,
-                has_token: false,
-                source: "none",
-              },
+              serviceUrl: "https://clash.art",
+              official: true,
+              user: null,
             }),
             { headers: { "content-type": "application/json" } },
           ),
@@ -2135,14 +2057,17 @@ describe("visual language surfaces", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Remote Loro URL")).toBeTruthy(),
+      expect(
+        screen.getByRole("radio", { name: "Official cloud" }),
+      ).toHaveAttribute("aria-checked", "true"),
     );
+    expect(screen.queryByLabelText("Remote Loro URL")).toBeNull();
     expect(screen.getByRole("heading", { name: "Sync" })).toBeTruthy();
     expect(container.innerHTML).not.toMatch(oldVisualTokens);
-    const localOnly = screen.getByRole("radio", { name: /Local only/ });
-    expect(localOnly).toHaveAttribute("data-state", "checked");
-    expect(localOnly?.className).toContain(
-      "data-[state=checked]:bg-[var(--control-bg-open)]",
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Self-hosted" })).toHaveAttribute(
+      "aria-checked",
+      "false",
     );
   });
 });

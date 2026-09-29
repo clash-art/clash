@@ -11,6 +11,8 @@ import { effectCommand } from "./commands/effects";
 import { logsCommand } from "./commands/logs";
 import { hostCommand } from "./commands/host";
 import { generatorsCommand } from "./commands/generators";
+import { actionsCommand } from "./commands/actions";
+import { registerContentCommands } from "./commands/content";
 import { modelsCommand } from "./commands/models";
 import { pluginCommand } from "./commands/plugin";
 import { projectionCommand } from "./commands/projection";
@@ -21,15 +23,23 @@ import { timelineCommand } from "./commands/timeline";
 import { workspaceCommand } from "./commands/workspace";
 import { installCliTrace } from "./lib/cli-trace";
 
-const DESCRIPTION = `Clash CLI — AI video production from your terminal
+const TASK_HELP = `
+Start with the task (the current directory selects the project):
+  clash ls --kind video --match interview      List by name and overview
+  clash search "sleeve" --kind video           Find analysed content and source times
+  clash read '<returned-ref-JSON>'             Read exact media or Document evidence
+  clash actions list --query video-clipper     Discover trim/frame input contracts
+  clash actions --help                        Run examples, outputs and recovery
+  clash timeline --help                       Create, edit, apply and render a cut
+  clash assets import --file ./clip.mp4 --json  Bring in a local file
 
-Local setup:
-  1. Open Clash Desktop or start the local-api host
-  2. clash init --project <id>    # link this cwd through .clash/project.toml
-  3. clash host status            # verify the local-api host
+ls/search/read and actions return JSON. Reuse returned refs and Run IDs.
+Search matches literal text in existing evidence; it does not analyse new media.
+Use a specific actions list --query to avoid loading every installed schema.
 
-Local commands do not require cloud authentication.
-Optional cloud sync: clash auth login
+Already in a linked workspace? Start working; no init/status preflight needed.
+For a new workspace only: clash projects list --json, then clash init --project <id>.
+Local commands need no cloud login. Setup/diagnostics: clash host --help.
 
 Environment variables:
   CLASH_API_URL      Override the discovered local host or optional cloud API URL
@@ -39,8 +49,8 @@ Environment variables:
   CLASH_CANVAS_ID    Canvas scope for canvas node commands
   CLASH_API_KEY      Remote/cloud credential override (not needed for local-api)
 
-Project identity lives in .clash/project.toml. Collaborative state remains in
-the host-owned Project Loro replica; cwd files are editable projections and drafts.`;
+Project identity lives in .clash/project.toml; native file edits are drafts until applied.
+Optional cloud sync: clash auth login.`;
 
 export type CliProgramOptions = {
   beforeAction?: (program: Command) => void | Promise<void>;
@@ -56,7 +66,8 @@ export type CliProgramOptions = {
 export function createCliProgram(options: CliProgramOptions = {}): Command {
   const program = new Command()
     .name("clash")
-    .description(DESCRIPTION)
+    .description("Clash CLI — find media, run Actions, and edit project timelines")
+    .addHelpText("after", TASK_HELP)
     .option("--profile <profile>", "Runtime profile: dev or prod")
     .version(process.env.CLASH_DISTRIBUTION_VERSION ?? "0.1.0");
 
@@ -70,21 +81,23 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     if (actionCommand.name() !== "logs") await options.beforeAction?.(program);
   });
 
-  program.addCommand(authCommand);
+  program.addCommand(authCommand.summary("Manage optional cloud-sync login"));
   program.addCommand(initCommand);
   program.addCommand(projectsCommand);
-  program.addCommand(canvasCommand);
+  program.addCommand(canvasCommand.summary("Read and edit Canvas nodes and connections"));
   program.addCommand(canvasesCommand);
   program.addCommand(pluginCommand);
   program.addCommand(modelsCommand);
   program.addCommand(hostCommand);
   program.addCommand(logsCommand);
   program.addCommand(generatorsCommand);
+  program.addCommand(actionsCommand);
+  registerContentCommands(program);
   registerProviderCommands(program);
   program.addCommand(timelineCommand);
   program.addCommand(doctorCommand);
-  program.addCommand(textCommand);
-  program.addCommand(projectionCommand);
+  program.addCommand(textCommand.summary("Pull and apply editable text node files"));
+  program.addCommand(projectionCommand.summary("Pull and apply entity files using their own DSL"));
   program.addCommand(assetsCommand);
   program.addCommand(auditCommand);
   program.addCommand(effectCommand);

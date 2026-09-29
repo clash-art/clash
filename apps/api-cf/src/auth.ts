@@ -43,7 +43,7 @@ export interface AuthBindings {
   AUTH_SECRET?: string;
   AUTH_GOOGLE_ID?: string;
   AUTH_GOOGLE_SECRET?: string;
-  /** Sender address; falls back to `auth@clash.video` if unset. Must be on a
+  /** Sender address; falls back to `auth@clash.art` if unset. Must be on a
    *  CF-DNS-managed domain that's onboarded into Email Service. */
   AUTH_EMAIL_FROM?: string;
   ENVIRONMENT: string;
@@ -60,7 +60,7 @@ async function sendOtpEmail(
     console.log(`[auth] OTP for ${to} (${type}): ${otp}  (expires in 10 min)`);
     return;
   }
-  const from = env.AUTH_EMAIL_FROM ?? "Clash <auth@clash.video>";
+  const from = env.AUTH_EMAIL_FROM ?? "Clash <auth@clash.art>";
   try {
     await env.EMAIL.send({
       to,
@@ -118,10 +118,10 @@ export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) 
         // CSRF). Without these, cross-origin requests from the Vite dev proxy
         // (localhost:3001) get rejected with "Invalid origin".
         trustedOrigins: [
-          "https://clash.video",
-          "https://www.clash.video",
-          "https://next.clash.video",
-          "https://api.clash.video",
+          "https://clash.art",
+          "https://www.clash.art",
+          "https://next.clash.art",
+          "https://api.clash.art",
           ...(env.ENVIRONMENT === "development"
             ? [
                 "http://localhost:3000",

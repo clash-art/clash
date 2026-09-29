@@ -11,6 +11,7 @@ import { useEffect, useRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   projectTimelineReadToken,
+  projectTimelineRevisionId,
   type ProjectTimeline,
   type ResolvedAsset,
 } from "@clash/shared-types";
@@ -33,7 +34,13 @@ const timelineEditorApi = vi.hoisted(() => ({
   previewCacheScope: undefined as string | undefined,
   innerProjectAssetDrop: vi.fn(),
   mutate: (_duration: number) => {},
+  zoom: () => {},
 }));
+
+vi.mock('@clash/shared-types', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@clash/shared-types')>();
+  return { ...actual, projectTimelineRevisionId: vi.fn(actual.projectTimelineRevisionId) };
+});
 
 vi.mock("@clash/web-ui/lib/hooks/useAsset", () => ({
   getAsset: assetApi.getAsset,
@@ -77,6 +84,10 @@ vi.mock("@clash/remotion-ui", () => ({
     }
     timelineEditorApi.mutate = (duration) => {
       stateRef.current = { ...stateRef.current, durationInFrames: duration };
+      onStateChange?.(stateRef.current);
+    };
+    timelineEditorApi.zoom = () => {
+      stateRef.current = { ...stateRef.current, zoom: 2 };
       onStateChange?.(stateRef.current);
     };
     useEffect(() => {
@@ -375,6 +386,23 @@ describe("Project workspace surfaces", () => {
     expect(screen.getByLabelText("Inline video editor")).toBeTruthy();
   });
 
+  it('does not rehash authored content or schedule a save for zoom-only updates', async () => {
+    const onSave = vi.fn(acknowledgeTimelineSave);
+    render(<ProjectTimelineEditorSurface
+      projectId="project-a"
+      timeline={{ id: 'zoom-only', name: 'Zoom only', owner: { kind: 'project' }, revisionId: 'zoom-base', state: { tracks: [] } }}
+      mediaInputs={[]} canvases={[]} onSave={onSave} onOpenCanvas={vi.fn()} onRequestAsset={vi.fn()}
+    />);
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Preparing timeline' })).toBeNull());
+    const hashesBeforeZoom = vi.mocked(projectTimelineRevisionId).mock.calls.length;
+    act(() => timelineEditorApi.zoom());
+    expect(vi.mocked(projectTimelineRevisionId).mock.calls.length).toBe(hashesBeforeZoom);
+    expect(onSave).not.toHaveBeenCalled();
+    act(() => timelineEditorApi.mutate(120));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls.at(-1)?.[1].durationInFrames).toBe(120);
+  });
+
   it("opens a Project-owned Timeline without inventing a back action or rewriting unchanged state on unmount", async () => {
     const onSave = vi.fn(acknowledgeTimelineSave);
     const timeline = {
@@ -478,6 +506,25 @@ describe("Project workspace surfaces", () => {
     );
   });
 
+  it("keeps the editor instance when its own save returns through Host state", async () => {
+    const timeline: ProjectTimeline = {
+      id: "own-save", name: "Own save", owner: { kind: "project" },
+      revisionId: crypto.randomUUID(), state: { tracks: [] },
+    };
+    let accepted: ProjectTimeline | undefined;
+    const onSave = vi.fn((id: string, state: Record<string, unknown>) => {
+      accepted = acknowledgeTimelineSave(id, state);
+      return accepted;
+    });
+    const props = { mediaInputs: [], canvases: [], onSave, onOpenCanvas: vi.fn() };
+    const { rerender } = render(<ProjectTimelineEditorSurface {...props} timeline={timeline} />);
+    const key = (await screen.findByTestId("remotion-editor")).getAttribute("data-editor-key");
+    fireEvent.click(screen.getByRole("button", { name: "Apply editor mutation" }));
+    await waitFor(() => expect(accepted).toBeDefined());
+    rerender(<ProjectTimelineEditorSurface {...props} timeline={accepted!} />);
+    expect(screen.getByTestId("remotion-editor").getAttribute("data-editor-key")).toBe(key);
+  });
+
   it("waits for native save acknowledgements and drains edits made during a save before export", async () => {
     const timeline: ProjectTimeline = {
       id: "native-cut", name: "Native cut", owner: { kind: "project" },
@@ -505,12 +552,19 @@ describe("Project workspace surfaces", () => {
     expect(onExport).toHaveBeenCalledWith(timeline.id);
   });
 
-  it("keeps a rejected async save dirty and prevents export", async () => {
+  it.each([
+    "STALE_READ: Read again",
+    "structured caption text requires non-empty cues, wordRefs, and sourceToOutputMap",
+  ])("keeps a rejected async save dirty, exposes its reason and prevents export: %s", async (reason) => {
     const timeline: ProjectTimeline = {
       id: "conflicted-cut", name: "Conflicted", owner: { kind: "project" },
       revisionId: "before-conflict", state: { tracks: [] },
     };
-    const onSave = vi.fn(async () => { throw new Error("STALE_READ: Read again"); });
+    const onSave = vi.fn(async () => { throw new Error(reason); });
+    const notices: string[] = [];
+    const notice = (event: Event) => notices.push((event as CustomEvent<string>).detail);
+    window.addEventListener("clash:timeline-notice", notice);
+    try {
     const onExport = vi.fn();
     render(<ProjectTimelineEditorSurface timeline={timeline} mediaInputs={[]} canvases={[]}
       onSave={onSave} onExport={onExport} onOpenCanvas={vi.fn()} />);
@@ -521,6 +575,10 @@ describe("Project workspace surfaces", () => {
     });
     expect(onExport).not.toHaveBeenCalled();
     expect(onSave).toHaveBeenCalledWith(timeline.id, expect.anything(), projectTimelineReadToken(timeline));
+    expect(notices).toContain(reason);
+    } finally {
+      window.removeEventListener("clash:timeline-notice", notice);
+    }
   });
 
   it("persists the current Timeline before requesting a backend export", async () => {
@@ -704,6 +762,22 @@ describe("Project workspace surfaces", () => {
         "data-editor-key",
       ),
     ).toBe("timeline-after-warmup:timeline-revision-v1:after-warmup");
+  });
+
+  it("preserves Asset-only media references when another editor field changes", async () => {
+    const onSave = vi.fn(acknowledgeTimelineSave);
+    const tracks = [{ id: "media", name: "Media", items: [{
+      id: "clip", type: "video", assetId: "asset-video", from: 0, durationInFrames: 60,
+    }] }];
+    render(<ProjectTimelineEditorSurface
+      timeline={{ id: "asset-only", name: "Asset only", owner: { kind: "project" },
+        revisionId: "initial", state: { tracks } }}
+      mediaInputs={[{ sourceNodeId: "timeline-asset:asset-video", projectAssetId: "asset-video", type: "video", src: "/video.mp4" }]}
+      canvases={[]} onSave={onSave} onOpenCanvas={vi.fn()} />);
+    await screen.findByTestId("remotion-editor");
+    fireEvent.click(screen.getByRole("button", { name: "Apply editor mutation" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalled());
+    expect(onSave.mock.calls.at(-1)![1].tracks).toEqual(tracks);
   });
 
   it("resolves Canvas media without saving until a real editor mutation", async () => {

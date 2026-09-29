@@ -4,6 +4,40 @@ Clash remains local-first. A local-only Project can be edited without an
 account. `auth login` only stores an identity credential; it never uploads all
 local Projects and never changes the process-wide sync switch.
 
+## Desktop sign-in and project upgrade
+
+Settings → Sync offers Official cloud (`https://clash.art`) and a
+self-hosted service origin. The Host checks `GET /api/v1/cloud`, then opens
+the existing browser `/auth/cli` PKCE flow with a loopback callback. The
+renderer never receives the access token. Credentials are stored in the
+Host-private credential file by exact origin; HTTP is accepted only for
+loopback development servers.
+
+Signing in selects an account; it neither enables global sync nor uploads any
+Project. In a Project, choose **Cloud sync → Enable cloud sync** to admit that
+Project and start the existing canvas, metadata and immutable-resource
+synchronizer. Pending, failure and retry states come from Host records.
+**Open in Web** appears only after all required planes are ready and the
+matching service/account credential is available.
+
+An admitted Project remains bound to its original service, tenant and user.
+Changing the default service does not migrate Projects. Failed admission retries
+preserve that binding; overlapping admission requests are rejected until the
+current request finishes. Sign out clears the local service credential and
+stops new authenticated sync operations; it does not delete remote data or
+revoke every token/session on the server.
+
+### Compatible self-hosted deployments
+
+This journey requires the hosted Web login page, CLI authorization/token routes,
+and the new cloud discovery/account endpoints on the same public origin.
+Configure the admission sync URL to use that public gateway origin as well.
+Redirects and cross-origin admission responses are rejected rather than
+forwarding credentials elsewhere. The current Node-only API does not implement
+this browser PKCE surface, so it is not yet a compatible login target.
+Deploy the matching Web/api-cf version before using the entry point; selecting
+Official cloud does not itself establish that the live deployment is ready.
+
 ## Identity and ownership
 
 Better Auth owns the User identity. The current MVP uses the User as an
@@ -167,6 +201,103 @@ and status hook had no product callers and were removed; this is a status-contra
 fix, not evidence of a shipped sharing interface.
 
 ## Node and multi-container deployment
+
+### Implemented authorization boundary
+
+Project authentication and connection revalidation now share
+`@clash/shared-runtime/project-authorization`. The policy consumes normalized
+Project, API-token and session records; it imports neither Cloudflare bindings
+nor Node storage. JWT signature verification and Better Auth session resolution
+are trusted injected adapters. API tokens are hashed before storage lookup;
+connection evidence never retains the raw credential.
+
+Cloudflare's existing auth entry uses a D1 adapter. The narrow
+`@clash/shared-runtime/project-authorization-postgres` entry provides a PostgreSQL
+adapter through an injected query port compatible with a host-owned client/pool.
+Node cloud persistence targets PostgreSQL; Desktop Host SQLite remains local.
+The PostgreSQL adapter expects `project`, `api_token`, and `sessions` authority
+records with native `timestamptz` date columns. It normalizes dates to the shared
+policy milliseconds; D1 retains its backend schema units. PostgreSQL schema
+migrations and connection-pool lifecycle belong to the deployment host; the
+SQLite/D1 Drizzle schema is not a PostgreSQL migration.
+
+Project admission now uses `@clash/shared-runtime/project-cloud-admission` for
+request validation, personal-tenant identity, capabilities and response consistency.
+D1 implements the atomic persistence port with guarded batch SQL; PostgreSQL
+uses `project-cloud-admission-postgres` with a host-owned transaction callback.
+That callback must reserve one connection and commit or roll back the whole unit;
+issuing BEGIN/COMMIT through an unpinned pool is not an implementation of the port.
+Repeated admission preserves the persisted sync endpoint, readiness and admitted time.
+Both adapters reject other owners, deleted projects and mismatched project tenants.
+
+The initial PostgreSQL admission migration lives in
+`packages/shared-cloud-schema/postgres/0001_project_admission.sql`; it does not
+migrate Better Auth, billing or resource data and is not a D1 data conversion.
+PGlite and Miniflare verify SQL behavior and rollback locally. TCP/TLS, connection
+pooling and multiple server processes still need deployment acceptance.
+
+These are implemented authorization and admission slices, not a complete Node cloud deploy.
+`apps/api-node` now provides an API-token-authenticated HTTP admission service,
+pg connection-pool transactions and an explicit checksum-checked migration runner.
+It also provides API-token snapshot/log HTTP relay with SSE notification hints; resources, Better Auth login and token issuance remain pending.
+Its pending admissions do not grant sync readiness.
+
+The Node replication target keeps the stateless relay design in
+`docs/distributed-loro-sync-backend-research.md`. The initial deployment choice
+is PostgreSQL for the event log, durable outbox queue and LISTEN/NOTIFY wake-ups;
+a separate Redis service is not required. The notification publisher is a port.
+The internal PG log/queue and outbox dispatcher now exist. Event + queue writes
+commit together; leases and fenced acknowledgements allow retry after failure.
+Notifications contain only Project/cursor, not binary document contents.
+
+Stateless gateways must independently replay missed events from PG;
+claiming a queue job does not deliver an update to every connected gateway.
+Node checkpoint work is registered in the existing durable outbox in the same
+transaction as append. One pending checkpoint per Project coalesces new offsets;
+its initial ten-minute due time is not extended by later appends. The existing
+outbox executor handles checkpoint and notification queues separately. It restores
+the prior snapshot, imports through a captured target, checks gaps/dependencies,
+and publishes bytes/cursor monotonically. Fenced acknowledgement only clears work
+covered by that snapshot; a concurrent tail remains scheduled. Failed or crashed
+work is reclaimed after the execution lease expires. No standalone checkpoint
+polling process or client snapshot scheduler remains.
+
+Migration 0008 extends and backfills the outbox. Run migrations, then
+`pnpm --filter @clash/api-node worker:outbox`. This uses Node's existing durable
+queue; CF cron remains separate, and this change adds no generic Node cron API.
+The shared `replica-relay` port provides PG log/checkpoint storage; the
+`replica-stream-client` adapter uses `@loro-dev/streams-client` for HTTP append,
+snapshot reads, offset catch-up, SSE parsing and reconnect. The Node gateway relays opaque
+CRDT bytes and holds no LoroDoc. A cold client
+loads the latest full snapshot and its covered cursor, then reads logs after that
+cursor. Reconnection uses the last locally persisted cursor. Snapshot bytes and
+cursor are atomic; log pages capture a committed head. SSE carries actual log
+batches followed by SDK control frames. An entire batch must be locally persisted
+before its offset is saved. Transport receipt alone cannot advance applied progress.
+Client offsets are opaque strings, independent of Loro VersionVectors and PG's
+internal numeric cursor. A 410 catch-up response reloads the latest checkpoint.
+
+The Node experimental Loro WebSocket gateway has been retired. The Local Host
+discovers the `loro-streams-v1` transport, while Cloudflare ProjectRoom keeps its
+existing Loro protocol. Local mutation state remains client-owned; cloud checkpoint computation runs in the Node worker.
+An append ACK confirms durable bytes, not successful CRDT validation. Invalid logs
+stop checkpoint publication and client apply; repair/GC policy remains pending.
+The initial local-history upload is limited to 8 MiB; larger offline projects need
+chunked upload acceptance. The Node adapter retains complete log and idempotency
+history. Local real-PG multi-process evidence is recorded in the launch roadmap;
+TLS, multi-host networking, Fly and release capacity are not yet certified.
+The local Host is not that multi-user cloud service.
+
+The Node endpoint implements the SDK operations used by this product, not the
+whole Durable Streams service: HEAD, JSON record append/catch-up, latest/specific
+snapshot reads, and SSE live reads. Records contain an id and base64 CRDT bytes;
+snapshot bodies remain binary. Existing content-checked `Idempotency-Key` writes
+remain the retry boundary. Producer epochs, stream provisioning/deletion/closing,
+multipart bootstrap and long-poll are not implemented or advertised. Checkpoint
+publication remains internal to the worker. The obsolete private `/log` and
+`/events` transport endpoints have been removed; no released Node migration is
+claimed. SDK protocol references ship in its `docs/ds-protocol.md` and
+`docs/ds-extensions.md`.
 
 The cloud contract does not require Durable Objects. A Node deployment can put
 the same HTTP/WebSocket routes behind several containers and provide these

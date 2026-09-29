@@ -86,7 +86,7 @@
   --info-soft: var(--clash-blue-soft);
   --border: #e2e2e2;
   --input: #d8d8d8;
-  --ring: var(--clash-blue);
+  --ring: var(--clash-content-secondary);
 
   /* Component tokens. Contexts below remap these without changing component
      behavior or forking the Radix/cmdk implementation. */
@@ -511,7 +511,7 @@
   --info-soft: var(--clash-blue-soft);
   --border: #444444;
   --input: #4b4b4b;
-  --ring: var(--clash-blue);
+  --ring: var(--clash-content-secondary);
   --select-shadow: var(--clash-shadow-floating);
   --clash-agent-avatar-danger: #ff8069;
   --clash-brand-light: color-mix(
@@ -888,7 +888,11 @@ html.clash-desktop-route,
   --color-brand-foreground: var(--clash-warm-surface);
 }
 
-html.clash-desktop-route[data-clash-sidebar-collapsed="true"] {
+html[data-clash-sidebar-collapsed="false"] {
+  --clash-app-sidebar-width: var(--clash-app-sidebar-expanded-width);
+}
+
+html[data-clash-sidebar-collapsed="true"] {
   --clash-app-sidebar-width: var(--clash-app-sidebar-collapsed-width);
 }
 
@@ -1522,7 +1526,8 @@ html.dark .clash-is-scrolling::-webkit-scrollbar-thumb:hover {
   content: none;
 }
 
-.clash-settings-dialog-shell > * {
+.clash-settings-dialog-shell > aside,
+.clash-settings-dialog-shell > main {
   position: relative;
   z-index: 1;
 }
@@ -1706,7 +1711,6 @@ html.dark .clash-is-scrolling::-webkit-scrollbar-thumb:hover {
 
 .clash-copilot-launcher {
   border: 0;
-  background: transparent;
   box-shadow: none;
 }
 
@@ -5774,4 +5778,30 @@ html.dark .clash-download-card {
     rgba(25, 25, 25, 0.86)
   );
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+/* Thumbnail geometry: 96px outer width, 1px border + 4px padding per side
+   yields an 86px image viewport. Focus is inset, so a scrollport never clips it. */
+.clash-storyboard-candidate {
+  --candidate-width: 6rem;
+  --candidate-image-height: 4rem;
+  --candidate-border: 1px;
+  --candidate-padding: 0.25rem;
+  --candidate-focus-width: 2px;
+  box-sizing: border-box;
+  width: var(--candidate-width);
+  padding: var(--candidate-padding);
+  gap: var(--candidate-padding);
+  border-width: var(--candidate-border);
+  border-radius: var(--clash-workspace-control-radius);
+}
+.clash-storyboard-candidate-image { height: var(--candidate-image-height); }
+.clash-storyboard-candidate:focus-visible {
+  box-shadow: none;
+  outline: var(--candidate-focus-width) solid var(--control-focus);
+  outline-offset: calc(-1 * var(--candidate-focus-width));
+}
+
+html[data-clash-sidebar-collapsed="true"] .clash-web-main {
+  padding-top: 3rem;
 }

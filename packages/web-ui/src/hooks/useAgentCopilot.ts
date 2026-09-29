@@ -4,7 +4,7 @@ import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import { getRuntimeConfig } from '../lib/runtimeConfig';
 
-// Agent WebSocket goes through Next.js rewrite proxy (same origin).
+// Hosted Agent WebSocket goes through the Web Worker gateway (same origin).
 // No external URL needed — the /agents/* path is proxied to api-cf.
 const API_HOST = (() => {
   if (typeof window === 'undefined') return 'localhost:3000';
@@ -100,6 +100,10 @@ export function useAgentCopilot({ projectId, threadId, enabled = true, onCustomE
 
   const chat = useAgentChat({
     agent,
+    // The chat SDK fetches HTTP history independently of the socket's enabled
+    // flag. Local mode must not contact the hosted Supervisor endpoint.
+    getInitialMessages: enabled ? undefined : null,
+    resume: enabled,
     onError: (error) => {
       if (!enabled) return;
       console.error('[useAgentCopilot] Chat error:', error);

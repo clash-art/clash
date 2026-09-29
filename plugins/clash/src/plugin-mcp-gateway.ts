@@ -7,7 +7,7 @@ import {
   createLocalPluginHostRequest,
   rollbackDownloadedActionPackage,
   scaffoldExecutablePluginDraft,
-  tryInstallLocalMarketplaceAction,
+  tryInstallLocalMarketplacePlugin,
   validateExecutablePluginDraft,
 } from "@clash/cli/plugin";
 import type {
@@ -16,7 +16,7 @@ import type {
   PluginToolInput,
 } from "@clash/mcp-server";
 import { pluginIdSchema } from "@clash/shared-types";
-import type { ProjectHostConnection } from "@clash/shared-runtime/project-host-client";
+import { resolveProjectHostContext, type ProjectHostConnection } from "@clash/shared-runtime/project-host-client";
 
 type PluginConnectionClient = {
   resolveConnection?(): Promise<ProjectHostConnection>;
@@ -128,8 +128,9 @@ export function createPluginMcpGateway(options: {
         }
         case "clash_plugin_install": {
           const packageId = requiredString(input.id, "Marketplace plugin id");
-          const installed = await tryInstallLocalMarketplaceAction({
+          const installed = await tryInstallLocalMarketplacePlugin({
             packageId,
+            installation: input.installation ?? { scope: "projects", projectIds: [(await resolveProjectHostContext({ cwd: input.cwd })).projectId] },
             serverUrl: resolved.endpoint,
             ...(resolved.token ? { apiKey: resolved.token } : {}),
             request,

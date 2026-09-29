@@ -1,7 +1,10 @@
+import { useMediaQuery } from "../lib/hooks/useMediaQuery";
+import { SettingsPlugins } from "./SettingsPlugins";
 import { useCallback, useEffect, useState } from "react";
 import type { ComponentType } from "react";
 import {
   X,
+  ArrowsOutSimple,
   Plug,
   Key,
   PuzzlePiece,
@@ -53,6 +56,7 @@ interface NavItem {
 
 export const SETTINGS_NAV_ITEMS: NavItem[] = [
   { id: "appearance", label: "Appearance", icon: PaintBrush },
+  { id: "plugins", label: "Plugins", icon: PuzzlePiece },
   { id: "agents", label: "Agents", icon: Plug },
   { id: "sync", label: "Sync", icon: CloudArrowUp },
   { id: "public-storage", label: "Public storage", icon: CloudArrowUp },
@@ -74,6 +78,7 @@ const HOSTED_ONLY_SETTINGS_SECTIONS = new Set<SettingsSection>([
   "skills",
 ]);
 const LOCAL_ONLY_SETTINGS_SECTIONS = new Set<SettingsSection>([
+  "plugins",
   "public-storage",
   "media-analysis",
 ]);
@@ -93,9 +98,11 @@ type LoadState =
     };
 
 export interface SettingsSurfaceProps {
+  projectId?: string;
   active: SettingsSection;
   onActiveChange: (section: SettingsSection) => void;
   onClose?: () => void;
+  onExpand?: () => void;
   variant?: "dialog" | "page";
 }
 
@@ -197,13 +204,16 @@ function SettingsSurfaceLoadingSkeleton() {
 }
 
 export function SettingsSurface({
+  projectId,
   active,
   onActiveChange,
   onClose,
+  onExpand,
   variant = "dialog",
 }: SettingsSurfaceProps) {
   const [load, setLoad] = useState<LoadState>({ status: "idle" });
   const isPage = variant === "page";
+  const narrow = useMediaQuery("(max-width: 767px)");
   const hostedSettingsAvailable = supportsHostedSettings();
   const remoteWorkerVariablesAvailable = supportsRemoteWorkerVariables();
   const navItems = availableSettingsNavItems(hostedSettingsAvailable);
@@ -280,7 +290,9 @@ export function SettingsSurface({
   }, []);
 
   const settingsContent =
-    activeSection === "archive" ? (
+    activeSection === "plugins" ? (
+      <SettingsPlugins projectId={projectId} />
+    ) : activeSection === "archive" ? (
       <SessionArchiveLibrary />
     ) : load.status === "loading" || load.status === "idle" ? (
       <SettingsSurfaceLoadingSkeleton />
@@ -309,40 +321,39 @@ export function SettingsSurface({
         className={
           isPage
             ? "clash-settings-page-shell flex h-full min-h-full w-full overflow-hidden"
-            : "clash-settings-dialog-shell flex h-full overflow-hidden rounded-2xl"
+            : "clash-settings-dialog-shell relative flex h-full flex-col overflow-hidden rounded-2xl md:flex-row"
         }
       >
         <aside
-          className={`${isPage ? "clash-settings-page-sidebar" : "clash-settings-dialog-sidebar"} flex w-64 shrink-0 flex-col border-r border-border [--clash-settings-sidebar-item-inline-inset:0.5rem]`}
+          className={`${isPage ? "clash-settings-page-sidebar" : "clash-settings-dialog-sidebar"} flex w-full shrink-0 flex-col border-b border-border md:w-52 md:border-b-0 md:border-r [--clash-settings-sidebar-item-inline-inset:0.5rem]`}
         >
           <div className="clash-settings-sidebar-header flex h-10 shrink-0 items-center px-2">
-            {onClose ? (
-              <Tooltip label="Close settings">
+            <h1 className="px-[var(--clash-settings-sidebar-item-inline-inset)] font-display text-[13px] font-semibold leading-5 text-foreground">
+              Settings
+            </h1>
+            {!isPage && onExpand ? (
+              <Tooltip label="Open settings page">
                 <IconButton
-                  label="Close settings"
-                  icon={<X className="h-4 w-4" weight="bold" />}
+                  label="Open settings page"
+                  icon={<ArrowsOutSimple className="h-4 w-4" weight="bold" />}
                   shape="rounded"
                   size="sm"
-                  onClick={onClose}
-                  className="text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-ring/60"
+                  onClick={onExpand}
+                  className="ml-auto text-muted-foreground hover:bg-accent hover:text-foreground max-md:hidden"
                 />
               </Tooltip>
-            ) : (
-              <h1 className="px-[var(--clash-settings-sidebar-item-inline-inset)] font-display text-[13px] font-semibold leading-5 text-foreground">
-                Settings
-              </h1>
-            )}
+            ) : null}
           </div>
           <TabProvider
             selectedId={activeSection}
             setSelectedId={(section) => {
               if (isSettingsSection(section)) onActiveChange(section);
             }}
-            orientation="vertical"
+            orientation={narrow ? "horizontal" : "vertical"}
             focusLoop
           >
             <TabList
-              className="flex-1 space-y-0 overflow-y-auto px-2 py-1"
+              className="flex flex-row gap-1 overflow-x-auto px-2 py-1 md:flex-1 md:flex-col md:gap-0 md:overflow-y-auto"
               aria-label="Settings sections"
             >
               {navItems.map((item) => {
@@ -352,7 +363,7 @@ export function SettingsSurface({
                   <Tab
                     key={item.id}
                     id={item.id}
-                    className={`relative flex h-8 w-full items-center gap-2 rounded-md border px-[var(--clash-settings-sidebar-item-inline-inset)] text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
+                    className={`relative flex h-8 w-auto shrink-0 items-center md:w-full gap-2 rounded-md border px-[var(--clash-settings-sidebar-item-inline-inset)] text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
                       isActive
                         ? "border-border bg-accent text-foreground shadow-xs"
                         : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -391,9 +402,18 @@ export function SettingsSurface({
           {isPage ? (
             <AppPage>{settingsContent}</AppPage>
           ) : (
-            <div className="px-8 py-6">{settingsContent}</div>
+            <div className="px-4 py-6 md:px-6 md:pt-12">{settingsContent}</div>
           )}
         </main>
+        {onClose ? (
+          <IconButton
+            label="Close settings"
+            icon={<X className="size-4" />}
+            size="sm"
+            onClick={onClose}
+            className="absolute right-3 top-2 z-10 border-transparent bg-transparent text-muted-foreground shadow-none hover:bg-accent"
+          />
+        ) : null}
       </div>
     </ControlContextProvider>
   );

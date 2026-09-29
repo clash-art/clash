@@ -27,17 +27,7 @@ export const getMeasuredSize = (width: unknown, height: unknown): MediaSize | nu
     return { width: widthValue, height: heightValue };
 };
 
-export function calculateScaledDimensions(naturalWidth: number, naturalHeight: number): MediaSize {
-    if (!naturalWidth || !naturalHeight) {
-        return { width: DEFAULT_MEDIA_DIMENSION, height: DEFAULT_MEDIA_DIMENSION };
-    }
-
-    const scale = Math.min(1, MAX_MEDIA_DIMENSION / Math.max(naturalWidth, naturalHeight));
-    return {
-        width: Math.round(naturalWidth * scale),
-        height: Math.round(naturalHeight * scale),
-    };
-}
+export { calculateScaledDimensions } from '@clash/shared-layout';
 
 export function calculateDimensionsFromAspectRatio(aspectRatio?: string): MediaSize {
     if (!aspectRatio) {

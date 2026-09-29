@@ -9,9 +9,26 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScopedAssetPicker } from "./ScopedAssetPicker";
+import { mediaContentResult } from "../features/assets/content.test-fixtures";
 
 describe("ScopedAssetPicker", () => {
-  afterEach(cleanup);
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("finds media by Host analysis evidence even when its filename does not match", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...mediaContentResult("video-3377", [{
+      field: "content", attachmentId: "observed", document: { kind: "document", documentAssetId: "notes", revisionId: "notes-v1" }, documentKind: "media.observation", producer: { kind: "actor", actor: { kind: "agent" } }, sourceRefs: [], text: "Folding a shirt", location: { asset: { kind: "media", projectAssetId: "video-3377" }, startMs: 0, endMs: 2000 },
+    }, {
+      field: "content", attachmentId: "observed", document: { kind: "document", documentAssetId: "notes", revisionId: "notes-v1" }, documentKind: "media.observation", producer: { kind: "actor", actor: { kind: "agent" } }, sourceRefs: [], text: "A child folds a shirt",
+    }]), truncated: true })));
+    const onSelect = vi.fn();
+    render(<ScopedAssetPicker projectId="project-1" open onClose={vi.fn()} onSelect={onSelect} onUpload={vi.fn()} sections={[{ scope: "project", label: "Project", description: "", assets: [{ assetId: "video-3377", name: "3377.mp4", type: "video", src: "/3377.mp4", status: "ready", source: { kind: "project", assetId: "video-3377" } }] }]} />);
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search media" }), { target: { value: "shirt" } });
+    expect(await screen.findByText("Search results are incomplete. Refine your search.")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Add 3377.mp4" }));
+    expect(screen.getByText("Folding a shirt")).toBeTruthy();
+    expect(screen.getByText("00:00–00:02")).toBeTruthy();
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ assetId: "video-3377" }));
+  });
 
   it("renders scope groups and returns the selected source", () => {
     const onSelect = vi.fn();

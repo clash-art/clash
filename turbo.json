@@ -32,6 +32,11 @@
         "runtime/**"
       ]
     },
+    "@clash/web#build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"],
+      "inputs": ["$TURBO_DEFAULT$", "../../scripts/project-renderer-freshness.ts"]
+    },
     "dev": {
       "cache": false,
       "persistent": true

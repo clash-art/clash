@@ -142,7 +142,7 @@ async function stopHost(record: HostRecord | null): Promise<void> {
   }
 }
 
-function timelineYaml(sourceNodeId: string, label: string): string {
+function timelineYaml(assetId: string, label: string): string {
   return `compositionWidth: 1080
 compositionHeight: 1920
 fps: 30
@@ -155,7 +155,7 @@ tracks:
         type: image
         from: 0
         durationInFrames: 60
-        sourceNodeId: ${sourceNodeId}
+        assetId: ${assetId}
         label: ${label}
 `;
 }
@@ -265,11 +265,19 @@ async function main(): Promise<void> {
     );
     check("Canvas node scopes stay isolated", shotsNodes.some((node) => node.id === createdNode.node_id) && !mainNodes.some((node) => node.id === createdNode.node_id), JSON.stringify({ shotsNodes, mainNodes }));
 
+    const fixturePath = path.join(workspace, "timeline-fixture.png");
+    await writeFile(fixturePath, Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64",
+    ));
+    const imported = parseJson<{ assetId: string }>(await runCli([
+      "assets", "import", "--file", fixturePath, "--kind", "image", "--no-link", "--json",
+    ]));
+    check("Timeline fixture is a published Project Asset", Boolean(imported.assetId), JSON.stringify(imported));
     await runCli(["timeline", "create", "--id", "episode-1", "--name", "Episode 1", "--json"]);
     const pulled = parseJson<{ filePath: string; timelineId: string }>(
       await runCli(["timeline", "pull", "--timeline", "episode-1", "--json"]),
     );
-    await writeFile(pulled.filePath, timelineYaml(createdNode.node_id, "opening"), "utf8");
+    await writeFile(pulled.filePath, timelineYaml(imported.assetId, "opening"), "utf8");
     const applied = parseJson<{ applied: boolean; timelineId: string; revisionId: string }>(
       await runCli(["timeline", "apply", "--timeline", "episode-1", "--json"]),
     );
@@ -339,13 +347,13 @@ async function main(): Promise<void> {
     );
     await writeFile(
       concurrentPull.filePath,
-      timelineYaml(createdNode.node_id, "concurrent edit"),
+      timelineYaml(imported.assetId, "concurrent edit"),
       "utf8",
     );
     await runCli(["timeline", "apply", "--timeline", "episode-1", "--json"], {
       cwd: concurrentWorkspace,
     });
-    await writeFile(pulled.filePath, timelineYaml(createdNode.node_id, "stale edit"), "utf8");
+    await writeFile(pulled.filePath, timelineYaml(imported.assetId, "stale edit"), "utf8");
     const stale = await runCli(
       ["timeline", "apply", "--timeline", "episode-1", "--json"],
       { expectStatus: 1 },
@@ -353,7 +361,7 @@ async function main(): Promise<void> {
     check("stale Timeline apply is rejected", /STALE_READ|Stale|changed after/i.test(stale.stderr), stale.stderr);
 
     await runCli(["timeline", "pull", "--timeline", "episode-1", "--json"]);
-    await writeFile(pulled.filePath, timelineYaml(createdNode.node_id, "fresh edit"), "utf8");
+    await writeFile(pulled.filePath, timelineYaml(imported.assetId, "fresh edit"), "utf8");
     await runCli(["timeline", "apply", "--timeline", "episode-1", "--json"]);
 
     const observationPath = path.join(workspace, ".clash", "observed.json");

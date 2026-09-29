@@ -2,13 +2,33 @@
 import { act, renderHook, waitFor, cleanup } from "@testing-library/react";
 import { LoroDoc } from "loro-crdt";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectTimelineReadToken, type ProjectTimeline } from "@clash/shared-types";
+import { projectTimelineReadToken, type ProjectTimeline, type ProjectTimelineMutationResult } from "@clash/shared-types";
 import { useHostTimelines } from "./useHostTimelines";
 
 afterEach(cleanup);
 const timeline: ProjectTimeline = { id: "native-cut", name: "Native cut", owner: { kind: "project" }, revisionId: "host-original", state: { tracks: [] } };
 
 describe("Host Timeline state", () => {
+  it("returns the Host's validation reason without changing the accepted Timeline", async () => {
+    // Captured from the installed Host while an ordinary title was incorrectly
+    // authored as a structured subtitle (timeline-roll-save-rejection.json).
+    const rejection = {
+      code: "PROJECT_TIMELINE_DSL_INVALID",
+      error: "structured caption text requires non-empty cues, wordRefs, and sourceToOutputMap",
+    };
+    const request = vi.fn().mockResolvedValueOnce(Response.json({ timelines: [timeline], versions: { [timeline.id]: "receipt" } }))
+      .mockResolvedValueOnce(Response.json(rejection));
+    const onMutation = vi.fn();
+    const { result } = renderHook(() => useHostTimelines({ projectId: "project", doc: null, request, onMutation }));
+    await waitFor(() => expect(result.current.timelines).toEqual([timeline]));
+    await act(async () => {
+      const saved = await result.current.applyTimelineState(timeline.id, {}, { ifMatch: projectTimelineReadToken(timeline) });
+      expect(saved).toEqual({ ok: false, error: rejection.error });
+    });
+    expect(result.current.timelines).toEqual([timeline]);
+    expect(onMutation).toHaveBeenCalledWith(expect.objectContaining({ accepted: false, error: rejection.error }));
+  });
+
   it("sends creation, ownership changes, and deletion to the same Host authority", async () => {
     const created = { ...timeline, owner: { kind: "canvas-action" as const, canvasId: "shots", actionNodeId: "editor" } };
     const request = vi.fn().mockResolvedValueOnce(Response.json({ timelines: [], versions: {} }))
@@ -36,7 +56,7 @@ describe("Host Timeline state", () => {
     const onMutation = vi.fn();
     const { result } = renderHook(() => useHostTimelines({ projectId: "project", doc: null, request, onMutation }));
     await waitFor(() => expect(result.current.timelines).toEqual([timeline]));
-    await act(async () => { expect(await result.current.applyTimelineState(timeline.id, {}, { actorClientType: "agent" })).toBe(false); });
+    await act(async () => { expect(await result.current.applyTimelineState(timeline.id, {}, { actorClientType: "agent" })).toMatchObject({ ok: false, error: expect.any(String) }); });
     expect(request).toHaveBeenCalledOnce();
     expect(onMutation).toHaveBeenCalledWith(expect.objectContaining({ operation: "timeline_apply", accepted: false, beforeReadToken: projectTimelineReadToken(timeline) }));
     expect(result.current.timelines).toEqual([timeline]);
@@ -49,14 +69,14 @@ describe("Host Timeline state", () => {
     const { result } = renderHook(() => useHostTimelines({ projectId: "project", doc, request }));
     await waitFor(() => expect(result.current.timelines).toEqual([timeline]));
     const updated = { ...timeline, revisionId: "host-accepted", state: { tracks: [], durationInFrames: 72 } };
-    let saving!: Promise<ProjectTimeline | false>;
+    let saving!: Promise<ProjectTimelineMutationResult>;
     act(() => { saving = result.current.applyTimelineState(timeline.id, updated.state, { ifMatch: projectTimelineReadToken(timeline) }); });
     expect(result.current.timelines).toEqual([timeline]);
-    await act(async () => { accept(Response.json({ timeline: updated, readToken: "receipt-after" })); expect(await saving).toEqual(updated); });
+    await act(async () => { accept(Response.json({ timeline: updated, readToken: "receipt-after" })); expect(await saving).toEqual({ ok: true, timeline: updated }); });
     expect(result.current.timelines).toEqual([updated]);
     expect(doc.getMap("timelines").size).toBe(0);
     expect(JSON.parse(request.mock.calls[1]![1].body)).toMatchObject({ action: "update_timeline_state", ifMatch: "receipt-before" });
-    await act(async () => { expect(await result.current.applyTimelineState(timeline.id, {}, { ifMatch: projectTimelineReadToken(timeline) })).toBe(false); });
+    await act(async () => { expect(await result.current.applyTimelineState(timeline.id, {}, { ifMatch: projectTimelineReadToken(timeline) })).toMatchObject({ ok: false, error: expect.stringContaining("STALE_READ") }); });
     expect(result.current.timelines).toEqual([updated]);
   });
 

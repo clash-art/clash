@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeCopilotAssetComposerValue } from "./projectAssetReferences";
+import {
+  normalizeCopilotAssetComposerValue,
+  projectAssetMention,
+} from "./projectAssetReferences";
 
 describe("normalizeCopilotAssetComposerValue", () => {
+  it("round-trips file labels containing brackets and backslashes", () => {
+    const label = "Portrait [final] \\ take 2";
+    const normalized = normalizeCopilotAssetComposerValue(
+      projectAssetMention(label, "asset/portrait"),
+      [{ id: "asset/portrait", type: "image", kind: "asset", label }],
+    );
+    expect(normalized.assets).toEqual([
+      { projectAssetId: "asset/portrait", kind: "image", label },
+    ]);
+  });
   it("replaces imported media projections with storage-neutral Project Asset mentions", () => {
     const result = normalizeCopilotAssetComposerValue(
       [
@@ -27,7 +40,9 @@ describe("normalizeCopilotAssetComposerValue", () => {
         },
       ],
     });
-    expect(JSON.stringify(result)).not.toMatch(/host\.test|file:|\/private\/cas/);
+    expect(JSON.stringify(result)).not.toMatch(
+      /host\.test|file:|\/private\/cas/,
+    );
   });
 
   it("keeps Canvas node mentions distinct while typing Project Asset mentions", () => {

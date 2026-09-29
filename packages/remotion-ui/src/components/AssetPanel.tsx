@@ -198,13 +198,13 @@ export const AssetPanel: React.FC<AssetPanelProps> = ({
       <div
         data-asset-panel-body=""
         className={compact
-          ? 'clash-timeline-panel-surface rounded-matrix bg-warm-surface p-2 min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto'
+          ? 'clash-timeline-panel-surface rounded-matrix bg-warm-surface p-3 min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto'
           : 'min-h-0 min-w-0 flex-1 overflow-auto p-4'}
       >
         {/* Upload Section */}
         {showUploadControls && (
         <div className={compact ? 'mb-4' : 'mb-6'}>
-          <div className={`flex items-center justify-between ${compact ? 'mb-1.5 min-h-7 px-1' : 'mb-3'}`}>
+          <div className={`flex items-center justify-between ${compact ? 'mb-1.5 min-h-7' : 'mb-3'}`}>
             <h3 className={`m-0 font-display font-semibold text-stone-500 ${editorTypeClassName.control}`}>
               Media files
             </h3>
@@ -247,7 +247,7 @@ export const AssetPanel: React.FC<AssetPanelProps> = ({
 
         {/* Assets List */}
         {compact ? (
-          <div className="flex h-8 items-center justify-between px-1">
+          <div className="flex h-8 items-center justify-between">
             <h3 className={`m-0 font-display font-semibold text-stone-500 ${editorTypeClassName.control}`}>
               Timeline media
             </h3>
@@ -258,7 +258,7 @@ export const AssetPanel: React.FC<AssetPanelProps> = ({
         ) : null}
         <div data-asset-list="" className={`flex min-w-0 flex-col ${compact ? 'gap-0' : 'gap-2'}`}>
           {assets.length === 0 ? (
-            <div className={compact ? 'px-1 py-7 text-left' : 'rounded-md border border-dashed border-warm-border bg-warm-surface/60 py-8 text-center'}>
+            <div className={compact ? 'py-7 text-left' : 'rounded-md border border-dashed border-warm-border bg-warm-surface/60 py-8 text-center'}>
               <p className={`${editorTypeClassName.item} ${compact ? 'font-semibold text-slate-700 dark:text-stone-300' : 'text-slate-400 dark:text-stone-500'}`}>
                 No media in this edit
               </p>
@@ -274,7 +274,7 @@ export const AssetPanel: React.FC<AssetPanelProps> = ({
                 key={asset.id}
                 draggable
                 onDragStart={(e) => handleAssetDragStart(e, asset)}
-                className={`group flex w-full min-w-0 cursor-move items-center overflow-hidden transition-colors ${compact ? 'gap-2 rounded-lg px-1 py-2 hover:bg-warm-muted/70' : 'gap-3 rounded-md border border-warm-border bg-warm-surface p-2 hover:border-brand/40 hover:bg-brand-light/35 hover:shadow-sm'}`}
+                className={`group flex w-full min-w-0 cursor-move items-center overflow-hidden transition-colors ${compact ? 'gap-2 rounded-lg py-2 hover:bg-warm-muted/70' : 'gap-3 rounded-md border border-warm-border bg-warm-surface p-2 hover:border-brand/40 hover:bg-brand-light/35 hover:shadow-sm'}`}
               >
                 <AssetThumbnail asset={asset} compact={compact} />
                 <div className="flex-1 min-w-0 overflow-hidden">
@@ -288,7 +288,7 @@ export const AssetPanel: React.FC<AssetPanelProps> = ({
                   aria-label={`Remove ${asset.name} from Timeline media`}
                   title="Remove from Timeline media"
                   onClick={() => dispatch({ type: 'REMOVE_ASSET', payload: asset.id })}
-                  className="flex h-6 w-6 items-center justify-center rounded text-slate-400 opacity-60 transition-[color,background-color,opacity] hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:opacity-100 dark:text-stone-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 opacity-60 transition-[color,background-color,opacity] hover:bg-red-50 hover:text-red-600 hover:opacity-100 focus-visible:opacity-100 dark:text-stone-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
                 >
                   ×
                 </RemotionButton>

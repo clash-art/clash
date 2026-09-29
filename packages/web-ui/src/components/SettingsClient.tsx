@@ -1,3 +1,4 @@
+import { CloudAccountPanel } from "./CloudConnection";
 import {
   useState,
   useCallback,
@@ -142,6 +143,7 @@ import { type ThemePreference } from "../lib/theme";
 /** Stable identifiers for each section pane — shared between the legacy
  *  SettingsSurface. The host uses these as its sidebar nav keys. */
 export type SettingsSection =
+  | "plugins"
   | "appearance"
   | "agents"
   | "sync"
@@ -1388,21 +1390,12 @@ export default function SettingsClient({
 
       {/* ── API Tokens ── */}
       {showSection("tokens") && (
-        <section>
-          <div className="flex items-center gap-3 mb-5">
-            <Key
-              className="h-5 w-5 text-stone-600 dark:text-stone-300"
-              weight="bold"
-            />
-            <div>
-              <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-                API Tokens
-              </h2>
-              <p className="text-sm text-stone-600 dark:text-stone-300">
-                For CLI and agent access
-              </p>
-            </div>
-          </div>
+        <SettingsSectionLayout>
+          <SettingsSectionHeader
+            title="API Tokens"
+            icon={<Key className="size-4" weight="bold" />}
+            description="For CLI and agent access"
+          />
 
           <form className="flex gap-2 mb-4" onSubmit={handleCreateTokenSubmit}>
             <Input
@@ -1510,7 +1503,7 @@ export default function SettingsClient({
               ))}
             </div>
           )}
-        </section>
+        </SettingsSectionLayout>
       )}
 
       {showAll && <hr className="border-warm-border" />}
@@ -1543,21 +1536,12 @@ export default function SettingsClient({
 
       {/* ── Variables: hidden compatibility section for raw secret variables. ── */}
       {activeSection === "variables" && (
-        <section>
-          <div className="flex items-center gap-3 mb-5">
-            <Lock
-              className="h-5 w-5 text-stone-600 dark:text-stone-300"
-              weight="bold"
-            />
-            <div>
-              <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-                API Keys
-              </h2>
-              <p className="text-sm text-stone-600 dark:text-stone-300">
-                OpenAI image generation and canvas action keys
-              </p>
-            </div>
-          </div>
+        <SettingsSectionLayout>
+          <SettingsSectionHeader
+            title="API Keys"
+            icon={<Lock className="size-4" weight="bold" />}
+            description="OpenAI image generation and canvas action keys"
+          />
 
           <div className="mb-5 divide-y divide-warm-border border-y border-warm-border">
             {providerPresets.map((preset) => {
@@ -1683,7 +1667,7 @@ export default function SettingsClient({
               ))}
             </div>
           )}
-        </section>
+        </SettingsSectionLayout>
       )}
 
       {showAll && <hr className="border-warm-border" />}
@@ -1716,28 +1700,20 @@ export default function SettingsClient({
 
       {/* ── Installed Actions ── */}
       {showSection("actions") && (
-        <section>
-          <div className="flex items-center gap-3 mb-5">
-            <PuzzlePiece
-              className="h-5 w-5 text-stone-600 dark:text-stone-300"
-              weight="bold"
-            />
-            <div className="flex-1">
-              <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-                Legacy Action records
-              </h2>
-              <p className="text-sm text-stone-600 dark:text-stone-300">
-                Historical manifests; executable plugins are managed by the Local
-                Host
-              </p>
-            </div>
-            <Link
-              to="/marketplace/manage"
-              className="text-sm font-medium text-stone-600 transition-colors hover:text-brand dark:text-stone-300 dark:hover:text-brand"
-            >
-              Browse
-            </Link>
-          </div>
+        <SettingsSectionLayout>
+          <SettingsSectionHeader
+            title="Legacy Action records"
+            icon={<PuzzlePiece className="size-4" weight="bold" />}
+            description="Historical manifests; executable plugins are managed by the Local Host"
+            action={
+              <Link
+                to="/marketplace/manage"
+                className="text-sm font-medium text-stone-600 transition-colors hover:text-brand dark:text-stone-300 dark:hover:text-brand"
+              >
+                Browse
+              </Link>
+            }
+          />
 
           {actions.length === 0 ? (
             <div className="rounded-xl border border-dashed border-warm-border py-10 text-center">
@@ -1842,34 +1818,27 @@ export default function SettingsClient({
               })}
             </div>
           )}
-        </section>
+        </SettingsSectionLayout>
       )}
 
       {showAll && <hr className="border-warm-border" />}
 
       {/* ── Installed Skills ── */}
       {showSection("skills") && (
-        <section>
-          <div className="flex items-center gap-3 mb-5">
-            <BookOpen
-              className="h-5 w-5 text-stone-600 dark:text-stone-300"
-              weight="bold"
-            />
-            <div className="flex-1">
-              <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-                Installed Skills
-              </h2>
-              <p className="text-sm text-stone-600 dark:text-stone-300">
-                AI agent skills for Claude
-              </p>
-            </div>
-            <Link
-              to="/marketplace/manage"
-              className="text-sm font-medium text-stone-600 transition-colors hover:text-brand dark:text-stone-300 dark:hover:text-brand"
-            >
-              Browse
-            </Link>
-          </div>
+        <SettingsSectionLayout>
+          <SettingsSectionHeader
+            title="Installed Skills"
+            icon={<BookOpen className="size-4" weight="bold" />}
+            description="AI agent skills for Claude"
+            action={
+              <Link
+                to="/marketplace/manage"
+                className="text-sm font-medium text-stone-600 transition-colors hover:text-brand dark:text-stone-300 dark:hover:text-brand"
+              >
+                Browse
+              </Link>
+            }
+          />
 
           {skills.length === 0 ? (
             <div className="rounded-xl border border-dashed border-warm-border py-10 text-center">
@@ -1928,27 +1897,22 @@ export default function SettingsClient({
               ))}
             </div>
           )}
-        </section>
+        </SettingsSectionLayout>
       )}
 
       {showAll && <hr className="border-warm-border" />}
 
       {/* ── CLI ── */}
       {showSection("cli") && (
-        <section className="pb-4">
-          <div className="flex items-center gap-3 mb-4">
-            <Terminal
-              className="h-5 w-5 text-stone-600 dark:text-stone-300"
-              weight="bold"
-            />
-            <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-              CLI
-            </h2>
-          </div>
+        <SettingsSectionLayout>
+          <SettingsSectionHeader
+            title="CLI"
+            icon={<Terminal className="size-4" weight="bold" />}
+          />
           <code className="block rounded-xl bg-warm-muted border border-warm-border px-4 py-3 text-sm font-mono text-stone-700 dark:text-stone-200">
             npm install -g @clash/cli
           </code>
-        </section>
+        </SettingsSectionLayout>
       )}
     </div>
   );
@@ -6302,162 +6266,11 @@ function ModelRoutingSection({
   );
 }
 
-/**
- * Sync — local daemon cloud sync mode.
- */
-interface LocalSyncConfig {
-  mode: "local-only" | "cloud-sync";
-  remote_loro: {
-    enabled: boolean;
-    url: string | null;
-    has_token: boolean;
-    source: "none" | "env" | "config";
-  };
-  capabilities?: LocalSyncCapabilities;
-}
-
-interface LocalSyncCapabilities {
-  canvas: boolean;
-  asset_metadata: boolean;
-  revision_content: boolean;
-  project_metadata: boolean;
-}
-
-function defaultLocalSyncCapabilities(): LocalSyncCapabilities {
-  return {
-    canvas: false,
-    asset_metadata: false,
-    revision_content: false,
-    project_metadata: false,
-  };
-}
-
-function normalizeLocalSyncCapabilities(
-  value: LocalSyncConfig["capabilities"],
-): LocalSyncCapabilities {
-  return {
-    ...defaultLocalSyncCapabilities(),
-    ...(value ?? {}),
-  };
-}
-
+/** Cloud account selection is separate from per-project admission. */
 function SyncSection() {
-  const rt = useClashRuntime();
-  const feedback = useAppFeedback();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [removingRuntimeId, setRemovingRuntimeId] = useState<string | null>(
-    null,
-  );
-  const [mode, setMode] = useState<"local-only" | "cloud-sync">("local-only");
-  const [remoteUrl, setRemoteUrl] = useState("");
-  const [remoteToken, setRemoteToken] = useState("");
-  const [hasToken, setHasToken] = useState(false);
-  const [source, setSource] = useState<"none" | "env" | "config">("none");
-  const [capabilities, setCapabilities] = useState<LocalSyncCapabilities>(() =>
-    defaultLocalSyncCapabilities(),
-  );
-  const syncVersionRef = useRef(0);
-
-  const markDirty = useCallback(() => {
-    syncVersionRef.current += 1;
-    setDirty(true);
-    setError(null);
-  }, []);
-
-  const applyConfig = useCallback((config: LocalSyncConfig) => {
-    setMode(config.mode);
-    setRemoteUrl(config.remote_loro.url ?? "");
-    setRemoteToken("");
-    setHasToken(config.remote_loro.has_token);
-    setSource(config.remote_loro.source);
-    setCapabilities(normalizeLocalSyncCapabilities(config.capabilities));
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetch(runtimeApiUrl("/api/v1/local/sync"), { credentials: "include" })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return (await res.json()) as LocalSyncConfig;
-      })
-      .then((config) => {
-        if (cancelled) return;
-        applyConfig(config);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [applyConfig]);
-
-  useEffect(() => {
-    if (loading || !dirty) return;
-    if (mode === "cloud-sync" && !remoteUrl.trim()) return;
-    const version = syncVersionRef.current;
-    const timer = window.setTimeout(() => {
-      setSaving(true);
-      setError(null);
-      const body: Record<string, unknown> = {
-        mode,
-        remote_loro_url: mode === "cloud-sync" ? remoteUrl.trim() : null,
-        capabilities:
-          mode === "cloud-sync" ? capabilities : defaultLocalSyncCapabilities(),
-      };
-      if (remoteToken.trim()) body.remote_loro_token = remoteToken.trim();
-      void fetch(runtimeApiUrl("/api/v1/local/sync"), {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      })
-        .then(async (res) => {
-          if (!res.ok) {
-            const json = (await res.json().catch(() => null)) as {
-              error?: string;
-            } | null;
-            throw new Error(json?.error ?? `HTTP ${res.status}`);
-          }
-          return (await res.json()) as LocalSyncConfig;
-        })
-        .then((config) => {
-          if (syncVersionRef.current !== version) return;
-          setDirty(false);
-          applyConfig(config);
-          feedback.notify({
-            variant: "success",
-            title: "Sync settings saved",
-          });
-        })
-        .catch((err) => {
-          if (syncVersionRef.current !== version) return;
-          setError(err instanceof Error ? err.message : String(err));
-        })
-        .finally(() => {
-          if (syncVersionRef.current === version) setSaving(false);
-        });
-    }, 450);
-    return () => window.clearTimeout(timer);
-  }, [
-    applyConfig,
-    capabilities,
-    dirty,
-    feedback,
-    loading,
-    mode,
-    remoteToken,
-    remoteUrl,
-  ]);
-
+  const rt=useClashRuntime();
+  const feedback=useAppFeedback();
+  const [removingRuntimeId,setRemovingRuntimeId]=useState<string|null>(null);
   const onRemoveRuntime = useCallback(
     async (id: string, label: string) => {
       if (
@@ -6489,115 +6302,10 @@ function SyncSection() {
     [feedback, rt],
   );
 
-
-  return (
-    <SettingsSectionLayout aria-labelledby="sync-heading">
-      <SettingsSectionHeader
-        title="Sync"
-        titleId="sync-heading"
-        description="Connection details for project cloud admission. Each project controls its own sync admission."
-        icon={<CloudArrowUp className="size-4" weight="bold" />}
-        action={
-          <span className="rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground">
-            {mode === "cloud-sync" ? "Cloud endpoint" : "No default endpoint"}
-          </span>
-        }
-      />
-
-      {loading ? (
-        <SettingsFormSkeleton
-          ariaLabel="Loading sync settings"
-          variant="sync"
-        />
-      ) : (
-        <SettingsAnimatedBody className="space-y-4">
-          <RadioGroup
-            aria-label="Default cloud connection"
-            value={mode}
-            onValueChange={(nextMode) => {
-              if (nextMode === "local-only" || nextMode === "cloud-sync") {
-                setMode(nextMode);
-                markDirty();
-              }
-            }}
-            className="grid grid-cols-1 gap-2 sm:grid-cols-2"
-          >
-            <RadioGroupItem
-              value="local-only"
-              className="rounded-[var(--settings-row-radius)] p-3 data-[state=checked]:bg-[var(--control-bg-open)]"
-            >
-              <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
-                No default endpoint
-              </span>
-              <span className="mt-1 block text-xs text-stone-600 dark:text-stone-300">
-                No default endpoint for new project admissions.
-              </span>
-            </RadioGroupItem>
-            <RadioGroupItem
-              value="cloud-sync"
-              className="rounded-[var(--settings-row-radius)] p-3 data-[state=checked]:bg-[var(--control-bg-open)]"
-            >
-              <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
-                Cloud endpoint
-              </span>
-              <span className="mt-1 block text-xs text-stone-600 dark:text-stone-300">
-                Configure the cloud connection for project admission.
-              </span>
-            </RadioGroupItem>
-          </RadioGroup>
-
-          <SettingsPanel className="space-y-3 p-4">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-stone-600 dark:text-stone-300">
-                Remote Loro URL
-              </span>
-              <Input
-                aria-label="Remote Loro URL"
-                type="url"
-                value={remoteUrl}
-                onChange={(e) => {
-                  setRemoteUrl(e.target.value);
-                  markDirty();
-                }}
-                placeholder="https://api.example.com"
-                disabled={mode !== "cloud-sync"}
-                controlSize="lg"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-stone-600 dark:text-stone-300">
-                Remote Loro token
-              </span>
-              <Input
-                aria-label="Remote Loro token"
-                type="password"
-                value={remoteToken}
-                onChange={(e) => {
-                  setRemoteToken(e.target.value);
-                  markDirty();
-                }}
-                placeholder={hasToken ? "Token saved" : "Bearer token"}
-                disabled={mode !== "cloud-sync"}
-                controlSize="lg"
-              />
-            </label>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-stone-500 dark:text-stone-400">
-              <span>{hasToken ? "Token saved" : "No token saved"}</span>
-              <span>·</span>
-              <span>Source: {source}</span>
-            </div>
-          </SettingsPanel>
-
-          {error && <InlineAlert tone="error" title={error} />}
-          {saving && (
-            <div
-              className="text-sm font-medium text-stone-500 dark:text-stone-400"
-              aria-live="polite"
-            >
-              Saving sync settings…
-            </div>
-          )}
-
+  return <SettingsSectionLayout aria-labelledby="sync-heading">
+    <SettingsSectionHeader title="Sync" titleId="sync-heading" description="Sign in to a cloud service, then enable sync for individual projects." icon={<CloudArrowUp className="size-4" weight="bold"/>}/>
+    <SettingsAnimatedBody className="space-y-4">
+      <CloudAccountPanel/>
           <div className="mt-7 border-t border-warm-border pt-5">
             <div className="mb-3">
               <h3 className="font-display text-sm font-bold text-slate-900 dark:text-slate-50">
@@ -6672,10 +6380,8 @@ function SyncSection() {
               </div>
             )}
           </div>
-        </SettingsAnimatedBody>
-      )}
-    </SettingsSectionLayout>
-  );
+    </SettingsAnimatedBody>
+  </SettingsSectionLayout>;
 }
 
 type PublicStorageMode = "disabled" | "byos" | "managed";
@@ -6891,27 +6597,19 @@ function PublicStorageSection() {
   }, [feedback]);
 
   return (
-    <section>
-      <div className="mb-5 flex items-center gap-3">
-        <CloudArrowUp
-          className="h-5 w-5 text-stone-600 dark:text-stone-300"
-          weight="bold"
-        />
-        <div className="flex-1">
-          <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-            Public storage
-          </h2>
-          <p className="text-sm text-stone-600 dark:text-stone-300">
-            Publishes short-lived signed URLs when a model provider requires an
-            internet-reachable asset.
-          </p>
-        </div>
-        {config ? (
-          <span className="rounded-lg border border-warm-border bg-warm-muted px-3 py-1 text-xs font-medium text-stone-700 dark:text-stone-200">
-            {config.available ? "Ready" : "Not configured"}
-          </span>
-        ) : null}
-      </div>
+    <SettingsSectionLayout>
+      <SettingsSectionHeader
+        title="Public storage"
+        description="Publishes short-lived signed URLs when a model provider requires an internet-reachable asset."
+        icon={<CloudArrowUp className="size-4" weight="bold" />}
+        action={
+          config ? (
+            <span className="rounded-md border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground">
+              {config.available ? "Ready" : "Not configured"}
+            </span>
+          ) : null
+        }
+      />
 
       {loading ? (
         <SettingsFormSkeleton
@@ -6938,7 +6636,10 @@ function PublicStorageSection() {
             }}
             className="grid grid-cols-1 gap-2 sm:grid-cols-2"
           >
-            <RadioGroupItem value="disabled" className="rounded-xl p-4">
+            <RadioGroupItem
+              value="disabled"
+              className="rounded-[var(--settings-row-radius)] p-3"
+            >
               <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
                 Disabled
               </span>
@@ -6946,7 +6647,10 @@ function PublicStorageSection() {
                 Functions that require public storage stay unavailable.
               </span>
             </RadioGroupItem>
-            <RadioGroupItem value="byos" className="rounded-xl p-4">
+            <RadioGroupItem
+              value="byos"
+              className="rounded-[var(--settings-row-radius)] p-3"
+            >
               <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
                 Use my storage
               </span>
@@ -6955,7 +6659,10 @@ function PublicStorageSection() {
               </span>
             </RadioGroupItem>
             {config?.managed.available && config.managed.authenticated ? (
-              <RadioGroupItem value="managed" className="rounded-xl p-4">
+              <RadioGroupItem
+                value="managed"
+                className="rounded-[var(--settings-row-radius)] p-3"
+              >
                 <span className="block text-sm font-semibold text-slate-900 dark:text-slate-50">
                   Clash managed
                 </span>
@@ -6967,9 +6674,9 @@ function PublicStorageSection() {
           </RadioGroup>
 
           {mode === "byos" ? (
-            <div className="space-y-4 rounded-xl border border-warm-border bg-warm-surface p-4">
-              <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
-                <span>Storage provider</span>
+            <SettingsPanel className="space-y-4 p-3">
+              <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
+                <span className="block">Storage provider</span>
                 <SelectMenu
                   ariaLabel="Storage provider"
                   value={provider}
@@ -6979,25 +6686,27 @@ function PublicStorageSection() {
                     if (value === "r2") setRegion("auto");
                     if (value === "tos") setForcePathStyle(false);
                   }}
+                  className="w-full"
+                  menuWidth="trigger"
                   variant="field"
                 />
               </label>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-3 sm:grid-cols-2">
                 {provider === "r2" ? (
-                  <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                  <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                     <span>Account ID</span>
                     <Input
                       aria-label="Account ID"
                       value={accountId}
                       onChange={(event) => setAccountId(event.target.value)}
-                      controlSize="lg"
+                      controlSize="default"
                       className="font-mono"
                     />
                   </label>
                 ) : null}
                 {provider === "custom-s3" ? (
-                  <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                  <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                     <span>Endpoint</span>
                     <Input
                       aria-label="Endpoint"
@@ -7005,23 +6714,23 @@ function PublicStorageSection() {
                       value={endpoint}
                       onChange={(event) => setEndpoint(event.target.value)}
                       placeholder="https://objects.example.com"
-                      controlSize="lg"
+                      controlSize="default"
                       className="font-mono"
                     />
                   </label>
                 ) : null}
-                <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                   <span>Bucket</span>
                   <Input
                     aria-label="Bucket"
                     value={bucket}
                     onChange={(event) => setBucket(event.target.value)}
-                    controlSize="lg"
+                    controlSize="default"
                     className="font-mono"
                   />
                 </label>
                 {provider !== "r2" ? (
-                  <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                  <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                     <span>Region</span>
                     <Input
                       aria-label="Region"
@@ -7030,12 +6739,12 @@ function PublicStorageSection() {
                       placeholder={
                         provider === "tos" ? "cn-beijing" : "us-east-1"
                       }
-                      controlSize="lg"
+                      controlSize="default"
                       className="font-mono"
                     />
                   </label>
                 ) : null}
-                <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                   <span>Access key ID</span>
                   <Input
                     aria-label="Access key ID"
@@ -7048,11 +6757,11 @@ function PublicStorageSection() {
                         ? "Saved; leave blank to keep"
                         : ""
                     }
-                    controlSize="lg"
+                    controlSize="default"
                     className="font-mono"
                   />
                 </label>
-                <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                   <span>Secret access key</span>
                   <Input
                     aria-label="Secret access key"
@@ -7065,12 +6774,12 @@ function PublicStorageSection() {
                         ? "Saved; leave blank to keep"
                         : ""
                     }
-                    controlSize="lg"
+                    controlSize="default"
                     className="font-mono"
                   />
                 </label>
                 {provider === "aws-s3" || provider === "custom-s3" ? (
-                  <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                  <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                     <span>Session token (optional)</span>
                     <Input
                       aria-label="Session token"
@@ -7083,25 +6792,25 @@ function PublicStorageSection() {
                           ? "Saved; leave blank to keep"
                           : ""
                       }
-                      controlSize="lg"
+                      controlSize="default"
                       className="font-mono"
                     />
                   </label>
                 ) : null}
-                <label className="block space-y-1.5 text-sm font-medium text-slate-900 dark:text-slate-50">
+                <label className="block space-y-1.5 text-[length:var(--settings-type-size)] font-medium text-foreground">
                   <span>Key prefix</span>
                   <Input
                     aria-label="Key prefix"
                     value={keyPrefix}
                     onChange={(event) => setKeyPrefix(event.target.value)}
-                    controlSize="lg"
+                    controlSize="default"
                     className="font-mono"
                   />
                 </label>
               </div>
 
               {provider === "custom-s3" ? (
-                <label className="flex items-center gap-3 text-sm font-medium text-slate-900 dark:text-slate-50">
+                <label className="flex items-center gap-3 text-[length:var(--settings-type-size)] font-medium text-foreground">
                   <Switch
                     aria-label="Use path-style URLs"
                     checked={forcePathStyle}
@@ -7116,7 +6825,7 @@ function PublicStorageSection() {
                   virtual-hosted addressing for the selected region.
                 </p>
               ) : null}
-            </div>
+            </SettingsPanel>
           ) : null}
 
           {error ? <InlineAlert tone="error" title={error} /> : null}
@@ -7142,7 +6851,7 @@ function PublicStorageSection() {
           </SettingsActions>
         </form>
       )}
-    </section>
+    </SettingsSectionLayout>
   );
 }
 
@@ -7363,8 +7072,8 @@ function LocalSpeechSettingsCard({
   );
 
   return (
-    <div className="rounded-xl border border-warm-border bg-warm-surface p-4">
-      <div className="flex items-start justify-between gap-4 border-b border-warm-border pb-4">
+    <SettingsPanel className="p-3">
+      <div className="flex items-start justify-between gap-4 border-b border-border pb-3">
         <div>
           <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-50">
             {title}
@@ -7384,7 +7093,7 @@ function LocalSpeechSettingsCard({
           </span>
         )}
       </div>
-      <label className="mt-4 block">
+      <label className="mt-3 block">
         <span className="mb-1.5 block text-xs font-medium text-stone-600 dark:text-stone-300">
           {modelLabel}
         </span>
@@ -7402,7 +7111,7 @@ function LocalSpeechSettingsCard({
           <Button
             aria-label={modelLabel}
             onClick={onConfigure}
-            className="h-10 w-full justify-between text-muted-foreground"
+            className="w-full justify-between text-muted-foreground"
           >
             <span className="min-w-0 flex-1 truncate text-left">
               {hasModel ? selectedModelValue : "Select"}
@@ -7419,7 +7128,7 @@ function LocalSpeechSettingsCard({
           {switchDisabledReason}
         </p>
       )}
-    </div>
+    </SettingsPanel>
   );
 }
 
@@ -7561,12 +7270,12 @@ function MediaAnalysisSection() {
 
   if (loading || !settings) {
     return (
-      <section>
+      <SettingsSectionLayout>
         <SettingsFormSkeleton
           ariaLabel="Loading media analysis settings"
           variant="audio"
         />
-      </section>
+      </SettingsSectionLayout>
     );
   }
 
@@ -7984,21 +7693,12 @@ function AudioSection({
     [asrBlockingReason, markDirty, openAsrSetupDialog],
   );
   return (
-    <section>
-      <div className="mb-5 flex items-center gap-3">
-        <Microphone
-          className="h-5 w-5 text-stone-600 dark:text-stone-300"
-          weight="bold"
-        />
-        <div className="flex-1">
-          <h2 className="font-display text-base font-bold text-slate-900 dark:text-slate-50">
-            Microphone transcription
-          </h2>
-          <p className="text-sm text-stone-600 dark:text-stone-300">
-            Transcribe with any enabled audio-capable model.
-          </p>
-        </div>
-      </div>
+    <SettingsSectionLayout>
+      <SettingsSectionHeader
+        title="Microphone transcription"
+        description="Transcribe with any enabled audio-capable model."
+        icon={<Microphone className="size-4" weight="bold" />}
+      />
 
       {loading ? (
         <SettingsFormSkeleton
@@ -8007,25 +7707,23 @@ function AudioSection({
         />
       ) : (
         <SettingsAnimatedBody>
-          <div className="max-w-2xl">
-            <LocalSpeechSettingsCard
-              title="Voice input"
-              description="Transcribe microphone clips before sending."
-              switchLabel="Enable voice input"
-              modelLabel="ASR model"
-              enabled={asrEnabled}
-              saving={saving}
-              blockingReason={asrBlockingReason}
-              modelOptions={asrModelOptions}
-              modelValue={asrModel}
-              onEnabledChange={handleAsrEnabledChange}
-              onModelChange={(next) => {
-                setAsrModel(next);
-                markDirty();
-              }}
-              onConfigure={openAsrSetupDialog}
-            />
-          </div>
+          <LocalSpeechSettingsCard
+            title="Voice input"
+            description="Transcribe microphone clips before sending."
+            switchLabel="Enable voice input"
+            modelLabel="ASR model"
+            enabled={asrEnabled}
+            saving={saving}
+            blockingReason={asrBlockingReason}
+            modelOptions={asrModelOptions}
+            modelValue={asrModel}
+            onEnabledChange={handleAsrEnabledChange}
+            onModelChange={(next) => {
+              setAsrModel(next);
+              markDirty();
+            }}
+            onConfigure={openAsrSetupDialog}
+          />
 
           {saving && (
             <div
@@ -8057,7 +7755,7 @@ function AudioSection({
           </Link>
         </div>
       </Dialog>
-    </section>
+    </SettingsSectionLayout>
   );
 }
 

@@ -105,3 +105,14 @@ describe("public API identity middleware", () => {
     expect(response.status).toBe(401);
   });
 });
+
+it('exposes cloud compatibility without auth and rejects a forged account identity',async()=>{
+ tokenIdentity.mockResolvedValue(null);sessionIdentity.mockResolvedValue(null);
+ const app=createApp();
+ const info=await app.request('/api/v1/cloud',{},env);
+ expect(info.status).toBe(200);
+ const {CloudServiceSchema}=await import('@clash/shared-types');
+ expect(CloudServiceSchema.safeParse(await info.json()).success).toBe(true);
+ const account=await app.request('/api/v1/cloud/account',{headers:{'x-user-id':'forged'}},env);
+ expect(account.status).toBe(401);
+});

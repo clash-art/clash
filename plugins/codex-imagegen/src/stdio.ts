@@ -68,7 +68,8 @@ function promptValue(invocation: ExecutablePluginInvocation): string {
 }
 
 function aspectRatioValue(invocation: ExecutablePluginInvocation) {
-  const value = invocation.input.values.aspect_ratio;
+  // The Generator permits prompt-only runs; match the shipped Card's default.
+  const value = invocation.input.values.aspect_ratio ?? "1:1";
   const parsed =
     typeof value === "string" ? parseAspectRatio(value) : undefined;
   if (!parsed) {

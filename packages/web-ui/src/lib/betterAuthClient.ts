@@ -20,13 +20,22 @@ type SessionQuery = {
 type AuthResult = {
   data?: unknown;
   error?: {
+    code?: string;
     message?: string;
   } | null;
 };
 
 type AuthClient = {
+  updateUser: (input: { name: string }) => Promise<AuthResult>;
   useSession: () => SessionQuery;
+  emailOtp: {
+    sendVerificationOtp: (input: {
+      email: string;
+      type: "sign-in";
+    }) => Promise<AuthResult>;
+  };
   signIn: {
+    emailOtp: (input: { email: string; otp: string }) => Promise<AuthResult>;
     email: (input: unknown) => Promise<AuthResult>;
     social: (input: unknown) => Promise<AuthResult>;
   };
@@ -70,13 +79,17 @@ const SSR_STUB = {
     refetch: () => Promise.resolve(),
   }),
   signIn: {
-    email: () => Promise.reject(new Error("Auth client is unavailable during SSR")),
-    social: () => Promise.reject(new Error("Auth client is unavailable during SSR")),
+    email: () =>
+      Promise.reject(new Error("Auth client is unavailable during SSR")),
+    social: () =>
+      Promise.reject(new Error("Auth client is unavailable during SSR")),
   },
   signUp: {
-    email: () => Promise.reject(new Error("Auth client is unavailable during SSR")),
+    email: () =>
+      Promise.reject(new Error("Auth client is unavailable during SSR")),
   },
-  signOut: () => Promise.reject(new Error("Auth client is unavailable during SSR")),
+  signOut: () =>
+    Promise.reject(new Error("Auth client is unavailable during SSR")),
 };
 
 const betterAuthClient = new Proxy(

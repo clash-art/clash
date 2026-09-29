@@ -1,5 +1,5 @@
 {
-  "summary": "Application shell components, Context Providers, and React Flow views used within the Next.js App Router.",
+  "summary": "Application shells, shared settings, context providers, and React Flow views for the React Router Web and Desktop clients.",
   "context_hints": [
     "ProjectEditor.tsx composes the workspace shell; feature business logic belongs under src/features",
     "Contains all Global State Providers (Contexts)",
@@ -11,6 +11,7 @@
     "copilot": "Components for the Chatbot/AI Assistant sidebar interface."
   },
   "key_files": {
+    "ParentCanvasButton.tsx": "Shared owning-Canvas navigation for Timeline and Storyboard headers; independent of Preview close actions.",
     "SyncRecoveryDialog.tsx": "Shared Radix recovery dialog mounted by ProjectEditor. Rejected edits use the local archive/reload workflow; a Host project-load failure shows the supplied cause and retries the existing sync connection without clearing local edits or changing plugin versions.",
     "CanvasCreateMenuItems.tsx": "Shared creation actions for the canvas plus menu and empty-pane double-click menu; uses shared Radix menu items and action submenu.",
     "AppPage.tsx": "Shared authenticated content-page inset, semantic narrow/standard/wide width contract, AppPageHeader title/description/action rhythm, and AppBreadcrumb hierarchy navigation; full-bleed editors remain outside it.",
@@ -21,7 +22,7 @@
     "ProjectBrowserSurfaces.tsx": "Keeps every Project sidebar browser tab mounted while exposing only the selected webview surface; memoized per-tab children and stable event callbacks preserve page state without rebinding on unrelated workspace updates.",
     "DashboardComposerContext.tsx": "Route-stable Dashboard draft and Project/Skill reference state, including the shared drag-and-drop boundary and focus handoff.",
     "DashboardComposerDock.tsx": "Persistent Home/Marketplace bottom Composer dock with an external compact searchable Project scope tag, in-surface Skill references, shared Backchat runtime controls, and one same-document transition into Project.",
-    "ProjectCard.tsx": "Project-browser card that loads one Host-derived Main canvas WebP per revision and keeps the lightweight geometry SVG as a no-media loading/error fallback.",
+    "ProjectCard.tsx": "Project-browser card that loads one Host-derived Main canvas WebP per revision and keeps the lightweight geometry SVG as a no-media loading/error fallback. Web project links use native browser tabs; Desktop uses its existing application navigation.",
     "MarketplacePluginDetail.tsx": "Canonical Marketplace plugin detail surface with shared breadcrumb navigation, desktop trackpad back gesture, and registry-declared capabilities.",
     "usePageHistorySwipe.ts": "Detail-page back gesture using the shared wheel primitive; preserves browser-native navigation, scrolling, editable regions, and pinch zoom.",
     "marketplaceRouting.ts": "Single canonical path builder for action and skill detail links used by Marketplace cards and the Home featured feed.",
@@ -40,8 +41,18 @@
     "timelineMediaInputs.ts": "Resolve native Timeline Project Asset refs and available Canvas media for preview; Canvas nodes are navigation hints, not Asset storage authority.",
     "nodes/NativeMediaReference.tsx": "Displays native Generator media input facts directly from Project Asset projections without requiring Canvas nodes. Removal identifies a specific slot/itemKey, preserving repeated references to the same Asset.",
     "nodes/NativeOrderedPrompt.tsx": "Edits existing ordered Model prompt text sections through the native draft queue. Input positions remain explicit; text changes reconstruct the flat prompt from the same contentParts.",
-    "nodes/TextDocumentNode.tsx": "Read-only Canvas placement and shared Dialog for the exact text Document result. Uses the same revision reader as the sidebar rather than editable legacy text content.",
-    "TextDocumentReadSurface.tsx": "Sidebar text-result reader over an exact Document revision. ProjectEditor selects this surface for Document-backed nodes and retains the existing editor for ordinary authored text."
+    "nodes/TextDocumentNode.tsx": "Read-only Canvas placement and shared Dialog for exact plain-text or typed analysis Document results, including pending/failure state and no editable body shadow.",
+    "DocumentRevisionContent.tsx": "Shared pinned typed Document reader for Canvas and sidebar. Formats analysis result bodies and source times while keeping plain text Markdown read-only.",
+    "TextDocumentReadSurface.tsx": "Sidebar text-result reader over an exact Document revision. ProjectEditor selects this surface for Document-backed nodes and retains the existing editor for ordinary authored text.",
+    "PluginStoryboardSurface.tsx": "Storyboard draft workspace: sortable named entries, ordered description references, media candidates, explicit version adoption, and contextual preview. Uses the existing View state and project Asset projections; generation appends by stable item/material identity to the latest state.",
+    "PluginGeneratorComposer.tsx": "Host implementation of action-sdk/ui GeneratorComposer; resolves a native Generator draft and optional Action id directly from Project facts, reusing native authoring controls without requiring a Canvas placement.",
+    "PluginGeneratorOutput.tsx": "Host SDK output tile resolves durable run/output slot references and pending/running/failed state; delivers only committed media assets.",
+    "CloudConnection.tsx": "Official/self-hosted cloud account settings and explicit project cloud-sync dialog. Uses Host-owned PKCE, admission and readiness; never handles tokens or enables sync merely on login.",
+    "UserControls.tsx": "Runtime-aware account controls; hosted sidebar shows neutral avatar and name with row-wide hover; Settings opens shared dialog.",
+    "TopNavigation.tsx": "Shared sidebar container for Web and Desktop navigation; Desktop retains workspace tabs; hosted Web has an explicit collapsed-sidebar trigger.",
+    "SettingsSurface.tsx": "Shared settings surface with top-right close action and responsive category navigation.",
+    "ProjectsClient.tsx": "Project grid and create action without decorative fake workflow nodes.",
+    "copilot/useCopilotComposerDraft.ts": "Common-backed per-Project/session unsent drafts; consumes queued Asset reference requests once across lazy mounting without submission or cross-session leakage."
   },
   "architecture_notes": "Keep ProjectEditor focused on workspace composition. Asset Preview/Edit, thumbnails, media resolution, and action clients belong in src/features/assets; shared action semantics belong in @clash/shared-types/actions. Home and in-session Composer surfaces reuse the same Backchat-derived editor, model/permission controls, send/voice state, and content-driven resize logic; Clash extends that core only through capability-scoped Project/Canvas/Timeline context and density tokens. Authenticated content pages must use AppPage/AppPageInset instead of page-local outer padding; Settings applies it inside its scroll pane, while Project/editor workspaces remain full bleed."
 }

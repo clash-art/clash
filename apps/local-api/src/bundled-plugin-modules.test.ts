@@ -1,9 +1,12 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { readFile } from "node:fs/promises";
 
 import { ExecutablePluginManifestSchema } from "@clash/shared-types";
 import { describe, expect, it } from "vitest";
 
-import { BUNDLED_PLUGINS } from "./bundled-plugins.js";
+import { BUNDLED_PLUGINS, bundledPluginPaths } from "./bundled-plugins.js";
 import {
   loadTrustedBundledPluginModule,
   TRUSTED_BUNDLED_PLUGIN_MODULES,
@@ -35,6 +38,19 @@ describe("trusted bundled Plugin modules", () => {
       ).toEqual(
         manifest.contributes.functions.map(({ id, kind }) => ({ id, kind })),
       );
+    }
+  });
+
+  it("loads every bundled plugin in native Node ESM without Vitest require interop", async () => {
+    for (const registration of TRUSTED_BUNDLED_PLUGIN_MODULES) {
+      const { entrypointPath } = bundledPluginPaths(registration.id);
+      await expect(
+        promisify(execFile)(process.execPath, [
+          "--input-type=module",
+          "-e",
+          `const {plugin} = await import(${JSON.stringify(pathToFileURL(entrypointPath).href)}); if (typeof plugin.invoke !== "function") throw new Error("Missing plugin");`,
+        ]),
+      ).resolves.toMatchObject({ stderr: "" });
     }
   });
 
@@ -80,9 +96,11 @@ describe("trusted bundled Plugin modules", () => {
     expect(manifest.contributes.providers).toEqual([
       { id: "meshy", kind: "provider", path: "providers/meshy.json" },
     ]);
-    expect(
-      manifest.contributes.modelBindings.map(({ id }) => id),
-    ).toEqual(["meshy-6", "meshy-7", "meshy-auto-rig"]);
+    expect(manifest.contributes.modelBindings.map(({ id }) => id)).toEqual([
+      "meshy-6",
+      "meshy-7",
+      "meshy-auto-rig",
+    ]);
     expect(
       manifest.contributes.functions.map(({ id, kind }) => ({ id, kind })),
     ).toEqual([{ id: "meshy-execute", kind: "provider-executor" }]);
@@ -101,9 +119,10 @@ describe("trusted bundled Plugin modules", () => {
     expect(manifest.contributes.providers).toEqual([
       { id: "tripo", kind: "provider", path: "providers/tripo.json" },
     ]);
-    expect(
-      manifest.contributes.modelBindings.map(({ id }) => id),
-    ).toEqual(["tripo-h3.1", "tripo-auto-rig"]);
+    expect(manifest.contributes.modelBindings.map(({ id }) => id)).toEqual([
+      "tripo-h3.1",
+      "tripo-auto-rig",
+    ]);
     expect(
       manifest.contributes.functions.map(({ id, kind }) => ({ id, kind })),
     ).toEqual([{ id: "tripo-execute", kind: "provider-executor" }]);
