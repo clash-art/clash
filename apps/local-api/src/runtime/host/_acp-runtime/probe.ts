@@ -105,7 +105,6 @@ const ACP_CLIENT_CAPABILITIES: ClientCapabilities = withClashAcpExtensionCapabil
   terminal: true,
   auth: {
     terminal: true,
-    _meta: { gateway: true },
   },
 });
 

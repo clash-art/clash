@@ -4742,7 +4742,27 @@ describe("SettingsClient runtime harnesses", () => {
       </MemoryRouter>,
     );
 
+    expect(
+      await screen.findByRole("button", { name: "Browser Login" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "API Key" })).toBeTruthy();
+    expect(screen.queryByLabelText("API key")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser Login" }));
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Sign in to Devin with Browser Login" }),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Devin sign-in methods" }),
+    );
+    expect(screen.queryByLabelText("API key")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "API Key" }));
     await screen.findByLabelText("API key");
+    expect(
+      screen.queryByRole("button", { name: "Browser Login" }),
+    ).toBeNull();
     fireEvent.change(screen.getByLabelText("API key"), {
       target: { value: "sk-settings-secret" },
     });

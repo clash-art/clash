@@ -437,7 +437,7 @@ describe("probeAgentAuthStatus", () => {
       }],
     });
 
-    expect(calls).toEqual(["initialize:gateway=true", "newSession"]);
+    expect(calls).toEqual(["initialize:gateway=false", "newSession"]);
   });
 
   it("reports configured auth when a session can be created", async () => {

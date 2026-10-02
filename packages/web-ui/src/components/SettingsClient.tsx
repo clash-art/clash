@@ -786,6 +786,10 @@ function authActionAriaLabel(
     : `Sign in to ${harnessLabel}`;
 }
 
+function authMethodHasFields(method: LocalAuthMethod | undefined): boolean {
+  return method?.form === "fields" && (method.vars?.length ?? 0) > 0;
+}
+
 function authMethodVariableNames(
   method: LocalAuthMethod | undefined,
 ): string[] {
@@ -7777,6 +7781,9 @@ function AgentsSection() {
   const [authFieldValues, setAuthFieldValues] = useState<
     Record<string, Record<string, string>>
   >({});
+  const [authPickerMethodId, setAuthPickerMethodId] = useState<
+    Record<string, string | null>
+  >({});
   const authOpeningTimersRef = useRef<
     Record<string, ReturnType<typeof setTimeout> | undefined>
   >({});
@@ -8805,20 +8812,15 @@ function AgentsSection() {
                     const authMethods = needsAuth
                       ? (harness.auth?.methods ?? [])
                       : [];
-                    const fieldAuthMethods = authMethods.filter(
-                      (method) =>
-                        method.form === "fields" &&
-                        (method.vars?.length ?? 0) > 0,
-                    );
-                    const launchAuthMethods = authMethods.filter(
-                      (method) =>
-                        method.form !== "fields" ||
-                        (method.vars?.length ?? 0) === 0,
-                    );
-                    const authMethodDescription =
+                    const pickedAuthMethodId = authPickerMethodId[harness.id];
+                    const pickedAuthMethod =
+                      authMethods.find(
+                        (method) => method.id === pickedAuthMethodId,
+                      ) ?? null;
+                    const authDetailMethod =
                       authMethods.length === 1
-                        ? authMethods[0]?.description
-                        : null;
+                        ? (authMethods[0] ?? null)
+                        : pickedAuthMethod;
                     const hasTerminalAuthMethod = authMethods.some((method) =>
                       authMethodIsTerminal(method),
                     );
@@ -8937,14 +8939,6 @@ function AgentsSection() {
                               {harness.auth.message}
                             </span>
                           )}
-                          {authMethodDescription &&
-                            !harness.auth?.message.includes(
-                              authMethodDescription,
-                            ) && (
-                              <span className="mt-1 block text-xs text-stone-500 dark:text-stone-400">
-                                {authMethodDescription}
-                              </span>
-                            )}
                           {busyMessage && (
                             <span
                               className="mt-1 block text-xs text-sky-700 dark:text-sky-300"
@@ -9002,73 +8996,186 @@ function AgentsSection() {
                               </span>
                             )}
                         </div>
-                        <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-                          {fieldAuthMethods.map((method) => {
-                            const formKey = `${harness.id}:${method.id}`;
-                            const values = authFieldValues[formKey] ?? {};
-                            const requiredComplete = (method.vars ?? []).every(
-                              (variable) =>
-                                variable.optional ||
-                                Boolean(values[variable.name]?.trim()),
-                            );
-                            return (
-                              <form
-                                key={method.id}
-                                className="flex min-w-[14rem] flex-wrap items-end justify-end gap-2"
-                                onSubmit={(event) => {
-                                  event.preventDefault();
-                                  if (!requiredComplete) return;
-                                  void onAuthenticateHarness(
-                                    harness.id,
-                                    method.id,
-                                    values,
-                                  );
-                                }}
-                              >
-                                {(method.vars ?? []).map((variable) => (
-                                  <label
-                                    key={variable.name}
-                                    className="min-w-[10rem] flex-1 text-left text-xs font-medium text-stone-600 dark:text-stone-300"
+                        <div className="flex min-w-0 flex-col items-stretch justify-end gap-2">
+                          {needsAuth && !authDetailMethod && (
+                            <div
+                              className="flex w-full flex-col gap-1.5"
+                              role="list"
+                              aria-label={`${harness.label} sign-in methods`}
+                            >
+                              {authMethods.map((method) => {
+                                const methodLabel = method.name ?? method.id;
+                                return (
+                                  <Button
+                                    key={method.id}
+                                    type="button"
+                                    size="sm"
+                                    aria-label={methodLabel}
+                                    className="h-auto w-full flex-col items-start gap-0.5 whitespace-normal px-3 py-2 text-left"
+                                    onClick={() => {
+                                      setAuthPickerMethodId((current) => ({
+                                        ...current,
+                                        [harness.id]: method.id,
+                                      }));
+                                    }}
                                   >
-                                    <span className="mb-1 block">
-                                      {variable.label ?? variable.name}
+                                    <span className="text-sm font-medium text-slate-900 dark:text-slate-50">
+                                      {methodLabel}
                                     </span>
-                                    <Input
-                                      aria-label={
-                                        variable.label ?? variable.name
-                                      }
-                                      type={
-                                        variable.secret ? "password" : "text"
-                                      }
-                                      autoComplete="off"
-                                      required={!variable.optional}
-                                      value={values[variable.name] ?? ""}
-                                      onChange={(event) => {
-                                        const value = event.currentTarget.value;
-                                        setAuthFieldValues((current) => ({
-                                          ...current,
-                                          [formKey]: {
-                                            ...(current[formKey] ?? {}),
-                                            [variable.name]: value,
-                                          },
-                                        }));
-                                      }}
-                                      className="h-8 rounded-lg font-mono text-xs"
-                                    />
-                                  </label>
-                                ))}
+                                    {method.description ? (
+                                      <span className="text-xs font-normal text-stone-600 dark:text-stone-300">
+                                        {method.description}
+                                      </span>
+                                    ) : null}
+                                  </Button>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {needsAuth && authDetailMethod && (
+                            <div className="flex w-full flex-col gap-2 rounded-lg border border-warm-border p-2">
+                              {authMethods.length > 1 && (
                                 <Button
-                                  type="submit"
+                                  type="button"
                                   size="sm"
-                                  aria-label={`Continue with ${method.name ?? method.id}`}
-                                  disabled={busy || !requiredComplete}
-                                  className="rounded-lg border border-brand/30 bg-brand-light px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand-light/80 disabled:cursor-not-allowed disabled:opacity-60"
+                                  aria-label={`Back to ${harness.label} sign-in methods`}
+                                  className="h-auto w-fit border-transparent bg-transparent px-0 py-0 text-xs font-medium text-stone-600 shadow-none hover:bg-transparent hover:text-stone-800 dark:text-stone-300"
+                                  onClick={() => {
+                                    setAuthPickerMethodId((current) => ({
+                                      ...current,
+                                      [harness.id]: null,
+                                    }));
+                                  }}
                                 >
-                                  Continue
+                                  All methods
                                 </Button>
-                              </form>
-                            );
-                          })}
+                              )}
+                              <div>
+                                <div className="text-sm font-medium text-slate-900 dark:text-slate-50">
+                                  {authDetailMethod.name ?? authDetailMethod.id}
+                                </div>
+                                {authDetailMethod.description ? (
+                                  <div className="mt-0.5 text-xs text-stone-600 dark:text-stone-300">
+                                    {authDetailMethod.description}
+                                  </div>
+                                ) : null}
+                              </div>
+                              {authMethodHasFields(authDetailMethod) ? (
+                                <form
+                                  className="flex flex-col items-stretch gap-2"
+                                  onSubmit={(event) => {
+                                    event.preventDefault();
+                                    const formKey = `${harness.id}:${authDetailMethod.id}`;
+                                    const values = authFieldValues[formKey] ?? {};
+                                    const requiredComplete = (
+                                      authDetailMethod.vars ?? []
+                                    ).every(
+                                      (variable) =>
+                                        variable.optional ||
+                                        Boolean(values[variable.name]?.trim()),
+                                    );
+                                    if (!requiredComplete) return;
+                                    void onAuthenticateHarness(
+                                      harness.id,
+                                      authDetailMethod.id,
+                                      values,
+                                    );
+                                  }}
+                                >
+                                  {(authDetailMethod.vars ?? []).map((variable) => {
+                                    const formKey = `${harness.id}:${authDetailMethod.id}`;
+                                    const values = authFieldValues[formKey] ?? {};
+                                    return (
+                                      <label
+                                        key={variable.name}
+                                        className="text-left text-xs font-medium text-stone-600 dark:text-stone-300"
+                                      >
+                                        <span className="mb-1 block">
+                                          {variable.label ?? variable.name}
+                                        </span>
+                                        <Input
+                                          aria-label={
+                                            variable.label ?? variable.name
+                                          }
+                                          type={
+                                            variable.secret ? "password" : "text"
+                                          }
+                                          autoComplete="off"
+                                          required={!variable.optional}
+                                          value={values[variable.name] ?? ""}
+                                          onChange={(event) => {
+                                            const value = event.currentTarget.value;
+                                            setAuthFieldValues((current) => ({
+                                              ...current,
+                                              [formKey]: {
+                                                ...(current[formKey] ?? {}),
+                                                [variable.name]: value,
+                                              },
+                                            }));
+                                          }}
+                                          className="h-8 rounded-lg font-mono text-xs"
+                                        />
+                                      </label>
+                                    );
+                                  })}
+                                  <Button
+                                    type="submit"
+                                    size="sm"
+                                    aria-label={`Continue with ${authDetailMethod.name ?? authDetailMethod.id}`}
+                                    disabled={
+                                      busy ||
+                                      !(authDetailMethod.vars ?? []).every(
+                                        (variable) =>
+                                          variable.optional ||
+                                          Boolean(
+                                            (
+                                              authFieldValues[
+                                                `${harness.id}:${authDetailMethod.id}`
+                                              ] ?? {}
+                                            )[variable.name]?.trim(),
+                                          ),
+                                      )
+                                    }
+                                  >
+                                    Continue
+                                  </Button>
+                                </form>
+                              ) : (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  aria-label={authActionAriaLabel(
+                                    harness.label,
+                                    authDetailMethod,
+                                    authMethods.length > 1,
+                                  )}
+                                  disabled={
+                                    busy && !(authWaiting || authAttention)
+                                  }
+                                  onClick={() =>
+                                    onAuthenticateHarness(
+                                      harness.id,
+                                      authDetailMethod.id,
+                                    )
+                                  }
+                                >
+                                  {authLaunch?.methodId === authDetailMethod.id &&
+                                  authOpening
+                                    ? authMethodIsTerminal(authDetailMethod)
+                                      ? "Opening setup…"
+                                      : "Opening sign in…"
+                                    : authLaunch?.methodId ===
+                                          authDetailMethod.id &&
+                                        (authWaiting || authAttention)
+                                      ? "Open again"
+                                      : authActionLabel(
+                                          authDetailMethod,
+                                          authMethods.length > 1,
+                                        )}
+                                </Button>
+                              )}
+                            </div>
+                          )}
                           {canInstall && (
                             <Button
                               size="sm"
@@ -9125,73 +9232,6 @@ function AgentsSection() {
                                   : "Check again"}
                               </Button>
                             </Tooltip>
-                          )}
-                          {needsAuth &&
-                            launchAuthMethods.length > 1 &&
-                            launchAuthMethods.map((method) => {
-                              const methodLabel = method.name ?? method.id;
-                              const buttonLabel = authActionLabel(method, true);
-                              const methodActive =
-                                authLaunch?.methodId === method.id;
-                              const methodOpening = authOpening && methodActive;
-                              const methodWaiting =
-                                (authWaiting || authAttention) && methodActive;
-                              const methodOpeningLabel = authMethodIsTerminal(
-                                method,
-                              )
-                                ? "Opening setup…"
-                                : "Opening sign in…";
-                              return (
-                                <Button
-                                  key={method.id}
-                                  size="sm"
-                                  aria-label={authActionAriaLabel(
-                                    harness.label,
-                                    method,
-                                    true,
-                                  )}
-                                  disabled={busy && !methodWaiting}
-                                  onClick={() =>
-                                    onAuthenticateHarness(harness.id, method.id)
-                                  }
-                                  className="rounded-lg border border-brand/30 bg-brand-light px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand-light/80 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  {methodOpening
-                                    ? methodOpeningLabel
-                                    : methodWaiting
-                                      ? `Open ${methodLabel} again`
-                                      : buttonLabel}
-                                </Button>
-                              );
-                            })}
-                          {needsAuth && launchAuthMethods.length === 1 && (
-                            <Button
-                              size="sm"
-                              aria-label={authActionAriaLabel(
-                                harness.label,
-                                launchAuthMethods[0],
-                                false,
-                              )}
-                              disabled={busy && !(authWaiting || authAttention)}
-                              onClick={() =>
-                                onAuthenticateHarness(
-                                  harness.id,
-                                  launchAuthMethods[0]?.id,
-                                )
-                              }
-                              className="rounded-lg border border-brand/30 bg-brand-light px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand-light/80 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {authOpening
-                                ? authMethodIsTerminal(launchAuthMethods[0])
-                                  ? "Opening setup…"
-                                  : "Opening sign in…"
-                                : authWaiting || authAttention
-                                  ? "Open again"
-                                  : authActionLabel(
-                                      launchAuthMethods[0],
-                                      false,
-                                    )}
-                            </Button>
                           )}
                           {showEnableSwitch && (
                             <>
