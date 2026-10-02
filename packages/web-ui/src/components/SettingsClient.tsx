@@ -786,6 +786,10 @@ function authActionAriaLabel(
     : `Sign in to ${harnessLabel}`;
 }
 
+function authMethodHasFields(method: LocalAuthMethod | undefined): boolean {
+  return method?.form === "fields" && (method.vars?.length ?? 0) > 0;
+}
+
 function authMethodVariableNames(
   method: LocalAuthMethod | undefined,
 ): string[] {
@@ -7777,6 +7781,17 @@ function AgentsSection() {
   const [authFieldValues, setAuthFieldValues] = useState<
     Record<string, Record<string, string>>
   >({});
+  const [authPickerMethodId, setAuthPickerMethodId] = useState<
+    Record<string, string | null>
+  >({});
+  const [authDialogHarnessId, setAuthDialogHarnessId] = useState<string | null>(
+    null,
+  );
+  const [authDialogError, setAuthDialogError] = useState<string | null>(null);
+  const [authDialogNotice, setAuthDialogNotice] = useState<{
+    title: string;
+    message: string;
+  } | null>(null);
   const authOpeningTimersRef = useRef<
     Record<string, ReturnType<typeof setTimeout> | undefined>
   >({});
@@ -8022,6 +8037,11 @@ function AgentsSection() {
               const { [harnessId]: _removed, ...rest } = current;
               return rest;
             });
+            setAuthDialogHarnessId((current) =>
+              current === harnessId ? null : current,
+            );
+            setAuthDialogError(null);
+            setAuthDialogNotice(null);
             await rt.refresh({ probe: "config", refresh: true });
             return;
           }
@@ -8328,6 +8348,23 @@ function AgentsSection() {
     }
   };
 
+  const openHarnessAuthDialog = (harness: LocalHarnessInfo) => {
+    const methods = harness.auth?.methods ?? [];
+    setAuthDialogError(null);
+    setAuthDialogNotice(null);
+    setAuthPickerMethodId((current) => ({
+      ...current,
+      [harness.id]: methods.length === 1 ? (methods[0]?.id ?? null) : null,
+    }));
+    setAuthDialogHarnessId(harness.id);
+  };
+
+  const closeHarnessAuthDialog = () => {
+    setAuthDialogHarnessId(null);
+    setAuthDialogError(null);
+    setAuthDialogNotice(null);
+  };
+
   const onAuthenticateHarness = async (
     harnessId: string,
     methodId?: string,
@@ -8345,14 +8382,10 @@ function AgentsSection() {
         variableNames.length > 0
           ? `Set ${variableNames.join(", ")} in your agent environment, then check again.`
           : "Set the required credentials in your agent environment, then check again.";
-      feedback.notify({
-        variant: "info",
+      setAuthDialogError(null);
+      setAuthDialogNotice({
         title: `Configure ${label} credentials`,
         message: variableText,
-        actionLabel: "Check again",
-        onAction: () => {
-          void onRecheckHarnesses(harnessId);
-        },
       });
       return;
     }
@@ -8437,6 +8470,11 @@ function AgentsSection() {
           const { [harnessId]: _removed, ...rest } = current;
           return rest;
         });
+        setAuthDialogHarnessId((current) =>
+          current === harnessId ? null : current,
+        );
+        setAuthDialogError(null);
+        setAuthDialogNotice(null);
         await rt.refresh({ probe: "config", refresh: true });
         return;
       }
@@ -8460,17 +8498,8 @@ function AgentsSection() {
         const { [harnessId]: _removed, ...rest } = current;
         return rest;
       });
-      feedback.notify({
-        variant: "error",
-        title: authMethodIsTerminal(authMethod)
-          ? `Could not open ${label} setup`
-          : `Could not start ${label} sign in`,
-        message: displayErrorMessage(e),
-        actionLabel: "Check again",
-        onAction: () => {
-          void onRecheckHarnesses();
-        },
-      });
+      setAuthDialogNotice(null);
+      setAuthDialogError(displayErrorMessage(e));
     } finally {
       clearHarnessSavingAction(harnessId, "auth");
     }
@@ -8805,30 +8834,9 @@ function AgentsSection() {
                     const authMethods = needsAuth
                       ? (harness.auth?.methods ?? [])
                       : [];
-                    const fieldAuthMethods = authMethods.filter(
-                      (method) =>
-                        method.form === "fields" &&
-                        (method.vars?.length ?? 0) > 0,
-                    );
-                    const launchAuthMethods = authMethods.filter(
-                      (method) =>
-                        method.form !== "fields" ||
-                        (method.vars?.length ?? 0) === 0,
-                    );
-                    const authMethodDescription =
-                      authMethods.length === 1
-                        ? authMethods[0]?.description
-                        : null;
-                    const hasTerminalAuthMethod = authMethods.some((method) =>
-                      authMethodIsTerminal(method),
-                    );
+                    const authDialogOpen = authDialogHarnessId === harness.id;
                     const hasEnvVarAuthMethod = authMethods.some((method) =>
                       authMethodIsEnvVar(method),
-                    );
-                    const envVarAuthNames = authMethods.flatMap((method) =>
-                      authMethodIsEnvVar(method)
-                        ? authMethodVariableNames(method)
-                        : [],
                     );
                     const busyMessage = harnessBusyMessage(
                       harness.label,
@@ -8937,14 +8945,6 @@ function AgentsSection() {
                               {harness.auth.message}
                             </span>
                           )}
-                          {authMethodDescription &&
-                            !harness.auth?.message.includes(
-                              authMethodDescription,
-                            ) && (
-                              <span className="mt-1 block text-xs text-stone-500 dark:text-stone-400">
-                                {authMethodDescription}
-                              </span>
-                            )}
                           {busyMessage && (
                             <span
                               className="mt-1 block text-xs text-sky-700 dark:text-sky-300"
@@ -8952,47 +8952,6 @@ function AgentsSection() {
                             >
                               {busyMessage}
                             </span>
-                          )}
-                          {(authWaiting || authAttention) && (
-                            <span
-                              className={`mt-1 block text-xs ${authAttention ? "text-amber-700 dark:text-amber-300" : "text-sky-700 dark:text-sky-300"}`}
-                            >
-                              {authAttention
-                                ? (authLaunch.message ??
-                                  `Still waiting for ${harness.label} auth.`)
-                                : (authLaunch.message ??
-                                  `Waiting for ${harness.label} auth…`)}
-                            </span>
-                          )}
-                          {needsAuth && harness.auth?.command && (
-                            <Collapsible className="mt-1 text-xs text-stone-500 dark:text-stone-400">
-                              <CollapsibleTrigger asChild>
-                                <Button
-                                  size="sm"
-                                  shape="rounded"
-                                  className="min-h-0 cursor-pointer rounded-none border-transparent bg-transparent px-0 py-0 text-xs font-medium text-stone-600 shadow-none hover:bg-transparent hover:text-stone-700 focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:underline focus-visible:underline-offset-4 dark:text-stone-300 dark:hover:text-stone-200"
-                                >
-                                  Manual fallback
-                                </Button>
-                              </CollapsibleTrigger>
-                              <CollapsibleContent>
-                                <span className="mt-1 block leading-5">
-                                  {hasTerminalAuthMethod ? (
-                                    "Configure the required credentials in the agent terminal, settings, or environment, then click Check again."
-                                  ) : hasEnvVarAuthMethod ? (
-                                    `Set ${envVarAuthNames.length > 0 ? envVarAuthNames.join(", ") : "the required environment variables"} in your agent environment, then click Check again.`
-                                  ) : (
-                                    <>
-                                      If Sign in does not open, run{" "}
-                                      <code className="rounded bg-warm-muted px-1 font-mono">
-                                        {harness.auth.command}
-                                      </code>{" "}
-                                      and follow the agent auth prompt.
-                                    </>
-                                  )}
-                                </span>
-                              </CollapsibleContent>
-                            </Collapsible>
                           )}
                           {!harness.available &&
                             !canInstall &&
@@ -9003,72 +8962,18 @@ function AgentsSection() {
                             )}
                         </div>
                         <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
-                          {fieldAuthMethods.map((method) => {
-                            const formKey = `${harness.id}:${method.id}`;
-                            const values = authFieldValues[formKey] ?? {};
-                            const requiredComplete = (method.vars ?? []).every(
-                              (variable) =>
-                                variable.optional ||
-                                Boolean(values[variable.name]?.trim()),
-                            );
-                            return (
-                              <form
-                                key={method.id}
-                                className="flex min-w-[14rem] flex-wrap items-end justify-end gap-2"
-                                onSubmit={(event) => {
-                                  event.preventDefault();
-                                  if (!requiredComplete) return;
-                                  void onAuthenticateHarness(
-                                    harness.id,
-                                    method.id,
-                                    values,
-                                  );
-                                }}
-                              >
-                                {(method.vars ?? []).map((variable) => (
-                                  <label
-                                    key={variable.name}
-                                    className="min-w-[10rem] flex-1 text-left text-xs font-medium text-stone-600 dark:text-stone-300"
-                                  >
-                                    <span className="mb-1 block">
-                                      {variable.label ?? variable.name}
-                                    </span>
-                                    <Input
-                                      aria-label={
-                                        variable.label ?? variable.name
-                                      }
-                                      type={
-                                        variable.secret ? "password" : "text"
-                                      }
-                                      autoComplete="off"
-                                      required={!variable.optional}
-                                      value={values[variable.name] ?? ""}
-                                      onChange={(event) => {
-                                        const value = event.currentTarget.value;
-                                        setAuthFieldValues((current) => ({
-                                          ...current,
-                                          [formKey]: {
-                                            ...(current[formKey] ?? {}),
-                                            [variable.name]: value,
-                                          },
-                                        }));
-                                      }}
-                                      className="h-8 rounded-lg font-mono text-xs"
-                                    />
-                                  </label>
-                                ))}
-                                <Button
-                                  type="submit"
-                                  size="sm"
-                                  aria-label={`Continue with ${method.name ?? method.id}`}
-                                  disabled={busy || !requiredComplete}
-                                  className="rounded-lg border border-brand/30 bg-brand-light px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand-light/80 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  Continue
-                                </Button>
-                              </form>
-                            );
-                          })}
+                          {needsAuth && (
+                            <Button
+                              size="sm"
+                              aria-label={`Sign in to ${harness.label}`}
+                              disabled={busy}
+                              onClick={() => openHarnessAuthDialog(harness)}
+                            >
+                              {authDialogOpen && authOpening
+                                ? "Opening sign in…"
+                                : "Sign in"}
+                            </Button>
+                          )}
                           {canInstall && (
                             <Button
                               size="sm"
@@ -9125,73 +9030,6 @@ function AgentsSection() {
                                   : "Check again"}
                               </Button>
                             </Tooltip>
-                          )}
-                          {needsAuth &&
-                            launchAuthMethods.length > 1 &&
-                            launchAuthMethods.map((method) => {
-                              const methodLabel = method.name ?? method.id;
-                              const buttonLabel = authActionLabel(method, true);
-                              const methodActive =
-                                authLaunch?.methodId === method.id;
-                              const methodOpening = authOpening && methodActive;
-                              const methodWaiting =
-                                (authWaiting || authAttention) && methodActive;
-                              const methodOpeningLabel = authMethodIsTerminal(
-                                method,
-                              )
-                                ? "Opening setup…"
-                                : "Opening sign in…";
-                              return (
-                                <Button
-                                  key={method.id}
-                                  size="sm"
-                                  aria-label={authActionAriaLabel(
-                                    harness.label,
-                                    method,
-                                    true,
-                                  )}
-                                  disabled={busy && !methodWaiting}
-                                  onClick={() =>
-                                    onAuthenticateHarness(harness.id, method.id)
-                                  }
-                                  className="rounded-lg border border-brand/30 bg-brand-light px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand-light/80 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                  {methodOpening
-                                    ? methodOpeningLabel
-                                    : methodWaiting
-                                      ? `Open ${methodLabel} again`
-                                      : buttonLabel}
-                                </Button>
-                              );
-                            })}
-                          {needsAuth && launchAuthMethods.length === 1 && (
-                            <Button
-                              size="sm"
-                              aria-label={authActionAriaLabel(
-                                harness.label,
-                                launchAuthMethods[0],
-                                false,
-                              )}
-                              disabled={busy && !(authWaiting || authAttention)}
-                              onClick={() =>
-                                onAuthenticateHarness(
-                                  harness.id,
-                                  launchAuthMethods[0]?.id,
-                                )
-                              }
-                              className="rounded-lg border border-brand/30 bg-brand-light px-3 py-1.5 text-xs font-medium text-brand shadow-sm transition-colors hover:bg-brand-light/80 disabled:cursor-not-allowed disabled:opacity-60"
-                            >
-                              {authOpening
-                                ? authMethodIsTerminal(launchAuthMethods[0])
-                                  ? "Opening setup…"
-                                  : "Opening sign in…"
-                                : authWaiting || authAttention
-                                  ? "Open again"
-                                  : authActionLabel(
-                                      launchAuthMethods[0],
-                                      false,
-                                    )}
-                            </Button>
                           )}
                           {showEnableSwitch && (
                             <>
@@ -9364,6 +9202,68 @@ function AgentsSection() {
         </SettingsRow>
       </div>
 
+      <HarnessAuthDialog
+        harness={
+          harnesses.find((candidate) => candidate.id === authDialogHarnessId) ??
+          null
+        }
+        methodId={
+          authDialogHarnessId
+            ? (authPickerMethodId[authDialogHarnessId] ?? null)
+            : null
+        }
+        fieldValues={authFieldValues}
+        error={authDialogError}
+        notice={authDialogNotice}
+        busy={Boolean(
+          authDialogHarnessId &&
+            savingHarnesses[authDialogHarnessId] === "auth",
+        )}
+        launch={
+          authDialogHarnessId
+            ? (authLaunches[authDialogHarnessId] ?? null)
+            : null
+        }
+        onClose={closeHarnessAuthDialog}
+        onSelectMethod={(methodId) => {
+          if (!authDialogHarnessId) return;
+          setAuthDialogError(null);
+          setAuthDialogNotice(null);
+          setAuthPickerMethodId((current) => ({
+            ...current,
+            [authDialogHarnessId]: methodId,
+          }));
+        }}
+        onBack={() => {
+          if (!authDialogHarnessId) return;
+          setAuthDialogError(null);
+          setAuthDialogNotice(null);
+          setAuthPickerMethodId((current) => ({
+            ...current,
+            [authDialogHarnessId]: null,
+          }));
+        }}
+        onFieldChange={(methodId, name, value) => {
+          if (!authDialogHarnessId) return;
+          const formKey = `${authDialogHarnessId}:${methodId}`;
+          setAuthFieldValues((current) => ({
+            ...current,
+            [formKey]: {
+              ...(current[formKey] ?? {}),
+              [name]: value,
+            },
+          }));
+        }}
+        onSubmit={(method, values) => {
+          if (!authDialogHarnessId) return;
+          setAuthDialogError(null);
+          void onAuthenticateHarness(
+            authDialogHarnessId,
+            method.id,
+            authMethodHasFields(method) ? values : undefined,
+          );
+        }}
+      />
       <CustomAgentServerDialog
         open={customAgentDialogOpen}
         editing={customAgentOriginalName != null}
@@ -9403,6 +9303,193 @@ function AgentsSection() {
         }}
       />
     </SettingsSectionLayout>
+  );
+}
+
+function HarnessAuthDialog({
+  harness,
+  methodId,
+  fieldValues,
+  error,
+  notice,
+  busy,
+  launch,
+  onClose,
+  onSelectMethod,
+  onBack,
+  onFieldChange,
+  onSubmit,
+}: {
+  harness: LocalHarnessInfo | null;
+  methodId: string | null;
+  fieldValues: Record<string, Record<string, string>>;
+  error: string | null;
+  notice: { title: string; message: string } | null;
+  busy: boolean;
+  launch: AuthLaunchState | null;
+  onClose: () => void;
+  onSelectMethod: (methodId: string) => void;
+  onBack: () => void;
+  onFieldChange: (methodId: string, name: string, value: string) => void;
+  onSubmit: (method: LocalAuthMethod, values: Record<string, string>) => void;
+}) {
+  const methods = harness?.auth?.methods ?? [];
+  const detailMethod =
+    methods.length === 1
+      ? (methods[0] ?? null)
+      : (methods.find((method) => method.id === methodId) ?? null);
+  const formKey = harness && detailMethod ? `${harness.id}:${detailMethod.id}` : "";
+  const values = fieldValues[formKey] ?? {};
+  const requiredComplete = (detailMethod?.vars ?? []).every(
+    (variable) => variable.optional || Boolean(values[variable.name]?.trim()),
+  );
+  const opening = launch?.status === "opening" && launch.methodId === detailMethod?.id;
+  const waiting =
+    (launch?.status === "waiting" || launch?.status === "attention") &&
+    launch.methodId === detailMethod?.id;
+
+  return (
+    <Dialog
+      open={!!harness}
+      onClose={onClose}
+      title={harness ? `Sign in to ${harness.label}` : "Sign in"}
+      description={
+        detailMethod
+          ? (detailMethod.description ?? harness?.auth?.message)
+          : "Choose a sign-in method."
+      }
+      size="sm"
+    >
+      <div className="flex flex-col gap-3 pt-2">
+        {harness && !detailMethod && (
+          <div
+            className="flex flex-col gap-1.5"
+            role="list"
+            aria-label={`${harness.label} sign-in methods`}
+          >
+            {methods.map((method) => {
+              const methodLabel = method.name ?? method.id;
+              return (
+                <Button
+                  key={method.id}
+                  type="button"
+                  size="sm"
+                  aria-label={methodLabel}
+                  className="h-auto w-full flex-col items-start gap-0.5 whitespace-normal px-3 py-2 text-left"
+                  onClick={() => onSelectMethod(method.id)}
+                >
+                  <span className="text-sm font-medium">{methodLabel}</span>
+                  {method.description ? (
+                    <span className="text-xs font-normal text-stone-600 dark:text-stone-300">
+                      {method.description}
+                    </span>
+                  ) : null}
+                </Button>
+              );
+            })}
+          </div>
+        )}
+        {harness && detailMethod && (
+          <div className="flex flex-col gap-3">
+            {methods.length > 1 && (
+              <Button
+                type="button"
+                size="sm"
+                aria-label={`Back to ${harness.label} sign-in methods`}
+                className="h-auto w-fit border-transparent bg-transparent px-0 py-0 text-xs font-medium text-stone-600 shadow-none hover:bg-transparent hover:text-stone-800 dark:text-stone-300"
+                onClick={onBack}
+              >
+                All methods
+              </Button>
+            )}
+            <div className="text-sm font-medium text-slate-900 dark:text-slate-50">
+              {detailMethod.name ?? detailMethod.id}
+            </div>
+            {authMethodHasFields(detailMethod) ? (
+              <form
+                className="flex flex-col gap-3"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!requiredComplete) return;
+                  onSubmit(detailMethod, values);
+                }}
+              >
+                {(detailMethod.vars ?? []).map((variable) => (
+                  <label
+                    key={variable.name}
+                    className="text-left text-xs font-medium text-stone-600 dark:text-stone-300"
+                  >
+                    <span className="mb-1 block">
+                      {variable.label ?? variable.name}
+                      {variable.optional ? "" : " *"}
+                    </span>
+                    <Input
+                      aria-label={variable.label ?? variable.name}
+                      type={variable.secret ? "password" : "text"}
+                      autoComplete="off"
+                      required={!variable.optional}
+                      value={values[variable.name] ?? ""}
+                      onChange={(event) =>
+                        onFieldChange(
+                          detailMethod.id,
+                          variable.name,
+                          event.currentTarget.value,
+                        )
+                      }
+                      className="h-8 rounded-lg font-mono text-xs"
+                    />
+                  </label>
+                ))}
+                <Button
+                  type="submit"
+                  size="sm"
+                  aria-label={`Continue with ${detailMethod.name ?? detailMethod.id}`}
+                  disabled={busy || !requiredComplete}
+                >
+                  Continue
+                </Button>
+              </form>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                aria-label={authActionAriaLabel(
+                  harness.label,
+                  detailMethod,
+                  true,
+                )}
+                disabled={busy && !waiting}
+                onClick={() => onSubmit(detailMethod, values)}
+              >
+                {opening
+                  ? authMethodIsTerminal(detailMethod)
+                    ? "Opening setup…"
+                    : "Opening sign in…"
+                  : waiting
+                    ? "Open again"
+                    : authActionLabel(detailMethod, true)}
+              </Button>
+            )}
+          </div>
+        )}
+        {launch?.message && (opening || waiting) && (
+          <p className="text-xs text-sky-700 dark:text-sky-300" aria-live="polite">
+            {launch.message}
+          </p>
+        )}
+        {notice && (
+          <div role="status">
+            <p className="text-sm font-medium text-slate-900 dark:text-slate-50">
+              {notice.title}
+            </p>
+            <p className="mt-1 text-xs text-stone-600 dark:text-stone-300">
+              {notice.message}
+            </p>
+          </div>
+        )}
+        {error && <InlineAlert tone="error" title={error} />}
+      </div>
+    </Dialog>
   );
 }
 
