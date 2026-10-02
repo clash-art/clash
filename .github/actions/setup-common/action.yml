@@ -1,5 +1,12 @@
 name: Prepare pinned OpenMA common
 description: Reproduce the shared runtime and UI used by Desktop, from the immutable v0.5.0 release.
+inputs:
+  mode:
+    description: >
+      verify runs the pinned common test suite, typecheck, and build.
+      package runs typecheck and build, which desktop packaging needs.
+    required: false
+    default: verify
 runs:
   using: composite
   steps:
@@ -10,6 +17,8 @@ runs:
         enable-cache: "false"
 
     - shell: bash
+      env:
+        OPENMA_COMMON_MODE: ${{ inputs.mode }}
       run: |
         git clone --filter=blob:none --no-checkout https://github.com/openma-ai/openma-common.git ../openma-common
         git -C ../openma-common checkout 08ad161ac7eb8605b6d71c825b1a8fe2d461d074
@@ -27,4 +36,18 @@ runs:
           echo "openssl req -x509 did not produce a CA certificate; leaving OPENSSL_CONF unchanged"
         fi
         rm -rf "${probe_dir}"
-        pnpm --dir ../openma-common verify
+        # Packaging does not need the upstream suite. That suite fails on Windows
+        # (GNU tar, platform keys, uv venv layout). Desktop Checks keeps verify.
+        case "$OPENMA_COMMON_MODE" in
+          package)
+            pnpm --dir ../openma-common typecheck
+            pnpm --dir ../openma-common build
+            ;;
+          verify)
+            pnpm --dir ../openma-common verify
+            ;;
+          *)
+            echo "Unsupported OpenMA common mode: ${OPENMA_COMMON_MODE}" >&2
+            exit 1
+            ;;
+        esac

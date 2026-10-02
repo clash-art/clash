@@ -171,7 +171,8 @@ async function main(): Promise<void> {
     const rootHelp = await runCli(["--help"]);
     check(
       "root help presents cloud authentication as optional",
-      /Local setup:/i.test(rootHelp.stdout) &&
+      /Start with the task/i.test(rootHelp.stdout) &&
+        /Local commands need no cloud login/i.test(rootHelp.stdout) &&
         /Optional cloud sync:/i.test(rootHelp.stdout) &&
         /clash auth login/i.test(rootHelp.stdout) &&
         !/Setup:\s*\n\s*1\. clash auth login/i.test(rootHelp.stdout) &&

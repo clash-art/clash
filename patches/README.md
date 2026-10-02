@@ -2,8 +2,10 @@
 
 CI and Desktop packaging check out immutable common v0.5.0 commit
 `08ad161ac7eb8605b6d71c825b1a8fe2d461d074` via
-`.github/actions/setup-common/action.yml`, install its frozen lockfile and run
-common tests, type checks and build before installing Clash.
+`.github/actions/setup-common/action.yml` and install its frozen lockfile.
+Desktop Checks then runs common tests, type checks, and build. Desktop
+packaging runs typecheck and build only. The pinned suite is not
+Windows-compatible, and packaging does not need it.
 
 The shared chat, composer, session controls and ACP probe/harness exports are now
 in the published common release. There is no downstream source patch to apply.

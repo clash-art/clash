@@ -259,6 +259,14 @@ describe("desktop Electron runtime", () => {
       new URL("../../../.github/workflows/release.yml", import.meta.url),
       "utf8",
     );
+    const ci = readFileSync(
+      new URL("../../../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+    const publishBeta = readFileSync(
+      new URL("../../../.github/workflows/publish-beta.yml", import.meta.url),
+      "utf8",
+    );
     const commonSetup = readFileSync(
       new URL("../../../.github/actions/setup-common/action.yml", import.meta.url), "utf8",
     );
@@ -266,6 +274,8 @@ describe("desktop Electron runtime", () => {
       /git clone .*https:\/\/github\.com\/openma-ai\/openma-common\.git/,
       /git -C \.\.\/openma-common checkout [a-f0-9]{40}/,
       /pnpm --dir \.\.\/openma-common install --frozen-lockfile/,
+      /pnpm --dir \.\.\/openma-common typecheck/,
+      /pnpm --dir \.\.\/openma-common build/,
       /pnpm --dir \.\.\/openma-common verify/,
     ];
     let previous = -1;
@@ -275,7 +285,27 @@ describe("desktop Electron runtime", () => {
       expect(position).toBeGreaterThan(previous);
       previous = position;
     }
-    expect(release.indexOf("uses: ./.github/actions/setup-common")).toBeGreaterThan(-1);
+    expect(sourceMatches(commonSetup, /default:\s*verify\b/)).toBe(true);
+    const packageArm = commonSetup.slice(
+      commonSetup.indexOf("package)"),
+      commonSetup.indexOf("verify)"),
+    );
+    expect(packageArm).toContain("pnpm --dir ../openma-common typecheck");
+    expect(packageArm).toContain("pnpm --dir ../openma-common build");
+    expect(packageArm).not.toContain("pnpm --dir ../openma-common verify");
+
+    const setupInvocation = (workflow: string) => {
+      const marker = "uses: ./.github/actions/setup-common";
+      const start = workflow.indexOf(marker);
+      expect(start).toBeGreaterThan(-1);
+      const nextStep = workflow.slice(start + marker.length).search(/\n\s*- /);
+      return nextStep < 0
+        ? workflow.slice(start)
+        : workflow.slice(start, start + marker.length + nextStep);
+    };
+    expect(setupInvocation(release)).toMatch(/mode:\s*package\b/);
+    expect(setupInvocation(ci)).not.toMatch(/mode:\s*package\b/);
+    expect(setupInvocation(publishBeta)).not.toMatch(/mode:\s*package\b/);
     expect(release.indexOf("pnpm install --frozen-lockfile")).toBeGreaterThan(
       release.indexOf("uses: ./.github/actions/setup-common"),
     );
