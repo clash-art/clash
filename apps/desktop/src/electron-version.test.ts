@@ -325,15 +325,14 @@ describe("desktop Electron runtime", () => {
       "utf8",
     );
     expect(pin).toContain(
-      "OPENMA_COMMON_SHA=08ad161ac7eb8605b6d71c825b1a8fe2d461d074",
+      "OPENMA_COMMON_SHA=5d839b5cbf7170ced4cb031d45c0e6e4261ca175",
     );
-    expect(pin).toContain("OPENMA_COMMON_TAG=v0.5.0");
-    expect(pin).toContain(
-      "OPENMA_COMMON_TARBALL_SHA256=4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3",
-    );
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.7.1");
+    expect(pin).toContain("OPENMA_COMMON_TARBALL_SHA256=\n");
+    expect(pin).toContain("OPENMA_COMMON_TARBALL_URL=\n");
     expect(commonSetup).toContain(".github/actions/setup-common/pin.env");
     expect(commonSetup).not.toContain(
-      "08ad161ac7eb8605b6d71c825b1a8fe2d461d074",
+      "5d839b5cbf7170ced4cb031d45c0e6e4261ca175",
     );
     expect(
       sourceMatches(

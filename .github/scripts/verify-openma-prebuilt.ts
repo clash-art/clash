@@ -128,12 +128,41 @@ function git(args: string[]): string {
   return result.stdout.trim();
 }
 
+const committedDist = [
+  "dist/chat-ui/index.js",
+  "dist/agent-ui/index.js",
+  "dist/acp-runtime/index.js",
+  "dist/protocol/acp/index.js",
+];
+
+/** A release asset is optional. v0.7.1 publishes the prebuilt tree only in git. */
+export function tarballPinMode(url: string, digest: string): "tarball" | "git" {
+  const hasUrl = url.trim().length > 0;
+  const hasDigest = digest.trim().length > 0;
+  if (hasUrl !== hasDigest) {
+    throw new Error(
+      "OPENMA_COMMON_TARBALL_URL and OPENMA_COMMON_TARBALL_SHA256 must both be set or both be empty",
+    );
+  }
+  return hasUrl ? "tarball" : "git";
+}
+
+function assertCommittedDist(root: string, sha: string): void {
+  for (const relative of committedDist) {
+    git(["-C", root, "cat-file", "-e", `${sha}:${relative}`]);
+    const info = statSync(path.join(root, relative));
+    if (!info.isFile() || info.size === 0) {
+      throw new Error(`OpenMA committed dist is empty: ${relative}`);
+    }
+  }
+}
+
 export function verifyOpenmaPrebuilt(): void {
   const workspace = requireEnv("GITHUB_WORKSPACE");
   const sha = requireEnv("OPENMA_COMMON_SHA");
   const tag = requireEnv("OPENMA_COMMON_TAG");
-  const expectedDigest = requireEnv("OPENMA_COMMON_TARBALL_SHA256");
-  const tarballUrl = requireEnv("OPENMA_COMMON_TARBALL_URL");
+  const expectedDigest = process.env.OPENMA_COMMON_TARBALL_SHA256 ?? "";
+  const tarballUrl = process.env.OPENMA_COMMON_TARBALL_URL ?? "";
   const root = path.resolve(workspace, "..", "openma-common");
   if (git(["-C", root, "rev-parse", "HEAD"]) !== sha) {
     throw new Error(`OpenMA checkout is not ${sha}`);
@@ -141,22 +170,33 @@ export function verifyOpenmaPrebuilt(): void {
   if (git(["-C", root, "rev-parse", `${tag}^{commit}`]) !== sha) {
     throw new Error(`OpenMA tag ${tag} does not peel to ${sha}`);
   }
+  assertCommittedDist(root, sha);
+  if (tarballPinMode(tarballUrl, expectedDigest) === "git") {
+    console.log(
+      `OpenMA ${tag} ${sha} uses committed dist; this tag publishes no release tarball`,
+    );
+    return;
+  }
 
   const scratch = mkdtempSync(path.join(tmpdir(), "openma-prebuilt-"));
   try {
     const tarball = path.join(scratch, "openma-common.tgz");
-    const download = spawnSync("curl", ["-fsSL", "-o", tarball, tarballUrl], {
-      encoding: "utf8",
-    });
+    const download = spawnSync(
+      "curl",
+      ["-fsSL", "-o", tarball, tarballUrl.trim()],
+      {
+        encoding: "utf8",
+      },
+    );
     if (download.status !== 0) {
       throw new Error(`OpenMA tarball download failed\n${download.stderr}`);
     }
     const actualDigest = createHash("sha256")
       .update(readFileSync(tarball))
       .digest("hex");
-    if (actualDigest !== expectedDigest) {
+    if (actualDigest !== expectedDigest.trim()) {
       throw new Error(
-        `OpenMA tarball sha256 ${actualDigest} != ${expectedDigest}`,
+        `OpenMA tarball sha256 ${actualDigest} != ${expectedDigest.trim()}`,
       );
     }
     extractTarGz(tarball, scratch);

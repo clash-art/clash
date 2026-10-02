@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
-import { distMismatches, extractTarGz } from "./verify-openma-prebuilt.ts";
+import {
+  distMismatches,
+  extractTarGz,
+  tarballPinMode,
+} from "./verify-openma-prebuilt.ts";
 
 function tarHeader(name: string, size: number): Buffer {
   const header = Buffer.alloc(512);
@@ -13,6 +17,15 @@ function tarHeader(name: string, size: number): Buffer {
   header[156] = 48;
   return header;
 }
+
+test("a missing release tarball is a git-dist pin, not a partial one", () => {
+  assert.equal(tarballPinMode("", ""), "git");
+  assert.equal(
+    tarballPinMode("https://example.invalid/a.tgz", "abc"),
+    "tarball",
+  );
+  assert.throws(() => tarballPinMode("https://example.invalid/a.tgz", ""));
+});
 
 test("dist comparison accepts identical trees and reports drift", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "openma-dist-"));
