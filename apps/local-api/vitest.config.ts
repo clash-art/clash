@@ -12,6 +12,15 @@ export default defineConfig({
         ),
       },
       {
+        // shared-runtime's root entry imports this subpath from source.
+        // The package export points at dist/, which Desktop Checks does not build.
+        find: /^@clash\/action-sdk\/executable-failure$/,
+        replacement: resolve(
+          __dirname,
+          "../../packages/action-sdk/src/executable-failure.ts",
+        ),
+      },
+      {
         find: /^@clash\/action-sdk$/,
         replacement: resolve(
           __dirname,
