@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { AcpForkPoint } from "@clash/shared-types";
 import { AcpRuntimeImpl as SharedRuntime } from "@openma/common/acp-runtime";
-import type { AgentSpec, SessionOptions, Spawner } from "./types.js";
+import type { AgentSpec, SessionOptions, Spawner } from "@openma/common/acp-runtime";
 
 interface LegacyModels {
   currentModelId: string;
@@ -73,17 +73,25 @@ export class AcpRuntimeImpl extends SharedRuntime {
     this.forkPoints = forkPoints;
   }
 
-  override async start(options: SessionOptions & { forkPoint?: AcpForkPoint }) {
-    if (options.forkPoint)
-      this.forkPoints.set(options.agent, options.forkPoint);
-    else this.forkPoints.delete(options.agent);
-    const session = await super.start(options);
-    const catalog = this.catalogs.get(options.agent);
-    return Object.assign(session, { models: catalog?.models });
+  /**
+   * Record a fork point for the next session started from `spec`.
+   * The runtime injects it into the session/fork request before sending it to
+   * the agent; other initialization remains normal. Call this before `start()`.
+   */
+  declareForkPoint(spec: AgentSpec, forkPoint: AcpForkPoint): void {
+    this.forkPoints.set(spec, forkPoint);
+  }
+
+  /**
+   * Compatibility shim for older agents that emit the legacy `models` field in
+   * initialize. Web UI and Desktop use this to seed the model picker before any
+   * `config_option_update` arrives; the Host does not persist the catalog.
+   */
+  getLegacyCatalogModels(spec: AgentSpec): LegacyModels | undefined {
+    return this.catalogs.get(spec)?.models;
   }
 }
 
-/** Preserve the vendor extension across SDK versions which omit fork metadata. */
 function withForkPoint(
   target: WritableStream<Uint8Array>,
   point: AcpForkPoint,
@@ -99,22 +107,26 @@ function withForkPoint(
       while ((end = pending.indexOf("\n")) >= 0) {
         let line = pending.slice(0, end);
         pending = pending.slice(end + 1);
-        const message = JSON.parse(line);
-        if (message.method === "session/fork") {
-          message.params._meta = {
-            ...message.params._meta,
-            jetbrains: {
-              air: {
-                fork: {
-                  version: 1,
-                  messageId: point.messageId,
-                  messageFingerprint: `sha256:${createHash("sha256").update(point.messageText, "utf8").digest("hex")}`,
-                  messageOccurrence: point.messageOccurrence,
+        try {
+          const message = JSON.parse(line);
+          if (message.method === "session/fork") {
+            message.params._meta = {
+              ...message.params._meta,
+              jetbrains: {
+                air: {
+                  fork: {
+                    version: 1,
+                    messageId: point.messageId,
+                    messageFingerprint: `sha256:${createHash("sha256").update(point.messageText, "utf8").digest("hex")}`,
+                    messageOccurrence: point.messageOccurrence,
+                  },
                 },
               },
-            },
-          };
-          line = JSON.stringify(message);
+            };
+            line = JSON.stringify(message);
+          }
+        } catch {
+          /* Pass through invalid JSON; the SDK owns error handling. */
         }
         await writer.write(encoder.encode(line + "\n"));
       }

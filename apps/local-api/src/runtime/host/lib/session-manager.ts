@@ -42,10 +42,10 @@ import {
 } from "@openma/common/session-kernel";
 import { AcpRuntimeImpl } from "../_acp-runtime/index.js";
 import { withClashAcpExtensionCapabilities } from "../_acp-runtime/client-capabilities.js";
-import { NodeSpawner } from "../_acp-runtime/spawners/node.js";
+import { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
 import { ensureSessionScratchpad } from "./session-scratchpad.js";
 import { detect } from "../_acp-runtime/registry.js";
-import type { AcpSession, AgentSpec } from "../_acp-runtime/types.js";
+import type { AcpSession, AgentSpec } from "../_acp-runtime/index.js";
 import {
   ensureAgentCwd,
   readAgentRuntime,

@@ -1,22 +1,24 @@
+// Re-export core types and classes from @openma/common
 export type {
   AgentSpec,
-  ChildHandle,
-  Spawner,
   AcpSession,
   AcpRuntime,
   RestartPolicy,
   SessionOptions,
-  AcpPromptInput,
-  AcpSessionEvent,
   ClientCallbacks,
-} from "./types.js";
+  ChildHandle,
+  Spawner,
+  SteeringOutcome,
+} from "@openma/common/acp-runtime";
+export type { ContentBlock, PromptCapabilities } from "@agentclientprotocol/sdk";
+export { AcpSessionImpl } from "@openma/common/acp-runtime";
+export type { AcpSessionConstructOptions } from "@openma/common/acp-runtime";
+export { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
 
-// Renamed `AcpRuntimeImpl` → `AcpRuntime` would collide with the same-named
-// interface above. Keep the impl class postfix-named; callers do
-// `new AcpRuntimeImpl(spawner)`. Slightly ugly, unambiguous.
+// Clash-specific runtime wrapper
 export { AcpRuntimeImpl } from "./runtime.js";
-export { AcpSessionImpl } from "./session.js";
-export { NodeSpawner } from "./spawners/node.js";
+
+// Clash-specific probe extensions
 export {
   authenticateAgent,
   disposeAllAcpSetupProcesses,
@@ -30,6 +32,8 @@ export {
   type ProbeAgentConfigOptionsOptions,
   type ProbeAgentSessionConfigResult,
 } from "./probe.js";
-export { listAgentSessions, listLocalAgentSessions, type AcpListedSession } from "./session-list.js";
 
+// Clash-specific agent catalog and session management
+export { listAgentSessions, listLocalAgentSessions, type AcpListedSession } from "./session-list.js";
 export { KNOWN_ACP_AGENTS, detect, detectAll, detectEntry, type KnownAgentEntry } from "./registry.js";
+export { withClashAcpExtensionCapabilities } from "./client-capabilities.js";
