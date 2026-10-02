@@ -12,18 +12,9 @@ jobs:
     runs-on: macos-14
     needs: [source-checks]
     steps:
-      - uses: actions/checkout@v7
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
 
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - uses: ./.github/actions/setup-common
-
-      - run: pnpm install --frozen-lockfile
       - run: pnpm build:package clash
       - run: pnpm --dir packages/shared-mcp test
       - run: pnpm --dir plugins/clash test

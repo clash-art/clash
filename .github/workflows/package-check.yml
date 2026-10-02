@@ -1,0 +1,24 @@
+name: Package Check
+
+# Packaging without publication. pull_request runs from any branch once the
+# ci:package label is applied, including later pushes to that PR. workflow_dispatch
+# selects a branch after this file is on the default branch. No signing or
+# publish secrets are passed in.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: package-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-desktop:
+    name: Package Desktop
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:package')
+    uses: ./.github/workflows/package-desktop.yml

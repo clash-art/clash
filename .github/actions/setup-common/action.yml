@@ -1,53 +1,28 @@
 name: Prepare pinned OpenMA common
-description: Reproduce the shared runtime and UI used by Desktop, from the immutable v0.5.0 release.
-inputs:
-  mode:
-    description: >
-      verify runs the pinned common test suite, typecheck, and build.
-      package runs typecheck and build, which desktop packaging needs.
-    required: false
-    default: verify
+description: >
+  Check out immutable @openma/common v0.5.0 and install its dependencies.
+  The committed dist is the published GitHub release tarball. This action does
+  not build or test openma-common; upstream CI owns that suite.
+
 runs:
   using: composite
   steps:
-    - name: Install pinned uv
-      uses: astral-sh/setup-uv@v10.2.0
-      with:
-        version: "0.12.17"
-        enable-cache: "false"
-
-    - shell: bash
+    - name: Use the pinned OpenMA common release
+      shell: bash
       env:
-        OPENMA_COMMON_MODE: ${{ inputs.mode }}
+        # v0.5.0 annotated tag peels to this commit. The release asset
+        # openma-common-0.5.0.tgz is that commit's dist, packed for consumers
+        # that install from Git. npm does not publish this private package.
+        OPENMA_COMMON_SHA: 08ad161ac7eb8605b6d71c825b1a8fe2d461d074
+        OPENMA_COMMON_TAG: v0.5.0
+        OPENMA_COMMON_TARBALL_SHA256: 4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3
+        OPENMA_COMMON_TARBALL_URL: https://github.com/openma-ai/openma-common/releases/download/v0.5.0/openma-common-0.5.0.tgz
       run: |
-        git clone --filter=blob:none --no-checkout https://github.com/openma-ai/openma-common.git ../openma-common
-        git -C ../openma-common checkout 08ad161ac7eb8605b6d71c825b1a8fe2d461d074
-        pnpm --dir ../openma-common install --frozen-lockfile
-        # openma-common's uvx HTTPS test trusts a cert from `openssl req -x509`.
-        # When that default is a CA certificate, uv's rustls verifier rejects the
-        # peer (CaUsedAsEndEntity) even though SSL_CERT_FILE is set. Point only
-        # that fixture at a leaf profile; other OpenSSL uses keep the host config.
-        probe_dir="$(mktemp -d)"
-        if openssl req -x509 -newkey rsa:2048 -nodes -keyout "${probe_dir}/key.pem" -out "${probe_dir}/cert.pem" -days 1 -subj "/CN=probe" >/dev/null 2>&1 \
-          && openssl x509 -in "${probe_dir}/cert.pem" -noout -text | grep -q "CA:TRUE"; then
-          export OPENSSL_CONF="${GITHUB_ACTION_PATH}/openssl-req-leaf.cnf"
-          echo "openssl req -x509 produced a CA certificate; using ${OPENSSL_CONF}"
-        else
-          echo "openssl req -x509 did not produce a CA certificate; leaving OPENSSL_CONF unchanged"
-        fi
-        rm -rf "${probe_dir}"
-        # Packaging does not need the upstream suite. That suite fails on Windows
-        # (GNU tar, platform keys, uv venv layout). Desktop Checks keeps verify.
-        case "$OPENMA_COMMON_MODE" in
-          package)
-            pnpm --dir ../openma-common typecheck
-            pnpm --dir ../openma-common build
-            ;;
-          verify)
-            pnpm --dir ../openma-common verify
-            ;;
-          *)
-            echo "Unsupported OpenMA common mode: ${OPENMA_COMMON_MODE}" >&2
-            exit 1
-            ;;
-        esac
+        set -euo pipefail
+        dest="../openma-common"
+        rm -rf "${dest}"
+        git clone --filter=blob:none --no-checkout https://github.com/openma-ai/openma-common.git "${dest}"
+        git -C "${dest}" checkout --detach "${OPENMA_COMMON_SHA}"
+        git -C "${dest}" fetch --depth 1 origin "refs/tags/${OPENMA_COMMON_TAG}:refs/tags/${OPENMA_COMMON_TAG}"
+        node .github/scripts/verify-openma-prebuilt.ts
+        pnpm --dir "${dest}" install --frozen-lockfile
