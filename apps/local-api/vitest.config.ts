@@ -47,6 +47,10 @@ export default defineConfig({
         replacement: resolve(__dirname, "../../packages/shared-layout/src/index.ts"),
       },
       {
+        find: /^@clash\/replica$/,
+        replacement: resolve(__dirname, "../../packages/shared-replica/src/index.ts"),
+      },
+      {
         find: /^@clash\/sdk$/,
         replacement: resolve(__dirname, "../../packages/clash-sdk/js/src/index.ts"),
       },
