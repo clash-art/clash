@@ -6,7 +6,7 @@ export default defineConfig({
     dedupe: ["react", "react-dom"],
     alias: [
       {
-        find: /^@clash\/action-sdk\/(browser|ui)$/,
+        find: /^@clash\/action-sdk\/(browser|ui|executable-failure)$/,
         replacement: resolve(__dirname, "../action-sdk/src/$1.ts"),
       },
       {

@@ -40,7 +40,7 @@ export const DEV_SOURCE_ALIASES = [
     ),
   },
   {
-    find: /^@clash\/action-sdk\/(browser|ui)$/,
+    find: /^@clash\/action-sdk\/(browser|ui|executable-failure)$/,
     replacement: resolve(repoRoot, "packages/action-sdk/src/$1.ts"),
   },
   {
