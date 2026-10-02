@@ -206,9 +206,7 @@ describe("desktop startup test suite", () => {
     expect(runtime).toContain("resolveDesktopSourceHostNodeArgs");
     expect(runtime).toContain("CLASH_DESKTOP_SOURCE_HOST_WATCH");
     expect(runtime).toContain("resolveClashDevTsconfigPath(moduleDir)");
-    expect(forge).toContain(
-      "process.env.CLASH_DESKTOP_SOURCE_HOST_WATCH ??=",
-    );
+    expect(forge).toContain("process.env.CLASH_DESKTOP_SOURCE_HOST_WATCH ??=");
   });
 
   it("injects the packaged Python SDK into local-model subprocess discovery", () => {
@@ -527,10 +525,42 @@ describe("desktop startup test suite", () => {
 
     expect(releaseWorkflow).toContain("package-desktop:");
     expect(releaseWorkflow).toContain("publish-desktop-preview:");
-    expect(sourceContains(releaseWorkflow, "needs: [desktop-checks]")).toBe(true);
-    expect(sourceContains(releaseWorkflow, "test:e2e:agent-first-local-v1")).toBe(true);
-    expect(sourceContains(releaseWorkflow, "needs: [package-desktop]")).toBe(true);
-    expect(sourceContains(releaseWorkflow, "vars.CLASH_PREVIEW_PUBLICATION_ENABLED == 'true'")).toBe(true);
+    expect(sourceContains(releaseWorkflow, "needs: [desktop-checks]")).toBe(
+      true,
+    );
+    expect(
+      sourceContains(
+        releaseWorkflow,
+        "uses: ./.github/workflows/package-desktop.yml",
+      ),
+    ).toBe(true);
+    const packageWorkflow = readRootText(
+      ".github/workflows/package-desktop.yml",
+    );
+    expect(
+      sourceContains(packageWorkflow, "test:e2e:agent-first-local-v1"),
+    ).toBe(true);
+    expect(
+      sourceContains(packageWorkflow, "platform: macOS-arm64 smoke: full"),
+    ).toBe(true);
+    expect(
+      sourceContains(packageWorkflow, "platform: Linux smoke: launch"),
+    ).toBe(true);
+    expect(
+      sourceContains(packageWorkflow, "platform: Windows smoke: launch"),
+    ).toBe(true);
+    expect(
+      sourceContains(packageWorkflow, "platform: macOS-x64 smoke: launch"),
+    ).toBe(true);
+    expect(sourceContains(releaseWorkflow, "needs: [package-desktop]")).toBe(
+      true,
+    );
+    expect(
+      sourceContains(
+        releaseWorkflow,
+        "vars.CLASH_PREVIEW_PUBLICATION_ENABLED == 'true'",
+      ),
+    ).toBe(true);
     expect(releaseWorkflow).not.toContain("changesets/action");
     expect(
       existsSync(

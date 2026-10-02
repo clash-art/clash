@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { sourceMatches } from "../../../packages/gui/test-support/source-match.js";
+import {
+  sourceContains,
+  sourceMatches,
+} from "../../../packages/gui/test-support/source-match.js";
 import { describe, expect, it } from "vitest";
 
 interface DesktopPackage {
@@ -91,8 +94,7 @@ describe("desktop Electron runtime", () => {
     expect(rootManifest.scripts?.["prepare:desktop-pack"] ?? "").toContain(
       "pnpm --filter @clash/desktop prepare:pack",
     );
-    const desktopPrepare =
-      rootManifest.scripts?.["prepare:desktop-pack"] ?? "";
+    const desktopPrepare = rootManifest.scripts?.["prepare:desktop-pack"] ?? "";
     const bundledPluginBuild = desktopPrepare.indexOf(
       'turbo run build --filter="@clash-plugin/*"',
     );
@@ -139,9 +141,7 @@ describe("desktop Electron runtime", () => {
     expect(builderConfig).toContain(
       "artifactName: Clash-Desktop-Linux-x64.${ext}",
     );
-    expect(builderConfig).toContain(
-      "from: build/clash-runtime/node_modules",
-    );
+    expect(builderConfig).toContain("from: build/clash-runtime/node_modules");
     expect(builderConfig).toContain("to: clash-runtime/node_modules");
     expect(builderConfig).toMatch(
       /^win:\n(?:(?!^[A-Za-z]).*\n)*? {2}executableName: clash$/m,
@@ -183,38 +183,58 @@ describe("desktop Electron runtime", () => {
       new URL("../../../.github/workflows/release.yml", import.meta.url),
       "utf8",
     );
+    const packaging = readFileSync(
+      new URL(
+        "../../../.github/workflows/package-desktop.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
 
     expect(release).toContain("package-desktop:");
-    expect(release).toContain("macos-latest");
-    expect(release).toContain("platform: macOS-arm64");
-    expect(release).toContain("platform: macOS-x64");
-    expect(release).toContain(
+    expect(
+      sourceMatches(
+        release,
+        /uses:\s*\.\/\.github\/workflows\/package-desktop\.yml/,
+      ),
+    ).toBe(true);
+    expect(packaging).toContain("macos-latest");
+    expect(packaging).toContain("platform: macOS-arm64");
+    expect(packaging).toContain("platform: macOS-x64");
+    expect(packaging).toContain(
       "apps/desktop/release/Clash-Desktop-macOS-arm64.dmg",
     );
-    expect(release).toContain(
+    expect(packaging).toContain(
       "apps/desktop/release/Clash-Desktop-macOS-x64.dmg",
     );
-    expect(release).toContain("windows-latest");
-    expect(release).toContain("ubuntu-latest");
+    expect(packaging).toContain("windows-latest");
+    expect(packaging).toContain("ubuntu-latest");
     expect(
-      sourceMatches(release, /uses:\s*actions\/upload-artifact@v\d+\b/),
+      sourceMatches(packaging, /uses:\s*actions\/upload-artifact@v\d+\b/),
     ).toBe(true);
-    expect(release).toContain("Clash-Desktop-${{ matrix.platform }}");
-    expect(release).toContain("pnpm run ${{ matrix.script }}");
-    expect(release).toContain("script: pack:desktop:mac:arm64");
+    expect(packaging).toContain("Clash-Desktop-${{ matrix.platform }}");
+    expect(packaging).toContain("pnpm run ${{ matrix.script }}");
+    expect(packaging).toContain("script: pack:desktop:mac:arm64");
+    expect(packaging).toContain('CSC_IDENTITY_AUTO_DISCOVERY: "false"');
+    expect(packaging).toContain('CSC_FOR_PULL_REQUEST: "true"');
+    expect(packaging).toContain("packaged-binary-sanity.ts");
     expect(release).toContain("publish-desktop-preview:");
     expect(
       sourceMatches(release, /uses:\s*actions\/download-artifact@v\d+\b/),
     ).toBe(true);
     expect(release).toContain("gh release upload desktop-preview");
+    expect(release).toContain("environment: desktop-preview-acceptance");
   });
 
   it("gives the desktop renderer enough heap on packaging runners", () => {
-    const release = readFileSync(
-      new URL("../../../.github/workflows/release.yml", import.meta.url),
+    const packaging = readFileSync(
+      new URL(
+        "../../../.github/workflows/package-desktop.yml",
+        import.meta.url,
+      ),
       "utf8",
     );
-    const heapLimit = release.match(
+    const heapLimit = packaging.match(
       /NODE_OPTIONS:\s*["']?--max-old-space-size=(\d+)["']?/,
     )?.[1];
 
@@ -222,8 +242,11 @@ describe("desktop Electron runtime", () => {
   });
 
   it("runs repository automation on Node 24 based action releases", () => {
-    const ci = readFileSync(
-      new URL("../../../.github/workflows/ci.yml", import.meta.url),
+    const workspaceSetup = readFileSync(
+      new URL(
+        "../../../.github/actions/setup-workspace/action.yml",
+        import.meta.url,
+      ),
       "utf8",
     );
     const release = readFileSync(
@@ -234,81 +257,119 @@ describe("desktop Electron runtime", () => {
       new URL("../../../.github/workflows/publish-beta.yml", import.meta.url),
       "utf8",
     );
+    const ci = readFileSync(
+      new URL("../../../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+    const packaging = readFileSync(
+      new URL(
+        "../../../.github/workflows/package-desktop.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
 
-    for (const workflow of [ci, release, publishBeta]) {
-      expect(
-        sourceMatches(workflow, /uses:\s*actions\/checkout@v7\b/),
-      ).toBe(true);
-      expect(
-        sourceMatches(workflow, /uses:\s*pnpm\/action-setup@v6\b/),
-      ).toBe(true);
-      expect(
-        sourceMatches(workflow, /uses:\s*actions\/setup-node@v7\b/),
-      ).toBe(true);
-    }
     expect(
-      sourceMatches(release, /uses:\s*actions\/upload-artifact@v7\b/),
+      sourceMatches(workspaceSetup, /uses:\s*pnpm\/action-setup@v6\b/),
+    ).toBe(true);
+    expect(
+      sourceMatches(workspaceSetup, /uses:\s*actions\/setup-node@v7\b/),
+    ).toBe(true);
+    for (const workflow of [ci, publishBeta, packaging]) {
+      expect(sourceMatches(workflow, /uses:\s*actions\/checkout@v7\b/)).toBe(
+        true,
+      );
+      expect(
+        sourceMatches(
+          workflow,
+          /uses:\s*\.\/\.github\/actions\/setup-workspace\b/,
+        ),
+      ).toBe(true);
+      expect(workflow.indexOf("actions/checkout@v7")).toBeLessThan(
+        workflow.indexOf("./.github/actions/setup-workspace"),
+      );
+    }
+    expect(sourceMatches(publishBeta, /uses:\s*actions\/setup-node@v7\b/)).toBe(
+      true,
+    );
+    expect(
+      sourceMatches(packaging, /uses:\s*actions\/upload-artifact@v7\b/),
     ).toBe(true);
     expect(
       sourceMatches(release, /uses:\s*actions\/download-artifact@v8\b/),
     ).toBe(true);
   });
 
-  it("checks out the pinned OpenMA common source before clean desktop packaging", () => {
-    const release = readFileSync(
-      new URL("../../../.github/workflows/release.yml", import.meta.url),
-      "utf8",
-    );
-    const ci = readFileSync(
-      new URL("../../../.github/workflows/ci.yml", import.meta.url),
-      "utf8",
-    );
-    const publishBeta = readFileSync(
-      new URL("../../../.github/workflows/publish-beta.yml", import.meta.url),
-      "utf8",
-    );
+  it("checks out the pinned OpenMA common release without running its suite", () => {
     const commonSetup = readFileSync(
-      new URL("../../../.github/actions/setup-common/action.yml", import.meta.url), "utf8",
+      new URL(
+        "../../../.github/actions/setup-common/action.yml",
+        import.meta.url,
+      ),
+      "utf8",
     );
-    const steps = [
-      /git clone .*https:\/\/github\.com\/openma-ai\/openma-common\.git/,
-      /git -C \.\.\/openma-common checkout [a-f0-9]{40}/,
-      /pnpm --dir \.\.\/openma-common install --frozen-lockfile/,
-      /pnpm --dir \.\.\/openma-common typecheck/,
-      /pnpm --dir \.\.\/openma-common build/,
-      /pnpm --dir \.\.\/openma-common verify/,
-    ];
-    let previous = -1;
-    for (const step of steps) {
-      expect(sourceMatches(commonSetup, step)).toBe(true);
-      const position = commonSetup.search(step);
-      expect(position).toBeGreaterThan(previous);
-      previous = position;
-    }
-    expect(sourceMatches(commonSetup, /default:\s*verify\b/)).toBe(true);
-    const packageArm = commonSetup.slice(
-      commonSetup.indexOf("package)"),
-      commonSetup.indexOf("verify)"),
+    const workspaceSetup = readFileSync(
+      new URL(
+        "../../../.github/actions/setup-workspace/action.yml",
+        import.meta.url,
+      ),
+      "utf8",
     );
-    expect(packageArm).toContain("pnpm --dir ../openma-common typecheck");
-    expect(packageArm).toContain("pnpm --dir ../openma-common build");
-    expect(packageArm).not.toContain("pnpm --dir ../openma-common verify");
+    const packageCheck = readFileSync(
+      new URL("../../../.github/workflows/package-check.yml", import.meta.url),
+      "utf8",
+    );
 
-    const setupInvocation = (workflow: string) => {
-      const marker = "uses: ./.github/actions/setup-common";
-      const start = workflow.indexOf(marker);
-      expect(start).toBeGreaterThan(-1);
-      const nextStep = workflow.slice(start + marker.length).search(/\n\s*- /);
-      return nextStep < 0
-        ? workflow.slice(start)
-        : workflow.slice(start, start + marker.length + nextStep);
-    };
-    expect(setupInvocation(release)).toMatch(/mode:\s*package\b/);
-    expect(setupInvocation(ci)).not.toMatch(/mode:\s*package\b/);
-    expect(setupInvocation(publishBeta)).not.toMatch(/mode:\s*package\b/);
-    expect(release.indexOf("pnpm install --frozen-lockfile")).toBeGreaterThan(
-      release.indexOf("uses: ./.github/actions/setup-common"),
+    const pin = readFileSync(
+      new URL("../../../.github/actions/setup-common/pin.env", import.meta.url),
+      "utf8",
     );
+    expect(pin).toContain(
+      "OPENMA_COMMON_SHA=08ad161ac7eb8605b6d71c825b1a8fe2d461d074",
+    );
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.5.0");
+    expect(pin).toContain(
+      "OPENMA_COMMON_TARBALL_SHA256=4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3",
+    );
+    expect(commonSetup).toContain(".github/actions/setup-common/pin.env");
+    expect(commonSetup).not.toContain(
+      "08ad161ac7eb8605b6d71c825b1a8fe2d461d074",
+    );
+    expect(
+      sourceMatches(
+        commonSetup,
+        /git clone .*https:\/\/github\.com\/openma-ai\/openma-common\.git/,
+      ),
+    ).toBe(true);
+    expect(sourceMatches(commonSetup, /checkout --detach/)).toBe(true);
+    expect(commonSetup).toContain("core.autocrlf=false");
+    expect(commonSetup).toContain("verify-openma-prebuilt.ts");
+    expect(
+      sourceContains(
+        commonSetup,
+        'pnpm --dir "${dest}" install --frozen-lockfile',
+      ),
+    ).toBe(true);
+    expect(commonSetup).not.toContain("typecheck");
+    expect(commonSetup).not.toMatch(/pnpm[^\n]*\b(build|verify|test)\b/);
+    expect(commonSetup).not.toContain("setup-uv");
+    expect(commonSetup).not.toContain("openssl-req-leaf");
+    expect(
+      sourceMatches(
+        workspaceSetup,
+        /uses:\s*\.\/\.github\/actions\/setup-common\b/,
+      ),
+    ).toBe(true);
+    expect(
+      workspaceSetup.indexOf("pnpm install --frozen-lockfile"),
+    ).toBeGreaterThan(
+      workspaceSetup.indexOf("uses: ./.github/actions/setup-common"),
+    );
+    expect(packageCheck).toContain("workflow_dispatch:");
+    expect(packageCheck).toContain("ci:package");
+    expect(packageCheck).not.toContain("secrets:");
+    expect(packageCheck).not.toContain("CSC_LINK");
+    expect(packageCheck).not.toContain("NPM_TOKEN");
   });
 
   it("keeps self-hosted ACP runtimes out of immutable desktop resources", () => {

@@ -1,0 +1,53 @@
+name: Set up Clash workspace
+description: >
+  Shared setup for Desktop Checks, desktop packaging, and Publish Beta.
+  The caller checks out the repository first. This action installs pnpm and
+  Node, restores the pnpm store and Electron download caches, prepares pinned
+  OpenMA common, then installs the frozen lockfile.
+
+inputs:
+  linux-apt-packages:
+    description: Apt packages to install on Linux runners. Empty skips apt.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v6
+
+    - name: Set up Node
+      uses: actions/setup-node@v7
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+        cache-dependency-path: pnpm-lock.yaml
+
+    - name: Locate Electron caches
+      shell: bash
+      run: |
+        echo "ELECTRON_CACHE=${GITHUB_WORKSPACE}/.cache/electron" >> "$GITHUB_ENV"
+        echo "ELECTRON_BUILDER_CACHE=${GITHUB_WORKSPACE}/.cache/electron-builder" >> "$GITHUB_ENV"
+
+    - name: Cache Electron downloads
+      uses: actions/cache@v6
+      with:
+        path: |
+          .cache/electron
+          .cache/electron-builder
+        key: electron-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/package.json') }}
+        restore-keys: |
+          electron-${{ runner.os }}-
+
+    - name: Prepare pinned OpenMA common
+      uses: ./.github/actions/setup-common
+
+    - name: Install Linux packages
+      if: runner.os == 'Linux' && inputs.linux-apt-packages != ''
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install --yes ${{ inputs.linux-apt-packages }}
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile

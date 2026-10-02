@@ -1,0 +1,83 @@
+name: Package Desktop
+
+on:
+  workflow_call:
+
+jobs:
+  package:
+    name: Package Desktop (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: macOS-arm64
+            smoke: full
+            script: pack:desktop:mac:arm64
+            asset: apps/desktop/release/Clash-Desktop-macOS-arm64.dmg
+          - os: macos-latest
+            platform: macOS-x64
+            smoke: launch
+            script: pack:desktop:mac:x64
+            asset: apps/desktop/release/Clash-Desktop-macOS-x64.dmg
+          - os: windows-latest
+            platform: Windows
+            smoke: launch
+            script: pack:desktop:win
+            asset: apps/desktop/release/Clash-Desktop-Windows-x64.exe
+          - os: ubuntu-latest
+            platform: Linux
+            smoke: launch
+            script: pack:desktop:linux
+            asset: apps/desktop/release/Clash-Desktop-Linux-x64.AppImage
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # electron-builder skips its ad-hoc identity "-" seal on pull requests.
+      # Package Check is a pull_request. This keeps that seal without Developer
+      # ID secrets or notarization.
+      CSC_FOR_PULL_REQUEST: "true"
+      NODE_OPTIONS: "--max-old-space-size=4096"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          linux-apt-packages: ffmpeg libfuse2
+
+      - name: Package desktop
+        run: pnpm run ${{ matrix.script }}
+
+      - name: Sanity-check the packaged binary
+        env:
+          CLASH_DESKTOP_PACK_PLATFORM: ${{ matrix.platform }}
+          CLASH_DESKTOP_VERIFY_MAC_SEAL: ${{ runner.os == 'macOS' && '1' || '0' }}
+        run: node apps/desktop/scripts/packaged-binary-sanity.ts
+
+      - name: Upload desktop installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: Clash-Desktop-${{ matrix.platform }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+      # The agent-first local v1 gate is the desktop-first acceptance check
+      # for macOS Apple Silicon. Other platforms only launch the packaged
+      # binary. storage-doctor-repair-smoke.ts stays inside that gate.
+      - name: Verify local integrity after packaging
+        if: matrix.smoke == 'full'
+        run: pnpm --dir apps/desktop test:e2e:agent-first-local-v1
+
+      - name: Upload local integrity evidence
+        if: always() && matrix.smoke == 'full'
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-integrity-${{ github.sha }}
+          path: |
+            .tmp/agent-first-local-v1-gate/**
+            .tmp/agent-first-cas/**
+            .tmp/project-workspace-cli/**
+            .tmp/storage-doctor-repair/**
+            .tmp/short-drama-timeline/**

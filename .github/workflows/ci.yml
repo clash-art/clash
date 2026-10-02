@@ -19,18 +19,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
         with:
-          node-version-file: .nvmrc
-          cache: pnpm
+          linux-apt-packages: ffmpeg
 
-      - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
-      - uses: ./.github/actions/setup-common
-      - run: pnpm install --frozen-lockfile
       - run: make lint
-      - run: node --test scripts/runtime-dependency-identity.test.ts
+      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts
       - run: pnpm --filter @clash/desktop test
       - name: Verify Storyboard references and chat drafts
         run: pnpm --dir packages/web-ui exec vitest run src/components/PluginStoryboardSurface.test.tsx src/components/copilot/useCopilotComposerDraft.test.tsx src/components/copilot/projectAssetReferences.test.ts src/components/copilot/ChatInput.test.tsx
