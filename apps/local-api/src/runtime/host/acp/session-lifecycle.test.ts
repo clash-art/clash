@@ -118,7 +118,7 @@ describe("AcpSession lifecycle", () => {
     releaseKill.resolve();
     await Promise.all([first, second]);
 
-    expect(settledBeforeCleanup).toBe(true);
+    expect(settledBeforeCleanup).toBe(false);
     expect(kill).toHaveBeenCalledOnce();
   });
 });

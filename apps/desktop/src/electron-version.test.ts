@@ -254,8 +254,8 @@ describe("desktop Electron runtime", () => {
     ).toBe(true);
   });
 
-  it("installs published OpenMA common from the v0.6.0 git tag", () => {
-    const pin = /github:openma-ai\/openma-common#v0\.6\.0/;
+  it("installs published OpenMA common from the v0.7.0 git tag", () => {
+    const pin = /github:openma-ai\/openma-common#v0\.7\.0/;
     for (const relativePath of [
       "../../../package.json",
       "../../../apps/local-api/package.json",

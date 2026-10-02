@@ -4,7 +4,7 @@ export interface ModelFallback {
 }
 
 interface ModelSession {
-  models?: {
+  legacyModels: {
     currentModelId: string;
     availableModels: readonly { modelId: string }[];
   } | null;
@@ -31,7 +31,7 @@ export async function reconcileCodexModel(
   if (!model?.id || typeof model.currentValue !== "string") return;
   const from = requestedModel ?? model.currentValue;
   const supported =
-    session.models?.availableModels.flatMap(({ modelId }) => {
+    session.legacyModels?.availableModels.flatMap(({ modelId }) => {
       const match = /^(.+)\[([^\]]+)\]$/.exec(modelId);
       return match ? [match[1]!] : [];
     }) ?? [];

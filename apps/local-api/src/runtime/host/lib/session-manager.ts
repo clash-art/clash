@@ -1,5 +1,12 @@
 import { supportsAcpMessageFork, type AcpForkPoint } from "@clash/shared-types";
 import {
+  AcpRuntimeImpl,
+  acpForkRequestMeta,
+  type AcpSession,
+  type AgentSpec,
+} from "@openma/common/acp-runtime";
+import { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
+import {
   reconcileCodexModel,
   type ModelFallback,
 } from "./codex-model-fallback.js";
@@ -40,12 +47,9 @@ import {
   reduceSessionLifecycle,
   type SessionLifecycle,
 } from "@openma/common/session-kernel";
-import { AcpRuntimeImpl } from "../acp/index.js";
 import { withClashAcpExtensionCapabilities } from "../acp/client-capabilities.js";
-import { NodeSpawner } from "../acp/node-spawner.js";
 import { ensureSessionScratchpad } from "./session-scratchpad.js";
 import { detect } from "../acp/registry.js";
-import type { AcpSession, AgentSpec } from "@openma/common/acp-runtime";
 import {
   ensureAgentCwd,
   readAgentRuntime,
@@ -54,9 +58,8 @@ import {
 
 const DEFAULT_SESSION_CONTEXT_ID = "clash";
 
-/** v0.6.0 delivers idle setup updates on the live event queue and no longer
- * buffers session/load replay. Keep the optional field so a runtime that
- * still exposes it continues to forward those events. */
+/** Idle setup updates arrive on the live event queue. Keep the optional
+ * replay field so a runtime that still exposes it continues to forward those events. */
 function loadReplayEvents(session: AcpSession): readonly unknown[] {
   const replay = (session as { loadedReplayEvents?: readonly unknown[] }).loadedReplayEvents;
   return Array.isArray(replay) ? replay : [];
@@ -616,6 +619,7 @@ export class SessionManager {
           "The bundled Clash MCP is unavailable. Self-host sessions require the built-in Clash MCP and cannot fall back to the shell CLI.",
         );
       }
+      const forkPoint = p.fork?.point;
       const session = await this.#runtime.start({
         agent: {
           ...agentSpec,
@@ -626,9 +630,9 @@ export class SessionManager {
         },
         resumeAcpSessionId: resumeId,
         forkFromAcpSessionId: p.fork?.acp_session_id,
-        forkPoint: p.fork?.point,
+        ...(forkPoint ? { sessionRequestMeta: acpForkRequestMeta(forkPoint) } : {}),
         mcpServers,
-        clientCapabilities: withClashAcpExtensionCapabilities({
+        clientCapabilityOverlay: withClashAcpExtensionCapabilities({
           auth: { terminal: true },
           elicitation: { form: {}, url: {} },
         }),

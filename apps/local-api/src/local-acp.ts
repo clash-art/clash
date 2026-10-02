@@ -8,6 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   detectAll,
   detectEntry,
+  disposeAllAcpProbes,
   disposeAllAcpSetupProcesses,
   KNOWN_ACP_AGENTS,
   authenticateAgent as authenticateRuntimeAgent,
@@ -3629,7 +3630,10 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.shuttingDown = true;
     this.shutdownPromise = (async () => {
-      await disposeAllAcpSetupProcesses();
+      await Promise.all([
+        disposeAllAcpSetupProcesses(),
+        disposeAllAcpProbes(),
+      ]);
       while (this.sessions.size > 0) {
         const entries = [...this.sessions.values()];
         for (const entry of entries) {

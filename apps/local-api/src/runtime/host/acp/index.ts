@@ -8,22 +8,28 @@ export type {
   SessionOptions,
   ClientCallbacks,
 } from "@openma/common/acp-runtime";
-export { AcpSessionImpl } from "@openma/common/acp-runtime";
-export type { AcpSessionConstructOptions } from "@openma/common/acp-runtime";
-export { NodeSpawner } from "./node-spawner.js";
-
-export { AcpRuntimeImpl } from "./runtime.js";
-export type { ClashAcpStartOptions } from "./runtime.js";
 export {
+  AcpRuntimeImpl,
+  AcpSessionImpl,
+  acpForkRequestMeta,
   authenticateAgent,
-  disposeAllAcpSetupProcesses,
+  disposeAllAcpProbes,
   probeAgentAuthStatus,
+} from "@openma/common/acp-runtime";
+export type {
+  AcpForkPoint,
+  AcpSessionConstructOptions,
+  AuthenticateAgentOptions,
+  AuthenticateAgentResult,
+  ProbeAgentAuthStatus,
+  ProbeAgentAuthStatusOptions,
+} from "@openma/common/acp-runtime";
+export { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
+
+export {
+  disposeAllAcpSetupProcesses,
   probeAgentConfigOptions,
   probeAgentSessionConfig,
-  type AuthenticateAgentOptions,
-  type AuthenticateAgentResult,
-  type ProbeAgentAuthStatus,
-  type ProbeAgentAuthStatusOptions,
   type ProbeAgentConfigOptionsOptions,
   type ProbeAgentSessionConfigResult,
 } from "./probe.js";

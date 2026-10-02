@@ -19,8 +19,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   authenticateAgent,
-  disposeAllAcpSetupProcesses,
+  disposeAllAcpProbes,
   probeAgentAuthStatus,
+} from "@openma/common/acp-runtime";
+import {
   probeAgentConfigOptions,
   probeAgentSessionConfig,
 } from "./probe.js";
@@ -543,7 +545,7 @@ describe("ACP setup lifecycle", () => {
       backgroundAuthTimeoutMs: 60_000,
     })).resolves.toEqual({ status: "started" });
 
-    await disposeAllAcpSetupProcesses();
+    await disposeAllAcpProbes();
     expect(kill).toHaveBeenCalledOnce();
   });
 });

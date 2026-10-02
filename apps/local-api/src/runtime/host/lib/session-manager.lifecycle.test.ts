@@ -21,13 +21,16 @@ const bundledClashMcp = {
   },
 };
 
-vi.mock("../acp/index.js", () => ({
+vi.mock("@openma/common/acp-runtime", () => ({
   AcpRuntimeImpl: class {
     start = mocks.runtimeStart;
   },
+  acpForkRequestMeta: (point: { messageId: string }) => ({
+    jetbrains: { air: { fork: point } },
+  }),
 }));
 
-vi.mock("../acp/node-spawner.js", () => ({
+vi.mock("@openma/common/acp-runtime/node-spawner", () => ({
   NodeSpawner: class {},
 }));
 

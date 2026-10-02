@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { NodeSpawner } from "./node-spawner.js";
+import { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
 
 const require = createRequire(import.meta.url);
 const tsxLoader = (() => {
@@ -125,7 +125,7 @@ setInterval(() => {}, 1000);
 
   posixIt("cleans up the child process group when the host process exits", async () => {
     const pidFile = join(tmpdir(), `clash-node-spawner-grandchild-${process.pid}-${Date.now()}.txt`);
-    const spawnerUrl = new URL("./node-spawner.ts", import.meta.url).href;
+    const spawnerUrl = import.meta.resolve("@openma/common/acp-runtime/node-spawner");
     const parentScript = `
 const { writeFile } = await import("node:fs/promises");
 const { NodeSpawner } = await import(${JSON.stringify(spawnerUrl)});
@@ -176,7 +176,7 @@ process.exit(0);
 
   posixIt("cleans up the child process group when the host is interrupted", async () => {
     const pidFile = join(tmpdir(), `clash-node-spawner-sigint-${process.pid}-${Date.now()}.txt`);
-    const spawnerUrl = new URL("./node-spawner.ts", import.meta.url).href;
+    const spawnerUrl = import.meta.resolve("@openma/common/acp-runtime/node-spawner");
     const parentScript = `
 const { writeFile } = await import("node:fs/promises");
 const { NodeSpawner } = await import(${JSON.stringify(spawnerUrl)});
