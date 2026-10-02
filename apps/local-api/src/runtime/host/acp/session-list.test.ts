@@ -16,7 +16,7 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { listAgentSessions } from "./session-list";
-import type { ChildHandle, Spawner } from "./types";
+import type { ChildHandle, Spawner } from "@openma/common/acp-runtime";
 
 function makeStreamPair(): { child: ChildHandle; agentInput: ReadableStream<Uint8Array>; agentOutput: WritableStream<Uint8Array> } {
   const clientToAgent = new TransformStream<Uint8Array, Uint8Array>();

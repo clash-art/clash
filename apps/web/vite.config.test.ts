@@ -132,44 +132,47 @@ describe("Vite workspace source routing", () => {
     expect(resolved.preview?.port).toBe(3000);
   });
 
-  it("resolves linked OpenMA entrypoints from source instead of mutable dist output", async () => {
+  it("resolves published OpenMA entrypoints from the git package", async () => {
     const server = await createServer({
       configFile: resolve(testDirectory, "vite.config.ts"),
       mode: "development",
+      optimizeDeps: { noDiscovery: true, include: [] },
       server: { middlewareMode: true },
     });
 
     try {
       const importer = resolve(testDirectory, "app/main.tsx");
       const entrypoints = [
-        ["@openma/common/chat-ui", "/src/chat-ui/index.ts"],
-        ["@openma/common/chat-ui/styles.css", "/src/chat-ui/styles.css"],
-        ["@openma/common/agent-ui", "/src/agent-ui/index.ts"],
-        ["@openma/common/agent-ui/react", "/src/agent-ui/react.tsx"],
-        ["@openma/common/protocol/acp", "/src/protocol/acp/index.ts"],
+        ["@openma/common/chat-ui", "/dist/chat-ui/index.js"],
+        ["@openma/common/chat-ui/styles.css", "/dist/chat-ui/styles.css"],
+        ["@openma/common/agent-ui", "/dist/agent-ui/index.js"],
+        ["@openma/common/agent-ui/react", "/dist/agent-ui/react.js"],
+        ["@openma/common/protocol/acp", "/dist/protocol/acp/index.js"],
         [
           "@openma/common/session-events/openma",
-          "/src/session-events/openma.ts",
+          "/dist/session-events/openma.js",
         ],
-        ["@openma/common/session-ui", "/src/session-ui/index.tsx"],
+        ["@openma/common/session-ui", "/dist/session-ui/index.js"],
       ] as const;
 
-      for (const [specifier, sourceSuffix] of entrypoints) {
+      for (const [specifier, distSuffix] of entrypoints) {
         const resolved = await server.pluginContainer.resolveId(
           specifier,
           importer,
         );
 
-        expect(resolved?.id).toMatch(/\/openma-common\/src\//u);
-        expect(resolved?.id.endsWith(sourceSuffix)).toBe(true);
-        expect(resolved?.id).not.toContain("/openma-common/dist/");
+        const id = (resolved?.id ?? "").split("?")[0] ?? "";
+        expect(id).toContain("/@openma/common/dist/");
+        expect(id.endsWith(distSuffix), `${specifier} -> ${id}`).toBe(true);
+        expect(id).not.toContain("/openma-common/src/");
       }
     } finally {
       await server.close();
     }
   });
 
-  it("resolves the virtualizer's transitive dependency from the linked common package", async () => {
+  it("resolves the virtualizer from the published common package", async () => {
+    const { realpathSync } = await import("node:fs");
     const server = await createServer({
       configFile: resolve(testDirectory, "vite.config.ts"),
       mode: "development",
@@ -178,7 +181,9 @@ describe("Vite workspace source routing", () => {
       server: { middlewareMode: true },
     });
     try {
-      const importer = resolve(testDirectory, "../../../openma-common/src/chat-ui/components.tsx");
+      const importer = realpathSync(
+        resolve(testDirectory, "node_modules/@openma/common/dist/chat-ui/index.js"),
+      );
       const entry = await server.pluginContainer.resolveId("@tanstack/react-virtual", importer);
       expect(entry).not.toBeNull();
       const core = await server.pluginContainer.resolveId("@tanstack/virtual-core", entry!.id);

@@ -21,8 +21,6 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
-      - uses: ./.github/actions/setup-common
-
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:package clash
       - run: pnpm --dir packages/shared-mcp test

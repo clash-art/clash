@@ -6,17 +6,14 @@ export type {
   AcpRuntime,
   RestartPolicy,
   SessionOptions,
-  AcpPromptInput,
-  AcpSessionEvent,
   ClientCallbacks,
-} from "./types.js";
+} from "@openma/common/acp-runtime";
+export { AcpSessionImpl } from "@openma/common/acp-runtime";
+export type { AcpSessionConstructOptions } from "@openma/common/acp-runtime";
+export { NodeSpawner } from "./node-spawner.js";
 
-// Renamed `AcpRuntimeImpl` → `AcpRuntime` would collide with the same-named
-// interface above. Keep the impl class postfix-named; callers do
-// `new AcpRuntimeImpl(spawner)`. Slightly ugly, unambiguous.
 export { AcpRuntimeImpl } from "./runtime.js";
-export { AcpSessionImpl } from "./session.js";
-export { NodeSpawner } from "./spawners/node.js";
+export type { ClashAcpStartOptions } from "./runtime.js";
 export {
   authenticateAgent,
   disposeAllAcpSetupProcesses,
@@ -31,5 +28,4 @@ export {
   type ProbeAgentSessionConfigResult,
 } from "./probe.js";
 export { listAgentSessions, listLocalAgentSessions, type AcpListedSession } from "./session-list.js";
-
 export { KNOWN_ACP_AGENTS, detect, detectAll, detectEntry, type KnownAgentEntry } from "./registry.js";

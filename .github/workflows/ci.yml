@@ -27,7 +27,6 @@ jobs:
           cache: pnpm
 
       - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
-      - uses: ./.github/actions/setup-common
       - run: pnpm install --frozen-lockfile
       - run: make lint
       - run: node --test scripts/runtime-dependency-identity.test.ts

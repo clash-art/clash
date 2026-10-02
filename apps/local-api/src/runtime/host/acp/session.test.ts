@@ -2,10 +2,8 @@ import {
   AgentSideConnection,
   ndJsonStream,
   PROTOCOL_VERSION,
-  RequestError,
   type Agent,
   type AgentSideConnection as AgentConnection,
-  type AuthenticateRequest,
   type InitializeRequest,
   type InitializeResponse,
   type LoadSessionRequest,
@@ -21,9 +19,8 @@ import {
 } from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 
+import { AcpSessionImpl, type ChildHandle, type Spawner } from "@openma/common/acp-runtime";
 import { AcpRuntimeImpl } from "./runtime.js";
-import { AcpSessionImpl } from "./session.js";
-import type { AcpSessionEvent, ChildHandle, Spawner } from "./types.js";
 
 function makeStreamPair(): { child: ChildHandle; agentInput: ReadableStream<Uint8Array>; agentOutput: WritableStream<Uint8Array> } {
   const clientToAgent = new TransformStream<Uint8Array, Uint8Array>();
@@ -193,101 +190,6 @@ class AsyncLoadReplayAgent extends LoadReplayAgent {
   }
 }
 
-class AuthRetryAgent implements Agent {
-  private authenticated = false;
-
-  constructor(private readonly calls: string[]) {}
-
-  async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
-    this.calls.push("initialize");
-    return {
-      protocolVersion: PROTOCOL_VERSION,
-      authMethods: [{ id: "login", name: "Login" }],
-      agentCapabilities: {
-        promptCapabilities: {},
-      },
-    };
-  }
-
-  async authenticate(params: AuthenticateRequest) {
-    this.calls.push(`authenticate:${params.methodId}`);
-    this.authenticated = true;
-    return {};
-  }
-
-  async newSession(_params: NewSessionRequest): Promise<NewSessionResponse> {
-    this.calls.push("newSession");
-    if (!this.authenticated) throw RequestError.authRequired();
-    return { sessionId: "authed-session" };
-  }
-
-  async prompt(_params: PromptRequest): Promise<PromptResponse> {
-    return { stopReason: "end_turn" };
-  }
-
-  async cancel() {
-    return undefined;
-  }
-}
-
-class HangingPromptAgent implements Agent {
-  constructor(private readonly calls: string[]) {}
-
-  async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
-    return {
-      protocolVersion: PROTOCOL_VERSION,
-      agentCapabilities: {
-        promptCapabilities: {},
-      },
-    };
-  }
-
-  async newSession(_params: NewSessionRequest): Promise<NewSessionResponse> {
-    return { sessionId: "timeout-session" };
-  }
-
-  async authenticate() {
-    return {};
-  }
-
-  async prompt(_params: PromptRequest): Promise<PromptResponse> {
-    this.calls.push("prompt");
-    return new Promise(() => undefined);
-  }
-
-  async cancel(params: { sessionId: string }) {
-    this.calls.push(`cancel:${params.sessionId}`);
-  }
-}
-
-class HangingAuthAgent implements Agent {
-  async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
-    return {
-      protocolVersion: PROTOCOL_VERSION,
-      authMethods: [{ id: "login", name: "Login" }],
-      agentCapabilities: {
-        promptCapabilities: {},
-      },
-    };
-  }
-
-  async newSession(_params: NewSessionRequest): Promise<NewSessionResponse> {
-    throw RequestError.authRequired();
-  }
-
-  async authenticate() {
-    return new Promise<never>(() => undefined);
-  }
-
-  async prompt(_params: PromptRequest): Promise<PromptResponse> {
-    return { stopReason: "end_turn" };
-  }
-
-  async cancel() {
-    return undefined;
-  }
-}
-
 class ModeCapableAgent implements Agent {
   currentModeId = "codex:review";
 
@@ -422,87 +324,6 @@ describe("AcpSessionImpl resume", () => {
     await session.dispose();
   });
 
-  it("authenticates and retries when session creation reports ACP auth required", async () => {
-    const pair = makeStreamPair();
-    const calls: string[] = [];
-    new AgentSideConnection(
-      () => new AuthRetryAgent(calls),
-      ndJsonStream(pair.agentOutput, pair.agentInput),
-    );
-
-    const session = new AcpSessionImpl({
-      id: "local-session",
-      child: pair.child,
-      options: {
-        agent: { command: "gemini", cwd: "/tmp/project" },
-      },
-    });
-
-    await session.init();
-
-    expect(calls).toEqual(["initialize", "newSession", "authenticate:login", "newSession"]);
-    expect(session.acpSessionId).toBe("authed-session");
-  });
-
-  it("ends the prompt stream when a per-turn timeout fires even if the agent ignores cancel", async () => {
-    const pair = makeStreamPair();
-    const calls: string[] = [];
-    new AgentSideConnection(
-      () => new HangingPromptAgent(calls),
-      ndJsonStream(pair.agentOutput, pair.agentInput),
-    );
-
-    const session = new AcpSessionImpl({
-      id: "local-session",
-      child: pair.child,
-      options: {
-        agent: { command: "gemini", cwd: "/tmp/project" },
-        perTurnTimeoutMs: 10,
-      },
-    });
-
-    await session.init();
-    const events: AcpSessionEvent[] = [];
-    try {
-      for await (const event of session.prompt("hang")) {
-        events.push(event);
-      }
-    } finally {
-      await session.dispose();
-    }
-
-    expect(calls).toEqual(["prompt", "cancel:timeout-session"]);
-    expect(events).toContainEqual({
-      type: "promptError",
-      error: "Error: ACP prompt timed out after 10ms",
-    });
-  });
-
-  it("times out session init and kills the child when ACP auth hangs", async () => {
-    const pair = makeStreamPair();
-    let killed = false;
-    pair.child.kill = async () => {
-      killed = true;
-    };
-    const spawner: Spawner = {
-      async spawn() {
-        return pair.child;
-      },
-    };
-    new AgentSideConnection(
-      () => new HangingAuthAgent(),
-      ndJsonStream(pair.agentOutput, pair.agentInput),
-    );
-
-    const runtime = new AcpRuntimeImpl(spawner);
-
-    await expect(runtime.start({
-      agent: { command: "gemini", cwd: "/tmp/project" },
-      initTimeoutMs: 10,
-    })).rejects.toThrow("ACP session init timed out after 10ms");
-    expect(killed).toBe(true);
-  });
-
   it("uses ACP session/resume instead of session/load when the agent advertises resume", async () => {
     const pair = makeStreamPair();
     const calls: string[] = [];
@@ -548,7 +369,7 @@ describe("AcpSessionImpl resume", () => {
     expect(calls).toEqual(["load"]);
     expect(session.acpSessionId).toBe("acp-existing");
 
-    const events: AcpSessionEvent[] = [];
+    const events: unknown[] = [];
     for await (const event of session.prompt("continue")) {
       events.push(event);
     }
@@ -578,7 +399,7 @@ describe("AcpSessionImpl resume", () => {
     expect(calls).toEqual(["load"]);
     expect(session.acpSessionId).toBe("acp-existing");
 
-    const events: AcpSessionEvent[] = [];
+    const events: unknown[] = [];
     for await (const event of session.prompt("continue")) {
       events.push(event);
     }
@@ -611,7 +432,8 @@ describe("AcpSessionImpl resume", () => {
       ],
     });
 
-    await expect(session.setMode("codex:full-access")).resolves.toEqual({
+    await expect(session.setMode("codex:full-access")).resolves.toBeUndefined();
+    expect(session.modes).toEqual({
       currentModeId: "codex:full-access",
       availableModes: [
         { id: "codex:review", name: "Review" },

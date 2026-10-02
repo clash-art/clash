@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpSession, SessionOptions } from "../_acp-runtime/types.js";
+import type { AcpSession, SessionOptions } from "@openma/common/acp-runtime";
 
 const mocks = vi.hoisted(() => ({
   runtimeStart: vi.fn(),
@@ -21,13 +21,13 @@ const bundledClashMcp = {
   },
 };
 
-vi.mock("../_acp-runtime/index.js", () => ({
+vi.mock("../acp/index.js", () => ({
   AcpRuntimeImpl: class {
     start = mocks.runtimeStart;
   },
 }));
 
-vi.mock("../_acp-runtime/spawners/node.js", () => ({
+vi.mock("../acp/node-spawner.js", () => ({
   NodeSpawner: class {},
 }));
 
@@ -80,10 +80,9 @@ function createAcpSession(
     authMethods: [],
     agentInfo: null,
     configOptions: [],
-    modes: undefined,
+    modes: null,
     promptCapabilities: {},
     supportsSessionFork: options.supportsSessionFork ?? false,
-    loadedReplayEvents: [],
     drainPendingEvents() {
       return [];
     },
@@ -104,7 +103,7 @@ function createAcpSession(
       return true;
     },
     dispose: options.dispose ?? (async () => undefined),
-  };
+  } as unknown as AcpSession;
 }
 
 async function nextTask(): Promise<void> {

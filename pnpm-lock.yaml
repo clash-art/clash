@@ -18,11 +18,7 @@ overrides:
   '@vitest/mocker': 4.1.0
   vitest: 4.1.0
   '@electron/get': 5.0.0
-
-patchedDependencies:
-  '@openma/common@0.5.0':
-    hash: 81acaf8f797553a8bc5776f8ba1eaae787b725cc1b3f0d1651d14975dc232539
-    path: patches/@openma__common@0.5.0.patch
+  '@agentclientprotocol/sdk': 1.3.0
 
 importers:
 
@@ -32,8 +28,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.4
       '@openma/common':
-        specifier: link:../openma-common
-        version: link:../openma-common
+        specifier: github:openma-ai/openma-common#v0.6.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       better-auth:
         specifier: ^1.4.6
         version: 1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3))
@@ -127,7 +123,7 @@ importers:
         version: 1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-kit@0.28.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3))
       better-auth-cloudflare:
         specifier: ^0.2.9
-        version: 0.2.9(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-auth@1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-kit@0.28.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3)))(kysely@0.29.3)(pg@8.23.0)
+        version: 0.2.9(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-auth@1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3)))(kysely@0.29.3)(pg@8.23.0)
       consola:
         specifier: ^3.4.2
         version: 3.4.2
@@ -242,12 +238,6 @@ importers:
         specifier: 4.0.507
         version: 4.0.507(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
     devDependencies:
-      '@clash/gui':
-        specifier: workspace:*
-        version: link:../../packages/gui
-      '@clash/web':
-        specifier: workspace:*
-        version: link:../web
       '@agentclientprotocol/claude-agent-acp':
         specifier: ^0.47.0
         version: 0.47.0(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))
@@ -257,15 +247,21 @@ importers:
       '@clash/cli':
         specifier: workspace:*
         version: link:../../packages/cli
+      '@clash/gui':
+        specifier: workspace:*
+        version: link:../../packages/gui
       '@clash/local-api':
         specifier: workspace:*
         version: link:../local-api
       '@clash/render-server':
         specifier: workspace:*
         version: link:../render-server
+      '@clash/web':
+        specifier: workspace:*
+        version: link:../web
       '@electron-forge/cli':
         specifier: 7.11.2
-        version: 7.11.2(encoding@0.1.13)(lightningcss@1.32.0)
+        version: 7.11.2(encoding@0.1.13)(lightningcss@1.32.0)(postcss@8.5.16)
       '@electron-forge/plugin-vite':
         specifier: 7.11.2
         version: 7.11.2
@@ -274,7 +270,7 @@ importers:
         version: 7.11.2
       '@remotion/bundler':
         specifier: 4.0.507
-        version: 4.0.507(lightningcss@1.32.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        version: 4.0.507(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@types/node':
         specifier: ^24.0.0
         version: 24.13.2
@@ -307,10 +303,10 @@ importers:
         version: 11.16.0
       vitepress:
         specifier: ^1.6.3
-        version: 1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3)
+        version: 1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(@types/react@19.2.17)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3)
       vitepress-plugin-mermaid:
         specifier: 2.0.17
-        version: 2.0.17(mermaid@11.16.0)(vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3))
+        version: 2.0.17(mermaid@11.16.0)(vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(@types/react@19.2.17)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3))
 
   apps/local-api:
     dependencies:
@@ -318,8 +314,8 @@ importers:
         specifier: ^0.47.0
         version: 0.47.0(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))
       '@agentclientprotocol/sdk':
-        specifier: ^0.28.1
-        version: 0.28.1(zod@4.4.3)
+        specifier: 1.3.0
+        version: 1.3.0(zod@4.4.3)
       '@aws-sdk/client-s3':
         specifier: ^3.1109.0
         version: 3.1109.0
@@ -405,8 +401,8 @@ importers:
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.27)
       '@openma/common':
-        specifier: github:openma-ai/openma-common#codex/acp-lifecycle-v05
-        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/28d93020c85c2dddbddcb8231f784d768fb88e69(patch_hash=81acaf8f797553a8bc5776f8ba1eaae787b725cc1b3f0d1651d14975dc232539)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)
+        specifier: github:openma-ai/openma-common#v0.6.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -589,6 +585,9 @@ importers:
       '@milkdown/utils':
         specifier: ^7.17.2
         version: 7.21.2
+      '@openma/common':
+        specifier: github:openma-ai/openma-common#v0.6.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -612,7 +611,7 @@ importers:
         version: 1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-kit@0.28.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3))
       better-auth-cloudflare:
         specifier: ^0.2.9
-        version: 0.2.9(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-auth@1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-kit@0.28.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3)))(kysely@0.29.3)(pg@8.23.0)
+        version: 0.2.9(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-auth@1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3)))(kysely@0.29.3)(pg@8.23.0)
       drizzle-orm:
         specifier: ^0.36.4
         version: 0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5)
@@ -1469,8 +1468,8 @@ importers:
         specifier: ^7.17.2
         version: 7.21.2
       '@openma/common':
-        specifier: link:../../../openma-common
-        version: link:../../../openma-common
+        specifier: github:openma-ai/openma-common#v0.6.0
+        version: https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -2249,21 +2248,6 @@ packages:
   '@agentclientprotocol/codex-acp@1.1.7':
     resolution: {integrity: sha512-bhFLbGtOMEw6+PAp33vNERb6dXlULOfV3mWbRdps4v7sY7PHha/C2T1dnlG0yVcvBu9W+NYPzL0CAupnVoFTiQ==}
     hasBin: true
-
-  '@agentclientprotocol/sdk@0.25.1':
-    resolution: {integrity: sha512-jx2rF3bdpGwZ75Q/meyEDLLbYmbtxk82Uh9hDCdxDvcEedBnNSF5hZAnL/kJR5VNz56JqwOmqnAqasC84MwwkQ==}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-
-  '@agentclientprotocol/sdk@0.26.0':
-    resolution: {integrity: sha512-ialrcI+RzKOYe+fw+TfpyTdRmEoqIkXLlwbTi6XgaXXfdhNcdod7TmE1VsTnG3yTlox8TMTSMQgWbLLbz3r86Q==}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-
-  '@agentclientprotocol/sdk@0.28.1':
-    resolution: {integrity: sha512-Z2Frs6YtPhnZZ+XwFXyQkRDXY0fn8FjCalEs0W4yUhQnY4TztmNq0/RnfzWdFN3vqT3h0jTz5klzYbZHGxCDyQ==}
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
 
   '@agentclientprotocol/sdk@1.3.0':
     resolution: {integrity: sha512-i3h/efaeuMUFAO1HSfo97QZQnnvMd7wWBYtBsdL6UMZg3a78sk3Ffya5Xu7C7tYsXomXoDXJBAzQF2PcFKAhIQ==}
@@ -3292,7 +3276,7 @@ packages:
     engines: {node: '>=22.12.0'}
 
   '@electron/node-gyp@https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2':
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2}
+    resolution: {gitHosted: true, integrity: sha512-MXgzlTDEEndJB3TBbvd5uFQO/8gaINo1Hfen8vef5rq/VHVPeB63uuv/uO5+8GFsAJ/rauu6XB79S6K4+aXc+w==, tarball: https://codeload.github.com/electron/node-gyp/tar.gz/06b29aafb7708acef8b3669835c8a7857ebc92d2}
     version: 10.2.0-electron.1
     engines: {node: '>=12.13.0'}
     hasBin: true
@@ -5210,14 +5194,17 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/28d93020c85c2dddbddcb8231f784d768fb88e69':
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/28d93020c85c2dddbddcb8231f784d768fb88e69}
-    version: 0.5.0
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda':
+    resolution: {gitHosted: true, integrity: sha512-afUmGVxQovnZbxZ2Z7QXJcFSg+NU1ByTXHUbYDTdBeRPPW3lpjanDUacixNqwq/iqoS47aYtnYOMdBft3XPPoQ==, tarball: https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda}
+    version: 0.6.0
     engines: {node: '>=20'}
     peerDependencies:
+      '@anthropic-ai/sdk': 0.120.x
       react: 19.2.5
       react-dom: 19.2.5
     peerDependenciesMeta:
+      '@anthropic-ai/sdk':
+        optional: true
       react:
         optional: true
       react-dom:
@@ -6787,6 +6774,15 @@ packages:
     resolution: {integrity: sha512-eHpMeX4JXfVNJDEcsouTeCBubJBTcTLigeaw/NTUW6PB5ATKKXdyonnXgTBX2VuRbjz1hjfz6C5XAhr52ImQXA==}
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
+
+  '@tanstack/react-virtual@3.14.13':
+    resolution: {integrity: sha512-JbDTAwtzZ99aOeCrAfW5EsE5KSq5RWh6Af2dtFwyLIIk48Ja7vm6n4axu/43T3vfjFnEGJalxJ1wyYjSQD6bSg==}
+    peerDependencies:
+      react: 19.2.5
+      react-dom: 19.2.5
+
+  '@tanstack/virtual-core@3.17.11':
+    resolution: {integrity: sha512-+ILjvtHup6Y2hzQ6YzwMgX1Q+oQpxEGOXCEsCNaPoIP0VxMbizIBTmYTDtkerkIQS8/CbP1BRuyt8V/8BCsy1g==}
 
   '@testing-library/dom@10.4.1':
     resolution: {integrity: sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==}
@@ -11851,6 +11847,10 @@ packages:
       react: 19.2.5
       react-dom: 19.2.5
 
+  streaming-markdown@0.2.15:
+    resolution: {integrity: sha512-eSWjdvLSTznl2+FIzuxw1TRXwhjZiY1RfSygGCMpcNY8CrsaUM2zHtxe/JFcPoXCQxeO3TSJ72QMDIN5B/Ui1w==}
+    engines: {node: '>=20'}
+
   string-width@4.2.3:
     resolution: {integrity: sha512-wKyQRQpjJ0sIp62ErSZdGsjMJWsap5oRNihHhu6G7JVO/9jIB6UyevL+tXuOqrng8j/cxKTWyWUwvSTriiZz/g==}
     engines: {node: '>=8'}
@@ -11987,6 +11987,10 @@ packages:
 
   tar@7.5.19:
     resolution: {integrity: sha512-4LeEWl96twnS2Q7Bz4MGqgazLqO+hJN63GZxXoIqh1T3VweYD997gbU1ItNsQafqqXTXd5WFyFdReLtwvRBNiw==}
+    engines: {node: '>=18'}
+
+  tar@7.5.22:
+    resolution: {integrity: sha512-MFO/QzvtAOmJbkhOaCTvbGcFN9L9b+JunIsDwaKljSOdcLMea3NJ1k9Usz/rjdfSXTq4dfzfeS7W4p4YOAAHeA==}
     engines: {node: '>=18'}
 
   temp-file@3.4.0:
@@ -12394,6 +12398,11 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
+
+  use-stick-to-bottom@1.1.6:
+    resolution: {integrity: sha512-z3Up8jYQGTkUCsGBnwg6/wj70KgXoW5Kz1AAc1j8MtQuYMBo6ZsdhrIXoegxa7gaMMilgQYyTohTrt3p94jHog==}
+    peerDependencies:
+      react: 19.2.5
 
   use-sync-external-store@1.2.0:
     resolution: {integrity: sha512-eEgnFxGQ1Ife9bzYs6VLi8/4X6CObHMw9Qr9tPY43iKwsPw8xE8+EFsf/2cFZ5S3esXgpWgtSCtLNS41F+sKPA==}
@@ -12899,7 +12908,7 @@ snapshots:
 
   '@agentclientprotocol/claude-agent-acp@0.47.0(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))':
     dependencies:
-      '@agentclientprotocol/sdk': 0.26.0(zod@4.4.3)
+      '@agentclientprotocol/sdk': 1.3.0(zod@4.4.3)
       '@anthropic-ai/claude-agent-sdk': 0.3.179(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(zod@4.4.3)
       zod: 4.4.3
     transitivePeerDependencies:
@@ -12913,18 +12922,6 @@ snapshots:
       diff: 9.0.0
       open: 11.0.0
       vscode-jsonrpc: 9.0.1
-      zod: 4.4.3
-
-  '@agentclientprotocol/sdk@0.25.1(zod@4.4.3)':
-    dependencies:
-      zod: 4.4.3
-
-  '@agentclientprotocol/sdk@0.26.0(zod@4.4.3)':
-    dependencies:
-      zod: 4.4.3
-
-  '@agentclientprotocol/sdk@0.28.1(zod@4.4.3)':
-    dependencies:
       zod: 4.4.3
 
   '@agentclientprotocol/sdk@1.3.0(zod@4.4.3)':
@@ -14240,9 +14237,9 @@ snapshots:
 
   '@docsearch/css@3.8.2': {}
 
-  '@docsearch/js@3.8.2(@algolia/client-search@5.56.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)':
+  '@docsearch/js@3.8.2(@algolia/client-search@5.56.0)(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)':
     dependencies:
-      '@docsearch/react': 3.8.2(@algolia/client-search@5.56.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)
+      '@docsearch/react': 3.8.2(@algolia/client-search@5.56.0)(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)
       preact: 10.29.8
     transitivePeerDependencies:
       - '@algolia/client-search'
@@ -14252,13 +14249,14 @@ snapshots:
       - react-dom
       - search-insights
 
-  '@docsearch/react@3.8.2(@algolia/client-search@5.56.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)':
+  '@docsearch/react@3.8.2(@algolia/client-search@5.56.0)(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)':
     dependencies:
       '@algolia/autocomplete-core': 1.17.7(@algolia/client-search@5.56.0)(algoliasearch@5.56.0)(search-insights@2.17.3)
       '@algolia/autocomplete-preset-algolia': 1.17.7(@algolia/client-search@5.56.0)(algoliasearch@5.56.0)
       '@docsearch/css': 3.8.2
       algoliasearch: 5.56.0
     optionalDependencies:
+      '@types/react': 19.2.17
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
       search-insights: 2.17.3
@@ -14279,9 +14277,9 @@ snapshots:
 
   '@electric-sql/pglite@0.5.8': {}
 
-  '@electron-forge/cli@7.11.2(encoding@0.1.13)(lightningcss@1.32.0)':
+  '@electron-forge/cli@7.11.2(encoding@0.1.13)(lightningcss@1.32.0)(postcss@8.5.16)':
     dependencies:
-      '@electron-forge/core': 7.11.2(encoding@0.1.13)(lightningcss@1.32.0)
+      '@electron-forge/core': 7.11.2(encoding@0.1.13)(lightningcss@1.32.0)(postcss@8.5.16)
       '@electron-forge/core-utils': 7.11.2
       '@electron-forge/shared-types': 7.11.2
       '@electron/get': 5.0.0
@@ -14328,7 +14326,7 @@ snapshots:
       - bluebird
       - supports-color
 
-  '@electron-forge/core@7.11.2(encoding@0.1.13)(lightningcss@1.32.0)':
+  '@electron-forge/core@7.11.2(encoding@0.1.13)(lightningcss@1.32.0)(postcss@8.5.16)':
     dependencies:
       '@electron-forge/core-utils': 7.11.2
       '@electron-forge/maker-base': 7.11.2
@@ -14339,7 +14337,7 @@ snapshots:
       '@electron-forge/template-vite': 7.11.2
       '@electron-forge/template-vite-typescript': 7.11.2
       '@electron-forge/template-webpack': 7.11.2
-      '@electron-forge/template-webpack-typescript': 7.11.2(lightningcss@1.32.0)
+      '@electron-forge/template-webpack-typescript': 7.11.2(lightningcss@1.32.0)(postcss@8.5.16)
       '@electron-forge/tracer': 7.11.2
       '@electron/get': 5.0.0
       '@electron/packager': 18.4.4
@@ -14458,13 +14456,13 @@ snapshots:
       - bluebird
       - supports-color
 
-  '@electron-forge/template-webpack-typescript@7.11.2(lightningcss@1.32.0)':
+  '@electron-forge/template-webpack-typescript@7.11.2(lightningcss@1.32.0)(postcss@8.5.16)':
     dependencies:
       '@electron-forge/shared-types': 7.11.2
       '@electron-forge/template-base': 7.11.2
       fs-extra: 10.1.0
       typescript: 5.4.5
-      webpack: 5.105.0(lightningcss@1.32.0)
+      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
     transitivePeerDependencies:
       - '@minify-html/node'
       - '@swc/core'
@@ -16342,14 +16340,28 @@ snapshots:
   '@openai/codex@0.145.0-win32-x64':
     optional: true
 
-  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/28d93020c85c2dddbddcb8231f784d768fb88e69(patch_hash=81acaf8f797553a8bc5776f8ba1eaae787b725cc1b3f0d1651d14975dc232539)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(zod@4.4.3)':
+  '@openma/common@https://codeload.github.com/openma-ai/openma-common/tar.gz/72ccc567013bf14f29401f9393828146ca09beda(@anthropic-ai/sdk@0.110.0(zod@4.4.3))(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
-      '@agentclientprotocol/sdk': 0.25.1(zod@4.4.3)
+      '@agentclientprotocol/sdk': 1.3.0(zod@4.4.3)
+      '@radix-ui/react-collapsible': 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@tanstack/react-virtual': 3.14.13(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      clsx: 2.1.1
+      fflate: 0.8.3
+      lucide-react: 1.23.0(react@19.2.5)
+      streamdown: 2.5.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      streaming-markdown: 0.2.15
+      tailwind-merge: 3.6.0
+      tar: 7.5.22
+      use-stick-to-bottom: 1.1.6(react@19.2.5)
+      zod: 4.4.3
     optionalDependencies:
+      '@anthropic-ai/sdk': 0.110.0(zod@4.4.3)
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
     transitivePeerDependencies:
-      - zod
+      - '@types/react'
+      - '@types/react-dom'
+      - supports-color
 
   '@opentelemetry/api@1.9.1': {}
 
@@ -17229,7 +17241,7 @@ snapshots:
       - webpack-cli
       - webpack-hot-middleware
 
-  '@remotion/bundler@4.0.507(lightningcss@1.32.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+  '@remotion/bundler@4.0.507(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@remotion/media-parser': 4.0.507
       '@remotion/studio': 4.0.507(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -17237,14 +17249,14 @@ snapshots:
       '@remotion/timeline-utils': 4.0.507
       '@rspack/core': 1.7.11
       '@rspack/plugin-react-refresh': 1.6.1(react-refresh@0.18.0)
-      css-loader: 7.1.4(@rspack/core@1.7.11)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0))
+      css-loader: 7.1.4(@rspack/core@1.7.11)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16))
       esbuild: 0.28.1
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
       react-refresh: 0.18.0
       remotion: 4.0.507(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      style-loader: 4.0.0(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0))
-      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)
+      style-loader: 4.0.0(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16))
+      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
     transitivePeerDependencies:
       - '@minify-html/node'
       - '@swc/core'
@@ -17977,6 +17989,14 @@ snapshots:
       '@tailwindcss/oxide': 4.3.2
       tailwindcss: 4.3.2
       vite: 7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  '@tanstack/react-virtual@3.14.13(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+    dependencies:
+      '@tanstack/virtual-core': 3.17.11
+      react: 19.2.5
+      react-dom: 19.2.5(react@19.2.5)
+
+  '@tanstack/virtual-core@3.17.11': {}
 
   '@testing-library/dom@10.4.1':
     dependencies:
@@ -19025,7 +19045,7 @@ snapshots:
 
   bcp-47-match@2.0.3: {}
 
-  better-auth-cloudflare@0.2.9(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-auth@1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-kit@0.28.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3)))(kysely@0.29.3)(pg@8.23.0):
+  better-auth-cloudflare@0.2.9(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(better-auth@1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3)))(kysely@0.29.3)(pg@8.23.0):
     dependencies:
       better-auth: 1.6.23(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(drizzle-kit@0.28.1)(drizzle-orm@0.36.4(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@types/react@19.2.17)(kysely@0.29.3)(pg@8.23.0)(react@19.2.5))(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3))
       drizzle-orm: 0.44.5(@cloudflare/workers-types@4.20260702.1)(@electric-sql/pglite@0.5.8)(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(kysely@0.29.3)(pg@8.23.0)
@@ -19598,7 +19618,7 @@ snapshots:
       '@rspack/core': 1.7.11
       webpack: 5.105.0(@swc/core@1.15.43)(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
 
-  css-loader@7.1.4(@rspack/core@1.7.11)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)):
+  css-loader@7.1.4(@rspack/core@1.7.11)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)):
     dependencies:
       icss-utils: 5.1.0(postcss@8.5.16)
       postcss: 8.5.16
@@ -19610,7 +19630,7 @@ snapshots:
       semver: 7.8.5
     optionalDependencies:
       '@rspack/core': 1.7.11
-      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)
+      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
 
   css-selector-parser@3.3.0: {}
 
@@ -23824,6 +23844,8 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  streaming-markdown@0.2.15: {}
+
   string-width@4.2.3:
     dependencies:
       emoji-regex: 8.0.0
@@ -23883,9 +23905,9 @@ snapshots:
     dependencies:
       webpack: 5.105.0(@swc/core@1.15.43)(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
 
-  style-loader@4.0.0(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)):
+  style-loader@4.0.0(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)):
     dependencies:
-      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)
+      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
 
   style-mod@4.1.3: {}
 
@@ -23970,6 +23992,14 @@ snapshots:
       minizlib: 3.1.0
       yallist: 5.0.0
 
+  tar@7.5.22:
+    dependencies:
+      '@isaacs/fs-minipass': 4.0.1
+      chownr: 3.0.0
+      minipass: 7.1.3
+      minizlib: 3.1.0
+      yallist: 5.0.0
+
   temp-file@3.4.0:
     dependencies:
       async-exit-hook: 2.0.1
@@ -23995,26 +24025,17 @@ snapshots:
       lightningcss: 1.32.0
       postcss: 8.5.16
 
-  terser-webpack-plugin@5.6.1(esbuild@0.28.1)(lightningcss@1.32.0)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)):
+  terser-webpack-plugin@5.6.1(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)):
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       jest-worker: 27.4.5
       schema-utils: 4.3.3
       terser: 5.48.0
-      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)
+      webpack: 5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)
     optionalDependencies:
       esbuild: 0.28.1
       lightningcss: 1.32.0
-
-  terser-webpack-plugin@5.6.1(lightningcss@1.32.0)(webpack@5.105.0(lightningcss@1.32.0)):
-    dependencies:
-      '@jridgewell/trace-mapping': 0.3.31
-      jest-worker: 27.4.5
-      schema-utils: 4.3.3
-      terser: 5.48.0
-      webpack: 5.105.0(lightningcss@1.32.0)
-    optionalDependencies:
-      lightningcss: 1.32.0
+      postcss: 8.5.16
 
   terser@5.48.0:
     dependencies:
@@ -24380,6 +24401,10 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.2.17
 
+  use-stick-to-bottom@1.1.6(react@19.2.5):
+    dependencies:
+      react: 19.2.5
+
   use-sync-external-store@1.2.0(react@19.2.5):
     dependencies:
       react: 19.2.5
@@ -24483,17 +24508,17 @@ snapshots:
       tsx: 4.23.0
       yaml: 2.9.0
 
-  vitepress-plugin-mermaid@2.0.17(mermaid@11.16.0)(vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3)):
+  vitepress-plugin-mermaid@2.0.17(mermaid@11.16.0)(vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(@types/react@19.2.17)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3)):
     dependencies:
       mermaid: 11.16.0
-      vitepress: 1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3)
+      vitepress: 1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(@types/react@19.2.17)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3)
     optionalDependencies:
       '@mermaid-js/mermaid-mindmap': 9.3.0
 
-  vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3):
+  vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@24.13.2)(@types/react@19.2.17)(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)(terser@5.48.0)(typescript@5.9.3):
     dependencies:
       '@docsearch/css': 3.8.2
-      '@docsearch/js': 3.8.2(@algolia/client-search@5.56.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)
+      '@docsearch/js': 3.8.2(@algolia/client-search@5.56.0)(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(search-insights@2.17.3)
       '@iconify-json/simple-icons': 1.2.93
       '@shikijs/core': 2.5.0
       '@shikijs/transformers': 2.5.0
@@ -24663,7 +24688,7 @@ snapshots:
       - postcss
       - uglify-js
 
-  webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0):
+  webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16):
     dependencies:
       '@types/eslint-scope': 3.7.7
       '@types/estree': 1.0.9
@@ -24687,48 +24712,7 @@ snapshots:
       neo-async: 2.6.2
       schema-utils: 4.3.3
       tapable: 2.3.3
-      terser-webpack-plugin: 5.6.1(esbuild@0.28.1)(lightningcss@1.32.0)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0))
-      watchpack: 2.5.2
-      webpack-sources: 3.5.0
-    transitivePeerDependencies:
-      - '@minify-html/node'
-      - '@swc/core'
-      - '@swc/css'
-      - '@swc/html'
-      - clean-css
-      - cssnano
-      - csso
-      - esbuild
-      - html-minifier-terser
-      - lightningcss
-      - postcss
-      - uglify-js
-
-  webpack@5.105.0(lightningcss@1.32.0):
-    dependencies:
-      '@types/eslint-scope': 3.7.7
-      '@types/estree': 1.0.9
-      '@types/json-schema': 7.0.15
-      '@webassemblyjs/ast': 1.14.1
-      '@webassemblyjs/wasm-edit': 1.14.1
-      '@webassemblyjs/wasm-parser': 1.14.1
-      acorn: 8.17.0
-      acorn-import-phases: 1.0.4(acorn@8.17.0)
-      browserslist: 4.28.7
-      chrome-trace-event: 1.0.4
-      enhanced-resolve: 5.24.1
-      es-module-lexer: 2.3.0
-      eslint-scope: 5.1.1
-      events: 3.3.0
-      glob-to-regexp: 0.4.1
-      graceful-fs: 4.2.11
-      json-parse-even-better-errors: 2.3.1
-      loader-runner: 4.3.2
-      mime-types: 2.1.35
-      neo-async: 2.6.2
-      schema-utils: 4.3.3
-      tapable: 2.3.3
-      terser-webpack-plugin: 5.6.1(lightningcss@1.32.0)(webpack@5.105.0(lightningcss@1.32.0))
+      terser-webpack-plugin: 5.6.1(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16)(webpack@5.105.0(esbuild@0.28.1)(lightningcss@1.32.0)(postcss@8.5.16))
       watchpack: 2.5.2
       webpack-sources: 3.5.0
     transitivePeerDependencies:

@@ -49,8 +49,6 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 
-      - uses: ./.github/actions/setup-common
-
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes ffmpeg libfuse2

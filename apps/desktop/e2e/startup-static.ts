@@ -3,7 +3,7 @@ import { access, readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { KNOWN_ACP_AGENTS } from "../../local-api/src/runtime/host/_acp-runtime/registry.js";
+import { KNOWN_ACP_AGENTS } from "../../local-api/src/runtime/host/acp/registry.js";
 import { sourceContains } from "../../../packages/gui/test-support/source-match.js";
 import { BUILTIN_ACP_WRAPPERS } from "../scripts/prepare-acp-harnesses.ts";
 

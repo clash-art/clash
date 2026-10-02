@@ -8,7 +8,7 @@
 import { constants } from "node:fs";
 import { access, readdir } from "node:fs/promises";
 import { delimiter, extname, isAbsolute, join } from "node:path";
-import type { AgentSpec } from "./types.js";
+import type { AgentSpec } from "@openma/common/acp-runtime";
 
 export interface KnownAgentConfigSelectValue {
   value: string;

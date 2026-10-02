@@ -17,7 +17,7 @@ import {
   type AuthenticateAgentResult,
   type KnownAgentEntry,
   type ProbeAgentAuthStatus,
-} from "./runtime/host/_acp-runtime/index.js";
+} from "./runtime/host/acp/index.js";
 import { listLocalCcSessions } from "./runtime/host/lib/cc-sessions.js";
 import {
   machineName,
@@ -34,6 +34,7 @@ import type {
   CreateElicitationResponse,
   ElicitationContentValue,
   ElicitationPropertySchema,
+  ElicitationSchema,
 } from "@agentclientprotocol/sdk";
 import type {
   LocalAcpAdapter,
@@ -358,7 +359,7 @@ interface LocalAcpSession {
   pendingElicitations: Map<
     string,
     | {
-        request: CreateElicitationRequest & { mode: "form" };
+        request: FormElicitationRequest;
         message: {
           type: "session.elicitation_request";
           session_id: string;
@@ -371,7 +372,7 @@ interface LocalAcpSession {
         resolve: (response: CreateElicitationResponse) => void;
       }
     | {
-        request: CreateElicitationRequest & { mode: "url" };
+        request: UrlElicitationRequest;
         message: {
           type: "session.elicitation_request";
           session_id: string;
@@ -1037,47 +1038,93 @@ function createDefaultSessionManager(
   return new SessionManager(send, { requestPermission, requestElicitation });
 }
 
+type FormElicitationRequest = CreateElicitationRequest & {
+  mode: "form";
+  requestedSchema: ElicitationSchema;
+};
+
+type UrlElicitationRequest = CreateElicitationRequest & {
+  mode: "url";
+  elicitationId: string;
+  url: string;
+};
+
+function isFormElicitationRequest(
+  request: CreateElicitationRequest,
+): request is FormElicitationRequest {
+  return (
+    request.mode === "form" &&
+    "requestedSchema" in request &&
+    Boolean(request.requestedSchema) &&
+    typeof request.requestedSchema === "object"
+  );
+}
+
+function isUrlElicitationRequest(
+  request: CreateElicitationRequest,
+): request is UrlElicitationRequest {
+  return (
+    request.mode === "url" &&
+    typeof request.elicitationId === "string" &&
+    typeof request.url === "string"
+  );
+}
+
 function isElicitationFieldValue(
   schema: ElicitationPropertySchema,
   value: unknown,
 ): value is ElicitationContentValue {
   if (schema.type === "boolean") return typeof value === "boolean";
   if (schema.type === "number" || schema.type === "integer") {
+    const numeric = schema as { minimum?: number | null; maximum?: number | null };
     if (typeof value !== "number" || !Number.isFinite(value)) return false;
     if (schema.type === "integer" && !Number.isInteger(value)) return false;
-    if (typeof schema.minimum === "number" && value < schema.minimum)
+    if (typeof numeric.minimum === "number" && value < numeric.minimum)
       return false;
-    if (typeof schema.maximum === "number" && value > schema.maximum)
+    if (typeof numeric.maximum === "number" && value > numeric.maximum)
       return false;
     return true;
   }
   if (schema.type === "array") {
+    const list = schema as {
+      minItems?: number | null;
+      maxItems?: number | null;
+      items?: { enum?: string[] | null; anyOf?: Array<{ const?: string }> | null };
+    };
     if (
       !Array.isArray(value) ||
       !value.every((item) => typeof item === "string")
     )
       return false;
-    if (typeof schema.minItems === "number" && value.length < schema.minItems)
+    if (typeof list.minItems === "number" && value.length < list.minItems)
       return false;
-    if (typeof schema.maxItems === "number" && value.length > schema.maxItems)
+    if (typeof list.maxItems === "number" && value.length > list.maxItems)
       return false;
-    const allowed =
-      "enum" in schema.items
-        ? schema.items.enum
-        : schema.items.anyOf.map((option) => option.const);
+    const allowed = Array.isArray(list.items?.enum)
+      ? list.items.enum
+      : (list.items?.anyOf ?? []).flatMap((option) =>
+          typeof option.const === "string" ? [option.const] : [],
+        );
     return value.every((item) => allowed.includes(item));
   }
-  if (typeof value !== "string") return false;
-  if (typeof schema.minLength === "number" && value.length < schema.minLength)
+  if (schema.type !== "string" || typeof value !== "string") return false;
+  const text = schema as {
+    minLength?: number | null;
+    maxLength?: number | null;
+    enum?: string[] | null;
+    oneOf?: Array<{ const?: string }> | null;
+    pattern?: string | null;
+  };
+  if (typeof text.minLength === "number" && value.length < text.minLength)
     return false;
-  if (typeof schema.maxLength === "number" && value.length > schema.maxLength)
+  if (typeof text.maxLength === "number" && value.length > text.maxLength)
     return false;
-  if (schema.enum && !schema.enum.includes(value)) return false;
-  if (schema.oneOf && !schema.oneOf.some((option) => option.const === value))
+  if (text.enum && !text.enum.includes(value)) return false;
+  if (text.oneOf && !text.oneOf.some((option) => option.const === value))
     return false;
-  if (schema.pattern) {
+  if (text.pattern) {
     try {
-      if (!new RegExp(schema.pattern).test(value)) return false;
+      if (!new RegExp(text.pattern).test(value)) return false;
     } catch {
       return false;
     }
@@ -1086,7 +1133,7 @@ function isElicitationFieldValue(
 }
 
 function validatedElicitationResponse(
-  request: CreateElicitationRequest & { mode: "form" },
+  request: FormElicitationRequest,
   action: string | undefined,
   rawContent: unknown,
 ): CreateElicitationResponse {
@@ -2991,10 +3038,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     if (entry.id !== sessionId) {
       return Promise.resolve({ action: "decline" });
     }
-    if (request.mode === "url") {
+    if (isUrlElicitationRequest(request)) {
       const url = safeElicitationUrl(request.url);
-      if (!url || !request.elicitationId)
-        return Promise.resolve({ action: "decline" });
+      if (!url) return Promise.resolve({ action: "decline" });
       const requestId = randomUUID();
       return new Promise((resolve) => {
         const message = {
@@ -3013,7 +3059,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         for (const client of entry.clients) sendJson(client, message);
       });
     }
-    if (request.mode !== "form") return Promise.resolve({ action: "decline" });
+    if (!isFormElicitationRequest(request)) return Promise.resolve({ action: "decline" });
     const requestId = randomUUID();
     return new Promise((resolve) => {
       const message = {

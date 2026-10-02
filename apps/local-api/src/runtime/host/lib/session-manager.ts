@@ -40,12 +40,12 @@ import {
   reduceSessionLifecycle,
   type SessionLifecycle,
 } from "@openma/common/session-kernel";
-import { AcpRuntimeImpl } from "../_acp-runtime/index.js";
-import { withClashAcpExtensionCapabilities } from "../_acp-runtime/client-capabilities.js";
-import { NodeSpawner } from "../_acp-runtime/spawners/node.js";
+import { AcpRuntimeImpl } from "../acp/index.js";
+import { withClashAcpExtensionCapabilities } from "../acp/client-capabilities.js";
+import { NodeSpawner } from "../acp/node-spawner.js";
 import { ensureSessionScratchpad } from "./session-scratchpad.js";
-import { detect } from "../_acp-runtime/registry.js";
-import type { AcpSession, AgentSpec } from "../_acp-runtime/types.js";
+import { detect } from "../acp/registry.js";
+import type { AcpSession, AgentSpec } from "@openma/common/acp-runtime";
 import {
   ensureAgentCwd,
   readAgentRuntime,
@@ -53,6 +53,14 @@ import {
 } from "./session-cwd.js";
 
 const DEFAULT_SESSION_CONTEXT_ID = "clash";
+
+/** v0.6.0 delivers idle setup updates on the live event queue and no longer
+ * buffers session/load replay. Keep the optional field so a runtime that
+ * still exposes it continues to forward those events. */
+function loadReplayEvents(session: AcpSession): readonly unknown[] {
+  const replay = (session as { loadedReplayEvents?: readonly unknown[] }).loadedReplayEvents;
+  return Array.isArray(replay) ? replay : [];
+}
 
 export interface SessionStartParams {
   session_id: string;
@@ -466,9 +474,9 @@ export class SessionManager {
         ? { model_fallback: session.modelFallback }
         : {}),
       ...(modes ? { modes } : {}),
-      ...((session.acp.loadedReplayEvents?.length ?? 0) > 0
+      ...(loadReplayEvents(session.acp).length > 0
         ? {
-            replay_events: session.acp.loadedReplayEvents!.map((event) =>
+            replay_events: loadReplayEvents(session.acp).map((event) =>
               annotateTrustedMcpEvent(event, session.trustedMcpRenderers),
             ),
           }
@@ -654,7 +662,8 @@ export class SessionManager {
         p.permission_mode &&
         modes?.availableModes.some((mode) => mode.id === p.permission_mode)
       ) {
-        modes = await session.setMode(p.permission_mode);
+        await session.setMode(p.permission_mode);
+        modes = session.modes;
       }
       if (this.#cancelledStarts.has(p.session_id)) {
         await session.dispose().catch(() => undefined);
@@ -921,7 +930,8 @@ export class SessionManager {
       return;
     }
     try {
-      const modes = await sess.acp.setMode(mode_id);
+      await sess.acp.setMode(mode_id);
+      const modes = sess.acp.modes;
       if (modes) {
         this.#send({
           type: "session.mode",

@@ -15,10 +15,10 @@ import {
   type SessionConfigOption,
   type SessionModeState,
 } from "@agentclientprotocol/sdk";
-import { sessionConfigOptionsFromResponse } from "@openma/common/acp-runtime";
-import { NodeSpawner } from "./spawners/node.js";
+import { NodeSpawner } from "./node-spawner.js";
+import type { AgentSpec, ChildHandle, Spawner } from "@openma/common/acp-runtime";
 import { withClashAcpExtensionCapabilities } from "./client-capabilities.js";
-import type { AgentSpec, ChildHandle, Spawner } from "./types.js";
+import { sessionConfigOptionsFromResponse } from "./legacy-models.js";
 
 export interface ProbeAgentConfigOptionsOptions {
   agent: AgentSpec;

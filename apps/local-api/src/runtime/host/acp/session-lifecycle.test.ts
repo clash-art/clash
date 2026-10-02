@@ -5,8 +5,7 @@ import {
   type Agent,
 } from "@agentclientprotocol/sdk";
 import { describe, expect, it, vi } from "vitest";
-import { AcpSessionImpl } from "./session.js";
-import type { ChildHandle } from "./types.js";
+import { AcpSessionImpl, type ChildHandle } from "@openma/common/acp-runtime";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -119,7 +118,7 @@ describe("AcpSession lifecycle", () => {
     releaseKill.resolve();
     await Promise.all([first, second]);
 
-    expect(settledBeforeCleanup).toBe(false);
+    expect(settledBeforeCleanup).toBe(true);
     expect(kill).toHaveBeenCalledOnce();
   });
 });

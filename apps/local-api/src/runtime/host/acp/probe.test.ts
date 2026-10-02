@@ -24,7 +24,7 @@ import {
   probeAgentConfigOptions,
   probeAgentSessionConfig,
 } from "./probe.js";
-import type { ChildHandle, Spawner } from "./types.js";
+import type { ChildHandle, Spawner } from "@openma/common/acp-runtime";
 
 function makeStreamPair(): { child: ChildHandle; agentInput: ReadableStream<Uint8Array>; agentOutput: WritableStream<Uint8Array> } {
   const clientToAgent = new TransformStream<Uint8Array, Uint8Array>();

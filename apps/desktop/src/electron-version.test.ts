@@ -254,31 +254,23 @@ describe("desktop Electron runtime", () => {
     ).toBe(true);
   });
 
-  it("checks out the pinned OpenMA common source before clean desktop packaging", () => {
+  it("installs published OpenMA common from the v0.6.0 git tag", () => {
+    const pin = /github:openma-ai\/openma-common#v0\.6\.0/;
+    for (const relativePath of [
+      "../../../package.json",
+      "../../../apps/local-api/package.json",
+      "../../../packages/web-ui/package.json",
+      "../../../apps/web/package.json",
+    ]) {
+      const manifest = readFileSync(new URL(relativePath, import.meta.url), "utf8");
+      expect(sourceMatches(manifest, pin)).toBe(true);
+    }
     const release = readFileSync(
       new URL("../../../.github/workflows/release.yml", import.meta.url),
       "utf8",
     );
-    const commonSetup = readFileSync(
-      new URL("../../../.github/actions/setup-common/action.yml", import.meta.url), "utf8",
-    );
-    const steps = [
-      /git clone .*https:\/\/github\.com\/openma-ai\/openma-common\.git/,
-      /git -C \.\.\/openma-common checkout [a-f0-9]{40}/,
-      /pnpm --dir \.\.\/openma-common install --frozen-lockfile/,
-      /pnpm --dir \.\.\/openma-common verify/,
-    ];
-    let previous = -1;
-    for (const step of steps) {
-      expect(sourceMatches(commonSetup, step)).toBe(true);
-      const position = commonSetup.search(step);
-      expect(position).toBeGreaterThan(previous);
-      previous = position;
-    }
-    expect(release.indexOf("uses: ./.github/actions/setup-common")).toBeGreaterThan(-1);
-    expect(release.indexOf("pnpm install --frozen-lockfile")).toBeGreaterThan(
-      release.indexOf("uses: ./.github/actions/setup-common"),
-    );
+    expect(sourceMatches(release, /setup-common/)).toBe(false);
+    expect(sourceMatches(release, /git clone .*openma-common/)).toBe(false);
   });
 
   it("keeps self-hosted ACP runtimes out of immutable desktop resources", () => {

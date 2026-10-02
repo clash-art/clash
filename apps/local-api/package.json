@@ -35,7 +35,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.47.0",
-    "@agentclientprotocol/sdk": "^0.28.1",
+    "@agentclientprotocol/sdk": "1.3.0",
     "@aws-sdk/client-s3": "^3.1109.0",
     "@aws-sdk/s3-request-presigner": "^3.1109.0",
     "@clash-plugin/agent-text": "workspace:*",
@@ -64,7 +64,7 @@
     "@ffmpeg-installer/ffmpeg": "1.1.0",
     "@ffprobe-installer/ffprobe": "2.1.2",
     "@hono/node-server": "^1.13.0",
-    "@openma/common": "github:openma-ai/openma-common#codex/acp-lifecycle-v05",
+    "@openma/common": "github:openma-ai/openma-common#v0.6.0",
     "ajv": "^8.20.0",
     "hono": "^4.7.10",
     "loro-crdt": "1.16.3",

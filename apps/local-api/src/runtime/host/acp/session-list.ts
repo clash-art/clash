@@ -5,8 +5,8 @@ import {
   type Client,
   type SessionInfo,
 } from "@agentclientprotocol/sdk";
-import { NodeSpawner } from "./spawners/node.js";
-import type { AgentSpec, Spawner } from "./types.js";
+import { NodeSpawner } from "./node-spawner.js";
+import type { AgentSpec, Spawner } from "@openma/common/acp-runtime";
 
 export interface AcpListedSession {
   id: string;
