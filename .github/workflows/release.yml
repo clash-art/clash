@@ -50,6 +50,8 @@ jobs:
           cache: pnpm
 
       - uses: ./.github/actions/setup-common
+        with:
+          mode: package
 
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
