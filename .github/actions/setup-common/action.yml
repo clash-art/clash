@@ -9,16 +9,12 @@ runs:
   steps:
     - name: Use the pinned OpenMA common release
       shell: bash
-      env:
-        # v0.5.0 annotated tag peels to this commit. The release asset
-        # openma-common-0.5.0.tgz is that commit's dist, packed for consumers
-        # that install from Git. npm does not publish this private package.
-        OPENMA_COMMON_SHA: 08ad161ac7eb8605b6d71c825b1a8fe2d461d074
-        OPENMA_COMMON_TAG: v0.5.0
-        OPENMA_COMMON_TARBALL_SHA256: 4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3
-        OPENMA_COMMON_TARBALL_URL: https://github.com/openma-ai/openma-common/releases/download/v0.5.0/openma-common-0.5.0.tgz
       run: |
         set -euo pipefail
+        set -a
+        # pin.env is the only place that names the commit and release tarball.
+        source .github/actions/setup-common/pin.env
+        set +a
         dest="../openma-common"
         rm -rf "${dest}"
         git clone --filter=blob:none --no-checkout https://github.com/openma-ai/openma-common.git "${dest}"

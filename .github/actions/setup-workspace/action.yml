@@ -1,8 +1,9 @@
 name: Set up Clash workspace
 description: >
-  Shared checkout for Desktop Checks, desktop packaging, and Publish Beta.
-  Installs pnpm and Node, restores the pnpm store and Electron download
-  caches, prepares pinned OpenMA common, then installs the frozen lockfile.
+  Shared setup for Desktop Checks, desktop packaging, and Publish Beta.
+  The caller checks out the repository first. This action installs pnpm and
+  Node, restores the pnpm store and Electron download caches, prepares pinned
+  OpenMA common, then installs the frozen lockfile.
 
 inputs:
   linux-apt-packages:
@@ -13,9 +14,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Checkout
-      uses: actions/checkout@v7
-
     - name: Set up pnpm
       uses: pnpm/action-setup@v6
 

@@ -269,21 +269,24 @@ describe("desktop Electron runtime", () => {
     );
 
     expect(
-      sourceMatches(workspaceSetup, /uses:\s*actions\/checkout@v7\b/),
-    ).toBe(true);
-    expect(
       sourceMatches(workspaceSetup, /uses:\s*pnpm\/action-setup@v6\b/),
     ).toBe(true);
     expect(
       sourceMatches(workspaceSetup, /uses:\s*actions\/setup-node@v7\b/),
     ).toBe(true);
     for (const workflow of [ci, publishBeta, packaging]) {
+      expect(sourceMatches(workflow, /uses:\s*actions\/checkout@v7\b/)).toBe(
+        true,
+      );
       expect(
         sourceMatches(
           workflow,
           /uses:\s*\.\/\.github\/actions\/setup-workspace\b/,
         ),
       ).toBe(true);
+      expect(workflow.indexOf("actions/checkout@v7")).toBeLessThan(
+        workflow.indexOf("./.github/actions/setup-workspace"),
+      );
     }
     expect(sourceMatches(publishBeta, /uses:\s*actions\/setup-node@v7\b/)).toBe(
       true,
@@ -316,9 +319,20 @@ describe("desktop Electron runtime", () => {
       "utf8",
     );
 
-    expect(commonSetup).toContain("08ad161ac7eb8605b6d71c825b1a8fe2d461d074");
-    expect(commonSetup).toContain(
-      "4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3",
+    const pin = readFileSync(
+      new URL("../../../.github/actions/setup-common/pin.env", import.meta.url),
+      "utf8",
+    );
+    expect(pin).toContain(
+      "OPENMA_COMMON_SHA=08ad161ac7eb8605b6d71c825b1a8fe2d461d074",
+    );
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.5.0");
+    expect(pin).toContain(
+      "OPENMA_COMMON_TARBALL_SHA256=4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3",
+    );
+    expect(commonSetup).toContain(".github/actions/setup-common/pin.env");
+    expect(commonSetup).not.toContain(
+      "08ad161ac7eb8605b6d71c825b1a8fe2d461d074",
     );
     expect(
       sourceMatches(

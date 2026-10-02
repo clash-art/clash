@@ -36,6 +36,8 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       NODE_OPTIONS: "--max-old-space-size=4096"
     steps:
+      - uses: actions/checkout@v7
+
       - name: Set up workspace
         uses: ./.github/actions/setup-workspace
         with:

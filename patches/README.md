@@ -1,8 +1,9 @@
 # OpenMA common used by Desktop
 
-CI and Desktop packaging check out immutable common v0.5.0 commit
-`08ad161ac7eb8605b6d71c825b1a8fe2d461d074` via
-`.github/actions/setup-common/action.yml` and install its frozen lockfile.
+CI and Desktop packaging read the OpenMA pin from
+`.github/actions/setup-common/pin.env` (currently v0.5.0 commit
+`08ad161ac7eb8605b6d71c825b1a8fe2d461d074`, the same commit master already
+uses) and install its frozen lockfile. Change that file alone to move the pin.
 That commit already contains `dist/`. The GitHub release asset
 `openma-common-0.5.0.tgz` (sha256
 `4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3`) is the

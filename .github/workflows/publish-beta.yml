@@ -12,6 +12,8 @@ jobs:
     runs-on: macos-14
     needs: [source-checks]
     steps:
+      - uses: actions/checkout@v7
+
       - name: Set up workspace
         uses: ./.github/actions/setup-workspace
 
