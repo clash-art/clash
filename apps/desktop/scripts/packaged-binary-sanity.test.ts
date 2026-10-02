@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   launchPackagedBinary,
   resolvePackagedRelease,
+  shouldLaunchPackagedBinary,
 } from "./packaged-binary-sanity.ts";
 
 async function writeExecutable(file: string, body: string): Promise<void> {
@@ -14,6 +15,15 @@ async function writeExecutable(file: string, body: string): Promise<void> {
 }
 
 describe("packaged binary sanity", () => {
+  it("does not launch a macOS binary on a different CPU", () => {
+    expect(shouldLaunchPackagedBinary("macOS-x64", "arm64")).toBe(false);
+    expect(shouldLaunchPackagedBinary("macOS-arm64", "x64")).toBe(false);
+    expect(shouldLaunchPackagedBinary("macOS-x64", "x64")).toBe(true);
+    expect(shouldLaunchPackagedBinary("macOS-arm64", "arm64")).toBe(true);
+    expect(shouldLaunchPackagedBinary("Linux", "x64")).toBe(true);
+    expect(shouldLaunchPackagedBinary("Windows", "arm64")).toBe(true);
+  });
+
   it("launches the unpacked Linux binary and accepts the x64 macOS layout", async () => {
     const releaseDir = await mkdtemp(path.join(tmpdir(), "clash-pack-sanity-"));
     try {

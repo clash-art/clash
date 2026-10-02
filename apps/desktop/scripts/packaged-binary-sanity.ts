@@ -150,14 +150,26 @@ export function verifyMacSeal(appBundle: string): void {
   }
 }
 
+/** An arm64 GitHub macOS runner cannot execute the x64 Electron binary under a short timeout. */
+export function shouldLaunchPackagedBinary(
+  platform: string,
+  hostArch: string,
+): boolean {
+  if (platform === "macOS-x64") return hostArch === "x64";
+  if (platform === "macOS-arm64") return hostArch === "arm64";
+  return true;
+}
+
 export function runPackagedBinarySanity(options: {
   platform: string;
   releaseDir: string;
   verifyMacSeal: boolean;
+  hostArch?: string;
 }): {
   platform: string;
   installer: string;
   executable: string;
+  launched: boolean;
   version: string;
 } {
   const resolved = resolvePackagedRelease(options.releaseDir, options.platform);
@@ -169,12 +181,22 @@ export function runPackagedBinarySanity(options: {
     }
     verifyMacSeal(resolved.appBundle);
   }
-  const version = launchPackagedBinary(resolved.executable);
+  const hostArch = options.hostArch ?? process.arch;
+  if (!shouldLaunchPackagedBinary(options.platform, hostArch)) {
+    return {
+      platform: options.platform,
+      installer: resolved.installer,
+      executable: resolved.executable,
+      launched: false,
+      version: "",
+    };
+  }
   return {
     platform: options.platform,
     installer: resolved.installer,
     executable: resolved.executable,
-    version,
+    launched: true,
+    version: launchPackagedBinary(resolved.executable),
   };
 }
 
