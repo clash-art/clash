@@ -1,17 +1,16 @@
 # OpenMA common used by Desktop
 
 CI and Desktop packaging read the OpenMA pin from
-`.github/actions/setup-common/pin.env` (currently v0.5.0 commit
-`08ad161ac7eb8605b6d71c825b1a8fe2d461d074`, the same commit master already
-uses) and install its frozen lockfile. Change that file alone to move the pin.
-That commit already contains `dist/`. The GitHub release asset
-`openma-common-0.5.0.tgz` (sha256
-`4f79bf81a9d73cbe15a5ed9dfdd55653c9d401e52f03077b81eaf85ed7c92dc3`) is the
-same prebuilt tree. Clash checks the tarball and then uses the checkout.
-It does not run common's tests, typecheck, or build. Upstream CI owns that
-suite. The sibling checkout remains because Desktop and web-ui resolve
-`@openma/common` to `src/` during Vite and Vitest; package exports still
-point at the committed `dist/`.
+`.github/actions/setup-common/pin.env` (currently v0.7.1 commit
+`5d839b5cbf7170ced4cb031d45c0e6e4261ca175`) and install its frozen lockfile.
+Change that file alone to move the pin. v0.7.1 publishes no GitHub release
+tarball, so both tarball fields stay empty and CI checks that `dist/` is in
+the tagged commit. When a release asset exists, set the URL and sha256
+together and CI compares that archive to the checkout. Clash does not run
+common's tests, typecheck, or build. Upstream CI owns that suite. The sibling
+checkout remains because Desktop and web-ui resolve `@openma/common` to
+`src/` during Vite and Vitest; package exports still point at the committed
+`dist/`.
 
 The shared chat, composer, session controls and ACP probe/harness exports are now
 in the published common release. There is no downstream source patch to apply.

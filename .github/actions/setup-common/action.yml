@@ -1,8 +1,9 @@
 name: Prepare pinned OpenMA common
 description: >
-  Check out immutable @openma/common v0.5.0 and install its dependencies.
-  The committed dist is the published GitHub release tarball. This action does
-  not build or test openma-common; upstream CI owns that suite.
+  Check out the @openma/common release named in pin.env and install its
+  dependencies. Use the committed dist. Compare a GitHub release tarball only
+  when pin.env names one. This action does not build or test openma-common;
+  upstream CI owns that suite.
 
 runs:
   using: composite
