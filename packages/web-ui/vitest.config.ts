@@ -28,7 +28,9 @@ export default defineConfig({
         replacement: resolve(openmaCommonRoot, "src/session-ui/index.tsx"),
       },
       {
-        find: /^@clash\/action-sdk\/(browser|ui)$/,
+        // The browser shared-runtime entry imports executable-failure. Its
+        // package export is dist/, which this job does not build.
+        find: /^@clash\/action-sdk\/(browser|executable-failure|ui)$/,
         replacement: resolve(__dirname, "../action-sdk/src/$1.ts"),
       },
       {
