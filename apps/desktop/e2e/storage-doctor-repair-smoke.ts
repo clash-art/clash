@@ -17,11 +17,16 @@ const artifactRoot = path.resolve(
 const workspace = path.join(artifactRoot, "workspace");
 const clashHome = path.join(artifactRoot, "clash-home");
 const reportPath = path.join(artifactRoot, "storage-doctor-repair-report.json");
-const cliEntry = path.join(repoRoot, "packages", "cli", "src", "index.ts");
+// Packaged dispatcher starts the local Host before commands. The bare CLI
+// entry does not, so init falls through to localhost:8788 and fetch fails.
+const cliEntry = path.join(repoRoot, "plugins", "clash", "runtime", "dispatcher.js");
+const offlineCliEntry = path.join(repoRoot, "packages", "cli", "src", "index.ts");
 const require = createRequire(path.join(repoRoot, "packages", "cli", "package.json"));
 const tsxLoader = require.resolve("tsx");
 const cliTsconfig = path.join(repoRoot, "packages", "cli", "tsconfig.dev.json");
+const { CLASH_API_URL: _ambientApiUrl, ...baseEnv } = process.env;
 const checks = [];
+const hostRecordPath = path.join(clashHome, "run", "host.json");
 
 function now() {
   return new Date().toISOString();
@@ -45,17 +50,22 @@ function recordCheck(name, pass, evidence, extra = {}) {
   }
 }
 
-function runCli(args, cwd = workspace) {
+function runCli(args, cwd = workspace, options = {}) {
+  // Offline doctor reads the sqlite file directly. A live Host rebuilds provider
+  // tables on startup, so corruption checks must not start it first.
+  const command = options.offline
+    ? ["--import", tsxLoader, offlineCliEntry, ...args]
+    : [cliEntry, ...args];
   const result = spawnSync(
     process.execPath,
-    ["--import", tsxLoader, cliEntry, ...args],
+    command,
     {
       cwd,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...baseEnv,
         CLASH_HOME: clashHome,
-        TSX_TSCONFIG_PATH: cliTsconfig,
+        ...(options.offline ? { TSX_TSCONFIG_PATH: cliTsconfig } : {}),
       },
     },
   );
@@ -63,9 +73,39 @@ function runCli(args, cwd = workspace) {
     command: `clash ${args.join(" ")}`,
     cwd,
     status: result.status,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdout: result.stdout ?? "",
+    stderr: `${result.stderr ?? ""}${result.error ? `\n${result.error.message}` : ""}`,
   };
+}
+
+function processExists(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readHostRecord() {
+  try {
+    return JSON.parse(await readFile(hostRecordPath, "utf8"));
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function stopHost(record) {
+  if (!record || !processExists(record.pid)) return;
+  process.kill(record.pid, "SIGTERM");
+  for (let attempt = 0; attempt < 100 && processExists(record.pid); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (processExists(record.pid)) {
+    throw new Error(`local-api host ${record.pid} did not stop`);
+  }
 }
 
 function parseStdoutJson(result) {
@@ -236,6 +276,14 @@ async function writeProductReplicationConfig(sqlitePath, config) {
 }
 
 async function main() {
+  try {
+    await runStorageDoctorSmoke();
+  } finally {
+    await stopHost(await readHostRecord()).catch(() => undefined);
+  }
+}
+
+async function runStorageDoctorSmoke() {
   await mkdir(workspace, { recursive: true });
   await mkdir(clashHome, { recursive: true });
   const startedAt = now();
@@ -267,7 +315,8 @@ async function main() {
   recordCheck(
     "doctor before repair reports missing workspace prerequisites",
     checkById(beforeReport, "editable-drafts-root")?.level === "warning" &&
-      checkById(beforeReport, "local-sqlite-schema")?.level === "warning",
+      // Host startup creates the local SQLite schema. Draft roots are still absent.
+      checkById(beforeReport, "local-sqlite-schema")?.level === "ok",
     JSON.stringify({
       drafts: checkById(beforeReport, "editable-drafts-root"),
       sqliteSchema: checkById(beforeReport, "local-sqlite-schema"),
@@ -326,9 +375,9 @@ async function main() {
         "editable-timelines-root",
         "editable-sessions-root",
         "editable-asset-links-root",
-        "protected-runtime-root",
-      ].every((id) => repairReport.repairs?.some((item) => item.id === id)) &&
-      repairReport.repairs?.some((item) => item.id === "local-sqlite-schema"),
+        // Host init already creates the protected runtime root and the SQLite file.
+        "local-sqlite-schema",
+      ].every((id) => repairReport.repairs?.some((item) => item.id === id)),
     JSON.stringify({ repaired: repairReport.repaired, repairs: repairReport.repairs }),
   );
   recordCheck(
@@ -963,8 +1012,9 @@ async function main() {
     ]),
     status.localSqlitePath,
   );
+  await stopHost(await readHostRecord());
   rewriteProviderAuthTablesWithLegacyPrimaryKeys(status.localSqlitePath);
-  const legacyProviderPkDoctor = runCli(["doctor", "storage", "--json"]);
+  const legacyProviderPkDoctor = runCli(["doctor", "storage", "--json"], workspace, { offline: true });
   recordCheck(
     "doctor storage detects legacy provider auth primary keys",
     legacyProviderPkDoctor.status === 0,
@@ -979,7 +1029,7 @@ async function main() {
       checkById(legacyProviderPkReport, "local-sqlite-schema")?.message?.includes("provider_oauth primary key") === true,
     JSON.stringify(checkById(legacyProviderPkReport, "local-sqlite-schema")),
   );
-  const legacyProviderPkRepair = runCli(["doctor", "storage", "--repair", "--json"]);
+  const legacyProviderPkRepair = runCli(["doctor", "storage", "--repair", "--json"], workspace, { offline: true });
   recordCheck(
     "doctor storage repair fixes legacy provider auth primary keys",
     legacyProviderPkRepair.status === 0,
@@ -993,7 +1043,7 @@ async function main() {
     status.localSqlitePath,
   );
 
-  const after = runCli(["doctor", "storage", "--json"]);
+  const after = runCli(["doctor", "storage", "--json"], workspace, { offline: true });
   recordCheck(
     "doctor storage after repair succeeds",
     after.status === 0,
@@ -1041,7 +1091,7 @@ async function main() {
       },
     ],
   });
-  const invalidRecoveryList = runCli(["doctor", "storage-recovery", "list", "--json"]);
+  const invalidRecoveryList = runCli(["doctor", "storage-recovery", "list", "--json"], workspace, { offline: true });
   recordCheck(
     "doctor storage recovery list reports invalid manifest inventory",
     invalidRecoveryList.status === 0,
@@ -1058,7 +1108,7 @@ async function main() {
       !invalidRecoveryListReport.sets?.some((set) => set.manifestPath === invalidRecoveryManifestPath),
     JSON.stringify(invalidRecoveryListReport),
   );
-  const invalidRecoveryDoctor = runCli(["doctor", "storage", "--json"]);
+  const invalidRecoveryDoctor = runCli(["doctor", "storage", "--json"], workspace, { offline: true });
   recordCheck(
     "doctor storage reports invalid recovery inventory without blessing it",
     invalidRecoveryDoctor.status === 0,
@@ -1088,7 +1138,7 @@ async function main() {
     ].join("\n"),
     "utf8",
   );
-  const forgedMarkerStatusResult = runCli(["project", "status", "--json"]);
+  const forgedMarkerStatusResult = runCli(["project", "status", "--json"], workspace, { offline: true });
   recordCheck(
     "project marker rejects removed collaboration fields",
     forgedMarkerStatusResult.status === 2 && /unsupported TOML section.*\[sync\]/i.test(forgedMarkerStatusResult.stderr),
@@ -1110,7 +1160,7 @@ async function main() {
     mode: "cloud-sync",
     remoteLoroUrl: "https://sync.example",
   });
-  const cloudSyncStatusResult = runCli(["project", "status", "--json"]);
+  const cloudSyncStatusResult = runCli(["project", "status", "--json"], workspace, { offline: true });
   recordCheck(
     "product replication state keeps cloud-sync pending until mirrors are ready",
     cloudSyncStatusResult.status === 0,
@@ -1178,7 +1228,7 @@ async function main() {
     ].join("\n"),
     "utf8",
   );
-  const claimedReadyCloudSyncStatusResult = runCli(["project", "status", "--json"], claimedReadyCloudSyncWorkspace);
+  const claimedReadyCloudSyncStatusResult = runCli(["project", "status", "--json"], claimedReadyCloudSyncWorkspace, { offline: true });
   recordCheck(
     "cloud-sync status tolerates a config claiming readiness",
     claimedReadyCloudSyncStatusResult.status === 0,
@@ -1221,7 +1271,7 @@ async function main() {
       claimedReadyCloudSyncStatus?.collaboration?.syncPolicy?.excluded?.rawAgentTraces?.optInRequiredForSync === true,
     JSON.stringify(claimedReadyCloudSyncStatus?.collaboration?.syncPolicy),
   );
-  const cloudSyncRecoveryList = runCli(["doctor", "storage-recovery", "list", "--json"]);
+  const cloudSyncRecoveryList = runCli(["doctor", "storage-recovery", "list", "--json"], workspace, { offline: true });
   recordCheck(
     "cloud-sync storage recovery list command succeeds",
     cloudSyncRecoveryList.status === 0,
@@ -1247,7 +1297,7 @@ async function main() {
   const detachedWorkspace = await realpath(await mkdtemp(path.join(tmpdir(), "clash-detached-workspace-")));
   await mkdir(detachedWorkspace, { recursive: true });
   await rm(workspace, { recursive: true, force: true });
-  const detachedStatusResult = runCli(["project", "status", "--project", projectId, "--json"], detachedWorkspace);
+  const detachedStatusResult = runCli(["project", "status", "--project", projectId, "--json"], detachedWorkspace, { offline: true });
   await rm(detachedWorkspace, { recursive: true, force: true });
   recordCheck(
     "project status can recover project store after marker workspace deletion",
