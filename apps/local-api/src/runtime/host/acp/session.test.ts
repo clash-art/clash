@@ -19,7 +19,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import { describe, expect, it } from "vitest";
 
-import { AcpSessionImpl, type ChildHandle, type Spawner } from "@openma/common/acp-runtime";
+import { AcpSessionImpl, type ChildHandle } from "@openma/common/acp-runtime";
 import { AcpRuntimeImpl } from "./runtime.js";
 
 function makeStreamPair(): { child: ChildHandle; agentInput: ReadableStream<Uint8Array>; agentOutput: WritableStream<Uint8Array> } {

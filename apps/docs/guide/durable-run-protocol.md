@@ -293,7 +293,7 @@ runtime currently requires injected product ports: authenticated admission,
 credentials, durable output staging and Project publication are not connected to
 the Node service. Real PostgreSQL fixture tests establish execution and crash
 recovery, not a deployed end-to-end Node generation product. See
-[Node service](../../../api-node/README.md#node-generation-execution-adapter).
+[Node service](https://github.com/clash-art/clash/blob/master/apps/api-node/README.md#node-generation-execution-adapter).
 
 ### Native Cloud adapter extension contract
 
