@@ -1,0 +1,25 @@
+name: Prepare pinned OpenMA common
+description: >
+  Check out the @openma/common release named in pin.env and install its
+  dependencies. Use the committed dist. Compare a GitHub release tarball only
+  when pin.env names one. This action does not build or test openma-common;
+  upstream CI owns that suite.
+
+runs:
+  using: composite
+  steps:
+    - name: Use the pinned OpenMA common release
+      shell: bash
+      run: |
+        set -euo pipefail
+        set -a
+        # pin.env is the only place that names the commit and release tarball.
+        source .github/actions/setup-common/pin.env
+        set +a
+        dest="../openma-common"
+        rm -rf "${dest}"
+        git clone --filter=blob:none --no-checkout -c core.autocrlf=false -c core.eol=lf https://github.com/openma-ai/openma-common.git "${dest}"
+        git -C "${dest}" checkout --detach "${OPENMA_COMMON_SHA}"
+        git -C "${dest}" fetch --depth 1 origin "refs/tags/${OPENMA_COMMON_TAG}:refs/tags/${OPENMA_COMMON_TAG}"
+        node .github/scripts/verify-openma-prebuilt.ts
+        pnpm --dir "${dest}" install --frozen-lockfile

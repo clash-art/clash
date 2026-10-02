@@ -3173,7 +3173,10 @@ describe("SettingsClient runtime harnesses", () => {
     expect(screen.getAllByText("/tmp/clash-acp-gemini").length).toBeGreaterThan(
       0,
     );
-    expect(screen.getByText("Manual fallback")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Sign in to Gemini" }),
+    ).toBeTruthy();
+    expect(screen.queryByText("Manual fallback")).toBeNull();
     expect(
       screen.queryByRole("switch", { name: "Enable Gemini agent" }),
     ).toBeNull();
@@ -3195,7 +3198,10 @@ describe("SettingsClient runtime harnesses", () => {
       refresh: true,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open Gemini setup" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign in to Gemini" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open Gemini setup with Login" }),
+    );
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         expect.stringContaining("/api/v1/local/harnesses/gemini/authenticate"),
@@ -4182,11 +4188,13 @@ describe("SettingsClient runtime harnesses", () => {
     );
 
     await screen.findByText("Auth needed");
-    expect(
-      screen.queryByRole("button", { name: "Open Qwen Code setup" }),
-    ).toBeNull();
     fireEvent.click(
-      screen.getByRole("button", { name: "Configure Qwen Code credentials" }),
+      screen.getByRole("button", { name: "Sign in to Qwen Code" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Configure Qwen Code credentials for Use OpenAI API key",
+      }),
     );
 
     await screen.findByRole("status");
@@ -4198,7 +4206,8 @@ describe("SettingsClient runtime harnesses", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
     expect(
-      screen.getAllByRole("button", { name: "Check again" }).length,
+      screen.getAllByRole("button", { name: "Check again", hidden: true })
+        .length,
     ).toBeGreaterThan(0);
     expect(
       screen.queryByRole("switch", { name: "Enable Qwen Code agent" }),
@@ -4406,9 +4415,12 @@ describe("SettingsClient runtime harnesses", () => {
       screen.queryByRole("switch", { name: "Enable Devin agent" }),
     ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Sign in to Devin" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sign in to Devin with Login" }),
+    );
 
     await screen.findByRole("alert");
-    expect(screen.getByText("Could not start Devin sign in")).toBeTruthy();
+    expect(screen.getByRole("dialog", { name: "Sign in to Devin" })).toBeTruthy();
     expect(screen.getByText("Login canceled")).toBeTruthy();
     expect(
       screen.queryByRole("dialog", { name: "Could not start Devin sign in" }),
@@ -4505,12 +4517,13 @@ describe("SettingsClient runtime harnesses", () => {
     );
 
     await screen.findByText("Auth needed");
-    expect(
-      screen.queryByRole("button", { name: "Sign in to Qwen Code" }),
-    ).toBeNull();
-
     fireEvent.click(
-      screen.getByRole("button", { name: "Configure Qwen Code credentials" }),
+      screen.getByRole("button", { name: "Sign in to Qwen Code" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Configure Qwen Code credentials for OpenAI API key",
+      }),
     );
 
     await screen.findByRole("status");
@@ -4522,7 +4535,8 @@ describe("SettingsClient runtime harnesses", () => {
     ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Providers" })).toBeNull();
     expect(
-      screen.getAllByRole("button", { name: "Check again" }).length,
+      screen.getAllByRole("button", { name: "Check again", hidden: true })
+        .length,
     ).toBeGreaterThan(0);
     expect(
       fetchMock.mock.calls.some(([input]) =>
@@ -4742,7 +4756,28 @@ describe("SettingsClient runtime harnesses", () => {
       </MemoryRouter>,
     );
 
+    fireEvent.click(await screen.findByRole("button", { name: "Sign in to Devin" }));
+    expect(
+      await screen.findByRole("button", { name: "Browser Login" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "API Key" })).toBeTruthy();
+    expect(screen.queryByLabelText("API key")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Browser Login" }));
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Sign in to Devin with Browser Login" }),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Back to Devin sign-in methods" }),
+    );
+    expect(screen.queryByLabelText("API key")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "API Key" }));
     await screen.findByLabelText("API key");
+    expect(
+      screen.queryByRole("button", { name: "Browser Login" }),
+    ).toBeNull();
     fireEvent.change(screen.getByLabelText("API key"), {
       target: { value: "sk-settings-secret" },
     });
@@ -4871,6 +4906,9 @@ describe("SettingsClient runtime harnesses", () => {
     await screen.findByText("Auth needed");
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "Sign in to Devin" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sign in to Devin with API Key" }),
+    );
     await act(async () => {
       await Promise.resolve();
     });
@@ -4965,11 +5003,15 @@ describe("SettingsClient runtime harnesses", () => {
     await screen.findByText("Auth needed");
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "Sign in to Devin" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sign in to Devin with API Key" }),
+    );
     await act(async () => {
       await Promise.resolve();
     });
     expect(
-      screen.getByRole("button", { name: "Sign in to Devin" }).textContent,
+      screen.getByRole("button", { name: "Sign in to Devin with API Key" })
+        .textContent,
     ).toContain("Opening sign in…");
 
     act(() => {
@@ -4978,7 +5020,8 @@ describe("SettingsClient runtime harnesses", () => {
 
     expect(screen.getByText("Waiting for Devin auth…")).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Sign in to Devin" }).textContent,
+      screen.getByRole("button", { name: "Sign in to Devin with API Key" })
+        .textContent,
     ).toContain("Open again");
   });
 });

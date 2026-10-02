@@ -6,7 +6,9 @@ export default defineConfig({
     dedupe: ["react", "react-dom"],
     alias: [
       {
-        find: /^@clash\/action-sdk\/(browser|ui|executable-failure)$/,
+        // The browser shared-runtime entry imports executable-failure. Its
+        // package export is dist/, which this job does not build.
+        find: /^@clash\/action-sdk\/(browser|executable-failure|ui)$/,
         replacement: resolve(__dirname, "../action-sdk/src/$1.ts"),
       },
       {

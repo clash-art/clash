@@ -13,75 +13,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   package-desktop:
-    name: Package Desktop (${{ matrix.platform }})
-    runs-on: ${{ matrix.os }}
     needs: [desktop-checks]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            platform: macOS-arm64
-            script: pack:desktop:mac:arm64
-            asset: apps/desktop/release/Clash-Desktop-macOS-arm64.dmg
-          - os: macos-latest
-            platform: macOS-x64
-            script: pack:desktop:mac:x64
-            asset: apps/desktop/release/Clash-Desktop-macOS-x64.dmg
-          - os: windows-latest
-            platform: Windows
-            script: pack:desktop:win
-            asset: apps/desktop/release/Clash-Desktop-Windows-x64.exe
-          - os: ubuntu-latest
-            platform: Linux
-            script: pack:desktop:linux
-            asset: apps/desktop/release/Clash-Desktop-Linux-x64.AppImage
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      NODE_OPTIONS: "--max-old-space-size=4096"
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: pnpm/action-setup@v6
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-
-      - name: Install Linux packaging dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes ffmpeg libfuse2
-
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run ${{ matrix.script }}
-
-      - name: Verify macOS candidate seal
-        if: matrix.platform == 'macOS-arm64'
-        run: codesign --verify --deep --strict --verbose=2 apps/desktop/release/mac-arm64/Clash.app
-
-      - name: Verify local integrity after packaging
-        if: matrix.platform == 'macOS-arm64'
-        run: pnpm --dir apps/desktop test:e2e:agent-first-local-v1
-
-      - name: Upload local integrity evidence
-        if: always() && matrix.platform == 'macOS-arm64'
-        uses: actions/upload-artifact@v7
-        with:
-          name: desktop-integrity-${{ github.sha }}
-          path: |
-            .tmp/agent-first-local-v1-gate/**
-            .tmp/agent-first-cas/**
-            .tmp/project-workspace-cli/**
-            .tmp/storage-doctor-repair/**
-            .tmp/short-drama-timeline/**
-
-      - name: Upload desktop installer
-        uses: actions/upload-artifact@v7
-        with:
-          name: Clash-Desktop-${{ matrix.platform }}
-          path: ${{ matrix.asset }}
-          if-no-files-found: error
+    uses: ./.github/workflows/package-desktop.yml
 
   publish-desktop-preview:
     name: Publish Desktop Preview

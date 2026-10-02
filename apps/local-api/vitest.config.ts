@@ -5,10 +5,19 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: /^@clash\/action-sdk\/(browser|executable-failure)$/,
+        find: /^@clash\/action-sdk\/browser$/,
         replacement: resolve(
           __dirname,
-          "../../packages/action-sdk/src/$1.ts",
+          "../../packages/action-sdk/src/browser.ts",
+        ),
+      },
+      {
+        // shared-runtime's root entry imports this subpath from source.
+        // The package export points at dist/, which Desktop Checks does not build.
+        find: /^@clash\/action-sdk\/executable-failure$/,
+        replacement: resolve(
+          __dirname,
+          "../../packages/action-sdk/src/executable-failure.ts",
         ),
       },
       {
@@ -16,6 +25,15 @@ export default defineConfig({
         replacement: resolve(
           __dirname,
           "../../packages/action-sdk/src/index.ts",
+        ),
+      },
+      {
+        // Package root exports dist/, which Desktop Checks does not build.
+        // Subpath exports already point their import condition at source.
+        find: /^@clash\/replica$/,
+        replacement: resolve(
+          __dirname,
+          "../../packages/shared-replica/src/index.ts",
         ),
       },
       {
@@ -45,10 +63,6 @@ export default defineConfig({
       {
         find: /^@clash\/shared-layout$/,
         replacement: resolve(__dirname, "../../packages/shared-layout/src/index.ts"),
-      },
-      {
-        find: /^@clash\/replica$/,
-        replacement: resolve(__dirname, "../../packages/shared-replica/src/index.ts"),
       },
       {
         find: /^@clash\/sdk$/,
