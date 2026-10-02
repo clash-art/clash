@@ -3,9 +3,28 @@ description: Reproduce the shared runtime and UI used by Desktop, from the immut
 runs:
   using: composite
   steps:
+    - name: Install pinned uv
+      uses: astral-sh/setup-uv@v10.2.0
+      with:
+        version: "0.12.17"
+        enable-cache: "false"
+
     - shell: bash
       run: |
         git clone --filter=blob:none --no-checkout https://github.com/openma-ai/openma-common.git ../openma-common
         git -C ../openma-common checkout 08ad161ac7eb8605b6d71c825b1a8fe2d461d074
         pnpm --dir ../openma-common install --frozen-lockfile
+        # openma-common's uvx HTTPS test trusts a cert from `openssl req -x509`.
+        # When that default is a CA certificate, uv's rustls verifier rejects the
+        # peer (CaUsedAsEndEntity) even though SSL_CERT_FILE is set. Point only
+        # that fixture at a leaf profile; other OpenSSL uses keep the host config.
+        probe_dir="$(mktemp -d)"
+        if openssl req -x509 -newkey rsa:2048 -nodes -keyout "${probe_dir}/key.pem" -out "${probe_dir}/cert.pem" -days 1 -subj "/CN=probe" >/dev/null 2>&1 \
+          && openssl x509 -in "${probe_dir}/cert.pem" -noout -text | grep -q "CA:TRUE"; then
+          export OPENSSL_CONF="${GITHUB_ACTION_PATH}/openssl-req-leaf.cnf"
+          echo "openssl req -x509 produced a CA certificate; using ${OPENSSL_CONF}"
+        else
+          echo "openssl req -x509 did not produce a CA certificate; leaving OPENSSL_CONF unchanged"
+        fi
+        rm -rf "${probe_dir}"
         pnpm --dir ../openma-common verify
