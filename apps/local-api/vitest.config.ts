@@ -28,6 +28,15 @@ export default defineConfig({
         ),
       },
       {
+        // Package root exports dist/, which Desktop Checks does not build.
+        // Subpath exports already point their import condition at source.
+        find: /^@clash\/replica$/,
+        replacement: resolve(
+          __dirname,
+          "../../packages/shared-replica/src/index.ts",
+        ),
+      },
+      {
         find: /^@clash\/shared-types\/(.+)$/,
         replacement: resolve(__dirname, "../../packages/shared-types/src/$1.ts"),
       },
