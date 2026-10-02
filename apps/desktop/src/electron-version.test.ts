@@ -342,6 +342,7 @@ describe("desktop Electron runtime", () => {
       ),
     ).toBe(true);
     expect(sourceMatches(commonSetup, /checkout --detach/)).toBe(true);
+    expect(commonSetup).toContain("core.autocrlf=false");
     expect(commonSetup).toContain("verify-openma-prebuilt.ts");
     expect(
       sourceContains(
