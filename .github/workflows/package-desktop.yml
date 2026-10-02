@@ -34,6 +34,10 @@ jobs:
             asset: apps/desktop/release/Clash-Desktop-Linux-x64.AppImage
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # electron-builder skips its ad-hoc identity "-" seal on pull requests.
+      # Package Check is a pull_request. This keeps that seal without Developer
+      # ID secrets or notarization.
+      CSC_FOR_PULL_REQUEST: "true"
       NODE_OPTIONS: "--max-old-space-size=4096"
     steps:
       - uses: actions/checkout@v7

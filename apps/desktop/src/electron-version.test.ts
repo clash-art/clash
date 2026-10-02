@@ -216,6 +216,7 @@ describe("desktop Electron runtime", () => {
     expect(packaging).toContain("pnpm run ${{ matrix.script }}");
     expect(packaging).toContain("script: pack:desktop:mac:arm64");
     expect(packaging).toContain('CSC_IDENTITY_AUTO_DISCOVERY: "false"');
+    expect(packaging).toContain('CSC_FOR_PULL_REQUEST: "true"');
     expect(packaging).toContain("packaged-binary-sanity.ts");
     expect(release).toContain("publish-desktop-preview:");
     expect(
