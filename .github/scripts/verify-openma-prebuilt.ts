@@ -1,15 +1,18 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 export function listFiles(directory: string): string[] {
   const files: string[] = [];
@@ -23,6 +26,65 @@ export function listFiles(directory: string): string[] {
   walk(directory);
   files.sort();
   return files;
+}
+
+function tarField(header: Buffer, start: number, length: number): string {
+  return header
+    .subarray(start, start + length)
+    .toString("utf8")
+    .replace(/\0.*$/s, "");
+}
+
+function tarEntryName(header: Buffer): string {
+  const name = tarField(header, 0, 100);
+  const prefix = tarField(header, 345, 155);
+  if (prefix && name) return `${prefix}/${name}`;
+  return name || prefix;
+}
+
+/** Extract a gzip-compressed tar without the system tar. Windows GNU tar treats `C:` as a host. */
+export function extractTarGz(tarballPath: string, destination: string): void {
+  const archive = gunzipSync(readFileSync(tarballPath));
+  let offset = 0;
+  let pendingName: string | undefined;
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    offset += 512;
+    const sizeText = tarField(header, 124, 12).trim();
+    const size = sizeText ? Number.parseInt(sizeText, 8) : 0;
+    if (!Number.isFinite(size) || size < 0) {
+      throw new Error(`Invalid tar entry size at offset ${offset}`);
+    }
+    const data = archive.subarray(offset, offset + size);
+    offset += Math.ceil(size / 512) * 512;
+    const typeflag = header[156] ?? 0;
+    if (typeflag === 76) {
+      pendingName = data.toString("utf8").replace(/\0.*$/s, "");
+      continue;
+    }
+    if (typeflag === 120) {
+      const pathRecord = data
+        .toString("utf8")
+        .match(/(?:^|\n)\d+ path=([^\n]*)/);
+      if (pathRecord?.[1]) pendingName = pathRecord[1];
+      continue;
+    }
+    const name = pendingName || tarEntryName(header);
+    pendingName = undefined;
+    if (!name) continue;
+    if (name.split("/").includes("..") || path.isAbsolute(name)) {
+      throw new Error(`Refusing tar entry ${name}`);
+    }
+    const target = path.join(destination, name);
+    if (typeflag === 53 || name.endsWith("/")) {
+      mkdirSync(target, { recursive: true });
+      continue;
+    }
+    if (typeflag !== 0 && typeflag !== 48) continue;
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, data);
+  }
 }
 
 export function distMismatches(
@@ -97,12 +159,7 @@ export function verifyOpenmaPrebuilt(): void {
         `OpenMA tarball sha256 ${actualDigest} != ${expectedDigest}`,
       );
     }
-    const extract = spawnSync("tar", ["-xzf", tarball, "-C", scratch], {
-      encoding: "utf8",
-    });
-    if (extract.status !== 0) {
-      throw new Error(`OpenMA tarball extract failed\n${extract.stderr}`);
-    }
+    extractTarGz(tarball, scratch);
     const mismatches = distMismatches(
       path.join(scratch, "package", "dist"),
       path.join(root, "dist"),
