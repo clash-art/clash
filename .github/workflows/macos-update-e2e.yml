@@ -18,6 +18,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:package')
     runs-on: macos-latest
     timeout-minutes: 120
+    env:
+      NODE_OPTIONS: "--max-old-space-size=8192"
     steps:
       - uses: actions/checkout@v7
 
@@ -69,6 +71,7 @@ jobs:
         run: pnpm --dir apps/desktop test scripts/macos-update-e2e.test.ts
 
       - name: Build two notarized preview versions
+        shell: bash
         env:
           CLASH_UPDATE_CHANNEL: preview
           MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
@@ -80,6 +83,7 @@ jobs:
           set -euo pipefail
           pnpm prepare:desktop-pack
           CLASH_UPDATE_BUILD=910001 pnpm --filter @clash/desktop pack:mac:arm64:update
+          # Version is stamped at pack time; skip a second full monorepo build.
           CLASH_UPDATE_BUILD=910002 pnpm --filter @clash/desktop pack:mac:arm64:update
 
       - name: Run macOS update e2e

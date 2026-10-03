@@ -124,6 +124,7 @@ jobs:
           fi
 
       - name: Package desktop
+        shell: bash
         env:
           CLASH_UPDATE_CHANNEL: ${{ matrix.platform == 'macOS-arm64' && 'preview' || '' }}
           MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
