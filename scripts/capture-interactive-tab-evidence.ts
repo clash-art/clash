@@ -158,22 +158,32 @@ async function openSettingsWorkspaceTab(
   );
 }
 
-async function navigateProjectPath(
+async function returnToPrimaryProject(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
-  projectPath: string,
+  primaryProjectPath: string,
 ) {
-  evalOnPage(agentBrowser, recovery, `(() => {
-    window.history.pushState({}, "", ${JSON.stringify(projectPath)});
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    return location.pathname;
-  })()`);
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
-    `location.pathname === ${JSON.stringify(projectPath)}`,
-    `project route ${projectPath}`,
+    `document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]').length >= 1`,
+    "workspace tabs after settings",
     30000,
+  );
+  const labels = evalOnPage(
+    agentBrowser,
+    recovery,
+    `[...document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]')].map((tab) => tab.getAttribute("aria-label") || "")`,
+  ) as string[];
+  for (const label of labels) {
+    if (!label || label === "Settings") continue;
+    clickWorkspaceTab(agentBrowser, label);
+    await sleep(500);
+    const path = evalOnPage(agentBrowser, recovery, "location.pathname") as string;
+    if (path === primaryProjectPath) return label;
+  }
+  throw new Error(
+    `Could not return to ${primaryProjectPath} from workspace tabs: ${JSON.stringify(labels)}`,
   );
 }
 
@@ -1060,21 +1070,8 @@ async function main() {
       90000,
     );
 
-    const primaryTabTitle = (evalOnPage(
-      agentBrowser,
-      recovery,
-      `document.querySelector('[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"]')?.getAttribute("aria-label") || ${JSON.stringify(PRIMARY_PROJECT)}`,
-    ) ?? PRIMARY_PROJECT) as string;
-
     await openSettingsWorkspaceTab(agentBrowser, recovery);
-    await selectWorkspaceTab(agentBrowser, recovery, primaryTabTitle);
-    await waitForEvalRecovered(
-      agentBrowser,
-      recovery,
-      `location.pathname === ${JSON.stringify(primaryProjectPath)}`,
-      "primary project route after settings tab",
-      30000,
-    );
+    const primaryTabTitle = await returnToPrimaryProject(agentBrowser, recovery, primaryProjectPath);
     await waitForEvalRecovered(
       agentBrowser,
       recovery,
