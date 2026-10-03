@@ -1,4 +1,4 @@
-import type { AcpForkPoint } from "@clash/shared-types";
+import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { visibleUserPromptText } from "@clash/shared-runtime";
 import {

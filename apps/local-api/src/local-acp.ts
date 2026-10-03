@@ -1,4 +1,4 @@
-import { describeAcpForkFailure, type AcpForkPoint } from "@clash/shared-types";
+import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -76,6 +76,13 @@ export interface SessionStartParamsLike {
   project_id?: string;
   resume?: { acp_session_id: string };
   fork?: { acp_session_id: string; point?: AcpForkPoint };
+}
+
+/** The runtime embeds forkSupport().message after this prefix. */
+function userFacingForkError(raw: string, requestedFork: boolean): string {
+  if (!requestedFork) return raw;
+  const embedded = /^ACP agent does not support message-level fork \([^)]+\): ([\s\S]+)$/.exec(raw);
+  return embedded?.[1] ?? raw;
 }
 
 export interface SessionPromptParamsLike {
@@ -2959,7 +2966,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       send({
         type: "session.error",
         session_id: sessionId,
-        message: describeAcpForkFailure(raw, requestedFork),
+        message: userFacingForkError(raw, requestedFork),
       });
     });
 

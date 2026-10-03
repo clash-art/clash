@@ -24,7 +24,6 @@ import { describe, expect, it } from "vitest";
 import {
   AcpRuntimeImpl,
   AcpSessionImpl,
-  acpForkRequestMeta,
   type ChildHandle,
 } from "@openma/common/acp-runtime";
 
@@ -593,41 +592,6 @@ it("preserves the legacy model catalog before SDK decoding strips unknown respon
   const runtime = new AcpRuntimeImpl({ spawn: async () => pair.child });
   const session = await runtime.start({ agent: { command: "test", args: [] } });
   expect(session.legacyModels).toEqual(models);
-  await reader.cancel();
-  await session.dispose();
-});
-
-it("sends the inclusive message boundary on the fork request", async () => {
-  const pair = makeStreamPair();
-  const wire = ndJsonStream(pair.agentOutput, pair.agentInput);
-  const reader = wire.readable.getReader();
-  const writer = wire.writable.getWriter();
-  let forkParams: unknown;
-  void (async () => {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      const request = value as { id?: number; method?: string; params?: unknown };
-      if (request.id === undefined) continue;
-      if (request.method === "session/fork") forkParams = request.params;
-      await writer.write({ jsonrpc: "2.0", id: request.id, result: request.method === "initialize"
-        ? { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { sessionCapabilities: { fork: {} } } }
-        : { sessionId: "forked-session", configOptions: [] } });
-    }
-  })();
-  const runtime = new AcpRuntimeImpl({ spawn: async () => pair.child });
-  const forkPoint = { messageId: "answer-old", messageText: "abc", messageOccurrence: 2 };
-  const session = await runtime.start({
-    agent: { command: "test", args: [] },
-    forkFromAcpSessionId: "source",
-    sessionRequestMeta: acpForkRequestMeta(forkPoint),
-  });
-  expect(forkParams).toMatchObject({ sessionId: "source", _meta: { jetbrains: { air: { fork: {
-    version: 1, messageId: "answer-old", messageOccurrence: 2,
-    // SHA-256 standard test vector for UTF-8 "abc".
-    messageFingerprint: "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-  } } } } });
-  expect(session.acpSessionId).toBe("forked-session");
   await reader.cancel();
   await session.dispose();
 });

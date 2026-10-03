@@ -1,7 +1,6 @@
-import { type AcpForkPoint } from "@clash/shared-types";
 import {
   AcpRuntimeImpl,
-  acpForkRequestMeta,
+  type AcpForkPoint,
   type AcpSession,
   type AgentSpec,
 } from "@openma/common/acp-runtime";
@@ -48,7 +47,6 @@ import {
   type SessionLifecycle,
 } from "@openma/common/session-kernel";
 import { withClashAcpExtensionCapabilities } from "../acp/client-capabilities.js";
-import { supportsMessagePointFork } from "../acp/fork-support.js";
 import { ensureSessionScratchpad } from "./session-scratchpad.js";
 import { detect } from "../acp/registry.js";
 import {
@@ -471,10 +469,8 @@ export class SessionManager {
       type: "session.ready",
       session_id: sessionId,
       acp_session_id: session.acp.acpSessionId,
-      supports_session_fork: session.acp.supportsSessionFork,
-      supports_message_fork: supportsMessagePointFork(
-        session.acp.supportsSessionFork,
-      ),
+      supports_session_fork: session.acp.forkSupport.level !== "none",
+      supports_message_fork: session.acp.forkSupport.level === "message",
       config_options: [...session.acp.configOptions],
       ...(session.modelFallback
         ? { model_fallback: session.modelFallback }
@@ -633,7 +629,7 @@ export class SessionManager {
         },
         resumeAcpSessionId: resumeId,
         forkFromAcpSessionId: p.fork?.acp_session_id,
-        ...(forkPoint ? { sessionRequestMeta: acpForkRequestMeta(forkPoint) } : {}),
+        ...(forkPoint ? { forkPoint } : {}),
         mcpServers,
         clientCapabilityOverlay: withClashAcpExtensionCapabilities({
           auth: { terminal: true },

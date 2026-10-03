@@ -11,7 +11,6 @@ export type {
 export {
   AcpRuntimeImpl,
   AcpSessionImpl,
-  acpForkRequestMeta,
   authenticateAgent,
   disposeAllAcpProbes,
   probeAgentAuthStatus,

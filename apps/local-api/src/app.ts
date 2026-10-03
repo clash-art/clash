@@ -11,7 +11,7 @@ import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.
 import { commitProjectMutation } from "@clash/shared-types";
 import { migrateLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
 import { migrateLegacyProjectTimelines } from "./local-timeline-migration.js";
-import { AcpForkPointSchema, type AcpForkPoint } from "@clash/shared-types";
+import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import { HostInstallScopeSchema, type HostInstallScope } from "@clash/shared-types";
 import {
   mkdtemp,
@@ -8722,6 +8722,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     );
   });
 
+const ForkPointBodySchema = z.object({
+  messageId: z.string().trim().min(1).max(4096),
+  messageText: z.string().max(2_000_000),
+  messageOccurrence: z.number().int().positive(),
+});
+
   app.post("/api/v1/runtimes/:runtimeId/sessions", async (c) => {
     if (!options.localAcp) {
       return c.json(
@@ -8762,7 +8768,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         400,
       );
     }
-    const forkPoint = body.fork_point === undefined ? undefined : AcpForkPointSchema.safeParse(body.fork_point);
+    const forkPoint = body.fork_point === undefined ? undefined : ForkPointBodySchema.safeParse(body.fork_point);
     if (forkPoint && (!forkPoint.success || !body.fork_session_id)) {
       return c.json({ error: "A valid fork_point requires fork_session_id" }, 400);
     }

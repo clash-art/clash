@@ -1,6 +1,6 @@
 "use client";
 
-import type { AcpForkPoint } from "@clash/shared-types";
+import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import { messageForkPoints } from "../../lib/acpForkPoint";
 
 import type {

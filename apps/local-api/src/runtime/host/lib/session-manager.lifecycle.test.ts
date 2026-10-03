@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AcpSession, SessionOptions } from "@openma/common/acp-runtime";
+import type {
+  AcpForkSupport,
+  AcpSession,
+  SessionOptions,
+} from "@openma/common/acp-runtime";
 
 const mocks = vi.hoisted(() => ({
   runtimeStart: vi.fn(),
@@ -25,9 +29,6 @@ vi.mock("@openma/common/acp-runtime", () => ({
   AcpRuntimeImpl: class {
     start = mocks.runtimeStart;
   },
-  acpForkRequestMeta: (point: { messageId: string }) => ({
-    jetbrains: { air: { fork: point } },
-  }),
 }));
 
 vi.mock("@openma/common/acp-runtime/node-spawner", () => ({
@@ -74,15 +75,25 @@ function createAcpSession(
     prompt?: AcpSession["prompt"];
     dispose?: AcpSession["dispose"];
     supportsSessionFork?: boolean;
-    agentInfo?: { name: string; version: string } | null;
+    forkSupport?: AcpForkSupport;
   } = {},
 ): AcpSession {
+  const forkSupport = options.forkSupport ?? {
+    level: options.supportsSessionFork ? "session" : "none",
+    reason: options.supportsSessionFork
+      ? "message-fork-not-advertised"
+      : "session-fork-not-advertised",
+    message: options.supportsSessionFork
+      ? "This agent can fork the whole session but not from a specific message."
+      : "This agent does not support forking a session.",
+  };
   return {
     id: "runtime-session",
     acpSessionId: "acp-session",
     options: { agent: { command: "fake-acp" } } satisfies SessionOptions,
     authMethods: [],
-    agentInfo: options.agentInfo ?? null,
+    agentInfo: null,
+    forkSupport,
     configOptions: [],
     modes: null,
     promptCapabilities: {},
@@ -209,85 +220,87 @@ describe("SessionManager lifecycle", () => {
     }
   });
 
-  it("offers message-point fork from session/fork support without a harness version", async () => {
-    mocks.runtimeStart.mockResolvedValue(
-      createAcpSession({
-        supportsSessionFork: true,
-        agentInfo: {
-          name: "@agentclientprotocol/claude-agent-acp",
-          version: "0.47.0",
+  it("projects forkSupport level onto the session and message flags", async () => {
+    const sent: ManagerOut[] = [];
+    const manager = new SessionManager((message) => sent.push(message));
+    const cases = [
+      {
+        id: "fork-level-message",
+        support: {
+          level: "message" as const,
+          reason: "message-fork-advertised" as const,
+          message: "This agent can fork from a specific message.",
         },
-      }),
-    );
-    const sent: ManagerOut[] = [];
-    const manager = new SessionManager((message) => sent.push(message));
-    const params = sessionParams("session-fork-capability");
+        supports_session_fork: true,
+        supports_message_fork: true,
+      },
+      {
+        id: "fork-level-session",
+        support: {
+          level: "session" as const,
+          reason: "message-fork-not-advertised" as const,
+          message:
+            "This agent can fork the whole session but not from a specific message.",
+        },
+        supports_session_fork: true,
+        supports_message_fork: false,
+      },
+      {
+        id: "fork-level-none",
+        support: {
+          level: "none" as const,
+          reason: "session-fork-not-advertised" as const,
+          message: "This agent does not support forking a session.",
+        },
+        supports_session_fork: false,
+        supports_message_fork: false,
+      },
+    ];
 
-    await manager.start(params);
-
-    try {
+    for (const entry of cases) {
+      mocks.runtimeStart.mockResolvedValue(
+        createAcpSession({ forkSupport: entry.support }),
+      );
+      const params = sessionParams(entry.id);
+      await manager.start(params);
       expect(sent).toContainEqual(
         expect.objectContaining({
           type: "session.ready",
           session_id: params.session_id,
-          supports_session_fork: true,
-          supports_message_fork: true,
+          supports_session_fork: entry.supports_session_fork,
+          supports_message_fork: entry.supports_message_fork,
         }),
       );
-    } finally {
       await manager.dispose(params.session_id);
     }
   });
 
-  it("announces message-point fork only for a checked adapter that also advertises session/fork", async () => {
-    mocks.runtimeStart.mockResolvedValue(
-      createAcpSession({
-        supportsSessionFork: true,
-        agentInfo: { name: "codex-acp", version: "1.10.0" },
-      }),
-    );
-    const sent: ManagerOut[] = [];
-    const manager = new SessionManager((message) => sent.push(message));
-    const params = sessionParams("message-fork-capability");
+  it("passes a message point to the runtime without building fork metadata", async () => {
+    mocks.runtimeStart.mockResolvedValue(createAcpSession());
+    const manager = new SessionManager(() => undefined);
+    const point = {
+      messageId: "answer",
+      messageText: "hello",
+      messageOccurrence: 1,
+    };
+    const params = {
+      ...sessionParams("fork-point-pass"),
+      fork: { acp_session_id: "source", point },
+    };
 
     await manager.start(params);
 
     try {
-      expect(sent).toContainEqual(
+      expect(mocks.runtimeStart).toHaveBeenCalledWith(
         expect.objectContaining({
-          type: "session.ready",
-          session_id: params.session_id,
-          supports_session_fork: true,
-          supports_message_fork: true,
+          forkFromAcpSessionId: "source",
+          forkPoint: point,
         }),
       );
-    } finally {
-      await manager.dispose(params.session_id);
-    }
-  });
-
-  it("does not offer message fork when the agent omitted session/fork", async () => {
-    mocks.runtimeStart.mockResolvedValue(
-      createAcpSession({
-        supportsSessionFork: false,
-        agentInfo: { name: "codex-acp", version: "1.10.0" },
-      }),
-    );
-    const sent: ManagerOut[] = [];
-    const manager = new SessionManager((message) => sent.push(message));
-    const params = sessionParams("session-fork-absent");
-
-    await manager.start(params);
-
-    try {
-      expect(sent).toContainEqual(
-        expect.objectContaining({
-          type: "session.ready",
-          session_id: params.session_id,
-          supports_session_fork: false,
-          supports_message_fork: false,
-        }),
-      );
+      const started = mocks.runtimeStart.mock.calls.at(-1)?.[0] as {
+        sessionRequestMeta?: unknown;
+      };
+      expect(started.sessionRequestMeta).toBeUndefined();
     } finally {
       await manager.dispose(params.session_id);
     }
