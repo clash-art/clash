@@ -7,6 +7,7 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { loadHostServer } from "./host-artifacts.ts";
 import {
   CdpClient,
   capture,
@@ -166,7 +167,7 @@ async function main() {
   const apiOrigin = `http://127.0.0.1:${apiPort}`;
   const webOrigin = `http://127.0.0.1:${webPort}`;
 
-  const { startLocalApiServer } = await import("../../local-api/src/server.ts");
+  const { startLocalApiServer } = await loadHostServer();
   const apiServer = await startLocalApiServer({ port: apiPort, dataDir });
   const { child: web, logs: webLogs } = await startViteDevServer({
     webDir,

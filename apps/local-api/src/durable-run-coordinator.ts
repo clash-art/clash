@@ -37,8 +37,8 @@ import type {
   ProviderPluginExecutor,
   ProviderPluginExecutorRequest,
   ProviderPluginExecutorResponse,
-} from "./local-aigc";
-import { ProviderPluginHostUnavailableError } from "./local-aigc";
+} from "./local-aigc.js";
+import { ProviderPluginHostUnavailableError } from "./local-aigc.js";
 import type {
   ExecutablePluginActionInvoker,
   ExecutablePluginActionRequest,
