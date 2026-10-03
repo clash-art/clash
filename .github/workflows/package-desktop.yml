@@ -59,27 +59,42 @@ jobs:
         env:
           MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          CSC_KEY_PASSWORD_LEGACY: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
           if [ -n "${MAC_CSC_LINK}" ]; then
+            csc_key_password="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD_LEGACY:-}}"
+            if [ -z "${csc_key_password}" ]; then
+              echo "::error::Developer ID signing requires MAC_CSC_KEY_PASSWORD (or legacy CSC_KEY_PASSWORD)." >&2
+              exit 1
+            fi
             echo "CLASH_DESKTOP_MAC_SIGN_MODE=developer-id" >> "$GITHUB_ENV"
             cert_file="$(mktemp "${TMPDIR:-/tmp}/clash-mac-cert.XXXXXX.p12")"
             chmod 600 "${cert_file}"
-            printf '%s' "${MAC_CSC_LINK}" | base64 -D > "${cert_file}"
-            pass_file="$(mktemp "${TMPDIR:-/tmp}/clash-csc-pass.XXXXXX")"
-            chmod 600 "${pass_file}"
-            printf '%s' "${MAC_CSC_KEY_PASSWORD}" > "${pass_file}"
-            if ! openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}"; then
-              rm -f "${cert_file}" "${pass_file}"
-              echo "::error::MAC_CSC_LINK does not match MAC_CSC_KEY_PASSWORD (openssl pkcs12 check failed)." >&2
-              exit 1
+            cert_ready=false
+            if printf '%s' "${MAC_CSC_LINK}" | tr -d '[:space:]' | base64 -D > "${cert_file}" 2>/dev/null; then
+              pass_file="$(mktemp "${TMPDIR:-/tmp}/clash-csc-pass.XXXXXX")"
+              chmod 600 "${pass_file}"
+              printf '%s' "${csc_key_password}" > "${pass_file}"
+              if openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}"; then
+                cert_ready=true
+                echo "CSC_LINK=${cert_file}" >> "$GITHUB_ENV"
+                echo "CLASH_MAC_CERT_FILE=${cert_file}" >> "$GITHUB_ENV"
+              fi
+              rm -f "${pass_file}"
             fi
-            rm -f "${pass_file}"
-            echo "CSC_LINK=${cert_file}" >> "$GITHUB_ENV"
-            echo "CLASH_MAC_CERT_FILE=${cert_file}" >> "$GITHUB_ENV"
+            if [ "${cert_ready}" != true ]; then
+              rm -f "${cert_file}"
+              {
+                echo "CSC_LINK<<EOF"
+                printf '%s\n' "${MAC_CSC_LINK}"
+                echo "EOF"
+              } >> "$GITHUB_ENV"
+              echo "::warning::MAC_CSC_LINK openssl preflight failed; using CSC_LINK base64 passthrough for electron-builder."
+            fi
             echo "APPLE_TEAM_ID=962863MJ5J" >> "$GITHUB_ENV"
             echo "APPLE_API_KEY_ID=${APPLE_API_KEY_ID}" >> "$GITHUB_ENV"
             echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}" >> "$GITHUB_ENV"
@@ -103,9 +118,10 @@ jobs:
       - name: Package desktop
         env:
           MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          CSC_KEY_PASSWORD_LEGACY: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
           if [ "${CLASH_DESKTOP_MAC_SIGN_MODE:-ad-hoc}" = "developer-id" ]; then
-            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD}"
+            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD_LEGACY}}"
             export CSC_LINK="${CSC_LINK:-}"
           fi
           pnpm run ${{ matrix.script }}
