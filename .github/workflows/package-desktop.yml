@@ -75,17 +75,26 @@ jobs:
             cert_file="$(mktemp "${TMPDIR:-/tmp}/clash-mac-cert.XXXXXX.p12")"
             chmod 600 "${cert_file}"
             cert_ready=false
-            if printf '%s' "${MAC_CSC_LINK}" | tr -d '[:space:]' | base64 -D > "${cert_file}" 2>/dev/null; then
-              pass_file="$(mktemp "${TMPDIR:-/tmp}/clash-csc-pass.XXXXXX")"
-              chmod 600 "${pass_file}"
-              printf '%s' "${csc_key_password}" > "${pass_file}"
-              if openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}"; then
+            pass_file="$(mktemp "${TMPDIR:-/tmp}/clash-csc-pass.XXXXXX")"
+            chmod 600 "${pass_file}"
+            printf '%s' "${csc_key_password}" > "${pass_file}"
+            link_file="$(mktemp "${TMPDIR:-/tmp}/clash-csc-link.XXXXXX")"
+            chmod 600 "${link_file}"
+            printf '%s' "${MAC_CSC_LINK}" > "${link_file}"
+            for decode_pass in 1 2; do
+              if base64 -D -i "${link_file}" -o "${cert_file}" 2>/dev/null \
+                && openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}"; then
                 cert_ready=true
                 echo "CSC_LINK=${cert_file}" >> "$GITHUB_ENV"
                 echo "CLASH_MAC_CERT_FILE=${cert_file}" >> "$GITHUB_ENV"
+                break
               fi
-              rm -f "${pass_file}"
-            fi
+              if [ "${decode_pass}" -eq 1 ]; then
+                base64 -D -i "${link_file}" -o "${link_file}.decoded" 2>/dev/null \
+                  && mv "${link_file}.decoded" "${link_file}"
+              fi
+            done
+            rm -f "${pass_file}" "${link_file}" "${link_file}.decoded"
             if [ "${cert_ready}" != true ]; then
               rm -f "${cert_file}"
               {
