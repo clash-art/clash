@@ -2211,6 +2211,99 @@ describe("local ACP adapter", () => {
     }
   });
 
+  it("does not flag updateAvailable when a versioned npx install matches npm latest", async () => {
+    const harnessDir = await mkdtemp(
+      join(tmpdir(), "clash-harness-versioned-npx-"),
+    );
+    const shimPath = join(harnessDir, "openma-acp-pi-acp");
+    const versionedRoot = join(
+      harnessDir,
+      "registry",
+      "pi-acp",
+      "v_unknown_abc123",
+    );
+    try {
+      await writeFile(shimPath, "#!/bin/sh\nexit 0\n", "utf8");
+      await mkdir(join(versionedRoot, "node_modules", "@openma", "pi-acp"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(
+          versionedRoot,
+          "node_modules",
+          "@openma",
+          "pi-acp",
+          "package.json",
+        ),
+        JSON.stringify({ name: "@openma/pi-acp", version: "0.1.6" }),
+        "utf8",
+      );
+      await writeFile(
+        join(harnessDir, "registry", "pi-acp", "install.json"),
+        JSON.stringify({
+          source: "registry",
+          registryId: "pi-acp",
+          shimName: "openma-acp-pi-acp",
+          installedAt: new Date().toISOString(),
+        }),
+        "utf8",
+      );
+
+      const adapter = createLocalAcpAdapter({
+        detectAgents: async () => [
+          {
+            id: "pi-acp",
+            label: "Pi",
+            spec: { command: shimPath },
+          },
+        ],
+        agentCatalog: [
+          {
+            id: "pi-acp",
+            label: "Pi",
+            spec: { command: "openma-acp-pi-acp" },
+            registryId: "pi-acp",
+            installSource: "registry",
+            install: { kind: "npm", package: "@openma/pi-acp" },
+            registryDistribution: { npx: { package: "@openma/pi-acp" } },
+          },
+        ],
+        harnessDownloadDir: harnessDir,
+        fetch: async (url) => {
+          if (String(url).includes("registry.json")) {
+            return new Response(JSON.stringify({ agents: [] }), {
+              status: 200,
+            });
+          }
+          expect(String(url)).toBe(
+            "https://registry.npmjs.org/%40openma%2Fpi-acp/latest",
+          );
+          return new Response(JSON.stringify({ version: "0.1.6" }), {
+            status: 200,
+          });
+        },
+      });
+
+      await expect(
+        adapter.listHarnesses({ probe: "auth", refresh: true }),
+      ).resolves.toEqual({
+        harnesses: [
+          expect.objectContaining({
+            id: "pi-acp",
+            installed: true,
+            installedVersion: "0.1.6",
+            latestVersion: "0.1.6",
+          }),
+        ],
+      });
+      expect(
+        (await adapter.listHarnesses({ checkUpdates: true })).harnesses[0],
+      ).not.toHaveProperty("updateAvailable");
+    } finally {
+      await rm(harnessDir, { recursive: true, force: true });
+    }
+  });
+
   it("loads additional installable agents from the public ACP registry catalog", async () => {
     const harnessDir = await mkdtemp(
       join(tmpdir(), "clash-harness-dynamic-registry-"),
