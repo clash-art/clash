@@ -1,5 +1,6 @@
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -214,6 +215,42 @@ describe("local ACP adapter", () => {
         mode_by_agent: {
           "codex-acp": "agent",
         },
+      });
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes an installed dsh-acp managed shim in runtime agents when enabled", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-acp-dsh-detect-"));
+    const harnessDir = join(dataDir, "acp-bin");
+    const shimPath = join(harnessDir, "dsh-acp");
+    try {
+      await mkdir(harnessDir, { recursive: true });
+      await writeFile(shimPath, "#!/bin/sh\nexit 0\n", "utf8");
+      await chmod(shimPath, 0o755);
+      const harnessConfig = createLocalHarnessConfigStore(dataDir);
+      await harnessConfig.saveEnabledHarnessIds(["dsh-acp"]);
+      const adapter = createLocalAcpAdapter({
+        harnessDownloadDir: harnessDir,
+        harnessConfig,
+        spawnEnv: {
+          CLASH_ACP_BIN_DIR: harnessDir,
+          OPENMA_ACP_BIN_DIR: harnessDir,
+        },
+        probeAgentAuth: async () => ({
+          status: "configured",
+          message: "DeepSeek auth configured for test.",
+        }),
+      });
+      await expect(adapter.listRuntimes({ refresh: true })).resolves.toMatchObject({
+        runtimes: [
+          expect.objectContaining({
+            agents: expect.arrayContaining([
+              expect.objectContaining({ id: "dsh-acp", label: "DeepSeek Harness" }),
+            ]),
+          }),
+        ],
       });
     } finally {
       await rm(dataDir, { recursive: true, force: true });

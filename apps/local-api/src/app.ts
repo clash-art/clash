@@ -1936,7 +1936,10 @@ function verifyLocalApiLocalConfigReadReceipt(
 
 const LOCAL_RUNTIME_CONFIG_READ_VERSION = "local-runtime-config-v1";
 
-type LocalHarnessesResponse = { harnesses: LocalAcpHarness[] };
+type LocalHarnessesResponse = {
+  harnesses: LocalAcpHarness[];
+  migration_notices?: string[];
+};
 type LocalAgentServersResponse = { agent_servers: LocalAcpAgentServersConfig };
 
 function localHarnessReadProjection(result: LocalHarnessesResponse) {

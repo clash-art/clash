@@ -7770,6 +7770,9 @@ function AgentsSection() {
   const rt = useClashRuntime();
   const feedback = useAppFeedback();
   const [harnesses, setHarnesses] = useState<LocalHarnessInfo[]>([]);
+  const [harnessMigrationNotices, setHarnessMigrationNotices] = useState<
+    string[]
+  >([]);
   const [harnessLoading, setHarnessLoading] = useState(true);
   const [harnessLoadingMessage, setHarnessLoadingMessage] = useState(
     "Checking installed agents…",
@@ -7886,9 +7889,20 @@ function AgentsSection() {
           return [];
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = (await res.json()) as { harnesses?: LocalHarnessInfo[] };
+        const json = (await res.json()) as {
+          harnesses?: LocalHarnessInfo[];
+          migration_notices?: string[];
+        };
         const nextHarnesses = json.harnesses ?? [];
         setHarnesses(nextHarnesses);
+        setHarnessMigrationNotices(
+          Array.isArray(json.migration_notices)
+            ? json.migration_notices.filter(
+                (line): line is string =>
+                  typeof line === "string" && line.length > 0,
+              )
+            : [],
+        );
         return nextHarnesses;
       } catch (e) {
         feedback.notify({
@@ -8737,6 +8751,15 @@ function AgentsSection() {
           </Tooltip>
         }
       />
+
+      {harnessMigrationNotices.length > 0 && (
+        <InlineAlert
+          tone="warning"
+          title="Agent harness update"
+          message={harnessMigrationNotices.join(" ")}
+          className="mb-4"
+        />
+      )}
 
       <TabProvider
         selectedId={selectedRuntimeGroup?.id ?? null}
