@@ -177,23 +177,58 @@ async function main() {
     );
     await capture(cdp, path.join(captureDir, "04-harnesses-enabled.png"));
 
-    await cdp.send("Page.navigate", { url: `${webOrigin}/settings?section=agents` });
-    await waitFor(cdp, `location.pathname === "/settings"`, "settings refresh", 30_000);
+    await click(
+      cdp,
+      `(() => [...document.querySelectorAll("button")].find((b) => {
+        const text = (b.innerText || b.textContent || "").trim();
+        return text === "Check again" && !b.disabled;
+      }))()`,
+      "agents Check again",
+    );
+    await waitFor(
+      cdp,
+      `(() => {
+        const btn = [...document.querySelectorAll("button")].find((b) =>
+          (b.innerText || b.textContent || "").trim() === "Check again"
+        );
+        return !!btn && (btn.innerText || "").trim() === "Check again";
+      })() && !document.body.innerText.includes("Checking...")`,
+      "agents recheck finished",
+      360_000,
+    );
+
     await cdp.send("Page.navigate", { url: `${webOrigin}/` });
     await waitFor(cdp, `document.body.innerText.includes("Home")`, "home", 120_000);
 
-    const runtimeCheck = await fetch(
-      `${apiOrigin}/api/v1/local/runtimes?refresh=1&probe=config`,
-    ).then((res) => res.json() as Promise<{ runtimes?: { agents?: { id: string }[] }[] }>);
+    const runtimeRes = await fetch(
+      `${apiOrigin}/api/v1/runtimes?refresh=1&probe=config`,
+    );
+    if (!runtimeRes.ok) {
+      throw new Error(`Runtime refresh failed: HTTP ${runtimeRes.status}`);
+    }
+    const runtimeCheck = (await runtimeRes.json()) as {
+      runtimes?: { agents?: { id: string }[] }[];
+    };
     const runtimeAgentIds =
       runtimeCheck.runtimes?.[0]?.agents?.map((agent) => agent.id) ?? [];
     console.log("[acp-consolidation-pr24-smoke] runtime agents", runtimeAgentIds);
+    if (!runtimeAgentIds.includes("dsh-acp")) {
+      throw new Error(
+        `Expected dsh-acp in runtime agents; got ${JSON.stringify(runtimeAgentIds)}`,
+      );
+    }
 
-    await cdp.send("Page.navigate", { url: `${webOrigin}/?refresh=${Date.now()}` });
+    await cdp.send("Page.navigate", { url: `${webOrigin}/` });
+    await waitFor(cdp, `document.body.innerText.includes("Home")`, "home", 120_000);
     await waitFor(
       cdp,
-      `document.body.innerText.includes("Home")`,
-      "home after runtime refresh",
+      `(() => {
+        const btn = [...document.querySelectorAll("button")].find((b) =>
+          b.getAttribute("aria-label") === "Session runtime, harness, and model"
+        );
+        return !!btn && (btn.innerText || "").length > 0;
+      })()`,
+      "harness trigger ready",
       120_000,
     );
 
@@ -206,17 +241,22 @@ async function main() {
         );
         await waitFor(
           cdp,
-          `document.body.innerText.includes("HARNESS") || document.body.innerText.includes("DeepSeek")`,
+          `document.body.innerText.includes("DeepSeek") || document.body.innerText.includes("HARNESS")`,
           "harness menu",
           30_000,
         );
         await click(
           cdp,
-          `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio']")].find((el) => {
+          `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio'], [data-value]")].find((el) => {
             const text = (el.innerText || el.textContent || "").trim();
-            return text.includes("DeepSeek") || text === ${JSON.stringify(label)} || text.includes("dsh");
+            const value = el.getAttribute("data-value") || "";
+            return text.includes("DeepSeek") || value.includes("dsh-acp");
           }))()`,
           `select ${label}`,
+        );
+        await capture(
+          cdp,
+          path.join(captureDir, "05b-harness-menu-dsh-selected.png"),
         );
       }
       await click(
@@ -263,7 +303,9 @@ async function main() {
         cdp,
         path.join(
           captureDir,
-          `0${5 + idx}-session-start-${label.replace(/\s+/g, "-").toLowerCase()}.png`,
+          idx === 1
+            ? "06-session-start-deepseek-harness.png"
+            : `0${5 + idx}-session-start-${label.replace(/\s+/g, "-").toLowerCase()}.png`,
         ),
       );
       await cdp.send("Page.navigate", { url: `${webOrigin}/` });
