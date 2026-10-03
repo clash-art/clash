@@ -307,8 +307,8 @@ describe("desktop Electron runtime", () => {
     ).toBe(true);
   });
 
-  it("installs published OpenMA common from the v0.7.7 git tag", () => {
-    const pin = /github:openma-ai\/openma-common#v0\.7\.7/;
+  it("installs published OpenMA common from the v0.7.8 git tag", () => {
+    const pin = /github:openma-ai\/openma-common#v0\.7\.8/;
     for (const relativePath of [
       "../../../package.json",
       "../../../apps/local-api/package.json",
@@ -345,9 +345,9 @@ describe("desktop Electron runtime", () => {
       "utf8",
     );
     expect(pin).toContain(
-      "OPENMA_COMMON_SHA=95524fc1cbdd4d99edbd5b2954c224a57119f10f",
+      "OPENMA_COMMON_SHA=2ebf9b2cb4dd75313364a4062d51e41821901e52",
     );
-    expect(pin).toContain("OPENMA_COMMON_TAG=v0.7.7");
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.7.8");
     expect(pin).toContain("OPENMA_COMMON_TARBALL_SHA256=\n");
     expect(pin).toContain("OPENMA_COMMON_TARBALL_URL=\n");
     expect(commonSetup).toContain(".github/actions/setup-common/pin.env");

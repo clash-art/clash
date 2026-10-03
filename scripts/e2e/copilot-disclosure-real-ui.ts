@@ -30,8 +30,8 @@ const webDir = path.join(repoRoot, "apps/web");
 
 const evidenceRoot =
   process.env.OPENMA_EVIDENCE_DIR ??
-  "/cursor/stores/bc-8af30c89-1c8d-5944-9e50-08179bf783ab/media/openma-common-0.7.7/real-ui";
-const versionLabel = process.env.OPENMA_EVIDENCE_VERSION ?? "v0.7.7-after";
+  "/cursor/stores/bc-8af30c89-1c8d-5944-9e50-08179bf783ab/media/openma-common-0.7.8/real-ui";
+const versionLabel = process.env.OPENMA_EVIDENCE_VERSION ?? "v0.7.8-after";
 const outDir = path.join(evidenceRoot, versionLabel);
 
 const dataDir = path.join(repoRoot, ".tmp", `openma-disclosure-${versionLabel}-data`);
@@ -51,7 +51,7 @@ function clickableByText(label: string) {
 }
 
 function disclosureRowExpr(includes: string) {
-  return `([...document.querySelectorAll('[data-backchat-session-timeline="true"] button.activity-disclosure-row, [data-backchat-session-timeline="true"] button.chat-interactive-surface')].find((el) => {
+  return `([...document.querySelectorAll('[data-backchat-session-timeline="true"] button[data-chat-turn-disclosure-trigger="true"], [data-backchat-session-timeline="true"] button.activity-disclosure-row, [data-backchat-session-timeline="true"] button.chat-interactive-surface')].find((el) => {
     const text = (el.innerText || el.textContent || "").trim();
     const rect = el.getBoundingClientRect();
     const style = getComputedStyle(el);
@@ -109,6 +109,37 @@ async function captureClip(cdp: CdpClient, selectorExpr: string, targetPath: str
   });
   await mkdir(path.dirname(targetPath), { recursive: true });
   await writeFile(targetPath, Buffer.from(shot.data, "base64"));
+}
+
+async function measureRowAlignment(cdp: CdpClient, selectorExpr: string) {
+  return evaluate(cdp, `(() => {
+    const row = (${selectorExpr});
+    const timeline = document.querySelector('[data-backchat-session-timeline="true"]');
+    if (!row || !timeline) return null;
+    const summary =
+      row.querySelector(".chat-transcript-disclosure-summary") ??
+      row.querySelector("span.min-w-0") ??
+      row;
+    const body =
+      timeline.querySelector("[data-chat-markdown='settled'] p") ??
+      timeline.querySelector(".chat-assistant-markdown p") ??
+      timeline.querySelector("[data-chat-markdown='settled']") ??
+      timeline.querySelector(".chat-assistant-markdown");
+    if (!body) return { error: "body anchor missing" };
+    const summaryRect = summary.getBoundingClientRect();
+    const bodyRect = body.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const offsetPx = Math.round((summaryRect.left - bodyRect.left) * 100) / 100;
+    return {
+      bodyLeft: bodyRect.left,
+      summaryLeft: summaryRect.left,
+      rowLeft: rowRect.left,
+      offsetPx,
+      within1px: Math.abs(offsetPx) <= 1,
+      summaryText: (summary.textContent || "").trim().slice(0, 80),
+      bodyPreview: (body.textContent || "").trim().slice(0, 80),
+    };
+  })()`);
 }
 
 async function rowStyleAudit(cdp: CdpClient, selectorExpr: string) {
@@ -203,7 +234,7 @@ type RowKind = "process" | "tool" | "thought";
 const rowMatchers: Record<RowKind, string> = {
   process: "已工作",
   tool: "已执行",
-  thought: "思考",
+  thought: "已思考",
 };
 
 async function captureRowStates(
@@ -261,11 +292,13 @@ async function captureRowStates(
   const tabAudit = await rowStyleAudit(cdp, expr);
   await captureClip(cdp, expr, path.join(outDir, `${prefix}-tab-focus.png`));
 
+  const alignment = await measureRowAlignment(cdp, expr);
+
   await click(cdp, expr, `${kind} row expand`);
   await sleep(200);
   await captureClip(cdp, expr, path.join(outDir, `${prefix}-expanded.png`));
 
-  return { kind, theme, skipped: false as const, tabAudit };
+  return { kind, theme, skipped: false as const, tabAudit, alignment };
 }
 
 async function closeServer(server: ClosableServer) {
@@ -341,7 +374,16 @@ async function main() {
       }
     }
 
+    const alignmentReport = {
+      versionLabel,
+      capturedAt: new Date().toISOString(),
+      rows: audits,
+    };
     await writeFile(path.join(outDir, "focus-audit.json"), JSON.stringify(audits, null, 2));
+    await writeFile(
+      path.join(outDir, "alignment-measurements.json"),
+      JSON.stringify(alignmentReport, null, 2),
+    );
     console.log(`[openma-evidence] wrote ${outDir}`);
   } catch (error) {
     if (cdp) {
