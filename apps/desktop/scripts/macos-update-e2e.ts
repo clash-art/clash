@@ -311,8 +311,17 @@ async function main(): Promise<void> {
   const oldApp = apps.find((app) => bundleVersion(app) === oldVersion);
   const newApp = apps.find((app) => bundleVersion(app) === newVersion);
   if (!oldApp || !newApp) {
+    const described = apps
+      .map((app) => {
+        try {
+          return `${app}=${bundleVersion(app)}`;
+        } catch {
+          return `${app}=?`;
+        }
+      })
+      .join(", ");
     throw new Error(
-      `missing signed apps for ${oldVersion} and ${newVersion}: ${apps.join(", ")}`,
+      `missing signed apps for ${oldVersion} and ${newVersion}: ${described}`,
     );
   }
   log(`old=${oldApp}`);
@@ -321,11 +330,11 @@ async function main(): Promise<void> {
   requireDeveloperId(newApp);
 
   const ymls = findFiles(releaseRoot, "preview-mac.yml").filter((file) =>
-    file.includes(newVersion),
+    readFileSync(file, "utf8").includes(newVersion),
   );
   if (ymls.length !== 1) {
     throw new Error(
-      `expected one ${newVersion} preview-mac.yml, found ${ymls.join(", ")}`,
+      `expected one preview-mac.yml for ${newVersion}, found ${ymls.join(", ")}`,
     );
   }
   const ymlText = readFileSync(ymls[0], "utf8");

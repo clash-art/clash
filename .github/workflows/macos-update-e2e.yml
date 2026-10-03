@@ -82,9 +82,18 @@ jobs:
         run: |
           set -euo pipefail
           pnpm prepare:desktop-pack
-          CLASH_UPDATE_BUILD=910001 pnpm --filter @clash/desktop pack:mac:arm64:update
-          # Version is stamped at pack time; skip a second full monorepo build.
-          CLASH_UPDATE_BUILD=910002 pnpm --filter @clash/desktop pack:mac:arm64:update
+          archive_preview_build() {
+            local build="$1"
+            CLASH_UPDATE_BUILD="${build}" pnpm --filter @clash/desktop pack:mac:arm64:update
+            local dest="apps/desktop/release/preview-build-${build}"
+            rm -rf "${dest}"
+            mkdir -p "${dest}"
+            /usr/bin/ditto apps/desktop/release/mac-arm64 "${dest}/mac-arm64"
+            cp apps/desktop/release/Clash-Desktop-macOS-arm64.zip "${dest}/"
+            cp apps/desktop/release/preview-mac.yml "${dest}/"
+          }
+          archive_preview_build 910001
+          archive_preview_build 910002
 
       - name: Run macOS update e2e
         run: pnpm --dir apps/desktop test:macos-update-e2e release
