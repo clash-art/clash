@@ -72,45 +72,28 @@ jobs:
               exit 1
             fi
             echo "CLASH_DESKTOP_MAC_SIGN_MODE=developer-id" >> "$GITHUB_ENV"
+            {
+              echo "CSC_LINK<<EOF"
+              printf '%s\n' "${MAC_CSC_LINK}"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
             tmp_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
             cert_file="${TMPDIR:-/tmp}/clash-mac-cert-${tmp_id}.p12"
-            cert_ready=false
             pass_file="${TMPDIR:-/tmp}/clash-csc-pass-${tmp_id}"
+            link_file="${TMPDIR:-/tmp}/clash-csc-link-${tmp_id}"
             printf '%s' "${csc_key_password}" > "${pass_file}"
             chmod 600 "${pass_file}"
-            link_file="${TMPDIR:-/tmp}/clash-csc-link-${tmp_id}"
             printf '%s' "${MAC_CSC_LINK}" > "${link_file}"
             chmod 600 "${link_file}"
-            for decode_pass in 1 2; do
-              p12_ok=false
-              if base64 -D -i "${link_file}" -o "${cert_file}" 2>/dev/null; then
-                chmod 600 "${cert_file}"
-                if openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" 2>/dev/null \
-                  || openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" -legacy 2>/dev/null; then
-                  p12_ok=true
-                fi
-              fi
-              if [ "${p12_ok}" = true ]; then
-                cert_ready=true
-                echo "CSC_LINK=${cert_file}" >> "$GITHUB_ENV"
-                echo "CLASH_MAC_CERT_FILE=${cert_file}" >> "$GITHUB_ENV"
-                break
-              fi
-              if [ "${decode_pass}" -eq 1 ]; then
-                base64 -D -i "${link_file}" -o "${link_file}.decoded" 2>/dev/null \
-                  && mv "${link_file}.decoded" "${link_file}"
-              fi
-            done
-            rm -f "${pass_file}" "${link_file}" "${link_file}.decoded"
-            if [ "${cert_ready}" != true ]; then
-              rm -f "${cert_file}"
-              {
-                echo "CSC_LINK<<EOF"
-                printf '%s\n' "${MAC_CSC_LINK}"
-                echo "EOF"
-              } >> "$GITHUB_ENV"
-              echo "::warning::MAC_CSC_LINK openssl preflight failed; using CSC_LINK base64 passthrough for electron-builder."
+            if base64 -D -i "${link_file}" -o "${cert_file}" 2>/dev/null \
+              && chmod 600 "${cert_file}" \
+              && { openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" 2>/dev/null \
+                || openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" -legacy 2>/dev/null; }; then
+              echo "MAC_CSC_LINK openssl preflight succeeded."
+            else
+              echo "::warning::MAC_CSC_LINK openssl preflight failed (non-blocking); electron-builder will import the certificate."
             fi
+            rm -f "${pass_file}" "${link_file}" "${cert_file}"
             echo "APPLE_TEAM_ID=962863MJ5J" >> "$GITHUB_ENV"
             echo "APPLE_API_KEY_ID=${APPLE_API_KEY_ID}" >> "$GITHUB_ENV"
             echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}" >> "$GITHUB_ENV"
@@ -133,14 +116,8 @@ jobs:
 
       - name: Package desktop
         env:
-          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          CSC_KEY_PASSWORD_LEGACY: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          if [ "${CLASH_DESKTOP_MAC_SIGN_MODE:-ad-hoc}" = "developer-id" ]; then
-            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD_LEGACY}}"
-            export CSC_LINK="${CSC_LINK:-}"
-          fi
-          pnpm run ${{ matrix.script }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD != '' && secrets.MAC_CSC_KEY_PASSWORD || secrets.CSC_KEY_PASSWORD }}
+        run: pnpm run ${{ matrix.script }}
 
       - name: Sanity-check the packaged binary
         env:
@@ -153,13 +130,9 @@ jobs:
         if: always() && runner.os == 'macOS'
         env:
           APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
-          CLASH_MAC_CERT_FILE: ${{ env.CLASH_MAC_CERT_FILE }}
         run: |
           if [ -n "${APPLE_API_KEY:-}" ]; then
             rm -f "${APPLE_API_KEY}"
-          fi
-          if [ -n "${CLASH_MAC_CERT_FILE:-}" ]; then
-            rm -f "${CLASH_MAC_CERT_FILE}"
           fi
 
       - name: Upload desktop installer
