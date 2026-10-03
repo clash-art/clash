@@ -65,7 +65,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "./ui/context-menu";
-import { Tab, TabList, TabProvider } from "./ui/tabs";
+import { Tab, TabList, TabProvider, appTabTriggerClassName } from "./ui/tabs";
 import { AssetThumbnail } from "../features/assets/AssetThumbnail";
 import { projectAssetDisplayName } from "../features/assets/projectAssetPresentation";
 import {
@@ -222,7 +222,7 @@ function ProjectFolderSection({
                 variant={null}
                 size={null}
                 shape={null}
-                className="flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center justify-start gap-1.5 rounded-md bg-transparent pl-2 pr-1 text-left shadow-none hover:bg-warm-hover focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50 focus-visible:ring-offset-0"
+                className="app-interactive-surface flex h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center justify-start gap-1.5 rounded-md pl-2 pr-1 text-left shadow-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50 focus-visible:ring-offset-0"
               >
                 <CaretRight
                   className={`h-3 w-3 shrink-0 text-stone-400 transition-transform ${open ? "rotate-90" : ""}`}
@@ -342,10 +342,13 @@ type ProjectSearchResult =
 
 function rowClass(active: boolean): string {
   return [
-    "group/menu-button relative grid grid-cols-[1.25rem_minmax(0,1fr)] [&>svg]:justify-self-center h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-[13px] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/50",
-    active
-      ? "bg-warm-hover font-medium text-content-primary"
-      : "text-content-secondary hover:bg-warm-muted hover:text-content-primary",
+    "group/menu-button relative grid grid-cols-[1.25rem_minmax(0,1fr)] [&>svg]:justify-self-center h-[var(--clash-project-control-rhythm,2rem)] w-full min-w-0 items-center gap-2 rounded-md px-2 pr-8 text-left text-[13px] transition-colors",
+    appTabTriggerClassName({
+      selected: active,
+      className: active
+        ? "font-medium text-content-primary"
+        : "text-content-secondary hover:text-content-primary",
+    }),
   ].join(" ");
 }
 

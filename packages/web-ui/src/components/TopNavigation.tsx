@@ -28,7 +28,7 @@ import {
 } from "./ui/combobox";
 import { Dialog } from "./ui/dialog";
 import { IconButton } from "./ui/icon-button";
-import { Tab, TabList, TabProvider } from "./ui/tabs";
+import { Tab, TabList, TabProvider, appTabTriggerClassName } from "./ui/tabs";
 import { Tooltip } from "./ui/tooltip";
 import { HarnessUpdateNotifier } from "./HarnessUpdateNotifier";
 import { BrandAsset } from "./BrandAsset";
@@ -456,8 +456,8 @@ export default function TopNavigation({
               to="/"
               className={`desktop-no-drag inline-flex h-8 flex-none items-center gap-2 rounded-lg px-2 text-sm font-medium shadow-none outline-none transition-colors hover:bg-warm-hover hover:text-content-primary focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-muted ${
                 dashboardActive
-                  ? "bg-warm-hover text-content-primary"
-                  : "text-content-secondary"
+                  ? "bg-warm-surface text-content-primary shadow-raised"
+                  : "bg-transparent text-content-secondary"
               }`}
             >
               <SquaresFour
@@ -493,14 +493,21 @@ export default function TopNavigation({
                       data-active={String(active)}
                       className={`desktop-no-drag group relative flex h-8 min-w-36 max-w-64 items-center gap-1 rounded-lg border pl-2.5 pr-1 text-sm font-medium transition-[background-color,border-color,box-shadow,color] ${
                         active
-                          ? "border-warm-border bg-warm-surface text-content-primary shadow-raised"
-                          : "border-transparent bg-warm-hover text-content-muted hover:text-content-primary"
+                          ? "border-warm-border shadow-raised"
+                          : "border-transparent"
                       }`}
                     >
                       <Tab
                         id={tab.id}
                         aria-label={tab.title}
-                        className="flex min-w-0 flex-1 items-center gap-2 truncate text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0 focus-visible:ring-offset-warm-muted"
+                        className={appTabTriggerClassName({
+                          selected: active,
+                          className: `flex min-w-0 flex-1 items-center gap-2 truncate text-left ${
+                            active
+                              ? "text-content-primary"
+                              : "text-content-muted hover:text-content-primary"
+                          }`,
+                        })}
                       >
                         <TabIcon
                           data-workspace-tab-icon="true"

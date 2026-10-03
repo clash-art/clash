@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tab selection fixture</title>
+    <style>
+      :root {
+        --app-tab-hover-bg: #ededed;
+        --app-tab-selected-bg: #dce9f7;
+        --app-tab-selected-fg: #1e293b;
+        --control-focus: #5f5e5b;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 24px;
+        background: #fff;
+      }
+      .bar {
+        display: flex;
+        gap: 4px;
+        padding: 4px;
+        border: 1px solid #e2e2e2;
+        border-radius: 12px;
+        width: 320px;
+      }
+      .label {
+        font-size: 11px;
+        color: #898885;
+        margin: 16px 0 6px;
+      }
+      .app-tab-trigger {
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .app-tab-trigger-rest {
+        background: transparent;
+        color: #5f5e5b;
+      }
+      .app-tab-trigger-rest:hover:not([aria-disabled="true"]) {
+        background: var(--app-tab-hover-bg);
+      }
+      .app-tab-trigger-selected {
+        background: var(--app-tab-selected-bg);
+        color: var(--app-tab-selected-fg);
+      }
+      .app-tab-trigger-rest:focus:not(:focus-visible),
+      [role="tab"]:focus:not(:focus-visible):not([aria-selected="true"]) {
+        background: transparent;
+      }
+      [role="tab"][aria-selected="true"] {
+        background: var(--app-tab-selected-bg);
+        color: var(--app-tab-selected-fg);
+      }
+      [role="tab"]:not([aria-selected="true"]) {
+        background: transparent;
+      }
+      [role="tab"]:hover:not([aria-selected="true"]) {
+        background: var(--app-tab-hover-bg);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="capture-root">
+      <div class="label">1 — Selected tab (Beta selected)</div>
+      <div class="bar" id="scene-selected">
+        <button type="button" role="tab" aria-selected="false" class="app-tab-trigger app-tab-trigger-rest">Alpha</button>
+        <button type="button" role="tab" aria-selected="true" class="app-tab-trigger app-tab-trigger-selected">Beta</button>
+        <button type="button" role="tab" aria-selected="false" class="app-tab-trigger app-tab-trigger-rest">Gamma</button>
+      </div>
+
+      <div class="label">2 — Previously selected after switch + mouse away (Alpha focused, not selected)</div>
+      <div class="bar" id="scene-previous">
+        <button type="button" role="tab" aria-selected="false" class="app-tab-trigger app-tab-trigger-rest" id="prev-tab">Alpha</button>
+        <button type="button" role="tab" aria-selected="true" class="app-tab-trigger app-tab-trigger-selected">Beta</button>
+        <button type="button" role="tab" aria-selected="false" class="app-tab-trigger app-tab-trigger-rest">Gamma</button>
+      </div>
+
+      <div class="label">3 — Hover on inactive tab</div>
+      <div class="bar" id="scene-hover">
+        <button type="button" role="tab" aria-selected="true" class="app-tab-trigger app-tab-trigger-selected">Alpha</button>
+        <button type="button" role="tab" aria-selected="false" class="app-tab-trigger app-tab-trigger-rest" id="hover-tab">Beta</button>
+      </div>
+
+      <div class="label">4 — Keyboard focus (focus-visible)</div>
+      <div class="bar" id="scene-focus">
+        <button type="button" role="tab" aria-selected="false" class="app-tab-trigger app-tab-trigger-rest" id="focus-tab">Alpha</button>
+        <button type="button" role="tab" aria-selected="true" class="app-tab-trigger app-tab-trigger-selected">Beta</button>
+      </div>
+    </div>
+    <style>
+      #focus-tab:focus-visible {
+        outline: 2px solid rgba(95, 94, 91, 0.36);
+        outline-offset: 2px;
+      }
+    </style>
+  </body>
+</html>
