@@ -99,8 +99,8 @@
   --control-bg-open: var(--info-soft);
   --app-tab-hover-bg: color-mix(
     in srgb,
-    var(--clash-content-primary) 10%,
-    transparent
+    var(--clash-content-primary) 14%,
+    var(--clash-warm-muted)
   );
   --app-tab-selected-bg: var(--select-item-selected, color-mix(in srgb, var(--clash-content-primary) 8%, var(--clash-warm-muted)));
   --app-tab-selected-fg: var(--select-item-selected-foreground, var(--clash-content-primary));
@@ -5871,4 +5871,23 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
 
 [role="tab"]:hover:not([aria-disabled="true"]):not([aria-selected="true"]) {
   background: var(--app-tab-hover-bg);
+}
+
+/* Director inspector segmented tabs: visible hover on dark panel chrome (not text-only). */
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"].app-tab-trigger-rest:hover:not([aria-disabled="true"]),
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"]:hover:not([aria-disabled="true"]):not([aria-selected="true"]) {
+  background: var(--clash-director-panel-hover);
+  color: var(--clash-director-panel-secondary);
+}
+
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"]:focus-visible {
+  outline: 2px solid var(--app-tab-focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--app-tab-focus-ring);
 }
