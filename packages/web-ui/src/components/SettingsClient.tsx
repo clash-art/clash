@@ -114,7 +114,7 @@ import { SearchableSelect } from "./ui/searchable-select";
 import { SortableList, moveItem, useSortableItem } from "./ui/sortable";
 import { Switch } from "./ui/switch";
 import { Textarea } from "./ui/textarea";
-import { Tab, TabList, TabProvider } from "./ui/tabs";
+import { Tab, TabList, TabProvider, appTabTriggerClassName } from "./ui/tabs";
 import { Tooltip } from "./ui/tooltip";
 import {
   Collapsible,
@@ -8784,12 +8784,15 @@ function AgentsSection() {
                 key={group.id}
                 id={group.id}
                 aria-label={`${group.label}, ${group.status}, ${agentCountLabel}`}
-                className={cn(
-                  "flex h-8 shrink-0 items-center gap-2 rounded-lg px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring/60",
-                  selected
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-                )}
+                className={appTabTriggerClassName({
+                  selected,
+                  className: cn(
+                    "flex h-8 shrink-0 items-center gap-2 rounded-lg px-2.5 text-xs font-medium",
+                    selected
+                      ? "text-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  ),
+                })}
               >
                 <span
                   className={cn(
