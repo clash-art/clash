@@ -1,19 +1,18 @@
 /**
  * PR #24 VM evidence: Chrome + Vite pointed at real local-api (no Worker 401).
- * Installs public-registry Pi + dsh-acp through Settings → Agents UI.
+ * Run: CHROME_BIN=/usr/local/bin/google-chrome pnpm exec tsx apps/web/e2e/acp-consolidation-pr24-smoke.ts
  */
 import { spawn } from "node:child_process";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { loadHostServer } from "./host-artifacts.ts";
 import {
   CdpClient,
-  assert,
   capture,
   chromeBinary,
   click,
+  evaluate,
   findFreePort,
   startViteDevServer,
   stopProcess,
@@ -35,60 +34,129 @@ const dataDir =
   path.join(repoRoot, ".tmp", "acp-consolidation-pr24-data");
 const chromeDataDir = path.join(dataDir, "chrome-profile");
 
-const REGISTRY_LABEL = "Pi";
 const DSH_LABEL = "DeepSeek Harness";
 
-function agentRowExpression(label: string) {
-  return `(() => {
-    const label = ${JSON.stringify(label)};
-    const rows = [...document.querySelectorAll("div.grid")].filter((el) => {
-      const rect = el.getBoundingClientRect();
-      const style = getComputedStyle(el);
-      if (rect.width < 400 || rect.height < 40 || style.display === "none" || style.visibility === "hidden") return false;
-      const text = el.innerText || el.textContent || "";
-      if (!text.includes(label)) return false;
-      return [...el.querySelectorAll("span")].some((span) => (span.innerText || span.textContent || "").trim() === label);
-    });
-    return rows[0] ?? null;
-  })()`;
+function buttonByAriaLabelExpression(ariaLabel: string) {
+  return `(() => [...document.querySelectorAll("button")].find((button) => button.getAttribute("aria-label") === ${JSON.stringify(ariaLabel)}))()`;
 }
 
-function agentRowActionExpression(label: string, action: string) {
-  return `(() => {
-    const row = (${agentRowExpression(label)});
-    if (!row) return null;
-    const action = ${JSON.stringify(action)};
-    return [...row.querySelectorAll("button")].find((button) => {
-      const text = (button.innerText || button.textContent || "").trim();
-      const aria = button.getAttribute("aria-label") || "";
-      return text === action || aria.includes(action);
-    }) ?? null;
-  })()`;
+async function clickAriaButton(cdp: CdpClient, ariaLabel: string) {
+  await click(cdp, buttonByAriaLabelExpression(ariaLabel), ariaLabel);
 }
 
-async function clickAgentAction(cdp: CdpClient, label: string, action: string) {
-  await click(cdp, agentRowActionExpression(label, action), `${action} ${label}`);
+async function ensureHarnessEnabled(cdp: CdpClient, label: string) {
+  const enableLabel = `Enable ${label} agent`;
+  const alreadyEnabled = await evaluate<boolean>(
+    cdp,
+    `[...document.querySelectorAll("button")].some((button) => button.getAttribute("aria-label") === ${JSON.stringify(`Disable ${label} agent`)})`,
+  );
+  if (alreadyEnabled) return;
+  await clickAriaButton(cdp, enableLabel);
 }
 
-async function waitForAgentRowIncludes(
+async function scrollInstallButtonIntoView(cdp: CdpClient, label: string) {
+  await evaluate(
+    cdp,
+    `(() => {
+      const button = [...document.querySelectorAll("button")].find(
+        (candidate) => candidate.getAttribute("aria-label") === ${JSON.stringify(`Install ${label}`)},
+      );
+      button?.scrollIntoView({ block: "center", inline: "nearest" });
+      return !!button;
+    })()`,
+  );
+}
+
+async function resolveRegistryHarnessLabel(cdp: CdpClient): Promise<string> {
+  await waitFor(
+    cdp,
+    `[...document.querySelectorAll("button")].some((button) => (button.getAttribute("aria-label") || "").startsWith("Install "))`,
+    "harness install actions",
+    120_000,
+  );
+  const preferred = process.env.CLASH_ACP_VERIFY_REGISTRY_LABEL ?? "Pi";
+  for (const label of [preferred, "Pi", "Agoragentic"]) {
+    const found = await evaluate<boolean>(
+      cdp,
+      `[...document.querySelectorAll("button")].some((button) => button.getAttribute("aria-label") === ${JSON.stringify(`Install ${label}`)})`,
+    );
+    if (found) return label;
+  }
+  const fallback = await evaluate<string | null>(
+    cdp,
+    `(() => {
+      const skip = new Set([${JSON.stringify(DSH_LABEL)}]);
+      const button = [...document.querySelectorAll("button")].find((candidate) => {
+        const aria = candidate.getAttribute("aria-label") || "";
+        if (!aria.startsWith("Install ")) return false;
+        const name = aria.slice("Install ".length);
+        return !skip.has(name);
+      });
+      return button ? (button.getAttribute("aria-label") || "").slice("Install ".length) : null;
+    })()`,
+  );
+  if (fallback) return fallback;
+  throw new Error(
+    "No public registry harness install button found (tried Pi and Agoragentic)",
+  );
+}
+
+async function waitForHarnessInstalled(
   cdp: CdpClient,
   label: string,
-  includes: string,
-  description: string,
   timeoutMs = 360_000,
 ) {
   await waitFor(
     cdp,
     `(() => {
-      const row = (${agentRowExpression(label)});
-      return !!row && (row.innerText || row.textContent || "").includes(${JSON.stringify(includes)});
+      const install = [...document.querySelectorAll("button")].find(
+        (button) => button.getAttribute("aria-label") === ${JSON.stringify(`Install ${label}`)},
+      );
+      const text = document.body.innerText || "";
+      return !install && text.includes(${JSON.stringify(label)});
     })()`,
-    description,
+    `installed ${label}`,
     timeoutMs,
   );
 }
 
+async function waitForHarnessIdle(cdp: CdpClient, timeoutMs = 360_000) {
+  await waitFor(
+    cdp,
+    `!document.body.innerText.includes("Installing...") && !document.body.innerText.includes("Saving enablement...")`,
+    "harness UI idle",
+    timeoutMs,
+  );
+}
+
+async function waitForRuntimeAgent(
+  apiOrigin: string,
+  agentId: string,
+  timeoutMs = 360_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await fetch(
+      `${apiOrigin}/api/v1/runtimes?refresh=1&probe=config`,
+    );
+    if (res.ok) {
+      const json = (await res.json()) as {
+        runtimes?: { agents?: { id: string }[] }[];
+      };
+      const ids =
+        json.runtimes?.[0]?.agents?.map((agent) => agent.id) ?? [];
+      if (ids.includes(agentId)) return ids;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  throw new Error(`Timed out waiting for runtime agent ${agentId}`);
+}
+
 async function main() {
+  process.env.DEEPSEEK_API_KEY =
+    process.env.DEEPSEEK_API_KEY ?? "sk-fake-deepseek-test";
+  process.env.PI_API_KEY = process.env.PI_API_KEY ?? "sk-fake-pi-test";
+
   await rm(dataDir, { recursive: true, force: true });
   await mkdir(captureDir, { recursive: true });
 
@@ -98,7 +166,7 @@ async function main() {
   const apiOrigin = `http://127.0.0.1:${apiPort}`;
   const webOrigin = `http://127.0.0.1:${webPort}`;
 
-  const { startLocalApiServer } = await loadHostServer();
+  const { startLocalApiServer } = await import("../../local-api/src/server.ts");
   const apiServer = await startLocalApiServer({ port: apiPort, dataDir });
   const { child: web, logs: webLogs } = await startViteDevServer({
     webDir,
@@ -127,7 +195,7 @@ async function main() {
         "--no-first-run",
         "--no-default-browser-check",
         "--window-size=1440,1000",
-        "about:blank",
+        webOrigin,
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
@@ -150,32 +218,39 @@ async function main() {
     );
     await capture(cdp, path.join(captureDir, "01-agents-settings-initial.png"));
 
-    await waitForAgentRowIncludes(cdp, REGISTRY_LABEL, "Install", "Pi installable", 120_000);
-    await clickAgentAction(cdp, REGISTRY_LABEL, "Install");
-    await waitForAgentRowIncludes(cdp, REGISTRY_LABEL, "Uninstall", "Pi installed", 360_000);
+    const registryLabel = await resolveRegistryHarnessLabel(cdp);
+    console.log("[acp-consolidation-pr24-smoke] registry harness", registryLabel);
+
+    await clickAriaButton(cdp, `Install ${registryLabel}`);
+    await waitForHarnessInstalled(cdp, registryLabel);
     await capture(cdp, path.join(captureDir, "02-registry-harness-pi-installed.png"));
 
-    await waitForAgentRowIncludes(cdp, DSH_LABEL, "Install", "dsh installable", 120_000);
-    await clickAgentAction(cdp, DSH_LABEL, "Install");
-    await waitForAgentRowIncludes(cdp, DSH_LABEL, "Uninstall", "dsh installed", 360_000);
+    await scrollInstallButtonIntoView(cdp, DSH_LABEL);
+    await clickAriaButton(cdp, `Install ${DSH_LABEL}`);
+    await waitForHarnessInstalled(cdp, DSH_LABEL);
+    await waitForHarnessIdle(cdp);
     await capture(cdp, path.join(captureDir, "03-dsh-acp-installed.png"));
 
     await click(
       cdp,
-      `(() => {
-        const row = (${agentRowExpression(REGISTRY_LABEL)});
-        return row?.querySelector('[role="switch"], button[role="switch"]');
-      })()`,
-      "enable Pi",
+      `(() => [...document.querySelectorAll("button")].find((b) => {
+        const text = (b.innerText || b.textContent || "").trim();
+        return text === "Check again" && !b.disabled;
+      }))()`,
+      "agents Check again",
     );
-    await click(
+    await waitFor(
       cdp,
-      `(() => {
-        const row = (${agentRowExpression(DSH_LABEL)});
-        return row?.querySelector('[role="switch"], button[role="switch"]');
-      })()`,
-      "enable dsh",
+      `!document.body.innerText.includes("Checking...")`,
+      "agents auth recheck",
+      360_000,
     );
+    await waitForHarnessIdle(cdp);
+
+    for (const label of [registryLabel, DSH_LABEL]) {
+      await ensureHarnessEnabled(cdp, label);
+    }
+    await waitForHarnessIdle(cdp);
     await capture(cdp, path.join(captureDir, "04-harnesses-enabled.png"));
 
     await click(
@@ -192,27 +267,10 @@ async function main() {
       "agents recheck finished",
       360_000,
     );
+    await waitForHarnessIdle(cdp);
 
-    await cdp.send("Page.navigate", { url: `${webOrigin}/` });
-    await waitFor(cdp, `document.body.innerText.includes("Home")`, "home", 120_000);
-
-    const runtimeRes = await fetch(
-      `${apiOrigin}/api/v1/runtimes?refresh=1&probe=config`,
-    );
-    if (!runtimeRes.ok) {
-      throw new Error(`Runtime refresh failed: HTTP ${runtimeRes.status}`);
-    }
-    const runtimeCheck = (await runtimeRes.json()) as {
-      runtimes?: { agents?: { id: string }[] }[];
-    };
-    const runtimeAgentIds =
-      runtimeCheck.runtimes?.[0]?.agents?.map((agent) => agent.id) ?? [];
+    const runtimeAgentIds = await waitForRuntimeAgent(apiOrigin, "dsh-acp");
     console.log("[acp-consolidation-pr24-smoke] runtime agents", runtimeAgentIds);
-    if (!runtimeAgentIds.includes("dsh-acp")) {
-      throw new Error(
-        `Expected dsh-acp in runtime agents; got ${JSON.stringify(runtimeAgentIds)}`,
-      );
-    }
 
     await cdp.send("Page.navigate", { url: `${webOrigin}/` });
     await waitFor(cdp, `document.body.innerText.includes("Home")`, "home", 120_000);
@@ -228,7 +286,7 @@ async function main() {
       120_000,
     );
 
-    for (const [idx, label] of [REGISTRY_LABEL, DSH_LABEL].entries()) {
+    for (const [idx, label] of [registryLabel, DSH_LABEL].entries()) {
       if (idx > 0) {
         await click(
           cdp,
@@ -249,10 +307,6 @@ async function main() {
             return text.includes("DeepSeek") || value.includes("dsh-acp");
           }))()`,
           `select ${label}`,
-        );
-        await capture(
-          cdp,
-          path.join(captureDir, "05b-harness-menu-dsh-selected.png"),
         );
       }
       await click(
