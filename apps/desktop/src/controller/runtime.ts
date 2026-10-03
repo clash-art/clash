@@ -61,6 +61,8 @@ export function createDesktopRuntimeController({
     const acpBinDir = resolveAcpBinDir(dataDir);
     process.env.CLASH_ACP_BIN_DIR =
       process.env.CLASH_ACP_TEST_BIN_DIR || acpBinDir;
+    process.env.OPENMA_ACP_BIN_DIR =
+      process.env.CLASH_ACP_TEST_BIN_DIR || acpBinDir;
     process.env.CLASH_AGENT_BUNDLE_ROOT = resolveAgentBundleRoot({
       isPackaged: app.isPackaged,
       moduleDir,

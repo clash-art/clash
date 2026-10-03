@@ -1,5 +1,6 @@
 import {
   access,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -214,6 +215,42 @@ describe("local ACP adapter", () => {
         mode_by_agent: {
           "codex-acp": "agent",
         },
+      });
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes an installed dsh-acp managed shim in runtime agents when enabled", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-acp-dsh-detect-"));
+    const harnessDir = join(dataDir, "acp-bin");
+    const shimPath = join(harnessDir, "dsh-acp");
+    try {
+      await mkdir(harnessDir, { recursive: true });
+      await writeFile(shimPath, "#!/bin/sh\nexit 0\n", "utf8");
+      await chmod(shimPath, 0o755);
+      const harnessConfig = createLocalHarnessConfigStore(dataDir);
+      await harnessConfig.saveEnabledHarnessIds(["dsh-acp"]);
+      const adapter = createLocalAcpAdapter({
+        harnessDownloadDir: harnessDir,
+        harnessConfig,
+        spawnEnv: {
+          CLASH_ACP_BIN_DIR: harnessDir,
+          OPENMA_ACP_BIN_DIR: harnessDir,
+        },
+        probeAgentAuth: async () => ({
+          status: "configured",
+          message: "DeepSeek auth configured for test.",
+        }),
+      });
+      await expect(adapter.listRuntimes({ refresh: true })).resolves.toMatchObject({
+        runtimes: [
+          expect.objectContaining({
+            agents: expect.arrayContaining([
+              expect.objectContaining({ id: "dsh-acp", label: "DeepSeek Harness" }),
+            ]),
+          }),
+        ],
       });
     } finally {
       await rm(dataDir, { recursive: true, force: true });
@@ -2169,6 +2206,99 @@ describe("local ACP adapter", () => {
       const checked = await adapter.listHarnesses({ checkUpdates: true });
       expect(checked.harnesses[0]?.latestVersion).toBe(latestVersion);
       expect(probeAuth).not.toHaveBeenCalled();
+    } finally {
+      await rm(harnessDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not flag updateAvailable when a versioned npx install matches npm latest", async () => {
+    const harnessDir = await mkdtemp(
+      join(tmpdir(), "clash-harness-versioned-npx-"),
+    );
+    const shimPath = join(harnessDir, "openma-acp-pi-acp");
+    const versionedRoot = join(
+      harnessDir,
+      "registry",
+      "pi-acp",
+      "v_unknown_abc123",
+    );
+    try {
+      await writeFile(shimPath, "#!/bin/sh\nexit 0\n", "utf8");
+      await mkdir(join(versionedRoot, "node_modules", "@openma", "pi-acp"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(
+          versionedRoot,
+          "node_modules",
+          "@openma",
+          "pi-acp",
+          "package.json",
+        ),
+        JSON.stringify({ name: "@openma/pi-acp", version: "0.1.6" }),
+        "utf8",
+      );
+      await writeFile(
+        join(harnessDir, "registry", "pi-acp", "install.json"),
+        JSON.stringify({
+          source: "registry",
+          registryId: "pi-acp",
+          shimName: "openma-acp-pi-acp",
+          installedAt: new Date().toISOString(),
+        }),
+        "utf8",
+      );
+
+      const adapter = createLocalAcpAdapter({
+        detectAgents: async () => [
+          {
+            id: "pi-acp",
+            label: "Pi",
+            spec: { command: shimPath },
+          },
+        ],
+        agentCatalog: [
+          {
+            id: "pi-acp",
+            label: "Pi",
+            spec: { command: "openma-acp-pi-acp" },
+            registryId: "pi-acp",
+            installSource: "registry",
+            install: { kind: "npm", package: "@openma/pi-acp" },
+            registryDistribution: { npx: { package: "@openma/pi-acp" } },
+          },
+        ],
+        harnessDownloadDir: harnessDir,
+        fetch: async (url) => {
+          if (String(url).includes("registry.json")) {
+            return new Response(JSON.stringify({ agents: [] }), {
+              status: 200,
+            });
+          }
+          expect(String(url)).toBe(
+            "https://registry.npmjs.org/%40openma%2Fpi-acp/latest",
+          );
+          return new Response(JSON.stringify({ version: "0.1.6" }), {
+            status: 200,
+          });
+        },
+      });
+
+      await expect(
+        adapter.listHarnesses({ probe: "auth", refresh: true }),
+      ).resolves.toEqual({
+        harnesses: [
+          expect.objectContaining({
+            id: "pi-acp",
+            installed: true,
+            installedVersion: "0.1.6",
+            latestVersion: "0.1.6",
+          }),
+        ],
+      });
+      expect(
+        (await adapter.listHarnesses({ checkUpdates: true })).harnesses[0],
+      ).not.toHaveProperty("updateAvailable");
     } finally {
       await rm(harnessDir, { recursive: true, force: true });
     }
@@ -5134,8 +5264,10 @@ describe("local ACP adapter", () => {
             label: "Codex",
             spec: { command: "clash-acp-codex-acp" },
             registryId: "codex-acp",
-            registryNpmPackage: "@test/codex-acp",
             installSource: "registry",
+            registryDistribution: {
+              npx: { package: "@test/codex-acp" },
+            },
           },
         ],
         harnessDownloadDir: harnessDir,
