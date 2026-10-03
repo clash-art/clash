@@ -9,6 +9,7 @@ import {
   appendFileSync,
   closeSync,
   createReadStream,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -171,6 +172,10 @@ function findFiles(root: string, name: string): string[] {
   return (result.stdout ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+function previewBuildDir(releaseRoot: string, build: number): string {
+  return join(releaseRoot, `preview-build-${build}`);
+}
+
 function walkApps(root: string): string[] {
   return spawnSync("find", [root, "-type", "d", "-name", "Clash.app"], {
     encoding: "utf8",
@@ -308,8 +313,24 @@ async function main(): Promise<void> {
   const oldVersion = previewAppVersion(baseVersion, OLD_PREVIEW_BUILD);
   const newVersion = previewAppVersion(baseVersion, NEW_PREVIEW_BUILD);
   const apps = walkApps(releaseRoot);
-  const oldApp = apps.find((app) => bundleVersion(app) === oldVersion);
-  const newApp = apps.find((app) => bundleVersion(app) === newVersion);
+  const stagedOld = join(
+    previewBuildDir(releaseRoot, OLD_PREVIEW_BUILD),
+    "mac-arm64",
+    "Clash.app",
+  );
+  const stagedNew = join(
+    previewBuildDir(releaseRoot, NEW_PREVIEW_BUILD),
+    "mac-arm64",
+    "Clash.app",
+  );
+  const oldApp =
+    existsSync(stagedOld) && bundleVersion(stagedOld) === oldVersion
+      ? stagedOld
+      : apps.find((app) => bundleVersion(app) === oldVersion);
+  const newApp =
+    existsSync(stagedNew) && bundleVersion(stagedNew) === newVersion
+      ? stagedNew
+      : apps.find((app) => bundleVersion(app) === newVersion);
   if (!oldApp || !newApp) {
     const described = apps
       .map((app) => {
@@ -329,19 +350,34 @@ async function main(): Promise<void> {
   requireDeveloperId(oldApp);
   requireDeveloperId(newApp);
 
-  const ymls = findFiles(releaseRoot, "preview-mac.yml").filter((file) =>
-    readFileSync(file, "utf8").includes(newVersion),
+  const stagedYml = join(
+    previewBuildDir(releaseRoot, NEW_PREVIEW_BUILD),
+    "preview-mac.yml",
   );
-  if (ymls.length !== 1) {
-    throw new Error(
-      `expected one preview-mac.yml for ${newVersion}, found ${ymls.join(", ")}`,
-    );
+  const ymlPath = existsSync(stagedYml)
+    ? stagedYml
+    : findFiles(releaseRoot, "preview-mac.yml")
+        .filter((file) => readFileSync(file, "utf8").includes(newVersion))
+        .find((file) => file.includes(`/preview-build-${NEW_PREVIEW_BUILD}/`)) ??
+      findFiles(releaseRoot, "preview-mac.yml").find((file) =>
+        readFileSync(file, "utf8").includes(newVersion),
+      );
+  if (!ymlPath) {
+    throw new Error(`expected preview-mac.yml for ${newVersion}`);
   }
-  const ymlText = readFileSync(ymls[0], "utf8");
+  const ymlText = readFileSync(ymlPath, "utf8");
   const zipName = zipNameFromFeedYaml(ymlText);
-  const zipCandidates = findFiles(releaseRoot, zipName);
-  if (zipCandidates.length !== 1) {
-    throw new Error(`expected one ${zipName}, found ${zipCandidates.join(", ")}`);
+  const stagedZip = join(
+    previewBuildDir(releaseRoot, NEW_PREVIEW_BUILD),
+    zipName,
+  );
+  const zipPath = existsSync(stagedZip)
+    ? stagedZip
+    : findFiles(releaseRoot, zipName).find((file) =>
+        file.includes(`/preview-build-${NEW_PREVIEW_BUILD}/`),
+      ) ?? findFiles(releaseRoot, zipName)[0];
+  if (!zipPath) {
+    throw new Error(`expected ${zipName} for ${newVersion}`);
   }
   const feedDir = join(tmpdir(), "clash-update-feed");
   rmSync(feedDir, { recursive: true, force: true });
@@ -350,7 +386,7 @@ async function main(): Promise<void> {
     join(feedDir, "preview-mac.yml"),
     `${localizeFeedYaml(ymlText, zipName)}\n`,
   );
-  run("/usr/bin/ditto", [zipCandidates[0], join(feedDir, zipName)]);
+  run("/usr/bin/ditto", [zipPath, join(feedDir, zipName)]);
   const feed = await serveFeed(feedDir);
   log(`feed ${feed.url}`);
 
