@@ -99,12 +99,12 @@
   --control-bg-open: var(--info-soft);
   --app-tab-hover-bg: color-mix(
     in srgb,
-    var(--clash-content-primary) 6%,
+    var(--clash-content-primary) 10%,
     transparent
   );
   --app-tab-selected-bg: var(--select-item-selected, color-mix(in srgb, var(--clash-content-primary) 8%, var(--clash-warm-muted)));
   --app-tab-selected-fg: var(--select-item-selected-foreground, var(--clash-content-primary));
-  --app-tab-focus-ring: color-mix(in srgb, var(--control-focus) 55%, transparent);
+  --app-tab-focus-ring: var(--control-focus);
   --control-border: var(--input);
   --control-focus: var(--ring);
   --input-placeholder: var(--muted-foreground);
@@ -5855,6 +5855,7 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
 [role="tab"]:focus-visible {
   outline: 2px solid var(--app-tab-focus-ring);
   outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--app-tab-focus-ring);
 }
 
 .app-tab-trigger-rest:focus:not(:focus-visible),
