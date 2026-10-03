@@ -65,7 +65,7 @@
     "@remotion/bundler": "4.0.507",
     "@types/node": "^24.0.0",
     "electron": "^42.3.2",
-    "electron-builder": "26.15.3",
+    "electron-builder": "^26.17.0",
     "tsx": "^4.23.0",
     "typescript": "^5.9.0",
     "vite": "^7.1.0",

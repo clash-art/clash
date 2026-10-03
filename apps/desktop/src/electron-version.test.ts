@@ -130,7 +130,7 @@ describe("desktop Electron runtime", () => {
         "pnpm prepare:desktop-pack",
       );
     }
-    expect(manifest.devDependencies?.["electron-builder"]).toBe("26.15.3");
+    expect(manifest.devDependencies?.["electron-builder"]).toBe("^26.17.0");
     expect(rootManifest.pnpm?.overrides?.["@electron/get"]).toBe("5.0.0");
     expect(builderConfig).toContain(
       "artifactName: Clash-Desktop-macOS-${arch}.${ext}",
