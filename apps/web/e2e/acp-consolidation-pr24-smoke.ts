@@ -177,8 +177,25 @@ async function main() {
     );
     await capture(cdp, path.join(captureDir, "04-harnesses-enabled.png"));
 
+    await cdp.send("Page.navigate", { url: `${webOrigin}/settings?section=agents` });
+    await waitFor(cdp, `location.pathname === "/settings"`, "settings refresh", 30_000);
     await cdp.send("Page.navigate", { url: `${webOrigin}/` });
     await waitFor(cdp, `document.body.innerText.includes("Home")`, "home", 120_000);
+
+    const runtimeCheck = await fetch(
+      `${apiOrigin}/api/v1/local/runtimes?refresh=1&probe=config`,
+    ).then((res) => res.json() as Promise<{ runtimes?: { agents?: { id: string }[] }[] }>);
+    const runtimeAgentIds =
+      runtimeCheck.runtimes?.[0]?.agents?.map((agent) => agent.id) ?? [];
+    console.log("[acp-consolidation-pr24-smoke] runtime agents", runtimeAgentIds);
+
+    await cdp.send("Page.navigate", { url: `${webOrigin}/?refresh=${Date.now()}` });
+    await waitFor(
+      cdp,
+      `document.body.innerText.includes("Home")`,
+      "home after runtime refresh",
+      120_000,
+    );
 
     for (const [idx, label] of [REGISTRY_LABEL, DSH_LABEL].entries()) {
       if (idx > 0) {
@@ -197,7 +214,7 @@ async function main() {
           cdp,
           `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio']")].find((el) => {
             const text = (el.innerText || el.textContent || "").trim();
-            return text.includes("DeepSeek") || text === ${JSON.stringify(label)};
+            return text.includes("DeepSeek") || text === ${JSON.stringify(label)} || text.includes("dsh");
           }))()`,
           `select ${label}`,
         );

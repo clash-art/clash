@@ -3,7 +3,7 @@ import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, readFile, unlink } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   detectAll,
@@ -12,6 +12,8 @@ import {
   disposeAllAcpSetupProcesses,
   getKnownAgents,
   loadRegistry,
+  OVERLAY_AGENTS,
+  resolveAcpDetectOptions,
   authenticateAgent as authenticateRuntimeAgent,
   listLocalAgentSessions,
   probeAgentAuthStatus as probeRuntimeAgentAuthStatus,
@@ -20,6 +22,11 @@ import {
   type KnownAgentEntry,
   type ProbeAgentAuthStatus,
 } from "./runtime/host/acp/index.js";
+
+import {
+  ACP_LEGACY_SHIM_MIGRATION_ID,
+  migrateLegacyClashAcpShims,
+} from "./acp-legacy-shim-migration.js";
 
 type ClashKnownAgentEntry = KnownAgentEntry & { custom?: boolean };
 import { listLocalCcSessions } from "./runtime/host/lib/cc-sessions.js";
@@ -468,10 +475,12 @@ async function defaultDetectAgents(
   env: Record<string, string | undefined> = process.env,
   harnessBinDir?: string | null,
 ): Promise<DetectedAcpAgent[]> {
-  const detected = await detectAll({
-    env: env as NodeJS.ProcessEnv,
-    harnessBinDir,
-  });
+  const detected = await detectAll(
+    resolveAcpDetectOptions({
+      env: env as NodeJS.ProcessEnv,
+      harnessBinDir,
+    }),
+  );
   return detected.map((agent) => {
     const { env: agentEnv, ...spec } = agent.spec;
     return {
@@ -1684,6 +1693,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   private readonly spawnEnv: Record<string, string | undefined>;
   private readonly harnessDownloadDir: string | null;
   private readonly fetchImpl: typeof fetch;
+  private migrationNotices: string[] = [];
+  private legacyMigrationPromise: Promise<void> | null = null;
+  private legacyMigrationRunning = false;
   private readonly hostname: () => string;
   private readonly osTag: () => string;
   private readonly nowSeconds: () => number;
@@ -1883,6 +1895,45 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     };
   }
 
+  private localConfigDataDir(): string | null {
+    if (!this.harnessDownloadDir) return null;
+    return dirname(this.harnessDownloadDir);
+  }
+
+  private async ensureLegacyShimMigration(): Promise<void> {
+    if (!this.harnessDownloadDir || this.legacyMigrationRunning) return;
+    this.legacyMigrationPromise ??= (async () => {
+      this.legacyMigrationRunning = true;
+      try {
+        const dataDir = this.localConfigDataDir();
+        if (!dataDir) return;
+        const store = createSqliteLocalConfigStore(dataDir);
+        if (await store.getJson(ACP_LEGACY_SHIM_MIGRATION_ID)) return;
+        const migration = await migrateLegacyClashAcpShims({
+          binDir: this.harnessDownloadDir!,
+          fetchImpl: this.fetchImpl,
+          spawnEnv: this.spawnEnv,
+          reinstallHarness: async (harnessId) => {
+            await this.installHarness(harnessId);
+          },
+        });
+        this.migrationNotices = migration.needsAttention.map(
+          (item) => item.message,
+        );
+        this.detectedAgentsCache = null;
+        await store.setJson(ACP_LEGACY_SHIM_MIGRATION_ID, {
+          completedAt: new Date().toISOString(),
+          adopted: migration.adopted,
+          reinstalled: migration.reinstalled,
+          needsAttention: migration.needsAttention.map((item) => item.harnessId),
+        });
+      } finally {
+        this.legacyMigrationRunning = false;
+      }
+    })();
+    await this.legacyMigrationPromise;
+  }
+
   private async ensureRegistryLoaded(forceRefresh = false): Promise<void> {
     if (!this.registryCachePath) return;
     if (forceRefresh) this.registryLoadPromise = null;
@@ -1894,6 +1945,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   }
 
   async warmup(): Promise<void> {
+    await this.ensureLegacyShimMigration();
     await this.ensureRegistryLoaded();
     await this.ensureCapabilityCacheLoaded();
     const agents = await this.refreshDetectedAgents({
@@ -2171,16 +2223,26 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     const env = { ...process.env, ...this.spawnEnv } as NodeJS.ProcessEnv;
     const knownIds = new Set(agents.map((agent) => agent.id));
     await this.ensureRegistryLoaded();
+    const installedProbe = await Promise.all(
+      fullCatalog.map(async (entry) => ({
+        id: entry.id,
+        installed: (await this.managedInstallInfo(entry)).installed,
+      })),
+    );
+    const installedIds = new Set(
+      installedProbe.filter((row) => row.installed).map((row) => row.id),
+    );
     const baseCatalogIds = new Set(
-      (this.agentCatalog.length > 0
-        ? this.agentCatalog
-        : getKnownAgents()
-      ).map((entry) => entry.id),
+      (this.agentCatalog.length > 0 ? this.agentCatalog : OVERLAY_AGENTS).map(
+        (entry) => entry.id,
+      ),
     );
     const entriesToProbe = fullCatalog.filter(
       (entry) =>
         !knownIds.has(entry.id) &&
-        (entry.custom || !baseCatalogIds.has(entry.id)),
+        (entry.custom ||
+          !baseCatalogIds.has(entry.id) ||
+          installedIds.has(entry.id)),
     );
     if (entriesToProbe.length === 0) return agents;
     const extraDetected = await Promise.all(
@@ -2475,7 +2537,14 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   }
 
   async listHarnesses(opts: LocalAcpHarnessListOptions = {}) {
-    return { harnesses: await this.buildHarnesses(opts) };
+    await this.ensureLegacyShimMigration();
+    const harnesses = await this.buildHarnesses(opts);
+    return {
+      harnesses,
+      ...(this.migrationNotices.length > 0
+        ? { migration_notices: [...this.migrationNotices] }
+        : {}),
+    };
   }
 
   async updateHarnesses(enabledIds: string[]) {
