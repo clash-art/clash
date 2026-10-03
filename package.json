@@ -100,15 +100,13 @@
       "@vitest/pretty-format": "4.1.0",
       "@vitest/mocker": "4.1.0",
       "vitest": "4.1.0",
-      "@electron/get": "5.0.0"
-    },
-    "patchedDependencies": {
-      "@openma/common@0.5.0": "patches/@openma__common@0.5.0.patch"
+      "@electron/get": "5.0.0",
+      "@agentclientprotocol/sdk": "1.3.0"
     }
   },
   "dependencies": {
     "@cloudflare/containers": "^0.2.0",
-    "@openma/common": "link:../openma-common",
+    "@openma/common": "github:openma-ai/openma-common#v0.7.6",
     "better-auth": "^1.4.6",
     "better-auth-cloudflare": "^0.2.9",
     "zod": "^4"

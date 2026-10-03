@@ -5,8 +5,7 @@ import {
   type Agent,
 } from "@agentclientprotocol/sdk";
 import { describe, expect, it, vi } from "vitest";
-import { AcpSessionImpl } from "./session.js";
-import type { ChildHandle } from "./types.js";
+import { AcpSessionImpl, type ChildHandle } from "@openma/common/acp-runtime";
 
 interface Deferred<T> {
   promise: Promise<T>;

@@ -37,6 +37,10 @@
 
 import { mergeAgentUIStreamingText } from "@openma/common/agent-ui";
 import { decodeAcpSessionUpdate } from "@openma/common/protocol/acp";
+import {
+  sessionUpdateInner,
+  sessionUpdateType,
+} from "@openma/common/session-events/acp";
 
 // ─── ACP wire shapes (subset we use) ────────────────────────────────
 
@@ -232,27 +236,6 @@ interface ParsedEvent {
   event: unknown;
 }
 
-function sessionUpdateInner(event: unknown): Record<string, unknown> {
-  const ev = event as {
-    sessionUpdate?: string;
-    update?: Record<string, unknown> & { sessionUpdate?: string };
-  };
-  return (ev?.update ?? ev) as Record<string, unknown>;
-}
-
-function sessionUpdateType(
-  inner: Record<string, unknown>,
-  event: unknown,
-): string | undefined {
-  const ev = event as { sessionUpdate?: string };
-  const rawType = typeof inner.type === "string" ? inner.type : undefined;
-  return (
-    (inner.sessionUpdate as string | undefined) ??
-    ev?.sessionUpdate ??
-    (rawType && ACP_SESSION_UPDATE_TYPES.has(rawType) ? rawType : undefined)
-  );
-}
-
 /**
  * Codex exposes Goal as session state, not transcript content. Preserve the
  * three meaningful outcomes so a host can update its UI without inventing
@@ -265,7 +248,7 @@ export function sessionInfoStateFromAcpEvent(
   event: unknown,
 ): AcpSessionInfoStatePatch | undefined {
   const inner = sessionUpdateInner(event);
-  if (sessionUpdateType(inner, event) !== "session_info_update")
+  if (sessionUpdateType(event) !== "session_info_update")
     return undefined;
   const patch: AcpSessionInfoStatePatch = {};
   if (Object.prototype.hasOwnProperty.call(inner, "title")) {
@@ -364,7 +347,7 @@ export function usageStateFromAcpEvent(
   event: unknown,
 ): RuntimeSessionUsage | undefined {
   const inner = sessionUpdateInner(event);
-  if (sessionUpdateType(inner, event) !== "usage_update") return undefined;
+  if (sessionUpdateType(event) !== "usage_update") return undefined;
   if (
     typeof inner.used !== "number" ||
     !Number.isFinite(inner.used) ||
@@ -446,7 +429,7 @@ function promptErrorNote(error: string): NonNullable<ParsedEvent["note"]> {
 
 export function getAcpEventBlockKey(event: unknown): string | null {
   const inner = sessionUpdateInner(event);
-  const update = sessionUpdateType(inner, event);
+  const update = sessionUpdateType(event);
   if (update === "tool_call" || update === "tool_call_update") {
     const toolCallId = stringField(inner, ["toolCallId", "tool_call_id", "id"]);
     return toolCallId ? `tool:${toolCallId}` : null;
@@ -476,19 +459,6 @@ const SILENT_SESSION_UPDATES = new Set([
   "config_option_update",
   "session_info_update",
   "usage_update",
-]);
-
-const ACP_SESSION_UPDATE_TYPES = new Set([
-  "user_message_chunk",
-  "agent_message_chunk",
-  "agent_thought_chunk",
-  "tool_call",
-  "tool_call_update",
-  "plan",
-  "plan_update",
-  "plan_removed",
-  "available_commands_update",
-  ...SILENT_SESSION_UPDATES,
 ]);
 
 /** Normalize a wire ToolCall(Update) object into our ParsedEvent.tool shape.
@@ -659,7 +629,7 @@ function parseClashAcpEventFallback(event: unknown): ParsedEvent {
   // openma-vendored shape exposed sessionUpdate at the top level —
   // accept both so a chat mixing sources still parses cleanly.
   const inner = sessionUpdateInner(event);
-  const update = sessionUpdateType(inner, event);
+  const update = sessionUpdateType(event);
 
   if (!update) {
     if (

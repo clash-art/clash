@@ -1,32 +1,10 @@
 import { defineConfig } from "vitest/config";
 import { resolve } from "node:path";
 
-const openmaCommonRoot = resolve(__dirname, "../../../openma-common");
-
 export default defineConfig({
   resolve: {
     dedupe: ["react", "react-dom"],
     alias: [
-      {
-        find: /^@openma\/common\/chat-ui$/,
-        replacement: resolve(openmaCommonRoot, "src/chat-ui/index.ts"),
-      },
-      {
-        find: /^@openma\/common\/agent-ui\/react$/,
-        replacement: resolve(openmaCommonRoot, "src/agent-ui/react.tsx"),
-      },
-      {
-        find: /^@openma\/common\/agent-ui$/,
-        replacement: resolve(openmaCommonRoot, "src/agent-ui/index.ts"),
-      },
-      {
-        find: /^@openma\/common\/session-events\/openma$/,
-        replacement: resolve(openmaCommonRoot, "src/session-events/openma.ts"),
-      },
-      {
-        find: /^@openma\/common\/session-ui$/,
-        replacement: resolve(openmaCommonRoot, "src/session-ui/index.tsx"),
-      },
       {
         // The browser shared-runtime entry imports executable-failure. Its
         // package export is dist/, which this job does not build.
@@ -130,11 +108,9 @@ export default defineConfig({
     setupFiles: ["./vitest.setup.ts"],
     server: {
       deps: {
-        // The common checkout owns this hook implementation but React must be
-        // resolved from Clash. Transforming it lets the aliases above enforce
-        // the single host React instance instead of externalizing common's
-        // peer-bound node_modules copy.
-        inline: ["use-stick-to-bottom"],
+        // Published @openma/common ships React hooks in dist. Transforming the
+        // package lets the aliases above enforce Clash's React instance.
+        inline: ["use-stick-to-bottom", "@openma/common"],
       },
     },
     testTimeout: 20_000,

@@ -1,5 +1,5 @@
 import { ServiceNotice } from "./ServiceNotice";
-import type { AcpForkPoint } from "@clash/shared-types";
+import type { AcpForkPoint } from "@openma/common/acp-fork";
 import {
   memo,
   useState,

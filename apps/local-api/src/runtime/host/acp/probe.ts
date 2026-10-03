@@ -15,10 +15,17 @@ import {
   type SessionConfigOption,
   type SessionModeState,
 } from "@agentclientprotocol/sdk";
-import { sessionConfigOptionsFromResponse } from "@openma/common/acp-runtime";
-import { NodeSpawner } from "./spawners/node.js";
+import { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
+import {
+  sessionConfigOptionsFromResponse,
+  type AgentSpec,
+  type ChildHandle,
+  type ProbeAgentAuthMethod,
+  type ProbeAgentAuthStatus,
+  type Spawner,
+  type TerminalAuthLaunchOptions,
+} from "@openma/common/acp-runtime";
 import { withClashAcpExtensionCapabilities } from "./client-capabilities.js";
-import type { AgentSpec, ChildHandle, Spawner } from "./types.js";
 
 export interface ProbeAgentConfigOptionsOptions {
   agent: AgentSpec;
@@ -35,64 +42,6 @@ export interface ProbeAgentSessionConfigResult {
   modes?: SessionModeState | null;
   /** Auth observed by the same disposable process as the capability snapshot. */
   auth: ProbeAgentAuthStatus;
-}
-
-export interface AuthenticateAgentOptions {
-  agent: AgentSpec;
-  cwd?: string;
-  env?: Record<string, string | undefined>;
-  timeoutMs?: number;
-  agentAuthLaunchGraceMs?: number;
-  backgroundAuthTimeoutMs?: number;
-  spawner?: Spawner;
-  methodId?: string;
-  /** Ephemeral fields encoded into authenticate `_meta`; never persisted by the Host. */
-  values?: Record<string, string>;
-  launchInteractiveAuth?: (options: TerminalAuthLaunchOptions) => Promise<void>;
-}
-
-export interface AuthenticateAgentResult {
-  status: "completed" | "started";
-}
-
-export interface ProbeAgentAuthStatusOptions {
-  agent: AgentSpec;
-  cwd?: string;
-  env?: Record<string, string | undefined>;
-  timeoutMs?: number;
-  spawner?: Spawner;
-}
-
-export interface ProbeAgentAuthMethod {
-  id: string;
-  name?: string;
-  description?: string;
-  type: string;
-  form?: "fields";
-  vars?: Array<{
-    name: string;
-    label?: string;
-    secret?: boolean;
-    optional?: boolean;
-  }>;
-  link?: string;
-  terminalLaunch?: TerminalAuthLaunchOptions;
-}
-
-export interface ProbeAgentAuthStatus {
-  status: "configured" | "needs-auth" | "none" | "unknown";
-  methodId?: string;
-  methodName?: string;
-  methods?: ProbeAgentAuthMethod[];
-  message?: string;
-}
-
-export interface TerminalAuthLaunchOptions {
-  label: string;
-  command: string;
-  args: string[];
-  env?: Record<string, string>;
-  cwd?: string;
 }
 
 const ACP_AUTH_REQUIRED_CODE = -32000;
@@ -275,30 +224,6 @@ function authFormVars(method: AuthMethod): ProbeAgentAuthMethod["vars"] | undefi
   return undefined;
 }
 
-function authenticateMetaFromMethod(
-  method: AuthMethod,
-  values: Record<string, string>,
-): Record<string, unknown> | undefined {
-  if (gatewayAuthMeta(method)) {
-    const baseUrl = (values.baseUrl ?? "").trim();
-    const apiKey = (values["api-key"] ?? "").trim();
-    const providerName = (values.providerName ?? "").trim();
-    if (!baseUrl) return undefined;
-    return {
-      gateway: {
-        baseUrl,
-        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-        ...(providerName ? { providerName } : {}),
-      },
-    };
-  }
-  if (apiKeyAuthMeta(method)) {
-    const apiKey = (values["api-key"] ?? "").trim();
-    return apiKey ? { "api-key": { apiKey } } : undefined;
-  }
-  return undefined;
-}
-
 function selectAuthMethod(authMethods: unknown, methodId?: string): AuthMethod | null {
   const methods = supportedAuthMethods(authMethods);
   if (!methodId) return methods[0] ?? null;
@@ -350,10 +275,6 @@ function isCredentialPromptAuthMethod(method: AuthMethod): boolean {
   return type === "env_var" || (type === "terminal" && Boolean(inferredCredentialVars(method)));
 }
 
-function credentialVariableNames(method: AuthMethod): string | undefined {
-  return credentialVars(method)?.map((item) => item.name).join(", ");
-}
-
 function missingCredentialVariableNames(
   method: AuthMethod,
   env: Record<string, string>,
@@ -389,34 +310,6 @@ function publicAuthMethods(
   });
 }
 
-function acpErrorMessage(error: unknown): string {
-  if (error && typeof error === "object") {
-    const data = (error as { data?: unknown }).data;
-    if (isRecord(data)) {
-      const details = data.details;
-      if (typeof details === "string" && details.length > 0) return details;
-      const message = data.message;
-      if (typeof message === "string" && message.length > 0) return message;
-    }
-    const message = (error as { message?: unknown }).message;
-    if (typeof message === "string" && message.length > 0) return message;
-  }
-  return String(error);
-}
-
-function withAcpDetails(error: unknown): unknown {
-  const message = acpErrorMessage(error);
-  if (error instanceof Error && message === error.message) return error;
-  const next = new Error(message);
-  if (error && typeof error === "object") {
-    const code = (error as { code?: unknown }).code;
-    const data = (error as { data?: unknown }).data;
-    if (typeof code === "number") (next as Error & { code?: number }).code = code;
-    if (data !== undefined) (next as Error & { data?: unknown }).data = data;
-  }
-  return next;
-}
-
 function authMethodStatusFields(
   method: AuthMethod,
   methods: AuthMethod[],
@@ -430,12 +323,6 @@ function authMethodStatusFields(
     ...(methodName ? { methodName } : {}),
     methods: publicAuthMethods(methods, agent, env, cwd),
   };
-}
-
-function publicEnv(env: Record<string, string | undefined> | undefined): Record<string, string> | undefined {
-  if (!env) return undefined;
-  const entries = Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string");
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function mergedStringEnv(
@@ -456,16 +343,6 @@ function mergedSpawnEnv(
   const out: Record<string, string | undefined> = {};
   for (const env of envs) Object.assign(out, env);
   return out;
-}
-
-function envArrayToRecord(env: Array<{ name?: unknown; value?: unknown }> | undefined): Record<string, string> | undefined {
-  if (!Array.isArray(env)) return undefined;
-  const entries = env.filter((entry): entry is { name: string; value: string } => (
-    typeof entry.name === "string" &&
-    entry.name.length > 0 &&
-    typeof entry.value === "string"
-  )).map((entry) => [entry.name, entry.value] as const);
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 function configOptionsFromResponse(value: NewSessionResponse | { configOptions?: SessionConfigOption[] | null } | undefined): SessionConfigOption[] {
@@ -777,243 +654,4 @@ export async function probeAgentConfigOptions(
   options: ProbeAgentConfigOptionsOptions,
 ): Promise<SessionConfigOption[]> {
   return (await probeAgentSessionConfig(options)).configOptions;
-}
-
-export async function authenticateAgent(options: AuthenticateAgentOptions): Promise<AuthenticateAgentResult> {
-  const cwd = options.cwd ?? join(tmpdir(), "clash-acp-auth");
-  await mkdir(cwd, { recursive: true });
-
-  const env = mergedStringEnv(options.agent.env, options.env);
-  let authTerminalId = 0;
-  let activeAuthMethodName = "Agent";
-  let resolveTerminalLaunch: (() => void) | null = null;
-  let rejectTerminalLaunch: ((error: unknown) => void) | null = null;
-  const terminalLaunch = new Promise<void>((resolve, reject) => {
-    resolveTerminalLaunch = resolve;
-    rejectTerminalLaunch = reject;
-  });
-  void terminalLaunch.catch(() => undefined);
-  const client: Client = {
-    sessionUpdate: async () => undefined,
-    requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
-    createTerminal: async (params) => {
-      if (!options.launchInteractiveAuth) {
-        throw new Error("ACP auth requested a terminal, but this host cannot open one.");
-      }
-      const terminalId = `auth-terminal-${++authTerminalId}`;
-      try {
-        await options.launchInteractiveAuth({
-          label: `${activeAuthMethodName} auth`,
-          command: params.command,
-          args: params.args ?? [],
-          ...(envArrayToRecord(params.env) ? { env: envArrayToRecord(params.env) } : {}),
-          cwd: params.cwd ?? cwd,
-        });
-        resolveTerminalLaunch?.();
-        return { terminalId };
-      } catch (error) {
-        rejectTerminalLaunch?.(error);
-        throw error;
-      }
-    },
-    terminalOutput: async () => ({
-      output: "",
-      truncated: false,
-    }),
-    waitForTerminalExit: async () => new Promise(() => undefined),
-    releaseTerminal: async () => undefined,
-    killTerminal: async () => undefined,
-  };
-  const connection = await spawnAcpProbeAgent({
-    agent: options.agent,
-    cwd,
-    env: options.env,
-    spawner: options.spawner,
-    client,
-  });
-  const agent = connection.agent;
-
-  const timeoutMs = options.timeoutMs ?? 120_000;
-  const agentAuthLaunchGraceMs = options.agentAuthLaunchGraceMs ?? 0;
-  const backgroundAuthTimeoutMs = options.backgroundAuthTimeoutMs ?? 10 * 60_000;
-  let keepChildAliveForBackgroundAuth = false;
-  let timer: NodeJS.Timeout | undefined;
-  const keepBackgroundAuthAlive = (authPromise: Promise<unknown>) => {
-    keepChildAliveForBackgroundAuth = true;
-    let backgroundTimer: NodeJS.Timeout | undefined = setTimeout(() => {
-      void connection.dispose();
-      backgroundTimer = undefined;
-    }, backgroundAuthTimeoutMs);
-    backgroundTimer.unref?.();
-    void (async () => {
-      try {
-        await authPromise;
-      } catch {
-        // The interactive flow may be cancelled after the browser has opened.
-        // At that point the UI already has the useful state and can re-probe.
-      } finally {
-        if (backgroundTimer) clearTimeout(backgroundTimer);
-        await connection.dispose();
-      }
-    })();
-  };
-  try {
-    return await Promise.race([
-      (async () => {
-        const initResult = await initializeAcpAgent(agent);
-        const method = selectAuthMethod(initResult.authMethods, options.methodId);
-        if (!method) {
-          throw new Error(options.methodId
-            ? `ACP auth method is unavailable or not supported by Clash: ${options.methodId}`
-            : "No supported ACP auth method is available for this harness");
-        }
-        if (isCredentialPromptAuthMethod(method)) {
-          const vars = credentialVariableNames(method);
-          throw new Error(vars
-            ? `ACP auth method ${method.id} requires credential variables (${vars}) and cannot be started as a sign-in flow.`
-            : `ACP auth method ${method.id} requires credential variables and cannot be started as a sign-in flow.`);
-        }
-        const authenticateMeta = authenticateMetaFromMethod(method, options.values ?? {});
-        if (authenticateMeta) {
-          await Promise.resolve(agent.authenticate({
-            methodId: method.id,
-            _meta: authenticateMeta,
-          })).catch((error) => {
-            throw withAcpDetails(error);
-          });
-          return { status: "completed" as const };
-        }
-        const terminalAuth = terminalAuthFromMethod(method, options.agent, env, cwd);
-        if (terminalAuth) {
-          if (!options.launchInteractiveAuth) {
-            throw new Error(`ACP auth method ${method.id} requires an interactive terminal, but this host cannot open one.`);
-          }
-          await options.launchInteractiveAuth(terminalAuth);
-          return { status: "started" as const };
-        }
-        activeAuthMethodName = authMethodName(method) ?? "Agent";
-        const authPromise = Promise.resolve(agent.authenticate({ methodId: method.id }))
-          .catch((error) => {
-            throw withAcpDetails(error);
-          });
-        void authPromise.catch(() => undefined);
-        let launchGraceTimer: NodeJS.Timeout | undefined;
-        const launchGrace = agentAuthLaunchGraceMs > 0
-          ? new Promise<"launched">((resolve) => {
-              launchGraceTimer = setTimeout(() => resolve("launched"), agentAuthLaunchGraceMs);
-              launchGraceTimer.unref?.();
-            })
-          : null;
-        try {
-          const result = await Promise.race([
-            authPromise.then(() => "complete" as const),
-            terminalLaunch.then(() => "terminal" as const),
-            ...(launchGrace ? [launchGrace] : []),
-          ]);
-          if (result === "launched") {
-            keepBackgroundAuthAlive(authPromise);
-            return { status: "started" as const };
-          }
-          return { status: result === "complete" ? "completed" as const : "started" as const };
-        } finally {
-          if (launchGraceTimer) clearTimeout(launchGraceTimer);
-        }
-      })(),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`ACP auth timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-    if (!keepChildAliveForBackgroundAuth) {
-      await connection.dispose();
-    }
-  }
-}
-
-export async function probeAgentAuthStatus(
-  options: ProbeAgentAuthStatusOptions,
-): Promise<ProbeAgentAuthStatus> {
-  const cwd = options.cwd ?? join(tmpdir(), "clash-acp-auth-probe");
-  await mkdir(cwd, { recursive: true });
-
-  const connection = await spawnAcpProbeAgent({
-    agent: options.agent,
-    cwd,
-    env: options.env,
-    spawner: options.spawner,
-  });
-
-  const timeoutMs = options.timeoutMs ?? 15_000;
-  try {
-    return await withTimeout(
-      (async (): Promise<ProbeAgentAuthStatus> => {
-        const initResult = await initializeAcpAgent(connection.agent);
-        const methods = supportedAuthMethods(initResult.authMethods);
-        const method = selectAuthMethod(initResult.authMethods);
-        if (!method) {
-          const declared = declaredAuthMethods(initResult.authMethods);
-          if (declared.length > 0) {
-            const unsupported = unsupportedAuthMethodTypes(declared);
-            return {
-              status: "unknown" as const,
-              message: unsupported.length > 0
-                ? `No supported ACP auth method is available. Unsupported methods: ${unsupported.join(", ")}.`
-                : "No supported ACP auth method is available.",
-            };
-          }
-          return { status: "none" as const };
-        }
-        const methodFields = authMethodStatusFields(method, methods, options.agent, connection.env, cwd);
-        if (isCredentialPromptAuthMethod(method)) {
-          const missing = missingCredentialVariableNames(method, connection.env);
-          if (missing.length > 0) {
-            return {
-              status: "needs-auth" as const,
-              ...methodFields,
-              message:
-                missing.length === 1
-                  ? `Missing credential variable: ${missing[0]}.`
-                  : `Missing credential variables: ${missing.join(", ")}.`,
-            };
-          }
-        }
-        try {
-          await createAcpProbeSession(connection.agent, cwd);
-          await allowDiagnosticsToFlush();
-          const diagnostic = unauthenticatedDiagnostic(connection.diagnosticLines);
-          if (diagnostic) {
-            return {
-              status: "needs-auth" as const,
-              ...methodFields,
-              message: diagnostic,
-            };
-          }
-          return {
-            status: "configured" as const,
-            ...methodFields,
-          };
-        } catch (error) {
-          if (!isAuthRequiredError(error)) {
-            return {
-              status: "unknown" as const,
-              message: acpErrorMessage(error),
-              ...methodFields,
-            };
-          }
-          return {
-            status: "needs-auth" as const,
-            ...methodFields,
-          };
-        }
-      })(),
-      timeoutMs,
-      `ACP auth probe timed out after ${timeoutMs}ms`,
-    );
-  } finally {
-    await connection.dispose();
-  }
 }

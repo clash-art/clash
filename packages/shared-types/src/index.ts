@@ -1672,12 +1672,6 @@ export {
   type WorkspaceTransferFileCapability,
 } from "./workspace-bundle.js";
 
-export {
-  AcpForkPointSchema,
-  supportsAcpMessageFork,
-  type AcpForkPoint,
-} from "./acp-fork.js";
-
 export * from "./generator-requests.js";
 export { commitProjectMutation } from "./project-mutation.js";
 

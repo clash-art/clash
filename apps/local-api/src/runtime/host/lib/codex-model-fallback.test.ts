@@ -5,7 +5,7 @@ import { reconcileCodexModel } from "./codex-model-fallback.js";
 // createModelConfigOption additionally inserts the current (possibly unknown) ID.
 function session(current: string, available: string[]) {
   return {
-    models: {
+    legacyModels: {
       currentModelId: `${current}[medium]`,
       availableModels: available.map((modelId) => ({ modelId, name: modelId })),
     },

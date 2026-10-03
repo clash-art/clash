@@ -1,25 +1,18 @@
-# OpenMA common used by Desktop
+# Dependency patches
 
-CI and Desktop packaging read the OpenMA pin from
-`.github/actions/setup-common/pin.env` (currently v0.7.1 commit
-`5d839b5cbf7170ced4cb031d45c0e6e4261ca175`) and install its frozen lockfile.
-Change that file alone to move the pin. v0.7.1 publishes no GitHub release
-tarball, so both tarball fields stay empty and CI checks that `dist/` is in
-the tagged commit. When a release asset exists, set the URL and sha256
-together and CI compares that archive to the checkout. Clash does not run
-common's tests, typecheck, or build. Upstream CI owns that suite. The sibling
-checkout remains because Desktop and web-ui resolve `@openma/common` to
-`src/` during Vite and Vitest; package exports still point at the committed
-`dist/`.
+`@openma/common` is installed from the git tag `v0.7.6`
+(`github:openma-ai/openma-common#v0.7.6`). That tag peels to
+`77bcbdfb3bb9b20a6fda09be860ada9881a4c371`, the same commit CI names in
+`.github/actions/setup-common/pin.env`. Its `dist/` is committed, so Clash
+does not build or patch it. The historical `@openma/common@0.5.0` elicitation
+patch is not applied.
 
-The shared chat, composer, session controls and ACP probe/harness exports are now
-in the published common release. There is no downstream source patch to apply.
+CI checks out that pin and verifies the committed `dist/`. v0.7.6 publishes
+no GitHub release tarball, so both tarball fields stay empty. When a release
+asset exists, set the URL and sha256 together and CI compares that archive
+to the checkout. Clash does not run common's tests, typecheck, or build.
+Upstream CI owns that suite. Desktop and web-ui resolve the published package
+exports, which point at `dist/`.
+
 The previous patch is retained only as historical candidate evidence at
 `docs/validation/release-fixes-20260920/evidence/common-before-release.patch`.
-
-For local development the existing `link:../openma-common` dependency remains.
-Use the same released commit in that checkout; preserve local changes before
-updating. The pre-upgrade worktree was preserved in a named common Git stash.
-
-`@openma__common@0.5.0.patch` belongs to the separate package-manager tarball path;
-it does not apply to the linked source checkout.

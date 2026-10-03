@@ -1,4 +1,10 @@
-import { supportsAcpMessageFork, type AcpForkPoint } from "@clash/shared-types";
+import {
+  AcpRuntimeImpl,
+  type AcpForkPoint,
+  type AcpSession,
+  type AgentSpec,
+} from "@openma/common/acp-runtime";
+import { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
 import {
   reconcileCodexModel,
   type ModelFallback,
@@ -40,12 +46,9 @@ import {
   reduceSessionLifecycle,
   type SessionLifecycle,
 } from "@openma/common/session-kernel";
-import { AcpRuntimeImpl } from "../_acp-runtime/index.js";
-import { withClashAcpExtensionCapabilities } from "../_acp-runtime/client-capabilities.js";
-import { NodeSpawner } from "../_acp-runtime/spawners/node.js";
+import { withClashAcpExtensionCapabilities } from "../acp/client-capabilities.js";
 import { ensureSessionScratchpad } from "./session-scratchpad.js";
-import { detect } from "../_acp-runtime/registry.js";
-import type { AcpSession, AgentSpec } from "../_acp-runtime/types.js";
+import { detect } from "../acp/registry.js";
 import {
   ensureAgentCwd,
   readAgentRuntime,
@@ -53,6 +56,13 @@ import {
 } from "./session-cwd.js";
 
 const DEFAULT_SESSION_CONTEXT_ID = "clash";
+
+/** Idle setup updates arrive on the live event queue. Keep the optional
+ * replay field so a runtime that still exposes it continues to forward those events. */
+function loadReplayEvents(session: AcpSession): readonly unknown[] {
+  const replay = (session as { loadedReplayEvents?: readonly unknown[] }).loadedReplayEvents;
+  return Array.isArray(replay) ? replay : [];
+}
 
 export interface SessionStartParams {
   session_id: string;
@@ -459,16 +469,16 @@ export class SessionManager {
       type: "session.ready",
       session_id: sessionId,
       acp_session_id: session.acp.acpSessionId,
-      supports_session_fork: session.acp.supportsSessionFork,
-      supports_message_fork: session.acp.supportsSessionFork && supportsAcpMessageFork(session.acp.agentInfo?.name, session.acp.agentInfo?.version),
+      supports_session_fork: session.acp.forkSupport.level !== "none",
+      supports_message_fork: session.acp.forkSupport.level === "message",
       config_options: [...session.acp.configOptions],
       ...(session.modelFallback
         ? { model_fallback: session.modelFallback }
         : {}),
       ...(modes ? { modes } : {}),
-      ...((session.acp.loadedReplayEvents?.length ?? 0) > 0
+      ...(loadReplayEvents(session.acp).length > 0
         ? {
-            replay_events: session.acp.loadedReplayEvents!.map((event) =>
+            replay_events: loadReplayEvents(session.acp).map((event) =>
               annotateTrustedMcpEvent(event, session.trustedMcpRenderers),
             ),
           }
@@ -608,6 +618,7 @@ export class SessionManager {
           "The bundled Clash MCP is unavailable. Self-host sessions require the built-in Clash MCP and cannot fall back to the shell CLI.",
         );
       }
+      const forkPoint = p.fork?.point;
       const session = await this.#runtime.start({
         agent: {
           ...agentSpec,
@@ -618,9 +629,9 @@ export class SessionManager {
         },
         resumeAcpSessionId: resumeId,
         forkFromAcpSessionId: p.fork?.acp_session_id,
-        forkPoint: p.fork?.point,
+        ...(forkPoint ? { forkPoint } : {}),
         mcpServers,
-        clientCapabilities: withClashAcpExtensionCapabilities({
+        clientCapabilityOverlay: withClashAcpExtensionCapabilities({
           auth: { terminal: true },
           elicitation: { form: {}, url: {} },
         }),
@@ -654,7 +665,8 @@ export class SessionManager {
         p.permission_mode &&
         modes?.availableModes.some((mode) => mode.id === p.permission_mode)
       ) {
-        modes = await session.setMode(p.permission_mode);
+        await session.setMode(p.permission_mode);
+        modes = session.modes;
       }
       if (this.#cancelledStarts.has(p.session_id)) {
         await session.dispose().catch(() => undefined);
@@ -921,7 +933,8 @@ export class SessionManager {
       return;
     }
     try {
-      const modes = await sess.acp.setMode(mode_id);
+      await sess.acp.setMode(mode_id);
+      const modes = sess.acp.modes;
       if (modes) {
         this.#send({
           type: "session.mode",

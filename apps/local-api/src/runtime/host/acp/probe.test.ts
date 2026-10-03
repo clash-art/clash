@@ -19,12 +19,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   authenticateAgent,
-  disposeAllAcpSetupProcesses,
+  disposeAllAcpProbes,
   probeAgentAuthStatus,
+} from "@openma/common/acp-runtime";
+import {
   probeAgentConfigOptions,
   probeAgentSessionConfig,
 } from "./probe.js";
-import type { ChildHandle, Spawner } from "./types.js";
+import type { ChildHandle, Spawner } from "@openma/common/acp-runtime";
 
 function makeStreamPair(): { child: ChildHandle; agentInput: ReadableStream<Uint8Array>; agentOutput: WritableStream<Uint8Array> } {
   const clientToAgent = new TransformStream<Uint8Array, Uint8Array>();
@@ -543,7 +545,7 @@ describe("ACP setup lifecycle", () => {
       backgroundAuthTimeoutMs: 60_000,
     })).resolves.toEqual({ status: "started" });
 
-    await disposeAllAcpSetupProcesses();
+    await disposeAllAcpProbes();
     expect(kill).toHaveBeenCalledOnce();
   });
 });
