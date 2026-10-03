@@ -523,40 +523,52 @@ function createMockAcpSessionManager(send: SessionSender): SessionManagerLike {
             content: { type: "text", text: "先读取当前画布结构。" },
           },
         });
-        send({
-          type: "session.event",
-          session_id,
-          turn_id,
-          event: {
-            sessionUpdate: "tool_call",
-            toolCallId: `tool-list-canvas-${turn_id}`,
-            title: "List canvas nodes",
-            kind: "list",
-            status: "in_progress",
-            rawInput: { query: "canvas.nodes", projectId: "mock-project" },
-          },
-        });
-        send({
-          type: "session.event",
-          session_id,
-          turn_id,
-          event: {
-            sessionUpdate: "tool_call_update",
-            toolCallId: `tool-list-canvas-${turn_id}`,
-            title: "List canvas nodes",
-            kind: "list",
-            status: "completed",
-            rawOutput: [
-              { id: "dianmwa7", type: "action-badge", label: "Image Prompt" },
-              { id: "lrcleamx", type: "image", label: "生成类似的" },
-              {
-                id: "upload-1781414847642-oq6cbcl",
-                type: "image",
-                label: "258251d8857f30efff6b9b7085302bf5.JPG",
-              },
-            ],
-          },
-        });
+        const mockToolTitles = [
+          "Read file",
+          "Workspace Init",
+          "Canvas",
+          "Canvas 12 items",
+        ];
+        for (const [index, title] of mockToolTitles.entries()) {
+          const toolCallId = `tool-${turn_id}-${index + 1}`;
+          send({
+            type: "session.event",
+            session_id,
+            turn_id,
+            event: {
+              sessionUpdate: "tool_call",
+              toolCallId,
+              title,
+              kind: "read",
+              status: "in_progress",
+              rawInput: { step: index + 1 },
+            },
+          });
+          send({
+            type: "session.event",
+            session_id,
+            turn_id,
+            event: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              title,
+              kind: "read",
+              status: "completed",
+              rawOutput:
+                index === mockToolTitles.length - 1
+                  ? [
+                      { id: "dianmwa7", type: "action-badge", label: "Image Prompt" },
+                      { id: "lrcleamx", type: "image", label: "生成类似的" },
+                      {
+                        id: "upload-1781414847642-oq6cbcl",
+                        type: "image",
+                        label: "258251d8857f30efff6b9b7085302bf5.JPG",
+                      },
+                    ]
+                  : { step: index + 1, ok: true },
+            },
+          });
+        }
         send({
           type: "session.event",
           session_id,

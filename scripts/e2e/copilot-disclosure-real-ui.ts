@@ -213,18 +213,36 @@ async function openRealBackchatSession(cdp: CdpClient, webOrigin: string) {
   await waitFor(
     cdp,
     `!!document.querySelector('[data-backchat-session-timeline="true"]') &&
-      document.body.innerText.includes("已执行")`,
-    "backchat tool summary row",
-    30000,
+      document.body.innerText.includes("画布上当前有") &&
+      document.body.innerText.includes("已工作") &&
+      !document.body.innerText.includes("正在工作")`,
+    "mock ACP turn settled",
+    60000,
   );
-  await click(cdp, disclosureRowExpr("已工作"), "expand process row");
+  await evaluate(cdp, `(() => {
+    const btn = document.querySelector('[data-backchat-session-timeline="true"] button[data-chat-reasoning-trigger="true"]');
+    if (!btn || btn instanceof HTMLButtonElement === false) return false;
+    btn.click();
+    return true;
+  })()`);
+  await waitFor(
+    cdp,
+    `!!document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]')`,
+    "process disclosure expanded with tool group",
+    10000,
+  );
   await waitFor(
     cdp,
     `(() => {
       const row = (${disclosureRowExpr("已执行")});
-      return !!row;
+      if (row) {
+        const style = getComputedStyle(row);
+        const rect = row.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
+      }
+      return false;
     })()`,
-    "tool row visible",
+    "tool row visible in expanded process",
     10000,
   );
 }
@@ -368,8 +386,19 @@ async function main() {
       await openRealBackchatSession(cdp, webOrigin);
       await capture(cdp, path.join(outDir, `context-${theme}.png`));
       for (const kind of ["tool", "process", "thought"] as const) {
-        await click(cdp, disclosureRowExpr("已工作"), "ensure process row expanded");
-        await waitFor(cdp, `!!(${disclosureRowExpr("已执行")})`, "tool row available", 5000);
+        await evaluate(cdp, `(() => {
+          const activity = document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]');
+          if (activity) return true;
+          const btn = document.querySelector('[data-backchat-session-timeline="true"] button[data-chat-reasoning-trigger="true"]');
+          if (btn instanceof HTMLButtonElement) btn.click();
+          return !!document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]');
+        })()`);
+        await waitFor(
+          cdp,
+          `!!(${disclosureRowExpr("已执行")})`,
+          "tool row available",
+          5000,
+        );
         audits.push(await captureRowStates(cdp, kind, theme));
       }
     }
