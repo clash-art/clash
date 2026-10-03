@@ -721,6 +721,7 @@ export function createConfiguredLocalAcpAdapter(
     runPreferences: createLocalAcpRunPreferencesStore(localDataDir),
     capabilityCache: createLocalAcpCapabilityCacheStore(localDataDir),
     harnessDownloadDir,
+    registryCachePath: join(localDataDir, "acp-registry-cache.json"),
     probeCwd: join(localDataDir, "acp-probe"),
     spawnEnv: {
       ...createLocalAgentToolEnv({
@@ -730,6 +731,7 @@ export function createConfiguredLocalAcpAdapter(
         env,
       }),
       CLASH_ACP_BIN_DIR: acpBinDir,
+      OPENMA_ACP_BIN_DIR: acpBinDir,
     },
   });
 }

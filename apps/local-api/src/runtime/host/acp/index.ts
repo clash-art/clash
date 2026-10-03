@@ -33,4 +33,18 @@ export {
   type ProbeAgentSessionConfigResult,
 } from "./probe.js";
 export { listAgentSessions, listLocalAgentSessions, type AcpListedSession } from "./session-list.js";
-export { KNOWN_ACP_AGENTS, detect, detectAll, detectEntry, type KnownAgentEntry } from "./registry.js";
+export {
+  KNOWN_ACP_AGENTS,
+  OVERLAY_AGENTS,
+  detect,
+  detectAll,
+  detectEntry,
+  getKnownAgents,
+  knownAgentCatalog,
+  loadRegistry,
+  registryShimName,
+  resolveAcpDetectOptions,
+  resolveKnownAgent,
+  type KnownAgentEntry,
+  type ResolveAgentCommandOptions,
+} from "./registry.js";

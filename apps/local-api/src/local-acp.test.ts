@@ -5134,8 +5134,10 @@ describe("local ACP adapter", () => {
             label: "Codex",
             spec: { command: "clash-acp-codex-acp" },
             registryId: "codex-acp",
-            registryNpmPackage: "@test/codex-acp",
             installSource: "registry",
+            registryDistribution: {
+              npx: { package: "@test/codex-acp" },
+            },
           },
         ],
         harnessDownloadDir: harnessDir,
