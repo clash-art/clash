@@ -10,7 +10,8 @@ import {
   detectEntry,
   disposeAllAcpProbes,
   disposeAllAcpSetupProcesses,
-  KNOWN_ACP_AGENTS,
+  getKnownAgents,
+  loadRegistry,
   authenticateAgent as authenticateRuntimeAgent,
   listLocalAgentSessions,
   probeAgentAuthStatus as probeRuntimeAgentAuthStatus,
@@ -19,6 +20,8 @@ import {
   type KnownAgentEntry,
   type ProbeAgentAuthStatus,
 } from "./runtime/host/acp/index.js";
+
+type ClashKnownAgentEntry = KnownAgentEntry & { custom?: boolean };
 import { listLocalCcSessions } from "./runtime/host/lib/cc-sessions.js";
 import {
   machineName,
@@ -48,11 +51,10 @@ import type {
 import {
   installAcpRegistryAgent,
   installManagedAdapter,
-  listAcpRegistryCatalog,
   readAcpRegistryInstallMetadata,
   uninstallAcpRegistryAgent,
   uninstallManagedAdapter,
-} from "./acp-registry-installer.js";
+} from "@openma/common/acp-harnesses/installer";
 import { createSqliteLocalConfigStore } from "./local-config-store.js";
 import { createClashUserConfigStore } from "./user-config.js";
 
@@ -288,7 +290,8 @@ export interface LocalAcpAdapterOptions {
   harnessConfig?: LocalAcpHarnessConfigStore;
   runPreferences?: LocalAcpRunPreferencesStore;
   capabilityCache?: LocalAcpCapabilityCacheStore;
-  agentCatalog?: KnownAgentEntry[];
+  agentCatalog?: ClashKnownAgentEntry[];
+  registryCachePath?: string;
   spawnEnv?: Record<string, string | undefined>;
   harnessDownloadDir?: string;
   fetch?: typeof fetch;
@@ -463,8 +466,12 @@ function isTransportDiagnosticManagerMessage(msg: unknown): boolean {
 
 async function defaultDetectAgents(
   env: Record<string, string | undefined> = process.env,
+  harnessBinDir?: string | null,
 ): Promise<DetectedAcpAgent[]> {
-  const detected = await detectAll({ env: env as NodeJS.ProcessEnv });
+  const detected = await detectAll({
+    env: env as NodeJS.ProcessEnv,
+    harnessBinDir,
+  });
   return detected.map((agent) => {
     const { env: agentEnv, ...spec } = agent.spec;
     return {
@@ -731,18 +738,13 @@ function toHarnessEntry(agent: DetectedAcpAgent): KnownAgentEntry {
   };
 }
 
-function registryShimName(id: string): string {
-  return `clash-acp-${id}`;
+function registryNpmPackageName(entry: KnownAgentEntry): string | undefined {
+  if (entry.install?.kind === "npm") return entry.install.package;
+  const npxPackage = entry.registryDistribution?.npx?.package;
+  if (!npxPackage) return undefined;
+  const lastAt = npxPackage.lastIndexOf("@");
+  return lastAt > 0 ? npxPackage.slice(0, lastAt) : npxPackage;
 }
-
-const REGISTRY_AGENT_SPEC_OVERRIDES: Record<
-  string,
-  { args?: string[]; env?: Record<string, string> }
-> = {
-  // Devin's registry binary is the CLI; ACP mode is a subcommand. Without this
-  // the child prints interactive CLI text on stdout and breaks ACP JSON-RPC.
-  devin: { args: ["acp"] },
-};
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -791,12 +793,12 @@ function sanitizeCustomAgentId(name: string): string {
 
 function customAgentEntries(
   servers: LocalAcpAgentServersConfig,
-): KnownAgentEntry[] {
+): ClashKnownAgentEntry[] {
   const used = new Set<string>();
   return Object.entries(servers).map(([name, server]) => {
     let id = sanitizeCustomAgentId(name);
     let suffix = 2;
-    while (used.has(id) || KNOWN_ACP_AGENTS.some((entry) => entry.id === id)) {
+    while (used.has(id) || getKnownAgents().some((entry) => entry.id === id)) {
       id = `${sanitizeCustomAgentId(name)}-${suffix}`;
       suffix += 1;
     }
@@ -811,12 +813,14 @@ function customAgentEntries(
         ...(server.args ? { args: server.args } : {}),
         ...(server.env ? { env: server.env } : {}),
       },
-    } satisfies KnownAgentEntry;
+    } satisfies ClashKnownAgentEntry;
   });
 }
 
-function mergeAgentEntries(entries: KnownAgentEntry[]): KnownAgentEntry[] {
-  const merged = new Map<string, KnownAgentEntry>();
+function mergeAgentEntries(
+  entries: ClashKnownAgentEntry[],
+): ClashKnownAgentEntry[] {
+  const merged = new Map<string, ClashKnownAgentEntry>();
   for (const entry of entries) {
     const existing = merged.get(entry.id);
     if (!existing) {
@@ -826,23 +830,13 @@ function mergeAgentEntries(entries: KnownAgentEntry[]): KnownAgentEntry[] {
     merged.set(entry.id, {
       ...entry,
       ...existing,
-      registryVersion: existing.registryVersion ?? entry.registryVersion,
-      registryNpmPackage:
-        existing.registryNpmPackage ?? entry.registryNpmPackage,
+      version: existing.version ?? entry.version,
       registryId: existing.registryId ?? entry.registryId,
       installSource: existing.installSource ?? entry.installSource,
       homepage: existing.homepage ?? entry.homepage,
     });
   }
   return [...merged.values()];
-}
-
-function shouldEnableRegistryCatalog(options: LocalAcpAdapterOptions): boolean {
-  if (!options.harnessDownloadDir) return false;
-  if (options.agentCatalog === undefined) return true;
-  return options.agentCatalog.some(
-    (entry) => entry.installSource === "registry",
-  );
 }
 
 const LOCAL_HARNESS_CONFIG_KEY = "local-harness-config";
@@ -1685,8 +1679,8 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   private readonly harnessConfig: LocalAcpHarnessConfigStore | null;
   private readonly runPreferences: LocalAcpRunPreferencesStore | null;
   private readonly capabilityCache: LocalAcpCapabilityCacheStore | null;
-  private readonly agentCatalog: KnownAgentEntry[];
-  private readonly registryCatalogEnabled: boolean;
+  private readonly agentCatalog: ClashKnownAgentEntry[];
+  private readonly registryCachePath: string | null;
   private readonly spawnEnv: Record<string, string | undefined>;
   private readonly harnessDownloadDir: string | null;
   private readonly fetchImpl: typeof fetch;
@@ -1705,8 +1699,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   private detectedAgentsPromiseProbesConfigOptions = false;
   private detectedAgentsPromiseProbeScope: DetectedAgentProbeScope | null =
     null;
-  private registryAgentCatalogCache: KnownAgentEntry[] | null = null;
-  private registryAgentCatalogPromise: Promise<KnownAgentEntry[]> | null = null;
+  private registryLoadPromise: Promise<void> | null = null;
   private readonly npmPackageVersionCache = new Map<string, string | null>();
   private readonly confirmedCapabilities = new Map<
     string,
@@ -1723,13 +1716,20 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
 
   constructor(options: LocalAcpAdapterOptions = {}) {
     this.spawnEnv = options.spawnEnv ?? {};
+    this.harnessDownloadDir = options.harnessDownloadDir ?? null;
+    this.registryCachePath = options.registryCachePath ?? null;
+    this.agentCatalog = options.agentCatalog ?? [];
     this.probeCwd = options.probeCwd ?? null;
     this.probeTimeoutMs = options.probeTimeoutMs ?? 15_000;
     this.launchInteractiveAuth =
       options.launchInteractiveAuth ?? launchInteractiveAuthCommand;
     this.detectAgents =
       options.detectAgents ??
-      (() => defaultDetectAgents({ ...process.env, ...this.spawnEnv }));
+      (() =>
+        defaultDetectAgents(
+          { ...process.env, ...this.spawnEnv },
+          this.harnessDownloadDir,
+        ));
     this.probeAgentAuth =
       options.probeAgentAuth ??
       (async (agent) => {
@@ -1851,14 +1851,11 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     this.harnessConfig = options.harnessConfig ?? null;
     this.runPreferences = options.runPreferences ?? null;
     this.capabilityCache = options.capabilityCache ?? null;
-    this.agentCatalog = options.agentCatalog ?? KNOWN_ACP_AGENTS;
-    this.registryCatalogEnabled = shouldEnableRegistryCatalog(options);
     this.hostname = options.hostname ?? machineName;
     this.osTag = options.osTag ?? defaultOsTag;
     this.nowSeconds =
       options.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
     this.nowMilliseconds = options.nowMilliseconds ?? (() => Date.now());
-    this.harnessDownloadDir = options.harnessDownloadDir ?? null;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -1870,7 +1867,34 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     this.sessionEventStore = store;
   }
 
+  private acpDetectOptions(extra: {
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+  } = {}) {
+    const env = {
+      ...process.env,
+      ...this.spawnEnv,
+      ...extra.env,
+    } as NodeJS.ProcessEnv;
+    return {
+      env,
+      harnessBinDir: this.harnessDownloadDir,
+      ...(extra.cwd ?? this.probeCwd ? { cwd: extra.cwd ?? this.probeCwd! } : {}),
+    };
+  }
+
+  private async ensureRegistryLoaded(forceRefresh = false): Promise<void> {
+    if (!this.registryCachePath) return;
+    if (forceRefresh) this.registryLoadPromise = null;
+    this.registryLoadPromise ??= loadRegistry({
+      cachePath: this.registryCachePath,
+      ...(forceRefresh ? { forceRefresh: true } : {}),
+    }).then(() => undefined);
+    await this.registryLoadPromise;
+  }
+
   async warmup(): Promise<void> {
+    await this.ensureRegistryLoaded();
     await this.ensureCapabilityCacheLoaded();
     const agents = await this.refreshDetectedAgents({
       probeAuth: true,
@@ -1898,7 +1922,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       previousAgents.map((agent) => [agent.id, agent]),
     );
     const previousEnabled = this.lastReconciledEnabledIds;
-    this.registryAgentCatalogCache = null;
+    await this.ensureRegistryLoaded(true);
     const agents = await this.detectAgentsWithProbes({
       probeAuth: false,
       probeConfigOptions: false,
@@ -1950,7 +1974,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     this.detectedAgentsCacheProbesAuth = false;
     this.detectedAgentsCacheProbesConfigOptions = false;
     this.detectedAgentsCacheProbeScope = null;
-    this.registryAgentCatalogCache = null;
+    this.registryLoadPromise = null;
     return this.getDetectedAgents(opts);
   }
 
@@ -1965,7 +1989,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       this.detectedAgentsCacheProbesAuth = false;
       this.detectedAgentsCacheProbesConfigOptions = false;
       this.detectedAgentsCacheProbeScope = null;
-      this.registryAgentCatalogCache = null;
+      this.registryLoadPromise = null;
     }
     const scopeSatisfiesRequest = (scope: DetectedAgentProbeScope | null) =>
       !probeAuth || probeScope === "enabled" || scope === "installed";
@@ -2124,58 +2148,19 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     await this.capabilityCacheWrite;
   }
 
-  private async configuredCustomAgentEntries(): Promise<KnownAgentEntry[]> {
+  private async configuredCustomAgentEntries(): Promise<ClashKnownAgentEntry[]> {
     const servers = (await this.harnessConfig?.loadAgentServers?.()) ?? null;
     return servers ? customAgentEntries(servers) : [];
   }
 
-  private async registryAgentEntries(): Promise<KnownAgentEntry[]> {
-    if (!this.registryCatalogEnabled) return [];
-    if (this.registryAgentCatalogCache) return this.registryAgentCatalogCache;
-    if (!this.registryAgentCatalogPromise) {
-      this.registryAgentCatalogPromise = listAcpRegistryCatalog({
-        fetchImpl: this.fetchImpl,
-      })
-        .then((agents) =>
-          agents.map((agent) => {
-            const override = REGISTRY_AGENT_SPEC_OVERRIDES[agent.id];
-            const args = override?.args ?? agent.args;
-            const env = {
-              ...(agent.env ?? {}),
-              ...(override?.env ?? {}),
-            };
-            return {
-              id: agent.id,
-              label: agent.name,
-              spec: {
-                command: registryShimName(agent.id),
-                ...(args && args.length > 0 ? { args } : {}),
-                ...(Object.keys(env).length > 0 ? { env } : {}),
-              },
-              registryId: agent.id,
-              ...(agent.version ? { registryVersion: agent.version } : {}),
-              ...(agent.npmPackage
-                ? { registryNpmPackage: agent.npmPackage }
-                : {}),
-              installSource: "registry" as const,
-              ...(agent.homepage ? { homepage: agent.homepage } : {}),
-            } satisfies KnownAgentEntry;
-          }),
-        )
-        .catch(() => [])
-        .finally(() => {
-          this.registryAgentCatalogPromise = null;
-        });
-    }
-    const entries = await this.registryAgentCatalogPromise;
-    this.registryAgentCatalogCache = entries;
-    return entries;
-  }
-
-  private async fullAgentCatalog(): Promise<KnownAgentEntry[]> {
+  private async fullAgentCatalog(): Promise<ClashKnownAgentEntry[]> {
+    await this.ensureRegistryLoaded();
+    const base =
+      this.agentCatalog.length > 0
+        ? this.agentCatalog
+        : [...getKnownAgents()];
     return mergeAgentEntries([
-      ...this.agentCatalog,
-      ...(await this.registryAgentEntries()),
+      ...base,
       ...(await this.configuredCustomAgentEntries()),
     ]);
   }
@@ -2185,7 +2170,13 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     const fullCatalog = await this.fullAgentCatalog();
     const env = { ...process.env, ...this.spawnEnv } as NodeJS.ProcessEnv;
     const knownIds = new Set(agents.map((agent) => agent.id));
-    const baseCatalogIds = new Set(this.agentCatalog.map((entry) => entry.id));
+    await this.ensureRegistryLoaded();
+    const baseCatalogIds = new Set(
+      (this.agentCatalog.length > 0
+        ? this.agentCatalog
+        : getKnownAgents()
+      ).map((entry) => entry.id),
+    );
     const entriesToProbe = fullCatalog.filter(
       (entry) =>
         !knownIds.has(entry.id) &&
@@ -2194,10 +2185,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     if (entriesToProbe.length === 0) return agents;
     const extraDetected = await Promise.all(
       entriesToProbe.map((entry) =>
-        detectEntry(entry, {
-          env,
-          ...(this.probeCwd ? { cwd: this.probeCwd } : {}),
-        }),
+        detectEntry(entry, this.acpDetectOptions({ env })),
       ),
     );
     const merged = new Map(agents.map((agent) => [agent.id, agent]));
@@ -2277,13 +2265,13 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     return enabled ? agents.filter((agent) => enabled.has(agent.id)) : agents;
   }
 
-  private async managedInstallInfo(entry: KnownAgentEntry): Promise<{
+  private async managedInstallInfo(entry: ClashKnownAgentEntry): Promise<{
     installed: boolean;
     installedVersion?: string;
     latestVersion?: string;
     updateAvailable?: boolean;
   }> {
-    const registryLatestVersion = entry.registryVersion;
+    const registryLatestVersion = entry.version;
     if (!this.harnessDownloadDir || !entry.installSource) {
       return {
         installed: false,
@@ -2318,15 +2306,15 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
             })
           : Promise.resolve(null),
         entry.installSource === "registry" &&
-        entry.registryId &&
-        entry.registryNpmPackage
+        entry.registryId
           ? this.installedNpmPackageVersion(
               entry.registryId,
-              entry.registryNpmPackage,
+              registryNpmPackageName(entry) ?? "",
             )
           : Promise.resolve(undefined),
-        entry.installSource === "registry" && entry.registryNpmPackage
-          ? this.latestNpmPackageVersion(entry.registryNpmPackage)
+        entry.installSource === "registry" &&
+        registryNpmPackageName(entry)
+          ? this.latestNpmPackageVersion(registryNpmPackageName(entry)!)
           : Promise.resolve(undefined),
       ],
     );
@@ -2423,7 +2411,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         opts.probe !== false &&
         opts.probe !== "none");
     if (checksForUpdates) {
-      this.registryAgentCatalogCache = null;
+      await this.ensureRegistryLoaded(true);
       this.npmPackageVersionCache.clear();
     }
     const agents = await this.getDetectedAgents({
@@ -2437,7 +2425,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     const detectedById = new Map(agents.map((agent) => [agent.id, agent]));
     const fullCatalog = await this.fullAgentCatalog();
     const catalogById = new Map(fullCatalog.map((entry) => [entry.id, entry]));
-    const orderedEntries: KnownAgentEntry[] = [];
+    const orderedEntries: ClashKnownAgentEntry[] = [];
     const seen = new Set<string>();
 
     for (const agent of agents) {
@@ -2550,6 +2538,16 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         throw new Error(`${entry.label} is missing an ACP registry id`);
       await installAcpRegistryAgent({
         registryId: entry.registryId,
+        ...(entry.registryDistribution
+          ? {
+              registryAgent: {
+                id: entry.registryId,
+                name: entry.label,
+                ...(entry.version ? { version: entry.version } : {}),
+                distribution: entry.registryDistribution,
+              },
+            }
+          : {}),
         shimName: basename(entry.spec.command),
         binDir: this.harnessDownloadDir,
         installRoot: this.harnessDownloadDir,
