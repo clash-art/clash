@@ -443,7 +443,8 @@ function clickNavigatorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, 
     if (!root) return false;
     const tab = [...root.querySelectorAll('[role="tab"]')].find((candidate) => {
       const value = (candidate.innerText || candidate.textContent || "").trim();
-      return value === wanted || value.includes(wanted);
+      const aria = candidate.getAttribute("aria-label") || "";
+      return value === wanted || value.includes(wanted) || aria === wanted;
     });
     if (!tab) return false;
     tab.click();
@@ -711,6 +712,18 @@ async function openDirectorStageTab(
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   stageName: string,
 ) {
+  await ensureProjectNavigatorExpanded(agentBrowser, recovery);
+  evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const section = document.querySelector('[data-project-folder="director-stages"]');
+      const trigger = section?.querySelector('[aria-expanded]');
+      if (trigger?.getAttribute("aria-expanded") !== "true") trigger?.click();
+      return true;
+    })()`,
+  );
+  await sleep(250);
   if (!clickNavigatorTab(agentBrowser, stageName)) {
     throw new Error(`Director navigator tab not found: ${stageName}`);
   }
@@ -1195,6 +1208,9 @@ async function main() {
       await selectWorkspaceTab(agentBrowser, recovery, primaryTabTitle);
       await sleep(300);
       await captureTopNavStates(agentBrowser, recovery, theme, primaryTabTitle, "Settings");
+      await selectWorkspaceTab(agentBrowser, recovery, primaryTabTitle);
+      await sleep(400);
+      await ensureProjectNavigatorExpanded(agentBrowser, recovery);
       clickNavigatorTab(agentBrowser, NAV_CANVAS);
       await sleep(300);
       await captureNavigatorStates(agentBrowser, recovery, theme, NAV_CANVAS, NAV_TIMELINE);
