@@ -2,7 +2,7 @@ import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, readFile, unlink } from "node:fs/promises";
+import { access, readFile, readdir, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
@@ -753,6 +753,22 @@ function registryNpmPackageName(entry: KnownAgentEntry): string | undefined {
   if (!npxPackage) return undefined;
   const lastAt = npxPackage.lastIndexOf("@");
   return lastAt > 0 ? npxPackage.slice(0, lastAt) : npxPackage;
+}
+
+async function readNpmPackageJsonVersion(
+  packageJsonPath: string,
+): Promise<string | undefined> {
+  try {
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+      version?: unknown;
+    };
+    return typeof packageJson.version === "string" &&
+      packageJson.version.length > 0
+      ? packageJson.version
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -2384,6 +2400,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     const latestVersion = latestNpmVersion ?? registryLatestVersion;
     const updateAvailable =
       entry.installSource === "registry" &&
+      !!installedVersion &&
       !!latestVersion &&
       installedVersion !== latestVersion;
     return {
@@ -2409,28 +2426,35 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     packageName: string,
   ): Promise<string | undefined> {
     if (!this.harnessDownloadDir) return undefined;
+    const packageJsonRelative = join(
+      "node_modules",
+      ...packageName.split("/"),
+      "package.json",
+    );
+    const legacyPath = join(
+      this.harnessDownloadDir,
+      "registry",
+      registryId,
+      "npx",
+      packageJsonRelative,
+    );
+    const legacyVersion = await readNpmPackageJsonVersion(legacyPath);
+    if (legacyVersion) return legacyVersion;
+
+    const registryRoot = join(this.harnessDownloadDir, "registry", registryId);
+    let entries: string[];
     try {
-      const packageJson = JSON.parse(
-        await readFile(
-          join(
-            this.harnessDownloadDir,
-            "registry",
-            registryId,
-            "npx",
-            "node_modules",
-            ...packageName.split("/"),
-            "package.json",
-          ),
-          "utf8",
-        ),
-      ) as { version?: unknown };
-      return typeof packageJson.version === "string" &&
-        packageJson.version.length > 0
-        ? packageJson.version
-        : undefined;
+      entries = await readdir(registryRoot);
     } catch {
       return undefined;
     }
+    for (const entry of entries) {
+      if (!entry.startsWith("v_")) continue;
+      const versionedPath = join(registryRoot, entry, packageJsonRelative);
+      const version = await readNpmPackageJsonVersion(versionedPath);
+      if (version) return version;
+    }
+    return undefined;
   }
 
   private async latestNpmPackageVersion(
