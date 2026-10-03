@@ -1,9 +1,4 @@
-import {
-  ACP_MESSAGE_FORK_UNSUPPORTED,
-  describeAcpForkFailure,
-  supportsAcpMessageFork,
-  type AcpForkPoint,
-} from "@clash/shared-types";
+import { describeAcpForkFailure, type AcpForkPoint } from "@clash/shared-types";
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -2810,19 +2805,10 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     const agentIdForConfigUpdates = agent.id;
     const harnessVersion = await this.installedHarnessVersion(agent.id);
     const requestedFork = Boolean(params.forkFromAcpSessionId || params.forkPoint);
-    if (params.forkPoint && !supportsAcpMessageFork(agent.id, harnessVersion)) {
-      throw new Error(ACP_MESSAGE_FORK_UNSUPPORTED);
-    }
 
     let entry: LocalAcpSession;
     const send: SessionSender = (msg) => {
       if (isTransportDiagnosticManagerMessage(msg)) return;
-      if (isSessionReadyMessage(msg) && msg.supports_message_fork) {
-        msg.supports_message_fork = supportsAcpMessageFork(
-          agentIdForConfigUpdates,
-          harnessVersion,
-        );
-      }
       const normalizedMsg = normalizeSessionAuthenticationError(
         msg,
         agentIdForConfigUpdates,

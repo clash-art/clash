@@ -209,7 +209,7 @@ describe("SessionManager lifecycle", () => {
     }
   });
 
-  it("announces whole-session fork without a message boundary when the adapter is not a checked version", async () => {
+  it("offers message-point fork from session/fork support without a harness version", async () => {
     mocks.runtimeStart.mockResolvedValue(
       createAcpSession({
         supportsSessionFork: true,
@@ -231,7 +231,7 @@ describe("SessionManager lifecycle", () => {
           type: "session.ready",
           session_id: params.session_id,
           supports_session_fork: true,
-          supports_message_fork: false,
+          supports_message_fork: true,
         }),
       );
     } finally {

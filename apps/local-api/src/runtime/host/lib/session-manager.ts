@@ -1,4 +1,4 @@
-import { supportsAcpMessageFork, type AcpForkPoint } from "@clash/shared-types";
+import { type AcpForkPoint } from "@clash/shared-types";
 import {
   AcpRuntimeImpl,
   acpForkRequestMeta,
@@ -48,6 +48,7 @@ import {
   type SessionLifecycle,
 } from "@openma/common/session-kernel";
 import { withClashAcpExtensionCapabilities } from "../acp/client-capabilities.js";
+import { supportsMessagePointFork } from "../acp/fork-support.js";
 import { ensureSessionScratchpad } from "./session-scratchpad.js";
 import { detect } from "../acp/registry.js";
 import {
@@ -471,14 +472,9 @@ export class SessionManager {
       session_id: sessionId,
       acp_session_id: session.acp.acpSessionId,
       supports_session_fork: session.acp.supportsSessionFork,
-      // Message-point fork also needs the inclusive `_meta.jetbrains.air.fork`
-      // extension. v0.7.1 does not advertise that, so the version check stays.
-      supports_message_fork:
-        session.acp.supportsSessionFork &&
-        supportsAcpMessageFork(
-          session.acp.agentInfo?.name,
-          session.acp.agentInfo?.version,
-        ),
+      supports_message_fork: supportsMessagePointFork(
+        session.acp.supportsSessionFork,
+      ),
       config_options: [...session.acp.configOptions],
       ...(session.modelFallback
         ? { model_fallback: session.modelFallback }
