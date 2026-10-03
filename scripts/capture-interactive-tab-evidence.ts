@@ -4,7 +4,7 @@
  * Usage:
  *   CLASH_TAB_EVIDENCE_PHASE=before|after tsx scripts/capture-interactive-tab-evidence.ts
  */
-import { mkdir } from "node:fs/promises";
+import { cp, mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -21,7 +21,8 @@ import {
   startElectron,
   startVite,
   stopProcess,
-  waitForEval,
+  submitNamePromptDialog,
+  submitProjectCreateDialog,
   waitForHttp,
 } from "../apps/desktop/e2e/startup-shared.ts";
 
@@ -37,8 +38,45 @@ const dataDir = path.join(runRoot, "data");
 const captureDir = path.join(runRoot, "captures");
 const sessionName = `tab-evidence-${phase}-${Date.now().toString(36)}`;
 
+const repoEvidenceDir = path.join(repoRoot, "docs", "evidence", "interactive-state-styling");
+const artifactsDir = "/opt/cursor/artifacts/interactive-state-styling";
+
+function ensurePageTarget(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  try {
+    const href = evalJson(agentBrowser, "location.href");
+    if (typeof href === "string" && href.startsWith(recovery.expectedUrlPrefix)) return;
+  } catch {
+    // Re-attach below.
+  }
+  recoverAgentBrowserTarget(agentBrowser, recovery);
+}
+
+function evalOnPage(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  expression: string,
+) {
+  ensurePageTarget(agentBrowser, recovery);
+  return evalJson(agentBrowser, expression);
+}
+
 function outFile(surface: string, theme: string, state: string) {
   return path.join(outDir, `${phase}-${surface}-${theme}-${state}.png`);
+}
+
+function clickWorkspaceTab(agentBrowser: ReturnType<typeof createAgentBrowser>, title: string) {
+  return evalJson(agentBrowser, `(() => {
+    const wanted = ${JSON.stringify(title)};
+    const tab = [...document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]')]
+      .find((candidate) => candidate.getAttribute("aria-label") === wanted);
+    if (!tab) return false;
+    tab.scrollIntoView({ block: "center", inline: "nearest" });
+    tab.click();
+    return true;
+  })()`);
 }
 
 function clickVisibleText(agentBrowser: ReturnType<typeof createAgentBrowser>, text: string) {
@@ -134,9 +172,13 @@ async function waitForEvalRecovered(
   const deadline = Date.now() + timeoutMs;
   let lastValue: unknown;
   while (Date.now() < deadline) {
-    recoverAgentBrowserTarget(agentBrowser, recovery);
-    lastValue = evalJson(agentBrowser, expression);
-    if (lastValue) return lastValue;
+    try {
+      ensurePageTarget(agentBrowser, recovery);
+      lastValue = evalJson(agentBrowser, expression);
+      if (lastValue) return lastValue;
+    } catch {
+      recoverAgentBrowserTarget(agentBrowser, recovery);
+    }
     await sleep(300);
   }
   throw new Error(`Timed out waiting for ${label}; last value: ${JSON.stringify(lastValue)}`);
@@ -147,8 +189,21 @@ async function screenshot(
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   target: string,
 ) {
-  recoverAgentBrowserTarget(agentBrowser, recovery);
+  ensurePageTarget(agentBrowser, recovery);
   agentBrowser(["screenshot", target]);
+}
+
+async function syncEvidenceCopies() {
+  for (const dir of [repoEvidenceDir, artifactsDir]) {
+    await mkdir(dir, { recursive: true });
+  }
+  const names = await readdir(outDir);
+  for (const name of names) {
+    if (!name.endsWith(".png")) continue;
+    const source = path.join(outDir, name);
+    await cp(source, path.join(repoEvidenceDir, name));
+    await cp(source, path.join(artifactsDir, name));
+  }
 }
 
 async function captureNavigatorStates(
@@ -185,18 +240,19 @@ async function captureTopNavStates(
 ) {
   setTheme(agentBrowser, theme);
   await sleep(400);
-  clickVisibleText(agentBrowser, tabA);
+  clickWorkspaceTab(agentBrowser, tabA);
   await sleep(500);
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "selected-rest"));
-  clickVisibleText(agentBrowser, tabB);
+  clickWorkspaceTab(agentBrowser, tabB);
   await sleep(500);
   movePointerAway(agentBrowser);
   await sleep(200);
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "previous-tab-mouse-away"));
-  evalJson(agentBrowser, `(() => {
+  evalOnPage(agentBrowser, recovery, `(() => {
     const tabs = [...document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]')];
-    const inactive = tabs.find((t) => t.getAttribute('aria-selected') !== 'true');
-    inactive?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    const inactive = tabs.find((t) => t.getAttribute("aria-selected") !== "true");
+    inactive?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    inactive?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
     return !!inactive;
   })()`);
   await sleep(250);
@@ -240,24 +296,30 @@ async function prepareDirectorInspectorTabs(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
 ) {
-  recoverAgentBrowserTarget(agentBrowser, recovery);
+  if (
+    evalOnPage(
+      agentBrowser,
+      recovery,
+      `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
+    )
+  ) {
+    return;
+  }
+  ensurePageTarget(agentBrowser, recovery);
   if (!clickButtonByLabel(agentBrowser, "Add scene element")) {
     throw new Error("Director Add scene element control missing");
   }
+  await sleep(400);
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
-    `(() => {
-      const item = [...document.querySelectorAll('[role="menuitem"], [role="option"], button')]
-        .find((candidate) => (candidate.textContent || "").includes("Add editable actor"));
-      return !!item;
-    })()`,
+    `[...document.querySelectorAll('[role="menuitem"]')].some((item) => (item.textContent || "").includes("Add editable actor"))`,
     "director add actor menu",
-    15000,
+    20000,
   );
   if (
-    !evalJson(agentBrowser, `(() => {
-      const item = [...document.querySelectorAll('[role="menuitem"], [role="option"], button')]
+    !evalOnPage(agentBrowser, recovery, `(() => {
+      const item = [...document.querySelectorAll('[role="menuitem"]')]
         .find((candidate) => (candidate.textContent || "").includes("Add editable actor"));
       item?.click();
       return !!item;
@@ -270,8 +332,24 @@ async function prepareDirectorInspectorTabs(
     recovery,
     `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
     "mannequin inspector tabs",
-    20000,
+    30000,
   );
+}
+
+async function openDirectorStageTab(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  stageName: string,
+) {
+  clickNavigatorTab(agentBrowser, stageName);
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `!!document.querySelector('[data-testid="project-director-stage-editor"]')`,
+    "director stage editor",
+    45000,
+  );
+  await prepareDirectorInspectorTabs(agentBrowser, recovery);
 }
 
 async function captureDirectorInspectorStates(
@@ -343,59 +421,20 @@ async function waitForDesktopShell(
   const deadline = Date.now() + timeoutMs;
   let lastSnapshot: unknown = false;
   while (Date.now() < deadline) {
-    recoverAgentBrowserTarget(agentBrowser, recovery);
     try {
+      ensurePageTarget(agentBrowser, recovery);
       lastSnapshot = evalJson(agentBrowser, `(() => ({
         href: location.href,
         chrome: !!document.querySelector('[data-desktop-chrome="true"]'),
         runtime: window.__CLASH_RUNTIME_CONFIG__?.apiBaseUrl ?? null,
-        dashboard: !!document.querySelector('[aria-label="Dashboard"]'),
-        text: document.body.innerText.slice(0, 160),
       }))()`);
       if (evalJson(agentBrowser, readyExpression)) return lastSnapshot;
     } catch {
-      // Electron can reload while the detached host publishes runtime config.
+      recoverAgentBrowserTarget(agentBrowser, recovery);
     }
     await sleep(500);
   }
   throw new Error(`Timed out waiting for desktop shell; last snapshot: ${JSON.stringify(lastSnapshot)}`);
-}
-
-async function fillNamePromptDialogRecovered(
-  agentBrowser: ReturnType<typeof createAgentBrowser>,
-  recovery: { cdpPort: number; expectedUrlPrefix: string },
-  _dialogTitle: string,
-  name: string,
-) {
-  await waitForEvalRecovered(
-    agentBrowser,
-    recovery,
-    `!!document.querySelector('[role="dialog"] input')`,
-    "name prompt input",
-    30000,
-  );
-  agentBrowser(["fill", '[role="dialog"] input', name]);
-  await waitForEvalRecovered(
-    agentBrowser,
-    recovery,
-    `(() => {
-      const button = [...document.querySelectorAll('[role="dialog"] button[type="submit"]')]
-        .find((candidate) => !candidate.disabled);
-      return !!button;
-    })()`,
-    "enabled name prompt submit",
-    15000,
-  );
-  if (
-    !evalJson(agentBrowser, `(() => {
-      const button = [...document.querySelectorAll('[role="dialog"] button[type="submit"]')]
-        .find((candidate) => !candidate.disabled);
-      button?.click();
-      return !!button;
-    })()`)
-  ) {
-    throw new Error(`Could not submit name prompt for ${name}`);
-  }
 }
 
 async function submitProjectCreateDialogRecovered(
@@ -403,40 +442,46 @@ async function submitProjectCreateDialogRecovered(
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   projectName: string,
 ) {
-  const selector = "input[placeholder='Untitled project']";
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
     `(() => {
-      const input = document.querySelector(${JSON.stringify(selector)});
+      const input = document.querySelector("input[placeholder='Untitled project']");
       const rect = input?.getBoundingClientRect();
       return !!input && !!rect && rect.width > 0 && rect.height > 0;
     })()`,
     "project name dialog",
+    45000,
   );
-  agentBrowser(["fill", selector, projectName]);
+  ensurePageTarget(agentBrowser, recovery);
+  await submitProjectCreateDialog(agentBrowser, projectName);
+}
+
+async function submitNamePromptDialogRecovered(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  name: string,
+) {
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
     `(() => {
-      const create = [...document.querySelectorAll("button")].find((button) =>
-        (button.innerText || button.textContent || "").trim() === "Create" && !button.disabled
-      );
-      return !!create;
+      const input = document.querySelector('[role="dialog"] input');
+      const rect = input?.getBoundingClientRect();
+      return !!input && !!rect && rect.width > 0 && rect.height > 0;
     })()`,
-    "enabled project create action",
+    "name prompt input",
+    45000,
   );
-  if (
-    !evalJson(agentBrowser, `(() => {
-      const create = [...document.querySelectorAll("button")].find((button) =>
-        (button.innerText || button.textContent || "").trim() === "Create" && !button.disabled
-      );
-      create?.click();
-      return !!create;
-    })()`)
-  ) {
-    throw new Error("Could not submit the project creation dialog");
-  }
+  ensurePageTarget(agentBrowser, recovery);
+  await submitNamePromptDialog(agentBrowser, name);
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `!document.querySelector('[role="dialog"] button[type="submit"]')`,
+    "name prompt closed",
+    30000,
+  );
 }
 
 async function main() {
@@ -482,7 +527,7 @@ async function main() {
       throw new Error("Projects link missing");
     }
     await waitForEvalRecovered(agentBrowser, recovery, `location.pathname === "/projects"`, "projects route");
-    recoverAgentBrowserTarget(agentBrowser, recovery);
+    ensurePageTarget(agentBrowser, recovery);
     if (
       !clickButtonByLabel(agentBrowser, "New Project") &&
       !clickByText(agentBrowser, "New Project")
@@ -512,68 +557,50 @@ async function main() {
       120000,
     );
 
-    recoverAgentBrowserTarget(agentBrowser, recovery);
+    ensurePageTarget(agentBrowser, recovery);
     if (!clickButtonByLabel(agentBrowser, "New Timeline")) {
       throw new Error("Could not create timeline for navigator/topnav tabs");
     }
-    await fillNamePromptDialogRecovered(agentBrowser, recovery, "Timeline name", "Evidence Timeline");
+    await sleep(400);
+    await submitNamePromptDialogRecovered(agentBrowser, recovery, "Evidence Timeline");
     await waitForEvalRecovered(
       agentBrowser,
       recovery,
-      `document.body.innerText.includes("Evidence Timeline")`,
-      "timeline created",
-      60000,
+      `!!document.querySelector('[data-testid="project-timeline-editor"]')`,
+      "timeline editor",
+      90000,
     );
 
-    recoverAgentBrowserTarget(agentBrowser, recovery);
+    ensurePageTarget(agentBrowser, recovery);
     if (!clickButtonByLabel(agentBrowser, "New Director Stage")) {
       throw new Error("Could not create director stage");
     }
-    await fillNamePromptDialogRecovered(agentBrowser, recovery, "Director Stage name", "Evidence Director");
+    await sleep(400);
+    await submitNamePromptDialogRecovered(agentBrowser, recovery, "Evidence Director");
     await waitForEvalRecovered(
       agentBrowser,
       recovery,
       `!!document.querySelector('[data-testid="project-director-stage-editor"]')`,
       "director stage editor",
-      60000,
+      90000,
     );
     await prepareDirectorInspectorTabs(agentBrowser, recovery);
 
-    clickVisibleText(agentBrowser, "Main");
+    clickWorkspaceTab(agentBrowser, "Main");
     await sleep(500);
 
     for (const theme of ["light", "dark"] as const) {
+      clickWorkspaceTab(agentBrowser, "Main");
+      await sleep(300);
       await captureTopNavStates(agentBrowser, recovery, theme, "Main", "Evidence Timeline");
       await captureNavigatorStates(agentBrowser, recovery, theme, "Main", "Evidence Timeline");
-      clickVisibleText(agentBrowser, "Evidence Timeline");
-      await waitForEvalRecovered(
-        agentBrowser,
-        recovery,
-        `!!document.querySelector('[data-testid="project-director-stage-editor"]') || document.body.innerText.includes("Director")`,
-        "director reachable",
-        15000,
-      );
-      if (!evalJson(agentBrowser, `!!document.querySelector('[data-testid="project-director-stage-editor"]')`)) {
-        const stageTab = evalJson(agentBrowser, `(() => {
-          const tab = [...document.querySelectorAll('[aria-label="Project navigator"] [role="tab"]')]
-            .find((t) => (t.textContent || '').includes('Director') || (t.textContent || '').includes('Stage'));
-          tab?.click();
-          return !!tab;
-        })()`);
-        if (!stageTab) throw new Error("Could not open director stage tab");
-        await waitForEvalRecovered(
-          agentBrowser,
-          recovery,
-          `!!document.querySelector('[data-testid="project-director-stage-editor"]')`,
-          "director editor",
-          30000,
-        );
-        await prepareDirectorInspectorTabs(agentBrowser, recovery);
-      }
+      await openDirectorStageTab(agentBrowser, recovery, "Evidence Director");
       await captureDirectorInspectorStates(agentBrowser, recovery, theme);
     }
 
-    console.log(`[tab-evidence] phase=${phase} path=${outDir} runtime=electron`);
+    await syncEvidenceCopies();
+    const pngCount = (await readdir(outDir)).filter((name) => name.endsWith(".png")).length;
+    console.log(`[tab-evidence] phase=${phase} path=${outDir} png=${pngCount} runtime=electron`);
   } finally {
     agentBrowser(["close"], { allowFailure: true });
     await stopProcess(electron);

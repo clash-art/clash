@@ -348,6 +348,35 @@ export async function submitProjectCreateDialog(
   }
 }
 
+/** NamePrompt dialog (`useNamePrompt`); Continue stays disabled until React state updates. */
+export async function submitNamePromptDialog(agentBrowser, name: string) {
+  const inputSelector = '[role="dialog"] input';
+  await waitForEval(
+    agentBrowser,
+    `(() => {
+      const input = document.querySelector(${JSON.stringify(inputSelector)});
+      const rect = input?.getBoundingClientRect();
+      return !!input && !!rect && rect.width > 0 && rect.height > 0;
+    })()`,
+    "name prompt input",
+  );
+  agentBrowser(["click", inputSelector]);
+  agentBrowser(["press", "Meta+A"], { allowFailure: true });
+  agentBrowser(["press", "Control+A"], { allowFailure: true });
+  agentBrowser(["press", "Backspace"], { allowFailure: true });
+  agentBrowser(["keyboard", "type", name]);
+  await waitForEval(
+    agentBrowser,
+    `(() => {
+      const input = document.querySelector(${JSON.stringify(inputSelector)});
+      const submit = document.querySelector('[role="dialog"] button[type="submit"]');
+      return input?.value === ${JSON.stringify(name)} && !!submit && !submit.disabled;
+    })()`,
+    "enabled name prompt continue",
+  );
+  agentBrowser(["click", '[role="dialog"] button[type="submit"]']);
+}
+
 export async function openSessionHistoryMenu(agentBrowser) {
   const visibleMenuExpression = `(() => {
     const menu = document.querySelector(
