@@ -1,15 +1,17 @@
-import {
-  acpForkPointsFromMessages,
-  type AcpForkPoint,
-} from "@openma/common/acp-runtime";
+import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import type { AgentUITurnState } from "@openma/common/agent-ui";
 
-/** Map completed turns onto fork points. Segment ids are collapsed before
- * `@openma/common` numbers identical assistant text. */
+/**
+ * Fork points for completed turns. Segment ids are collapsed here because
+ * `acpForkPointsFromMessages` lives in `@openma/common/acp-runtime`, whose
+ * module imports `node:crypto` and cannot be bundled for the renderer.
+ * Occurrence counting matches that function: 1-based identical text in order.
+ */
 export function messageForkPoints(
   turns: readonly AgentUITurnState[],
 ): Map<string, AcpForkPoint> {
-  const flat: Array<{ turnId: string | null; messageId: string; text: string }> = [];
+  const result = new Map<string, AcpForkPoint>();
+  const occurrences = new Map<string, number>();
   for (const turn of turns) {
     const messages = new Map<string, string>();
     for (const item of turn.items) {
@@ -17,25 +19,13 @@ export function messageForkPoints(
       const id = item.messageId ?? item.id.replace(/:segment:\d+$/, "");
       messages.set(id, (messages.get(id) ?? "") + item.text);
     }
-    const entries = [...messages];
-    entries.forEach(([messageId, text], index) => {
-      flat.push({
-        turnId:
-          turn.status === "completed" && index === entries.length - 1
-            ? turn.id
-            : null,
-        messageId,
-        text,
-      });
-    });
+    let last: AcpForkPoint | undefined;
+    for (const [messageId, messageText] of messages) {
+      const messageOccurrence = (occurrences.get(messageText) ?? 0) + 1;
+      occurrences.set(messageText, messageOccurrence);
+      last = { messageId, messageText, messageOccurrence };
+    }
+    if (turn.status === "completed" && last) result.set(turn.id, last);
   }
-  const points = acpForkPointsFromMessages(
-    flat.map(({ messageId, text }) => ({ messageId, text })),
-  );
-  const result = new Map<string, AcpForkPoint>();
-  flat.forEach((message, index) => {
-    const point = points[index];
-    if (message.turnId && point) result.set(message.turnId, point);
-  });
   return result;
 }
