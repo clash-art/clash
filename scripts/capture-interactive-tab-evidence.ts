@@ -724,24 +724,16 @@ async function openDirectorStageTab(
     })()`,
   );
   await sleep(250);
+  const directorTabSelector = `[data-project-folder="director-stages"] [role="tab"][aria-label=${JSON.stringify(stageName)}]`;
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
-    `!!document.querySelector('[data-project-folder="director-stages"] [role="tab"][aria-label=${JSON.stringify(stageName)}]')`,
+    `!!document.querySelector(${JSON.stringify(directorTabSelector)})`,
     `director stage tab visible: ${stageName}`,
     30000,
   );
-  const directorTabSelector = `[data-project-folder="director-stages"] [role="tab"][aria-label=${JSON.stringify(stageName)}]`;
   ensurePageTarget(agentBrowser, recovery);
   agentBrowser(["click", directorTabSelector]);
-  const clicked = evalOnPage(
-    agentBrowser,
-    recovery,
-    `!!document.querySelector(${JSON.stringify(directorTabSelector)})`,
-  );
-  if (!clicked && !clickNavigatorTab(agentBrowser, stageName)) {
-    throw new Error(`Director navigator tab not found: ${stageName}`);
-  }
   await sleep(600);
   await waitForEvalRecovered(
     agentBrowser,
@@ -1036,11 +1028,28 @@ async function submitNamePromptDialogRecovered(
     try {
       ensurePageTarget(agentBrowser, recovery);
       const inputSelector = '[role="dialog"] input';
-      agentBrowser(["click", inputSelector]);
-      agentBrowser(["press", "Meta+A"], { allowFailure: true });
-      agentBrowser(["press", "Control+A"], { allowFailure: true });
-      agentBrowser(["press", "Backspace"], { allowFailure: true });
-      agentBrowser(["keyboard", "type", name]);
+      const focused = evalOnPage(
+        agentBrowser,
+        recovery,
+        `(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          const input = dialog?.querySelector("input");
+          if (!input) return false;
+          dialog?.scrollIntoView({ block: "center", inline: "nearest" });
+          input.focus({ preventScroll: true });
+          input.value = ${JSON.stringify(name)};
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+          return input.value === ${JSON.stringify(name)};
+        })()`,
+      );
+      if (!focused) {
+        agentBrowser(["click", inputSelector]);
+        agentBrowser(["press", "Meta+A"], { allowFailure: true });
+        agentBrowser(["press", "Control+A"], { allowFailure: true });
+        agentBrowser(["press", "Backspace"], { allowFailure: true });
+        agentBrowser(["keyboard", "type", name]);
+      }
       await waitForEvalRecovered(
         agentBrowser,
         recovery,
@@ -1052,7 +1061,16 @@ async function submitNamePromptDialogRecovered(
         "enabled name prompt continue",
         25000,
       );
-      agentBrowser(["click", '[role="dialog"] button[type="submit"]']);
+      agentBrowser(["click", '[role="dialog"] button[type="submit"]'], { allowFailure: true });
+      evalOnPage(
+        agentBrowser,
+        recovery,
+        `(() => {
+          const submit = document.querySelector('[role="dialog"] button[type="submit"]');
+          submit?.click();
+          return true;
+        })()`,
+      );
       await waitForEvalRecovered(
         agentBrowser,
         recovery,
