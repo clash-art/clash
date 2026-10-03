@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { messageForkPoints } from "./acpForkPoint";
 import type { AgentUITurnState } from "@openma/common/agent-ui";
+
+import { messageForkPoints } from "../components/copilot/RuntimeSessionTimeline";
 
 describe("historical fork boundaries", () => {
   it("counts identical replies and combines split segments without including later replies", () => {

@@ -1,7 +1,9 @@
 "use client";
 
-import type { AcpForkPoint } from "@openma/common/acp-runtime";
-import { messageForkPoints } from "../../lib/acpForkPoint";
+import {
+  acpForkPointsFromMessages,
+  type AcpForkPoint,
+} from "@openma/common/acp-fork";
 
 import type {
   AgentUIMessageItem,
@@ -56,6 +58,35 @@ const CLASH_COLLAPSIBLE_PRIMITIVES: ChatCollapsiblePrimitives = {
   Trigger: CollapsibleTrigger,
   Content: CollapsibleContent,
 };
+
+/** Per completed turn, the inclusive fork point at that turn's last assistant message. */
+export function messageForkPoints(
+  turns: readonly AgentUITurnState[],
+): Map<string, AcpForkPoint> {
+  const flat: { messageId: string; text: string; turnId: string }[] = [];
+  for (const turn of turns) {
+    const messages = new Map<string, string>();
+    for (const item of turn.items) {
+      if (item.kind !== "message" || item.role !== "assistant") continue;
+      const id = item.messageId ?? item.id.replace(/:segment:\d+$/, "");
+      messages.set(id, (messages.get(id) ?? "") + item.text);
+    }
+    for (const [messageId, text] of messages) {
+      flat.push({ messageId, text, turnId: turn.id });
+    }
+  }
+  const points = acpForkPointsFromMessages(flat);
+  const completedTurnIds = new Set(
+    turns.filter((turn) => turn.status === "completed").map((turn) => turn.id),
+  );
+  const result = new Map<string, AcpForkPoint>();
+  for (let index = 0; index < flat.length; index += 1) {
+    const entry = flat[index];
+    if (!completedTurnIds.has(entry.turnId)) continue;
+    result.set(entry.turnId, points[index]!);
+  }
+  return result;
+}
 
 export function RuntimeSessionTimeline({
   store,
