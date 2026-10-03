@@ -724,7 +724,22 @@ async function openDirectorStageTab(
     })()`,
   );
   await sleep(250);
-  if (!clickNavigatorTab(agentBrowser, stageName)) {
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `!!document.querySelector('[data-project-folder="director-stages"] [role="tab"][aria-label=${JSON.stringify(stageName)}]')`,
+    `director stage tab visible: ${stageName}`,
+    30000,
+  );
+  const directorTabSelector = `[data-project-folder="director-stages"] [role="tab"][aria-label=${JSON.stringify(stageName)}]`;
+  ensurePageTarget(agentBrowser, recovery);
+  agentBrowser(["click", directorTabSelector]);
+  const clicked = evalOnPage(
+    agentBrowser,
+    recovery,
+    `!!document.querySelector(${JSON.stringify(directorTabSelector)})`,
+  );
+  if (!clicked && !clickNavigatorTab(agentBrowser, stageName)) {
     throw new Error(`Director navigator tab not found: ${stageName}`);
   }
   await sleep(600);
@@ -1163,6 +1178,13 @@ async function main() {
       recovery,
       NAV_DIRECTOR,
       "Director Stage name",
+    );
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      `!!document.querySelector('[data-project-folder="director-stages"] [role="tab"][aria-label=${JSON.stringify(NAV_DIRECTOR)}]')`,
+      `director stage tab ${NAV_DIRECTOR}`,
+      120000,
     );
     clickNavigatorTab(agentBrowser, NAV_CANVAS);
     await sleep(800);
