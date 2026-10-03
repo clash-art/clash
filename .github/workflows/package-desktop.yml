@@ -119,8 +119,8 @@ jobs:
               exit 1
             fi
             api_key_file="${TMPDIR:-/tmp}/clash-apple-api-key-${tmp_id}.p8"
-            chmod 600 "${api_key_file}"
             printf '%s' "${APPLE_API_KEY_BASE64}" | base64 -D > "${api_key_file}"
+            chmod 600 "${api_key_file}"
             echo "APPLE_API_KEY=${api_key_file}" >> "$GITHUB_ENV"
             if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
               echo "CSC_FOR_PULL_REQUEST=true" >> "$GITHUB_ENV"
