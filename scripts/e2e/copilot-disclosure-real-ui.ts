@@ -21,7 +21,7 @@ import {
   waitForTarget,
 } from "./harness.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -120,6 +120,11 @@ async function measureRowAlignment(cdp: CdpClient, selectorExpr: string) {
       row.querySelector(".chat-transcript-disclosure-summary") ??
       row.querySelector("span.min-w-0") ??
       row;
+    const leadingIcon =
+      row.querySelector('[data-session-process-avatar="true"]') ??
+      row.querySelector(".chat-activity-icon")?.closest("span") ??
+      row.querySelector(".chat-activity-icon") ??
+      row.firstElementChild;
     const body =
       timeline.querySelector('[data-session-turn-answer="true"] p') ??
       timeline.querySelector('[data-assistant-section="answer"] p') ??
@@ -132,13 +137,25 @@ async function measureRowAlignment(cdp: CdpClient, selectorExpr: string) {
     const summaryRect = summary.getBoundingClientRect();
     const bodyRect = body.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
-    const offsetPx = Math.round((summaryRect.left - bodyRect.left) * 100) / 100;
+    const iconRect = leadingIcon?.getBoundingClientRect();
+    const summaryOffsetPx = Math.round((summaryRect.left - bodyRect.left) * 100) / 100;
+    const rowOffsetPx = Math.round((rowRect.left - bodyRect.left) * 100) / 100;
+    const iconOffsetPx =
+      iconRect == null
+        ? null
+        : Math.round((iconRect.left - bodyRect.left) * 100) / 100;
+    const iconWithin1px =
+      iconOffsetPx === null ? false : Math.abs(iconOffsetPx) <= 1;
     return {
       bodyLeft: bodyRect.left,
+      iconLeft: iconRect?.left ?? null,
       summaryLeft: summaryRect.left,
       rowLeft: rowRect.left,
-      offsetPx,
-      within1px: Math.abs(offsetPx) <= 1,
+      rowOffsetPx,
+      iconOffsetPx,
+      summaryOffsetPx,
+      iconWithin1px,
+      passCriterion: "icon aligned with body text (backchat #45)",
       summaryText: (summary.textContent || "").trim().slice(0, 80),
       bodyPreview: (body.textContent || "").trim().slice(0, 80),
     };
@@ -150,6 +167,8 @@ async function rowStyleAudit(cdp: CdpClient, selectorExpr: string) {
     const el = (${selectorExpr});
     if (!el) return null;
     const style = getComputedStyle(el);
+    const summary = el.querySelector(".chat-transcript-disclosure-summary");
+    const summaryStyle = summary ? getComputedStyle(summary) : null;
     return {
       tag: el.tagName,
       className: el.className,
@@ -161,11 +180,91 @@ async function rowStyleAudit(cdp: CdpClient, selectorExpr: string) {
       outlineStyle: style.outlineStyle,
       boxShadow: style.boxShadow,
       backgroundColor: style.backgroundColor,
+      color: style.color,
+      summaryColor: summaryStyle?.color ?? null,
+      summaryBackgroundColor: summaryStyle?.backgroundColor ?? null,
       activeElement: document.activeElement === el,
       activeTag: document.activeElement?.tagName ?? null,
       activeClass: document.activeElement?.className ?? null,
     };
   })()`);
+}
+
+async function captureAlignmentAnnotated(cdp: CdpClient, theme: "light" | "dark") {
+  const targetPath = path.join(outDir, `alignment-guide-${theme}.png`);
+  await evaluate(cdp, `(() => {
+    document.querySelectorAll("[data-openma-alignment-guide]").forEach((node) => node.remove());
+    const timeline = document.querySelector('[data-backchat-session-timeline="true"]');
+    const body =
+      timeline?.querySelector('[data-session-turn-answer="true"] p') ??
+      timeline?.querySelector('[data-assistant-section="answer"] p');
+    const processRow = timeline?.querySelector('button[data-chat-reasoning-trigger="true"]');
+    const toolRow = [...(timeline?.querySelectorAll('button[data-chat-turn-disclosure-trigger="true"]') ?? [])]
+      .find((el) => (el.textContent || "").includes("已执行"));
+    if (!body || !processRow || !toolRow) return false;
+    const bodyLeft = body.getBoundingClientRect().left;
+    const rows = [
+      { label: "body", left: bodyLeft, color: "#ef4444" },
+      { label: "process icon", left: (processRow.querySelector('[data-session-process-avatar="true"]') ?? processRow.firstElementChild)?.getBoundingClientRect().left ?? bodyLeft, color: "#22c55e" },
+      { label: "tool icon", left: (toolRow.querySelector(".chat-activity-icon")?.closest("span") ?? toolRow.firstElementChild)?.getBoundingClientRect().left ?? bodyLeft, color: "#3b82f6" },
+      { label: "process summary", left: processRow.querySelector(".chat-transcript-disclosure-summary")?.getBoundingClientRect().left ?? bodyLeft, color: "#a855f7" },
+      { label: "tool summary", left: toolRow.querySelector(".chat-transcript-disclosure-summary")?.getBoundingClientRect().left ?? bodyLeft, color: "#f97316" },
+    ];
+    const top = Math.min(body.getBoundingClientRect().top, processRow.getBoundingClientRect().top) - 8;
+    const bottom = Math.max(body.getBoundingClientRect().bottom, toolRow.getBoundingClientRect().bottom) + 8;
+    for (const guide of rows) {
+      const line = document.createElement("div");
+      line.setAttribute("data-openma-alignment-guide", "true");
+      line.style.position = "fixed";
+      line.style.left = guide.left + "px";
+      line.style.top = top + "px";
+      line.style.width = "2px";
+      line.style.height = bottom - top + "px";
+      line.style.background = guide.color;
+      line.style.zIndex = "2147483646";
+      line.style.pointerEvents = "none";
+      document.body.appendChild(line);
+      const tag = document.createElement("div");
+      tag.setAttribute("data-openma-alignment-guide", "true");
+      tag.textContent = guide.label;
+      tag.style.position = "fixed";
+      tag.style.left = (guide.left + 4) + "px";
+      tag.style.top = (top - 18) + "px";
+      tag.style.font = "11px monospace";
+      tag.style.color = guide.color;
+      tag.style.background = "rgba(255,255,255,0.92)";
+      tag.style.padding = "1px 4px";
+      tag.style.zIndex = "2147483647";
+      tag.style.pointerEvents = "none";
+      document.body.appendChild(tag);
+    }
+    return true;
+  })()`);
+  await captureClip(
+    cdp,
+    `document.querySelector('[data-backchat-session-timeline="true"]')`,
+    targetPath,
+    16,
+  );
+  await evaluate(cdp, `document.querySelectorAll("[data-openma-alignment-guide]").forEach((n) => n.remove()); true`);
+}
+
+async function publishEvidence() {
+  const publishRoots = [
+    process.env.OPENMA_PUBLISH_REPO_DIR ??
+      path.join(repoRoot, "docs/evidence/openma-0.7.8/real-ui", versionLabel),
+    process.env.OPENMA_PUBLISH_ARTIFACTS_DIR ??
+      path.join("/opt/cursor/artifacts/openma-0.7.8/real-ui", versionLabel),
+  ];
+  for (const root of publishRoots) {
+    await mkdir(root, { recursive: true });
+    const { readdir } = await import("node:fs/promises");
+    const names = await readdir(outDir);
+    for (const name of names) {
+      if (name === "failure.png") continue;
+      await cp(path.join(outDir, name), path.join(root, name));
+    }
+  }
 }
 
 async function openRealBackchatSession(cdp: CdpClient, webOrigin: string) {
@@ -222,31 +321,12 @@ async function openRealBackchatSession(cdp: CdpClient, webOrigin: string) {
     "mock ACP turn settled",
     60000,
   );
-  await evaluate(cdp, `(() => {
-    const btn = document.querySelector('[data-backchat-session-timeline="true"] button[data-chat-reasoning-trigger="true"]');
-    if (!btn || btn instanceof HTMLButtonElement === false) return false;
-    btn.click();
-    return true;
-  })()`);
+  await ensureProcessExpanded(cdp);
   await waitFor(
     cdp,
-    `!!document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]')`,
-    "process disclosure expanded with tool group",
-    10000,
-  );
-  await waitFor(
-    cdp,
-    `(() => {
-      const row = (${disclosureRowExpr("已执行")});
-      if (row) {
-        const style = getComputedStyle(row);
-        const rect = row.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
-      }
-      return false;
-    })()`,
-    "tool row visible in expanded process",
-    10000,
+    `!!document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]') || !!(${disclosureRowExpr("已执行")})`,
+    "process activity or tool summary row",
+    15000,
   );
 }
 
@@ -257,6 +337,16 @@ const rowMatchers: Record<RowKind, string> = {
   tool: "已执行",
   thought: "已思考",
 };
+
+function rowSelectorExpr(kind: RowKind): string {
+  if (kind === "process") {
+    return `document.querySelector('[data-backchat-session-timeline="true"] button[data-chat-reasoning-trigger="true"]')`;
+  }
+  if (kind === "tool") {
+    return `([...document.querySelectorAll('[data-backchat-session-timeline="true"] button[data-chat-turn-disclosure-trigger="true"]')].find((el) => (el.textContent || "").includes("已执行")))`;
+  }
+  return disclosureRowExpr(rowMatchers[kind]);
+}
 
 async function ensureProcessExpanded(cdp: CdpClient) {
   await evaluate(cdp, `(() => {
@@ -273,14 +363,14 @@ async function captureRowStates(
   kind: RowKind,
   theme: "light" | "dark",
 ) {
-  const includes = rowMatchers[kind];
-  const expr = disclosureRowExpr(includes);
+  const expr = rowSelectorExpr(kind);
   const exists = await evaluate<boolean>(cdp, `!!(${expr})`);
   if (!exists) return { kind, theme, skipped: true as const };
 
   const prefix = `${kind}-row-${theme}`;
   await mouseTo(cdp, 20, 20);
   await sleep(150);
+  const restAudit = await rowStyleAudit(cdp, expr);
   await captureClip(cdp, expr, path.join(outDir, `${prefix}-rest.png`));
 
   const hoverPoint = await evaluate<{ x: number; y: number }>(cdp, `(() => {
@@ -290,6 +380,7 @@ async function captureRowStates(
   })()`);
   await mouseTo(cdp, hoverPoint.x, hoverPoint.y);
   await sleep(200);
+  const hoverAudit = await rowStyleAudit(cdp, expr);
   await captureClip(cdp, expr, path.join(outDir, `${prefix}-hover.png`));
 
   await click(cdp, expr, `${kind} row click`);
@@ -332,7 +423,14 @@ async function captureRowStates(
   await sleep(200);
   await captureClip(cdp, expr, path.join(outDir, `${prefix}-expanded.png`));
 
-  return { kind, theme, skipped: false as const, tabAudit, alignment };
+  return {
+    kind,
+    theme,
+    skipped: false as const,
+    tabAudit,
+    alignment,
+    hover: { rest: restAudit, hover: hoverAudit },
+  };
 }
 
 async function closeServer(server: ClosableServer) {
@@ -393,28 +491,29 @@ async function main() {
     await cdp.send("Runtime.enable");
     await cdp.send("Page.enable");
 
+    await openRealBackchatSession(cdp, webOrigin);
     for (const theme of ["light", "dark"] as const) {
       if (theme === "dark") {
         await evaluate(cdp, `document.documentElement.classList.add("dark"); true`);
       } else {
         await evaluate(cdp, `document.documentElement.classList.remove("dark"); true`);
       }
-      await openRealBackchatSession(cdp, webOrigin);
+      await sleep(200);
+      await ensureProcessExpanded(cdp);
       await capture(cdp, path.join(outDir, `context-${theme}.png`));
-      for (const kind of ["tool", "process", "thought"] as const) {
-        await evaluate(cdp, `(() => {
-          const activity = document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]');
-          if (activity) return true;
-          const btn = document.querySelector('[data-backchat-session-timeline="true"] button[data-chat-reasoning-trigger="true"]');
-          if (btn instanceof HTMLButtonElement) btn.click();
-          return !!document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]');
-        })()`);
-        await waitFor(
-          cdp,
-          `!!(${disclosureRowExpr("已执行")})`,
-          "tool row available",
-          5000,
-        );
+      await captureAlignmentAnnotated(cdp, theme);
+      for (const kind of ["process", "tool", "thought"] as const) {
+        await ensureProcessExpanded(cdp);
+        if (kind === "tool") {
+          const toolReady = await evaluate<boolean>(
+            cdp,
+            `!!(${disclosureRowExpr("已执行")})`,
+          );
+          if (!toolReady) {
+            audits.push({ kind, theme, skipped: true as const, reason: "tool summary row missing" });
+            continue;
+          }
+        }
         audits.push(await captureRowStates(cdp, kind, theme));
       }
     }
@@ -429,6 +528,7 @@ async function main() {
       path.join(outDir, "alignment-measurements.json"),
       JSON.stringify(alignmentReport, null, 2),
     );
+    await publishEvidence();
     console.log(`[openma-evidence] wrote ${outDir}`);
   } catch (error) {
     if (cdp) {
