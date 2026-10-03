@@ -1,0 +1,106 @@
+name: macOS update e2e
+
+# Signed update proof for pull requests. Never publishes a release.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-update-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'ci:package')
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: Configure macOS code signing
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          CSC_KEY_PASSWORD_LEGACY: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          for name in MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_API_KEY_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!name:-}" ]; then
+              echo "missing ${name}"
+              exit 1
+            fi
+          done
+          csc_key_password="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD_LEGACY:-}}"
+          echo "CLASH_DESKTOP_MAC_SIGN_MODE=developer-id" >> "$GITHUB_ENV"
+          echo "CSC_IDENTITY_AUTO_DISCOVERY=true" >> "$GITHUB_ENV"
+          {
+            echo "CSC_LINK<<EOF"
+            printf '%s\n' "${MAC_CSC_LINK}"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+          {
+            echo "CSC_KEY_PASSWORD<<EOF"
+            printf '%s\n' "${csc_key_password}"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+          tmp_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+          api_key_file="${TMPDIR:-/tmp}/clash-apple-api-key-${tmp_id}.p8"
+          printf '%s' "${APPLE_API_KEY_BASE64}" | base64 -D > "${api_key_file}"
+          chmod 600 "${api_key_file}"
+          echo "APPLE_API_KEY=${api_key_file}" >> "$GITHUB_ENV"
+          echo "APPLE_API_KEY_ID=${APPLE_API_KEY_ID}" >> "$GITHUB_ENV"
+          echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}" >> "$GITHUB_ENV"
+          echo "APPLE_TEAM_ID=962863MJ5J" >> "$GITHUB_ENV"
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            echo "CSC_FOR_PULL_REQUEST=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Test update harness helpers
+        run: pnpm --dir apps/desktop test scripts/macos-update-e2e.test.ts
+
+      - name: Build two notarized preview versions
+        env:
+          CLASH_UPDATE_CHANNEL: preview
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          pnpm prepare:desktop-pack
+          CLASH_UPDATE_BUILD=910001 pnpm --filter @clash/desktop pack:mac:arm64:update
+          CLASH_UPDATE_BUILD=910002 pnpm --filter @clash/desktop pack:mac:arm64:update
+
+      - name: Run macOS update e2e
+        run: pnpm --dir apps/desktop test:macos-update-e2e apps/desktop/release
+
+      - name: Remove Apple notarization API key
+        if: always()
+        env:
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
+        run: |
+          if [ -n "${APPLE_API_KEY:-}" ]; then
+            rm -f "${APPLE_API_KEY}"
+          fi
+
+      - name: Upload update evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-update-e2e-${{ github.sha }}
+          path: |
+            apps/desktop/test-results/macos-update-e2e.txt
+            apps/desktop/test-results/clash-update-evidence.log
+            apps/desktop/test-results/installed-app.log
+          if-no-files-found: ignore

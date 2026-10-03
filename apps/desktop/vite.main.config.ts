@@ -69,6 +69,7 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       external: [
         "electron",
+        "electron-updater",
         "@remotion/bundler",
         "@remotion/renderer",
         "loro-crdt",
