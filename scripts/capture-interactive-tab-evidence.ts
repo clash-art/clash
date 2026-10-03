@@ -677,34 +677,55 @@ async function prepareDirectorInspectorTabs(
     return;
   }
   ensurePageTarget(agentBrowser, recovery);
-  if (!clickButtonByLabel(agentBrowser, "Add scene element")) {
-    throw new Error("Director Add scene element control missing");
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (
+      evalOnPage(
+        agentBrowser,
+        recovery,
+        `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
+      )
+    ) {
+      return;
+    }
+    if (!clickButtonByLabel(agentBrowser, "Add scene element")) {
+      throw new Error("Director Add scene element control missing");
+    }
+    await sleep(500);
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      `[...document.querySelectorAll('[role="menuitem"]')].some((item) => (item.textContent || "").includes("Add editable actor"))`,
+      "director add actor menu",
+      20000,
+    );
+    const clicked = evalOnPage(agentBrowser, recovery, `(() => {
+      const item = [...document.querySelectorAll('[role="menuitem"]')].find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        const style = getComputedStyle(candidate);
+        return (candidate.textContent || "").includes("Add editable actor") &&
+          rect.width > 0 && rect.height > 0 &&
+          style.display !== "none" && style.visibility !== "hidden" &&
+          candidate.getAttribute("aria-disabled") !== "true";
+      });
+      if (!item) return false;
+      item.scrollIntoView({ block: "center", inline: "nearest" });
+      item.click();
+      return true;
+    })()`);
+    if (clicked) {
+      await waitForEvalRecovered(
+        agentBrowser,
+        recovery,
+        `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
+        "mannequin inspector tabs",
+        45000,
+      );
+      return;
+    }
+    agentBrowser(["press", "Escape"], { allowFailure: true });
+    await sleep(400);
   }
-  await sleep(400);
-  await waitForEvalRecovered(
-    agentBrowser,
-    recovery,
-    `[...document.querySelectorAll('[role="menuitem"]')].some((item) => (item.textContent || "").includes("Add editable actor"))`,
-    "director add actor menu",
-    20000,
-  );
-  if (
-    !evalOnPage(agentBrowser, recovery, `(() => {
-      const item = [...document.querySelectorAll('[role="menuitem"]')]
-        .find((candidate) => (candidate.textContent || "").includes("Add editable actor"));
-      item?.click();
-      return !!item;
-    })()`)
-  ) {
-    throw new Error("Director Add editable actor menu item missing");
-  }
-  await waitForEvalRecovered(
-    agentBrowser,
-    recovery,
-    `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
-    "mannequin inspector tabs",
-    30000,
-  );
+  throw new Error("Director Add editable actor menu item missing");
 }
 
 async function openDirectorStageTab(
