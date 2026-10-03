@@ -4,7 +4,7 @@
  * Usage:
  *   CLASH_TAB_EVIDENCE_PHASE=before|after tsx scripts/capture-interactive-tab-evidence.ts
  */
-import { cp, mkdir, readdir } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -38,6 +38,250 @@ const sessionName = `tab-evidence-${phase}-${Date.now().toString(36)}`;
 
 const repoEvidenceDir = path.join(repoRoot, "docs", "evidence", "interactive-state-styling");
 const artifactsDir = "/opt/cursor/artifacts/interactive-state-styling";
+
+const PRIMARY_PROJECT = "Tab Evidence Project";
+const NAV_CANVAS = "Main";
+const NAV_TIMELINE = "Evidence Timeline";
+const NAV_DIRECTOR = "Evidence Director";
+
+type TabStyleSample = {
+  phase: string;
+  surface: string;
+  theme: string;
+  state: string;
+  ariaSelected: string | null;
+  background: string;
+  color: string;
+  outline: string;
+  boxShadow: string;
+};
+
+const styleAudit: TabStyleSample[] = [];
+
+function outFileZoom(surface: string, theme: string, state: string) {
+  return path.join(outDir, `${phase}-${surface}-${theme}-${state}-zoom.png`);
+}
+
+function tabStyleExpression(selector: string) {
+  return `(() => {
+    const el = document.querySelector(${JSON.stringify(selector)});
+    if (!el) return null;
+    const style = getComputedStyle(el);
+    return {
+      ariaSelected: el.getAttribute("aria-selected"),
+      background: style.backgroundColor,
+      color: style.color,
+      outline: style.outlineStyle !== "none" ? style.outlineColor + " " + style.outlineWidth : "none",
+      boxShadow: style.boxShadow,
+    };
+  })()`;
+}
+
+async function recordTabStyle(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  surface: string,
+  theme: string,
+  state: string,
+  selector: string,
+) {
+  const sample = evalOnPage(agentBrowser, recovery, tabStyleExpression(selector)) as Omit<
+    TabStyleSample,
+    "phase" | "surface" | "theme" | "state"
+  > | null;
+  if (sample) styleAudit.push({ phase, surface, theme, state, ...sample });
+}
+
+async function writeStyleAudit() {
+  const target = path.join(repoEvidenceDir, "computed-styles.json");
+  await mkdir(repoEvidenceDir, { recursive: true });
+  let existing: TabStyleSample[] = [];
+  try {
+    existing = JSON.parse(await readFile(target, "utf8")) as TabStyleSample[];
+  } catch {
+    existing = [];
+  }
+  const merged = [...existing.filter((row) => row.phase !== phase), ...styleAudit];
+  await writeFile(target, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  await mkdir(artifactsDir, { recursive: true });
+  await cp(target, path.join(artifactsDir, "computed-styles.json"));
+}
+
+function topNavTabSelector(title: string) {
+  return `[data-desktop-workspace-tab="true"] [role="tab"][aria-label=${JSON.stringify(title)}]`;
+}
+
+function navigatorTabSelector(label: string) {
+  return `[aria-label="Project navigator"] [role="tab"][aria-label=${JSON.stringify(label)}]`;
+}
+
+async function selectWorkspaceTab(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  title: string,
+) {
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `[...document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]')].some((tab) => tab.getAttribute("aria-label") === ${JSON.stringify(title)})`,
+    `workspace tab present: ${title}`,
+    30000,
+  );
+  if (!clickWorkspaceTab(agentBrowser, title)) {
+    throw new Error(`Workspace tab not found: ${title}`);
+  }
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `document.querySelector(${JSON.stringify(topNavTabSelector(title))})?.getAttribute("aria-selected") === "true"`,
+    `workspace tab selected: ${title}`,
+    15000,
+  );
+}
+
+async function openSettingsWorkspaceTab(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  evalOnPage(agentBrowser, recovery, `(() => {
+    window.history.pushState({}, "", "/settings");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    return location.pathname;
+  })()`);
+  await waitForEvalRecovered(agentBrowser, recovery, `location.pathname === "/settings"`, "settings route", 20000);
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `[...document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]')].some((tab) => tab.getAttribute("aria-label") === "Settings")`,
+    "settings workspace tab",
+    20000,
+  );
+}
+
+async function navigateProjectPath(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  projectPath: string,
+) {
+  evalOnPage(agentBrowser, recovery, `(() => {
+    window.history.pushState({}, "", ${JSON.stringify(projectPath)});
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    return location.pathname;
+  })()`);
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `location.pathname === ${JSON.stringify(projectPath)}`,
+    `project route ${projectPath}`,
+    30000,
+  );
+}
+
+async function hoverSelector(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  selector: string,
+  label: string,
+) {
+  ensurePageTarget(agentBrowser, recovery);
+  agentBrowser(["hover", selector]);
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return false;
+      const bg = getComputedStyle(el).backgroundColor;
+      return bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+    })()`,
+    `hover background on ${label}`,
+    10000,
+  );
+}
+
+async function movePointerOffTabs(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  ensurePageTarget(agentBrowser, recovery);
+  agentBrowser(["hover", '[data-desktop-dashboard="true"]']);
+  await sleep(150);
+}
+
+async function screenshotElement(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  selector: string,
+  target: string,
+) {
+  ensurePageTarget(agentBrowser, recovery);
+  agentBrowser(["screenshot", selector, target]);
+}
+
+async function focusWorkspaceTabKeyboard(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  title: string,
+  selectedTitle: string,
+) {
+  ensurePageTarget(agentBrowser, recovery);
+  agentBrowser(["click", topNavTabSelector(selectedTitle)]);
+  await sleep(150);
+  for (let i = 0; i < 14; i += 1) {
+    const match = evalOnPage(
+      agentBrowser,
+      recovery,
+      `document.activeElement?.getAttribute("aria-label") === ${JSON.stringify(title)}`,
+    );
+    if (match) break;
+    agentBrowser(["press", "ArrowLeft"]);
+    await sleep(80);
+  }
+}
+
+async function focusNavigatorTabKeyboard(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  label: string,
+  selectedLabel: string,
+) {
+  ensurePageTarget(agentBrowser, recovery);
+  agentBrowser(["click", navigatorTabSelector(selectedLabel)]);
+  await sleep(150);
+  for (let i = 0; i < 14; i += 1) {
+    const match = evalOnPage(
+      agentBrowser,
+      recovery,
+      `(() => {
+        const active = document.activeElement;
+        const text = (active?.innerText || active?.textContent || active?.getAttribute("aria-label") || "").trim();
+        return text.includes(${JSON.stringify(label)});
+      })()`,
+    );
+    if (match) break;
+    agentBrowser(["press", "ArrowUp"]);
+    await sleep(80);
+  }
+}
+
+function markDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
+  return evalJson(agentBrowser, `(() => {
+    const wanted = ${JSON.stringify(label)};
+    document.querySelectorAll("[data-tab-evidence-target]").forEach((el) => el.removeAttribute("data-tab-evidence-target"));
+    const root = document.querySelector('[aria-label="Mannequin inspector sections"]');
+    const tab = [...(root?.querySelectorAll('[role="tab"]') ?? [])].find((candidate) => {
+      const value = (candidate.innerText || candidate.textContent || "").trim();
+      return value === wanted;
+    });
+    if (!tab) return false;
+    tab.setAttribute("data-tab-evidence-target", "true");
+    return true;
+  })()`);
+}
+
+const directorEvidenceTab =
+  '[aria-label="Mannequin inspector sections"] [role="tab"][data-tab-evidence-target="true"]';
+const directorInspectorRoot = '[aria-label="Mannequin inspector sections"]';
 
 function ensurePageTarget(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
@@ -215,17 +459,33 @@ async function captureNavigatorStates(
   await sleep(400);
   clickNavigatorTab(agentBrowser, tabA);
   await sleep(350);
+  await recordTabStyle(agentBrowser, recovery, "navigator", theme, "selected-rest", navigatorTabSelector(tabA));
   await screenshot(agentBrowser, recovery, outFile("navigator", theme, "selected-rest"));
   clickNavigatorTab(agentBrowser, tabB);
   await sleep(350);
-  movePointerAway(agentBrowser);
-  await sleep(200);
+  await movePointerOffTabs(agentBrowser, recovery);
+  await recordTabStyle(
+    agentBrowser,
+    recovery,
+    "navigator",
+    theme,
+    "previous-tab-mouse-away",
+    navigatorTabSelector(tabA),
+  );
   await screenshot(agentBrowser, recovery, outFile("navigator", theme, "previous-tab-mouse-away"));
-  hoverNavigatorTab(agentBrowser, tabA);
-  await sleep(250);
+  await hoverSelector(agentBrowser, recovery, navigatorTabSelector(tabA), tabA);
+  await recordTabStyle(agentBrowser, recovery, "navigator", theme, "hover-inactive", navigatorTabSelector(tabA));
   await screenshot(agentBrowser, recovery, outFile("navigator", theme, "hover-inactive"));
-  await focusNavigatorTabWithArrows(agentBrowser, tabA);
-  await sleep(250);
+  await focusNavigatorTabKeyboard(agentBrowser, recovery, tabA, tabB);
+  await sleep(200);
+  await recordTabStyle(
+    agentBrowser,
+    recovery,
+    "navigator",
+    theme,
+    "focus-visible",
+    navigatorTabSelector(tabA),
+  );
   await screenshot(agentBrowser, recovery, outFile("navigator", theme, "focus-visible"));
 }
 
@@ -238,30 +498,35 @@ async function captureTopNavStates(
 ) {
   setTheme(agentBrowser, theme);
   await sleep(400);
-  clickWorkspaceTab(agentBrowser, tabA);
-  await sleep(500);
+  await selectWorkspaceTab(agentBrowser, recovery, tabA);
+  await sleep(350);
+  await recordTabStyle(agentBrowser, recovery, "topnav", theme, "selected-rest", topNavTabSelector(tabA));
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "selected-rest"));
-  clickWorkspaceTab(agentBrowser, tabB);
-  await sleep(500);
-  movePointerAway(agentBrowser);
-  await sleep(200);
+  await selectWorkspaceTab(agentBrowser, recovery, tabB);
+  await sleep(350);
+  await movePointerOffTabs(agentBrowser, recovery);
+  await recordTabStyle(
+    agentBrowser,
+    recovery,
+    "topnav",
+    theme,
+    "previous-tab-mouse-away",
+    topNavTabSelector(tabA),
+  );
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "previous-tab-mouse-away"));
-  evalOnPage(agentBrowser, recovery, `(() => {
-    const tabs = [...document.querySelectorAll('[data-desktop-workspace-tab="true"] [role="tab"]')];
-    const inactive = tabs.find((t) => t.getAttribute("aria-selected") !== "true");
-    inactive?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    inactive?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
-    return !!inactive;
-  })()`);
-  await sleep(250);
+  await hoverSelector(agentBrowser, recovery, topNavTabSelector(tabA), tabA);
+  await recordTabStyle(agentBrowser, recovery, "topnav", theme, "hover-inactive", topNavTabSelector(tabA));
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "hover-inactive"));
-  evalOnPage(agentBrowser, recovery, `(() => {
-    const tab = document.querySelector('[data-desktop-workspace-tab="true"] [role="tab"]');
-    tab?.focus();
-    return !!tab;
-  })()`);
-  for (let i = 0; i < 8; i += 1) agentBrowser(["press", "ArrowRight"]);
-  await sleep(250);
+  await focusWorkspaceTabKeyboard(agentBrowser, recovery, tabA, tabB);
+  await sleep(200);
+  await recordTabStyle(
+    agentBrowser,
+    recovery,
+    "topnav",
+    theme,
+    "focus-visible",
+    topNavTabSelector(tabA),
+  );
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "focus-visible"));
 }
 
@@ -349,7 +614,7 @@ async function openDirectorStageTab(
     recovery,
     `!!document.querySelector('[data-testid="project-director-stage-editor"]')`,
     "director stage editor",
-    45000,
+    90000,
   );
   await prepareDirectorInspectorTabs(agentBrowser, recovery);
 }
@@ -363,19 +628,45 @@ async function captureDirectorInspectorStates(
   await sleep(400);
   clickDirectorInspectorTab(agentBrowser, "Properties");
   await sleep(300);
+  markDirectorInspectorTab(agentBrowser, "Properties");
+  await recordTabStyle(agentBrowser, recovery, "director", theme, "selected-rest", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "selected-rest"));
+  await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "selected-rest"));
   clickDirectorInspectorTab(agentBrowser, "Pose");
   await sleep(300);
-  movePointerAway(agentBrowser);
-  await sleep(200);
+  await movePointerOffTabs(agentBrowser, recovery);
+  markDirectorInspectorTab(agentBrowser, "Properties");
+  await recordTabStyle(
+    agentBrowser,
+    recovery,
+    "director",
+    theme,
+    "previous-tab-mouse-away",
+    directorEvidenceTab,
+  );
   await screenshot(agentBrowser, recovery, outFile("director", theme, "previous-tab-mouse-away"));
-  hoverDirectorInspectorTab(agentBrowser, "Properties");
-  await sleep(250);
+  await screenshotElement(
+    agentBrowser,
+    recovery,
+    directorInspectorRoot,
+    outFileZoom("director", theme, "previous-tab-mouse-away"),
+  );
+  markDirectorInspectorTab(agentBrowser, "Properties");
+  await hoverSelector(agentBrowser, recovery, directorEvidenceTab, "Properties");
+  await recordTabStyle(agentBrowser, recovery, "director", theme, "hover-inactive", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "hover-inactive"));
-  agentBrowser(["click", '[aria-label="Mannequin inspector sections"] [role="tab"]']);
-  for (let i = 0; i < 6; i += 1) agentBrowser(["press", "ArrowRight"]);
-  await sleep(250);
+  await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "hover-inactive"));
+  markDirectorInspectorTab(agentBrowser, "Properties");
+  evalJson(agentBrowser, `(() => {
+    const tab = document.querySelector(${JSON.stringify(directorEvidenceTab)});
+    tab?.focus();
+    return !!tab;
+  })()`);
+  for (let i = 0; i < 4; i += 1) agentBrowser(["press", "ArrowRight"]);
+  await sleep(200);
+  await recordTabStyle(agentBrowser, recovery, "director", theme, "focus-visible", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "focus-visible"));
+  await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "focus-visible"));
 }
 
 async function waitForCdpPageTarget(
@@ -706,14 +997,14 @@ async function main() {
       throw new Error("New Project missing");
     }
     await sleep(500);
-    await submitProjectCreateDialogRecovered(agentBrowser, recovery, "Tab Evidence Project");
-    await waitForEvalRecovered(
+    await submitProjectCreateDialogRecovered(agentBrowser, recovery, PRIMARY_PROJECT);
+    const primaryProjectPath = (await waitForEvalRecovered(
       agentBrowser,
       recovery,
-      `location.pathname.startsWith("/projects/") && location.pathname !== "/projects"`,
+      `location.pathname.startsWith("/projects/") && location.pathname !== "/projects" && location.pathname`,
       "project editor",
       60000,
-    );
+    )) as string;
     await waitForEvalRecovered(
       agentBrowser,
       recovery,
@@ -729,7 +1020,7 @@ async function main() {
       120000,
     );
 
-    clickNavigatorTab(agentBrowser, "Main");
+    clickNavigatorTab(agentBrowser, NAV_CANVAS);
     await sleep(800);
 
     await waitForEvalRecovered(
@@ -746,10 +1037,10 @@ async function main() {
     await submitNamePromptDialogRecovered(
       agentBrowser,
       recovery,
-      "Evidence Director",
+      NAV_DIRECTOR,
       "Director Stage name",
     );
-    clickNavigatorTab(agentBrowser, "Main");
+    clickNavigatorTab(agentBrowser, NAV_CANVAS);
     await sleep(800);
 
     ensurePageTarget(agentBrowser, recovery);
@@ -758,7 +1049,7 @@ async function main() {
     await submitNamePromptDialogRecovered(
       agentBrowser,
       recovery,
-      "Evidence Timeline",
+      NAV_TIMELINE,
       "Timeline name",
     );
     await waitForEvalRecovered(
@@ -769,18 +1060,41 @@ async function main() {
       90000,
     );
 
-    clickWorkspaceTab(agentBrowser, "Main");
-    await sleep(500);
+    const primaryTabTitle = (evalOnPage(
+      agentBrowser,
+      recovery,
+      `document.querySelector('[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"]')?.getAttribute("aria-label") || ${JSON.stringify(PRIMARY_PROJECT)}`,
+    ) ?? PRIMARY_PROJECT) as string;
+
+    await openSettingsWorkspaceTab(agentBrowser, recovery);
+    await selectWorkspaceTab(agentBrowser, recovery, primaryTabTitle);
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      `location.pathname === ${JSON.stringify(primaryProjectPath)}`,
+      "primary project route after settings tab",
+      30000,
+    );
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      `!!document.querySelector('[aria-label="Project navigator"]')`,
+      "project navigator after settings tab",
+      120000,
+    );
 
     for (const theme of ["light", "dark"] as const) {
-      clickWorkspaceTab(agentBrowser, "Main");
+      await selectWorkspaceTab(agentBrowser, recovery, primaryTabTitle);
       await sleep(300);
-      await captureTopNavStates(agentBrowser, recovery, theme, "Main", "Evidence Timeline");
-      await captureNavigatorStates(agentBrowser, recovery, theme, "Main", "Evidence Timeline");
-      await openDirectorStageTab(agentBrowser, recovery, "Evidence Director");
+      await captureTopNavStates(agentBrowser, recovery, theme, primaryTabTitle, "Settings");
+      clickNavigatorTab(agentBrowser, NAV_CANVAS);
+      await sleep(300);
+      await captureNavigatorStates(agentBrowser, recovery, theme, NAV_CANVAS, NAV_TIMELINE);
+      await openDirectorStageTab(agentBrowser, recovery, NAV_DIRECTOR);
       await captureDirectorInspectorStates(agentBrowser, recovery, theme);
     }
 
+    await writeStyleAudit();
     await syncEvidenceCopies();
     const pngCount = (await readdir(outDir)).filter((name) => name.endsWith(".png")).length;
     console.log(`[tab-evidence] phase=${phase} path=${outDir} png=${pngCount} runtime=electron`);
