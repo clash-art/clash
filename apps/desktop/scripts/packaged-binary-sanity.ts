@@ -176,20 +176,43 @@ export function verifyMacSeal(appBundle: string): void {
   }
 }
 
+export function verifyMacSignatureDetails(appBundle: string): void {
+  const result = runMacVerificationCommand("codesign", ["-dv", appBundle]);
+  if (result.status !== 0) {
+    throw new Error(
+      `codesign -dv failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
+    );
+  }
+}
+
 export function verifyMacGatekeeper(appBundle: string): void {
   const result = runMacVerificationCommand("spctl", ["-a", "-vv", appBundle]);
+  const combined = `${result.stdout}\n${result.stderr}`;
   if (result.status !== 0) {
     throw new Error(
       `spctl assess failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
     );
   }
+  if (
+    macDistributionSignMode() === "developer-id" &&
+    (!combined.includes("accepted") ||
+      !combined.includes("Notarized Developer ID"))
+  ) {
+    throw new Error(
+      `spctl did not report a notarized Developer ID assessment for ${appBundle}\n${combined}`,
+    );
+  }
 }
 
 export function verifyMacStapler(appBundle: string): void {
-  const result = runMacVerificationCommand("stapler", ["validate", appBundle]);
+  const result = runMacVerificationCommand("xcrun", [
+    "stapler",
+    "validate",
+    appBundle,
+  ]);
   if (result.status !== 0) {
     throw new Error(
-      `stapler validate failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
+      `xcrun stapler validate failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
     );
   }
 }
@@ -229,12 +252,17 @@ export function runPackagedBinarySanity(options: {
       );
     }
     verifyMacSeal(resolved.appBundle);
+    verifyMacSignatureDetails(resolved.appBundle);
     if (macDistributionSignMode() === "developer-id") {
       verifyMacGatekeeper(resolved.appBundle);
       verifyMacStapler(resolved.appBundle);
     } else {
       runMacVerificationCommand("spctl", ["-a", "-vv", resolved.appBundle]);
-      runMacVerificationCommand("stapler", ["validate", resolved.appBundle]);
+      runMacVerificationCommand("xcrun", [
+        "stapler",
+        "validate",
+        resolved.appBundle,
+      ]);
     }
   }
   const hostArch = options.hostArch ?? process.arch;

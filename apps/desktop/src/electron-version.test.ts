@@ -368,8 +368,7 @@ describe("desktop Electron runtime", () => {
     );
     expect(packageCheck).toContain("workflow_dispatch:");
     expect(packageCheck).toContain("ci:package");
-    expect(packageCheck).not.toContain("secrets:");
-    expect(packageCheck).not.toContain("CSC_LINK");
+    expect(packageCheck).toContain("secrets: inherit");
     expect(packageCheck).not.toContain("NPM_TOKEN");
   });
 
@@ -399,6 +398,12 @@ describe("desktop Electron runtime", () => {
     expect(builderConfig).toContain("notarize: true");
     expect(builderConfig).not.toContain('identity: "-"');
     expect(release).toContain("secrets: inherit");
+    expect(
+      readFileSync(
+        new URL("../../../.github/workflows/package-check.yml", import.meta.url),
+        "utf8",
+      ),
+    ).toContain("secrets: inherit");
   });
 
   it("packages the local-model Python SDK as an unpacked desktop resource", () => {
