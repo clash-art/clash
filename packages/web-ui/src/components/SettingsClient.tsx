@@ -8144,16 +8144,19 @@ function AgentsSection() {
         enabled,
       );
       setHarnesses(savedHarnesses);
-      if (enabled && !target?.auth) {
+      if (enabled) {
         setHarnessSavingAction(harnessId, "probe");
         await Promise.all([
           loadHarnesses({
             probe: "auth",
             refresh: true,
+            showGlobalLoading: false,
             loadingMessage: "Checking agent auth and models…",
           }),
           rt.refresh({ probe: "config", refresh: true }),
         ]);
+      } else {
+        await rt.refresh({ probe: "config", refresh: true });
       }
     } catch (e) {
       const harness = harnesses.find((candidate) => candidate.id === harnessId);
