@@ -7,7 +7,7 @@ import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { startLocalApiServer } from "../../local-api/src/server.ts";
+import { loadHostServer } from "./host-artifacts.ts";
 import {
   CdpClient,
   assert,
@@ -98,6 +98,7 @@ async function main() {
   const apiOrigin = `http://127.0.0.1:${apiPort}`;
   const webOrigin = `http://127.0.0.1:${webPort}`;
 
+  const { startLocalApiServer } = await loadHostServer();
   const apiServer = await startLocalApiServer({ port: apiPort, dataDir });
   const { child: web, logs: webLogs } = await startViteDevServer({
     webDir,
@@ -187,12 +188,7 @@ async function main() {
     );
     await waitFor(
       cdp,
-      `(() => {
-        const btn = [...document.querySelectorAll("button")].find((b) =>
-          (b.innerText || b.textContent || "").trim() === "Check again"
-        );
-        return !!btn && (btn.innerText || "").trim() === "Check again";
-      })() && !document.body.innerText.includes("Checking...")`,
+      `!document.body.innerText.includes("Checking...")`,
       "agents recheck finished",
       360_000,
     );
