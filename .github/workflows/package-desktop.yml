@@ -2,6 +2,17 @@ name: Package Desktop
 
 on:
   workflow_call:
+    secrets:
+      MAC_CSC_LINK:
+        required: false
+      MAC_CSC_KEY_PASSWORD:
+        required: false
+      APPLE_API_KEY_BASE64:
+        required: false
+      APPLE_API_KEY_ID:
+        required: false
+      APPLE_API_ISSUER:
+        required: false
 
 jobs:
   package:
@@ -34,10 +45,6 @@ jobs:
             asset: apps/desktop/release/Clash-Desktop-Linux-x64.AppImage
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      # electron-builder skips its ad-hoc identity "-" seal on pull requests.
-      # Package Check is a pull_request. This keeps that seal without Developer
-      # ID secrets or notarization.
-      CSC_FOR_PULL_REQUEST: "true"
       NODE_OPTIONS: "--max-old-space-size=4096"
     steps:
       - uses: actions/checkout@v7
@@ -47,6 +54,43 @@ jobs:
         with:
           linux-apt-packages: ffmpeg libfuse2
 
+      - name: Configure macOS code signing
+        if: runner.os == 'macOS'
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MAC_CSC_LINK}" ]; then
+            echo "CLASH_DESKTOP_MAC_SIGN_MODE=developer-id" >> "$GITHUB_ENV"
+            {
+              echo "CSC_LINK<<EOF"
+              echo "${MAC_CSC_LINK}"
+              echo "EOF"
+              echo "CSC_KEY_PASSWORD<<EOF"
+              echo "${MAC_CSC_KEY_PASSWORD}"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+            echo "APPLE_TEAM_ID=962863MJ5J" >> "$GITHUB_ENV"
+            echo "APPLE_API_KEY_ID=${APPLE_API_KEY_ID}" >> "$GITHUB_ENV"
+            echo "APPLE_API_ISSUER=${APPLE_API_ISSUER}" >> "$GITHUB_ENV"
+            if [ -z "${APPLE_API_KEY_BASE64}" ]; then
+              echo "Developer ID signing requested but APPLE_API_KEY_BASE64 is missing." >&2
+              exit 1
+            fi
+            api_key_file="$(mktemp -t clash-apple-api-key).p8"
+            chmod 600 "${api_key_file}"
+            printf '%s' "${APPLE_API_KEY_BASE64}" | base64 --decode > "${api_key_file}"
+            echo "APPLE_API_KEY=${api_key_file}" >> "$GITHUB_ENV"
+          else
+            echo "CLASH_DESKTOP_MAC_SIGN_MODE=ad-hoc" >> "$GITHUB_ENV"
+            echo "CSC_FOR_PULL_REQUEST=true" >> "$GITHUB_ENV"
+            echo 'CLASH_ELECTRON_BUILDER_EXTRA_ARGS=--config.mac.identity=- --config.mac.notarize=false' >> "$GITHUB_ENV"
+          fi
+
       - name: Package desktop
         run: pnpm run ${{ matrix.script }}
 
@@ -54,7 +98,17 @@ jobs:
         env:
           CLASH_DESKTOP_PACK_PLATFORM: ${{ matrix.platform }}
           CLASH_DESKTOP_VERIFY_MAC_SEAL: ${{ runner.os == 'macOS' && '1' || '0' }}
+          CLASH_DESKTOP_MAC_SIGN_MODE: ${{ env.CLASH_DESKTOP_MAC_SIGN_MODE }}
         run: node apps/desktop/scripts/packaged-binary-sanity.ts
+
+      - name: Remove Apple notarization API key
+        if: always() && runner.os == 'macOS'
+        env:
+          APPLE_API_KEY: ${{ env.APPLE_API_KEY }}
+        run: |
+          if [ -n "${APPLE_API_KEY:-}" ]; then
+            rm -f "${APPLE_API_KEY}"
+          fi
 
       - name: Upload desktop installer
         uses: actions/upload-artifact@v7

@@ -216,7 +216,9 @@ describe("desktop Electron runtime", () => {
     expect(packaging).toContain("pnpm run ${{ matrix.script }}");
     expect(packaging).toContain("script: pack:desktop:mac:arm64");
     expect(packaging).toContain('CSC_IDENTITY_AUTO_DISCOVERY: "false"');
-    expect(packaging).toContain('CSC_FOR_PULL_REQUEST: "true"');
+    expect(packaging).toContain("CSC_FOR_PULL_REQUEST=true");
+    expect(packaging).toContain("MAC_CSC_LINK");
+    expect(packaging).toContain("CLASH_DESKTOP_MAC_SIGN_MODE=developer-id");
     expect(packaging).toContain("packaged-binary-sanity.ts");
     expect(release).toContain("publish-desktop-preview:");
     expect(
@@ -378,6 +380,25 @@ describe("desktop Electron runtime", () => {
     );
 
     expect(builderConfig).not.toMatch(/\bbuild\/acp-(?:bin|node)\b/);
+  });
+
+  it("configures macOS hardened signing and notarization for Developer ID CI", () => {
+    const builderConfig = readFileSync(
+      new URL("../electron-builder.yml", import.meta.url),
+      "utf8",
+    );
+    const release = readFileSync(
+      new URL("../../../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(builderConfig).toContain("appId: app.clash.video");
+    expect(builderConfig).not.toContain("dev.openma.backchat");
+    expect(builderConfig).toContain("hardenedRuntime: true");
+    expect(builderConfig).toContain("entitlements: build/entitlements.mac.plist");
+    expect(builderConfig).toContain("notarize: true");
+    expect(builderConfig).not.toContain('identity: "-"');
+    expect(release).toContain("secrets: inherit");
   });
 
   it("packages the local-model Python SDK as an unpacked desktop resource", () => {
