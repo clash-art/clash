@@ -121,8 +121,11 @@ async function measureRowAlignment(cdp: CdpClient, selectorExpr: string) {
       row.querySelector("span.min-w-0") ??
       row;
     const body =
+      timeline.querySelector('[data-session-turn-answer="true"] p') ??
+      timeline.querySelector('[data-assistant-section="answer"] p') ??
       timeline.querySelector("[data-chat-markdown='settled'] p") ??
       timeline.querySelector(".chat-assistant-markdown p") ??
+      timeline.querySelector('[data-session-turn-answer="true"]') ??
       timeline.querySelector("[data-chat-markdown='settled']") ??
       timeline.querySelector(".chat-assistant-markdown");
     if (!body) return { error: "body anchor missing" };
@@ -255,6 +258,16 @@ const rowMatchers: Record<RowKind, string> = {
   thought: "已思考",
 };
 
+async function ensureProcessExpanded(cdp: CdpClient) {
+  await evaluate(cdp, `(() => {
+    const activity = document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]');
+    if (activity) return true;
+    const btn = document.querySelector('[data-backchat-session-timeline="true"] button[data-chat-reasoning-trigger="true"]');
+    if (btn instanceof HTMLButtonElement) btn.click();
+    return !!document.querySelector('[data-backchat-session-timeline="true"] [data-session-process-activity]:not([hidden]) [data-tool-group-size]');
+  })()`);
+}
+
 async function captureRowStates(
   cdp: CdpClient,
   kind: RowKind,
@@ -310,6 +323,9 @@ async function captureRowStates(
   const tabAudit = await rowStyleAudit(cdp, expr);
   await captureClip(cdp, expr, path.join(outDir, `${prefix}-tab-focus.png`));
 
+  if (kind === "tool" || kind === "thought") {
+    await ensureProcessExpanded(cdp);
+  }
   const alignment = await measureRowAlignment(cdp, expr);
 
   await click(cdp, expr, `${kind} row expand`);
