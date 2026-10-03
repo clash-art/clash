@@ -124,14 +124,7 @@ jobs:
           fi
 
       - name: Package desktop
-        env:
-          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          CSC_KEY_PASSWORD_LEGACY: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: |
-          if [ "${CLASH_DESKTOP_MAC_SIGN_MODE:-ad-hoc}" = "developer-id" ]; then
-            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD_LEGACY}}"
-          fi
-          pnpm run ${{ matrix.script }}
+        run: pnpm run ${{ matrix.script }}
 
       - name: Sanity-check the packaged binary
         env:
