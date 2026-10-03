@@ -76,11 +76,11 @@ jobs:
             cert_file="${TMPDIR:-/tmp}/clash-mac-cert-${tmp_id}.p12"
             cert_ready=false
             pass_file="${TMPDIR:-/tmp}/clash-csc-pass-${tmp_id}"
-            chmod 600 "${pass_file}"
             printf '%s' "${csc_key_password}" > "${pass_file}"
+            chmod 600 "${pass_file}"
             link_file="${TMPDIR:-/tmp}/clash-csc-link-${tmp_id}"
-            chmod 600 "${link_file}"
             printf '%s' "${MAC_CSC_LINK}" > "${link_file}"
+            chmod 600 "${link_file}"
             for decode_pass in 1 2; do
               p12_ok=false
               if base64 -D -i "${link_file}" -o "${cert_file}" 2>/dev/null; then
