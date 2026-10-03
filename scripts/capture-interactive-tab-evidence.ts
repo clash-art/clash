@@ -210,7 +210,7 @@ async function hoverSelector(
       5000,
     );
   } catch (error) {
-    console.warn(`[tab-evidence] hover background check skipped for ${label}: ${String(error)}`);
+    console.warn(`[tab-evidence-warn] hover background check skipped for ${label}: ${String(error)}`);
   }
 }
 
@@ -461,6 +461,12 @@ async function syncEvidenceCopies() {
     await cp(source, path.join(repoEvidenceDir, name));
     await cp(source, path.join(artifactsDir, name));
   }
+  const styles = path.join(repoEvidenceDir, "computed-styles.json");
+  try {
+    await cp(styles, path.join(artifactsDir, "computed-styles.json"));
+  } catch {
+    // written by writeStyleAudit
+  }
 }
 
 async function captureNavigatorStates(
@@ -623,13 +629,16 @@ async function openDirectorStageTab(
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   stageName: string,
 ) {
-  clickNavigatorTab(agentBrowser, stageName);
+  if (!clickNavigatorTab(agentBrowser, stageName)) {
+    throw new Error(`Director navigator tab not found: ${stageName}`);
+  }
+  await sleep(600);
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
-    `!!document.querySelector('[data-testid="project-director-stage-editor"]')`,
+    `!!document.querySelector('[data-testid="project-director-stage-editor"]') || !!document.querySelector('[aria-label="Mannequin inspector sections"]')`,
     "director stage editor",
-    90000,
+    120000,
   );
   await prepareDirectorInspectorTabs(agentBrowser, recovery);
 }
@@ -999,6 +1008,16 @@ async function main() {
     agentBrowser(["close"], { allowFailure: true });
     agentBrowser(["connect", String(cdpPort)]);
     await waitForDesktopShell(agentBrowser, recovery);
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      `(() => {
+        const links = [...document.querySelectorAll("a, button")];
+        return links.some((el) => (el.textContent || "").trim() === "Projects" || el.getAttribute("aria-label") === "Projects");
+      })()`,
+      "Projects navigation control",
+      60000,
+    );
 
     if (!clickByText(agentBrowser, "Projects") && !clickButtonByLabel(agentBrowser, "Projects")) {
       throw new Error("Projects link missing");
