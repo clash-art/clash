@@ -1037,10 +1037,13 @@ async function submitNamePromptDialogRecovered(
           if (!input) return false;
           dialog?.scrollIntoView({ block: "center", inline: "nearest" });
           input.focus({ preventScroll: true });
-          input.value = ${JSON.stringify(name)};
+          const wanted = ${JSON.stringify(name)};
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+          if (setter) setter.call(input, wanted);
+          else input.value = wanted;
           input.dispatchEvent(new Event("input", { bubbles: true }));
           input.dispatchEvent(new Event("change", { bubbles: true }));
-          return input.value === ${JSON.stringify(name)};
+          return input.value === wanted;
         })()`,
       );
       if (!focused) {
@@ -1056,7 +1059,7 @@ async function submitNamePromptDialogRecovered(
         `(() => {
           const input = document.querySelector(${JSON.stringify(inputSelector)});
           const submit = document.querySelector('[role="dialog"] button[type="submit"]');
-          return input?.value === ${JSON.stringify(name)} && !!submit && !submit.disabled;
+          return input?.value?.trim() === ${JSON.stringify(name)} && !!submit && !submit.disabled;
         })()`,
         "enabled name prompt continue",
         25000,
