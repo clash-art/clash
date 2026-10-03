@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Interactive state fixture</title>
+    <style>
+      :root {
+        --control-bg-hover: #ededed;
+        --select-item-focus: #e4e4e4;
+        --select-item-selected: #dce9f7;
+        --select-item-selected-foreground: #1e293b;
+        --select-foreground: #242424;
+        --control-focus: #5f5e5b;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        margin: 24px;
+        background: #fff;
+      }
+      .stack {
+        display: grid;
+        gap: 12px;
+        max-width: 280px;
+      }
+      .label {
+        font-size: 11px;
+        color: #898885;
+        margin-bottom: 4px;
+      }
+      .app-interactive-surface {
+        background: transparent;
+        outline: none;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        text-align: left;
+        width: 100%;
+        color: #5f5e5b;
+      }
+      .app-interactive-surface:hover:not(:disabled) {
+        background: var(--control-bg-hover);
+      }
+      .app-interactive-surface:focus-visible {
+        outline: 2px solid color-mix(in srgb, var(--control-focus) 36%, transparent);
+        outline-offset: 2px;
+      }
+      .app-interactive-selected {
+        background: var(--select-item-selected);
+        color: var(--select-item-selected-foreground);
+      }
+      .app-select-item.app-select-focus.app-interactive-surface {
+        cursor: default;
+      }
+      .app-select-focus:is([data-highlighted], :focus-visible) {
+        background: var(--select-item-focus);
+      }
+      .row {
+        border: 1px solid #e2e2e2;
+        border-radius: 12px;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="stack" id="capture-root">
+      <div class="row" data-scene="rest">
+        <div class="label">Rest</div>
+        <button type="button" class="app-interactive-surface" id="rest-button">
+          Sidebar row
+        </button>
+        <div class="app-select-item app-select-focus app-interactive-surface" id="rest-menu">
+          Menu item
+        </div>
+      </div>
+      <div class="row" data-scene="selected">
+        <div class="label">Selected</div>
+        <button
+          type="button"
+          class="app-interactive-surface app-interactive-selected"
+        >
+          Active tab
+        </button>
+      </div>
+      <div class="row" data-scene="expanded">
+        <div class="label">Expanded (data-state=open, not highlighted)</div>
+        <button
+          type="button"
+          class="app-interactive-surface"
+          data-state="open"
+          id="open-trigger"
+        >
+          Folder trigger
+        </button>
+      </div>
+    </div>
+  </body>
+</html>

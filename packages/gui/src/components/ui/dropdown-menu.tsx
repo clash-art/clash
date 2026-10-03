@@ -29,8 +29,8 @@ export function dropdownMenuItemClassName({
   disabled?: boolean;
   className?: string;
 } = {}) {
-  return cn(
-    "app-select-item app-select-focus relative flex min-h-8 w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none select-none",
+    return cn(
+    "app-select-item app-select-focus relative flex min-h-8 w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-none select-none app-interactive-surface",
     "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
     disabled && "pointer-events-none opacity-50",
     className,
