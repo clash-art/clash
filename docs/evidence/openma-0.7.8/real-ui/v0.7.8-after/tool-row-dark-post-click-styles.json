@@ -1,0 +1,18 @@
+{
+  "tag": "BUTTON",
+  "className": "chat-interactive-surface chat-interactive-surface--transcript activity-disclosure-row min-h-6 text-[13px]",
+  "text": "已执行 4 项操作",
+  "ariaExpanded": "true",
+  "outline": "rgb(165, 165, 165) none 3px",
+  "outlineColor": "rgb(165, 165, 165)",
+  "outlineWidth": "3px",
+  "outlineStyle": "none",
+  "boxShadow": "none",
+  "backgroundColor": "rgba(0, 0, 0, 0)",
+  "color": "rgb(165, 165, 165)",
+  "summaryColor": "rgb(165, 165, 165)",
+  "summaryBackgroundColor": "rgba(0, 0, 0, 0)",
+  "activeElement": true,
+  "activeTag": "BUTTON",
+  "activeClass": "chat-interactive-surface chat-interactive-surface--transcript activity-disclosure-row min-h-6 text-[13px]"
+}
