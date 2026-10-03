@@ -44,7 +44,6 @@ jobs:
             script: pack:desktop:linux
             asset: apps/desktop/release/Clash-Desktop-Linux-x64.AppImage
     env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
       NODE_OPTIONS: "--max-old-space-size=4096"
     steps:
       - uses: actions/checkout@v7
@@ -72,9 +71,15 @@ jobs:
               exit 1
             fi
             echo "CLASH_DESKTOP_MAC_SIGN_MODE=developer-id" >> "$GITHUB_ENV"
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=true" >> "$GITHUB_ENV"
             {
               echo "CSC_LINK<<EOF"
               printf '%s\n' "${MAC_CSC_LINK}"
+              echo "EOF"
+            } >> "$GITHUB_ENV"
+            {
+              echo "CSC_KEY_PASSWORD<<EOF"
+              printf '%s\n' "${csc_key_password}"
               echo "EOF"
             } >> "$GITHUB_ENV"
             tmp_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
@@ -85,13 +90,16 @@ jobs:
             chmod 600 "${pass_file}"
             printf '%s' "${MAC_CSC_LINK}" > "${link_file}"
             chmod 600 "${link_file}"
-            if base64 -D -i "${link_file}" -o "${cert_file}" 2>/dev/null \
-              && chmod 600 "${cert_file}" \
-              && { openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" 2>/dev/null \
-                || openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" -legacy 2>/dev/null; }; then
-              echo "MAC_CSC_LINK openssl preflight succeeded."
+            if base64 -D -i "${link_file}" -o "${cert_file}" 2>/dev/null; then
+              chmod 600 "${cert_file}"
+              if openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" 2>/dev/null \
+                || openssl pkcs12 -in "${cert_file}" -noout -passin "file:${pass_file}" -legacy 2>/dev/null; then
+                echo "MAC_CSC_LINK openssl preflight succeeded."
+              else
+                echo "::warning::MAC_CSC_LINK openssl preflight failed (non-blocking); electron-builder will import the certificate."
+              fi
             else
-              echo "::warning::MAC_CSC_LINK openssl preflight failed (non-blocking); electron-builder will import the certificate."
+              echo "::warning::MAC_CSC_LINK base64 decode failed (non-blocking); electron-builder will import the certificate."
             fi
             rm -f "${pass_file}" "${link_file}" "${cert_file}"
             echo "APPLE_TEAM_ID=962863MJ5J" >> "$GITHUB_ENV"
@@ -110,14 +118,20 @@ jobs:
             fi
           else
             echo "CLASH_DESKTOP_MAC_SIGN_MODE=ad-hoc" >> "$GITHUB_ENV"
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
             echo "CSC_FOR_PULL_REQUEST=true" >> "$GITHUB_ENV"
             echo 'CLASH_ELECTRON_BUILDER_EXTRA_ARGS=--config.mac.identity=- --config.mac.notarize=false' >> "$GITHUB_ENV"
           fi
 
       - name: Package desktop
         env:
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD != '' && secrets.MAC_CSC_KEY_PASSWORD || secrets.CSC_KEY_PASSWORD }}
-        run: pnpm run ${{ matrix.script }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          CSC_KEY_PASSWORD_LEGACY: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          if [ "${CLASH_DESKTOP_MAC_SIGN_MODE:-ad-hoc}" = "developer-id" ]; then
+            export CSC_KEY_PASSWORD="${MAC_CSC_KEY_PASSWORD:-${CSC_KEY_PASSWORD_LEGACY}}"
+          fi
+          pnpm run ${{ matrix.script }}
 
       - name: Sanity-check the packaged binary
         env:

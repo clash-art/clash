@@ -215,7 +215,8 @@ describe("desktop Electron runtime", () => {
     expect(packaging).toContain("Clash-Desktop-${{ matrix.platform }}");
     expect(packaging).toContain("pnpm run ${{ matrix.script }}");
     expect(packaging).toContain("script: pack:desktop:mac:arm64");
-    expect(packaging).toContain('CSC_IDENTITY_AUTO_DISCOVERY: "false"');
+    expect(packaging).toContain("CSC_IDENTITY_AUTO_DISCOVERY=true");
+    expect(packaging).toContain("CSC_IDENTITY_AUTO_DISCOVERY=false");
     expect(packaging).toContain("CSC_FOR_PULL_REQUEST=true");
     expect(packaging).toContain("MAC_CSC_LINK");
     expect(packaging).toContain("CLASH_DESKTOP_MAC_SIGN_MODE=developer-id");
