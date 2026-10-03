@@ -97,9 +97,14 @@
   --control-bg: transparent;
   --control-bg-hover: var(--accent);
   --control-bg-open: var(--info-soft);
-  --app-tab-hover-bg: var(--control-bg-hover);
+  --app-tab-hover-bg: color-mix(
+    in srgb,
+    var(--clash-content-primary) 6%,
+    transparent
+  );
   --app-tab-selected-bg: var(--select-item-selected, color-mix(in srgb, var(--clash-content-primary) 8%, var(--clash-warm-muted)));
   --app-tab-selected-fg: var(--select-item-selected-foreground, var(--clash-content-primary));
+  --app-tab-focus-ring: color-mix(in srgb, var(--control-focus) 55%, transparent);
   --control-border: var(--input);
   --control-focus: var(--ring);
   --input-placeholder: var(--muted-foreground);
@@ -5838,20 +5843,25 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   background: var(--app-tab-hover-bg);
 }
 
-.app-tab-trigger-selected {
+.app-tab-trigger-selected,
+.app-tab-trigger-selected:hover,
+[role="tab"][aria-selected="true"],
+[role="tab"][aria-selected="true"]:hover {
   background: var(--app-tab-selected-bg);
   color: var(--app-tab-selected-fg);
+}
+
+.app-tab-trigger:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--app-tab-focus-ring);
+  outline-offset: 2px;
 }
 
 .app-tab-trigger-rest:focus:not(:focus-visible),
 [role="tab"]:focus:not(:focus-visible):not([aria-selected="true"]) {
   background: transparent;
   box-shadow: none;
-}
-
-[role="tab"][aria-selected="true"] {
-  background: var(--app-tab-selected-bg);
-  color: var(--app-tab-selected-fg);
+  outline: none;
 }
 
 [role="tab"]:not([aria-selected="true"]) {
