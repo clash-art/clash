@@ -137,17 +137,89 @@ export function launchPackagedBinary(executable: string): string {
   return version;
 }
 
-export function verifyMacSeal(appBundle: string): void {
-  const result = spawnSync(
-    "codesign",
-    ["--verify", "--deep", "--strict", "--verbose=2", appBundle],
-    { encoding: "utf8" },
+export interface MacCommandResult {
+  command: string;
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export function runMacVerificationCommand(
+  command: string,
+  args: string[],
+): MacCommandResult {
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  const report: MacCommandResult = {
+    command: [command, ...args].join(" "),
+    status: result.status,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+  console.log(
+    `$ ${report.command}\n${report.stdout}${report.stderr ? `${report.stderr}` : ""}`,
   );
+  return report;
+}
+
+export function verifyMacSeal(appBundle: string): void {
+  const result = runMacVerificationCommand("codesign", [
+    "--verify",
+    "--deep",
+    "--strict",
+    "--verbose=2",
+    appBundle,
+  ]);
   if (result.status !== 0) {
     throw new Error(
       `codesign verify failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
     );
   }
+}
+
+export function verifyMacSignatureDetails(appBundle: string): void {
+  const result = runMacVerificationCommand("codesign", ["-dv", appBundle]);
+  if (result.status !== 0) {
+    throw new Error(
+      `codesign -dv failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
+    );
+  }
+}
+
+export function verifyMacGatekeeper(appBundle: string): void {
+  const result = runMacVerificationCommand("spctl", ["-a", "-vv", appBundle]);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  if (result.status !== 0) {
+    throw new Error(
+      `spctl assess failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
+    );
+  }
+  if (
+    macDistributionSignMode() === "developer-id" &&
+    (!combined.includes("accepted") ||
+      !combined.includes("Notarized Developer ID"))
+  ) {
+    throw new Error(
+      `spctl did not report a notarized Developer ID assessment for ${appBundle}\n${combined}`,
+    );
+  }
+}
+
+export function verifyMacStapler(appBundle: string): void {
+  const result = runMacVerificationCommand("xcrun", [
+    "stapler",
+    "validate",
+    appBundle,
+  ]);
+  if (result.status !== 0) {
+    throw new Error(
+      `xcrun stapler validate failed for ${appBundle}\n${result.stdout}\n${result.stderr}`,
+    );
+  }
+}
+
+export function macDistributionSignMode(): "developer-id" | "ad-hoc" {
+  const mode = process.env.CLASH_DESKTOP_MAC_SIGN_MODE ?? "ad-hoc";
+  return mode === "developer-id" ? "developer-id" : "ad-hoc";
 }
 
 /** An arm64 GitHub macOS runner cannot execute the x64 Electron binary under a short timeout. */
@@ -180,6 +252,18 @@ export function runPackagedBinarySanity(options: {
       );
     }
     verifyMacSeal(resolved.appBundle);
+    verifyMacSignatureDetails(resolved.appBundle);
+    if (macDistributionSignMode() === "developer-id") {
+      verifyMacGatekeeper(resolved.appBundle);
+      verifyMacStapler(resolved.appBundle);
+    } else {
+      runMacVerificationCommand("spctl", ["-a", "-vv", resolved.appBundle]);
+      runMacVerificationCommand("xcrun", [
+        "stapler",
+        "validate",
+        resolved.appBundle,
+      ]);
+    }
   }
   const hostArch = options.hostArch ?? process.arch;
   if (!shouldLaunchPackagedBinary(options.platform, hostArch)) {

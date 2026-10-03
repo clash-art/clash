@@ -41,9 +41,11 @@ extraResources:
 mac:
   category: public.app-category.video
   icon: build/icon.icns
-  # Invited preview: seal the complete app instead of retaining Electron's
-  # invalid pre-package signature. Public Beta still needs Developer ID/notary.
-  identity: "-"
+  hardenedRuntime: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  gatekeeperAssess: false
+  notarize: true
   artifactName: Clash-Desktop-macOS-${arch}.${ext}
   x64ArchFiles: "**/node_modules/{@anthropic-ai/claude-agent-sdk-*,@esbuild/*,@remotion/compositor-*}/**"
   files:
