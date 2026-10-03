@@ -224,6 +224,31 @@ describe("SessionManager lifecycle", () => {
           type: "session.ready",
           session_id: params.session_id,
           supports_session_fork: true,
+          supports_message_fork: true,
+        }),
+      );
+    } finally {
+      await manager.dispose(params.session_id);
+    }
+  });
+
+  it("does not offer message fork when the agent omitted session/fork", async () => {
+    mocks.runtimeStart.mockResolvedValue(
+      createAcpSession({ supportsSessionFork: false }),
+    );
+    const sent: ManagerOut[] = [];
+    const manager = new SessionManager((message) => sent.push(message));
+    const params = sessionParams("session-fork-absent");
+
+    await manager.start(params);
+
+    try {
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          type: "session.ready",
+          session_id: params.session_id,
+          supports_session_fork: false,
+          supports_message_fork: false,
         }),
       );
     } finally {

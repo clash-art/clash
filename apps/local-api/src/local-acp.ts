@@ -1,4 +1,4 @@
-import { supportsAcpMessageFork, type AcpForkPoint } from "@clash/shared-types";
+import { describeAcpForkFailure, type AcpForkPoint } from "@clash/shared-types";
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -2804,19 +2804,11 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     if (!agent) throw new Error("No enabled local agent harness found");
     const agentIdForConfigUpdates = agent.id;
     const harnessVersion = await this.installedHarnessVersion(agent.id);
-    if (params.forkPoint && !supportsAcpMessageFork(agent.id, harnessVersion)) {
-      throw new Error("This harness version does not support forking at a message. Update the harness first.");
-    }
+    const requestedFork = Boolean(params.forkFromAcpSessionId || params.forkPoint);
 
     let entry: LocalAcpSession;
     const send: SessionSender = (msg) => {
       if (isTransportDiagnosticManagerMessage(msg)) return;
-      if (isSessionReadyMessage(msg) && msg.supports_message_fork) {
-        msg.supports_message_fork = supportsAcpMessageFork(
-          agentIdForConfigUpdates,
-          harnessVersion,
-        );
-      }
       const normalizedMsg = normalizeSessionAuthenticationError(
         msg,
         agentIdForConfigUpdates,
@@ -2963,10 +2955,11 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     };
 
     entry.startPromise = Promise.resolve(entry.manager.start(startParams)).catch((error) => {
+      const raw = error instanceof Error ? error.message : String(error);
       send({
         type: "session.error",
         session_id: sessionId,
-        message: error instanceof Error ? error.message : String(error),
+        message: describeAcpForkFailure(raw, requestedFork),
       });
     });
 

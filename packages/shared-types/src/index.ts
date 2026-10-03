@@ -1673,8 +1673,10 @@ export {
 } from "./workspace-bundle.js";
 
 export {
+  ACP_SESSION_FORK_UNSUPPORTED,
   AcpForkPointSchema,
-  supportsAcpMessageFork,
+  describeAcpForkFailure,
+  OPENMA_SESSION_FORK_UNSUPPORTED,
   type AcpForkPoint,
 } from "./acp-fork.js";
 
