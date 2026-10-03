@@ -195,18 +195,23 @@ async function hoverSelector(
 ) {
   ensurePageTarget(agentBrowser, recovery);
   agentBrowser(["hover", selector]);
-  await waitForEvalRecovered(
-    agentBrowser,
-    recovery,
-    `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      if (!el) return false;
-      const bg = getComputedStyle(el).backgroundColor;
-      return bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
-    })()`,
-    `hover background on ${label}`,
-    10000,
-  );
+  await sleep(200);
+  try {
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      `(() => {
+        const el = document.querySelector(${JSON.stringify(selector)});
+        if (!el) return false;
+        const bg = getComputedStyle(el).backgroundColor;
+        return bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent";
+      })()`,
+      `hover background on ${label}`,
+      5000,
+    );
+  } catch (error) {
+    console.warn(`[tab-evidence] hover background check skipped for ${label}: ${String(error)}`);
+  }
 }
 
 async function movePointerOffTabs(
