@@ -59,4 +59,8 @@ jobs:
               --notes "Unsigned preview installers built from ${GITHUB_SHA}. Where agents co-create, humans are welcome too." \
               --prerelease
           fi
-          gh release upload desktop-preview desktop-artifacts/Clash-Desktop-* --clobber
+          upload=(desktop-artifacts/Clash-Desktop-*)
+          if [ -f desktop-artifacts/preview-mac.yml ]; then
+            upload+=(desktop-artifacts/preview-mac.yml)
+          fi
+          gh release upload desktop-preview "${upload[@]}" --clobber

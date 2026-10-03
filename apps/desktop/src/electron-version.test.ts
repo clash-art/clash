@@ -44,9 +44,13 @@ describe("desktop Electron runtime", () => {
     const dmgScript = manifest.scripts?.["pack:dmg"] ?? "";
     expect(dmgScript).toContain("electron-builder");
     expect(dmgScript).toContain("--publish never");
-    expect(builderConfig).toMatch(/^publish:\s+null$/m);
+    expect(builderConfig).toContain("provider: github");
+    expect(builderConfig).toContain("owner: clash-art");
+    expect(builderConfig).toContain("repo: clash");
     expect(builderConfig).toMatch(/^\s+icon:\s+build\/icon\.icns$/m);
     expect(builderConfig).toMatch(/target:\n(?:\s+-\s+\w+\n)*\s+-\s+dmg/m);
+    expect(builderConfig).toContain("- zip");
+    expect(manifest.dependencies?.["electron-updater"]).toBeTruthy();
   });
 
   it("defines deterministic installers for macOS, Windows, and Linux", () => {
@@ -71,7 +75,7 @@ describe("desktop Electron runtime", () => {
     expect(manifest.scripts ?? {}).toHaveProperty("pack:win");
     expect(manifest.scripts ?? {}).toHaveProperty("pack:linux");
     expect(manifest.scripts?.["pack:mac:arm64"] ?? "").toContain(
-      "--mac dmg --arm64",
+      "--mac dmg zip --arm64",
     );
     expect(manifest.scripts?.["pack:mac:x64"] ?? "").toContain(
       "--mac dmg --x64",

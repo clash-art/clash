@@ -3,12 +3,14 @@ import { fileURLToPath } from "node:url";
 
 import { app, dialog } from "electron";
 
+import { startDesktopAppUpdater } from "./app-updater";
 import { configureDesktopHost } from "./controller/host";
 import { createDesktopRuntimeController } from "./controller/runtime";
 import { createDesktopWindowController } from "./controller/windows";
 import { ownDesktopInstance } from "./single-instance";
 import { startDesktopWithRecovery } from "./startup-recovery";
 import { createDesktopFileLogSink, createDesktopLogger } from "./stdio-logger";
+import { createUpdateQuitGate } from "./update-quit";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 let recoverOwnedWindow = () => undefined;
@@ -25,6 +27,7 @@ if (ownsDesktopInstance) {
   const desktopLog = createDesktopLogger(process.stdout, process.stderr, {
     fileSink,
   });
+  const updateQuitGate = createUpdateQuitGate();
   app.on("will-quit", () => desktopLog.close());
   const runtimeController = createDesktopRuntimeController({
     moduleDir,
@@ -73,7 +76,10 @@ if (ownsDesktopInstance) {
         },
         quit: () => app.quit(),
       });
-      if (outcome === "started") app.on("activate", windowController.activate);
+      if (outcome === "started") {
+        app.on("activate", windowController.activate);
+        void startDesktopAppUpdater({ log: desktopLog, quitGate: updateQuitGate });
+      }
     })
     .catch((error) => {
       desktopLog.error("[desktop] unrecoverable startup failure", error);

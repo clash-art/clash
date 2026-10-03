@@ -2,7 +2,10 @@ appId: app.clash.video
 productName: Clash
 asar: true
 npmRebuild: false
-publish: null
+publish:
+  provider: github
+  owner: clash-art
+  repo: clash
 afterPack: scripts/prune-packaged-architectures.ts
 
 directories:
@@ -37,6 +40,8 @@ extraResources:
     to: clash-runtime/node_modules
     filter:
       - "**/*"
+  - from: build/update-metadata.json
+    to: update-metadata.json
 
 mac:
   category: public.app-category.video
@@ -59,6 +64,7 @@ mac:
   target:
     - dir
     - dmg
+    - zip
 
 win:
   icon: build/icon-1024.png

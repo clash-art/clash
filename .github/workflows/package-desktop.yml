@@ -124,7 +124,21 @@ jobs:
           fi
 
       - name: Package desktop
-        run: pnpm run ${{ matrix.script }}
+        shell: bash
+        env:
+          CLASH_UPDATE_CHANNEL: ${{ matrix.platform == 'macOS-arm64' && 'preview' || '' }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          if [ "${{ matrix.platform }}" = "macOS-arm64" ]; then
+            pnpm prepare:desktop-pack
+            pnpm --filter @clash/desktop pack:mac:arm64:update
+          else
+            pnpm run ${{ matrix.script }}
+          fi
 
       - name: Sanity-check the packaged binary
         env:
@@ -143,10 +157,22 @@ jobs:
           fi
 
       - name: Upload desktop installer
+        if: matrix.platform != 'macOS-arm64'
         uses: actions/upload-artifact@v7
         with:
           name: Clash-Desktop-${{ matrix.platform }}
           path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+      - name: Upload desktop macOS arm64 installers and update feed
+        if: matrix.platform == 'macOS-arm64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Clash-Desktop-${{ matrix.platform }}
+          path: |
+            apps/desktop/release/Clash-Desktop-macOS-arm64.dmg
+            apps/desktop/release/Clash-Desktop-macOS-arm64.zip
+            apps/desktop/release/preview-mac.yml
           if-no-files-found: error
 
       # The agent-first local v1 gate is the desktop-first acceptance check

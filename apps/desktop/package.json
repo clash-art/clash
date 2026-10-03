@@ -15,13 +15,14 @@
     "pack:dir": "electron-builder --dir --config electron-builder.yml",
     "pack:dmg": "electron-builder --mac dmg --arm64 --config electron-builder.yml --publish never",
     "pack:mac": "pnpm pack:mac:arm64",
-    "pack:mac:arm64": "electron-builder --mac dmg --arm64 --config electron-builder.yml --publish never ${CLASH_ELECTRON_BUILDER_EXTRA_ARGS:-}",
+    "pack:mac:arm64": "electron-builder --mac dmg zip --arm64 --config electron-builder.yml --publish never ${CLASH_ELECTRON_BUILDER_EXTRA_ARGS:-}",
+    "pack:mac:arm64:update": "node scripts/run-mac-pack.ts --mac dmg zip --arm64 --config electron-builder.yml",
     "pack:mac:x64": "electron-builder --mac dmg --x64 --config electron-builder.yml --publish never ${CLASH_ELECTRON_BUILDER_EXTRA_ARGS:-}",
     "pack:mac:universal": "electron-builder --mac dmg --universal --config electron-builder.yml --publish never ${CLASH_ELECTRON_BUILDER_EXTRA_ARGS:-}",
     "pack:win": "electron-builder --win nsis --x64 --config electron-builder.yml --publish never",
     "pack:linux": "electron-builder --linux AppImage --x64 --config electron-builder.yml --publish never",
     "prepare:harnesses": "node scripts/prepare-acp-harnesses.ts",
-    "prepare:pack": "node scripts/prepare-clash-cli.ts",
+    "prepare:pack": "node scripts/prepare-clash-cli.ts && node scripts/write-update-metadata.ts",
     "start": "electron . --desktop-static-renderer",
     "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "test": "vitest run",
@@ -46,11 +47,13 @@
     "test:startup:real-codex-resume": "node scripts/prepare-clash-cli.ts && pnpm prepare:harnesses && CLASH_E2E_REAL_CODEX=1 node e2e/real-codex-resume-agent-browser.ts",
     "test:startup:static": "node scripts/prepare-clash-cli.ts && pnpm prepare:harnesses && tsx e2e/startup-static.ts",
     "test:startup:ui": "tsx e2e/startup-ui-smoke.ts",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:macos-update-e2e": "node scripts/macos-update-e2e.ts"
   },
   "dependencies": {
     "@remotion/renderer": "4.0.507",
-    "@clash/shared-runtime": "workspace:*"
+    "@clash/shared-runtime": "workspace:*",
+    "electron-updater": "^6.6.2"
   },
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.47.0",
