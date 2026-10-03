@@ -135,7 +135,7 @@ const committedDist = [
   "dist/protocol/acp/index.js",
 ];
 
-/** A release asset is optional. v0.7.4 publishes the prebuilt tree only in git. */
+/** A release asset is optional. v0.7.6 publishes the prebuilt tree only in git. */
 export function tarballPinMode(url: string, digest: string): "tarball" | "git" {
   const hasUrl = url.trim().length > 0;
   const hasDigest = digest.trim().length > 0;
