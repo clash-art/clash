@@ -106,7 +106,7 @@
   },
   "dependencies": {
     "@cloudflare/containers": "^0.2.0",
-    "@openma/common": "github:openma-ai/openma-common#v0.7.6",
+    "@openma/common": "github:openma-ai/openma-common#v0.7.7",
     "better-auth": "^1.4.6",
     "better-auth-cloudflare": "^0.2.9",
     "zod": "^4"

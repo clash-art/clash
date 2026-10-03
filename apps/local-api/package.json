@@ -64,7 +64,7 @@
     "@ffmpeg-installer/ffmpeg": "1.1.0",
     "@ffprobe-installer/ffprobe": "2.1.2",
     "@hono/node-server": "^1.13.0",
-    "@openma/common": "github:openma-ai/openma-common#v0.7.6",
+    "@openma/common": "github:openma-ai/openma-common#v0.7.7",
     "ajv": "^8.20.0",
     "hono": "^4.7.10",
     "loro-crdt": "1.16.3",
