@@ -28,5 +28,3 @@ allowBuilds:
   ffmpeg-static: true
   sharp: set this to true or false
   workerd: set this to true or false
-patchedDependencies:
-  '@openma/common@0.5.0': 'patches/@openma__common@0.5.0.patch'

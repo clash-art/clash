@@ -15,10 +15,18 @@ import {
   type SessionConfigOption,
   type SessionModeState,
 } from "@agentclientprotocol/sdk";
-import { sessionConfigOptionsFromResponse } from "@openma/common/acp-runtime";
-import { NodeSpawner } from "./spawners/node.js";
+import { NodeSpawner } from "@openma/common/acp-runtime/node-spawner";
 import { withClashAcpExtensionCapabilities } from "./client-capabilities.js";
-import type { AgentSpec, ChildHandle, Spawner } from "./types.js";
+import type { AgentSpec, ChildHandle, Spawner } from "@openma/common/acp-runtime";
+
+function sessionConfigOptionsFromResponse(
+  value: NewSessionResponse | { configOptions?: SessionConfigOption[] | null } | undefined
+): SessionConfigOption[] {
+  if (!value) return [];
+  const options = value.configOptions;
+  if (!Array.isArray(options)) return [];
+  return options.map((option) => structuredClone(option));
+}
 
 export interface ProbeAgentConfigOptionsOptions {
   agent: AgentSpec;
