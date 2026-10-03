@@ -74,6 +74,7 @@ function createAcpSession(
     prompt?: AcpSession["prompt"];
     dispose?: AcpSession["dispose"];
     supportsSessionFork?: boolean;
+    agentInfo?: { name: string; version: string } | null;
   } = {},
 ): AcpSession {
   return {
@@ -81,7 +82,7 @@ function createAcpSession(
     acpSessionId: "acp-session",
     options: { agent: { command: "fake-acp" } } satisfies SessionOptions,
     authMethods: [],
-    agentInfo: null,
+    agentInfo: options.agentInfo ?? null,
     configOptions: [],
     modes: null,
     promptCapabilities: {},
@@ -208,13 +209,46 @@ describe("SessionManager lifecycle", () => {
     }
   });
 
-  it("announces ACP session fork support when the harness provides it", async () => {
+  it("announces whole-session fork without a message boundary when the adapter is not a checked version", async () => {
     mocks.runtimeStart.mockResolvedValue(
-      createAcpSession({ supportsSessionFork: true }),
+      createAcpSession({
+        supportsSessionFork: true,
+        agentInfo: {
+          name: "@agentclientprotocol/claude-agent-acp",
+          version: "0.47.0",
+        },
+      }),
     );
     const sent: ManagerOut[] = [];
     const manager = new SessionManager((message) => sent.push(message));
     const params = sessionParams("session-fork-capability");
+
+    await manager.start(params);
+
+    try {
+      expect(sent).toContainEqual(
+        expect.objectContaining({
+          type: "session.ready",
+          session_id: params.session_id,
+          supports_session_fork: true,
+          supports_message_fork: false,
+        }),
+      );
+    } finally {
+      await manager.dispose(params.session_id);
+    }
+  });
+
+  it("announces message-point fork only for a checked adapter that also advertises session/fork", async () => {
+    mocks.runtimeStart.mockResolvedValue(
+      createAcpSession({
+        supportsSessionFork: true,
+        agentInfo: { name: "codex-acp", version: "1.10.0" },
+      }),
+    );
+    const sent: ManagerOut[] = [];
+    const manager = new SessionManager((message) => sent.push(message));
+    const params = sessionParams("message-fork-capability");
 
     await manager.start(params);
 
@@ -234,7 +268,10 @@ describe("SessionManager lifecycle", () => {
 
   it("does not offer message fork when the agent omitted session/fork", async () => {
     mocks.runtimeStart.mockResolvedValue(
-      createAcpSession({ supportsSessionFork: false }),
+      createAcpSession({
+        supportsSessionFork: false,
+        agentInfo: { name: "codex-acp", version: "1.10.0" },
+      }),
     );
     const sent: ManagerOut[] = [];
     const manager = new SessionManager((message) => sent.push(message));
