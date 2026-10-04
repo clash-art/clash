@@ -56,8 +56,6 @@
     "electron-updater": "^6.6.2"
   },
   "devDependencies": {
-    "@agentclientprotocol/claude-agent-acp": "^0.47.0",
-    "@agentclientprotocol/codex-acp": "^1.1.7",
     "@clash/cli": "workspace:*",
     "@clash/local-api": "workspace:*",
     "@clash/render-server": "workspace:*",
@@ -74,6 +72,7 @@
     "vite": "^7.1.0",
     "vitest": "^4.1.4",
     "@clash/gui": "workspace:*",
-    "@clash/web": "workspace:*"
+    "@clash/web": "workspace:*",
+    "@openma/common": "github:openma-ai/openma-common#v0.7.9"
   }
 }

@@ -312,6 +312,7 @@ describe("desktop Electron runtime", () => {
     for (const relativePath of [
       "../../../package.json",
       "../../../apps/local-api/package.json",
+      "../../../apps/desktop/package.json",
       "../../../packages/web-ui/package.json",
       "../../../apps/web/package.json",
     ]) {

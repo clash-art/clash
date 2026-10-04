@@ -636,6 +636,37 @@ function createMockAcpSessionManager(send: SessionSender): SessionManagerLike {
   };
 }
 
+/** Deterministic DeepSeek-shaped replies for web/desktop evidence runs (no live API). */
+function createDshEchoSessionManager(send: SessionSender): SessionManagerLike {
+  return {
+    start: ({ session_id }) => {
+      send({
+        type: "session.ready",
+        session_id,
+        acp_session_id: "e2e-dsh-echo",
+        supports_session_fork: false,
+      });
+    },
+    prompt: async ({ session_id, turn_id, text }) => {
+      const reply = text.includes("DeepSeek harness OK")
+        ? "DeepSeek harness OK."
+        : `DeepSeek harness echo: ${text.trim().slice(0, 160)}`;
+      send({
+        type: "session.event",
+        session_id,
+        turn_id,
+        event: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: reply },
+        },
+      });
+      send({ type: "session.complete", session_id, turn_id });
+    },
+    cancel: () => undefined,
+    dispose: () => undefined,
+  };
+}
+
 function withMockHarnessUpdateFixture(
   adapter: LocalAcpRuntimeAdapter,
   localDataDir: string,
@@ -716,12 +747,17 @@ export function createConfiguredLocalAcpAdapter(
   }
   const harnessDownloadDir = join(localDataDir, "acp-bin");
   const acpBinDir = env.CLASH_ACP_TEST_BIN_DIR || harnessDownloadDir;
+  const dshEchoSessions = env.CLASH_E2E_DSH_ECHO === "1";
   return createLocalAcpAdapter({
     harnessConfig: createLocalHarnessConfigStore(localDataDir),
     runPreferences: createLocalAcpRunPreferencesStore(localDataDir),
     capabilityCache: createLocalAcpCapabilityCacheStore(localDataDir),
     harnessDownloadDir,
+    registryCachePath: join(localDataDir, "acp-registry-cache.json"),
     probeCwd: join(localDataDir, "acp-probe"),
+    ...(dshEchoSessions
+      ? { createSessionManager: createDshEchoSessionManager }
+      : {}),
     spawnEnv: {
       ...createLocalAgentToolEnv({
         dataDir: localDataDir,
@@ -730,6 +766,7 @@ export function createConfiguredLocalAcpAdapter(
         env,
       }),
       CLASH_ACP_BIN_DIR: acpBinDir,
+      OPENMA_ACP_BIN_DIR: acpBinDir,
     },
   });
 }
