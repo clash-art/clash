@@ -206,7 +206,7 @@ describe("desktop Electron runtime", () => {
     expect(packaging).toContain("platform: macOS-arm64");
     expect(packaging).toContain("platform: macOS-x64");
     expect(packaging).toContain(
-      "apps/desktop/release/Clash-Desktop-macOS-arm64.dmg",
+      "apps/desktop/release/Clash-Desktop-*-macOS-arm64.dmg",
     );
     expect(packaging).toContain(
       "apps/desktop/release/Clash-Desktop-macOS-x64.dmg",
@@ -467,5 +467,47 @@ describe("desktop Electron runtime", () => {
 
     expect(preload).toMatch(/mode:\s*runtimeConfig\.mode/);
     expect(preload).toMatch(/capabilities:\s*runtimeConfig\.capabilities/);
+  });
+
+  it("disables GitHub multipart range requests for differential updates", () => {
+    const updater = readFileSync(
+      new URL("./app-updater.ts", import.meta.url),
+      "utf8",
+    );
+    expect(updater).toContain("electronUpdaterFeedOptions(feed)");
+    expect(updater).not.toContain(
+      'setFeedURL({ provider: "generic", url: feed.url })',
+    );
+    const appUpdate = readFileSync(
+      new URL("./app-update.ts", import.meta.url),
+      "utf8",
+    );
+    expect(appUpdate).toContain("useMultipleRangeRequest: false");
+  });
+
+  it("prepares previous stable blockmaps before desktop stable publication", () => {
+    const stablePublish = readFileSync(
+      new URL(
+        "../../../.github/workflows/publish-desktop-stable.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(stablePublish).toContain("if: false &&");
+    expect(stablePublish).toContain("prepare-stable-release-assets.ts");
+    expect(stablePublish).toContain("previous-stable-blockmap.json");
+    const packaging = readFileSync(
+      new URL(
+        "../../../.github/workflows/package-desktop.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(packaging).toContain(".zip.blockmap");
+    const releaseWorkflow = readFileSync(
+      new URL("../../../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+    expect(releaseWorkflow).toContain("prepare-preview-release-assets.ts");
   });
 });

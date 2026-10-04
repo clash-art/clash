@@ -27,7 +27,7 @@ jobs:
             platform: macOS-arm64
             smoke: full
             script: pack:desktop:mac:arm64
-            asset: apps/desktop/release/Clash-Desktop-macOS-arm64.dmg
+            asset: apps/desktop/release/Clash-Desktop-*-macOS-arm64.dmg
           - os: macos-latest
             platform: macOS-x64
             smoke: launch
@@ -170,8 +170,10 @@ jobs:
         with:
           name: Clash-Desktop-${{ matrix.platform }}
           path: |
-            apps/desktop/release/Clash-Desktop-macOS-arm64.dmg
-            apps/desktop/release/Clash-Desktop-macOS-arm64.zip
+            apps/desktop/release/Clash-Desktop-*-macOS-arm64.dmg
+            apps/desktop/release/Clash-Desktop-*-macOS-arm64.zip
+            apps/desktop/release/Clash-Desktop-*-macOS-arm64.zip.blockmap
+            apps/desktop/release/Clash-Desktop-*-macOS-arm64.dmg.blockmap
             apps/desktop/release/preview-mac.yml
           if-no-files-found: error
 

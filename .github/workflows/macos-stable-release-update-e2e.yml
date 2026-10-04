@@ -1,0 +1,47 @@
+name: macOS stable release update e2e
+
+# Live stable GitHub release differential proof (manual until desktop stable ships).
+on:
+  workflow_dispatch:
+    inputs:
+      from_tag:
+        description: Installed stable tag to start from (vX.Y.Z)
+        required: true
+      via_version:
+        description: Optional hop-1 target version (x.y.z)
+        required: false
+      to_version:
+        description: Final target version (x.y.z)
+        required: false
+      via_release_tag:
+        description: Optional pinned feed tag for hop 1 (vX.Y.Z)
+        required: false
+      require_differential:
+        description: Fail when hop 2 falls back to a full download
+        type: boolean
+        default: true
+
+concurrency:
+  group: macos-stable-release-update-e2e
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  stable-release-update:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: Test stable differential helpers
+        run: |
+          pnpm --dir apps/desktop test scripts/update-differential-assert.test.ts
+          pnpm --dir apps/desktop test scripts/prepare-stable-release-assets.test.ts
+
+      # Installed-app hop proof runs here after the first desktop stable vX.Y.Z
+      # release is published (see publish-desktop-stable.yml).

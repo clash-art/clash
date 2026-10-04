@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   localizeFeedYaml,
+  updaterCacheDirNameFromAppUpdateYaml,
   zipNameFromFeedYaml,
 } from "./macos-update-e2e.ts";
 
@@ -10,12 +11,30 @@ describe("macos-update-e2e helpers", () => {
     const yaml = [
       "version: 0.1.0-preview.2",
       "files:",
-      "  - url: Clash-Desktop-macOS-arm64.zip",
+      "  - url: Clash-Desktop-0.1.0-preview.2-macOS-arm64.zip",
       "    sha512: abc",
       "    size: 1",
-      "path: Clash-Desktop-macOS-arm64.zip",
+      "path: Clash-Desktop-0.1.0-preview.2-macOS-arm64.zip",
     ].join("\n");
-    expect(zipNameFromFeedYaml(yaml)).toBe("Clash-Desktop-macOS-arm64.zip");
+    expect(zipNameFromFeedYaml(yaml)).toBe(
+      "Clash-Desktop-0.1.0-preview.2-macOS-arm64.zip",
+    );
+  });
+
+  it("reads updaterCacheDirName from app-update.yml", () => {
+    expect(
+      updaterCacheDirNameFromAppUpdateYaml(
+        "provider: generic\nupdaterCacheDirName: clash-updater\n",
+      ),
+    ).toBe("clash-updater");
+    expect(updaterCacheDirNameFromAppUpdateYaml("provider: generic\n")).toBe(
+      "clash-updater",
+    );
+    expect(
+      updaterCacheDirNameFromAppUpdateYaml(
+        "updaterCacheDirName: '@clashdesktop-updater'\n",
+      ),
+    ).toBe("@clashdesktop-updater");
   });
 
   it("rewrites feed urls to a locally served zip", () => {

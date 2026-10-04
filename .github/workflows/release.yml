@@ -44,6 +44,11 @@ jobs:
           git tag --force desktop-preview "$GITHUB_SHA"
           git push origin refs/tags/desktop-preview --force
 
+      - name: Prepare previous preview blockmap for differential updates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/prepare-preview-release-assets.ts desktop-artifacts
+
       - name: Create or update the rolling desktop preview
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,5 +67,11 @@ jobs:
           upload=(desktop-artifacts/Clash-Desktop-*)
           if [ -f desktop-artifacts/preview-mac.yml ]; then
             upload+=(desktop-artifacts/preview-mac.yml)
+          fi
+          if [ -f desktop-artifacts/previous-preview-blockmap.json ]; then
+            prev_path="$(jq -r '.path // empty' desktop-artifacts/previous-preview-blockmap.json)"
+            if [ -n "${prev_path}" ] && [ -f "${prev_path}" ]; then
+              upload+=("${prev_path}")
+            fi
           fi
           gh release upload desktop-preview "${upload[@]}" --clobber
