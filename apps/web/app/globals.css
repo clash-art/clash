@@ -5871,6 +5871,12 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   box-shadow: none;
 }
 
+[aria-label="Settings sections"] [role="tab"]:focus-visible {
+  outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
+  outline-offset: calc(-1 * var(--app-tab-focus-width));
+  box-shadow: none;
+}
+
 .app-tab-trigger-rest:focus:not(:focus-visible),
 [role="tab"]:focus:not(:focus-visible):not([aria-selected="true"]) {
   background: transparent;

@@ -547,8 +547,10 @@ function stampDirectorInspectorRoot(
 }
 
 function markDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
+  const tabId = directorInspectorTabIdForLabel(label);
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
+    const tabId = ${JSON.stringify(tabId)};
     document.querySelectorAll("[data-tab-evidence-target]").forEach((el) => el.removeAttribute("data-tab-evidence-target"));
     document.querySelectorAll('[data-director-inspector-evidence-root="true"]').forEach((el) => {
       el.removeAttribute("data-director-inspector-evidence-root");
@@ -556,10 +558,13 @@ function markDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBro
     const root = ${findDirectorInspectorRootExpression()};
     if (!(root instanceof HTMLElement)) return false;
     root.setAttribute("data-director-inspector-evidence-root", "true");
-    const tab = [...root.querySelectorAll('[role="tab"]')].find((candidate) => {
-      const value = (candidate.innerText || candidate.textContent || "").trim();
-      return value === wanted;
-    });
+    let tab = tabId ? root.querySelector("#" + tabId) : null;
+    if (!(tab instanceof HTMLElement)) {
+      tab = [...root.querySelectorAll('[role="tab"]')].find((candidate) => {
+        const value = (candidate.innerText || candidate.textContent || "").trim();
+        return value === wanted;
+      }) ?? null;
+    }
     if (!(tab instanceof HTMLElement)) return false;
     tab.setAttribute("data-tab-evidence-target", "true");
     return true;
@@ -827,15 +832,28 @@ async function captureTopNavStates(
   await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "topnav", theme);
 }
 
+function directorInspectorTabIdForLabel(label: string) {
+  if (label === "Properties") return "properties";
+  if (label === "Pose") return "pose";
+  if (label === "Motion") return "motion";
+  return null;
+}
+
 function clickDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
+  const tabId = directorInspectorTabIdForLabel(label);
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
+    const tabId = ${JSON.stringify(tabId)};
     const root = ${findDirectorInspectorRootExpression()};
-    const tab = [...(root?.querySelectorAll('[role="tab"]') ?? [])].find((candidate) => {
-      const value = (candidate.innerText || candidate.textContent || "").trim();
-      return value === wanted;
-    });
-    if (!tab) return false;
+    if (!root) return false;
+    let tab = tabId ? root.querySelector("#" + tabId) : null;
+    if (!(tab instanceof HTMLElement)) {
+      tab = [...root.querySelectorAll('[role="tab"]')].find((candidate) => {
+        const value = (candidate.innerText || candidate.textContent || "").trim();
+        return value === wanted;
+      }) ?? null;
+    }
+    if (!(tab instanceof HTMLElement)) return false;
     tab.click();
     return true;
   })()`);
@@ -1017,8 +1035,10 @@ async function captureDirectorInspectorStates(
   await recordTabStyle(agentBrowser, recovery, "director", theme, "selected-rest", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "selected-rest"));
   await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "selected-rest"));
-  if (!clickDirectorInspectorTab(agentBrowser, inactiveTab)) {
-    throw new Error(`Director inactive tab missing: ${inactiveTab}`);
+  await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+  const inactiveAfterRest = resolveDirectorInactiveTabLabel(agentBrowser, recovery);
+  if (!clickDirectorInspectorTab(agentBrowser, inactiveAfterRest)) {
+    throw new Error(`Director inactive tab missing: ${inactiveAfterRest}`);
   }
   await sleep(300);
   await movePointerOffTabs(agentBrowser, recovery);
@@ -1049,7 +1069,10 @@ async function captureDirectorInspectorStates(
   }
   await sleep(200);
   if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
-    throw new Error("Director Properties tab marker missing (hover)");
+    await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+    if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
+      throw new Error("Director Properties tab marker missing (hover)");
+    }
   }
   await hoverAndSettle(agentBrowser, recovery, directorEvidenceTab, "Properties");
   await recordTabStyle(agentBrowser, recovery, "director", theme, "hover-inactive", directorEvidenceTab);
@@ -1135,6 +1158,8 @@ function markSettingsSectionTabForEvidence(
   }
 }
 
+const settingsAppearanceTabSelector = '[aria-label="Settings sections"] #appearance';
+
 async function captureSettingsFocusStates(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
@@ -1152,15 +1177,29 @@ async function captureSettingsFocusStates(
   );
   await focusSettingsSectionKeyboard(agentBrowser, recovery, "Appearance", "Plugins");
   await sleep(200);
-  markSettingsSectionTabForEvidence(agentBrowser, recovery, "Appearance");
+  const focusedAppearance = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const tab = document.querySelector(${JSON.stringify(settingsAppearanceTabSelector)});
+      if (!(tab instanceof HTMLElement)) return false;
+      tab.focus();
+      return document.activeElement === tab || document.activeElement?.closest('[role="tab"]') === tab;
+    })()`,
+  );
+  if (!focusedAppearance) {
+    throw new Error("Settings Appearance tab focus failed");
+  }
+  await sleep(120);
   await recordTabStyle(
     agentBrowser,
     recovery,
     "settings",
     theme,
     "focus-visible",
-    evidenceFocusedTabSelector,
+    settingsAppearanceTabSelector,
   );
+  markSettingsSectionTabForEvidence(agentBrowser, recovery, "Appearance");
   await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "settings", theme);
 }
 
