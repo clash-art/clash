@@ -976,6 +976,29 @@ async function openDirectorStageTab(
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
 }
 
+function resolveDirectorInactiveTabLabel(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  const label = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const root = ${findDirectorInspectorRootExpression()};
+      if (!root) return "";
+      const labels = [...root.querySelectorAll('[role="tab"]')].map((tab) =>
+        (tab.innerText || tab.textContent || "").trim(),
+      );
+      if (labels.includes("Pose")) return "Pose";
+      return labels.find((value) => value && value !== "Properties") || "";
+    })()`,
+  );
+  if (typeof label !== "string" || !label) {
+    throw new Error("Director inactive inspector tab missing");
+  }
+  return label;
+}
+
 async function captureDirectorInspectorStates(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
@@ -984,6 +1007,7 @@ async function captureDirectorInspectorStates(
   setTheme(agentBrowser, theme);
   await sleep(400);
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+  const inactiveTab = resolveDirectorInactiveTabLabel(agentBrowser, recovery);
   if (!clickDirectorInspectorTab(agentBrowser, "Properties")) {
     throw new Error("Director Properties tab missing");
   }
@@ -993,8 +1017,8 @@ async function captureDirectorInspectorStates(
   await recordTabStyle(agentBrowser, recovery, "director", theme, "selected-rest", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "selected-rest"));
   await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "selected-rest"));
-  if (!clickDirectorInspectorTab(agentBrowser, "Pose")) {
-    throw new Error("Director Pose tab missing");
+  if (!clickDirectorInspectorTab(agentBrowser, inactiveTab)) {
+    throw new Error(`Director inactive tab missing: ${inactiveTab}`);
   }
   await sleep(300);
   await movePointerOffTabs(agentBrowser, recovery);
@@ -1020,8 +1044,8 @@ async function captureDirectorInspectorStates(
     outFileZoom("director", theme, "previous-tab-mouse-away"),
   );
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
-  if (!clickDirectorInspectorTab(agentBrowser, "Pose")) {
-    throw new Error("Director Pose tab missing before hover capture");
+  if (!clickDirectorInspectorTab(agentBrowser, inactiveTab)) {
+    throw new Error(`Director inactive tab missing before hover capture: ${inactiveTab}`);
   }
   await sleep(200);
   if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
@@ -1037,7 +1061,7 @@ async function captureDirectorInspectorStates(
       throw new Error("Director Properties tab marker missing (focus)");
     }
   }
-  await focusDirectorInspectorTabKeyboard(agentBrowser, recovery, "Properties", "Pose");
+  await focusDirectorInspectorTabKeyboard(agentBrowser, recovery, "Properties", inactiveTab);
   await waitForTabTransitionSettle(agentBrowser, recovery, directorEvidenceTab, "Properties focus");
   markActiveTabForEvidence(agentBrowser, recovery);
   await recordTabStyle(agentBrowser, recovery, "director", theme, "focus-visible", evidenceFocusedTabSelector);
