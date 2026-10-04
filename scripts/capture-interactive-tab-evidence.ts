@@ -327,7 +327,22 @@ async function hoverAndSettle(
   label: string,
 ) {
   ensurePageTarget(agentBrowser, recovery);
-  agentBrowser(["hover", selector]);
+  const hovered = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!(el instanceof HTMLElement)) return false;
+      el.scrollIntoView({ block: "center", inline: "nearest" });
+      for (const type of ["mouseover", "mouseenter", "mousemove"]) {
+        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
+      }
+      return true;
+    })()`,
+  );
+  if (!hovered) {
+    throw new Error(`Hover target missing for ${label}: ${selector}`);
+  }
   await waitForTabTransitionSettle(agentBrowser, recovery, selector, label);
   await waitForEvalRecovered(
     agentBrowser,
@@ -978,10 +993,17 @@ async function captureDirectorInspectorStates(
   await recordTabStyle(agentBrowser, recovery, "director", theme, "selected-rest", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "selected-rest"));
   await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "selected-rest"));
-  clickDirectorInspectorTab(agentBrowser, "Pose");
+  if (!clickDirectorInspectorTab(agentBrowser, "Pose")) {
+    throw new Error("Director Pose tab missing");
+  }
   await sleep(300);
   await movePointerOffTabs(agentBrowser, recovery);
-  markDirectorInspectorTab(agentBrowser, "Properties");
+  if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
+    await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+    if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
+      throw new Error("Director Properties tab marker missing (mouse-away)");
+    }
+  }
   await recordTabStyle(
     agentBrowser,
     recovery,
@@ -997,14 +1019,24 @@ async function captureDirectorInspectorStates(
     directorInspectorRoot,
     outFileZoom("director", theme, "previous-tab-mouse-away"),
   );
+  await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+  if (!clickDirectorInspectorTab(agentBrowser, "Pose")) {
+    throw new Error("Director Pose tab missing before hover capture");
+  }
+  await sleep(200);
   if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
-    throw new Error("Director Properties tab marker missing");
+    throw new Error("Director Properties tab marker missing (hover)");
   }
   await hoverAndSettle(agentBrowser, recovery, directorEvidenceTab, "Properties");
   await recordTabStyle(agentBrowser, recovery, "director", theme, "hover-inactive", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "hover-inactive"));
   await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "hover-inactive"));
-  markDirectorInspectorTab(agentBrowser, "Properties");
+  if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
+    await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+    if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
+      throw new Error("Director Properties tab marker missing (focus)");
+    }
+  }
   await focusDirectorInspectorTabKeyboard(agentBrowser, recovery, "Properties", "Pose");
   await waitForTabTransitionSettle(agentBrowser, recovery, directorEvidenceTab, "Properties focus");
   markActiveTabForEvidence(agentBrowser, recovery);
