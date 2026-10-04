@@ -93,8 +93,9 @@ jobs:
             rm -rf "${dest}"
             mkdir -p "${dest}"
             /usr/bin/ditto apps/desktop/release/mac-arm64 "${dest}/mac-arm64"
-            local zip blockmap
-            zip="$(find apps/desktop/release -maxdepth 1 -name 'Clash-Desktop-*-macOS-arm64.zip' -type f | head -n 1)"
+            local zip_name zip blockmap
+            zip_name="$(grep -E '^\s*path:\s*\S' apps/desktop/release/preview-mac.yml | head -n 1 | sed -E 's/^\s*path:\s*//; s/^["'\'']|["'\'']$//g')"
+            zip="apps/desktop/release/${zip_name}"
             blockmap="${zip}.blockmap"
             test -f "${zip}" && test -f "${blockmap}"
             cp "${zip}" "${dest}/"
