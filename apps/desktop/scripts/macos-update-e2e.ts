@@ -183,7 +183,8 @@ function previewBuildDir(releaseRoot: string, build: number): string {
 
 export function updaterCacheDirNameFromAppUpdateYaml(text: string): string {
   const match = /^\s*updaterCacheDirName:\s*(\S+)\s*$/m.exec(text);
-  return match?.[1] ?? "clash-updater";
+  const raw = match?.[1] ?? "clash-updater";
+  return raw.replace(/^['"]|['"]$/g, "");
 }
 
 export function updaterCacheDirFromApp(appPath: string): string {

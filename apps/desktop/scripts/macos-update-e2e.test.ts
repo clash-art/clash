@@ -30,6 +30,11 @@ describe("macos-update-e2e helpers", () => {
     expect(updaterCacheDirNameFromAppUpdateYaml("provider: generic\n")).toBe(
       "clash-updater",
     );
+    expect(
+      updaterCacheDirNameFromAppUpdateYaml(
+        "updaterCacheDirName: '@clashdesktop-updater'\n",
+      ),
+    ).toBe("@clashdesktop-updater");
   });
 
   it("rewrites feed urls to a locally served zip", () => {
