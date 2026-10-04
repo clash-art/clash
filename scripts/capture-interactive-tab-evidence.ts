@@ -859,6 +859,19 @@ function clickDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBr
   })()`);
 }
 
+async function clickDirectorInspectorTabWithRetry(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  label: string,
+) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+    if (clickDirectorInspectorTab(agentBrowser, label)) return;
+    await sleep(450);
+  }
+  throw new Error(`Director tab missing after retries: ${label}`);
+}
+
 function hoverDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
@@ -1027,7 +1040,7 @@ async function captureDirectorInspectorStates(
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
   const inactiveTab = resolveDirectorInactiveTabLabel(agentBrowser, recovery);
   if (!clickDirectorInspectorTab(agentBrowser, "Properties")) {
-    throw new Error("Director Properties tab missing");
+    await clickDirectorInspectorTabWithRetry(agentBrowser, recovery, "Properties");
   }
   await sleep(300);
   markDirectorInspectorTab(agentBrowser, "Properties");
@@ -1037,9 +1050,7 @@ async function captureDirectorInspectorStates(
   await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "selected-rest"));
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
   const inactiveAfterRest = resolveDirectorInactiveTabLabel(agentBrowser, recovery);
-  if (!clickDirectorInspectorTab(agentBrowser, inactiveAfterRest)) {
-    throw new Error(`Director inactive tab missing: ${inactiveAfterRest}`);
-  }
+  await clickDirectorInspectorTabWithRetry(agentBrowser, recovery, inactiveAfterRest);
   await sleep(300);
   await movePointerOffTabs(agentBrowser, recovery);
   if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
@@ -1064,9 +1075,7 @@ async function captureDirectorInspectorStates(
     outFileZoom("director", theme, "previous-tab-mouse-away"),
   );
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
-  if (!clickDirectorInspectorTab(agentBrowser, inactiveTab)) {
-    throw new Error(`Director inactive tab missing before hover capture: ${inactiveTab}`);
-  }
+  await clickDirectorInspectorTabWithRetry(agentBrowser, recovery, inactiveTab);
   await sleep(200);
   if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
     await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
@@ -1104,6 +1113,23 @@ function clickSettingsSectionTab(agentBrowser: ReturnType<typeof createAgentBrow
   })()`);
 }
 
+const SETTINGS_SECTION_LABELS = [
+  "Appearance",
+  "Plugins",
+  "Agents",
+  "Sync",
+  "Public storage",
+  "Voice input",
+  "Media analysis",
+  "Archive",
+  "API Tokens",
+  "Providers",
+  "Models",
+  "Actions",
+  "Skills",
+  "CLI",
+];
+
 async function focusSettingsSectionKeyboard(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
@@ -1114,18 +1140,29 @@ async function focusSettingsSectionKeyboard(
     throw new Error(`Settings section tab not found: ${selectedLabel}`);
   }
   await sleep(150);
-  for (let i = 0; i < 16; i += 1) {
+  const targetIdx = SETTINGS_SECTION_LABELS.indexOf(label);
+  const selectedIdx = SETTINGS_SECTION_LABELS.indexOf(selectedLabel);
+  if (targetIdx < 0 || selectedIdx < 0) {
+    throw new Error(`Settings section label not in capture nav order: ${label} / ${selectedLabel}`);
+  }
+  const key = targetIdx < selectedIdx ? "ArrowUp" : "ArrowDown";
+  for (let step = 0; step < Math.abs(targetIdx - selectedIdx); step += 1) {
+    agentBrowser(["press", key]);
+    await sleep(100);
+  }
+  for (let i = 0; i < 8; i += 1) {
     const match = evalOnPage(
       agentBrowser,
       recovery,
       `(() => {
-        const active = document.activeElement;
-        const text = (active?.innerText || active?.textContent || "").trim();
-        return text === ${JSON.stringify(label)};
+        const tab = document.activeElement?.closest('[role="tab"]');
+        if (!(tab instanceof HTMLElement)) return false;
+        const text = (tab.innerText || tab.textContent || "").trim();
+        return text.includes(${JSON.stringify(label)});
       })()`,
     );
     if (match) break;
-    agentBrowser(["press", "ArrowDown"]);
+    agentBrowser(["press", key]);
     await sleep(80);
   }
 }
@@ -1175,17 +1212,39 @@ async function captureSettingsFocusStates(
     "settings section tabs",
     30000,
   );
-  await focusSettingsSectionKeyboard(agentBrowser, recovery, "Appearance", "Plugins");
+  if (!clickSettingsSectionTab(agentBrowser, "Plugins")) {
+    throw new Error("Settings Plugins section tab not found");
+  }
   await sleep(200);
+  const focusAppearance = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const appearance = document.querySelector(${JSON.stringify(settingsAppearanceTabSelector)});
+      const plugins = document.querySelector('[aria-label="Settings sections"] #plugins');
+      if (!(appearance instanceof HTMLElement) || !(plugins instanceof HTMLElement)) return false;
+      if (plugins.getAttribute("aria-selected") !== "true") {
+        plugins.click();
+      }
+      appearance.focus({ focusVisible: true });
+      return document.activeElement === appearance;
+    })()`,
+  );
+  if (!focusAppearance) {
+    throw new Error("Settings Appearance focus({ focusVisible: true }) failed");
+  }
+  await sleep(150);
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
     `(() => {
       const tab = document.querySelector(${JSON.stringify(settingsAppearanceTabSelector)});
+      const plugins = document.querySelector('[aria-label="Settings sections"] #plugins');
       if (!(tab instanceof HTMLElement)) return false;
       const focused =
         document.activeElement === tab || document.activeElement?.closest('[role="tab"]') === tab;
       if (!focused) return false;
+      if (plugins?.getAttribute("aria-selected") !== "true") return false;
       const style = getComputedStyle(tab);
       return style.outlineStyle !== "none" && style.outlineWidth !== "0px";
     })()`,

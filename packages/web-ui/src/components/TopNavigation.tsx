@@ -493,7 +493,7 @@ export default function TopNavigation({
                       data-active={String(active)}
                       className={`desktop-no-drag group relative flex h-8 min-w-36 max-w-64 items-center gap-1 rounded-lg border pl-2.5 pr-1 text-sm font-medium transition-[background-color,border-color,box-shadow,color] ${
                         active
-                          ? "border-warm-border shadow-raised"
+                          ? "border-warm-border bg-[var(--app-tab-selected-bg)] text-[var(--app-tab-selected-fg)] shadow-raised"
                           : "border-transparent"
                       }`}
                     >
