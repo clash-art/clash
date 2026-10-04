@@ -1107,6 +1107,34 @@ async function focusSettingsSectionKeyboard(
   }
 }
 
+function markSettingsSectionTabForEvidence(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  label: string,
+) {
+  const ok = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      document.querySelectorAll('[data-tab-evidence-focus="true"]').forEach((el) => {
+        el.removeAttribute("data-tab-evidence-focus");
+      });
+      const wanted = ${JSON.stringify(label)};
+      const tab = [...document.querySelectorAll('[aria-label="Settings sections"] [role="tab"]')].find((candidate) => {
+        const value = (candidate.innerText || candidate.textContent || "").trim();
+        return value.includes(wanted);
+      });
+      if (!(tab instanceof HTMLElement)) return false;
+      tab.setAttribute("data-tab-evidence-focus", "true");
+      tab.scrollIntoView({ block: "center", inline: "nearest" });
+      return true;
+    })()`,
+  );
+  if (!ok) {
+    throw new Error(`Settings section tab missing for evidence: ${label}`);
+  }
+}
+
 async function captureSettingsFocusStates(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
@@ -1124,7 +1152,7 @@ async function captureSettingsFocusStates(
   );
   await focusSettingsSectionKeyboard(agentBrowser, recovery, "Appearance", "Plugins");
   await sleep(200);
-  markActiveTabForEvidence(agentBrowser, recovery);
+  markSettingsSectionTabForEvidence(agentBrowser, recovery, "Appearance");
   await recordTabStyle(
     agentBrowser,
     recovery,

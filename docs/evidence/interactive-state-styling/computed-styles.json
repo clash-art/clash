@@ -291,9 +291,9 @@
     "theme": "light",
     "state": "hover-inactive",
     "ariaSelected": "false",
-    "background": "color(srgb 0.852784 0.852784 0.852784)",
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
+    "color": "rgb(137, 136, 133)",
     "outline": "none"
   },
   {
@@ -301,8 +301,8 @@
     "surface": "topnav",
     "theme": "light",
     "state": "focus-visible",
-    "ariaSelected": "true",
-    "background": "rgb(238, 244, 255)",
+    "ariaSelected": null,
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
     "color": "rgb(36, 36, 36)",
     "outline": "rgb(95, 94, 91) 2px"
@@ -335,9 +335,9 @@
     "theme": "light",
     "state": "hover-inactive",
     "ariaSelected": "false",
-    "background": "color(srgb 0.852784 0.852784 0.852784)",
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
+    "color": "rgb(95, 94, 91)",
     "outline": "none"
   },
   {
@@ -379,9 +379,9 @@
     "theme": "light",
     "state": "hover-inactive",
     "ariaSelected": "false",
-    "background": "color(srgb 0.141176 0.141176 0.141176 / 0.04)",
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "color(srgb 0.141176 0.141176 0.141176 / 0.68)",
+    "color": "color(srgb 0.141176 0.141176 0.141176 / 0.46)",
     "outline": "none"
   },
   {
@@ -394,6 +394,17 @@
     "boxShadow": "none",
     "color": "rgb(36, 36, 36)",
     "outline": "rgb(95, 94, 91) 2px"
+  },
+  {
+    "phase": "after",
+    "surface": "settings",
+    "theme": "light",
+    "state": "focus-visible",
+    "ariaSelected": null,
+    "background": "rgb(255, 255, 255)",
+    "boxShadow": "none",
+    "color": "rgb(36, 36, 36)",
+    "outline": "none"
   },
   {
     "phase": "after",
@@ -423,9 +434,9 @@
     "theme": "dark",
     "state": "hover-inactive",
     "ariaSelected": "false",
-    "background": "color(srgb 0.255922 0.255922 0.255922)",
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(245, 245, 245)",
+    "color": "rgb(165, 165, 165)",
     "outline": "none"
   },
   {
@@ -433,8 +444,8 @@
     "surface": "topnav",
     "theme": "dark",
     "state": "focus-visible",
-    "ariaSelected": "true",
-    "background": "rgb(28, 39, 64)",
+    "ariaSelected": null,
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
     "color": "rgb(245, 245, 245)",
     "outline": "rgb(208, 208, 208) 2px"
@@ -467,9 +478,9 @@
     "theme": "dark",
     "state": "hover-inactive",
     "ariaSelected": "false",
-    "background": "color(srgb 0.255922 0.255922 0.255922)",
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(245, 245, 245)",
+    "color": "rgb(208, 208, 208)",
     "outline": "none"
   },
   {
@@ -511,9 +522,9 @@
     "theme": "dark",
     "state": "hover-inactive",
     "ariaSelected": "false",
-    "background": "rgba(255, 255, 255, 0.06)",
+    "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(199, 199, 199)",
+    "color": "rgb(136, 136, 136)",
     "outline": "none"
   },
   {
@@ -526,5 +537,16 @@
     "boxShadow": "none",
     "color": "rgb(245, 245, 245)",
     "outline": "rgb(208, 208, 208) 2px"
+  },
+  {
+    "phase": "after",
+    "surface": "settings",
+    "theme": "dark",
+    "state": "focus-visible",
+    "ariaSelected": null,
+    "background": "rgb(30, 30, 30)",
+    "boxShadow": "none",
+    "color": "rgb(245, 245, 245)",
+    "outline": "none"
   }
 ]

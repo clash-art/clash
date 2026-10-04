@@ -5900,7 +5900,8 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
 :where(.clash-director-stage-shell, [data-context="director"])
   :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
   [role="tab"] {
-  min-width: 0;
+  min-width: max-content;
+  flex-shrink: 0;
   overflow: visible;
   white-space: nowrap;
 }
