@@ -502,7 +502,7 @@ export default function TopNavigation({
                         aria-label={tab.title}
                         className={appTabTriggerClassName({
                           selected: active,
-                          className: `flex min-w-0 flex-1 items-center gap-2 truncate text-left ${
+                          className: `flex h-full min-h-0 min-w-0 flex-1 items-center gap-2 truncate text-left ${
                             active
                               ? "text-content-primary"
                               : "text-content-muted hover:text-content-primary"

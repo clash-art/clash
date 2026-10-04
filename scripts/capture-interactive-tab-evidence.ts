@@ -7,6 +7,7 @@
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { CdpClient } from "./e2e/harness.ts";
 import {
   clickButtonByLabel,
   clickByText,
@@ -57,6 +58,13 @@ type TabStyleSample = {
 };
 
 const styleAudit: TabStyleSample[] = [];
+
+const FOCUS_CAPTURE_MARGIN_PX = 8;
+const FOCUS_CAPTURE_SCALE = 4;
+
+function outFileFocusFull(surface: string, theme: string) {
+  return path.join(outDir, `${phase}-${surface}-${theme}-focus-visible-full.png`);
+}
 
 function outFileZoom(surface: string, theme: string, state: string) {
   return path.join(outDir, `${phase}-${surface}-${theme}-${state}-zoom.png`);
@@ -115,7 +123,7 @@ function navigatorTabSelector(label: string) {
   return `[aria-label="Project navigator"] [role="tab"][aria-label=${JSON.stringify(label)}]`;
 }
 
-const evidenceFocusedTabSelector = '[role="tab"][data-tab-evidence-focus="true"]';
+const evidenceFocusedTabSelector = '[data-tab-evidence-focus="true"]';
 
 function markActiveTabForEvidence(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
@@ -129,17 +137,78 @@ function markActiveTabForEvidence(
         el.removeAttribute("data-tab-evidence-focus");
       });
       const active = document.activeElement;
-      if (active instanceof HTMLElement && active.getAttribute("role") === "tab") {
-        active.setAttribute("data-tab-evidence-focus", "true");
-        active.scrollIntoView({ block: "center", inline: "nearest" });
-        return true;
+      if (!(active instanceof HTMLElement)) return false;
+      let target = active;
+      if (active.getAttribute("role") === "tab") {
+        const workspace = active.closest('[data-desktop-workspace-tab="true"]');
+        if (workspace instanceof HTMLElement) target = workspace;
       }
-      return false;
+      target.setAttribute("data-tab-evidence-focus", "true");
+      target.scrollIntoView({ block: "center", inline: "nearest" });
+      return true;
     })()`,
   );
   if (!ok) {
     throw new Error("Focused tab missing for evidence capture");
   }
+}
+
+async function connectPageCdp(
+  cdpPort: number,
+  expectedUrlPrefix: string,
+): Promise<CdpClient> {
+  const res = await fetch(`http://127.0.0.1:${cdpPort}/json/list`);
+  if (!res.ok) throw new Error(`CDP list failed: HTTP ${res.status}`);
+  const targets = (await res.json()) as Array<{
+    type?: string;
+    url?: string;
+    webSocketDebuggerUrl?: string;
+  }>;
+  const page = targets.find(
+    (target) =>
+      target.type === "page" &&
+      typeof target.url === "string" &&
+      target.url.startsWith(expectedUrlPrefix) &&
+      target.webSocketDebuggerUrl,
+  );
+  if (!page?.webSocketDebuggerUrl) {
+    throw new Error(`CDP page target missing for ${expectedUrlPrefix}`);
+  }
+  const cdp = new CdpClient(page.webSocketDebuggerUrl);
+  await cdp.ready();
+  return cdp;
+}
+
+async function captureFocusClipScreenshot(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  selector: string,
+  targetPath: string,
+) {
+  await captureElementClipScreenshot(
+    agentBrowser,
+    recovery,
+    selector,
+    targetPath,
+    FOCUS_CAPTURE_MARGIN_PX,
+    FOCUS_CAPTURE_SCALE,
+  );
+}
+
+async function screenshotTabFocusEvidence(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  selector: string,
+  surface: string,
+  theme: "light" | "dark",
+) {
+  await screenshot(agentBrowser, recovery, outFileFocusFull(surface, theme));
+  await captureFocusClipScreenshot(
+    agentBrowser,
+    recovery,
+    selector,
+    outFile(surface, theme, "focus-visible"),
+  );
 }
 
 async function selectWorkspaceTab(
@@ -290,42 +359,65 @@ async function movePointerOffTabs(
   await sleep(150);
 }
 
+async function captureElementClipScreenshot(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  selector: string,
+  targetPath: string,
+  marginPx: number,
+  scale: number,
+) {
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  const clip = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      if (!el) return null;
+      el.scrollIntoView({ block: "center", inline: "nearest" });
+      const rect = el.getBoundingClientRect();
+      const margin = ${marginPx};
+      const x = Math.max(0, rect.x - margin);
+      const y = Math.max(0, rect.y - margin);
+      const right = rect.right + margin;
+      const bottom = rect.bottom + margin;
+      return {
+        x,
+        y,
+        width: Math.max(1, right - x),
+        height: Math.max(1, bottom - y),
+        scale: ${scale},
+      };
+    })()`,
+  ) as { x: number; y: number; width: number; height: number; scale: number } | null;
+  if (!clip) throw new Error(`Element clip target missing: ${selector}`);
+  const cdp = await connectPageCdp(recovery.cdpPort, recovery.expectedUrlPrefix);
+  try {
+    const shot = await cdp.send<{ data: string }>("Page.captureScreenshot", {
+      format: "png",
+      clip,
+      captureBeyondViewport: false,
+    });
+    await writeFile(targetPath, Buffer.from(shot.data, "base64"));
+  } finally {
+    cdp.close();
+  }
+}
+
 async function screenshotElement(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   selector: string,
   target: string,
 ) {
-  ensurePageTarget(agentBrowser, recovery);
-  evalOnPage(
+  await waitForEvalRecovered(
     agentBrowser,
     recovery,
-    `(() => {
-      const el = document.querySelector(${JSON.stringify(selector)});
-      el?.scrollIntoView({ block: "center", inline: "nearest" });
-      return !!el;
-    })()`,
+    `!!document.querySelector(${JSON.stringify(selector)})`,
+    `screenshot element ${selector}`,
+    45000,
   );
-  await sleep(120);
-  agentBrowser(["screenshot", selector, target]);
-}
-
-async function screenshotTabFocusCrop(
-  agentBrowser: ReturnType<typeof createAgentBrowser>,
-  recovery: { cdpPort: number; expectedUrlPrefix: string },
-  selector: string,
-  surface: string,
-  theme: "light" | "dark",
-) {
-  await screenshotElement(agentBrowser, recovery, selector, outFile(surface, theme, "focus-visible"));
-  if (surface === "director") {
-    await screenshotElement(
-      agentBrowser,
-      recovery,
-      selector,
-      outFileZoom(surface, theme, "focus-visible"),
-    );
-  }
+  await captureElementClipScreenshot(agentBrowser, recovery, selector, target, 0, 1);
 }
 
 async function focusWorkspaceTabKeyboard(
@@ -415,11 +507,35 @@ async function focusNavigatorTabKeyboard(
   }
 }
 
+function findDirectorInspectorRootExpression() {
+  return `document.querySelector('[aria-label="Mannequin inspector sections"]')
+    ?? document.querySelector('[aria-label="Rigged model inspector sections"]')`;
+}
+
+function stampDirectorInspectorRoot(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  return evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      document.querySelectorAll('[data-director-inspector-evidence-root="true"]').forEach((el) => {
+        el.removeAttribute("data-director-inspector-evidence-root");
+      });
+      const root = ${findDirectorInspectorRootExpression()};
+      if (!(root instanceof HTMLElement)) return false;
+      root.setAttribute("data-director-inspector-evidence-root", "true");
+      return true;
+    })()`,
+  );
+}
+
 function markDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
     document.querySelectorAll("[data-tab-evidence-target]").forEach((el) => el.removeAttribute("data-tab-evidence-target"));
-    const root = document.querySelector('[aria-label="Mannequin inspector sections"]');
+    const root = ${findDirectorInspectorRootExpression()};
     const tab = [...(root?.querySelectorAll('[role="tab"]') ?? [])].find((candidate) => {
       const value = (candidate.innerText || candidate.textContent || "").trim();
       return value === wanted;
@@ -431,8 +547,8 @@ function markDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBro
 }
 
 const directorEvidenceTab =
-  '[aria-label="Mannequin inspector sections"] [role="tab"][data-tab-evidence-target="true"]';
-const directorInspectorRoot = '[aria-label="Mannequin inspector sections"]';
+  '[data-director-inspector-evidence-root="true"] [role="tab"][data-tab-evidence-target="true"]';
+const directorInspectorRoot = '[data-director-inspector-evidence-root="true"]';
 
 function ensurePageTarget(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
@@ -646,7 +762,7 @@ async function captureNavigatorStates(
     "focus-visible",
     evidenceFocusedTabSelector,
   );
-  await screenshotTabFocusCrop(agentBrowser, recovery, evidenceFocusedTabSelector, "navigator", theme);
+  await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "navigator", theme);
 }
 
 async function captureTopNavStates(
@@ -688,13 +804,13 @@ async function captureTopNavStates(
     "focus-visible",
     evidenceFocusedTabSelector,
   );
-  await screenshotTabFocusCrop(agentBrowser, recovery, evidenceFocusedTabSelector, "topnav", theme);
+  await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "topnav", theme);
 }
 
 function clickDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
-    const root = document.querySelector('[aria-label="Mannequin inspector sections"]');
+    const root = ${findDirectorInspectorRootExpression()};
     const tab = [...(root?.querySelectorAll('[role="tab"]') ?? [])].find((candidate) => {
       const value = (candidate.innerText || candidate.textContent || "").trim();
       return value === wanted;
@@ -708,7 +824,7 @@ function clickDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBr
 function hoverDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
-    const root = document.querySelector('[aria-label="Mannequin inspector sections"]');
+    const root = ${findDirectorInspectorRootExpression()};
     const tab = [...(root?.querySelectorAll('[role="tab"]') ?? [])].find((candidate) => {
       const value = (candidate.innerText || candidate.textContent || "").trim();
       return value === wanted;
@@ -720,28 +836,18 @@ function hoverDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBr
   })()`);
 }
 
+const directorInspectorTabsPresentExpression = `!!(${findDirectorInspectorRootExpression()}?.querySelector('[role="tab"]'))`;
+
 async function prepareDirectorInspectorTabs(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
 ) {
-  if (
-    evalOnPage(
-      agentBrowser,
-      recovery,
-      `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
-    )
-  ) {
+  if (evalOnPage(agentBrowser, recovery, directorInspectorTabsPresentExpression)) {
     return;
   }
   ensurePageTarget(agentBrowser, recovery);
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    if (
-      evalOnPage(
-        agentBrowser,
-        recovery,
-        `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
-      )
-    ) {
+    if (evalOnPage(agentBrowser, recovery, directorInspectorTabsPresentExpression)) {
       return;
     }
     if (!clickButtonByLabel(agentBrowser, "Add scene element")) {
@@ -773,8 +879,15 @@ async function prepareDirectorInspectorTabs(
       await waitForEvalRecovered(
         agentBrowser,
         recovery,
-        `!!document.querySelector('[aria-label="Mannequin inspector sections"] [role="tab"]')`,
-        "mannequin inspector tabs",
+        `document.body.innerText.includes("Actor 1")`,
+        "mannequin scene row",
+        45000,
+      );
+      await waitForEvalRecovered(
+        agentBrowser,
+        recovery,
+        directorInspectorTabsPresentExpression,
+        "director inspector tabs",
         45000,
       );
       return;
@@ -783,6 +896,26 @@ async function prepareDirectorInspectorTabs(
     await sleep(400);
   }
   throw new Error("Director Add editable actor menu item missing");
+}
+
+async function ensureDirectorInspectorEvidenceReady(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  await prepareDirectorInspectorTabs(agentBrowser, recovery);
+  if (!evalOnPage(agentBrowser, recovery, directorInspectorTabsPresentExpression)) {
+    clickByText(agentBrowser, "Actor 1");
+    await waitForEvalRecovered(
+      agentBrowser,
+      recovery,
+      directorInspectorTabsPresentExpression,
+      "director inspector after selecting Actor 1",
+      30000,
+    );
+  }
+  if (!stampDirectorInspectorRoot(agentBrowser, recovery)) {
+    throw new Error("Director inspector root missing for evidence capture");
+  }
 }
 
 async function openDirectorStageTab(
@@ -816,11 +949,11 @@ async function openDirectorStageTab(
   await waitForEvalRecovered(
     agentBrowser,
     recovery,
-    `!!document.querySelector('[data-testid="project-director-stage-editor"]') || !!document.querySelector('[aria-label="Mannequin inspector sections"]')`,
+    `!!document.querySelector('[data-testid="project-director-stage-editor"]') || (${directorInspectorTabsPresentExpression})`,
     "director stage editor",
     120000,
   );
-  await prepareDirectorInspectorTabs(agentBrowser, recovery);
+  await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
 }
 
 async function captureDirectorInspectorStates(
@@ -830,9 +963,13 @@ async function captureDirectorInspectorStates(
 ) {
   setTheme(agentBrowser, theme);
   await sleep(400);
-  clickDirectorInspectorTab(agentBrowser, "Properties");
+  await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
+  if (!clickDirectorInspectorTab(agentBrowser, "Properties")) {
+    throw new Error("Director Properties tab missing");
+  }
   await sleep(300);
   markDirectorInspectorTab(agentBrowser, "Properties");
+  stampDirectorInspectorRoot(agentBrowser, recovery);
   await recordTabStyle(agentBrowser, recovery, "director", theme, "selected-rest", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "selected-rest"));
   await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "selected-rest"));
@@ -865,7 +1002,75 @@ async function captureDirectorInspectorStates(
   await waitForTabTransitionSettle(agentBrowser, recovery, directorEvidenceTab, "Properties focus");
   markActiveTabForEvidence(agentBrowser, recovery);
   await recordTabStyle(agentBrowser, recovery, "director", theme, "focus-visible", evidenceFocusedTabSelector);
-  await screenshotTabFocusCrop(agentBrowser, recovery, evidenceFocusedTabSelector, "director", theme);
+  await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "director", theme);
+}
+
+function clickSettingsSectionTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
+  return evalJson(agentBrowser, `(() => {
+    const wanted = ${JSON.stringify(label)};
+    const tab = [...document.querySelectorAll('[aria-label="Settings sections"] [role="tab"]')].find((candidate) => {
+      const value = (candidate.innerText || candidate.textContent || "").trim();
+      return value === wanted;
+    });
+    if (!tab) return false;
+    tab.click();
+    return true;
+  })()`);
+}
+
+async function focusSettingsSectionKeyboard(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  label: string,
+  selectedLabel: string,
+) {
+  if (!clickSettingsSectionTab(agentBrowser, selectedLabel)) {
+    throw new Error(`Settings section tab not found: ${selectedLabel}`);
+  }
+  await sleep(150);
+  for (let i = 0; i < 16; i += 1) {
+    const match = evalOnPage(
+      agentBrowser,
+      recovery,
+      `(() => {
+        const active = document.activeElement;
+        const text = (active?.innerText || active?.textContent || "").trim();
+        return text === ${JSON.stringify(label)};
+      })()`,
+    );
+    if (match) break;
+    agentBrowser(["press", "ArrowDown"]);
+    await sleep(80);
+  }
+}
+
+async function captureSettingsFocusStates(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  theme: "light" | "dark",
+) {
+  setTheme(agentBrowser, theme);
+  await sleep(400);
+  await openSettingsWorkspaceTab(agentBrowser, recovery);
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    `!!document.querySelector('[aria-label="Settings sections"] [role="tab"]')`,
+    "settings section tabs",
+    30000,
+  );
+  await focusSettingsSectionKeyboard(agentBrowser, recovery, "Appearance", "Plugins");
+  await sleep(200);
+  markActiveTabForEvidence(agentBrowser, recovery);
+  await recordTabStyle(
+    agentBrowser,
+    recovery,
+    "settings",
+    theme,
+    "focus-visible",
+    evidenceFocusedTabSelector,
+  );
+  await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "settings", theme);
 }
 
 async function waitForCdpPageTarget(
@@ -1337,6 +1542,7 @@ async function main() {
       await captureNavigatorStates(agentBrowser, recovery, theme, NAV_CANVAS, NAV_TIMELINE);
       await openDirectorStageTab(agentBrowser, recovery, NAV_DIRECTOR);
       await captureDirectorInspectorStates(agentBrowser, recovery, theme);
+      await captureSettingsFocusStates(agentBrowser, recovery, theme);
     }
 
     await writeStyleAudit();

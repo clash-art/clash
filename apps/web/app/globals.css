@@ -5859,6 +5859,18 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   box-shadow: none;
 }
 
+/* Desktop workspace tabs: ring the chrome row (icon, title, status, close), not the inner label. */
+[data-desktop-workspace-tab="true"]:focus-within {
+  outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
+  outline-offset: calc(-1 * var(--app-tab-focus-width));
+  box-shadow: none;
+}
+
+[data-desktop-workspace-tab="true"] [role="tab"]:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
 .app-tab-trigger-rest:focus:not(:focus-visible),
 [role="tab"]:focus:not(:focus-visible):not([aria-selected="true"]) {
   background: transparent;
@@ -5883,5 +5895,20 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   [role="tab"]:hover:not([aria-disabled="true"]):not([aria-selected="true"]) {
   background: var(--clash-director-panel-hover);
   color: var(--clash-director-panel-secondary);
+}
+
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"] {
+  min-width: 0;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"]:focus-visible
+  > span.rounded-full {
+  opacity: 0;
 }
 
