@@ -535,12 +535,17 @@ function markDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBro
   return evalJson(agentBrowser, `(() => {
     const wanted = ${JSON.stringify(label)};
     document.querySelectorAll("[data-tab-evidence-target]").forEach((el) => el.removeAttribute("data-tab-evidence-target"));
+    document.querySelectorAll('[data-director-inspector-evidence-root="true"]').forEach((el) => {
+      el.removeAttribute("data-director-inspector-evidence-root");
+    });
     const root = ${findDirectorInspectorRootExpression()};
-    const tab = [...(root?.querySelectorAll('[role="tab"]') ?? [])].find((candidate) => {
+    if (!(root instanceof HTMLElement)) return false;
+    root.setAttribute("data-director-inspector-evidence-root", "true");
+    const tab = [...root.querySelectorAll('[role="tab"]')].find((candidate) => {
       const value = (candidate.innerText || candidate.textContent || "").trim();
       return value === wanted;
     });
-    if (!tab) return false;
+    if (!(tab instanceof HTMLElement)) return false;
     tab.setAttribute("data-tab-evidence-target", "true");
     return true;
   })()`);
@@ -992,7 +997,9 @@ async function captureDirectorInspectorStates(
     directorInspectorRoot,
     outFileZoom("director", theme, "previous-tab-mouse-away"),
   );
-  markDirectorInspectorTab(agentBrowser, "Properties");
+  if (!markDirectorInspectorTab(agentBrowser, "Properties")) {
+    throw new Error("Director Properties tab marker missing");
+  }
   await hoverAndSettle(agentBrowser, recovery, directorEvidenceTab, "Properties");
   await recordTabStyle(agentBrowser, recovery, "director", theme, "hover-inactive", directorEvidenceTab);
   await screenshot(agentBrowser, recovery, outFile("director", theme, "hover-inactive"));
