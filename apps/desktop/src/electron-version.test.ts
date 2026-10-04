@@ -206,7 +206,7 @@ describe("desktop Electron runtime", () => {
     expect(packaging).toContain("platform: macOS-arm64");
     expect(packaging).toContain("platform: macOS-x64");
     expect(packaging).toContain(
-      "apps/desktop/release/Clash-Desktop-macOS-arm64.dmg",
+      "apps/desktop/release/Clash-Desktop-*-macOS-arm64.dmg",
     );
     expect(packaging).toContain(
       "apps/desktop/release/Clash-Desktop-macOS-x64.dmg",

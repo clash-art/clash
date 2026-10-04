@@ -94,7 +94,11 @@ jobs:
             mkdir -p "${dest}"
             /usr/bin/ditto apps/desktop/release/mac-arm64 "${dest}/mac-arm64"
             local zip_name zip blockmap
-            zip_name="$(grep -E '^\s*path:\s*\S' apps/desktop/release/preview-mac.yml | head -n 1 | sed -E 's/^\s*path:\s*//; s/^["'\'']|["'\'']$//g')"
+            zip_name="$(pnpm --dir apps/desktop exec node --input-type=module -e "
+              import { readFileSync } from 'node:fs';
+              import { zipNameFromFeedYaml } from './scripts/macos-update-e2e.ts';
+              console.log(zipNameFromFeedYaml(readFileSync('apps/desktop/release/preview-mac.yml', 'utf8')));
+            ")"
             zip="apps/desktop/release/${zip_name}"
             blockmap="${zip}.blockmap"
             test -f "${zip}" && test -f "${blockmap}"
