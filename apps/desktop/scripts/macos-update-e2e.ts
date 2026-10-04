@@ -26,7 +26,10 @@ import {
   UPDATE_E2E_EVIDENCE_PATH,
   previewAppVersion,
 } from "../src/app-update.ts";
-import { clashMacArm64ZipBlockmapName } from "./desktop-release-assets.ts";
+import {
+  clashMacArm64ZipBlockmapName,
+  clashMacArm64ZipName,
+} from "./desktop-release-assets.ts";
 import { assertDifferentialUpdate } from "./update-differential-assert.ts";
 
 export const OLD_PREVIEW_BUILD = 910001;
@@ -176,6 +179,37 @@ function findFiles(root: string, name: string): string[] {
 
 function previewBuildDir(releaseRoot: string, build: number): string {
   return join(releaseRoot, `preview-build-${build}`);
+}
+
+export function updaterCacheDirNameFromAppUpdateYaml(text: string): string {
+  const match = /^\s*updaterCacheDirName:\s*(\S+)\s*$/m.exec(text);
+  return match?.[1] ?? "clash-updater";
+}
+
+export function updaterCacheDirFromApp(appPath: string): string {
+  const ymlPath = join(appPath, "Contents", "Resources", "app-update.yml");
+  const text = readFileSync(ymlPath, "utf8");
+  return join(
+    homedir(),
+    "Library",
+    "Caches",
+    updaterCacheDirNameFromAppUpdateYaml(text),
+  );
+}
+
+function seedMacUpdaterCache(
+  installedAppPath: string,
+  oldZipPath: string,
+  oldBlockmapPath: string,
+): void {
+  const cacheDir = updaterCacheDirFromApp(installedAppPath);
+  mkdirSync(cacheDir, { recursive: true });
+  run("/usr/bin/ditto", [oldZipPath, join(cacheDir, "update.zip")]);
+  run("/usr/bin/ditto", [
+    oldBlockmapPath,
+    join(cacheDir, "current.blockmap"),
+  ]);
+  log(`seeded updater cache ${cacheDir}`);
 }
 
 function walkApps(root: string): string[] {
@@ -466,6 +500,14 @@ async function main(): Promise<void> {
     if (bundleVersion(installedAppPath) !== oldVersion) {
       throw new Error("/Applications version is not the old preview");
     }
+    const oldZipPath = join(
+      previewBuildDir(releaseRoot, OLD_PREVIEW_BUILD),
+      clashMacArm64ZipName(oldVersion),
+    );
+    if (!existsSync(oldZipPath)) {
+      throw new Error(`missing old preview zip for cache seed: ${oldZipPath}`);
+    }
+    seedMacUpdaterCache(installedAppPath, oldZipPath, oldBlockmapPath);
     rmSync(UPDATE_E2E_EVIDENCE_PATH, { force: true });
     const installedLog = resolve("test-results/installed-app.log");
     const installedPid = launch(installedAppPath, feed.url, installedLog);

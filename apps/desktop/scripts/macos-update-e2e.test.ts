@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   localizeFeedYaml,
+  updaterCacheDirNameFromAppUpdateYaml,
   zipNameFromFeedYaml,
 } from "./macos-update-e2e.ts";
 
@@ -17,6 +18,17 @@ describe("macos-update-e2e helpers", () => {
     ].join("\n");
     expect(zipNameFromFeedYaml(yaml)).toBe(
       "Clash-Desktop-0.1.0-preview.2-macOS-arm64.zip",
+    );
+  });
+
+  it("reads updaterCacheDirName from app-update.yml", () => {
+    expect(
+      updaterCacheDirNameFromAppUpdateYaml(
+        "provider: generic\nupdaterCacheDirName: clash-updater\n",
+      ),
+    ).toBe("clash-updater");
+    expect(updaterCacheDirNameFromAppUpdateYaml("provider: generic\n")).toBe(
+      "clash-updater",
     );
   });
 
