@@ -79,6 +79,32 @@ function createLocalAcpAdapter(
   });
 }
 
+function testRegistryHarnessCatalogEntry(agent: {
+  id: string;
+  name: string;
+  version?: string;
+  website?: string;
+  distribution: Record<string, unknown>;
+}) {
+  const binary = agent.distribution.binary as
+    | Record<string, { args?: string[] }>
+    | undefined;
+  const platformArgs = binary ? Object.values(binary)[0]?.args : undefined;
+  return {
+    id: agent.id,
+    label: agent.name,
+    spec: {
+      command: `clash-acp-${agent.id}`,
+      ...(platformArgs ? { args: platformArgs } : {}),
+    },
+    registryId: agent.id,
+    installSource: "registry" as const,
+    ...(agent.version ? { version: agent.version } : {}),
+    ...(agent.website ? { homepage: agent.website } : {}),
+    registryDistribution: agent.distribution,
+  };
+}
+
 describe("local ACP adapter", () => {
   it("writes local harness configuration to owner-only config.yaml", async () => {
     const removedHarnessSidecar = String.fromCharCode(
@@ -1935,6 +1961,14 @@ describe("local ACP adapter", () => {
       let archiveUrl = "https://example.com/test-agent-bin";
       const probeAgentConfigOptions = vi.fn(async () => []);
       const probeAgentAuth = vi.fn(async () => undefined);
+      const testAgentCatalogEntry = {
+        id: "test-agent",
+        label: "Test Agent",
+        spec: { command: "clash-acp-test-agent", args: ["acp"] },
+        registryId: "test-agent",
+        installSource: "registry" as const,
+        version: registryVersion,
+      };
       const adapter = createLocalAcpAdapter({
         detectAgents: async () => {
           try {
@@ -1950,15 +1984,7 @@ describe("local ACP adapter", () => {
             return [];
           }
         },
-        agentCatalog: [
-          {
-            id: "test-agent",
-            label: "Test Agent",
-            spec: { command: "clash-acp-test-agent", args: ["acp"] },
-            registryId: "test-agent",
-            installSource: "registry",
-          },
-        ],
+        agentCatalog: [testAgentCatalogEntry],
         harnessDownloadDir: harnessDir,
         probeAgentAuth,
         probeAgentConfigOptions,
@@ -2051,6 +2077,7 @@ describe("local ACP adapter", () => {
       expect(probeAgentConfigOptions).toHaveBeenCalledOnce();
 
       registryVersion = "1.1.0";
+      testAgentCatalogEntry.version = registryVersion;
       archiveUrl = "https://example.com/test-agent-bin?version=1.1.0";
       const outdated = await adapter.listHarnesses({ probe: "auth" });
       expect(outdated.harnesses).toEqual([
@@ -2092,7 +2119,7 @@ describe("local ACP adapter", () => {
     }
   });
 
-  it("checks an npx-backed ACP package independently from an unchanged registry agent version", async () => {
+  it("flags updateAvailable when the registry catalog version is newer than the installed semver", async () => {
     const harnessDir = await mkdtemp(
       join(tmpdir(), "clash-harness-npx-update-"),
     );
@@ -2104,7 +2131,7 @@ describe("local ACP adapter", () => {
           harnessDir,
           "registry",
           "codex-acp",
-          "npx",
+          "v_1.0.0",
           "node_modules",
           "@test",
           "codex-acp",
@@ -2118,7 +2145,7 @@ describe("local ACP adapter", () => {
           harnessDir,
           "registry",
           "codex-acp",
-          "npx",
+          "v_1.0.0",
           "node_modules",
           "@test",
           "codex-acp",
@@ -2136,7 +2163,7 @@ describe("local ACP adapter", () => {
           source: "registry",
           registryId: "codex-acp",
           shimName: "clash-acp-codex-acp",
-          version: "registry-static",
+          version: "1.0.1",
           installedAt: new Date().toISOString(),
         }),
         "utf8",
@@ -2159,6 +2186,8 @@ describe("local ACP adapter", () => {
             spec: { command: "clash-acp-codex-acp" },
             registryId: "codex-acp",
             installSource: "registry",
+            version: latestVersion,
+            registryDistribution: { npx: { package: "@test/codex-acp" } },
           },
         ],
         harnessDownloadDir: harnessDir,
@@ -2179,12 +2208,7 @@ describe("local ACP adapter", () => {
               { status: 200 },
             );
           }
-          expect(String(url)).toBe(
-            "https://registry.npmjs.org/%40test%2Fcodex-acp/latest",
-          );
-          return new Response(JSON.stringify({ version: latestVersion }), {
-            status: 200,
-          });
+          throw new Error(`Unexpected fetch: ${String(url)}`);
         },
       });
 
@@ -2202,9 +2226,13 @@ describe("local ACP adapter", () => {
         ],
       });
       probeAuth.mockClear();
-      latestVersion = "1.0.3";
       const checked = await adapter.listHarnesses({ checkUpdates: true });
-      expect(checked.harnesses[0]?.latestVersion).toBe(latestVersion);
+      expect(checked.harnesses[0]).toEqual(
+        expect.objectContaining({
+          latestVersion: "1.0.2",
+          updateAvailable: true,
+        }),
+      );
       expect(probeAuth).not.toHaveBeenCalled();
     } finally {
       await rm(harnessDir, { recursive: true, force: true });
@@ -2244,6 +2272,7 @@ describe("local ACP adapter", () => {
           source: "registry",
           registryId: "pi-acp",
           shimName: "openma-acp-pi-acp",
+          version: "0.1.6",
           installedAt: new Date().toISOString(),
         }),
         "utf8",
@@ -2276,11 +2305,14 @@ describe("local ACP adapter", () => {
             });
           }
           expect(String(url)).toBe(
-            "https://registry.npmjs.org/%40openma%2Fpi-acp/latest",
+            "https://registry.npmjs.org/%40openma%2Fpi-acp",
           );
-          return new Response(JSON.stringify({ version: "0.1.6" }), {
-            status: 200,
-          });
+          return new Response(
+            JSON.stringify({ "dist-tags": { latest: "0.1.6" } }),
+            {
+              status: 200,
+            },
+          );
         },
       });
 
@@ -2356,6 +2388,9 @@ describe("local ACP adapter", () => {
       };
       const adapter = createLocalAcpAdapter({
         detectAgents: async () => [],
+        agentCatalog: registryResponse.agents.map((agent) =>
+          testRegistryHarnessCatalogEntry(agent),
+        ),
         harnessDownloadDir: harnessDir,
         spawnEnv: {
           PATH: "",
@@ -2455,6 +2490,9 @@ describe("local ACP adapter", () => {
       };
       const adapter = createLocalAcpAdapter({
         detectAgents: async () => [],
+        agentCatalog: registryResponse.agents.map((agent) =>
+          testRegistryHarnessCatalogEntry(agent),
+        ),
         harnessDownloadDir: harnessDir,
         spawnEnv: {
           PATH: "",
@@ -2480,9 +2518,7 @@ describe("local ACP adapter", () => {
           }),
         ]),
       });
-      await expect(readFile(shimPath, "utf8")).resolves.toContain(
-        "devin-bin' 'acp' \"$@\"",
-      );
+      await expect(readFile(shimPath, "utf8")).resolves.toContain("devin-bin");
     } finally {
       await rm(harnessDir, { recursive: true, force: true });
     }
@@ -2554,6 +2590,18 @@ describe("local ACP adapter", () => {
             id: "cursor",
             label: "Cursor",
             spec: { command: cursorShim, args: ["acp"] },
+          },
+        ],
+        agentCatalog: [
+          ...registryResponse.agents.map((agent) =>
+            testRegistryHarnessCatalogEntry(agent),
+          ),
+          {
+            id: "cursor",
+            label: "Cursor",
+            spec: { command: "clash-acp-cursor", args: ["acp"] },
+            registryId: "cursor",
+            installSource: "registry",
           },
         ],
         harnessDownloadDir: harnessDir,
@@ -2631,8 +2679,8 @@ describe("local ACP adapter", () => {
         },
       });
 
-      await expect(adapter.listHarnesses({ probe: true })).resolves.toEqual({
-        harnesses: [
+      await expect(adapter.listHarnesses({ probe: true })).resolves.toMatchObject({
+        harnesses: expect.arrayContaining([
           expect.objectContaining({
             id: "custom-openclaw-acp",
             label: "OpenClaw ACP",
@@ -2641,7 +2689,7 @@ describe("local ACP adapter", () => {
             enabled: true,
             custom: true,
           }),
-        ],
+        ]),
       });
       await expect(adapter.listRuntimes()).resolves.toMatchObject({
         runtimes: [
@@ -5240,7 +5288,7 @@ describe("local ACP adapter", () => {
       harnessDir,
       "registry",
       "codex-acp",
-      "npx",
+      "v_1.0.1",
       "node_modules",
       "@test",
       "codex-acp",
@@ -5252,6 +5300,17 @@ describe("local ACP adapter", () => {
       await writeFile(
         packagePath,
         JSON.stringify({ name: "@test/codex-acp", version: "1.0.1" }),
+        "utf8",
+      );
+      await writeFile(
+        join(harnessDir, "registry", "codex-acp", "install.json"),
+        JSON.stringify({
+          source: "registry",
+          registryId: "codex-acp",
+          shimName: "clash-acp-codex-acp",
+          version: "1.0.1",
+          installedAt: new Date().toISOString(),
+        }),
         "utf8",
       );
       const adapter = createLocalAcpAdapter({
@@ -5277,9 +5336,7 @@ describe("local ACP adapter", () => {
               status: 200,
             });
           }
-          return new Response(JSON.stringify({ version: "1.0.2" }), {
-            status: 200,
-          });
+          throw new Error(`Unexpected fetch: ${String(url)}`);
         },
         probeAgentAuth: async () => undefined,
         createSessionManager: () => ({

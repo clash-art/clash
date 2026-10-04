@@ -2,7 +2,7 @@ import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import type { IncomingMessage } from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, readFile, readdir, unlink } from "node:fs/promises";
+import { access, readFile, unlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
@@ -58,7 +58,7 @@ import type {
 import {
   installAcpRegistryAgent,
   installManagedAdapter,
-  readAcpRegistryInstallMetadata,
+  readAcpHarnessInstallState,
   uninstallAcpRegistryAgent,
   uninstallManagedAdapter,
 } from "@openma/common/acp-harnesses/installer";
@@ -745,30 +745,6 @@ function toHarnessEntry(agent: DetectedAcpAgent): KnownAgentEntry {
     label: agent.label,
     spec: agent.spec,
   };
-}
-
-function registryNpmPackageName(entry: KnownAgentEntry): string | undefined {
-  if (entry.install?.kind === "npm") return entry.install.package;
-  const npxPackage = entry.registryDistribution?.npx?.package;
-  if (!npxPackage) return undefined;
-  const lastAt = npxPackage.lastIndexOf("@");
-  return lastAt > 0 ? npxPackage.slice(0, lastAt) : npxPackage;
-}
-
-async function readNpmPackageJsonVersion(
-  packageJsonPath: string,
-): Promise<string | undefined> {
-  try {
-    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
-      version?: unknown;
-    };
-    return typeof packageJson.version === "string" &&
-      packageJson.version.length > 0
-      ? packageJson.version
-      : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1728,7 +1704,6 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   private detectedAgentsPromiseProbeScope: DetectedAgentProbeScope | null =
     null;
   private registryLoadPromise: Promise<void> | null = null;
-  private readonly npmPackageVersionCache = new Map<string, string | null>();
   private readonly confirmedCapabilities = new Map<
     string,
     LocalAcpConfirmedCapabilities
@@ -2349,66 +2324,25 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     latestVersion?: string;
     updateAvailable?: boolean;
   }> {
-    const registryLatestVersion = entry.version;
-    if (!this.harnessDownloadDir || !entry.installSource) {
-      return {
-        installed: false,
-        ...(registryLatestVersion
-          ? { latestVersion: registryLatestVersion }
+    if (!entry.installSource) {
+      return readAcpHarnessInstallState({
+        entry,
+        binDir: this.harnessDownloadDir ?? "",
+        ...(this.harnessDownloadDir
+          ? { installRoot: this.harnessDownloadDir }
           : {}),
-      };
+        fetchImpl: this.fetchImpl,
+      });
     }
-    const shimPath = join(
-      this.harnessDownloadDir,
-      basename(entry.spec.command),
-    );
-    const installed = await access(shimPath).then(
-      () => true,
-      () => false,
-    );
-    if (!installed) {
-      return {
-        installed: false,
-        ...(registryLatestVersion
-          ? { latestVersion: registryLatestVersion }
-          : {}),
-      };
+    if (!this.harnessDownloadDir) {
+      return { installed: false };
     }
-    const [metadata, installedNpmVersion, latestNpmVersion] = await Promise.all(
-      [
-        entry.installSource === "registry" && entry.registryId
-          ? readAcpRegistryInstallMetadata({
-              registryId: entry.registryId,
-              binDir: this.harnessDownloadDir,
-              installRoot: this.harnessDownloadDir,
-            })
-          : Promise.resolve(null),
-        entry.installSource === "registry" &&
-        entry.registryId
-          ? this.installedNpmPackageVersion(
-              entry.registryId,
-              registryNpmPackageName(entry) ?? "",
-            )
-          : Promise.resolve(undefined),
-        entry.installSource === "registry" &&
-        registryNpmPackageName(entry)
-          ? this.latestNpmPackageVersion(registryNpmPackageName(entry)!)
-          : Promise.resolve(undefined),
-      ],
-    );
-    const installedVersion = installedNpmVersion ?? metadata?.version;
-    const latestVersion = latestNpmVersion ?? registryLatestVersion;
-    const updateAvailable =
-      entry.installSource === "registry" &&
-      !!installedVersion &&
-      !!latestVersion &&
-      installedVersion !== latestVersion;
-    return {
-      installed: true,
-      ...(installedVersion ? { installedVersion } : {}),
-      ...(latestVersion ? { latestVersion } : {}),
-      ...(updateAvailable ? { updateAvailable: true } : {}),
-    };
+    return readAcpHarnessInstallState({
+      entry,
+      binDir: this.harnessDownloadDir,
+      installRoot: this.harnessDownloadDir,
+      fetchImpl: this.fetchImpl,
+    });
   }
 
   private async installedHarnessVersion(
@@ -2419,69 +2353,6 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     );
     if (!entry) return undefined;
     return (await this.managedInstallInfo(entry)).installedVersion;
-  }
-
-  private async installedNpmPackageVersion(
-    registryId: string,
-    packageName: string,
-  ): Promise<string | undefined> {
-    if (!this.harnessDownloadDir) return undefined;
-    const packageJsonRelative = join(
-      "node_modules",
-      ...packageName.split("/"),
-      "package.json",
-    );
-    const legacyPath = join(
-      this.harnessDownloadDir,
-      "registry",
-      registryId,
-      "npx",
-      packageJsonRelative,
-    );
-    const legacyVersion = await readNpmPackageJsonVersion(legacyPath);
-    if (legacyVersion) return legacyVersion;
-
-    const registryRoot = join(this.harnessDownloadDir, "registry", registryId);
-    let entries: string[];
-    try {
-      entries = await readdir(registryRoot);
-    } catch {
-      return undefined;
-    }
-    for (const entry of entries) {
-      if (!entry.startsWith("v_")) continue;
-      const versionedPath = join(registryRoot, entry, packageJsonRelative);
-      const version = await readNpmPackageJsonVersion(versionedPath);
-      if (version) return version;
-    }
-    return undefined;
-  }
-
-  private async latestNpmPackageVersion(
-    packageName: string,
-  ): Promise<string | undefined> {
-    if (this.npmPackageVersionCache.has(packageName)) {
-      return this.npmPackageVersionCache.get(packageName) ?? undefined;
-    }
-    try {
-      const response = await this.fetchImpl(
-        `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
-      );
-      if (!response.ok)
-        throw new Error(`NPM registry unavailable: HTTP ${response.status}`);
-      const payload = (await response.json()) as {
-        version?: unknown;
-        "dist-tags"?: { latest?: unknown };
-      };
-      const version = payload.version ?? payload["dist-tags"]?.latest;
-      const normalized =
-        typeof version === "string" && version.length > 0 ? version : null;
-      this.npmPackageVersionCache.set(packageName, normalized);
-      return normalized ?? undefined;
-    } catch {
-      this.npmPackageVersionCache.set(packageName, null);
-      return undefined;
-    }
   }
 
   private async buildHarnesses(
@@ -2498,7 +2369,6 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         opts.probe !== "none");
     if (checksForUpdates) {
       await this.ensureRegistryLoaded(true);
-      this.npmPackageVersionCache.clear();
     }
     const agents = await this.getDetectedAgents({
       probeAuth,
