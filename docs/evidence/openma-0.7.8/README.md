@@ -1,4 +1,8 @@
-# OpenMA common v0.7.8 — Backchat disclosure evidence
+# OpenMA common — Backchat disclosure evidence
+
+**Clash pin:** `@openma/common` **v0.7.9** (`afc628e5`) — includes install.json version / install-state fix ([openma-ai/openma-common#28](https://github.com/openma-ai/openma-common/pull/28)).
+
+**Screenshots below** were captured while pinned to **v0.7.8** (disclosure alignment/hover UX unchanged in v0.7.9; no full matrix re-run for this bump).
 
 Captured with `scripts/e2e/copilot-disclosure-real-ui.ts` (Mock ACP, real project editor).
 
@@ -14,10 +18,9 @@ Regenerate:
 OPENMA_EVIDENCE_VERSION=v0.7.8-after pnpm exec tsx scripts/e2e/copilot-disclosure-real-ui.ts
 ```
 
-Master baseline (`origin/master`, `@openma/common` v0.7.6):
+Master baseline (`origin/master`, `@openma/common` v0.7.6) — same harness and 4-tool mock; use `CLASH_E2E_STUB_ACP_YIELD_MS=15` so the legacy pin finishes the turn. v0.7.6 does not render the grouped **「已执行 N 项操作」** tool-summary row (tool captures skipped; process rows + alignment guides still captured).
 
 ```bash
-# after checking out master pins temporarily
 CLASH_E2E_STUB_ACP_YIELD_MS=15 OPENMA_EVIDENCE_VERSION=v0.7.6-before pnpm exec tsx scripts/e2e/copilot-disclosure-real-ui.ts
 ```
 
