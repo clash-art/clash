@@ -14,7 +14,8 @@ permissions:
 
 jobs:
   publish:
-    if: vars.CLASH_STABLE_DESKTOP_PUBLICATION_ENABLED == 'true'
+    # Off by default — stable desktop release process is not decided yet.
+    if: false && vars.CLASH_STABLE_DESKTOP_PUBLICATION_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

@@ -157,13 +157,13 @@ async function main(): Promise<void> {
     const extraArgs = (env.CLASH_ELECTRON_BUILDER_EXTRA_ARGS ?? "")
       .split(/\s+/)
       .filter(Boolean);
-    const stableArtifactArgs =
-      channel === "stable"
+    const versionedMacArtifact =
+      channel === "stable" || channel === "preview"
         ? ["--config.mac.artifactName=Clash-Desktop-${version}-macOS-${arch}.${ext}"]
         : [];
     await runBuilder(env, [
       ...extraArgs,
-      ...stableArtifactArgs,
+      ...versionedMacArtifact,
       `--config.publish.channel=${publishChannel}`,
       ...extra,
     ]);

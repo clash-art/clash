@@ -493,6 +493,7 @@ describe("desktop Electron runtime", () => {
       ),
       "utf8",
     );
+    expect(stablePublish).toContain("if: false &&");
     expect(stablePublish).toContain("prepare-stable-release-assets.ts");
     expect(stablePublish).toContain("previous-stable-blockmap.json");
     const packaging = readFileSync(
@@ -503,5 +504,10 @@ describe("desktop Electron runtime", () => {
       "utf8",
     );
     expect(packaging).toContain(".zip.blockmap");
+    const releaseWorkflow = readFileSync(
+      new URL("../../../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+    expect(releaseWorkflow).toContain("prepare-preview-release-assets.ts");
   });
 });

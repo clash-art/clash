@@ -72,6 +72,7 @@ jobs:
           pnpm --dir apps/desktop test scripts/macos-update-e2e.test.ts
           pnpm --dir apps/desktop test scripts/update-differential-assert.test.ts
           pnpm --dir apps/desktop test scripts/prepare-stable-release-assets.test.ts
+          pnpm --dir apps/desktop test scripts/prepare-preview-release-assets.test.ts
 
       - name: Build two notarized preview versions
         shell: bash
@@ -92,7 +93,12 @@ jobs:
             rm -rf "${dest}"
             mkdir -p "${dest}"
             /usr/bin/ditto apps/desktop/release/mac-arm64 "${dest}/mac-arm64"
-            cp apps/desktop/release/Clash-Desktop-macOS-arm64.zip "${dest}/"
+            local zip blockmap
+            zip="$(find apps/desktop/release -maxdepth 1 -name 'Clash-Desktop-*-macOS-arm64.zip' -type f | head -n 1)"
+            blockmap="${zip}.blockmap"
+            test -f "${zip}" && test -f "${blockmap}"
+            cp "${zip}" "${dest}/"
+            cp "${blockmap}" "${dest}/"
             cp apps/desktop/release/preview-mac.yml "${dest}/"
           }
           archive_preview_build 910001
@@ -119,4 +125,6 @@ jobs:
             apps/desktop/test-results/macos-update-e2e.txt
             apps/desktop/test-results/clash-update-evidence.log
             apps/desktop/test-results/installed-app.log
+            apps/desktop/test-results/preview-updater.log
+            apps/desktop/test-results/preview-download.json
           if-no-files-found: ignore

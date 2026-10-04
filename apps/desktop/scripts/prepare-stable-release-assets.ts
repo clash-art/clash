@@ -17,6 +17,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { GITHUB_REPOSITORY } from "../src/app-update.ts";
+import { clashMacArm64ZipBlockmapName } from "./desktop-release-assets.ts";
 
 const STABLE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/;
 
@@ -64,7 +65,7 @@ export function previousStableVersion(
 
 /** Stable mac zip blockmap asset name for a semver (versioned artifact). */
 export function macZipBlockmapName(version: string): string {
-  return `Clash-Desktop-${version}-macOS-arm64.zip.blockmap`;
+  return clashMacArm64ZipBlockmapName(version);
 }
 
 export function findStableMacZip(releaseRoot: string): string {

@@ -26,6 +26,8 @@ import {
   UPDATE_E2E_EVIDENCE_PATH,
   previewAppVersion,
 } from "../src/app-update.ts";
+import { clashMacArm64ZipBlockmapName } from "./desktop-release-assets.ts";
+import { assertDifferentialUpdate } from "./update-differential-assert.ts";
 
 export const OLD_PREVIEW_BUILD = 910001;
 export const NEW_PREVIEW_BUILD = 910002;
@@ -185,6 +187,18 @@ function walkApps(root: string): string[] {
     .filter(Boolean);
 }
 
+export function extractUpdaterLogText(appLogPath: string): string {
+  try {
+    return readFileSync(appLogPath, "utf8")
+      .split("\n")
+      .filter((line) => line.includes("[desktop:updater]"))
+      .map((line) => line.replace(/^.*\[desktop:updater\]\s*/, "[desktop:updater] "))
+      .join("\n");
+  } catch {
+    return "";
+  }
+}
+
 async function serveFeed(directory: string): Promise<{
   url: string;
   close: () => Promise<void>;
@@ -206,8 +220,40 @@ async function serveFeed(directory: string): Promise<{
       response.end();
       return;
     }
+    const range = request.headers.range;
+    if (range) {
+      if (range.includes(",")) {
+        response.writeHead(501);
+        response.end();
+        return;
+      }
+      const match = /^bytes=(\d+)-(\d+)?$/i.exec(range.trim());
+      if (!match?.[1]) {
+        response.writeHead(416);
+        response.end();
+        return;
+      }
+      const start = Number(match[1]);
+      const end = match[2] ? Number(match[2]) : size - 1;
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || end >= size) {
+        response.writeHead(416);
+        response.end();
+        return;
+      }
+      const chunk = end - start + 1;
+      response.writeHead(206, {
+        "Content-Range": `bytes ${start}-${end}/${size}`,
+        "Accept-Ranges": "bytes",
+        "Content-Length": chunk,
+        "Content-Type": "application/octet-stream",
+        "Cache-Control": "no-cache",
+      });
+      createReadStream(file, { start, end }).pipe(response);
+      return;
+    }
     response.writeHead(200, {
       "Content-Length": size,
+      "Accept-Ranges": "bytes",
       "Content-Type": "application/octet-stream",
       "Cache-Control": "no-cache",
     });
@@ -387,6 +433,31 @@ async function main(): Promise<void> {
     `${localizeFeedYaml(ymlText, zipName)}\n`,
   );
   run("/usr/bin/ditto", [zipPath, join(feedDir, zipName)]);
+  const newBlockmap = `${zipPath}.blockmap`;
+  const oldBlockmapName = clashMacArm64ZipBlockmapName(oldVersion);
+  const oldBlockmapCandidates = [
+    join(previewBuildDir(releaseRoot, OLD_PREVIEW_BUILD), oldBlockmapName),
+    join(dirname(zipPath), oldBlockmapName),
+    ...findFiles(releaseRoot, oldBlockmapName),
+  ];
+  const oldBlockmapPath = oldBlockmapCandidates.find((candidate) =>
+    existsSync(candidate),
+  );
+  if (!oldBlockmapPath) {
+    throw new Error(`missing old preview blockmap ${oldBlockmapName}`);
+  }
+  if (!existsSync(newBlockmap)) {
+    throw new Error(`missing new preview blockmap ${newBlockmap}`);
+  }
+  run("/usr/bin/ditto", [
+    newBlockmap,
+    join(feedDir, clashMacArm64ZipBlockmapName(newVersion)),
+  ]);
+  run("/usr/bin/ditto", [oldBlockmapPath, join(feedDir, oldBlockmapName)]);
+  const fullZipBytes = statSync(zipPath).size;
+  log(
+    `feed assets zip=${zipName} fullZipBytes=${fullZipBytes} oldBlockmap=${oldBlockmapName}`,
+  );
   const feed = await serveFeed(feedDir);
   log(`feed ${feed.url}`);
 
@@ -431,6 +502,36 @@ async function main(): Promise<void> {
     if (installErrors.length) throw new Error(installErrors.join("\n"));
     requireDeveloperId(installedAppPath);
     log(`installed app is ${bundleVersion(installedAppPath)}`);
+    const updaterLog = extractUpdaterLogText(installedLog);
+    writeFileSync(resolve("test-results/preview-updater.log"), updaterLog);
+    const diff = assertDifferentialUpdate(updaterLog, fullZipBytes);
+    const ratio =
+      diff.analysis.downloadedBytes == null
+        ? null
+        : diff.analysis.downloadedBytes / fullZipBytes;
+    log(
+      `preview differential analysis: ${JSON.stringify({
+        ...diff.analysis,
+        fullPackageBytes: fullZipBytes,
+        ratio,
+        percent: ratio == null ? null : Math.round(ratio * 1000) / 10,
+      })}`,
+    );
+    writeFileSync(
+      resolve("test-results/preview-download.json"),
+      `${JSON.stringify(
+        {
+          ...diff.analysis,
+          fullPackageBytes: fullZipBytes,
+          ratio,
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    if (diff.errors.length) {
+      throw new Error(diff.errors.join("\n"));
+    }
     writeFileSync(
       resolve("test-results/clash-update-evidence.log"),
       readFileSync(UPDATE_E2E_EVIDENCE_PATH, "utf8"),
