@@ -105,7 +105,8 @@ function runBuilder(env: NodeJS.ProcessEnv, args: string[]): Promise<void> {
         cwd: desktopRoot,
         env,
         stdio: "inherit",
-        shell: true,
+        // electron-builder artifactName uses ${version}; shell expansion would blank it.
+        shell: false,
       },
     );
     child.on("error", reject);
