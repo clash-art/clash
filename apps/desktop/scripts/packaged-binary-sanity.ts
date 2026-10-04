@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -62,6 +62,24 @@ function existingFile(
   return undefined;
 }
 
+function findVersionedInstaller(
+  releaseDir: string,
+  pattern: RegExp,
+): string | undefined {
+  const matches = readdirSync(releaseDir)
+    .filter((name) => pattern.test(name))
+    .map((name) => path.join(releaseDir, name))
+    .filter((candidate) => {
+      try {
+        return statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+  if (matches.length === 1) return matches[0];
+  return undefined;
+}
+
 function existingDirectory(
   releaseDir: string,
   relatives: string[],
@@ -85,7 +103,14 @@ export function resolvePackagedRelease(
   if (!layout) {
     throw new Error(`Unknown desktop package platform: ${platform}`);
   }
-  const installer = existingFile(releaseDir, [layout.installer]);
+  const installer =
+    existingFile(releaseDir, [layout.installer]) ??
+    (platform === "macOS-arm64"
+      ? findVersionedInstaller(
+          releaseDir,
+          /^Clash-Desktop-.+-macOS-arm64\.dmg$/,
+        )
+      : undefined);
   if (!installer) {
     throw new Error(
       `Missing packaged installer ${path.join(releaseDir, layout.installer)}`,
