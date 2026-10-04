@@ -1,0 +1,174 @@
+{
+  "versionLabel": "v0.7.6-before",
+  "capturedAt": "2026-10-03T16:24:14.907Z",
+  "rows": [
+    {
+      "kind": "process",
+      "theme": "light",
+      "skipped": false,
+      "tabAudit": {
+        "tag": "BUTTON",
+        "className": "chat-reasoning-trigger activity-disclosure-row flex w-full select-none items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "text": "正在工作 4 秒",
+        "ariaExpanded": "true",
+        "outline": "rgb(137, 136, 133) none 3px",
+        "outlineColor": "rgb(137, 136, 133)",
+        "outlineWidth": "3px",
+        "outlineStyle": "none",
+        "boxShadow": "none",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "color": "rgb(137, 136, 133)",
+        "summaryColor": null,
+        "summaryBackgroundColor": null,
+        "activeElement": false,
+        "activeTag": "BUTTON",
+        "activeClass": "app-control gap-1.5 whitespace-nowrap font-medium outline-none focus-visible:border-ring disabled:pointer-events-none inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-offset-0 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-200 focus-visible:ring-ring focus-visible:ring-offset-warm-surface h-8 w-8 min-h-[32px] min-w-[32px] rounded-lg desktop-no-drag flex-none text-content-secondary hover:bg-warm-hover hover:text-content-primary"
+      },
+      "alignment": {
+        "bodyLeft": 979,
+        "iconLeft": 979,
+        "summaryLeft": 1005,
+        "rowLeft": 979,
+        "rowOffsetPx": 0,
+        "iconOffsetPx": 0,
+        "summaryOffsetPx": 26,
+        "iconWithin1px": true,
+        "passCriterion": "icon aligned with body text (backchat #45)",
+        "summaryText": "正在工作 4 秒",
+        "bodyPreview": "画布上当前有 3 个节点："
+      },
+      "hover": {
+        "rest": {
+          "tag": "BUTTON",
+          "className": "chat-reasoning-trigger activity-disclosure-row flex w-full select-none items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+          "text": "正在工作 2 秒",
+          "ariaExpanded": "true",
+          "outline": "rgb(137, 136, 133) none 3px",
+          "outlineColor": "rgb(137, 136, 133)",
+          "outlineWidth": "3px",
+          "outlineStyle": "none",
+          "boxShadow": "none",
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "color": "rgb(137, 136, 133)",
+          "summaryColor": null,
+          "summaryBackgroundColor": null,
+          "activeElement": false,
+          "activeTag": "BUTTON",
+          "activeClass": "app-control shrink-0 gap-1.5 whitespace-nowrap font-medium outline-none focus-visible:border-ring disabled:pointer-events-none inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-offset-0 disabled:opacity-40 disabled:cursor-not-allowed text-slate-800 hover:bg-warm-muted dark:text-slate-200 focus-visible:ring-ring focus-visible:ring-offset-warm-surface h-8 w-8 min-h-[32px] min-w-[32px] rounded-lg clash-workspace-icon-control relative"
+        },
+        "hover": {
+          "tag": "BUTTON",
+          "className": "chat-reasoning-trigger activity-disclosure-row flex w-full select-none items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+          "text": "正在工作 3 秒",
+          "ariaExpanded": "true",
+          "outline": "rgb(36, 36, 36) none 3px",
+          "outlineColor": "rgb(36, 36, 36)",
+          "outlineWidth": "3px",
+          "outlineStyle": "none",
+          "boxShadow": "none",
+          "backgroundColor": "color(srgb 0.141176 0.141176 0.141176 / 0.08)",
+          "color": "rgb(36, 36, 36)",
+          "summaryColor": null,
+          "summaryBackgroundColor": null,
+          "activeElement": false,
+          "activeTag": "BUTTON",
+          "activeClass": "app-control shrink-0 gap-1.5 whitespace-nowrap font-medium outline-none focus-visible:border-ring disabled:pointer-events-none inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-offset-0 disabled:opacity-40 disabled:cursor-not-allowed text-slate-800 hover:bg-warm-muted dark:text-slate-200 focus-visible:ring-ring focus-visible:ring-offset-warm-surface h-8 w-8 min-h-[32px] min-w-[32px] rounded-lg clash-workspace-icon-control relative"
+        }
+      }
+    },
+    {
+      "kind": "tool",
+      "theme": "light",
+      "skipped": true
+    },
+    {
+      "kind": "thought",
+      "theme": "light",
+      "skipped": true
+    },
+    {
+      "kind": "process",
+      "theme": "dark",
+      "skipped": false,
+      "tabAudit": {
+        "tag": "BUTTON",
+        "className": "chat-reasoning-trigger activity-disclosure-row flex w-full select-none items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        "text": "正在工作 8 秒",
+        "ariaExpanded": "true",
+        "outline": "rgb(165, 165, 165) none 3px",
+        "outlineColor": "rgb(165, 165, 165)",
+        "outlineWidth": "3px",
+        "outlineStyle": "none",
+        "boxShadow": "none",
+        "backgroundColor": "rgba(0, 0, 0, 0)",
+        "color": "rgb(165, 165, 165)",
+        "summaryColor": null,
+        "summaryBackgroundColor": null,
+        "activeElement": false,
+        "activeTag": "BUTTON",
+        "activeClass": "app-control gap-1.5 whitespace-nowrap font-medium outline-none focus-visible:border-ring disabled:pointer-events-none inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-offset-0 disabled:opacity-40 disabled:cursor-not-allowed dark:text-slate-200 focus-visible:ring-ring focus-visible:ring-offset-warm-surface h-8 w-8 min-h-[32px] min-w-[32px] rounded-lg desktop-no-drag flex-none text-content-secondary hover:bg-warm-hover hover:text-content-primary"
+      },
+      "alignment": {
+        "bodyLeft": 979,
+        "iconLeft": 979,
+        "summaryLeft": 1005,
+        "rowLeft": 979,
+        "rowOffsetPx": 0,
+        "iconOffsetPx": 0,
+        "summaryOffsetPx": 26,
+        "iconWithin1px": true,
+        "passCriterion": "icon aligned with body text (backchat #45)",
+        "summaryText": "正在工作 8 秒",
+        "bodyPreview": "画布上当前有 3 个节点："
+      },
+      "hover": {
+        "rest": {
+          "tag": "BUTTON",
+          "className": "chat-reasoning-trigger activity-disclosure-row flex w-full select-none items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+          "text": "正在工作 6 秒",
+          "ariaExpanded": "true",
+          "outline": "rgb(165, 165, 165) none 3px",
+          "outlineColor": "rgb(165, 165, 165)",
+          "outlineWidth": "3px",
+          "outlineStyle": "none",
+          "boxShadow": "none",
+          "backgroundColor": "rgba(0, 0, 0, 0)",
+          "color": "rgb(165, 165, 165)",
+          "summaryColor": null,
+          "summaryBackgroundColor": null,
+          "activeElement": false,
+          "activeTag": "BODY",
+          "activeClass": "font-sans antialiased"
+        },
+        "hover": {
+          "tag": "BUTTON",
+          "className": "chat-reasoning-trigger activity-disclosure-row flex w-full select-none items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+          "text": "正在工作 6 秒",
+          "ariaExpanded": "true",
+          "outline": "rgb(245, 245, 245) none 3px",
+          "outlineColor": "rgb(245, 245, 245)",
+          "outlineWidth": "3px",
+          "outlineStyle": "none",
+          "boxShadow": "none",
+          "backgroundColor": "color(srgb 0.960784 0.960784 0.960784 / 0.08)",
+          "color": "rgb(245, 245, 245)",
+          "summaryColor": null,
+          "summaryBackgroundColor": null,
+          "activeElement": false,
+          "activeTag": "BODY",
+          "activeClass": "font-sans antialiased"
+        }
+      }
+    },
+    {
+      "kind": "tool",
+      "theme": "dark",
+      "skipped": true
+    },
+    {
+      "kind": "thought",
+      "theme": "dark",
+      "skipped": true
+    }
+  ]
+}

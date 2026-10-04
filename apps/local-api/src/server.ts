@@ -514,6 +514,11 @@ function createMockAcpSessionManager(send: SessionSender): SessionManagerLike {
       }
       await waitForPromptDelay();
       if (text.includes("列出画布上的节点")) {
+        const yieldMs = Number(process.env.CLASH_E2E_STUB_ACP_YIELD_MS ?? "0");
+        const yieldTick = () =>
+          yieldMs > 0
+            ? new Promise<void>((resolve) => setTimeout(resolve, yieldMs))
+            : Promise.resolve();
         send({
           type: "session.event",
           session_id,
@@ -523,40 +528,64 @@ function createMockAcpSessionManager(send: SessionSender): SessionManagerLike {
             content: { type: "text", text: "先读取当前画布结构。" },
           },
         });
-        send({
-          type: "session.event",
-          session_id,
-          turn_id,
-          event: {
-            sessionUpdate: "tool_call",
-            toolCallId: `tool-list-canvas-${turn_id}`,
-            title: "List canvas nodes",
-            kind: "list",
-            status: "in_progress",
-            rawInput: { query: "canvas.nodes", projectId: "mock-project" },
-          },
-        });
-        send({
-          type: "session.event",
-          session_id,
-          turn_id,
-          event: {
-            sessionUpdate: "tool_call_update",
-            toolCallId: `tool-list-canvas-${turn_id}`,
-            title: "List canvas nodes",
-            kind: "list",
-            status: "completed",
-            rawOutput: [
-              { id: "dianmwa7", type: "action-badge", label: "Image Prompt" },
-              { id: "lrcleamx", type: "image", label: "生成类似的" },
-              {
-                id: "upload-1781414847642-oq6cbcl",
-                type: "image",
-                label: "258251d8857f30efff6b9b7085302bf5.JPG",
-              },
-            ],
-          },
-        });
+        await yieldTick();
+        const mockToolTitlesAll = [
+          "Read file",
+          "Workspace Init",
+          "Canvas",
+          "Canvas 12 items",
+        ];
+        const configuredCount = Number(
+          process.env.CLASH_E2E_STUB_ACP_TOOL_COUNT ?? "4",
+        );
+        const toolCount = Number.isFinite(configuredCount)
+          ? Math.min(
+              mockToolTitlesAll.length,
+              Math.max(1, Math.floor(configuredCount)),
+            )
+          : mockToolTitlesAll.length;
+        const mockToolTitles = mockToolTitlesAll.slice(0, toolCount);
+        for (const [index, title] of mockToolTitles.entries()) {
+          const toolCallId = `tool-${turn_id}-${index + 1}`;
+          send({
+            type: "session.event",
+            session_id,
+            turn_id,
+            event: {
+              sessionUpdate: "tool_call",
+              toolCallId,
+              title,
+              kind: "read",
+              status: "in_progress",
+              rawInput: { step: index + 1 },
+            },
+          });
+          send({
+            type: "session.event",
+            session_id,
+            turn_id,
+            event: {
+              sessionUpdate: "tool_call_update",
+              toolCallId,
+              title,
+              kind: "read",
+              status: "completed",
+              rawOutput:
+                index === mockToolTitles.length - 1
+                  ? [
+                      { id: "dianmwa7", type: "action-badge", label: "Image Prompt" },
+                      { id: "lrcleamx", type: "image", label: "生成类似的" },
+                      {
+                        id: "upload-1781414847642-oq6cbcl",
+                        type: "image",
+                        label: "258251d8857f30efff6b9b7085302bf5.JPG",
+                      },
+                    ]
+                  : { step: index + 1, ok: true },
+            },
+          });
+          await yieldTick();
+        }
         send({
           type: "session.event",
           session_id,
@@ -573,8 +602,10 @@ function createMockAcpSessionManager(send: SessionSender): SessionManagerLike {
                 "- `upload-1781414847642-oq6cbcl` — image，文件名是 `258251d8857f30efff6b9b7085302bf5.JPG`。",
               ].join("\n"),
             },
+            phase: "final_answer",
           },
         });
+        await yieldTick();
         send({ type: "session.complete", session_id, turn_id });
         return;
       }

@@ -1,13 +1,13 @@
 # Dependency patches
 
-`@openma/common` is installed from the git tag `v0.7.6`
-(`github:openma-ai/openma-common#v0.7.6`). That tag peels to
-`77bcbdfb3bb9b20a6fda09be860ada9881a4c371`, the same commit CI names in
+`@openma/common` is installed from the git tag `v0.7.9`
+(`github:openma-ai/openma-common#v0.7.9`). That tag peels to
+`afc628e5d624cc1aa61625185a1348bb87f32c05`, the same commit CI names in
 `.github/actions/setup-common/pin.env`. Its `dist/` is committed, so Clash
 does not build or patch it. The historical `@openma/common@0.5.0` elicitation
 patch is not applied.
 
-CI checks out that pin and verifies the committed `dist/`. v0.7.6 publishes
+CI checks out that pin and verifies the committed `dist/`. v0.7.9 publishes
 no GitHub release tarball, so both tarball fields stay empty. When a release
 asset exists, set the URL and sha256 together and CI compares that archive
 to the checkout. Clash does not run common's tests, typecheck, or build.

@@ -187,7 +187,7 @@ function RuntimeTurn({
       thoughts="history"
       activityTools="all"
       collapsiblePrimitives={CLASH_COLLAPSIBLE_PRIMITIVES}
-      className="!max-w-3xl [&_.activity-disclosure-row]:!pl-0"
+      className="!max-w-3xl"
       labels={{
         workingFor: (seconds) => `正在工作 ${seconds} 秒`,
         workedFor: (seconds) => `已工作 ${seconds} 秒`,
