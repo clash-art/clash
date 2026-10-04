@@ -303,7 +303,7 @@
     "state": "focus-visible",
     "ariaSelected": "true",
     "background": "rgb(238, 244, 255)",
-    "boxShadow": "rgb(95, 94, 91) 0px 0px 0px 1px",
+    "boxShadow": "none",
     "color": "rgb(36, 36, 36)",
     "outline": "rgb(95, 94, 91) 2px"
   },
@@ -347,7 +347,7 @@
     "state": "focus-visible",
     "ariaSelected": "true",
     "background": "rgb(238, 244, 255)",
-    "boxShadow": "rgb(95, 94, 91) 0px 0px 0px 1px",
+    "boxShadow": "none",
     "color": "rgb(36, 36, 36)",
     "outline": "rgb(95, 94, 91) 2px"
   },
@@ -391,7 +391,7 @@
     "state": "focus-visible",
     "ariaSelected": "true",
     "background": "rgb(238, 244, 255)",
-    "boxShadow": "rgb(95, 94, 91) 0px 0px 0px 1px",
+    "boxShadow": "none",
     "color": "rgb(36, 36, 36)",
     "outline": "rgb(95, 94, 91) 2px"
   },
@@ -435,7 +435,7 @@
     "state": "focus-visible",
     "ariaSelected": "true",
     "background": "rgb(28, 39, 64)",
-    "boxShadow": "rgb(208, 208, 208) 0px 0px 0px 1px",
+    "boxShadow": "none",
     "color": "rgb(245, 245, 245)",
     "outline": "rgb(208, 208, 208) 2px"
   },
@@ -479,7 +479,7 @@
     "state": "focus-visible",
     "ariaSelected": "true",
     "background": "rgb(28, 39, 64)",
-    "boxShadow": "rgb(208, 208, 208) 0px 0px 0px 1px",
+    "boxShadow": "none",
     "color": "rgb(245, 245, 245)",
     "outline": "rgb(208, 208, 208) 2px"
   },
@@ -523,7 +523,7 @@
     "state": "focus-visible",
     "ariaSelected": "true",
     "background": "rgb(28, 39, 64)",
-    "boxShadow": "rgb(208, 208, 208) 0px 0px 0px 1px",
+    "boxShadow": "none",
     "color": "rgb(245, 245, 245)",
     "outline": "rgb(208, 208, 208) 2px"
   }
