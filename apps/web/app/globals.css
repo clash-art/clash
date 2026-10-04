@@ -97,6 +97,15 @@
   --control-bg: transparent;
   --control-bg-hover: var(--accent);
   --control-bg-open: var(--info-soft);
+  --app-tab-hover-bg: color-mix(
+    in srgb,
+    var(--clash-content-primary) 14%,
+    var(--clash-warm-muted)
+  );
+  --app-tab-selected-bg: var(--select-item-selected, color-mix(in srgb, var(--clash-content-primary) 8%, var(--clash-warm-muted)));
+  --app-tab-selected-fg: var(--select-item-selected-foreground, var(--clash-content-primary));
+  --app-tab-focus-ring: var(--control-focus);
+  --app-tab-focus-width: 2px;
   --control-border: var(--input);
   --control-focus: var(--ring);
   --input-placeholder: var(--muted-foreground);
@@ -650,6 +659,41 @@ body {
   background: var(--control-bg-hover);
 }
 
+/* CLASH interactive surfaces: rest is flat, hover tints, keyboard focus rings only.
+   Expanded/open must not reuse hover/selected fills unless explicitly marked selected. */
+.app-interactive-surface {
+  background: transparent;
+  outline: none;
+}
+
+.app-interactive-surface:hover:not(:disabled):not([data-disabled="true"]) {
+  background: var(--control-bg-hover);
+}
+
+.app-interactive-surface:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--control-focus) 36%, transparent);
+  outline-offset: 2px;
+}
+
+:where(
+  .app-control,
+  .app-select-trigger,
+  .app-interactive-surface,
+  .app-select-focus,
+  .clash-toolbar-button,
+  .clash-input-icon-button
+):focus:not(:focus-visible) {
+  outline: none;
+  box-shadow: none;
+}
+
+.app-interactive-selected,
+.app-interactive-surface.app-interactive-selected,
+.app-interactive-surface[aria-current="true"] {
+  background: var(--select-item-selected);
+  color: var(--select-item-selected-foreground);
+}
+
 .app-select-content {
   border: 1px solid var(--select-border);
   background: var(--select-surface);
@@ -662,12 +706,7 @@ body {
   color: var(--select-foreground);
 }
 
-.app-select-focus:is(
-  [data-highlighted],
-  [data-selected="true"],
-  [data-state="open"],
-  :focus-visible
-) {
+.app-select-focus:is([data-highlighted], [data-selected="true"], :focus-visible) {
   background: var(--select-item-focus);
   color: var(--select-foreground);
 }
@@ -3260,11 +3299,6 @@ html.dark .clash-is-scrolling::-webkit-scrollbar-thumb:hover {
   color: var(--clash-content-primary);
 }
 
-.clash-canvas-toolbar-surface .clash-workspace-icon-control[data-state="open"] {
-  background: var(--control-bg-open);
-  color: var(--clash-content-primary);
-}
-
 .clash-canvas-toolbar-surface .clash-workspace-icon-control {
   color: var(--clash-content-secondary);
 }
@@ -3274,11 +3308,7 @@ html.dark .clash-is-scrolling::-webkit-scrollbar-thumb:hover {
 }
 
 .clash-canvas-toolbar-surface
-  .clash-workspace-icon-control:is(
-    [data-state="on"],
-    [aria-pressed="true"],
-    [data-state="open"]
-  ) {
+  .clash-workspace-icon-control:is([data-state="on"], [aria-pressed="true"]) {
   background: var(--select-item-selected);
   color: var(--tone-blue-ink);
 }
@@ -5165,8 +5195,7 @@ html.dark .clash-download-card {
 }
 
 .sidebar-row-action:hover,
-.sidebar-row-action:focus-visible,
-.sidebar-row-action[data-state="open"] {
+.sidebar-row-action:focus-visible {
   color: var(--clash-content-primary);
   background: var(--clash-warm-hover);
 }
@@ -5805,3 +5834,104 @@ html.dark .clash-download-card {
 html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   padding-top: 3rem;
 }
+
+/* Tab selection contract (Ariakit/Radix role=tab and shared app-tab-trigger helpers). */
+.app-tab-trigger-rest {
+  background: transparent;
+}
+
+.app-tab-trigger-rest:hover:not([aria-disabled="true"]) {
+  background: var(--app-tab-hover-bg);
+}
+
+.app-tab-trigger-selected,
+.app-tab-trigger-selected:hover,
+[role="tab"][aria-selected="true"],
+[role="tab"][aria-selected="true"]:hover {
+  background: var(--app-tab-selected-bg);
+  color: var(--app-tab-selected-fg);
+}
+
+.app-tab-trigger:focus-visible,
+[role="tab"]:focus-visible {
+  outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
+  outline-offset: calc(-1 * var(--app-tab-focus-width));
+  box-shadow: none;
+}
+
+/* Desktop workspace tabs: ring the chrome row (icon, title, status, close), not the inner label. */
+[data-desktop-workspace-tab="true"]:focus-within {
+  outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
+  outline-offset: calc(-1 * var(--app-tab-focus-width));
+  box-shadow: none;
+}
+
+[data-desktop-workspace-tab="true"][data-active="true"] {
+  background: var(--app-tab-selected-bg);
+  color: var(--app-tab-selected-fg);
+}
+
+[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"],
+[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"]:hover {
+  background: transparent;
+  color: inherit;
+}
+
+[data-desktop-workspace-tab="true"] [role="tab"]:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+[aria-label="Settings sections"] [role="tab"] {
+  border-radius: var(--radius-md, 0.375rem);
+}
+
+[aria-label="Settings sections"] [role="tab"]:focus-visible {
+  outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
+  outline-offset: calc(-1 * var(--app-tab-focus-width));
+  box-shadow: none;
+}
+
+.app-tab-trigger-rest:focus:not(:focus-visible),
+[role="tab"]:focus:not(:focus-visible):not([aria-selected="true"]) {
+  background: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+[role="tab"]:not([aria-selected="true"]) {
+  background: transparent;
+}
+
+[role="tab"]:hover:not([aria-disabled="true"]):not([aria-selected="true"]) {
+  background: var(--app-tab-hover-bg);
+}
+
+/* Director inspector segmented tabs: visible hover on dark panel chrome (not text-only). */
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"].app-tab-trigger-rest:hover:not([aria-disabled="true"]),
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"]:hover:not([aria-disabled="true"]):not([aria-selected="true"]) {
+  background: var(--clash-director-panel-hover);
+  color: var(--clash-director-panel-secondary);
+}
+
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"] {
+  min-width: max-content;
+  flex-shrink: 0;
+  overflow: visible;
+  white-space: nowrap;
+  border-radius: var(--radius-md, 0.375rem);
+}
+
+:where(.clash-director-stage-shell, [data-context="director"])
+  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
+  [role="tab"]:focus-visible
+  > span.rounded-full {
+  opacity: 0;
+}
+

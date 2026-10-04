@@ -99,7 +99,6 @@ function menuItemClassName({
 } = {}) {
     return cn(
         'app-select-item app-select-focus flex w-full items-center gap-2 rounded-md py-1.5 pl-2 pr-3 text-left text-sm outline-none select-none',
-        'data-[state=open]:bg-[var(--control-bg-hover)]',
         selected && 'data-[checked=true]:bg-[var(--control-bg-open)]',
         disabled && 'cursor-not-allowed opacity-45',
         className,

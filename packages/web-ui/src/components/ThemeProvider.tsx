@@ -77,6 +77,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
 
+  useEffect(() => {
+    const handlePreferenceSync = () => {
+      setStoredPreference(readThemePreference());
+    };
+    window.addEventListener('clash:appearance-preference-sync', handlePreferenceSync);
+    return () =>
+      window.removeEventListener('clash:appearance-preference-sync', handlePreferenceSync);
+  }, []);
+
   const setPreference = useCallback((next: ThemePreference) => {
     setStoredPreference(next);
     writeThemePreference(next);

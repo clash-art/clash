@@ -27,7 +27,7 @@ import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
 import { ControlContextProvider } from "./ui/control-context";
 import { InlineAlert } from "./ui/feedback";
-import { Tab, TabList, TabProvider } from "./ui/tabs";
+import { Tab, TabList, TabProvider, appTabTriggerClassName } from "./ui/tabs";
 import { AppPage } from "./AppPage";
 import { SessionArchiveLibrary } from "./SessionArchiveLibrary";
 import {
@@ -363,18 +363,15 @@ export function SettingsSurface({
                   <Tab
                     key={item.id}
                     id={item.id}
-                    className={`relative flex h-8 w-auto shrink-0 items-center md:w-full gap-2 rounded-md border px-[var(--clash-settings-sidebar-item-inline-inset)] text-[13px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 ${
-                      isActive
-                        ? "border-border bg-accent text-foreground shadow-xs"
-                        : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground"
-                    }`}
+                    className={appTabTriggerClassName({
+                      selected: isActive,
+                      className: `relative flex h-8 w-auto shrink-0 items-center md:w-full gap-2 rounded-md border border-transparent px-[var(--clash-settings-sidebar-item-inline-inset)] text-[13px] font-medium transition-colors ${
+                        isActive
+                          ? "font-medium text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`,
+                    })}
                   >
-                    {isActive && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute left-1 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary"
-                      />
-                    )}
                     <Icon className="h-4 w-4" weight="bold" />
                     <span className="truncate">{item.label}</span>
                   </Tab>

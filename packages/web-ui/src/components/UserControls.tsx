@@ -142,7 +142,7 @@ function AccountUserControls({
                   projectChrome
                     ? "clash-project-top-balance flex h-10 items-center gap-1.5 rounded-xl px-3 text-sm font-display font-semibold text-slate-900 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-warm-page"
                     : sidebarExpanded
-                      ? "flex h-10 w-full min-h-0 justify-start gap-2.5 rounded-lg border-transparent bg-transparent px-2 text-content-secondary shadow-none hover:bg-warm-hover data-[state=open]:bg-warm-hover"
+                      ? "flex h-10 w-full min-h-0 justify-start gap-2.5 rounded-lg border-transparent bg-transparent px-2 text-content-secondary shadow-none hover:bg-warm-hover"
                       : compact
                         ? "flex h-8 w-8 items-center justify-center rounded-lg text-content-muted transition-colors hover:bg-warm-hover hover:text-content-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         : "flex items-center gap-1.5 rounded-xl bg-warm-surface border border-warm-border px-3 py-1.5 shadow-sm hover:shadow-md hover:border-brand/40 transition-[box-shadow,border-color] text-sm font-display font-medium text-content-primary"
@@ -170,7 +170,7 @@ function AccountUserControls({
                   projectChrome
                     ? "clash-project-top-avatar flex h-10 min-h-0 w-10 items-center justify-center rounded-xl border-transparent bg-transparent p-0 shadow-none transition-colors focus-visible:ring-offset-warm-page"
                     : sidebarExpanded
-                      ? "flex h-10 w-full min-h-0 justify-start gap-2.5 rounded-lg border-transparent bg-transparent px-2 text-content-secondary shadow-none hover:bg-warm-hover data-[state=open]:bg-warm-hover"
+                      ? "flex h-10 w-full min-h-0 justify-start gap-2.5 rounded-lg border-transparent bg-transparent px-2 text-content-secondary shadow-none hover:bg-warm-hover"
                       : compact
                         ? "flex h-8 min-h-0 items-center rounded-lg border-transparent bg-transparent px-1 text-content-secondary shadow-none transition-colors hover:bg-warm-hover hover:text-content-primary"
                         : "flex min-h-0 items-center gap-3 rounded-2xl border border-warm-border bg-warm-surface pl-1.5 pr-4 py-1.5 text-sm shadow-sm cursor-pointer hover:shadow-md transition-shadow focus-visible:ring-offset-warm-page"
