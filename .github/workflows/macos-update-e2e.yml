@@ -97,7 +97,7 @@ jobs:
             zip_name="$(pnpm --dir apps/desktop exec node --input-type=module -e "
               import { readFileSync } from 'node:fs';
               import { zipNameFromFeedYaml } from './scripts/macos-update-e2e.ts';
-              console.log(zipNameFromFeedYaml(readFileSync('apps/desktop/release/preview-mac.yml', 'utf8')));
+              console.log(zipNameFromFeedYaml(readFileSync('release/preview-mac.yml', 'utf8')));
             ")"
             zip="apps/desktop/release/${zip_name}"
             blockmap="${zip}.blockmap"
