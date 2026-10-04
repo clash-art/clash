@@ -3066,17 +3066,17 @@ export function ProjectDirectorStageSurface({
             aria-label={selectedObject.kind === "mannequin" ? "Mannequin inspector sections" : "Rigged model inspector sections"}
             className="flex border-b border-[var(--clash-director-panel-divider)] px-2 pt-1"
           >
-            <Tab id="properties" className={appTabTriggerClassName({ selected: objectInspectorTab === "properties", className: `relative h-8 shrink-0 min-w-max whitespace-nowrap px-3 pb-2 text-[11px] font-medium ${objectInspectorTab === "properties" ? "text-[var(--clash-director-panel-text)]" : "text-[var(--clash-director-panel-muted)] hover:text-[var(--clash-director-panel-secondary)]"}` })}>
+            <Tab id="properties" className={appTabTriggerClassName({ selected: objectInspectorTab === "properties", className: `relative h-8 shrink-0 min-w-max whitespace-nowrap rounded-md px-3 pb-2 text-[11px] font-medium ${objectInspectorTab === "properties" ? "text-[var(--clash-director-panel-text)]" : "text-[var(--clash-director-panel-muted)] hover:text-[var(--clash-director-panel-secondary)]"}` })}>
               Properties
               {objectInspectorTab === "properties" ? <span className="absolute inset-x-2 bottom-1.5 h-0.5 rounded-full bg-[var(--clash-director-selection)]" /> : null}
             </Tab>
             {selectedObject.kind === "mannequin" ? (
-              <Tab id="pose" className={appTabTriggerClassName({ selected: objectInspectorTab === "pose", className: `relative h-8 shrink-0 min-w-max whitespace-nowrap px-3 pb-2 text-[11px] font-medium ${objectInspectorTab === "pose" ? "text-[var(--clash-director-panel-text)]" : "text-[var(--clash-director-panel-muted)] hover:text-[var(--clash-director-panel-secondary)]"}` })}>
+              <Tab id="pose" className={appTabTriggerClassName({ selected: objectInspectorTab === "pose", className: `relative h-8 shrink-0 min-w-max whitespace-nowrap rounded-md px-3 pb-2 text-[11px] font-medium ${objectInspectorTab === "pose" ? "text-[var(--clash-director-panel-text)]" : "text-[var(--clash-director-panel-muted)] hover:text-[var(--clash-director-panel-secondary)]"}` })}>
                 Pose
                 {objectInspectorTab === "pose" ? <span className="absolute inset-x-2 bottom-1 h-0.5 rounded-full bg-[var(--clash-director-selection)]" /> : null}
               </Tab>
             ) : null}
-            <Tab id="motion" className={appTabTriggerClassName({ selected: objectInspectorTab === "motion", className: `relative h-8 shrink-0 min-w-max whitespace-nowrap px-3 pb-2 text-[11px] font-medium ${objectInspectorTab === "motion" ? "text-[var(--clash-director-panel-text)]" : "text-[var(--clash-director-panel-muted)] hover:text-[var(--clash-director-panel-secondary)]"}` })}>
+            <Tab id="motion" className={appTabTriggerClassName({ selected: objectInspectorTab === "motion", className: `relative h-8 shrink-0 min-w-max whitespace-nowrap rounded-md px-3 pb-2 text-[11px] font-medium ${objectInspectorTab === "motion" ? "text-[var(--clash-director-panel-text)]" : "text-[var(--clash-director-panel-muted)] hover:text-[var(--clash-director-panel-secondary)]"}` })}>
               Motion
               {objectInspectorTab === "motion" ? <span className="absolute inset-x-2 bottom-1 h-0.5 rounded-full bg-[var(--clash-director-selection)]" /> : null}
             </Tab>

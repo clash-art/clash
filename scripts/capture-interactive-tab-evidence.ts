@@ -1177,20 +1177,21 @@ async function captureSettingsFocusStates(
   );
   await focusSettingsSectionKeyboard(agentBrowser, recovery, "Appearance", "Plugins");
   await sleep(200);
-  const focusedAppearance = evalOnPage(
+  await waitForEvalRecovered(
     agentBrowser,
     recovery,
     `(() => {
       const tab = document.querySelector(${JSON.stringify(settingsAppearanceTabSelector)});
       if (!(tab instanceof HTMLElement)) return false;
-      tab.focus();
-      return document.activeElement === tab || document.activeElement?.closest('[role="tab"]') === tab;
+      const focused =
+        document.activeElement === tab || document.activeElement?.closest('[role="tab"]') === tab;
+      if (!focused) return false;
+      const style = getComputedStyle(tab);
+      return style.outlineStyle !== "none" && style.outlineWidth !== "0px";
     })()`,
+    "settings Appearance keyboard focus-visible ring",
+    15000,
   );
-  if (!focusedAppearance) {
-    throw new Error("Settings Appearance tab focus failed");
-  }
-  await sleep(120);
   await recordTabStyle(
     agentBrowser,
     recovery,
@@ -1199,8 +1200,13 @@ async function captureSettingsFocusStates(
     "focus-visible",
     settingsAppearanceTabSelector,
   );
-  markSettingsSectionTabForEvidence(agentBrowser, recovery, "Appearance");
-  await screenshotTabFocusEvidence(agentBrowser, recovery, evidenceFocusedTabSelector, "settings", theme);
+  await screenshotTabFocusEvidence(
+    agentBrowser,
+    recovery,
+    settingsAppearanceTabSelector,
+    "settings",
+    theme,
+  );
 }
 
 async function waitForCdpPageTarget(

@@ -365,19 +365,13 @@ export function SettingsSurface({
                     id={item.id}
                     className={appTabTriggerClassName({
                       selected: isActive,
-                      className: `relative flex h-8 w-auto shrink-0 items-center md:w-full gap-2 rounded-md border px-[var(--clash-settings-sidebar-item-inline-inset)] text-[13px] font-medium transition-colors ${
+                      className: `relative flex h-8 w-auto shrink-0 items-center md:w-full gap-2 rounded-md border border-transparent px-[var(--clash-settings-sidebar-item-inline-inset)] text-[13px] font-medium transition-colors ${
                         isActive
-                          ? "border-border shadow-xs"
-                          : "border-transparent text-muted-foreground hover:text-foreground"
+                          ? "font-medium text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
                       }`,
                     })}
                   >
-                    {isActive && (
-                      <span
-                        aria-hidden="true"
-                        className="absolute left-1 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-primary"
-                      />
-                    )}
                     <Icon className="h-4 w-4" weight="bold" />
                     <span className="truncate">{item.label}</span>
                   </Tab>

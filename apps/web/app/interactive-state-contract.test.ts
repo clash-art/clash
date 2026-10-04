@@ -81,5 +81,6 @@ describe("interactive state styling contract", () => {
       /\.app-tab-trigger:focus-visible[\s\S]{0,160}box-shadow:\s*0 0 0 1px var\(--app-tab-focus-ring\)/,
     );
     expect(sourceContains(css, '[data-desktop-workspace-tab="true"]:focus-within')).toBe(true);
+    expect(sourceContains(css, '[data-desktop-workspace-tab="true"][data-active="true"]')).toBe(true);
   });
 });

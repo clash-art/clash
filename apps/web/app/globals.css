@@ -5866,9 +5866,24 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   box-shadow: none;
 }
 
+[data-desktop-workspace-tab="true"][data-active="true"] {
+  background: var(--app-tab-selected-bg);
+  color: var(--app-tab-selected-fg);
+}
+
+[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"],
+[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"]:hover {
+  background: transparent;
+  color: inherit;
+}
+
 [data-desktop-workspace-tab="true"] [role="tab"]:focus-visible {
   outline: none;
   box-shadow: none;
+}
+
+[aria-label="Settings sections"] [role="tab"] {
+  border-radius: var(--radius-md, 0.375rem);
 }
 
 [aria-label="Settings sections"] [role="tab"]:focus-visible {
@@ -5910,6 +5925,7 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   flex-shrink: 0;
   overflow: visible;
   white-space: nowrap;
+  border-radius: var(--radius-md, 0.375rem);
 }
 
 :where(.clash-director-stage-shell, [data-context="director"])
