@@ -403,7 +403,7 @@
     "ariaSelected": "true",
     "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
+    "color": "rgb(245, 245, 245)",
     "outline": "none"
   },
   {
@@ -414,7 +414,7 @@
     "ariaSelected": "false",
     "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(137, 136, 133)",
+    "color": "rgb(165, 165, 165)",
     "outline": "none"
   },
   {
@@ -425,7 +425,7 @@
     "ariaSelected": "false",
     "background": "rgba(0, 0, 0, 0)",
     "boxShadow": "none",
-    "color": "rgb(137, 136, 133)",
+    "color": "rgb(165, 165, 165)",
     "outline": "none"
   },
   {
@@ -434,10 +434,10 @@
     "theme": "dark",
     "state": "focus-visible",
     "ariaSelected": null,
-    "background": "rgb(238, 244, 255)",
+    "background": "rgb(28, 39, 64)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
-    "outline": "rgb(95, 94, 91) 2px"
+    "color": "rgb(245, 245, 245)",
+    "outline": "rgb(208, 208, 208) 2px"
   },
   {
     "phase": "after",
@@ -445,9 +445,9 @@
     "theme": "dark",
     "state": "selected-rest",
     "ariaSelected": "true",
-    "background": "rgb(238, 244, 255)",
+    "background": "rgb(28, 39, 64)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
+    "color": "rgb(245, 245, 245)",
     "outline": "none"
   },
   {
@@ -456,9 +456,9 @@
     "theme": "dark",
     "state": "previous-tab-mouse-away",
     "ariaSelected": "true",
-    "background": "rgb(238, 244, 255)",
+    "background": "rgb(28, 39, 64)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
+    "color": "rgb(245, 245, 245)",
     "outline": "none"
   },
   {
@@ -467,9 +467,9 @@
     "theme": "dark",
     "state": "hover-inactive",
     "ariaSelected": "true",
-    "background": "rgb(238, 244, 255)",
+    "background": "rgb(28, 39, 64)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
+    "color": "rgb(245, 245, 245)",
     "outline": "none"
   },
   {
@@ -478,10 +478,10 @@
     "theme": "dark",
     "state": "focus-visible",
     "ariaSelected": "true",
-    "background": "rgb(238, 244, 255)",
+    "background": "rgb(28, 39, 64)",
     "boxShadow": "none",
-    "color": "rgb(36, 36, 36)",
-    "outline": "rgb(95, 94, 91) 2px"
+    "color": "rgb(245, 245, 245)",
+    "outline": "rgb(208, 208, 208) 2px"
   },
   {
     "phase": "after",

@@ -7,6 +7,7 @@
 import { cp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import sharp from "sharp";
 import { CdpClient } from "./e2e/harness.ts";
 import {
   clickButtonByLabel,
@@ -202,6 +203,13 @@ async function screenshotTabFocusEvidence(
   surface: string,
   theme: "light" | "dark",
 ) {
+  await applyThemeAndSettle(agentBrowser, recovery, theme);
+  await sleep(250);
+  const chromePixelSamples =
+    theme === "dark" && (surface === "topnav" || surface === "navigator")
+      ? await readChromePixelSamplesForAssert(agentBrowser, recovery)
+      : null;
+  await assertCaptureTheme(agentBrowser, recovery, theme, `${surface} before focus capture`);
   await screenshot(agentBrowser, recovery, outFileFocusFull(surface, theme));
   await captureFocusClipScreenshot(
     agentBrowser,
@@ -209,6 +217,27 @@ async function screenshotTabFocusEvidence(
     selector,
     outFile(surface, theme, "focus-visible"),
   );
+  await assertCaptureTheme(agentBrowser, recovery, theme, `${surface} focus-visible crop`);
+  if (theme === "dark" && (surface === "topnav" || surface === "navigator")) {
+    const cropMeta = await sharp(outFile(surface, theme, "focus-visible")).metadata();
+    const cropWidth = cropMeta.width ?? 0;
+    const cropHeight = cropMeta.height ?? 0;
+    const cropSamples: Array<[number, number]> = [
+      [2, 2],
+      [2, Math.max(2, cropHeight - 3)],
+      [Math.max(2, cropWidth - 3), 2],
+    ];
+    await assertDarkCaptureChromePixel(
+      outFileFocusFull(surface, theme),
+      `${surface} focus-visible full`,
+      chromePixelSamples ?? [[16, 16]],
+    );
+    await assertDarkCaptureChromePixel(
+      outFile(surface, theme, "focus-visible"),
+      `${surface} focus-visible crop`,
+      cropSamples,
+    );
+  }
 }
 
 async function selectWorkspaceTab(
@@ -681,13 +710,170 @@ async function focusNavigatorTabWithArrows(
   return false;
 }
 
-function setTheme(agentBrowser: ReturnType<typeof createAgentBrowser>, theme: "light" | "dark") {
-  evalJson(agentBrowser, `(() => {
-    const dark = ${theme === "dark"};
-    document.documentElement.classList.toggle("dark", dark);
-    try { localStorage.setItem("clash.appearance", ${JSON.stringify(theme)}); } catch {}
-    return document.documentElement.classList.contains("dark") === dark;
-  })()`);
+function themeChromeLuminanceExpression() {
+  return `(() => {
+    const pick =
+      document.querySelector('[data-desktop-chrome="true"]') ??
+      document.querySelector('[aria-label="Project navigator"]');
+    const walk = (node) => {
+      if (!node) return null;
+      const bg = getComputedStyle(node).backgroundColor;
+      const parts = bg.match(/[\\d.]+/g);
+      if (!parts || parts.length < 3) return walk(node.parentElement);
+      const alpha = parts.length >= 4 ? Number(parts[3]) : 1;
+      if (alpha < 0.05) return walk(node.parentElement);
+      const [r, g, b] = parts.slice(0, 3).map((value) => Number(value) / 255);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const luminance = walk(pick);
+    if (luminance == null) {
+      return document.documentElement.classList.contains("dark") ? 0.15 : 0.92;
+    }
+    return luminance;
+  })()`;
+}
+
+function themeDomMatchesExpression(theme: "light" | "dark") {
+  return `(() => {
+    const root = document.documentElement;
+    const dark = ${JSON.stringify(theme === "dark")};
+    return root.classList.contains("dark") === dark && root.dataset.theme === ${JSON.stringify(theme)};
+  })()`;
+}
+
+function themeSettledExpression(theme: "light" | "dark") {
+  const luminance = themeChromeLuminanceExpression();
+  if (theme === "dark") {
+    return `(() => {
+      if (!(${themeDomMatchesExpression("dark")})) return false;
+      return (${luminance}) < 0.35;
+    })()`;
+  }
+  return `(() => {
+    if (!(${themeDomMatchesExpression("light")})) return false;
+    return (${luminance}) > 0.5;
+  })()`;
+}
+
+function themeSampleIsDarkExpression() {
+  return `(() => {
+    if (!document.documentElement.classList.contains("dark")) return false;
+    return (${themeChromeLuminanceExpression()}) < 0.35;
+  })()`;
+}
+
+function pixelLuminance(r: number, g: number, b: number) {
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+async function readChromePixelSamplesForAssert(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+): Promise<Array<[number, number]>> {
+  const result = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const el =
+        document.querySelector('[data-desktop-chrome="true"]') ??
+        document.querySelector('[aria-label="Project navigator"]');
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return [
+        [Math.round(rect.left + 12), Math.round(rect.top + 12)],
+        [Math.round(rect.left + 40), Math.round(rect.top + 8)],
+        [
+          Math.round(rect.left + 12),
+          Math.round(rect.top + Math.min(40, Math.max(8, rect.height / 2))),
+        ],
+      ];
+    })()`,
+  );
+  if (!Array.isArray(result)) {
+    return [
+      [16, 16],
+      [48, 12],
+      [12, 48],
+    ];
+  }
+  return result as Array<[number, number]>;
+}
+
+async function assertDarkCaptureChromePixel(
+  imagePath: string,
+  label: string,
+  samplePoints: Array<[number, number]>,
+) {
+  const image = sharp(imagePath);
+  const meta = await image.metadata();
+  const width = meta.width ?? 0;
+  const height = meta.height ?? 0;
+  if (width < 4 || height < 4) {
+    throw new Error(`Dark capture pixel check failed (${label}): image too small`);
+  }
+  for (const [rawX, rawY] of samplePoints) {
+    const x = Math.min(Math.max(0, rawX), width - 1);
+    const y = Math.min(Math.max(0, rawY), height - 1);
+    const { data } = await sharp(imagePath)
+      .extract({ left: x, top: y, width: 1, height: 1 })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const lum = pixelLuminance(data[0] ?? 255, data[1] ?? 255, data[2] ?? 255);
+    if (lum < 0.35) return;
+  }
+  throw new Error(
+    `Dark capture pixel check failed (${label}): sidebar/chrome still light in ${path.basename(imagePath)}`,
+  );
+}
+
+async function applyThemeAndSettle(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  theme: "light" | "dark",
+) {
+  const applied = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const theme = ${JSON.stringify(theme)};
+      const dark = theme === "dark";
+      try {
+        localStorage.setItem("clash.appearance", theme);
+      } catch {}
+      const root = document.documentElement;
+      root.classList.toggle("dark", dark);
+      root.dataset.theme = theme;
+      root.style.colorScheme = theme;
+      window.dispatchEvent(new Event("clash:appearance-preference-sync"));
+      return root.classList.contains("dark") === dark && root.dataset.theme === theme;
+    })()`,
+  );
+  if (!applied) {
+    throw new Error(`Failed to apply theme: ${theme}`);
+  }
+  await waitForEvalRecovered(
+    agentBrowser,
+    recovery,
+    themeSettledExpression(theme),
+    `theme settled: ${theme}`,
+    20000,
+  );
+  await sleep(350);
+}
+
+async function assertCaptureTheme(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  theme: "light" | "dark",
+  label: string,
+) {
+  const isDark = evalOnPage(agentBrowser, recovery, themeSampleIsDarkExpression());
+  if (theme === "dark" && !isDark) {
+    throw new Error(`Dark theme assertion failed (${label}): chrome still light`);
+  }
+  if (theme === "light" && isDark) {
+    throw new Error(`Light theme assertion failed (${label}): chrome still dark`);
+  }
 }
 
 function movePointerAway(agentBrowser: ReturnType<typeof createAgentBrowser>) {
@@ -728,6 +914,20 @@ async function screenshot(
   agentBrowser(["screenshot", target]);
 }
 
+async function copyFileWithRetry(source: string, dest: string, attempts = 5) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await cp(source, dest);
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(150 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 async function syncEvidenceCopies() {
   for (const dir of [repoEvidenceDir, artifactsDir]) {
     await mkdir(dir, { recursive: true });
@@ -736,13 +936,13 @@ async function syncEvidenceCopies() {
   for (const name of names) {
     if (!name.endsWith(".png")) continue;
     const source = path.join(outDir, name);
-    await cp(source, path.join(repoEvidenceDir, name));
-    await cp(source, path.join(artifactsDir, name));
+    await copyFileWithRetry(source, path.join(repoEvidenceDir, name));
+    await copyFileWithRetry(source, path.join(artifactsDir, name));
   }
   const styles = path.join(repoEvidenceDir, "computed-styles.json");
   try {
-    await cp(styles, path.join(artifactsDir, "computed-styles.json"));
-    await cp(styles, path.join(outDir, "computed-styles.json"));
+    await copyFileWithRetry(styles, path.join(artifactsDir, "computed-styles.json"));
+    await copyFileWithRetry(styles, path.join(outDir, "computed-styles.json"));
   } catch {
     // written by writeStyleAudit
   }
@@ -755,7 +955,7 @@ async function captureNavigatorStates(
   tabA: string,
   tabB: string,
 ) {
-  setTheme(agentBrowser, theme);
+  await applyThemeAndSettle(agentBrowser, recovery, theme);
   await sleep(400);
   clickNavigatorTab(agentBrowser, tabA);
   await sleep(350);
@@ -797,7 +997,7 @@ async function captureTopNavStates(
   tabA: string,
   tabB: string,
 ) {
-  setTheme(agentBrowser, theme);
+  await applyThemeAndSettle(agentBrowser, recovery, theme);
   await sleep(400);
   await selectWorkspaceTab(agentBrowser, recovery, tabA);
   await sleep(350);
@@ -1035,7 +1235,7 @@ async function captureDirectorInspectorStates(
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   theme: "light" | "dark",
 ) {
-  setTheme(agentBrowser, theme);
+  await applyThemeAndSettle(agentBrowser, recovery, theme);
   await sleep(400);
   await ensureDirectorInspectorEvidenceReady(agentBrowser, recovery);
   const inactiveTab = resolveDirectorInactiveTabLabel(agentBrowser, recovery);
@@ -1202,7 +1402,7 @@ async function captureSettingsFocusStates(
   recovery: { cdpPort: number; expectedUrlPrefix: string },
   theme: "light" | "dark",
 ) {
-  setTheme(agentBrowser, theme);
+  await applyThemeAndSettle(agentBrowser, recovery, theme);
   await sleep(400);
   await openSettingsWorkspaceTab(agentBrowser, recovery);
   await waitForEvalRecovered(
@@ -1726,6 +1926,7 @@ async function main() {
     );
 
     for (const theme of ["light", "dark"] as const) {
+      await applyThemeAndSettle(agentBrowser, recovery, theme);
       await selectWorkspaceTab(agentBrowser, recovery, primaryTabTitle);
       await sleep(300);
       await captureTopNavStates(agentBrowser, recovery, theme, primaryTabTitle, "Settings");
