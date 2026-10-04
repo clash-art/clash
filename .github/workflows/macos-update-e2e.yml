@@ -68,7 +68,10 @@ jobs:
           fi
 
       - name: Test update harness helpers
-        run: pnpm --dir apps/desktop test scripts/macos-update-e2e.test.ts
+        run: |
+          pnpm --dir apps/desktop test scripts/macos-update-e2e.test.ts
+          pnpm --dir apps/desktop test scripts/update-differential-assert.test.ts
+          pnpm --dir apps/desktop test scripts/prepare-stable-release-assets.test.ts
 
       - name: Build two notarized preview versions
         shell: bash

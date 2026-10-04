@@ -1,0 +1,7 @@
+[desktop:updater] Checking for update
+[desktop:updater] Found version 0.2.0 (url: Clash-Desktop-0.2.0-macOS-arm64.zip, Clash-Desktop-macOS-arm64.dmg)
+[desktop:updater] Downloading update from Clash-Desktop-0.2.0-macOS-arm64.zip, Clash-Desktop-macOS-arm64.dmg
+[desktop:updater] Download block maps (old: "https://github.com/clash-art/clash/releases/latest/download/Clash-Desktop-0.1.0-macOS-arm64.zip.blockmap", new: https://github.com/clash-art/clash/releases/latest/download/Clash-Desktop-0.2.0-macOS-arm64.zip.blockmap)
+[desktop:updater] No cached blockmap for the old installer, downloading it from "https://github.com/clash-art/clash/releases/latest/download/Clash-Desktop-0.1.0-macOS-arm64.zip.blockmap"
+[desktop:updater] Cannot download differentially, fallback to full download: Error: Cannot download "https://github.com/clash-art/clash/releases/download/v0.2.0/Clash-Desktop-0.1.0-macOS-arm64.zip.blockmap", status 404:
+[desktop:updater] New version 0.2.0 has been downloaded

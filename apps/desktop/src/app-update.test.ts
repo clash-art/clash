@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canInstallUpdate,
   compareAppVersions,
+  electronUpdaterFeedOptions,
   feedForChannel,
   parseAppVersion,
   previewAppVersion,
@@ -43,6 +44,16 @@ describe("app-update", () => {
     const feed = feedForChannel("preview", {});
     expect(feed?.url).toContain("/releases/download/desktop-preview");
     expect(feed?.fileName).toBe("preview-mac.yml");
+  });
+
+  it("disables multipart range requests for GitHub generic feeds", () => {
+    const feed = feedForChannel("stable", {});
+    expect(feed).not.toBeNull();
+    expect(electronUpdaterFeedOptions(feed!)).toEqual({
+      provider: "generic",
+      url: feed!.url,
+      useMultipleRangeRequest: false,
+    });
   });
 
   it("requires both e2e env vars before auto-accepting the update dialog", () => {

@@ -172,6 +172,8 @@ jobs:
           path: |
             apps/desktop/release/Clash-Desktop-macOS-arm64.dmg
             apps/desktop/release/Clash-Desktop-macOS-arm64.zip
+            apps/desktop/release/Clash-Desktop-macOS-arm64.zip.blockmap
+            apps/desktop/release/Clash-Desktop-macOS-arm64.dmg.blockmap
             apps/desktop/release/preview-mac.yml
           if-no-files-found: error
 
