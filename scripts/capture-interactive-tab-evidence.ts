@@ -115,6 +115,33 @@ function navigatorTabSelector(label: string) {
   return `[aria-label="Project navigator"] [role="tab"][aria-label=${JSON.stringify(label)}]`;
 }
 
+const evidenceFocusedTabSelector = '[role="tab"][data-tab-evidence-focus="true"]';
+
+function markActiveTabForEvidence(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+) {
+  const ok = evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      document.querySelectorAll('[data-tab-evidence-focus="true"]').forEach((el) => {
+        el.removeAttribute("data-tab-evidence-focus");
+      });
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && active.getAttribute("role") === "tab") {
+        active.setAttribute("data-tab-evidence-focus", "true");
+        active.scrollIntoView({ block: "center", inline: "nearest" });
+        return true;
+      }
+      return false;
+    })()`,
+  );
+  if (!ok) {
+    throw new Error("Focused tab missing for evidence capture");
+  }
+}
+
 async function selectWorkspaceTab(
   agentBrowser: ReturnType<typeof createAgentBrowser>,
   recovery: { cdpPort: number; expectedUrlPrefix: string },
@@ -270,7 +297,35 @@ async function screenshotElement(
   target: string,
 ) {
   ensurePageTarget(agentBrowser, recovery);
+  evalOnPage(
+    agentBrowser,
+    recovery,
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(selector)});
+      el?.scrollIntoView({ block: "center", inline: "nearest" });
+      return !!el;
+    })()`,
+  );
+  await sleep(120);
   agentBrowser(["screenshot", selector, target]);
+}
+
+async function screenshotTabFocusCrop(
+  agentBrowser: ReturnType<typeof createAgentBrowser>,
+  recovery: { cdpPort: number; expectedUrlPrefix: string },
+  selector: string,
+  surface: string,
+  theme: "light" | "dark",
+) {
+  await screenshotElement(agentBrowser, recovery, selector, outFile(surface, theme, "focus-visible"));
+  if (surface === "director") {
+    await screenshotElement(
+      agentBrowser,
+      recovery,
+      selector,
+      outFileZoom(surface, theme, "focus-visible"),
+    );
+  }
 }
 
 async function focusWorkspaceTabKeyboard(
@@ -582,15 +637,16 @@ async function captureNavigatorStates(
   await screenshot(agentBrowser, recovery, outFile("navigator", theme, "hover-inactive"));
   await focusNavigatorTabKeyboard(agentBrowser, recovery, tabA, tabB);
   await sleep(200);
+  markActiveTabForEvidence(agentBrowser, recovery);
   await recordTabStyle(
     agentBrowser,
     recovery,
     "navigator",
     theme,
     "focus-visible",
-    navigatorTabSelector(tabA),
+    evidenceFocusedTabSelector,
   );
-  await screenshot(agentBrowser, recovery, outFile("navigator", theme, "focus-visible"));
+  await screenshotTabFocusCrop(agentBrowser, recovery, evidenceFocusedTabSelector, "navigator", theme);
 }
 
 async function captureTopNavStates(
@@ -623,15 +679,16 @@ async function captureTopNavStates(
   await screenshot(agentBrowser, recovery, outFile("topnav", theme, "hover-inactive"));
   await focusWorkspaceTabKeyboard(agentBrowser, recovery, tabA, tabB);
   await sleep(200);
+  markActiveTabForEvidence(agentBrowser, recovery);
   await recordTabStyle(
     agentBrowser,
     recovery,
     "topnav",
     theme,
     "focus-visible",
-    topNavTabSelector(tabA),
+    evidenceFocusedTabSelector,
   );
-  await screenshot(agentBrowser, recovery, outFile("topnav", theme, "focus-visible"));
+  await screenshotTabFocusCrop(agentBrowser, recovery, evidenceFocusedTabSelector, "topnav", theme);
 }
 
 function clickDirectorInspectorTab(agentBrowser: ReturnType<typeof createAgentBrowser>, label: string) {
@@ -806,9 +863,9 @@ async function captureDirectorInspectorStates(
   markDirectorInspectorTab(agentBrowser, "Properties");
   await focusDirectorInspectorTabKeyboard(agentBrowser, recovery, "Properties", "Pose");
   await waitForTabTransitionSettle(agentBrowser, recovery, directorEvidenceTab, "Properties focus");
-  await recordTabStyle(agentBrowser, recovery, "director", theme, "focus-visible", directorEvidenceTab);
-  await screenshot(agentBrowser, recovery, outFile("director", theme, "focus-visible"));
-  await screenshotElement(agentBrowser, recovery, directorInspectorRoot, outFileZoom("director", theme, "focus-visible"));
+  markActiveTabForEvidence(agentBrowser, recovery);
+  await recordTabStyle(agentBrowser, recovery, "director", theme, "focus-visible", evidenceFocusedTabSelector);
+  await screenshotTabFocusCrop(agentBrowser, recovery, evidenceFocusedTabSelector, "director", theme);
 }
 
 async function waitForCdpPageTarget(

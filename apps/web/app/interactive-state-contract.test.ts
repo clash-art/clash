@@ -68,4 +68,17 @@ describe("interactive state styling contract", () => {
     expect(css).toContain(".app-tab-trigger-rest");
     expect(css).toContain("[role=\"tab\"]:focus:not(:focus-visible):not([aria-selected=\"true\"])");
   });
+
+  it("uses a single inset tab focus ring that survives overflow clipping", () => {
+    const css = readRepoFile("apps/web/app/globals.css");
+
+    expect(sourceContains(css, "--app-tab-focus-width:")).toBe(true);
+    expect(sourceMatches(
+      css,
+      /\.app-tab-trigger:focus-visible[\s\S]{0,220}outline-offset:\s*calc\(-1 \* var\(--app-tab-focus-width\)\)/,
+    )).toBe(true);
+    expect(css).not.toMatch(
+      /\.app-tab-trigger:focus-visible[\s\S]{0,160}box-shadow:\s*0 0 0 1px var\(--app-tab-focus-ring\)/,
+    );
+  });
 });

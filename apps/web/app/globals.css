@@ -105,6 +105,7 @@
   --app-tab-selected-bg: var(--select-item-selected, color-mix(in srgb, var(--clash-content-primary) 8%, var(--clash-warm-muted)));
   --app-tab-selected-fg: var(--select-item-selected-foreground, var(--clash-content-primary));
   --app-tab-focus-ring: var(--control-focus);
+  --app-tab-focus-width: 2px;
   --control-border: var(--input);
   --control-focus: var(--ring);
   --input-placeholder: var(--muted-foreground);
@@ -5853,9 +5854,9 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
 
 .app-tab-trigger:focus-visible,
 [role="tab"]:focus-visible {
-  outline: 2px solid var(--app-tab-focus-ring);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 1px var(--app-tab-focus-ring);
+  outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
+  outline-offset: calc(-1 * var(--app-tab-focus-width));
+  box-shadow: none;
 }
 
 .app-tab-trigger-rest:focus:not(:focus-visible),
@@ -5884,10 +5885,3 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   color: var(--clash-director-panel-secondary);
 }
 
-:where(.clash-director-stage-shell, [data-context="director"])
-  :is([aria-label="Mannequin inspector sections"], [aria-label="Rigged model inspector sections"])
-  [role="tab"]:focus-visible {
-  outline: 2px solid var(--app-tab-focus-ring);
-  outline-offset: 2px;
-  box-shadow: 0 0 0 1px var(--app-tab-focus-ring);
-}

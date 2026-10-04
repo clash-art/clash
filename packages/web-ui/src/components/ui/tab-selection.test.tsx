@@ -109,11 +109,11 @@ describe("tab selection styling", () => {
     expect(beta.getAttribute("aria-selected")).toBe("false");
   });
 
-  it("wires focus-visible outline utilities on tab triggers", () => {
+  it("delegates focus-visible ring styling to globals.css", () => {
     render(<TabSwitchHarness initialId="a" />);
 
     const beta = screen.getByRole("tab", { name: "Beta" });
-    expect(beta.className).toContain("focus-visible:outline");
-    expect(beta.className).toContain("--app-tab-focus-ring");
+    expect(beta.className).toContain("focus-visible:outline-none");
+    expect(beta.className).not.toContain("focus-visible:outline-offset-2");
   });
 });

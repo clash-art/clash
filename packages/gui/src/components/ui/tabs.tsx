@@ -11,7 +11,7 @@ export function appTabTriggerClassName({
   className?: string;
 } = {}) {
   return cn(
-    "app-tab-trigger outline-none transition-[color,background-color,box-shadow] focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--app-tab-focus-ring)]",
+    "app-tab-trigger outline-none transition-[color,background-color,box-shadow] focus:outline-none focus-visible:outline-none",
     selected ? "app-tab-trigger-selected" : "app-tab-trigger-rest",
     className,
   );
