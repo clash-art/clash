@@ -94,10 +94,10 @@ jobs:
             mkdir -p "${dest}"
             /usr/bin/ditto apps/desktop/release/mac-arm64 "${dest}/mac-arm64"
             local zip_name zip blockmap
-            zip_name="$(pnpm --dir apps/desktop exec node --input-type=module -e "
+            zip_name="$(node --experimental-strip-types -e "
               import { readFileSync } from 'node:fs';
-              import { zipNameFromFeedYaml } from './scripts/macos-update-e2e.ts';
-              console.log(zipNameFromFeedYaml(readFileSync('release/preview-mac.yml', 'utf8')));
+              import { zipNameFromFeedYaml } from './apps/desktop/scripts/macos-update-e2e.ts';
+              console.log(zipNameFromFeedYaml(readFileSync('apps/desktop/release/preview-mac.yml', 'utf8')));
             ")"
             zip="apps/desktop/release/${zip_name}"
             blockmap="${zip}.blockmap"
