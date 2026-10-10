@@ -334,6 +334,9 @@ importers:
       '@clash-plugin/codex-imagegen':
         specifier: workspace:*
         version: link:../../plugins/codex-imagegen
+      '@clash-plugin/director':
+        specifier: workspace:*
+        version: link:../../plugins/director
       '@clash-plugin/fal':
         specifier: workspace:*
         version: link:../../plugins/fal
@@ -1712,6 +1715,9 @@ importers:
       '@clash-plugin/remotion':
         specifier: workspace:*
         version: link:../remotion
+      '@clash-plugin/storyboard':
+        specifier: workspace:*
+        version: link:../official/storyboard
       '@clash/cli':
         specifier: workspace:*
         version: link:../../packages/cli
