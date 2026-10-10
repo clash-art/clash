@@ -71,9 +71,13 @@ not Attempt evidence or resume identity. Canonical Evaluation, Aggregate, and
 Reward records are immutable and content-addressed, so multiple evaluators can
 score one trajectory without overwriting each other.
 
-The current executor is truthfully recorded as `native-local`: each ready case
-uses a fresh temporary working directory and fresh per-case `CLASH_HOME`, but it
-is not advertised as a container-hermetic or fully network-isolated run.
+Where an Attempt runs is an **execution backend**, and the lock records which
+one and what isolation it established: `native-local` (a fresh temporary
+directory and per-case `CLASH_HOME` on the host, not container-hermetic and not
+network-isolated), `container`, or `claude-cloud`. See
+[`execution-backends.md`](execution-backends.md) for the backends, repeated
+trials (`pass@1`, `pass@k`, `pass^k`), and how the build under test is selected
+and recorded.
 Workspace is a Clash product concept; the benchmark Environment wraps it with
 Agent/runtime configuration and never places credentials in either portable
 bundle. Evaluator identity, specification, and policy are recorded separately

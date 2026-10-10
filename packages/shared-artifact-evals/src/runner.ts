@@ -5260,6 +5260,8 @@ export type BenchmarkAttemptExecutionInput = {
   attempt: number;
   /** Trial index (1-based) this Attempt belongs to. */
   trial: number;
+  /** The run repeats trials, so the report records which one this is. */
+  repeated?: boolean;
   forced: boolean;
   startedAt: string;
   processScope: BenchmarkProcessScope;
@@ -5329,6 +5331,7 @@ export async function executeBenchmarkAttempt(
     });
   }
   report.attempt = nextAttempt;
+  if (input.repeated) report.trial = input.trial;
   report.failure = classifyCaseFailure(report);
   if (forcedRetryRequested && report.status !== "pass") {
     report.forcePending = true;
@@ -5744,6 +5747,7 @@ async function runBenchmarkSuiteInProcessScope(
         caseRoot,
         attempt: nextAttempt,
         trial,
+        ...(trials > 1 ? { repeated: true } : {}),
         forced: forcedRetryRequested,
         startedAt: startedEntry.at,
         processScope,
@@ -5758,7 +5762,6 @@ async function runBenchmarkSuiteInProcessScope(
           executeBenchmarkAttempt({ ...dispatch, dispatchFailure: error }),
         );
       const { report, attemptReceipt } = completion;
-      if (trials > 1) report.trial = trial;
 
       const completedEntry: BenchmarkAttemptLedgerEntry = {
         schemaVersion: 1,

@@ -49,6 +49,7 @@ export type AttemptUnit = {
   caseRoot: string;
   attempt: number;
   trial: number;
+  repeated?: boolean;
   forced: boolean;
   startedAt: string;
   agent: PortableAgent;
@@ -124,6 +125,7 @@ export function createAttemptUnit(input: {
     caseRoot: dispatch.caseRoot,
     attempt: dispatch.attempt,
     trial: dispatch.trial,
+    ...(dispatch.repeated ? { repeated: true } : {}),
     forced: dispatch.forced,
     startedAt: dispatch.startedAt,
     agent,

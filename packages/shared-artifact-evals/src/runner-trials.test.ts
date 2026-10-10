@@ -142,6 +142,14 @@ describe("repeated trials", () => {
     ]);
     expect(report.status).toBe("fail");
     expect(report.trials).toBe(3);
+    // The trial index is on disk, not only in the in-memory report.
+    const onDisk = JSON.parse(
+      await readFile(
+        join(outputRoot, "run", "trials", "003", "flaky", "case-report.json"),
+        "utf8",
+      ),
+    ) as { trial?: number };
+    expect(onDisk.trial).toBe(3);
     expect(report.trialAggregate?.summary).toMatchObject({
       tasks: 1,
       passAt1: 2 / 3,

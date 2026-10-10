@@ -157,6 +157,7 @@ export async function runAttemptUnit(
       caseRoot: unit.caseRoot,
       attempt: unit.attempt,
       trial: unit.trial,
+      ...(unit.repeated ? { repeated: true } : {}),
       forced: unit.forced,
       startedAt: unit.startedAt,
       processScope,
