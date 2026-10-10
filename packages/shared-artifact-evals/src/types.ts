@@ -1,3 +1,7 @@
+import type { ExecutionBackend } from "./execution-backend";
+import type { ResolvedBenchmarkSubject } from "./subject";
+import type { TrialAggregateSummary } from "./trial-aggregate";
+
 export const ARTIFACT_KINDS = [
   "director-stage",
   "timeline",
@@ -579,6 +583,8 @@ export type BenchmarkCaseReport = {
   inputFixture?: BenchmarkInputFixtureProvenance;
   status: "pass" | "fail" | "blocked" | "pending-review";
   attempt?: number;
+  /** 1-based trial index; present only when the run repeats trials. */
+  trial?: number;
   /** A failed forced attempt is waiting for another explicit --force. */
   forcePending?: boolean;
   failure?: BenchmarkCaseFailure;
@@ -603,6 +609,16 @@ export type BenchmarkSuiteReport = {
     passed: number;
     failed: number;
   };
+  /** Trials per runnable case. Present when the run requested repeated trials. */
+  trials?: number;
+  /** Content-addressed pass@1 / pass@k / pass^k record over the run's Attempts. */
+  trialAggregate?: {
+    path: string;
+    sha256: string;
+    digest: string;
+    summary: TrialAggregateSummary;
+  };
+  /** One report per Attempt: every trial of every case. */
   cases: BenchmarkCaseReport[];
 };
 
@@ -621,6 +637,8 @@ export type BenchmarkAttemptLedgerEntry = {
   suiteId: string;
   runId: string;
   caseId: string;
+  /** Trial index; absent means trial 1. */
+  trial?: number;
   attempt: number;
   event: "started" | "completed" | "abandoned" | "force-pending";
   at: string;
@@ -654,6 +672,20 @@ export type RunBenchmarkSuiteInput = {
   force?: boolean;
   /** Total tries allowed for infrastructure failures only. Defaults to 2. */
   maxInfrastructureAttempts?: number;
+  /**
+   * Independent rollouts per runnable case. Setting it, even to 1, publishes a
+   * Trial Aggregate with pass@1, pass@k and pass^k.
+   */
+  trials?: number;
+  /**
+   * Where Attempts run. Unit `i` of the case-major, trial-minor plan goes to
+   * backend `i mod n`. Defaults to one sequential native-local backend.
+   */
+  backends?: ExecutionBackend[];
+  /** Cap on Attempts running at once across all backends. */
+  parallelism?: number;
+  /** The Clash build under test, recorded in every Environment lock. */
+  subject?: ResolvedBenchmarkSubject;
 };
 
 export type ReevaluateBenchmarkRunInput = {
