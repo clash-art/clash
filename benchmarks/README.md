@@ -74,7 +74,7 @@ score one trajectory without overwriting each other.
 Where an Attempt runs is an **execution backend**, and the lock records which
 one and what isolation it established: `native-local` (a fresh temporary
 directory and per-case `CLASH_HOME` on the host, not container-hermetic and not
-network-isolated), `container`, or `claude-cloud`. See
+network-isolated), `container`, or the opt-in experimental `claude-cloud`. See
 [`execution-backends.md`](execution-backends.md) for the backends, repeated
 trials (`pass@1`, `pass@k`, `pass^k`), and how the build under test is selected
 and recorded.

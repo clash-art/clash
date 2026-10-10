@@ -12,7 +12,10 @@ import {
 } from "./runner";
 import { runBenchmarkSuite, createNativeLocalBackend } from "./runner";
 import { loadBenchmarkSuite } from "./suite";
-import { createClaudeCloudBackend } from "./backend-claude-cloud";
+import {
+  createClaudeCloudBackend,
+  pruneCloudResultBranches,
+} from "./backend-claude-cloud";
 import { createContainerBackend } from "./backend-container";
 import type { ExecutionBackend } from "./execution-backend";
 import {
@@ -46,6 +49,9 @@ type CliOptions = {
   force?: boolean;
   maxInfrastructureAttempts?: number;
   trials?: number;
+  passK?: number;
+  spreadTrials?: boolean;
+  experimentalClaudeCloud?: boolean;
   parallel?: number;
   backends: Array<"native-local" | "container" | "claude-cloud">;
   concurrency?: number;
@@ -79,9 +85,14 @@ Options:
   --quality-reviewer-command <path>  Codex reviewer executable (default: codex)
   --clash-plugin-root <path>  Clash plugin root for clash-host cases (default: plugins/clash)
   --clash-profile dev|prod    Isolated Clash runtime profile (default: dev)
-  --trials <k>                Run every case k times; reports pass@1, pass@k, pass^k
-  --backend <kind>            native-local (default), container, or claude-cloud.
-                              Repeat to spread trials across backends
+  --trials <n>                Run every case n times; reports pass@1, pass@k, pass^k
+  --pass-k <k>                k for the unbiased pass@k / pass^k estimators (1..n, default n)
+  --backend <kind>            native-local (default), container, or claude-cloud
+                              (experimental). Repeat to use several backends: each
+                              task's trials stay on one backend, metrics per backend
+  --spread-trials             Opt in to spreading one task's trials across backends
+  --experimental-claude-cloud Required for --backend claude-cloud (unverified against
+                              a live cloud session)
   --parallel <n>              At most n Attempts at once across all backends
   --concurrency <n>           Attempts at once per backend (default: 1)
   --subject <selector>        Build under test: working-tree (default), commit:<rev>,
@@ -97,6 +108,9 @@ Options:
   --cloud-environment <id>    Self-hosted pool (ccpool_...) for claude-cloud
   --cloud-runner-rev <rev>    Pushed revision of this runner for claude-cloud sessions
   --run-id <id>               Stable run id (default: run-<timestamp>)
+
+  clash-artifact-bench prune-cloud-results [--run-id <id>] [--remote <name>] [--repo <path>]
+                              Delete bench-results/<run>/... branches claude-cloud pushed
   --resume                    Continue a compatible existing run id
   --force                     Run one explicit retry; later retries require force-pending
   --max-infra-attempts <n>    Retry infrastructure failures only (default: 2 total attempts)
@@ -146,6 +160,11 @@ function parseArgs(args: string[]): CliOptions {
       options.maxInfrastructureAttempts = value;
     } else if (flag === "--trials")
       options.trials = positive(requiredValue(args, index++, flag), flag);
+    else if (flag === "--pass-k")
+      options.passK = positive(requiredValue(args, index++, flag), flag);
+    else if (flag === "--spread-trials") options.spreadTrials = true;
+    else if (flag === "--experimental-claude-cloud")
+      options.experimentalClaudeCloud = true;
     else if (flag === "--parallel")
       options.parallel = positive(requiredValue(args, index++, flag), flag);
     else if (flag === "--concurrency")
@@ -251,9 +270,32 @@ async function runWorker(args: string[]): Promise<void> {
   await runAttemptUnit(unit, suiteRoot ? { suiteRoot } : {});
 }
 
+async function pruneCloudResults(args: string[]): Promise<void> {
+  const valueOf = (name: string) => {
+    const index = args.indexOf(name);
+    return index >= 0 ? requiredValue(args, index, name) : undefined;
+  };
+  const invocationRoot = process.env.INIT_CWD ?? process.cwd();
+  const repo = valueOf("--repo");
+  const runId = valueOf("--run-id");
+  const remote = valueOf("--remote");
+  const deleted = await pruneCloudResultBranches({
+    repoRoot: repo
+      ? resolve(invocationRoot, repo)
+      : await gitToplevel(invocationRoot),
+    ...(runId ? { runId } : {}),
+    ...(remote ? { remote } : {}),
+  });
+  process.stdout.write(`${JSON.stringify({ deleted }, null, 2)}\n`);
+}
+
 async function main(): Promise<void> {
   if (process.argv[2] === "worker") {
     await runWorker(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "prune-cloud-results") {
+    await pruneCloudResults(process.argv.slice(3));
     return;
   }
   const options = parseArgs(process.argv.slice(2));
@@ -263,6 +305,23 @@ async function main(): Promise<void> {
     throw new Error("--resume requires --run-id");
   if (options.force && !options.resume)
     throw new Error("--force requires --resume");
+  if (options.passK !== undefined) {
+    if (options.trials === undefined)
+      throw new Error("--pass-k requires --trials");
+    if (options.passK > options.trials)
+      throw new Error("--pass-k must not exceed --trials");
+  }
+  if (options.spreadTrials && new Set(options.backends).size < 2) {
+    throw new Error("--spread-trials requires at least two --backend values");
+  }
+  if (
+    options.backends.includes("claude-cloud") &&
+    !options.experimentalClaudeCloud
+  ) {
+    throw new Error(
+      "--backend claude-cloud is experimental: it has not been verified against a live claude --cloud session. Pass --experimental-claude-cloud to opt in.",
+    );
+  }
   const invocationRoot = process.env.INIT_CWD ?? process.cwd();
   const suitePath = resolve(invocationRoot, options.suite);
   const loadedSuite = await loadBenchmarkSuite(suitePath);
@@ -421,7 +480,9 @@ async function main(): Promise<void> {
       suite,
       suiteRoot: dirname(suitePath),
       ...(options.trials ? { trials: options.trials } : {}),
+      ...(options.passK ? { passK: options.passK } : {}),
       ...(backends ? { backends } : {}),
+      ...(options.spreadTrials ? { placement: "spread" as const } : {}),
       ...(options.parallel ? { parallelism: options.parallel } : {}),
       ...(subject ? { subject } : {}),
       outputRoot: resolve(invocationRoot, options.output),
@@ -446,6 +507,19 @@ async function main(): Promise<void> {
         : {}),
     });
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    const short = report.trialAggregate?.summary.indeterminateTasks ?? 0;
+    if (short > 0) {
+      process.stderr.write(
+        `warning: ${short} task(s) reached fewer than ${report.passK} scored trials after infrastructure retries; pass@k and pass^k leave them out (raise --max-infra-attempts or --trials)\n`,
+      );
+    }
+    for (const entry of report.trialAggregate?.byBackend ?? []) {
+      if (entry.experimental) {
+        process.stderr.write(
+          `warning: results from ${entry.backend} are experimental (backend unverified)\n`,
+        );
+      }
+    }
     if (
       report.status !== "pass" &&
       (process.exitCode === undefined || process.exitCode === 0)
@@ -559,7 +633,11 @@ async function buildBackends(input: {
         concurrency,
       });
     }
+    process.stderr.write(
+      "warning: claude-cloud is an EXPERIMENTAL backend, verified only against a simulated session\n",
+    );
     return createClaudeCloudBackend({
+      experimental: true,
       repoRoot: input.repoRoot,
       suiteFile: relative(input.repoRoot, input.suitePath),
       forwardEnv: options.forwardEnv,

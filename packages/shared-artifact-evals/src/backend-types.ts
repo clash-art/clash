@@ -13,6 +13,19 @@ export const BENCHMARK_BACKEND_KINDS = [
 export type BenchmarkBackendKind = (typeof BENCHMARK_BACKEND_KINDS)[number];
 
 /**
+ * Backends whose isolation and transport have not been verified against the
+ * real service. They run only on explicit opt-in, and every result they
+ * produce is labelled experimental.
+ */
+export const EXPERIMENTAL_BACKEND_KINDS: readonly BenchmarkBackendKind[] = [
+  "claude-cloud",
+];
+
+export function isExperimentalBackend(kind: BenchmarkBackendKind): boolean {
+  return EXPERIMENTAL_BACKEND_KINDS.includes(kind);
+}
+
+/**
  * What the dispatcher asserts about the place an Attempt will run. The worker
  * that actually runs the Attempt re-observes what it can and the lock records
  * both, so a claim the worker cannot corroborate fails the Attempt instead of

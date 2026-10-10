@@ -61,10 +61,12 @@ import {
 } from "./execution-backend";
 import { subjectIdentity, type ResolvedBenchmarkSubject } from "./subject";
 import {
+  assertSingleSubject,
   createTrialAggregateRecord,
   writeTrialAggregateRecord,
   type TrialAttemptInput,
   type TrialOutcome,
+  type TrialPlacement,
 } from "./trial-aggregate";
 import { loadSubmission } from "./artifacts";
 import { writeAtifTrajectory } from "./atif";
@@ -4301,7 +4303,12 @@ type RunManifest = {
   suiteSha256: string;
   startedAt: string;
   /** Present only when the run repeats trials or selects a subject. */
-  execution?: { trials: number; subjectIdentity?: string };
+  execution?: {
+    trials: number;
+    subjectIdentity?: string;
+    /** Present only for the opt-in `spread` placement; absent means per-task. */
+    placement?: "spread";
+  };
 };
 
 type RunProgressCase = {
@@ -5457,18 +5464,24 @@ async function runBenchmarkSuiteInProcessScope(
   if (!Number.isInteger(trials) || trials < 1) {
     throw new Error("trials must be a positive integer");
   }
+  const passK = input.passK ?? trials;
+  if (!Number.isInteger(passK) || passK < 1 || passK > trials) {
+    throw new Error("passK must be an integer between 1 and trials");
+  }
+  const placement: TrialPlacement = input.placement ?? "per-task";
   const backends = input.backends?.length
     ? input.backends
     : [createNativeLocalBackend()];
   // Only a non-default plan is written, so single-trial runs keep their
   // original manifest bytes.
   const executionPlan: RunManifest["execution"] | undefined =
-    trials > 1 || input.subject
+    trials > 1 || input.subject || placement === "spread"
       ? {
           trials,
           ...(input.subject
             ? { subjectIdentity: subjectIdentity(input.subject.record) }
             : {}),
+          ...(placement === "spread" ? { placement } : {}),
         }
       : undefined;
   let runRoot: string;
@@ -5514,10 +5527,11 @@ async function runBenchmarkSuiteInProcessScope(
     const recorded = parsedManifest.execution ?? { trials: 1 };
     if (
       recorded.trials !== trials ||
-      recorded.subjectIdentity !== executionPlan?.subjectIdentity
+      recorded.subjectIdentity !== executionPlan?.subjectIdentity ||
+      (recorded.placement ?? "per-task") !== placement
     ) {
       throw new Error(
-        "Cannot resume: the trial count or selected subject differs from the existing run manifest",
+        "Cannot resume: the trial count, trial placement, or selected subject differs from the existing run manifest",
       );
     }
     manifest = parsedManifest;
@@ -5550,28 +5564,34 @@ async function runBenchmarkSuiteInProcessScope(
   });
   const ledger = progress.attempts;
   const startedAt = manifest.startedAt;
-  const units: TrialUnit[] = [];
-  for (const benchmark of parsedSuite.data.cases) {
-    // A blocked case is never dispatched, so repeating it measures nothing.
-    const count =
-      benchmark.execution?.preflight?.status === "blocked" ? 1 : trials;
-    for (let trial = 1; trial <= count; trial += 1) {
-      units.push({
-        benchmark,
-        trial,
-        index: units.length,
-        backend: backends[units.length % backends.length]!,
-      });
-    }
-  }
+  const units = planTrialUnits({
+    cases: parsedSuite.data.cases,
+    trials,
+    backends,
+    placement,
+  });
   const locked = createSerializer();
   const reports: Array<BenchmarkCaseReport | undefined> = units.map(
     () => undefined,
   );
   const currentCases = () =>
     reports.filter((report): report is BenchmarkCaseReport => Boolean(report));
+  // One run measures one build. The first sealed identity fixes it, and an
+  // Attempt that measured another stops the run instead of being averaged in.
+  let runSubject: string | undefined;
   const settle = (unit: TrialUnit, report: BenchmarkCaseReport) =>
     locked(async () => {
+      const identity = await sealedAttemptIdentity({
+        runRoot,
+        ledger,
+        unit,
+        report,
+      });
+      if (identity) {
+        const measured = identity.subjectIdentity ?? "unrecorded";
+        assertSingleSubject(runSubject ? [runSubject, measured] : [measured]);
+        runSubject = measured;
+      }
       reports[unit.index] = report;
       await writeSuiteProgress({
         progressPath,
@@ -5850,6 +5870,8 @@ async function runBenchmarkSuiteInProcessScope(
           suiteId: parsedSuite.data.id,
           runId: input.runId,
           trials,
+          passK,
+          placement,
           units,
           reports,
           ledger,
@@ -5864,7 +5886,7 @@ async function runBenchmarkSuiteInProcessScope(
     finishedAt: new Date().toISOString(),
     resumed: Boolean(input.resume),
     qualityReview: suiteQualityReview(cases),
-    ...(trialAggregate ? { trials, trialAggregate } : {}),
+    ...(trialAggregate ? { trials, passK, trialAggregate } : {}),
     cases,
   };
   await Promise.all([
@@ -5934,6 +5956,8 @@ async function publishRunTrialAggregate(input: {
   suiteId: string;
   runId: string;
   trials: number;
+  passK: number;
+  placement: TrialPlacement;
   units: readonly TrialUnit[];
   reports: ReadonlyArray<BenchmarkCaseReport | undefined>;
   ledger: readonly BenchmarkAttemptLedgerEntry[];
@@ -5942,23 +5966,19 @@ async function publishRunTrialAggregate(input: {
   for (const unit of input.units) {
     const report = input.reports[unit.index];
     if (!report || report.status === "blocked") continue;
-    const completed = input.ledger
-      .filter(
-        (entry) =>
-          entry.caseId === unit.benchmark.id &&
-          (entry.trial ?? 1) === unit.trial &&
-          entry.event === "completed" &&
-          entry.attempt === report.attempt,
-      )
-      .at(-1);
-    const identity = completed
-      ? await readSealedLockIdentity(resolve(input.runRoot, completed.caseRoot))
-      : undefined;
+    const completed = completedLedgerEntry(input.ledger, unit, report);
+    const identity = await sealedAttemptIdentity({
+      runRoot: input.runRoot,
+      ledger: input.ledger,
+      unit,
+      report,
+    });
     attempts.push({
       caseId: unit.benchmark.id,
       trial: unit.trial,
       outcome: trialOutcome(report),
       backend: identity?.backend ?? unit.backend.kind,
+      ...(report.attempt !== undefined ? { attempt: report.attempt } : {}),
       ...(completed?.attemptDigest
         ? { attemptDigest: completed.attemptDigest }
         : {}),
@@ -5971,6 +5991,8 @@ async function publishRunTrialAggregate(input: {
     suiteId: input.suiteId,
     runId: input.runId,
     trials: input.trials,
+    k: input.passK,
+    placement: input.placement,
     attempts,
   });
   const receipt = await writeTrialAggregateRecord({
@@ -5982,7 +6004,75 @@ async function publishRunTrialAggregate(input: {
     sha256: receipt.sha256,
     digest: record.digest,
     summary: record.summary,
+    byBackend: record.byBackend,
   };
+}
+
+function completedLedgerEntry(
+  ledger: readonly BenchmarkAttemptLedgerEntry[],
+  unit: TrialUnit,
+  report: BenchmarkCaseReport,
+): BenchmarkAttemptLedgerEntry | undefined {
+  return ledger
+    .filter(
+      (entry) =>
+        entry.caseId === unit.benchmark.id &&
+        (entry.trial ?? 1) === unit.trial &&
+        entry.event === "completed" &&
+        entry.attempt === report.attempt,
+    )
+    .at(-1);
+}
+
+/** Where the settled Attempt of a unit ran and what it measured, from its sealed lock. */
+async function sealedAttemptIdentity(input: {
+  runRoot: string;
+  ledger: readonly BenchmarkAttemptLedgerEntry[];
+  unit: TrialUnit;
+  report: BenchmarkCaseReport;
+}): Promise<
+  { backend?: BenchmarkBackendKind; subjectIdentity?: string } | undefined
+> {
+  if (input.report.status === "blocked") return undefined;
+  const completed = completedLedgerEntry(
+    input.ledger,
+    input.unit,
+    input.report,
+  );
+  return completed
+    ? readSealedLockIdentity(resolve(input.runRoot, completed.caseRoot))
+    : undefined;
+}
+
+/**
+ * Case-major, trial-minor plan. By default every trial of a task runs on the
+ * same backend (task `c` on backend `c mod n`), so a task's pass@k is measured
+ * on one backend and backends can be compared. `spread` instead places unit
+ * `i` on backend `i mod n`. Either way placement is deterministic, so a
+ * resumed run places a unit where it ran.
+ */
+export function planTrialUnits(input: {
+  cases: readonly ArtifactBenchmarkCase[];
+  trials: number;
+  backends: readonly ExecutionBackend[];
+  placement: TrialPlacement;
+}): TrialUnit[] {
+  const units: TrialUnit[] = [];
+  input.cases.forEach((benchmark, caseIndex) => {
+    // A blocked case is never dispatched, so repeating it measures nothing.
+    const count =
+      benchmark.execution?.preflight?.status === "blocked" ? 1 : input.trials;
+    for (let trial = 1; trial <= count; trial += 1) {
+      const slot = input.placement === "spread" ? units.length : caseIndex;
+      units.push({
+        benchmark,
+        trial,
+        index: units.length,
+        backend: input.backends[slot % input.backends.length]!,
+      });
+    }
+  });
+  return units;
 }
 
 export async function runBenchmarkSuite(

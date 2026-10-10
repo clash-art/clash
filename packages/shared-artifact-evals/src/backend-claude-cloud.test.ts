@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   assertSafeArchive,
   createClaudeCloudBackend,
+  pruneCloudResultBranches,
   renderCloudWorkerScript,
   spawnCloudCommand,
 } from "./backend-claude-cloud";
@@ -162,6 +163,7 @@ describe("claude cloud backend (simulated session)", () => {
   it("returns a sealed Attempt through the result branch and never dispatches the credential", async () => {
     const cloud = await simulatedCloud();
     const backend = createClaudeCloudBackend({
+      experimental: true,
       command: cloud.fake,
       environmentId: "ccpool_selfhosted01",
       repoRoot: cloud.repo,
@@ -179,7 +181,8 @@ describe("claude cloud backend (simulated session)", () => {
       outputRoot,
       runId: "run",
       agent,
-      backends: [backend],
+      // Without the end-of-run sweep, so the per-Attempt delete is what is tested.
+      backends: [{ ...backend, dispose: undefined }],
     });
     expect(report.cases[0]).toMatchObject({ status: "pass" });
     // The credential the Agent used was the session's secret, and it came back only as bytes the Agent wrote.
@@ -200,9 +203,55 @@ describe("claude cloud backend (simulated session)", () => {
       kind: "claude-cloud",
       pool: { kind: "self-hosted", environmentId: "ccpool_selfhosted01" },
     });
+    // The result branch was read once and then deleted from the remote.
+    expect(git(cloud.repo, "ls-remote", cloud.origin)).not.toContain(
+      "bench-results/",
+    );
+  });
+
+  it("keeps the result branch only when asked to", async () => {
+    const cloud = await simulatedCloud();
+    const report = await runBenchmarkSuite({
+      suite: cloud.suite as never,
+      suiteRoot: cloud.suiteRoot,
+      outputRoot: join(cloud.root, "runs"),
+      runId: "run",
+      agent,
+      backends: [
+        createClaudeCloudBackend({
+          experimental: true,
+          keepResultBranches: true,
+          command: cloud.fake,
+          repoRoot: cloud.repo,
+          remote: cloud.origin,
+          suiteFile: "bench/suite.json",
+          installCommand: ["true"],
+          workerCommand: cloud.workerCommand,
+          pollIntervalMs: 50,
+          resultTimeoutMs: 120_000,
+        }),
+      ],
+    });
+    expect(report.cases[0]).toMatchObject({ status: "pass" });
     expect(git(cloud.repo, "ls-remote", cloud.origin)).toContain(
       "bench-results/run/task-t1-a1-",
     );
+  });
+
+  it("is refused unless explicitly enabled as experimental", () => {
+    expect(() =>
+      createClaudeCloudBackend({
+        repoRoot: ".",
+        suiteFile: "x",
+      } as never),
+    ).toThrow(/experimental/u);
+    expect(
+      createClaudeCloudBackend({
+        experimental: true,
+        repoRoot: ".",
+        suiteFile: "x",
+      }).experimental,
+    ).toBe(true);
   });
 
   it("reports a missing result branch as an infrastructure failure", async () => {
@@ -216,6 +265,7 @@ describe("claude cloud backend (simulated session)", () => {
       maxInfrastructureAttempts: 1,
       backends: [
         createClaudeCloudBackend({
+          experimental: true,
           command: cloud.fake,
           repoRoot: cloud.repo,
           remote: cloud.origin,
@@ -255,6 +305,7 @@ describe("claude cloud backend (simulated session)", () => {
       },
       backends: [
         createClaudeCloudBackend({
+          experimental: true,
           command: cloud.fake,
           repoRoot: cloud.repo,
           remote: cloud.origin,
@@ -270,11 +321,90 @@ describe("claude cloud backend (simulated session)", () => {
   it("rejects a malformed self-hosted pool id", () => {
     expect(() =>
       createClaudeCloudBackend({
+        experimental: true,
         environmentId: "not-a-pool; rm -rf /",
         repoRoot: ".",
         suiteFile: "x",
       }),
     ).toThrow(/ccpool_/u);
+  });
+});
+
+describe("result branch pruning", () => {
+  it("deletes one run's result branches and leaves everything else", async () => {
+    const cloud = await simulatedCloud();
+    const head = git(cloud.repo, "rev-parse", "HEAD");
+    for (const branch of [
+      "bench-results/run-a/task-t1-a1-0001",
+      "bench-results/run-a/task-t2-a1-0002",
+      "bench-results/run-b/task-t1-a1-0003",
+      "feature/bench-results/run-a",
+    ]) {
+      git(
+        cloud.repo,
+        "push",
+        "-q",
+        cloud.origin,
+        `${head}:refs/heads/${branch}`,
+      );
+    }
+    const deleted = await pruneCloudResultBranches({
+      repoRoot: cloud.repo,
+      remote: cloud.origin,
+      runId: "run-a",
+    });
+    expect(deleted.sort()).toEqual([
+      "bench-results/run-a/task-t1-a1-0001",
+      "bench-results/run-a/task-t2-a1-0002",
+    ]);
+    const remaining = git(cloud.repo, "ls-remote", "--heads", cloud.origin);
+    expect(remaining).not.toContain("bench-results/run-a/");
+    expect(remaining).toContain("bench-results/run-b/task-t1-a1-0003");
+    expect(remaining).toContain("feature/bench-results/run-a");
+    expect(remaining).toContain("refs/heads/main");
+
+    await pruneCloudResultBranches({
+      repoRoot: cloud.repo,
+      remote: cloud.origin,
+    });
+    expect(git(cloud.repo, "ls-remote", "--heads", cloud.origin)).not.toContain(
+      "refs/heads/bench-results/",
+    );
+  });
+
+  it("sweeps a run's leftover branches when the backend is disposed", async () => {
+    const cloud = await simulatedCloud();
+    const head = git(cloud.repo, "rev-parse", "HEAD");
+    const backend = createClaudeCloudBackend({
+      experimental: true,
+      command: cloud.fake,
+      repoRoot: cloud.repo,
+      remote: cloud.origin,
+      suiteFile: "bench/suite.json",
+      installCommand: ["true"],
+      workerCommand: cloud.workerCommand,
+      pollIntervalMs: 50,
+      resultTimeoutMs: 120_000,
+    });
+    // A session that pushed after the dispatcher stopped waiting for it.
+    git(
+      cloud.repo,
+      "push",
+      "-q",
+      cloud.origin,
+      `${head}:refs/heads/bench-results/run/task-t1-a9-late`,
+    );
+    await runBenchmarkSuite({
+      suite: cloud.suite as never,
+      suiteRoot: cloud.suiteRoot,
+      outputRoot: join(cloud.root, "runs"),
+      runId: "run",
+      agent,
+      backends: [backend],
+    });
+    expect(git(cloud.repo, "ls-remote", "--heads", cloud.origin)).not.toContain(
+      "bench-results/",
+    );
   });
 });
 

@@ -126,6 +126,13 @@ describe("clash-artifact-bench trials and backends", () => {
     [["--trials", "0"], /--trials must be a positive integer/u],
     [["--backend", "kubernetes"], /--backend must be/u],
     [["--container-network", "host"], /--container-network must be/u],
+    [["--pass-k", "2"], /--pass-k requires --trials/u],
+    [["--trials", "2", "--pass-k", "3"], /--pass-k must not exceed --trials/u],
+    [["--spread-trials"], /--spread-trials requires at least two --backend/u],
+    [
+      ["--backend", "claude-cloud"],
+      /claude-cloud is experimental.*--experimental-claude-cloud/u,
+    ],
   ])(
     "rejects invalid option %j",
     async (extra, message) => {

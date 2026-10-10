@@ -9,6 +9,8 @@ import {
   parseTrialAggregateRecord,
   summarizeTrialStats,
   taskTrialStats,
+  unbiasedPassAtK,
+  unbiasedPassPowK,
   writeTrialAggregateRecord,
   type TrialAttemptInput,
   type TrialOutcome,
@@ -38,56 +40,94 @@ function attempts(
   }));
 }
 
+/** Exact binomial coefficient, independent of the product form under test. */
+function choose(n: number, k: number): bigint {
+  if (k < 0 || k > n) return 0n;
+  let result = 1n;
+  for (let i = 1; i <= k; i += 1) {
+    result = (result * BigInt(n - k + i)) / BigInt(i);
+  }
+  return result;
+}
+
 describe("pass@1, pass@k and pass^k", () => {
-  it("separates a task that sometimes passes from one that always passes", () => {
+  it("matches the published definitions 1 - C(n-c,k)/C(n,k) and C(c,k)/C(n,k)", () => {
+    for (let n = 1; n <= 12; n += 1) {
+      for (let c = 0; c <= n; c += 1) {
+        for (let k = 1; k <= n; k += 1) {
+          const total = Number(choose(n, k));
+          expect(unbiasedPassAtK(n, c, k)).toBeCloseTo(
+            1 - Number(choose(n - c, k)) / total,
+            12,
+          );
+          expect(unbiasedPassPowK(n, c, k)).toBeCloseTo(
+            Number(choose(c, k)) / total,
+            12,
+          );
+        }
+      }
+    }
+  });
+
+  it("with k = n reduces to 'any trial passed' and 'every trial passed'", () => {
     expect(taskTrialStats(["pass", "fail", "fail"], 3)).toMatchObject({
       passAt1: 1 / 3,
-      passAtK: true,
-      passPowK: false,
+      passAtK: 1,
+      passPowK: 0,
     });
     expect(taskTrialStats(["pass", "pass", "pass"], 3)).toMatchObject({
       passAt1: 1,
-      passAtK: true,
-      passPowK: true,
+      passAtK: 1,
+      passPowK: 1,
     });
     expect(taskTrialStats(["fail", "fail", "fail"], 3)).toMatchObject({
       passAt1: 0,
-      passAtK: false,
-      passPowK: false,
+      passAtK: 0,
+      passPowK: 0,
     });
+  });
+
+  it("estimates pass@k from n > k trials instead of only the first k", () => {
+    // n = 5, c = 2, k = 2: 1 - C(3,2)/C(5,2) = 1 - 3/10; C(2,2)/C(5,2) = 1/10.
+    const stats = taskTrialStats(
+      ["pass", "fail", "pass", "fail", "fail"],
+      5,
+      2,
+    );
+    expect(stats.passAtK).toBeCloseTo(0.7, 12);
+    expect(stats.passPowK).toBeCloseTo(0.1, 12);
+    expect(stats.passAt1).toBeCloseTo(0.4, 12);
   });
 
   it("for one trial all three coincide", () => {
     for (const outcome of ["pass", "fail"] as const) {
       const stats = taskTrialStats([outcome], 1);
       expect(stats.passAt1).toBe(outcome === "pass" ? 1 : 0);
-      expect(stats.passAtK).toBe(outcome === "pass");
-      expect(stats.passPowK).toBe(outcome === "pass");
+      expect(stats.passAtK).toBe(outcome === "pass" ? 1 : 0);
+      expect(stats.passPowK).toBe(outcome === "pass" ? 1 : 0);
     }
   });
 
   it("never counts an unscored trial as an Agent failure", () => {
-    const stats = taskTrialStats(["pass", "pass", "unscored"], 3);
-    expect(stats.passAt1).toBe(1);
-    expect(stats.passAtK).toBe(true);
-    // One trial is unknown, so "every trial passed" cannot be claimed yet.
-    expect(stats.passPowK).toBeNull();
-    // A scored failure settles pass^k regardless of what is unscored.
-    expect(taskTrialStats(["fail", "unscored", "unscored"], 3).passPowK).toBe(
-      false,
+    // Four scored trials still estimate k = 3; the unscored one is left out.
+    const stats = taskTrialStats(
+      ["pass", "pass", "pass", "pass", "unscored"],
+      5,
+      3,
     );
-    expect(
-      taskTrialStats(["fail", "unscored", "unscored"], 3).passAtK,
-    ).toBeNull();
+    expect(stats).toMatchObject({ scored: 4, passAt1: 1, passPowK: 1 });
   });
 
-  it("treats trials that have not run yet like unscored ones", () => {
-    const stats = taskTrialStats(["pass"], 3);
-    expect(stats.passAtK).toBe(true);
+  it("does not estimate pass@k or pass^k from fewer than k scored trials", () => {
+    const stats = taskTrialStats(["pass", "fail", "unscored"], 3);
+    expect(stats.passAt1).toBe(0.5);
+    expect(stats.passAtK).toBeNull();
     expect(stats.passPowK).toBeNull();
+    // Trials that have not run yet are treated the same way.
+    expect(taskTrialStats(["pass"], 3).passAtK).toBeNull();
   });
 
-  it("averages only determinate tasks and reports how many were left out", () => {
+  it("averages only estimable tasks and reports how many were left out", () => {
     const summary = summarizeTrialStats([
       taskTrialStats(["pass", "pass"], 2),
       taskTrialStats(["pass", "fail"], 2),
@@ -105,6 +145,64 @@ describe("pass@1, pass@k and pass^k", () => {
   it("rejects an invalid trial plan", () => {
     expect(() => taskTrialStats([], 0)).toThrow();
     expect(() => taskTrialStats(["pass", "pass"], 1)).toThrow();
+    expect(() => taskTrialStats(["pass"], 2, 3)).toThrow(/k must/u);
+    expect(() => taskTrialStats(["pass"], 2, 0)).toThrow(/k must/u);
+  });
+});
+
+describe("per-backend statistics", () => {
+  it("reports each backend separately when a task's trials stay on one backend", () => {
+    const record = createTrialAggregateRecord({
+      suiteId: "suite",
+      runId: "run-1",
+      trials: 2,
+      attempts: [
+        ...attempts("a-task", ["pass", "pass"], "native-local"),
+        ...attempts("b-task", ["fail", "fail"], "container"),
+      ],
+    });
+    expect(record.placement).toBe("per-task");
+    expect(record.byBackend).toEqual([
+      {
+        backend: "container",
+        experimental: false,
+        summary: expect.objectContaining({ tasks: 1, passAtK: 0 }),
+      },
+      {
+        backend: "native-local",
+        experimental: false,
+        summary: expect.objectContaining({ tasks: 1, passAtK: 1 }),
+      },
+    ]);
+  });
+
+  it("does not estimate pass@k for a backend that ran fewer than k of a task's trials", () => {
+    const record = createTrialAggregateRecord({
+      suiteId: "suite",
+      runId: "run-1",
+      trials: 2,
+      placement: "spread",
+      attempts: [
+        { ...attempts("t", ["pass"], "native-local")[0]! },
+        { ...attempts("t", ["pass", "fail"], "container")[1]! },
+      ],
+    });
+    for (const { summary } of record.byBackend) {
+      expect(summary.passAtK).toBeNull();
+      expect(summary.indeterminateTasks).toBe(1);
+    }
+  });
+
+  it("labels results from an experimental backend", () => {
+    const record = createTrialAggregateRecord({
+      suiteId: "suite",
+      runId: "run-1",
+      trials: 1,
+      attempts: attempts("t", ["pass"], "claude-cloud"),
+    });
+    expect(record.byBackend).toEqual([
+      expect.objectContaining({ backend: "claude-cloud", experimental: true }),
+    ]);
   });
 });
 
@@ -147,7 +245,7 @@ describe("Trial Aggregate record", () => {
 
   it("rejects statistics that do not follow from the recorded attempts", () => {
     const forged = structuredClone(record()) as Record<string, any>;
-    forged.tasks[0].stats.passPowK = true;
+    forged.tasks[0].stats.passAt1 = 1;
     expect(() => parseTrialAggregateRecord(forged)).toThrow(/do not follow/u);
   });
 
@@ -175,19 +273,29 @@ describe("Trial Aggregate record", () => {
     expect(parseTrialAggregateRecord(stored).digest).toBe(record().digest);
   });
 
-  it("flags a run whose trials measured different builds", () => {
-    const mixed = createTrialAggregateRecord({
-      suiteId: "suite",
-      runId: "run-1",
-      trials: 2,
-      attempts: [
-        { ...attempts("t", ["pass"])[0]!, subjectIdentity: digest("a") },
-        {
-          ...attempts("t", ["pass", "pass"])[1]!,
-          subjectIdentity: digest("b"),
-        },
-      ],
-    });
-    expect(mixed.subjectIdentities).toHaveLength(2);
+  it("rejects a run whose trials measured different builds", () => {
+    expect(() =>
+      createTrialAggregateRecord({
+        suiteId: "suite",
+        runId: "run-1",
+        trials: 2,
+        attempts: [
+          { ...attempts("t", ["pass"])[0]!, subjectIdentity: digest("a") },
+          {
+            ...attempts("t", ["pass", "pass"])[1]!,
+            subjectIdentity: digest("b"),
+          },
+        ],
+      }),
+    ).toThrow(/exactly one subject/u);
+    const forged = structuredClone(record()) as Record<string, any>;
+    forged.subjectIdentities = [digest("a"), digest("b")];
+    expect(() => parseTrialAggregateRecord(forged)).toThrow();
+  });
+
+  it("rejects per-backend statistics that do not follow from the tasks", () => {
+    const forged = structuredClone(record()) as Record<string, any>;
+    forged.byBackend[0].backend = "claude-cloud";
+    expect(() => parseTrialAggregateRecord(forged)).toThrow(/per-backend/u);
   });
 });

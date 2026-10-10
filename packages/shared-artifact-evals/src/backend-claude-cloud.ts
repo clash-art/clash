@@ -53,6 +53,12 @@ export const spawnCloudCommand: CloudCommandRunner = (command, args, options) =>
   });
 
 export type ClaudeCloudBackendOptions = {
+  /**
+   * Required. This backend has only been exercised against a simulated
+   * session; how `claude --cloud` behaves non-interactively and whether a
+   * session may push its result branch are unverified.
+   */
+  experimental: true;
   /** Defaults to `claude`. */
   command?: string;
   /** A self-hosted pool (`ccpool_…`). Omit to use the Anthropic-managed pool. */
@@ -78,8 +84,56 @@ export type ClaudeCloudBackendOptions = {
   /** How long to wait for a result branch. Defaults to two hours. */
   resultTimeoutMs?: number;
   pollIntervalMs?: number;
+  /**
+   * Keep each `bench-results/<run>/…` branch on the remote after its result
+   * was fetched. By default it is deleted once read, and `dispose` prunes any
+   * left under the runs this backend dispatched.
+   */
+  keepResultBranches?: boolean;
   run?: CloudCommandRunner;
 };
+
+export const RESULT_BRANCH_PREFIX = "bench-results";
+
+/**
+ * Deletes result branches from the remote: all of `bench-results/<runId>/…`,
+ * or every `bench-results/…` branch when no run id is given. Returns the
+ * deleted branch names. Branches are pushed by cloud sessions and only read
+ * once, so nothing else should depend on them.
+ */
+export async function pruneCloudResultBranches(input: {
+  repoRoot: string;
+  remote?: string;
+  runId?: string;
+}): Promise<string[]> {
+  const remote = input.remote ?? "origin";
+  const prefix = input.runId
+    ? `refs/heads/${RESULT_BRANCH_PREFIX}/${input.runId}/`
+    : `refs/heads/${RESULT_BRANCH_PREFIX}/`;
+  const { stdout } = await execFileAsync(
+    "git",
+    ["ls-remote", "--heads", remote, `${prefix}*`],
+    { cwd: input.repoRoot, maxBuffer: 64 * 1024 * 1024 },
+  );
+  const refs = stdout
+    .split("\n")
+    .map((line) => line.split("\t")[1]?.trim())
+    .filter((ref): ref is string => Boolean(ref?.startsWith(prefix)));
+  // Push deletions in bounded batches so a long run cannot overflow argv.
+  for (let index = 0; index < refs.length; index += 100) {
+    await execFileAsync(
+      "git",
+      [
+        "push",
+        "--quiet",
+        remote,
+        ...refs.slice(index, index + 100).map((ref) => `:${ref}`),
+      ],
+      { cwd: input.repoRoot },
+    );
+  }
+  return refs.map((ref) => ref.slice("refs/heads/".length));
+}
 
 const RESULT_ARCHIVE = "attempt.tar.gz";
 
@@ -167,6 +221,10 @@ export async function assertSafeArchive(
 }
 
 /**
+ * EXPERIMENTAL: verified only against a simulated session, never a live
+ * `claude --cloud` session. Callers must pass `experimental: true`, and its
+ * results are labelled experimental in the Trial Aggregate.
+ *
  * Dispatches each Attempt to a Claude Code cloud session (`claude --cloud`,
  * optionally on a self-hosted pool via `--environment`). The runner cannot
  * observe the session's isolation, so the lock records it as
@@ -176,8 +234,14 @@ export async function assertSafeArchive(
 export function createClaudeCloudBackend(
   options: ClaudeCloudBackendOptions,
 ): ExecutionBackend {
+  if (options.experimental !== true) {
+    throw new Error(
+      "The claude-cloud backend is experimental and must be enabled explicitly",
+    );
+  }
   const run = options.run ?? spawnCloudCommand;
   const remote = options.remote ?? "origin";
+  const dispatchedRuns = new Set<string>();
   if (
     options.environmentId !== undefined &&
     !/^ccpool_[A-Za-z0-9_-]+$/u.test(options.environmentId)
@@ -224,7 +288,7 @@ export function createClaudeCloudBackend(
         `${options.runnerRev ?? "HEAD"}^{commit}`,
       ])
     ).trim();
-    const branch = `bench-results/${dispatch.runId}/${dispatch.benchmark.id}-t${dispatch.trial}-a${dispatch.attempt}-${randomUUID().slice(0, 8)}`;
+    const branch = `${RESULT_BRANCH_PREFIX}/${dispatch.runId}/${dispatch.benchmark.id}-t${dispatch.trial}-a${dispatch.attempt}-${randomUUID().slice(0, 8)}`;
     const unit = createAttemptUnit({
       dispatch,
       suiteFile: relative(
@@ -270,6 +334,8 @@ export function createClaudeCloudBackend(
     });
 
     const scratch = await mkdtemp(join(tmpdir(), "clash-bench-cloud-"));
+    let resultBranchExists = false;
+    dispatchedRuns.add(dispatch.runId);
     try {
       await mkdir(dirname(dispatch.caseRoot), { recursive: true });
       await mkdir(dispatch.caseRoot);
@@ -296,7 +362,10 @@ export function createClaudeCloudBackend(
           throw new Error("Interrupted while waiting for the cloud session");
         }
         const listed = await git(["ls-remote", remote, `refs/heads/${branch}`]);
-        if (listed.trim()) break;
+        if (listed.trim()) {
+          resultBranchExists = true;
+          break;
+        }
         if (Date.now() > deadline) {
           throw new Error(
             `No result branch ${branch} appeared before the timeout; the session may have failed`,
@@ -339,13 +408,33 @@ export function createClaudeCloudBackend(
       throw error;
     } finally {
       await rm(scratch, { recursive: true, force: true });
+      // The result was read (or rejected and quarantined locally); the branch
+      // has no further use. A failed delete is left to `dispose`.
+      if (resultBranchExists && !options.keepResultBranches) {
+        await git(["push", "--quiet", remote, `:refs/heads/${branch}`]).catch(
+          () => undefined,
+        );
+      }
     }
   };
 
   return {
     kind: "claude-cloud",
+    experimental: true,
     maxConcurrency: options.concurrency ?? 1,
     runtimeClaim: async () => claim,
     runAttempt,
+    // Sweeps branches whose delete failed or that a session pushed after the
+    // dispatcher stopped waiting.
+    dispose: async () => {
+      if (options.keepResultBranches) return;
+      for (const runId of dispatchedRuns) {
+        await pruneCloudResultBranches({
+          repoRoot: options.repoRoot,
+          remote,
+          runId,
+        }).catch(() => undefined);
+      }
+    },
   };
 }

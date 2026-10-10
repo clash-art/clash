@@ -35,10 +35,16 @@ selected subject, so the record cannot describe a build that was not run.
 
 ## Backends
 
-`--backend` may be repeated. Unit _i_ of the case-major, trial-minor plan runs on
-backend _i mod n_, so the trials of one task land on different backends and a
-resumed run places a unit where it ran before. `--concurrency` bounds Attempts
-per backend and `--parallel` bounds the total.
+`--backend` may be repeated. By default every trial of one task runs on the same
+backend (task _c_ on backend _c mod n_), so each task's pass@k is measured on a
+single backend and the Trial Aggregate reports metrics **per backend** as well as
+overall. `--spread-trials` opts in to placing unit _i_ of the case-major,
+trial-minor plan on backend _i mod n_ instead, so one task's trials mix
+backends; per-backend pass@k is then `null` wherever a backend scored fewer than
+_k_ of a task's trials. Placement is deterministic and recorded in the run
+manifest, so a resumed run places a unit where it ran before and refuses a
+different placement. `--concurrency` bounds Attempts per backend and
+`--parallel` bounds the total.
 
 The Attempt pipeline never changes: `executeBenchmarkAttempt` locks the
 Environment, imports the Workspace, runs the Agent, reads the product back, and
@@ -50,11 +56,11 @@ a missing result, or a lock that disagrees is sealed as a retryable
 infrastructure failure; the rejected output is kept under
 `<run>/.rejected-worker-output/`.
 
-| Backend        | Isolation actually established                                                                                                                                                                                                                                             | Recorded as                                                                                                                                                                             |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `native-local` | Fresh temporary workspace and per-case `CLASH_HOME` on the host. No container, no network isolation.                                                                                                                                                                       | `isolation.container: "none"`                                                                                                                                                           |
-| `container`    | Fresh container from a content-addressed image; suite, runner, and plugin mounted read-only; one writable mount (the Attempt directory); `--network none` or the engine default; container removed afterwards. No resource limits or extra syscall filtering are asserted. | `level: "container"`, image id, engine version, `attestation: "dispatcher-asserted-worker-observed"`. The worker must see a container marker or the lock refuses to record `container`. |
-| `claude-cloud` | None the runner can observe. The Attempt runs in a Claude Code cloud session; its sandbox and network policy belong to the environment that hosts it.                                                                                                                      | `level: "provider-managed-vm"`, `attestation: "dispatcher-declared"`, pool (`anthropic-managed` or `self-hosted` + `ccpool_…` id)                                                       |
+| Backend                       | Isolation actually established                                                                                                                                                                                                                                             | Recorded as                                                                                                                                                                             |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `native-local`                | Fresh temporary workspace and per-case `CLASH_HOME` on the host. No container, no network isolation.                                                                                                                                                                       | `isolation.container: "none"`                                                                                                                                                           |
+| `container`                   | Fresh container from a content-addressed image; suite, runner, and plugin mounted read-only; one writable mount (the Attempt directory); `--network none` or the engine default; container removed afterwards. No resource limits or extra syscall filtering are asserted. | `level: "container"`, image id, engine version, `attestation: "dispatcher-asserted-worker-observed"`. The worker must see a container marker or the lock refuses to record `container`. |
+| `claude-cloud` (experimental) | None the runner can observe. The Attempt runs in a Claude Code cloud session; its sandbox and network policy belong to the environment that hosts it.                                                                                                                      | `level: "provider-managed-vm"`, `attestation: "dispatcher-declared"`, pool (`anthropic-managed` or `self-hosted` + `ccpool_…` id)                                                       |
 
 ### Container backend
 
@@ -72,10 +78,18 @@ is mounted read-only at the same absolute path; the Attempt directory is mounted
 at its host path, so absolute paths in current-view reports stay valid. The image
 tag is resolved to its content id once per run.
 
-### Claude Code cloud backend
+### Claude Code cloud backend (experimental)
+
+> **Experimental.** This backend has been exercised only against a simulated
+> session, never a live `claude --cloud` session. How `claude --cloud` behaves
+> non-interactively and whether a session may push its result branch are
+> unverified. It runs only with `--experimental-claude-cloud` (library callers
+> pass `experimental: true`), the CLI prints a warning, and the Trial Aggregate
+> marks its per-backend results `experimental: true`.
 
 ```bash
-… --backend claude-cloud --cloud-environment ccpool_… --cloud-runner-rev <pushed-rev> \
+… --backend claude-cloud --experimental-claude-cloud \
+  --cloud-environment ccpool_… --cloud-runner-rev <pushed-rev> \
   --subject commit:<pushed-rev> --forward-env OPENAI_API_KEY
 ```
 
@@ -86,6 +100,20 @@ as a single archive to a `bench-results/<run>/…` branch. The dispatcher polls
 `git ls-remote`, fetches that branch, validates the archive (no hard links, no
 links or paths leaving the Attempt), unpacks it, and verifies it exactly like any
 other Attempt.
+
+Result branches are removed so they do not pile up on the remote: each branch is
+deleted as soon as its archive has been fetched (whether the Attempt is then
+accepted or rejected, since rejected output is kept locally), and when the run
+ends the backend sweeps any remaining `bench-results/<run>/…` branch of the runs
+it dispatched, such as one a session pushed after the dispatcher stopped
+waiting. `keepResultBranches: true` keeps them for debugging. Anything left
+behind by an interrupted dispatcher is removed with:
+
+```bash
+pnpm --filter @clash/artifact-evals benchmark prune-cloud-results [--run-id <id>] [--remote origin]
+```
+
+Without `--run-id` it deletes every `bench-results/…` branch on the remote.
 
 Requirements and limits:
 
@@ -99,8 +127,8 @@ Requirements and limits:
 - Results travel through git, so this suits text-heavy Attempts, not large media.
 - The runner cannot observe the session's isolation; the record says so.
 - The `claude --cloud` launch and the session's ability to push have not been
-  exercised against a live cloud session by this change; the protocol is tested
-  against a simulated session (see the PR evidence).
+  exercised against a live cloud session; the protocol is tested against a
+  simulated session. Until it is, the backend stays experimental.
 
 ### Credentials
 
@@ -114,23 +142,49 @@ never put a credential in one.
 
 ## Repeated trials
 
-`--trials k` runs every runnable case _k_ times as independent Attempts. Trial 1
+`--trials n` runs every runnable case _n_ times as independent Attempts, and
+`--pass-k k` (1 ≤ k ≤ n, default n) sets the _k_ of pass@k and pass^k. Trial 1
 keeps the original layout (`<run>/<case>/…`); later trials live in
 `<run>/trials/00N/<case>/…`. The ledger entries and case reports carry `trial`.
-Blocked cases are not repeated. Resume refuses a different trial count or
-subject.
+Blocked cases are not repeated. Resume refuses a different trial count,
+placement, or subject.
 
 When `--trials` is given, `suite-report.json` links a content-addressed
 **Trial Aggregate** (`trial-aggregates/sha256/<digest>.json`) listing, per task,
-each trial's outcome, backend, subject identity, and Attempt digest, plus:
+each trial's outcome, backend, sealed Attempt number, subject identity, and
+Attempt digest. With _s_ scored trials of which _c_ passed:
 
-- **pass@1** — passed ÷ scored trials.
-- **pass@k** — at least one of the _k_ trials passed.
-- **pass^k** — all _k_ trials passed.
+- **pass@1** = c ÷ s.
+- **pass@k** = 1 − C(s−c, k) ÷ C(s, k), the unbiased estimator of "at least one
+  of _k_ independent trials passes" (Chen et al. 2021, _Evaluating Large
+  Language Models Trained on Code_, eq. 1).
+- **pass^k** = C(c, k) ÷ C(s, k), the unbiased estimator of "all _k_ trials
+  pass" (Yao et al. 2024, _τ-bench_).
+
+With s = k these are "any trial passed" and "every trial passed"; running n > k
+trials gives lower-variance estimates of the same quantities. The record also
+carries `byBackend`: the same summary restricted to each backend, with
+`experimental: true` for an unverified backend.
 
 An Attempt is _scored_ when it passed or failed for a reason other than runner
 infrastructure. Infrastructure failures, pending reviews, and trials that have
-not run are _unscored_: they never count as an Agent failure, and pass@k / pass^k
-stay `null` for a task while the missing trials could still change the answer.
-The suite summary averages determinate tasks and reports how many were left out.
+not run are _unscored_ and never count as an Agent failure. A retryable
+infrastructure failure is retried in the same trial, on the same backend, up to
+`--max-infra-attempts` total Attempts (default 2), so that trials reach a scored
+outcome. A task that still has fewer than _k_ scored trials gets `null` pass@k and
+pass^k rather than an estimate from fewer samples; the summary averages only
+estimable tasks, `indeterminateTasks` counts the rest, and the CLI prints a
+warning naming the shortfall. The estimators treat unscored trials as missing
+at random: if infrastructure failures correlate with the task outcome, raise the
+retry bound rather than read the estimate.
+
 The suite `status` is the strictest reading: any failed trial fails the suite.
+
+### One subject per run
+
+A run measures exactly one build. Every Attempt's sealed lock is checked as it
+settles; the first subject identity fixes the run's subject, and an Attempt
+whose lock records a different one (or none, when others have one) stops the
+run with an error instead of being averaged in. No suite report or Trial
+Aggregate is written for such a run, and the Trial Aggregate schema itself
+admits at most one subject identity. Compare builds with one run per subject.

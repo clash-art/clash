@@ -20,6 +20,11 @@ import type { ArtifactBenchmarkCase, BenchmarkCaseReport } from "./types";
  */
 export interface ExecutionBackend {
   readonly kind: BenchmarkBackendKind;
+  /**
+   * Not yet verified against the real service (see
+   * `EXPERIMENTAL_BACKEND_KINDS`). Constructing one requires an explicit opt-in.
+   */
+  readonly experimental?: true;
   /** Attempts this backend may run at once. */
   readonly maxConcurrency: number;
   /** Resolve and freeze the isolation claim once, before any Attempt is placed. */
@@ -80,10 +85,9 @@ class Semaphore {
 }
 
 /**
- * Plans trials across backends deterministically: unit `i` belongs to backend
- * `i mod n`, so the trials of one task land on different backends and a resumed
- * run places the same unit on the same backend. Each backend runs at most its
- * own concurrency; `parallelism` additionally caps the total.
+ * Runs planned units (see `planTrialUnits`) on the backend each was placed on.
+ * Each backend runs at most its own concurrency; `parallelism` additionally
+ * caps the total.
  */
 export async function scheduleTrialUnits(input: {
   units: readonly TrialUnit[];

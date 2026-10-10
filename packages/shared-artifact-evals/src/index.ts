@@ -128,6 +128,8 @@ export { writeSuiteGallery } from "./report";
 export { matchRequiredProductOperations } from "./product-operations";
 export {
   BENCHMARK_BACKEND_KINDS,
+  EXPERIMENTAL_BACKEND_KINDS,
+  isExperimentalBackend,
   type BenchmarkBackendKind,
   type BenchmarkObservedRuntime,
   type BenchmarkRuntimeClaim,
@@ -135,6 +137,8 @@ export {
 } from "./backend-types";
 export {
   createClaudeCloudBackend,
+  pruneCloudResultBranches,
+  RESULT_BRANCH_PREFIX,
   type ClaudeCloudBackendOptions,
 } from "./backend-claude-cloud";
 export {
@@ -155,16 +159,21 @@ export {
   type ResolvedBenchmarkSubject,
 } from "./subject";
 export {
+  assertSingleSubject,
+  backendTrialStats,
   createTrialAggregateRecord,
   parseTrialAggregateRecord,
   summarizeTrialStats,
   taskTrialStats,
+  unbiasedPassAtK,
+  unbiasedPassPowK,
   writeTrialAggregateRecord,
   type BenchmarkTrialAggregateRecord,
   type TaskTrialStats,
   type TrialAggregateSummary,
   type TrialAttemptInput,
   type TrialOutcome,
+  type TrialPlacement,
 } from "./trial-aggregate";
 export {
   createClaudeAgentAdapter,
@@ -172,6 +181,7 @@ export {
   createNativeLocalBackend,
   createPiAgentAdapter,
   executeBenchmarkAttempt,
+  planTrialUnits,
   reevaluateBenchmarkRun,
   runBenchmarkSuite,
   type ClaudeAgentAdapterOptions,

@@ -1,6 +1,10 @@
 import type { ExecutionBackend } from "./execution-backend";
 import type { ResolvedBenchmarkSubject } from "./subject";
-import type { TrialAggregateSummary } from "./trial-aggregate";
+import type {
+  BenchmarkTrialAggregateRecord,
+  TrialAggregateSummary,
+  TrialPlacement,
+} from "./trial-aggregate";
 
 export const ARTIFACT_KINDS = [
   "director-stage",
@@ -611,12 +615,15 @@ export type BenchmarkSuiteReport = {
   };
   /** Trials per runnable case. Present when the run requested repeated trials. */
   trials?: number;
+  /** The k of pass@k and pass^k. Present with `trials`. */
+  passK?: number;
   /** Content-addressed pass@1 / pass@k / pass^k record over the run's Attempts. */
   trialAggregate?: {
     path: string;
     sha256: string;
     digest: string;
     summary: TrialAggregateSummary;
+    byBackend: BenchmarkTrialAggregateRecord["byBackend"];
   };
   /** One report per Attempt: every trial of every case. */
   cases: BenchmarkCaseReport[];
@@ -670,7 +677,12 @@ export type RunBenchmarkSuiteInput = {
   resume?: boolean;
   /** Run one explicit retry for eligible failed cases in a resumed run. */
   force?: boolean;
-  /** Total tries allowed for infrastructure failures only. Defaults to 2. */
+  /**
+   * Total tries per trial for retryable infrastructure failures only, so that
+   * trials reach a scored outcome instead of silently shrinking the sample.
+   * Defaults to 2. A trial still unscored after the bound is reported as such
+   * and counted against reaching k scored trials.
+   */
   maxInfrastructureAttempts?: number;
   /**
    * Independent rollouts per runnable case. Setting it, even to 1, publishes a
@@ -678,10 +690,21 @@ export type RunBenchmarkSuiteInput = {
    */
   trials?: number;
   /**
-   * Where Attempts run. Unit `i` of the case-major, trial-minor plan goes to
-   * backend `i mod n`. Defaults to one sequential native-local backend.
+   * k for the unbiased pass@k and pass^k estimators, at most `trials` (n).
+   * Defaults to `trials`.
+   */
+  passK?: number;
+  /**
+   * Where Attempts run. Defaults to one sequential native-local backend.
    */
   backends?: ExecutionBackend[];
+  /**
+   * `per-task` (default): every trial of a task runs on the same backend, task
+   * `c` on backend `c mod n`, and metrics are reported per backend. `spread`
+   * (opt-in): unit `i` of the case-major, trial-minor plan runs on backend
+   * `i mod n`, so one task's trials mix backends.
+   */
+  placement?: TrialPlacement;
   /** Cap on Attempts running at once across all backends. */
   parallelism?: number;
   /** The Clash build under test, recorded in every Environment lock. */

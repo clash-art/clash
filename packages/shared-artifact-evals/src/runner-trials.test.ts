@@ -242,35 +242,182 @@ describe("repeated trials", () => {
     });
   });
 
-  it("spreads the trials of one task over the configured backends", async () => {
+  it("retries an infrastructure failure so the trial is still scored", async () => {
     const { suiteRoot, outputRoot, log } = await scratch();
-    const seen: Array<[string, number]> = [];
-    const tagged = (name: string): ExecutionBackend => {
-      const native = createNativeLocalBackend({ concurrency: 2 });
-      return {
-        ...native,
-        runAttempt: (dispatch) => {
-          seen.push([name, dispatch.trial]);
-          return native.runAttempt(dispatch);
-        },
-      };
+    const native = createNativeLocalBackend();
+    const failed = new Set<number>();
+    const flakyOnce: ExecutionBackend = {
+      ...native,
+      runAttempt: async (dispatch) => {
+        if (dispatch.trial === 2 && !failed.has(2)) {
+          failed.add(2);
+          throw new Error("worker pool unreachable");
+        }
+        return native.runAttempt(dispatch);
+      },
     };
-    await runBenchmarkSuite({
+    const report = await runBenchmarkSuite({
+      suite: suite(["task"]),
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent: scriptedAgent(log, [1, 2, 3]),
+      trials: 3,
+      backends: [flakyOnce],
+    });
+    expect(report.trialAggregate?.summary).toMatchObject({
+      tasks: 1,
+      indeterminateTasks: 0,
+      passAt1: 1,
+      passAtK: 1,
+      passPowK: 1,
+    });
+    const aggregate = parseTrialAggregateRecord(
+      JSON.parse(
+        await readFile(
+          join(outputRoot, "run", report.trialAggregate!.path),
+          "utf8",
+        ),
+      ),
+    );
+    // Trial 2 needed a second Attempt; the aggregate says so.
+    expect(aggregate.tasks[0]?.attempts.map(({ attempt }) => attempt)).toEqual([
+      1, 2, 1,
+    ]);
+  });
+
+  it("estimates pass@k from n > k trials", async () => {
+    const { suiteRoot, outputRoot, log } = await scratch();
+    const report = await runBenchmarkSuite({
+      suite: suite(["task"]),
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      // n = 4, c = 2, k = 2: 1 - C(2,2)/C(4,2) = 5/6; C(2,2)/C(4,2) = 1/6.
+      agent: scriptedAgent(log, [1, 3]),
+      trials: 4,
+      passK: 2,
+    });
+    expect(report.passK).toBe(2);
+    expect(report.trialAggregate?.summary.passAtK).toBeCloseTo(5 / 6, 12);
+    expect(report.trialAggregate?.summary.passPowK).toBeCloseTo(1 / 6, 12);
+    await expect(
+      runBenchmarkSuite({
+        suite: suite(["task"]),
+        suiteRoot,
+        outputRoot,
+        runId: "bad-k",
+        agent: scriptedAgent(log, [1]),
+        trials: 2,
+        passK: 3,
+      }),
+    ).rejects.toThrow(/passK/u);
+  });
+});
+
+describe("trial placement", () => {
+  const tagged = (name: string, seen: Array<[string, string, number]>) => {
+    const native = createNativeLocalBackend({ concurrency: 2 });
+    return {
+      ...native,
+      runAttempt: (dispatch) => {
+        seen.push([name, dispatch.benchmark.id, dispatch.trial]);
+        return native.runAttempt(dispatch);
+      },
+    } satisfies ExecutionBackend;
+  };
+  const placed = (
+    seen: Array<[string, string, number]>,
+    name: string,
+  ): string[] =>
+    seen
+      .filter(([n]) => n === name)
+      .map(([, id, trial]) => `${id}#${trial}`)
+      .sort();
+
+  it("keeps every trial of a task on one backend by default and reports each backend", async () => {
+    const { suiteRoot, outputRoot, log } = await scratch();
+    const seen: Array<[string, string, number]> = [];
+    const report = await runBenchmarkSuite({
+      suite: suite(["first", "second"]),
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent: scriptedAgent(log, [1, 2, 3]),
+      trials: 3,
+      backends: [tagged("a", seen), tagged("b", seen)],
+    });
+    expect(placed(seen, "a")).toEqual(["first#1", "first#2", "first#3"]);
+    expect(placed(seen, "b")).toEqual(["second#1", "second#2", "second#3"]);
+    expect(report.trialAggregate?.byBackend).toEqual([
+      expect.objectContaining({ backend: "native-local", experimental: false }),
+    ]);
+    const manifest = JSON.parse(
+      await readFile(join(outputRoot, "run", "run-manifest.json"), "utf8"),
+    );
+    expect(manifest.execution.placement).toBeUndefined();
+  });
+
+  it("spreads one task's trials over the backends only when asked to", async () => {
+    const { suiteRoot, outputRoot, log } = await scratch();
+    const seen: Array<[string, string, number]> = [];
+    const common = {
       suite: suite(["task"]),
       suiteRoot,
       outputRoot,
       runId: "run",
       agent: scriptedAgent(log, [1, 2, 3, 4]),
       trials: 4,
-      backends: [tagged("a"), tagged("b")],
+      backends: [tagged("a", seen), tagged("b", seen)],
+    };
+    await runBenchmarkSuite({ ...common, placement: "spread" });
+    expect(placed(seen, "a")).toEqual(["task#1", "task#3"]);
+    expect(placed(seen, "b")).toEqual(["task#2", "task#4"]);
+    // Resuming must not silently re-place units.
+    await expect(
+      runBenchmarkSuite({ ...common, resume: true }),
+    ).rejects.toThrow(/trial placement/u);
+  });
+});
+
+describe("one subject per run", () => {
+  it("rejects a run whose Attempts measured different builds", async () => {
+    const { suiteRoot, outputRoot, log } = await scratch();
+    const native = createNativeLocalBackend();
+    const subject = (runtime: string) => ({
+      kind: "release",
+      version: "1.0.0",
+      artifact: { kind: "release-tarball", sha256: runtime.repeat(64) },
+      runtimeSha256: runtime.repeat(64),
     });
-    const byBackend = (name: string) =>
-      seen
-        .filter(([n]) => n === name)
-        .map(([, trial]) => trial)
-        .sort();
-    expect(byBackend("a")).toEqual([1, 3]);
-    expect(byBackend("b")).toEqual([2, 4]);
+    // Stands in for a worker whose sealed lock names another build.
+    const drifting: ExecutionBackend = {
+      ...native,
+      runAttempt: async (dispatch) => {
+        const completion = await native.runAttempt(dispatch);
+        await writeFile(
+          join(dispatch.caseRoot, "environment-lock.json"),
+          JSON.stringify({
+            clash: { subject: subject(dispatch.trial === 1 ? "a" : "b") },
+          }),
+        );
+        return completion;
+      },
+    };
+    await expect(
+      runBenchmarkSuite({
+        suite: suite(["task"]),
+        suiteRoot,
+        outputRoot,
+        runId: "run",
+        agent: scriptedAgent(log, [1, 2]),
+        trials: 2,
+        backends: [drifting],
+      }),
+    ).rejects.toThrow(/exactly one subject/u);
+    await expect(
+      readFile(join(outputRoot, "run", "suite-report.json"), "utf8"),
+    ).rejects.toThrow();
   });
 });
 
@@ -349,7 +496,7 @@ describe("resume with trials", () => {
     ).toBe(before);
     await expect(
       runBenchmarkSuite({ ...common, trials: 3, resume: true }),
-    ).rejects.toThrow(/trial count or selected subject/u);
+    ).rejects.toThrow(/trial count, trial placement, or selected subject/u);
     await appendFile(log, "");
     await writeFile(join(suiteRoot, ".keep"), "");
   });
