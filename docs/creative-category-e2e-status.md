@@ -45,8 +45,8 @@ readback linking the exact captured or refined keyframes through video-model
 Generator revisions, ActionRuns, and OutputCommits to selected Timeline takes
 and the final render. This is an evaluator gap, not a claim that Clash lacks
 video generation. Its quality criteria require the videos themselves; the
-current image-only Codex judge cannot certify motion and must leave that review
-pending. Enabling the case requires that lineage readback and an independent
+image-only Codex judge cannot certify motion and must leave that review
+pending; the Gemini judge (`--quality-reviewer gemini`) can inspect video. Enabling the case requires that lineage readback and an independent
 review capable of inspecting the complete moving output. Schema/mounting checks
 or the deliberately blocked runner result are not creative E2E passes.
 

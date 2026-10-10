@@ -55,13 +55,35 @@ otherwise mutable.
 
 Content-effect cases have explicit semantic `qualityCriteria` separate from
 technical acceptance gates. Technical evidence by itself produces
-`pending-review`, never a pass. The optional Codex judge uses the explicit
-`--quality-provider openai` and `--quality-model`, runs read-only without Clash
-tools, and publishes its evaluator/spec identity and every score in an
-immutable Evaluation bound to exact artifact SHA-256 evidence and the
-`attemptDigest`. Its v1 path reviews image evidence only: if any criterion
-requires audio or another unsupported kind, the entire review stays pending
-instead of asking the model to infer what it cannot inspect.
+`pending-review`, never a pass. An optional judge is selected with
+`--quality-reviewer codex|gemini`, an explicit `--quality-provider`, and
+`--quality-model`. Either judge runs without Clash tools and publishes its
+evaluator/spec identity and every score in an immutable Evaluation bound to
+exact artifact SHA-256 evidence and the `attemptDigest`. A judge reviews only
+the evidence kinds it can inspect; if any criterion requires another kind, the
+entire review stays pending instead of asking the model to infer what it cannot
+inspect.
+
+- `codex` (`--quality-provider openai`) runs the Codex CLI read-only and
+  inspects image evidence only.
+- `gemini` (`--quality-provider google`) calls the Gemini API
+  `generateContent` endpoint with no tools and inspects image, video, and audio
+  evidence. It reads the key from `GEMINI_API_KEY` (or the variable named by
+  `--quality-api-key-env`); the key is sent only as a request header and is
+  never written to the run. Media over the inline request limit is uploaded
+  through the Gemini Files API and deleted after the review.
+
+```bash
+GEMINI_API_KEY=... pnpm benchmark:artifacts -- \
+  --suite benchmarks/creative-artifacts/v2/suite.json \
+  --agent codex \
+  --model gpt-5.6-sol \
+  --quality-reviewer gemini \
+  --quality-provider google \
+  --quality-model "$GEMINI_JUDGE_MODEL" \
+  --case remotion-rhythm-mascot-mv-v2 \
+  --out artifacts/headless-benchmarks
+```
 
 Every case directory contains the durable outcome, agent workspace, stdout and
 stderr logs, the submitted artifact manifest, an external scorecard, and an
@@ -170,8 +192,9 @@ mounts add Director, Timeline, and finishing to the product-ad pack.
 The new contract is currently in `blocked-contract`: the runner does not yet
 independently read back that capture/keyframe-to-video-to-edit lineage. This
 does not mean the product lacks video generation. The semantic criteria also
-include full video evidence, so the current image-only judge leaves review
-pending rather than inferring motion quality from stills. Do not mark this
+include full video evidence, so the image-only Codex judge leaves review
+pending rather than inferring motion quality from stills; the Gemini judge can
+inspect that video once the contract is unblocked. Do not mark this
 contract ready or reuse the old three-PNG score as its result.
 
 | Category           | Case ID                                          | Editorial challenge                                                                                             |
