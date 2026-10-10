@@ -33,9 +33,9 @@ jobs:
         run: pnpm --dir packages/web-ui exec vitest run src/components/CloudConnection.test.tsx src/components/ChatbotCopilot.desktop.test.tsx src/components/visualLanguage.test.tsx src/features/assets/AssetWorkspace.test.tsx src/features/assets/relations.test.ts
       - name: Verify current Timeline render and cloud admission contracts
         run: pnpm --dir apps/local-api exec vitest run src/local-timeline-references.test.ts src/timeline-durable-workflow.test.ts src/local-timeline-generator-product.test.ts src/project-cloud-admission-route.test.ts
-      - name: Verify bundled plugin payloads are declared build dependencies
-        run: pnpm --dir apps/local-api exec vitest run src/bundled-plugins-set.test.ts
       - name: Build benchmark host runtime
         run: pnpm build:package clash
+      - name: Verify bundled plugin payloads are declared build dependencies
+        run: pnpm --dir apps/local-api exec vitest run src/bundled-plugins-set.test.ts
       - name: Verify benchmark catalog, runner, and evaluator contracts
         run: pnpm --dir packages/shared-artifact-evals exec vitest run
