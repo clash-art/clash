@@ -5254,6 +5254,8 @@ export type BenchmarkAttemptExecutionInput = {
   agent: BenchmarkAgent;
   qualityReviewer?: BenchmarkQualityReviewer;
   suiteRoot: string;
+  /** The run directory that contains `caseRoot`. */
+  runRoot: string;
   caseRoot: string;
   attempt: number;
   /** Trial index (1-based) this Attempt belongs to. */
@@ -5738,6 +5740,7 @@ async function runBenchmarkSuiteInProcessScope(
           ? { qualityReviewer: input.qualityReviewer }
           : {}),
         suiteRoot,
+        runRoot,
         caseRoot,
         attempt: nextAttempt,
         trial,

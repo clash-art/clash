@@ -127,9 +127,51 @@ export {
 export { writeSuiteGallery } from "./report";
 export { matchRequiredProductOperations } from "./product-operations";
 export {
+  BENCHMARK_BACKEND_KINDS,
+  type BenchmarkBackendKind,
+  type BenchmarkObservedRuntime,
+  type BenchmarkRuntimeClaim,
+  type BenchmarkSubjectRecord,
+} from "./backend-types";
+export {
+  createClaudeCloudBackend,
+  type ClaudeCloudBackendOptions,
+} from "./backend-claude-cloud";
+export {
+  createContainerBackend,
+  type ContainerBackendOptions,
+} from "./backend-container";
+export type {
+  BenchmarkAttemptCompletion,
+  BenchmarkAttemptDispatch,
+  ExecutionBackend,
+} from "./execution-backend";
+export {
+  DEFAULT_SUBJECT_BUILD,
+  resolveBenchmarkSubject,
+  subjectIdentity,
+  type BenchmarkSubjectBuild,
+  type BenchmarkSubjectSpec,
+  type ResolvedBenchmarkSubject,
+} from "./subject";
+export {
+  createTrialAggregateRecord,
+  parseTrialAggregateRecord,
+  summarizeTrialStats,
+  taskTrialStats,
+  writeTrialAggregateRecord,
+  type BenchmarkTrialAggregateRecord,
+  type TaskTrialStats,
+  type TrialAggregateSummary,
+  type TrialAttemptInput,
+  type TrialOutcome,
+} from "./trial-aggregate";
+export {
   createClaudeAgentAdapter,
   createCodexAgentAdapter,
+  createNativeLocalBackend,
   createPiAgentAdapter,
+  executeBenchmarkAttempt,
   reevaluateBenchmarkRun,
   runBenchmarkSuite,
   type ClaudeAgentAdapterOptions,
