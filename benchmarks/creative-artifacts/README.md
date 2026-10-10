@@ -66,21 +66,36 @@ inspect.
 
 - `codex` (`--quality-provider openai`) runs the Codex CLI read-only and
   inspects image evidence only.
-- `gemini` (`--quality-provider google`) calls the Gemini API
+- `gemini` (`--quality-provider google`) calls the Gemini-native
   `generateContent` endpoint with no tools and inspects image, video, and audio
-  evidence. It reads the key from `GEMINI_API_KEY` (or the variable named by
-  `--quality-api-key-env`); the key is sent only as a request header and is
-  never written to the run. Media over the inline request limit is uploaded
-  through the Gemini Files API and deleted after the review.
+  evidence. `--quality-base-url` selects the API origin (Google by default, or
+  a Gemini-native relay); it must be an https origin without credentials. The
+  key is read from `GEMINI_API_KEY` (or the variable named by
+  `--quality-api-key-env`), sent only as the `x-goog-api-key` header, and never
+  written to the run. The immutable Evaluation's evaluator identity records the
+  model, the endpoint host, and the key variable _name_. Media over the inline
+  request limit is uploaded through the Gemini Files API and deleted after the
+  review; a relay without that API fails the review closed.
+
+The judge configuration belongs to the Evaluation, not the Agent Environment
+lock: the lock stays byte-identical across judges so one immutable Attempt can
+be re-judged by another evaluator.
+
+Known limit, measured 2026-10-10 with `gemini-3.8-flash`: the judge sees the
+moving picture and hears the audio, but it did not separate a render whose
+visuals were shifted 250 ms off the beat from the on-beat render, and repeated
+reviews of identical evidence moved a criterion by about ten points. Treat a
+sub-second synchrony score as coarse, and do not compare single reviews.
 
 ```bash
 GEMINI_API_KEY=... pnpm benchmark:artifacts -- \
   --suite benchmarks/creative-artifacts/v2/suite.json \
-  --agent codex \
-  --model gpt-5.6-sol \
+  --agent claude \
+  --model "$AGENT_MODEL" \
   --quality-reviewer gemini \
   --quality-provider google \
-  --quality-model "$GEMINI_JUDGE_MODEL" \
+  --quality-model gemini-3.8-flash \
+  --quality-base-url https://cf.api.fan \
   --case remotion-rhythm-mascot-mv-v2 \
   --out artifacts/headless-benchmarks
 ```

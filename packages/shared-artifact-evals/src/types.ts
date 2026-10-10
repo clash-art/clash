@@ -373,6 +373,8 @@ export type QualityReviewerProvenance = {
   provider: string;
   model: string;
   adapterVersion: string;
+  endpointHost?: string;
+  apiKeyEnv?: string;
 };
 
 export type QualityReviewResult = {

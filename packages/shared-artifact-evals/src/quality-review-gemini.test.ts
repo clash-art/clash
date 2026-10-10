@@ -13,6 +13,7 @@ import {
 } from "./quality-review";
 import { codexQualityJudgeSupportsRequest } from "./quality-review-codex";
 import {
+  geminiBaseUrl,
   geminiQualityJudgeSupportsRequest,
   runGeminiQualityJudge,
 } from "./quality-review-gemini";
@@ -546,5 +547,44 @@ describe("Gemini content-effect judge", () => {
         .sort(),
     ).toEqual(["/v1beta/files/f1", "/v1beta/files/f2"]);
     expect(result?.aggregate.status).toBe("pass");
+  });
+
+  it("records the endpoint host and key variable name, never the key or a path", async () => {
+    const { workspace, caseRoot, request, evidence } = await fixture(MEDIA);
+    respond = () => judgeReply(judgeJson([90, 70]));
+
+    const result = await runGeminiQualityJudge({
+      reviewer: reviewer(),
+      request,
+      evidence,
+      workspace,
+      caseRoot,
+    });
+
+    expect(result?.reviewer).toMatchObject({
+      endpointHost: new URL(baseUrl).host,
+      apiKeyEnv: "CLASH_TEST_GEMINI_KEY",
+    });
+    expect(JSON.stringify(result)).not.toContain(API_KEY);
+    for (const file of ["request-summary.json", "response.json"]) {
+      expect(
+        await readFile(join(caseRoot, "quality-review-private", file), "utf8"),
+      ).not.toContain(API_KEY);
+    }
+  });
+
+  it("accepts only an https origin without credentials for the key-bearing base URL", () => {
+    expect(geminiBaseUrl("https://relay.example/")).toBe(
+      "https://relay.example",
+    );
+    expect(geminiBaseUrl("http://127.0.0.1:9")).toBe("http://127.0.0.1:9");
+    for (const bad of [
+      "http://relay.example",
+      "https://user:pw@relay.example",
+      "https://relay.example/?key=1",
+      "not a url",
+    ]) {
+      expect(() => geminiBaseUrl(bad)).toThrow();
+    }
   });
 });

@@ -7,6 +7,7 @@ import {
   createPiAgentAdapter,
 } from "./runner";
 import { runBenchmarkSuite } from "./runner";
+import { geminiBaseUrl } from "./quality-review-gemini";
 import { loadBenchmarkSuite } from "./suite";
 import type { BenchmarkAgent } from "./types";
 
@@ -26,6 +27,7 @@ type CliOptions = {
   qualityModel?: string;
   qualityReviewerCommand?: string;
   qualityApiKeyEnv?: string;
+  qualityBaseUrl?: string;
   clashPluginRoot?: string;
   clashProfile?: "dev" | "prod";
   resume?: boolean;
@@ -49,6 +51,7 @@ Options:
   --quality-model <model>     Explicit quality reviewer model
   --quality-reviewer-command <path>  Codex reviewer executable (default: codex)
   --quality-api-key-env <name>  Gemini API key environment variable (default: GEMINI_API_KEY)
+  --quality-base-url <url>    Gemini-native API origin, e.g. a relay (default: Google)
   --clash-plugin-root <path>  Clash plugin root for clash-host cases (default: plugins/clash)
   --clash-profile dev|prod    Isolated Clash runtime profile (default: dev)
   --run-id <id>               Stable run id (default: run-<timestamp>)
@@ -107,6 +110,8 @@ function parseArgs(args: string[]): CliOptions {
       options.qualityReviewerCommand = requiredValue(args, index++, flag);
     else if (flag === "--quality-api-key-env")
       options.qualityApiKeyEnv = requiredValue(args, index++, flag);
+    else if (flag === "--quality-base-url")
+      options.qualityBaseUrl = requiredValue(args, index++, flag);
     else if (flag === "--clash-plugin-root")
       options.clashPluginRoot = requiredValue(args, index++, flag);
     else if (flag === "--clash-profile") {
@@ -183,11 +188,12 @@ async function main(): Promise<void> {
     options.qualityProvider ||
     options.qualityModel ||
     options.qualityReviewerCommand ||
-    options.qualityApiKeyEnv,
+    options.qualityApiKeyEnv ||
+    options.qualityBaseUrl,
   );
   if (hasQualityOption && !options.qualityReviewer) {
     throw new Error(
-      "--quality-provider, --quality-model, --quality-reviewer-command, and --quality-api-key-env require --quality-reviewer",
+      "--quality-provider, --quality-model, --quality-reviewer-command, --quality-api-key-env, and --quality-base-url require --quality-reviewer",
     );
   }
   if (options.qualityReviewer) {
@@ -207,9 +213,12 @@ async function main(): Promise<void> {
     if (gemini && options.qualityReviewerCommand) {
       throw new Error("--quality-reviewer-command applies only to codex");
     }
-    if (!gemini && options.qualityApiKeyEnv) {
-      throw new Error("--quality-api-key-env applies only to gemini");
+    if (!gemini && (options.qualityApiKeyEnv || options.qualityBaseUrl)) {
+      throw new Error(
+        "--quality-api-key-env and --quality-base-url apply only to gemini",
+      );
     }
+    if (options.qualityBaseUrl) geminiBaseUrl(options.qualityBaseUrl);
     if (
       !suite.cases.some(
         (benchmarkCase) =>
@@ -302,6 +311,9 @@ async function main(): Promise<void> {
             model: options.qualityModel!,
             ...(options.qualityApiKeyEnv
               ? { apiKeyEnv: options.qualityApiKeyEnv }
+              : {}),
+            ...(options.qualityBaseUrl
+              ? { baseUrl: options.qualityBaseUrl }
               : {}),
           },
         }

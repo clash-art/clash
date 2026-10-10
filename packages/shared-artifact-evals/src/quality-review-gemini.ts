@@ -59,6 +59,24 @@ const MIME_BY_KIND_AND_EXTENSION: Record<string, Record<string, string>> = {
   },
 };
 
+/** Only an https origin (or loopback http for tests) is accepted: the key travels in a header. */
+export function geminiBaseUrl(value: string | undefined): string {
+  const url = new URL(value ?? DEFAULT_BASE_URL);
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (
+    (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error(
+      "Gemini base URL must be an https origin without credentials or query",
+    );
+  }
+  return url.href.replace(/\/+$/u, "");
+}
+
 export function geminiQualityJudgeSupportsRequest(
   request: QualityReviewRequest,
 ): boolean {
@@ -218,6 +236,8 @@ export function parseGeminiQualityJudgeResponse(input: {
       provider: input.reviewer.provider,
       model: input.reviewer.model,
       adapterVersion: `gemini-api ${GEMINI_API_VERSION} ${body.modelVersion ?? "unreported"}`,
+      endpointHost: new URL(input.reviewer.baseUrl ?? DEFAULT_BASE_URL).host,
+      apiKeyEnv: input.reviewer.apiKeyEnv ?? DEFAULT_API_KEY_ENV,
     },
     response: QualityJudgeResponseSchema.parse(parsed),
     prompt: input.prompt,
@@ -336,10 +356,7 @@ export async function runGeminiQualityJudge(input: {
     attachments.push({ file, mimeType });
   }
 
-  const baseUrl = (input.reviewer.baseUrl ?? DEFAULT_BASE_URL).replace(
-    /\/+$/u,
-    "",
-  );
+  const baseUrl = geminiBaseUrl(input.reviewer.baseUrl);
   const headers = { "x-goog-api-key": apiKey };
   const signal = AbortSignal.timeout(input.reviewer.timeoutMs ?? 5 * 60_000);
   const privateRoot = join(input.caseRoot, "quality-review-private");
