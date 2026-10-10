@@ -108,7 +108,9 @@ Credentials never enter a unit, a prompt, a mount, an argv, or any file under th
 run directory. A unit names variables (`envNames`); the container backend passes
 them with `--env NAME` so the engine reads the value from its own environment,
 and the cloud session reads them from its environment's secrets. A worker that
-cannot find a named variable fails the Attempt and names the variable.
+cannot find a named variable fails the Attempt and names the variable. Agent arguments
+(`--agent-arg`) are part of the unit and, for the cloud backend, of the prompt:
+never put a credential in one.
 
 ## Repeated trials
 

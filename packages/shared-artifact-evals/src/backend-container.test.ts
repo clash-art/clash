@@ -162,6 +162,26 @@ describe("container backend", () => {
     const caseRoot = join(outputRoot, "run", "task");
     expect(volumes).toContain(`${caseRoot}:${caseRoot}`);
     expect(runCall.args).toContain("--rm");
+    // The default network is left to the engine rather than guessed at.
+    const defaultCalls: EngineCall[] = [];
+    await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot: join(outputRoot, "default-network"),
+      runId: "run",
+      agent,
+      backends: [
+        createContainerBackend({
+          image: "bench:test",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          run: fakeEngine(defaultCalls),
+        }),
+      ],
+    });
+    expect(
+      defaultCalls.find(({ args }) => args[0] === "run")!.args,
+    ).not.toContain("--network");
 
     await expect(backend.runtimeClaim()).resolves.toEqual({
       kind: "container",
