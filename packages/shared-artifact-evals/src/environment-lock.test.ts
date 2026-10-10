@@ -645,6 +645,11 @@ describe("benchmark Environment execution lock", () => {
         provider: "openai" as const,
         model: "gpt-5.7-sol",
       },
+      {
+        adapter: "gemini" as const,
+        provider: "google" as const,
+        model: "gemini-judge",
+      },
     ];
     const captures: Array<{ digest: string; bytes: string }> = [];
     for (const [index, qualityReviewer] of selections.entries()) {
@@ -673,6 +678,8 @@ describe("benchmark Environment execution lock", () => {
     expect(captures[2]!.digest).toBe(captures[0]!.digest);
     expect(captures[1]!.bytes).toBe(captures[0]!.bytes);
     expect(captures[2]!.bytes).toBe(captures[0]!.bytes);
+    expect(captures[3]!.digest).toBe(captures[0]!.digest);
+    expect(captures[3]!.bytes).toBe(captures[0]!.bytes);
   });
 
   it("publishes only rollout phases and participants in the Agent Environment lock", async () => {
@@ -1012,6 +1019,65 @@ describe("benchmark Environment execution lock", () => {
         executionIntent: "execute",
       }),
     ).rejects.toThrow(/reviewer provider.*openai/iu);
+  });
+
+  it("rejects a Gemini quality reviewer that is not bound to Google", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+
+    await expect(
+      captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent: {
+          adapter: "codex",
+          command: fixture.executable,
+          model: "gpt-5.6-sol",
+          clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+        },
+        qualityReviewer: {
+          adapter: "gemini",
+          provider: "openai" as "google",
+          model: "gemini-judge",
+        },
+        executionIntent: "execute",
+      }),
+    ).rejects.toThrow(/reviewer provider.*google/iu);
+  });
+
+  it("binds no local executable for the HTTP Gemini quality reviewer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+
+    const receipt = await captureBenchmarkExecutionLock({
+      caseRoot,
+      suiteRoot: root,
+      benchmark: benchmark(),
+      agent: {
+        adapter: "codex",
+        command: fixture.executable,
+        model: "gpt-5.6-sol",
+        clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+      },
+      qualityReviewer: {
+        adapter: "gemini",
+        provider: "google",
+        model: "gemini-judge",
+      },
+      executionIntent: "execute",
+    });
+
+    expect(receipt.sources).not.toHaveProperty("qualityReviewerExecutable");
+    await expect(
+      verifyBenchmarkExecutionLock(receipt),
+    ).resolves.toBeUndefined();
   });
 
   it("rejects a mutated privately bound quality reviewer executable before review", async () => {

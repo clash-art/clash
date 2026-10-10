@@ -97,9 +97,9 @@ import {
 } from "./mcp-evidence";
 import { createOutcomeResult, renderOutcomeMarkdown } from "./outcome";
 import {
-  codexQualityJudgeSupportsRequest,
-  runCodexQualityJudge,
-} from "./quality-review-codex";
+  qualityJudgeSupportsRequest,
+  runQualityJudge,
+} from "./quality-review-judge";
 import {
   createQualityReviewRequest,
   evaluateQualityReview,
@@ -3612,11 +3612,13 @@ async function evaluateCaseQualityReview(input: {
     await writeJson(join(input.caseRoot, "quality-review.json"), review);
     return review;
   }
-  if (!codexQualityJudgeSupportsRequest(request)) {
+  if (!qualityJudgeSupportsRequest(input.reviewer, request)) {
     review = {
       ...review,
       detail:
-        "The configured Codex reviewer supports exact image evidence only; at least one quality criterion requires unsupported evidence, so the whole review remains pending.",
+        input.reviewer.adapter === "codex"
+          ? "The configured Codex reviewer supports exact image evidence only; at least one quality criterion requires unsupported evidence, so the whole review remains pending."
+          : "The configured reviewer cannot inspect at least one quality criterion's evidence kind, so the whole review remains pending.",
     };
     await writeJson(join(input.caseRoot, "quality-review.json"), review);
     return review;
@@ -3630,10 +3632,11 @@ async function evaluateCaseQualityReview(input: {
     try {
       const lockedReviewerExecutable =
         input.executionLockReceipt?.sources.qualityReviewerExecutable?.path;
-      result = await runCodexQualityJudge({
-        reviewer: lockedReviewerExecutable
-          ? { ...input.reviewer, command: lockedReviewerExecutable }
-          : input.reviewer,
+      result = await runQualityJudge({
+        reviewer:
+          lockedReviewerExecutable && input.reviewer.adapter === "codex"
+            ? { ...input.reviewer, command: lockedReviewerExecutable }
+            : input.reviewer,
         request,
         evidence: input.evaluation.artifacts,
         workspace: input.workspace,

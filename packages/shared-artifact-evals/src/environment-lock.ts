@@ -921,10 +921,11 @@ export async function captureBenchmarkExecutionLock(input: {
       "Native Agent arguments must not override the Environment model or provider",
     );
   }
-  if (
-    input.qualityReviewer &&
-    hasNativeSelectionOverride(input.qualityReviewer)
-  ) {
+  const codexReviewer =
+    input.qualityReviewer?.adapter === "codex"
+      ? input.qualityReviewer
+      : undefined;
+  if (codexReviewer && hasNativeSelectionOverride(codexReviewer)) {
     throw new Error(
       "Native quality-reviewer arguments must not override the Environment model or provider",
     );
@@ -940,9 +941,17 @@ export async function captureBenchmarkExecutionLock(input: {
   ) {
     throw new Error("A ready Environment requires an explicit Pi provider");
   }
-  if (input.qualityReviewer && input.qualityReviewer.provider !== "openai") {
+  if (codexReviewer && codexReviewer.provider !== "openai") {
     throw new Error(
       "The Codex quality reviewer provider must be bound to openai",
+    );
+  }
+  if (
+    input.qualityReviewer?.adapter === "gemini" &&
+    input.qualityReviewer.provider !== "google"
+  ) {
+    throw new Error(
+      "The Gemini quality reviewer provider must be bound to google",
     );
   }
   assertAdapterProviderBinding(input.agent, model);
@@ -957,11 +966,8 @@ export async function captureBenchmarkExecutionLock(input: {
   const [executable, reviewerExecutable, skills, clash, runnerManifest, task] =
     await Promise.all([
       lockExecutable(input.agent, input.executionIntent === "execute"),
-      input.qualityReviewer
-        ? lockExecutable(
-            input.qualityReviewer,
-            input.executionIntent === "execute",
-          )
+      codexReviewer
+        ? lockExecutable(codexReviewer, input.executionIntent === "execute")
         : undefined,
       lockSkills(input),
       lockClashPlugin(input.agent, input.executionIntent === "execute"),

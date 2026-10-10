@@ -21,10 +21,11 @@ type CliOptions = {
   agentSkills: string[];
   model?: string;
   provider?: string;
-  qualityReviewer?: "codex";
+  qualityReviewer?: "codex" | "gemini";
   qualityProvider?: string;
   qualityModel?: string;
   qualityReviewerCommand?: string;
+  qualityApiKeyEnv?: string;
   clashPluginRoot?: string;
   clashProfile?: "dev" | "prod";
   resume?: boolean;
@@ -43,10 +44,11 @@ Options:
   --case <case-id>            Run one benchmark case
   --model <model>             Agent model override
   --provider <provider>       Explicit Pi provider (required for ready Environments)
-  --quality-reviewer codex    Run an independent read-only content-effect judge
-  --quality-provider openai   Explicit quality reviewer provider
+  --quality-reviewer codex|gemini  Run an independent read-only content-effect judge
+  --quality-provider openai|google  Explicit quality reviewer provider (codex: openai, gemini: google)
   --quality-model <model>     Explicit quality reviewer model
   --quality-reviewer-command <path>  Codex reviewer executable (default: codex)
+  --quality-api-key-env <name>  Gemini API key environment variable (default: GEMINI_API_KEY)
   --clash-plugin-root <path>  Clash plugin root for clash-host cases (default: plugins/clash)
   --clash-profile dev|prod    Isolated Clash runtime profile (default: dev)
   --run-id <id>               Stable run id (default: run-<timestamp>)
@@ -93,8 +95,8 @@ function parseArgs(args: string[]): CliOptions {
       options.provider = requiredValue(args, index++, flag);
     else if (flag === "--quality-reviewer") {
       const value = requiredValue(args, index++, flag);
-      if (value !== "codex") {
-        throw new Error("--quality-reviewer must be codex");
+      if (value !== "codex" && value !== "gemini") {
+        throw new Error("--quality-reviewer must be codex or gemini");
       }
       options.qualityReviewer = value;
     } else if (flag === "--quality-provider")
@@ -103,6 +105,8 @@ function parseArgs(args: string[]): CliOptions {
       options.qualityModel = requiredValue(args, index++, flag);
     else if (flag === "--quality-reviewer-command")
       options.qualityReviewerCommand = requiredValue(args, index++, flag);
+    else if (flag === "--quality-api-key-env")
+      options.qualityApiKeyEnv = requiredValue(args, index++, flag);
     else if (flag === "--clash-plugin-root")
       options.clashPluginRoot = requiredValue(args, index++, flag);
     else if (flag === "--clash-profile") {
@@ -178,23 +182,33 @@ async function main(): Promise<void> {
   const hasQualityOption = Boolean(
     options.qualityProvider ||
     options.qualityModel ||
-    options.qualityReviewerCommand,
+    options.qualityReviewerCommand ||
+    options.qualityApiKeyEnv,
   );
   if (hasQualityOption && !options.qualityReviewer) {
     throw new Error(
-      "--quality-provider, --quality-model, and --quality-reviewer-command require --quality-reviewer codex",
+      "--quality-provider, --quality-model, --quality-reviewer-command, and --quality-api-key-env require --quality-reviewer",
     );
   }
   if (options.qualityReviewer) {
-    if (options.qualityProvider !== "openai") {
+    const gemini = options.qualityReviewer === "gemini";
+    const reviewerName = gemini ? "Gemini" : "Codex";
+    const expectedProvider = gemini ? "google" : "openai";
+    if (options.qualityProvider !== expectedProvider) {
       throw new Error(
-        "--quality-provider openai is required for the Codex quality reviewer",
+        `--quality-provider ${expectedProvider} is required for the ${reviewerName} quality reviewer`,
       );
     }
     if (!options.qualityModel) {
       throw new Error(
-        "--quality-model is required for the Codex quality reviewer",
+        `--quality-model is required for the ${reviewerName} quality reviewer`,
       );
+    }
+    if (gemini && options.qualityReviewerCommand) {
+      throw new Error("--quality-reviewer-command applies only to codex");
+    }
+    if (!gemini && options.qualityApiKeyEnv) {
+      throw new Error("--quality-api-key-env applies only to gemini");
     }
     if (
       !suite.cases.some(
@@ -280,18 +294,29 @@ async function main(): Promise<void> {
     outputRoot: resolve(invocationRoot, options.output),
     runId: options.runId ?? `run-${Date.now()}`,
     agent,
-    ...(options.qualityReviewer
+    ...(options.qualityReviewer === "gemini"
       ? {
           qualityReviewer: {
-            adapter: "codex" as const,
-            provider: "openai" as const,
+            adapter: "gemini" as const,
+            provider: "google" as const,
             model: options.qualityModel!,
-            ...(options.qualityReviewerCommand
-              ? { command: options.qualityReviewerCommand }
+            ...(options.qualityApiKeyEnv
+              ? { apiKeyEnv: options.qualityApiKeyEnv }
               : {}),
           },
         }
-      : {}),
+      : options.qualityReviewer
+        ? {
+            qualityReviewer: {
+              adapter: "codex" as const,
+              provider: "openai" as const,
+              model: options.qualityModel!,
+              ...(options.qualityReviewerCommand
+                ? { command: options.qualityReviewerCommand }
+                : {}),
+            },
+          }
+        : {}),
     ...(options.resume ? { resume: true } : {}),
     ...(options.force ? { force: true } : {}),
     ...(options.maxInfrastructureAttempts

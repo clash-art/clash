@@ -159,7 +159,7 @@ export const QualityJudgeResponseSchema = z
 
 export const QualityReviewerProvenanceSchema = z
   .object({
-    kind: z.enum(["codex", "human"]),
+    kind: z.enum(["codex", "gemini", "human"]),
     provider: PublicReviewerIdentitySchema,
     model: PublicReviewerIdentitySchema,
     adapterVersion: PublicReviewerIdentitySchema,
