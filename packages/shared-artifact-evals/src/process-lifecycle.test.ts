@@ -18,6 +18,7 @@ function processExists(pid: number): boolean {
 
 async function waitFor<T>(
   read: () => Promise<T | undefined>,
+  describeState: () => string,
   timeoutMs = 10_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
@@ -26,7 +27,9 @@ async function waitFor<T>(
     if (value !== undefined) return value;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  throw new Error("Timed out waiting for test process state");
+  throw new Error(
+    `Timed out waiting for test process state\n${describeState()}`,
+  );
 }
 
 async function waitForClose(child: ChildProcess): Promise<{
@@ -169,6 +172,15 @@ describe.each([
       },
     );
     cleanupPids.add(runner.pid!);
+    let runnerOutput = "";
+    runner.stdout?.setEncoding("utf8");
+    runner.stderr?.setEncoding("utf8");
+    runner.stdout?.on("data", (chunk: string) => {
+      runnerOutput += chunk;
+    });
+    runner.stderr?.on("data", (chunk: string) => {
+      runnerOutput += chunk;
+    });
     const pids = await waitFor(async () => {
       try {
         return JSON.parse(await readFile(pidPath, "utf8")) as {
@@ -178,7 +190,10 @@ describe.each([
       } catch {
         return undefined;
       }
-    });
+    }, () => `runner exit=${runner.exitCode} signal=${runner.signalCode}\n${runnerOutput.slice(-4_000)}`,
+    // Cold tsx start of the CLI under a fully parallel suite is the slow part;
+    // the assertions below concern behaviour after the signal, not start time.
+    20_000);
     cleanupPids.add(pids.agentPid);
     cleanupPids.add(pids.grandchildPid);
 
@@ -213,5 +228,5 @@ describe.each([
         "utf8",
       ),
     ).resolves.toContain('"signal": "SIGTERM"');
-  }, 30_000);
+  }, 45_000);
 });
