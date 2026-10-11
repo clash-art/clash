@@ -2,7 +2,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -20,7 +19,7 @@ import {
   resolveClashBrowserCacheDir,
   resolveClashBrowserCacheRoot,
   resolveClashBrowserExecutable,
-  resolveClashBrowserGl,
+  resolveClashBrowserGlOverride,
   type ClashBrowserDownloadRequest,
 } from "./render-browser.js";
 
@@ -110,62 +109,36 @@ describe("warm-up switch", () => {
   });
 });
 
-describe("resolveClashBrowserGl", () => {
-  const withGpu = () => true;
-  const withoutGpu = () => false;
+describe("resolveClashBrowserGlOverride", () => {
+  // Stand-in for Remotion's list: the helper only compares against what it is handed.
+  const backends = ["first-backend", "second-backend"] as const;
 
-  it("renders in software only on Linux without a GPU", () => {
-    const env = {};
-    expect(
-      resolveClashBrowserGl({ env, platform: "linux", hasGpu: withoutGpu }),
-    ).toBe("swangle");
-    expect(
-      resolveClashBrowserGl({ env, platform: "linux", hasGpu: withGpu }),
-    ).toBe("angle");
-    // Off Linux the GPU is not probed: /dev/dri says nothing about macOS or Windows.
-    const hasGpu = vi.fn(withoutGpu);
-    expect(resolveClashBrowserGl({ env, platform: "darwin", hasGpu })).toBe(
-      "angle",
-    );
-    expect(resolveClashBrowserGl({ env, platform: "win32", hasGpu })).toBe(
-      "angle",
-    );
-    expect(hasGpu).not.toHaveBeenCalled();
+  it("is absent, and does not load Remotion, while CLASH_BROWSER_GL is unset or blank", async () => {
+    const load = vi.fn(() => backends);
+    await expect(resolveClashBrowserGlOverride(load, {})).resolves.toBeUndefined();
+    await expect(
+      resolveClashBrowserGlOverride(load, { CLASH_BROWSER_GL: "  " }),
+    ).resolves.toBeUndefined();
+    expect(load).not.toHaveBeenCalled();
   });
 
-  it("passes CLASH_BROWSER_GL through on every platform", () => {
-    const hasGpu = vi.fn(withoutGpu);
-    for (const platform of ["linux", "darwin"] as const) {
-      expect(
-        resolveClashBrowserGl({
-          env: { CLASH_BROWSER_GL: " angle-egl " },
-          platform,
-          hasGpu,
-        }),
-      ).toBe("angle-egl");
-    }
-    expect(hasGpu).not.toHaveBeenCalled();
-    expect(
-      resolveClashBrowserGl({
-        env: { CLASH_BROWSER_GL: "  " },
-        platform: "linux",
-        hasGpu,
+  it("returns a backend Remotion accepts", async () => {
+    await expect(
+      resolveClashBrowserGlOverride(async () => backends, {
+        CLASH_BROWSER_GL: " second-backend ",
       }),
-    ).toBe("swangle");
+    ).resolves.toBe("second-backend");
   });
 
-  it("agrees with this machine's DRM render nodes by default", () => {
-    let renderNode = false;
-    try {
-      renderNode = readdirSync("/dev/dri").some((name) =>
-        name.startsWith("renderD"),
-      );
-    } catch {
-      // No /dev/dri: no GPU.
-    }
-    expect(resolveClashBrowserGl({ env: {}, platform: "linux" })).toBe(
-      renderNode ? "angle" : "swangle",
-    );
+  it("rejects any other value, naming the variable and the accepted values", async () => {
+    const failure = await resolveClashBrowserGlOverride(() => backends, {
+      CLASH_BROWSER_GL: "Second-Backend",
+    }).catch((error: Error) => error);
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain("CLASH_BROWSER_GL");
+    expect(message).toContain("Second-Backend");
+    for (const backend of backends) expect(message).toContain(backend);
   });
 });
 

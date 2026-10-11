@@ -5,11 +5,10 @@ import {
   createBoundedJsonlLogSink,
   installProcessStdioCapture,
 } from "@clash/shared-runtime/observability";
-import type { OpenGlRenderer } from "@remotion/renderer";
 import {
   clashBrowserWarmupEnabled,
   ensureClashBrowser,
-  resolveClashBrowserGl,
+  resolveClashBrowserGlOverride,
 } from "@clash/shared-runtime/render-browser";
 import {
   clashHomeForLocalDataDir,
@@ -136,21 +135,28 @@ async function main(): Promise<void> {
   ) {
     throw new Error(`Director bundle is missing: ${directorBundle}`);
   }
+  // A mistyped backend stops the Host here, by name, rather than failing the first capture.
+  const directorGlOverride = await resolveClashBrowserGlOverride(
+    async () =>
+      (await import("@remotion/renderer")).RenderInternals.validOpenGlRenderers,
+  );
   const directorStageRenderer = createHeadlessDirectorStageRenderer({
     bundleDir: directorBundle,
     ...(configuredDirectorBundle || !sourceRuntime
       ? {}
       : { prepareBundle: () => developmentAssets!.prepareDirectorBundle() }),
-    openBrowser: async () => {
+    ...(directorGlOverride ? { glOverride: directorGlOverride } : {}),
+    onGlSelected: ({ gl, reason }) => {
+      observability.event("info", "director.browser_gl", { gl, reason });
+    },
+    openBrowser: async (gl) => {
       const renderer = await import("@remotion/renderer");
       // The pinned headless shell from the Clash browser cache; Remotion's own default would
       // download into the installation's node_modules.
       const browser = await ensureClashBrowser();
       return renderer.openBrowser("chrome", {
         browserExecutable: browser.executablePath,
-        chromiumOptions: {
-          gl: resolveClashBrowserGl() as OpenGlRenderer,
-        },
+        chromiumOptions: { gl },
         logLevel: "error",
       }) as never;
     },

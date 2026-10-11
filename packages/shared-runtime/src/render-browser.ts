@@ -2,7 +2,6 @@ import { execFile, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -192,34 +191,27 @@ export function clashBrowserEnvironment(env: Env = process.env): Env {
   };
 }
 
-/** A DRM render node is what Chrome's hardware GL needs on Linux; a bare VM or container has none. */
-function hasLinuxRenderNode(): boolean {
-  try {
-    return readdirSync("/dev/dri").some((name) => name.startsWith("renderD"));
-  } catch {
-    return false;
-  }
-}
-
 /**
- * The Remotion `gl` backend for a browser that must create a WebGL context (Director capture).
+ * `CLASH_BROWSER_GL`: an operator's Remotion `gl` backend for a browser that needs WebGL.
  *
- * `CLASH_BROWSER_GL` wins and is passed through for Remotion to validate. Otherwise this is
- * `angle`, except on Linux without a GPU: there `--use-gl=angle` alone leaves Chrome with no
- * WebGL at all, while `swangle` (ANGLE on SwiftShader) renders in software.
+ * The accepted values are Remotion's, so the caller supplies them from the installed
+ * `@remotion/renderer`; they are only loaded when the variable is set. A value Remotion would
+ * reject fails here, by name, instead of at the first capture.
  */
-export function resolveClashBrowserGl(
-  options: {
-    env?: Env;
-    platform?: NodeJS.Platform;
-    /** Injectable for tests; defaults to looking for a DRM render node. */
-    hasGpu?: () => boolean;
-  } = {},
-): string {
-  const explicit = (options.env ?? process.env).CLASH_BROWSER_GL?.trim();
-  if (explicit) return explicit;
-  if ((options.platform ?? process.platform) !== "linux") return "angle";
-  return (options.hasGpu ?? hasLinuxRenderNode)() ? "angle" : "swangle";
+export async function resolveClashBrowserGlOverride<Backend extends string>(
+  loadValidBackends: () => readonly Backend[] | Promise<readonly Backend[]>,
+  env: Env = process.env,
+): Promise<Backend | undefined> {
+  const explicit = env.CLASH_BROWSER_GL?.trim();
+  if (!explicit) return undefined;
+  const validBackends = await loadValidBackends();
+  const backend = validBackends.find((candidate) => candidate === explicit);
+  if (backend === undefined) {
+    throw new Error(
+      `CLASH_BROWSER_GL is "${explicit}", which is not a Remotion gl backend. Accepted values: ${validBackends.join(", ")}.`,
+    );
+  }
+  return backend;
 }
 
 function readTrimmed(path: string): string | undefined {
