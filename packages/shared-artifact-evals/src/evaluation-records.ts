@@ -220,7 +220,7 @@ function sha256(value: Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function recordDigest(unsigned: unknown): string {
+export function recordDigest(unsigned: unknown): string {
   return sha256(canonicalJson(unsigned));
 }
 
@@ -498,9 +498,9 @@ async function checkedDirectory(path: string, label: string): Promise<string> {
   return realpath(path);
 }
 
-async function publishRecord<TRecord>(input: {
+export async function publishRecord<TRecord>(input: {
   storeRoot: string;
-  category: "evaluations" | "aggregates" | "rewards";
+  category: "evaluations" | "aggregates" | "rewards" | "trial-aggregates";
   record: TRecord;
   digest: string;
 }): Promise<EvaluationRecordReceipt<TRecord>> {

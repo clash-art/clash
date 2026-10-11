@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, constants } from "node:fs";
+import { createReadStream, constants, existsSync } from "node:fs";
 import {
   access,
   lstat,
@@ -25,6 +25,11 @@ import { fileURLToPath } from "node:url";
 
 import type { WorkspaceBundleManifest } from "@clash/shared-types";
 
+import type {
+  BenchmarkObservedRuntime,
+  BenchmarkRuntimeClaim,
+  BenchmarkSubjectRecord,
+} from "./backend-types";
 import type {
   ArtifactBenchmarkCase,
   BenchmarkAgent,
@@ -83,6 +88,49 @@ type BenchmarkResolvedPhasePolicy = {
   };
 };
 
+type RuntimePlatform = {
+  os: NodeJS.Platform;
+  arch: string;
+  nodeVersion: string;
+};
+
+/**
+ * `native-local` keeps its original shape so earlier locks and digests stay
+ * valid. Every other backend records its isolation level, what the dispatcher
+ * claimed, and what the worker observed on its own.
+ */
+export type BenchmarkResolvedRuntime =
+  | {
+      kind: "native-local";
+      platform: RuntimePlatform;
+      isolation: {
+        container: "none";
+        workspace: "fresh-temporary-directory" | "not-materialized";
+        clashHome: "fresh-per-case-directory" | "not-materialized";
+      };
+    }
+  | {
+      kind: "container" | "claude-cloud";
+      platform: RuntimePlatform;
+      isolation: {
+        level: "container" | "provider-managed-vm";
+        workspace: "fresh-temporary-directory" | "not-materialized";
+        clashHome: "fresh-per-case-directory" | "not-materialized";
+        network: "engine-default" | "none" | "environment-policy";
+        hostAccess:
+          "read-only-inputs-and-attempt-directory" | "provider-managed";
+      };
+      backend: BenchmarkRuntimeClaim;
+      /**
+       * `dispatcher-asserted-worker-observed`: the dispatcher set the isolation
+       * flags and the worker corroborated a container marker.
+       * `dispatcher-declared`: the runner cannot observe the isolation boundary.
+       */
+      attestation:
+        "dispatcher-asserted-worker-observed" | "dispatcher-declared";
+      observed: { containerMarker: boolean };
+    };
+
 export type BenchmarkResolvedEnvironment = {
   schemaVersion: 1;
   profile: "clash-agent-environment-v1";
@@ -100,19 +148,7 @@ export type BenchmarkResolvedEnvironment = {
     fixture:
       { state: "locked"; manifestSha256: string } | { state: "undeclared" };
   };
-  runtime: {
-    kind: "native-local";
-    platform: {
-      os: NodeJS.Platform;
-      arch: string;
-      nodeVersion: string;
-    };
-    isolation: {
-      container: "none";
-      workspace: "fresh-temporary-directory" | "not-materialized";
-      clashHome: "fresh-per-case-directory" | "not-materialized";
-    };
-  };
+  runtime: BenchmarkResolvedRuntime;
   phases: {
     agent: BenchmarkResolvedPhasePolicy;
   };
@@ -145,6 +181,8 @@ export type BenchmarkEnvironmentExecutionLock = {
     manifestSha256: string;
     profile: "dev" | "prod";
     runtime: LockedTree;
+    /** The selected build under test; absent for locks that predate subjects. */
+    subject?: BenchmarkSubjectRecord;
   };
   requirements: {
     capabilities: string[];
@@ -155,6 +193,12 @@ export type BenchmarkEnvironmentExecutionLock = {
     providers: string[];
   };
   resolvedEnvironment: BenchmarkResolvedEnvironment;
+};
+
+/** The resolved build under test; `pluginRoot` is runner-private and never serialized. */
+export type BenchmarkLockSubject = {
+  record: BenchmarkSubjectRecord;
+  pluginRoot: string;
 };
 
 type LockedSource = {
@@ -244,7 +288,7 @@ function canonicalJson(value: unknown): string {
   throw new Error("Resolved Environment digest accepts only JSON values");
 }
 
-async function hashRegularFile(path: string): Promise<LockedFile> {
+export async function hashRegularFile(path: string): Promise<LockedFile> {
   const canonicalPath = await realpath(path);
   const info = await lstat(canonicalPath);
   if (!info.isFile()) {
@@ -319,7 +363,7 @@ async function lockOptionalTask(
   return { path, evidence: await hashRegularFile(path) };
 }
 
-async function hashRegularTree(root: string): Promise<LockedTree> {
+export async function hashRegularTree(root: string): Promise<LockedTree> {
   const canonicalRoot = await realpath(root);
   if (!(await lstat(canonicalRoot)).isDirectory()) {
     throw new Error("Execution lock tree source must be a directory");
@@ -597,6 +641,7 @@ async function lockSkills(input: {
 async function lockClashPlugin(
   agent: BenchmarkAgent,
   required: boolean,
+  subject?: BenchmarkLockSubject,
 ): Promise<
   | {
       public: NonNullable<BenchmarkEnvironmentExecutionLock["clash"]>;
@@ -633,6 +678,21 @@ async function lockClashPlugin(
   const manifestEvidence = await hashRegularFile(manifestPath);
   const runtimePath = join(pluginRoot, "runtime");
   const runtimeEvidence = await hashRegularTree(runtimePath);
+  if (subject) {
+    if ((await realpath(subject.pluginRoot)) !== pluginRoot) {
+      throw new Error(
+        "The selected benchmark subject is not the Clash plugin the Agent will run",
+      );
+    }
+    if (
+      subject.record.runtimeSha256 !== runtimeEvidence.sha256 ||
+      subject.record.version !== manifest.version
+    ) {
+      throw new Error(
+        "The selected benchmark subject does not match the Clash plugin runtime on disk",
+      );
+    }
+  }
   return {
     public: {
       id: safePublicId(manifest.name, "Clash plugin id"),
@@ -640,6 +700,7 @@ async function lockClashPlugin(
       manifestSha256: manifestEvidence.sha256,
       profile: agent.clashHost.profile,
       runtime: runtimeEvidence,
+      ...(subject ? { subject: subject.record } : {}),
     },
     source: {
       manifest: { path: manifestPath, evidence: manifestEvidence },
@@ -782,6 +843,74 @@ function declaredWorkspace(benchmark: ArtifactBenchmarkCase):
     : undefined;
 }
 
+export function observeLocalRuntime(): BenchmarkObservedRuntime {
+  return {
+    platform: {
+      os: process.platform,
+      arch: process.arch,
+      nodeVersion: process.version,
+    },
+    containerMarker:
+      existsSync("/.dockerenv") || existsSync("/run/.containerenv"),
+  };
+}
+
+function resolvedRuntime(
+  claim: BenchmarkRuntimeClaim,
+  executionIntent: "execute" | "blocked-no-run",
+  observed: BenchmarkObservedRuntime,
+): BenchmarkResolvedRuntime {
+  const materialized = executionIntent === "execute";
+  const workspace = materialized
+    ? ("fresh-temporary-directory" as const)
+    : ("not-materialized" as const);
+  const clashHome = materialized
+    ? ("fresh-per-case-directory" as const)
+    : ("not-materialized" as const);
+  if (claim.kind === "native-local") {
+    return {
+      kind: "native-local",
+      platform: observed.platform,
+      isolation: { container: "none", workspace, clashHome },
+    };
+  }
+  if (claim.kind === "container") {
+    if (materialized && !observed.containerMarker) {
+      throw new Error(
+        "The Attempt was dispatched as container-isolated but the worker observed no container marker",
+      );
+    }
+    return {
+      kind: "container",
+      platform: observed.platform,
+      isolation: {
+        level: "container",
+        workspace,
+        clashHome,
+        network: claim.network,
+        hostAccess: "read-only-inputs-and-attempt-directory",
+      },
+      backend: claim,
+      attestation: "dispatcher-asserted-worker-observed",
+      observed: { containerMarker: observed.containerMarker },
+    };
+  }
+  return {
+    kind: "claude-cloud",
+    platform: observed.platform,
+    isolation: {
+      level: "provider-managed-vm",
+      workspace,
+      clashHome,
+      network: "environment-policy",
+      hostAccess: "provider-managed",
+    },
+    backend: claim,
+    attestation: "dispatcher-declared",
+    observed: { containerMarker: observed.containerMarker },
+  };
+}
+
 function buildResolvedEnvironment(input: {
   benchmark: ArtifactBenchmarkCase;
   executionIntent: "execute" | "blocked-no-run";
@@ -793,6 +922,8 @@ function buildResolvedEnvironment(input: {
   task?: LockedSource;
   requirements: BenchmarkEnvironmentExecutionLock["requirements"];
   inputManifest?: WorkspaceBundleManifest;
+  runtime?: BenchmarkRuntimeClaim;
+  observedRuntime: BenchmarkObservedRuntime;
 }): BenchmarkResolvedEnvironment {
   const environment = input.benchmark.execution?.environment;
   if (!environment) {
@@ -834,25 +965,11 @@ function buildResolvedEnvironment(input: {
           }
         : { state: "undeclared" },
     },
-    runtime: {
-      kind: "native-local",
-      platform: {
-        os: process.platform,
-        arch: process.arch,
-        nodeVersion: process.version,
-      },
-      isolation: {
-        container: "none",
-        workspace:
-          input.executionIntent === "execute"
-            ? "fresh-temporary-directory"
-            : "not-materialized",
-        clashHome:
-          input.executionIntent === "execute"
-            ? "fresh-per-case-directory"
-            : "not-materialized",
-      },
-    },
+    runtime: resolvedRuntime(
+      input.runtime ?? { kind: "native-local" },
+      input.executionIntent,
+      input.observedRuntime,
+    ),
     phases: {
       agent: resolvedAgentPhase(
         input.agentConfig,
@@ -904,6 +1021,12 @@ export async function captureBenchmarkExecutionLock(input: {
   qualityReviewer?: BenchmarkQualityReviewer;
   executionIntent: "execute" | "blocked-no-run";
   inputManifest?: WorkspaceBundleManifest;
+  /** Where the Attempt runs. Defaults to the in-process native-local backend. */
+  runtime?: BenchmarkRuntimeClaim;
+  /** The selected build under test, verified against the locked plugin runtime. */
+  subject?: BenchmarkLockSubject;
+  /** Override for tests; the worker's own observation otherwise. */
+  observeRuntime?: () => BenchmarkObservedRuntime;
 }): Promise<BenchmarkExecutionLockReceipt> {
   if (
     input.executionIntent === "execute" &&
@@ -970,7 +1093,11 @@ export async function captureBenchmarkExecutionLock(input: {
         ? lockExecutable(codexReviewer, input.executionIntent === "execute")
         : undefined,
       lockSkills(input),
-      lockClashPlugin(input.agent, input.executionIntent === "execute"),
+      lockClashPlugin(
+        input.agent,
+        input.executionIntent === "execute",
+        input.subject,
+      ),
       lockRunnerManifest(),
       lockOptionalTask(input.caseRoot),
     ]);
@@ -992,6 +1119,8 @@ export async function captureBenchmarkExecutionLock(input: {
     ...(task ? { task } : {}),
     requirements,
     ...(input.inputManifest ? { inputManifest: input.inputManifest } : {}),
+    ...(input.runtime ? { runtime: input.runtime } : {}),
+    observedRuntime: (input.observeRuntime ?? observeLocalRuntime)(),
   });
   const lock: BenchmarkEnvironmentExecutionLock = {
     schemaVersion: 1,

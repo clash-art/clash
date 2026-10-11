@@ -11,6 +11,7 @@ import { join } from "node:path";
 
 import {
   BUNDLED_PLUGINS,
+  OFFICIAL_MARKETPLACE_PLUGIN_PACKAGES,
   bundledPluginPayloadFiles,
   ensureBundledPlugin,
 } from "./bundled-plugins.js";
@@ -384,5 +385,29 @@ describe("bundled plugins", () => {
         mediaTypes: ["video/mp4", "video/quicktime", "video/x-msvideo"],
       },
     ]);
+  });
+
+  // Turbo orders `build` by declared workspace dependencies, and the host runtime build copies each
+  // payload's dist. An undeclared payload is never built first, so a clean build fails on ENOENT.
+  it("declares every copied plugin payload as a workspace dependency of its packager", () => {
+    const pluginsRoot = join(__dirname, "../../../plugins");
+    const readPackage = (dir: string) =>
+      JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+        name: string;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+      };
+    const localApi = readPackage(join(__dirname, ".."));
+    const hostRuntime = readPackage(join(pluginsRoot, "clash"));
+
+    for (const plugin of BUNDLED_PLUGINS) {
+      expect(localApi.dependencies?.[plugin.packageName], plugin.packageName).toBe(
+        "workspace:*",
+      );
+    }
+    for (const plugin of OFFICIAL_MARKETPLACE_PLUGIN_PACKAGES) {
+      const { name } = readPackage(join(pluginsRoot, plugin.workspaceDir));
+      expect(hostRuntime.devDependencies?.[name], name).toBe("workspace:*");
+    }
   });
 });

@@ -42,6 +42,7 @@
     "@clash-plugin/asr": "workspace:*",
     "@clash-plugin/asset-edit": "workspace:*",
     "@clash-plugin/codex-imagegen": "workspace:*",
+    "@clash-plugin/director": "workspace:*",
     "@clash-plugin/fal": "workspace:*",
     "@clash-plugin/google": "workspace:*",
     "@clash-plugin/gpt-image": "workspace:*",
