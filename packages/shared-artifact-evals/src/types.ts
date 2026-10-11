@@ -432,6 +432,8 @@ export type GeminiQualityReviewer = {
   /** Environment variable holding the API key; the key itself is never part of the reviewer. */
   apiKeyEnv?: string;
   baseUrl?: string;
+  /** Harness environment variable `baseUrl` was read from, when it was not an explicit override. */
+  baseUrlEnv?: string;
   timeoutMs?: number;
 };
 

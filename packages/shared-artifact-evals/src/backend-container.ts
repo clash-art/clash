@@ -230,7 +230,9 @@ export function createContainerBackend(
         "/tmp",
         "--env",
         "HOME=/tmp",
-        ...unit.envNames.flatMap((name) => ["--env", name]),
+        ...[
+          ...new Set([...unit.envNames, ...(unit.judgeEnvNames ?? [])]),
+        ].flatMap((name) => ["--env", name]),
         options.image,
         ...(options.workerCommand ?? defaultWorkerCommand(options.runnerRoot)),
         "worker",

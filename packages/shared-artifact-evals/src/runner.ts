@@ -98,6 +98,7 @@ import {
   type BenchmarkWorkspaceScaffoldReceipt,
 } from "./environment";
 import {
+  agentEnvironmentLock,
   captureBenchmarkExecutionLock,
   verifyBenchmarkExecutionLock,
   type BenchmarkExecutionLockReceipt,
@@ -4428,7 +4429,14 @@ async function assertEnvironmentResumeLockMatches(input: {
       ...(inputManifest ? { inputManifest } : {}),
       ...(input.subject ? { subject: input.subject } : {}),
     });
-    if (sha256Json(priorLock) !== sha256Json(current.lock)) {
+    // The judge is evaluator identity: a completed Attempt may be resumed, and
+    // later Tasks judged, under a different one.
+    if (
+      !priorLock ||
+      typeof priorLock !== "object" ||
+      sha256Json(agentEnvironmentLock(priorLock)) !==
+        sha256Json(agentEnvironmentLock(current.lock))
+    ) {
       throw new Error(
         `Cannot resume case '${input.benchmark.id}': the resolved Environment does not match the completed attempt`,
       );

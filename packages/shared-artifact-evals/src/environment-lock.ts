@@ -25,6 +25,10 @@ import { fileURLToPath } from "node:url";
 
 import type { WorkspaceBundleManifest } from "@clash/shared-types";
 
+import {
+  lockedQualityJudge,
+  type BenchmarkLockedQualityJudge,
+} from "./quality-judge-environment";
 import type {
   BenchmarkObservedRuntime,
   BenchmarkRuntimeClaim,
@@ -193,7 +197,23 @@ export type BenchmarkEnvironmentExecutionLock = {
     providers: string[];
   };
   resolvedEnvironment: BenchmarkResolvedEnvironment;
+  /**
+   * The configured content-effect judge: variable names and non-secret identity
+   * only. It sits outside `resolvedEnvironment` because it is evaluator
+   * identity, so one Agent Environment stays comparable across judges.
+   */
+  qualityJudge?: BenchmarkLockedQualityJudge;
 };
+
+/** The lock without its evaluator identity: what an Attempt's Agent actually ran in. */
+export function agentEnvironmentLock<T extends object>(
+  lock: T,
+): Omit<T, "qualityJudge"> {
+  const { qualityJudge: _qualityJudge, ...agentEnvironment } = lock as T & {
+    qualityJudge?: unknown;
+  };
+  return agentEnvironment;
+}
 
 /** The resolved build under test; `pluginRoot` is runner-private and never serialized. */
 export type BenchmarkLockSubject = {
@@ -1131,6 +1151,9 @@ export async function captureBenchmarkExecutionLock(input: {
     ...(clash ? { clash: clash.public } : {}),
     requirements,
     resolvedEnvironment,
+    ...(input.qualityReviewer
+      ? { qualityJudge: lockedQualityJudge(input.qualityReviewer) }
+      : {}),
   };
   const lockFile = join(input.caseRoot, "environment-lock.json");
   await writeJsonAtomically(lockFile, lock);

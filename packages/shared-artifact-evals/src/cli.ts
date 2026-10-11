@@ -11,7 +11,10 @@ import {
   createPiAgentAdapter,
 } from "./runner";
 import { runBenchmarkSuite, createNativeLocalBackend } from "./runner";
-import { geminiBaseUrl } from "./quality-review-gemini";
+import {
+  qualityJudgeEnvironmentNames,
+  resolveQualityJudgeEnvironment,
+} from "./quality-judge-environment";
 import { loadBenchmarkSuite } from "./suite";
 import {
   createClaudeCloudBackend,
@@ -83,11 +86,14 @@ Options:
   --model <model>             Agent model override
   --provider <provider>       Explicit Pi provider (required for ready Environments)
   --quality-reviewer codex|gemini  Run an independent read-only content-effect judge
-  --quality-provider openai|google  Explicit quality reviewer provider (codex: openai, gemini: google)
-  --quality-model <model>     Explicit quality reviewer model
+                              (default: CLASH_BENCH_QUALITY_REVIEWER)
+  --quality-provider openai|google  Quality reviewer provider (codex: openai, gemini: google;
+                              default: CLASH_BENCH_QUALITY_PROVIDER)
+  --quality-model <model>     Quality reviewer model (default: CLASH_BENCH_QUALITY_MODEL)
   --quality-reviewer-command <path>  Codex reviewer executable (default: codex)
-  --quality-api-key-env <name>  Gemini API key environment variable (default: GEMINI_API_KEY)
-  --quality-base-url <url>    Gemini-native API origin, e.g. a relay (default: Google)
+  --quality-api-key-env <name>  Variable holding the Gemini API key (default: GEMINI_API_KEY)
+  --quality-base-url <url>    Gemini-native API origin, e.g. a relay (default: GEMINI_BASE_URL,
+                              then Google)
   --clash-plugin-root <path>  Clash plugin root for clash-host cases (default: plugins/clash)
   --clash-profile dev|prod    Isolated Clash runtime profile (default: dev)
   --trials <n>                Run every case n times; reports pass@1, pass@k, pass^k
@@ -363,49 +369,50 @@ async function main(): Promise<void> {
   if (requiresExplicitSelection && adapter === "pi" && !options.provider) {
     throw new Error("--provider is required for a ready Pi Environment");
   }
-  const hasQualityOption = Boolean(
-    options.qualityProvider ||
-    options.qualityModel ||
-    options.qualityReviewerCommand ||
-    options.qualityApiKeyEnv ||
-    options.qualityBaseUrl,
-  );
-  if (hasQualityOption && !options.qualityReviewer) {
-    throw new Error(
-      "--quality-provider, --quality-model, --quality-reviewer-command, --quality-api-key-env, and --quality-base-url require --quality-reviewer",
-    );
-  }
-  if (options.qualityReviewer) {
-    const gemini = options.qualityReviewer === "gemini";
-    const reviewerName = gemini ? "Gemini" : "Codex";
-    const expectedProvider = gemini ? "google" : "openai";
-    if (options.qualityProvider !== expectedProvider) {
-      throw new Error(
-        `--quality-provider ${expectedProvider} is required for the ${reviewerName} quality reviewer`,
-      );
-    }
-    if (!options.qualityModel) {
-      throw new Error(
-        `--quality-model is required for the ${reviewerName} quality reviewer`,
-      );
-    }
-    if (gemini && options.qualityReviewerCommand) {
-      throw new Error("--quality-reviewer-command applies only to codex");
-    }
-    if (!gemini && (options.qualityApiKeyEnv || options.qualityBaseUrl)) {
-      throw new Error(
-        "--quality-api-key-env and --quality-base-url apply only to gemini",
-      );
-    }
-    if (options.qualityBaseUrl) geminiBaseUrl(options.qualityBaseUrl);
+  let qualityReviewer = resolveQualityJudgeEnvironment({
+    env: process.env,
+    overrides: {
+      ...(options.qualityReviewer ? { reviewer: options.qualityReviewer } : {}),
+      ...(options.qualityProvider ? { provider: options.qualityProvider } : {}),
+      ...(options.qualityModel ? { model: options.qualityModel } : {}),
+      ...(options.qualityReviewerCommand
+        ? { reviewerCommand: options.qualityReviewerCommand }
+        : {}),
+      ...(options.qualityApiKeyEnv
+        ? { apiKeyEnv: options.qualityApiKeyEnv }
+        : {}),
+      ...(options.qualityBaseUrl ? { baseUrl: options.qualityBaseUrl } : {}),
+    },
+  });
+  if (qualityReviewer) {
     if (
       !suite.cases.some(
         (benchmarkCase) =>
           benchmarkCase.execution?.environment?.track === "content-effect",
       )
     ) {
+      if (options.qualityReviewer) {
+        throw new Error(
+          "--quality-reviewer requires at least one content-effect case",
+        );
+      }
+      // A judge configured only in the harness environment has nothing to review here.
+      qualityReviewer = undefined;
+    }
+  }
+  if (qualityReviewer) {
+    // A cloud session reads the key from its own environment's secrets.
+    const readsHarnessEnvironment =
+      options.backends.length === 0 ||
+      options.backends.some((kind) => kind !== "claude-cloud");
+    const missing = readsHarnessEnvironment
+      ? qualityJudgeEnvironmentNames(qualityReviewer).filter(
+          (name) => !process.env[name]?.trim(),
+        )
+      : [];
+    if (missing.length > 0) {
       throw new Error(
-        "--quality-reviewer requires at least one content-effect case",
+        `The ${qualityReviewer.adapter} quality reviewer requires ${missing.join(", ")} in the harness environment`,
       );
     }
   }
@@ -511,32 +518,7 @@ async function main(): Promise<void> {
       outputRoot: resolve(invocationRoot, options.output),
       runId: options.runId ?? `run-${Date.now()}`,
       agent,
-      ...(options.qualityReviewer === "gemini"
-        ? {
-            qualityReviewer: {
-              adapter: "gemini" as const,
-              provider: "google" as const,
-              model: options.qualityModel!,
-              ...(options.qualityApiKeyEnv
-                ? { apiKeyEnv: options.qualityApiKeyEnv }
-                : {}),
-              ...(options.qualityBaseUrl
-                ? { baseUrl: options.qualityBaseUrl }
-                : {}),
-            },
-          }
-        : options.qualityReviewer
-          ? {
-              qualityReviewer: {
-                adapter: "codex" as const,
-                provider: "openai" as const,
-                model: options.qualityModel!,
-                ...(options.qualityReviewerCommand
-                  ? { command: options.qualityReviewerCommand }
-                  : {}),
-              },
-            }
-          : {}),
+      ...(qualityReviewer ? { qualityReviewer } : {}),
       ...(options.resume ? { resume: true } : {}),
       ...(options.force ? { force: true } : {}),
       ...(options.maxInfrastructureAttempts

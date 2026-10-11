@@ -22,7 +22,7 @@ import type {
 
 export const GEMINI_API_VERSION = "v1beta";
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
-const DEFAULT_API_KEY_ENV = "GEMINI_API_KEY";
+export const GEMINI_API_KEY_ENV = "GEMINI_API_KEY";
 const ATTACHED_EVIDENCE = "media (images, video, and audio)";
 // generateContent rejects requests over 20 MB; base64 inflates inline bytes by 4/3.
 const INLINE_MEDIA_BYTES = 14 * 1024 * 1024;
@@ -75,6 +75,20 @@ export function geminiBaseUrl(value: string | undefined): string {
     );
   }
   return url.href.replace(/\/+$/u, "");
+}
+
+/**
+ * The judge's endpoint host and key variable *name*. The Environment lock and
+ * the Evaluation's evaluator identity both record exactly this.
+ */
+export function geminiJudgeIdentity(reviewer: {
+  apiKeyEnv?: string;
+  baseUrl?: string;
+}): { endpointHost: string; apiKeyEnv: string } {
+  return {
+    endpointHost: new URL(geminiBaseUrl(reviewer.baseUrl)).host,
+    apiKeyEnv: reviewer.apiKeyEnv ?? GEMINI_API_KEY_ENV,
+  };
 }
 
 export function geminiQualityJudgeSupportsRequest(
@@ -236,8 +250,7 @@ export function parseGeminiQualityJudgeResponse(input: {
       provider: input.reviewer.provider,
       model: input.reviewer.model,
       adapterVersion: `gemini-api ${GEMINI_API_VERSION} ${body.modelVersion ?? "unreported"}`,
-      endpointHost: new URL(input.reviewer.baseUrl ?? DEFAULT_BASE_URL).host,
-      apiKeyEnv: input.reviewer.apiKeyEnv ?? DEFAULT_API_KEY_ENV,
+      ...geminiJudgeIdentity(input.reviewer),
     },
     response: QualityJudgeResponseSchema.parse(parsed),
     prompt: input.prompt,
@@ -335,7 +348,7 @@ export async function runGeminiQualityJudge(input: {
       "Gemini quality review requires explicit provider=google and an explicit model",
     );
   }
-  const apiKeyEnv = input.reviewer.apiKeyEnv ?? DEFAULT_API_KEY_ENV;
+  const apiKeyEnv = input.reviewer.apiKeyEnv ?? GEMINI_API_KEY_ENV;
   const apiKey = process.env[apiKeyEnv]?.trim();
   if (!apiKey) {
     throw new Error(`Gemini quality review requires ${apiKeyEnv} to be set`);
