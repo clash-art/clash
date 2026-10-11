@@ -332,6 +332,14 @@ export async function installBenchmarkInputFixture(input: {
   assertNoRunnerOwnedPaths(sourceManifest);
 
   await copyFixtureContents(source, input.workspace, sourceManifest);
+  // Recheck the source first: a source change can also corrupt the copy, and
+  // the copied-result checks below would otherwise report the wrong cause.
+  const sourceAfterCopy = await createBenchmarkFixtureManifest(source);
+  if (sourceAfterCopy.manifestSha256 !== sourceManifest.manifestSha256) {
+    throw new Error(
+      `Benchmark input fixture source changed during installation: expected ${sourceManifest.manifestSha256}, received ${sourceAfterCopy.manifestSha256}`,
+    );
+  }
   const copiedManifest = input.allowExistingWorkspace
     ? sourceManifest
     : await createBenchmarkFixtureManifest(input.workspace);
@@ -348,12 +356,6 @@ export async function installBenchmarkInputFixture(input: {
   } else if (copiedManifest.manifestSha256 !== input.fixture.manifestSha256) {
     throw new Error(
       `Copied benchmark input fixture manifest sha256 mismatch: expected ${input.fixture.manifestSha256}, received ${copiedManifest.manifestSha256}`,
-    );
-  }
-  const sourceAfterCopy = await createBenchmarkFixtureManifest(source);
-  if (sourceAfterCopy.manifestSha256 !== sourceManifest.manifestSha256) {
-    throw new Error(
-      `Benchmark input fixture source changed during installation: expected ${sourceManifest.manifestSha256}, received ${sourceAfterCopy.manifestSha256}`,
     );
   }
 

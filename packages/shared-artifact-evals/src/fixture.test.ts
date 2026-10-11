@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createBenchmarkFixtureManifest,
@@ -28,6 +28,59 @@ import type {
   ArtifactBenchmarkSuite,
   BenchmarkAgent,
 } from "./types";
+
+type CopyStepHook = (source: string, destination: string) => void;
+
+const copyStep = vi.hoisted(() => ({
+  before: undefined as CopyStepHook | undefined,
+  after: undefined as CopyStepHook | undefined,
+}));
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const cp: typeof actual.cp = async (source, destination, options) => {
+    copyStep.before?.(String(source), String(destination));
+    await actual.cp(source, destination, options);
+    copyStep.after?.(String(source), String(destination));
+  };
+  return { ...actual, default: { ...actual, cp }, cp };
+});
+
+afterEach(() => {
+  copyStep.before = undefined;
+  copyStep.after = undefined;
+});
+
+async function interceptedInstallation(allowExistingWorkspace: boolean) {
+  const root = await mkdtemp(join(tmpdir(), "clash-fixture-copy-step-"));
+  const suiteRoot = join(root, "suite");
+  const fixtureRoot = join(suiteRoot, "fixtures", "spoken-edit");
+  const workspace = join(root, "workspace");
+  await mkdir(fixtureRoot, { recursive: true });
+  await mkdir(workspace);
+  if (allowExistingWorkspace) {
+    await mkdir(join(workspace, ".clash"));
+    await writeFile(join(workspace, ".clash", "project.toml"), "project");
+  }
+  await writeFile(join(fixtureRoot, "a-trigger.txt"), "original");
+  await writeFile(join(fixtureRoot, "z-last.txt"), "last");
+  const manifest = await createBenchmarkFixtureManifest(fixtureRoot);
+  return {
+    sourceTrigger: join(await realpath(fixtureRoot), "a-trigger.txt"),
+    copiedTrigger: join(await realpath(workspace), "a-trigger.txt"),
+    receiptPath: join(workspace, ".clash", "benchmark-input-fixture.json"),
+    install: async () =>
+      installBenchmarkInputFixture({
+        suiteRoot: await realpath(suiteRoot),
+        workspace: await realpath(workspace),
+        fixture: {
+          path: "fixtures/spoken-edit",
+          manifestSha256: manifest.manifestSha256,
+        },
+        ...(allowExistingWorkspace ? { allowExistingWorkspace } : {}),
+      }),
+  };
+}
 
 function fixtureCase(
   inputFixture?: ArtifactBenchmarkCase["inputFixture"],
@@ -258,6 +311,83 @@ describe("benchmark input fixtures", () => {
       }
     }
   });
+
+  it.each([
+    { workspaceKind: "imported", allowExistingWorkspace: true },
+    { workspaceKind: "fresh", allowExistingWorkspace: false },
+  ])(
+    "reports the source change when it also corrupts the copy in a $workspaceKind workspace",
+    async ({ allowExistingWorkspace }) => {
+      const installation = await interceptedInstallation(
+        allowExistingWorkspace,
+      );
+      let rewrites = 0;
+      copyStep.before = (source) => {
+        if (source !== installation.sourceTrigger) return;
+        writeFileSync(source, "rewritten");
+        rewrites += 1;
+      };
+
+      await expect(installation.install()).rejects.toThrow(
+        /source changed during installation/i,
+      );
+
+      expect(rewrites).toBe(1);
+      await expect(readFile(installation.copiedTrigger, "utf8")).resolves.toBe(
+        "rewritten",
+      );
+      await expect(lstat(installation.receiptPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
+  it.each([
+    {
+      workspaceKind: "imported",
+      allowExistingWorkspace: true,
+      reason: /Copied benchmark input fixture failed verification/,
+    },
+    {
+      workspaceKind: "fresh",
+      allowExistingWorkspace: false,
+      reason: /Copied benchmark input fixture manifest sha256 mismatch/,
+    },
+  ])(
+    "reports a corrupted copy of an unchanged source in a $workspaceKind workspace",
+    async ({ allowExistingWorkspace, reason }) => {
+      const installation = await interceptedInstallation(
+        allowExistingWorkspace,
+      );
+      let corruptions = 0;
+      copyStep.after = (_source, destination) => {
+        if (destination !== installation.copiedTrigger) return;
+        writeFileSync(destination, "corrupted");
+        corruptions += 1;
+      };
+
+      const failure = await installation.install().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+      expect(corruptions).toBe(1);
+      expect(failure).toEqual(
+        expect.objectContaining({ message: expect.stringMatching(reason) }),
+      );
+      expect(failure).not.toEqual(
+        expect.objectContaining({
+          message: expect.stringMatching(/source changed/i),
+        }),
+      );
+      await expect(readFile(installation.sourceTrigger, "utf8")).resolves.toBe(
+        "original",
+      );
+      await expect(lstat(installation.receiptPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
 
   it("installs task inputs into an imported Workspace without replacing its marker", async () => {
     const root = await mkdtemp(
