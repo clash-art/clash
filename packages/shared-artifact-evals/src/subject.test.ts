@@ -19,6 +19,8 @@ import {
   subjectIdentity,
   type SubjectCommandRunner,
 } from "./subject";
+import { readSubjectBundledRuntime } from "./subject-runtime";
+import { writeSelfContainedRuntime } from "./subject-runtime.fixture";
 
 const roots: string[] = [];
 
@@ -342,5 +344,88 @@ describe("released-version subjects", () => {
       artifact: { kind: "release-tarball", sha256 },
     });
     await subject.dispose();
+  });
+});
+
+describe("self-contained release subjects", () => {
+  async function packSelfContained(
+    root: string,
+    options: Parameters<typeof writeSelfContainedRuntime>[1] = {},
+  ) {
+    const pluginRoot = join(root, "stage", "package");
+    await writePlugin(pluginRoot, "0.5.0", "runtime 0.5.0");
+    const written = await writeSelfContainedRuntime(pluginRoot, options);
+    const tarball = join(root, "clash-0.5.0-self-contained.tgz");
+    execFileSync("tar", ["-czf", tarball, "-C", join(root, "stage"), "package"]);
+    return { tarball, pluginRoot, ...written };
+  }
+
+  it("records the bundled Node, dependency tree and media digests from the unpacked files", async () => {
+    const root = await scratch();
+    const packed = await packSelfContained(root);
+    const subject = await resolveBenchmarkSubject({
+      kind: "release",
+      artifact: { kind: "tarball", path: packed.tarball },
+      workRoot: join(root, "work"),
+    });
+    try {
+      expect(subject.record.bundledRuntime).toMatchObject({
+        platform: process.platform,
+        arch: process.arch,
+        node: { version: "24.18.0", sha256: packed.nodeSha256 },
+        runtimeDependenciesSha256: packed.dependenciesSha256,
+      });
+      const bundled = await readSubjectBundledRuntime(subject.pluginRoot);
+      expect(bundled?.nodeExecPath).toBe(
+        join(subject.pluginRoot, "node", "bin", "node"),
+      );
+    } finally {
+      await subject.dispose();
+    }
+  });
+
+  it("leaves a release without its own runtime on the caller's Node", async () => {
+    const root = await scratch();
+    const { tarball } = await packRelease(root, "0.4.0");
+    const subject = await resolveBenchmarkSubject({
+      kind: "release",
+      artifact: { kind: "tarball", path: tarball },
+      workRoot: join(root, "work"),
+    });
+    try {
+      expect(subject.record.bundledRuntime).toBeUndefined();
+      expect(
+        await readSubjectBundledRuntime(subject.pluginRoot),
+      ).toBeUndefined();
+    } finally {
+      await subject.dispose();
+    }
+  });
+
+  it("refuses a bundled binary that differs from the manifest, another platform, and an escaping path", async () => {
+    const root = await scratch();
+    const { pluginRoot } = await packSelfContained(root);
+    await writeFile(join(pluginRoot, "node", "bin", "node"), "swapped");
+    await expect(readSubjectBundledRuntime(pluginRoot)).rejects.toThrow(
+      /Node differs from its manifest digest/u,
+    );
+
+    const foreign = await scratch();
+    const other = await packSelfContained(foreign, { platform: "plan9" });
+    await expect(
+      resolveBenchmarkSubject({
+        kind: "release",
+        artifact: { kind: "tarball", path: other.tarball },
+        workRoot: join(foreign, "work"),
+      }),
+    ).rejects.toThrow(/targets plan9-/u);
+
+    const escaping = await scratch();
+    const outside = await packSelfContained(escaping, {
+      nodePath: "../outside-node",
+    });
+    await expect(readSubjectBundledRuntime(outside.pluginRoot)).rejects.toThrow(
+      /escapes the package/u,
+    );
   });
 });

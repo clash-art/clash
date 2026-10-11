@@ -60,6 +60,7 @@ import {
   type TrialUnit,
 } from "./execution-backend";
 import { subjectIdentity, type ResolvedBenchmarkSubject } from "./subject";
+import { readSubjectBundledRuntime } from "./subject-runtime";
 import {
   assertSingleSubject,
   createTrialAggregateRecord,
@@ -213,6 +214,11 @@ class BenchmarkPostAgentInfrastructureError extends BenchmarkInfrastructureError
 type ResolvedClashHost = {
   pluginRoot: string;
   runtimePath: string;
+  /**
+   * The Node that runs the subject's Host, CLI and MCP and the runner's relay
+   * shims: the subject's own when it bundles one, otherwise the runner's.
+   */
+  nodeExecPath: string;
   workspace: string;
   profile: "dev" | "prod";
   runtimeRoot: string;
@@ -441,6 +447,7 @@ type AgentClashAccess = {
   mcp?: {
     runtimePath: string;
     pluginRoot: string;
+    nodeExecPath: string;
   };
   cli?: {
     agentCliPath: string;
@@ -1075,7 +1082,7 @@ async function startTrustedCliProxy(input: {
   await writeFile(
     agentCliPath,
     [
-      `#!${process.execPath}`,
+      `#!${input.host.nodeExecPath}`,
       'const fs = require("node:fs")',
       `const endpoint = ${JSON.stringify(`http://127.0.0.1:${address.port}/invoke`)}`,
       ";(async () => {",
@@ -1190,7 +1197,7 @@ async function startTrustedMcpRelay(input: {
     let runtime: ChildProcess;
     try {
       runtime = input.processScope.track(
-        spawn(process.execPath, [input.host.runtimePath], {
+        spawn(input.host.nodeExecPath, [input.host.runtimePath], {
           cwd: input.host.pluginRoot,
           env: environment,
           shell: false,
@@ -1435,7 +1442,7 @@ function resolveAgentCommand(
     const clashConfig = clashAccess?.mcp
       ? [
           "-c",
-          `mcp_servers.clash.command=${JSON.stringify(process.execPath)}`,
+          `mcp_servers.clash.command=${JSON.stringify(clashAccess.mcp.nodeExecPath)}`,
           "-c",
           `mcp_servers.clash.args=${JSON.stringify([clashAccess.mcp.runtimePath])}`,
           "-c",
@@ -1495,7 +1502,7 @@ function resolveAgentCommand(
       ? JSON.stringify({
           mcpServers: {
             clash: {
-              command: process.execPath,
+              command: clashAccess.mcp.nodeExecPath,
               args: [clashAccess.mcp.runtimePath],
               cwd: clashAccess.mcp.pluginRoot,
             },
@@ -1739,6 +1746,7 @@ async function runAgent(input: {
   if (input.agent.adapter === "pi" && input.clashAccess?.mcp) {
     env.CLASH_PI_MCP_RUNTIME_PATH = input.clashAccess.mcp.runtimePath;
     env.CLASH_PI_MCP_PLUGIN_ROOT = input.clashAccess.mcp.pluginRoot;
+    env.CLASH_PI_MCP_NODE_PATH = input.clashAccess.mcp.nodeExecPath;
   }
 
   let child: ChildProcess;
@@ -2009,6 +2017,9 @@ async function resolveClashHost(
     return {
       pluginRoot,
       runtimePath: join(pluginRoot, "runtime", "index.js"),
+      nodeExecPath:
+        (await readSubjectBundledRuntime(pluginRoot))?.nodeExecPath ??
+        process.execPath,
       workspace,
       profile: agent.clashHost.profile,
       runtimeRoot,
@@ -2082,7 +2093,7 @@ async function startClashHost(
     CLASH_PLUGIN_OWNER_CLIENT_ID: ownerClientId,
     CLASH_CLI_ENTRY_PATH: join(host.pluginRoot, "runtime", "clash-cli.cjs"),
     CLASH_LOCAL_API_WRAPPER_ENTRY: "1",
-    CLASH_NODE_EXEC_PATH: process.execPath,
+    CLASH_NODE_EXEC_PATH: host.nodeExecPath,
     CLASH_AGENT_BUNDLE_ROOT: join(host.pluginRoot, "runtime", "agents"),
     CLASH_BUILTIN_PLUGIN_ROOT: host.pluginRoot,
     CLASH_WORKSPACE_ROOT: host.workspace,
@@ -2097,7 +2108,7 @@ async function startClashHost(
   try {
     child = processScope.track(
       spawn(
-        process.execPath,
+        host.nodeExecPath,
         [join(host.pluginRoot, "runtime", "local-api.cjs")],
         {
           cwd: host.pluginRoot,
@@ -2223,7 +2234,7 @@ function clashClientEnvironment(
     CLASH_LOCAL_DATA_DIR: host.localDataDir,
     CLASH_API_URL: host.endpoint,
     CLASH_CLI_ENTRY_PATH: host.agentCliPath,
-    CLASH_NODE_EXEC_PATH: process.execPath,
+    CLASH_NODE_EXEC_PATH: host.nodeExecPath,
     CLASH_WORKSPACE_ROOT: workspace,
     CLASH_AGENT_MEMBER_ID: host.agentMemberId,
     CLASH_AGENT_NAME: host.agentName,
@@ -3934,6 +3945,7 @@ async function runCase(input: {
           profile: clashHost.profile,
           pluginRoot: clashHost.pluginRoot,
           runtimePath: clashHost.runtimePath,
+          nodeExecPath: clashHost.nodeExecPath,
           runtimeClashHome: clashHost.clashHome,
           persistedClashHome: clashHost.persistedClashHome,
           localDataDir: clashHost.localDataDir,
@@ -4003,6 +4015,7 @@ async function runCase(input: {
                   mcp: {
                     runtimePath: trustedMcpRelay.runtimePath,
                     pluginRoot: clashHost.pluginRoot,
+                    nodeExecPath: clashHost.nodeExecPath,
                   },
                 }
               : {}),

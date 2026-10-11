@@ -20,6 +20,7 @@ import {
   verifyBenchmarkExecutionLock,
 } from "./environment-lock";
 import { resolveBenchmarkSubject, subjectIdentity } from "./subject";
+import { writeSelfContainedRuntime } from "./subject-runtime.fixture";
 import type { ArtifactBenchmarkCase } from "./types";
 
 const roots: string[] = [];
@@ -333,6 +334,51 @@ describe("Environment lock runtime and subject", () => {
     ).not.toBe(
       first.receipt.lock.resolvedEnvironment.resolvedEnvironmentDigest,
     );
+  });
+
+  it("locks a self-contained subject's bundled runtime and refuses a record that misstates it", async () => {
+    const { root, caseRoot, agent, fixture } = await setup();
+    const written = await writeSelfContainedRuntime(fixture.pluginRoot);
+    const subject = await resolveBenchmarkSubject({
+      kind: "release",
+      artifact: { kind: "installed-directory", path: fixture.pluginRoot },
+      workRoot: join(root, "work"),
+    });
+    const base = {
+      caseRoot,
+      suiteRoot: root,
+      benchmark: benchmark(),
+      agent,
+      executionIntent: "execute" as const,
+    };
+    await expect(
+      captureBenchmarkExecutionLock({
+        ...base,
+        subject: {
+          ...subject,
+          record: {
+            ...subject.record,
+            bundledRuntime: {
+              ...subject.record.bundledRuntime!,
+              node: { version: "24.18.0", sha256: "0".repeat(64) },
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(/does not match the bundled runtime on disk/u);
+    const { bundledRuntime: _omitted, ...withoutRuntime } = subject.record;
+    await expect(
+      captureBenchmarkExecutionLock({
+        ...base,
+        subject: { ...subject, record: withoutRuntime },
+      }),
+    ).rejects.toThrow(/does not match the bundled runtime on disk/u);
+
+    const receipt = await captureBenchmarkExecutionLock({ ...base, subject });
+    expect(receipt.lock.clash?.subject?.bundledRuntime?.node.sha256).toBe(
+      written.nodeSha256,
+    );
+    expect(await readFile(receipt.lockFile, "utf8")).not.toContain(root);
   });
 
   it("refuses a subject record that does not describe the plugin the Agent will run", async () => {

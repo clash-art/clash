@@ -1,3 +1,5 @@
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -100,6 +102,46 @@ describe("Pi Clash extension", () => {
       } else {
         process.env.CLASH_PI_MCP_PLUGIN_ROOT = previousPluginRoot;
       }
+    }
+  });
+
+  it("launches the MCP runtime with the Node the runner names instead of its own executable", async () => {
+    const sourceRoot = dirname(fileURLToPath(import.meta.url));
+    const root = await mkdtemp(join(tmpdir(), "clash-pi-node-"));
+    const marker = join(root, "launched");
+    const node = join(root, "node");
+    await writeFile(
+      node,
+      `#!/bin/sh\necho "$1" > ${JSON.stringify(marker)}\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+    );
+    await chmod(node, 0o755);
+    const environment = {
+      CLASH_PI_MCP_RUNTIME_PATH: join(sourceRoot, "pi-mcp-server.fixture.ts"),
+      CLASH_PI_MCP_PLUGIN_ROOT: dirname(sourceRoot),
+      CLASH_PI_MCP_NODE_PATH: node,
+    };
+    const previous = Object.fromEntries(
+      Object.keys(environment).map((name) => [name, process.env[name]]),
+    );
+    Object.assign(process.env, environment);
+    let shutdown: (() => Promise<void> | void) | undefined;
+    const names: string[] = [];
+    try {
+      await piClashExtension({
+        registerTool: (tool) => void names.push(tool.name),
+        on: (_event, handler) => void (shutdown = handler),
+      });
+      expect(names).toContain("clash");
+      expect((await readFile(marker, "utf8")).trim()).toBe(
+        environment.CLASH_PI_MCP_RUNTIME_PATH,
+      );
+    } finally {
+      await shutdown?.();
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

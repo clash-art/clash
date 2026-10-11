@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 
 import type { BenchmarkSubjectRecord } from "./backend-types";
 import { hashRegularTree } from "./environment-lock";
+import { readSubjectBundledRuntime } from "./subject-runtime";
 
 const execFileAsync = promisify(execFile);
 
@@ -395,9 +396,10 @@ async function resolveRelease(
   }
   try {
     assertExpectedDigest(spec.expectedSha256, artifact.sha256);
-    const [version, tree] = await Promise.all([
+    const [version, tree, bundled] = await Promise.all([
       readPluginVersion(pluginRoot),
       runtimeTree(pluginRoot),
+      readSubjectBundledRuntime(pluginRoot),
     ]);
     if (spec.expectedVersion && spec.expectedVersion !== version) {
       throw new Error(
@@ -412,6 +414,7 @@ async function resolveRelease(
         artifact,
         runtimeSha256: tree.sha256,
         source,
+        ...(bundled ? { bundledRuntime: bundled.record } : {}),
       },
       dispose,
     };

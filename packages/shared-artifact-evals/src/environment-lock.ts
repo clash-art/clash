@@ -23,6 +23,7 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readSubjectBundledRuntime } from "./subject-runtime";
 import type { WorkspaceBundleManifest } from "@clash/shared-types";
 
 import {
@@ -710,6 +711,15 @@ async function lockClashPlugin(
     ) {
       throw new Error(
         "The selected benchmark subject does not match the Clash plugin runtime on disk",
+      );
+    }
+    const bundled = await readSubjectBundledRuntime(pluginRoot);
+    if (
+      canonicalJson(bundled?.record ?? null) !==
+      canonicalJson(subject.record.bundledRuntime ?? null)
+    ) {
+      throw new Error(
+        "The selected benchmark subject does not match the bundled runtime on disk",
       );
     }
   }
