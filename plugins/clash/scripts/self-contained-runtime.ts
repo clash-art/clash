@@ -95,8 +95,8 @@ export async function acquirePinnedNodeArchive(
 
 async function downloadFile(url: string, destination: string): Promise<void> {
   const response = await fetch(url, { redirect: "follow" });
-  if (!response.ok || !response.body) throw new Error(`Download failed (${response.status}): ${url}`);
-  await writeFile(destination, response.body);
+  if (!response.ok) throw new Error(`Download failed (${response.status}): ${url}`);
+  await writeFile(destination, Buffer.from(await response.arrayBuffer()));
 }
 
 /** Windows ships bsdtar, which also reads zip; Git's GNU tar on PATH does not. */
