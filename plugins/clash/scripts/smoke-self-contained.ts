@@ -96,8 +96,11 @@ async function runSmoke(root: string): Promise<void> {
   const bundledNode = join(root, ...manifest.node.path.split("/"));
   const launcher = join(root, ...manifest.launcher.split("/"));
   // macOS caps Unix socket paths near 104 bytes; its per-user temp directory is too deep.
-  // Canonical like `root`: the CLI and Host see their cwd as a real path.
-  const scratch = realpathSync.native(await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "clash-smoke-")));
+  const created = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "clash-smoke-"));
+  // Canonical like `root` on POSIX: the CLI and Host see their cwd as a real path. Windows keeps
+  // the temp spelling as given (often an 8.3 name such as RUNNER~1), as a user's %TEMP% would.
+  const scratch = windows ? created : realpathSync.native(created);
+  console.log(`scratch ${scratch}`);
   const hosts: string[] = [];
   let reportFailures = true;
   // Nothing below may reach a Node other than the bundled one.
