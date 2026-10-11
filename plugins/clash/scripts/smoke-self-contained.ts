@@ -78,7 +78,8 @@ async function runSmoke(root: string): Promise<void> {
   const manifest = JSON.parse(await readFile(join(root, "self-contained.json"), "utf8")) as Manifest;
   const bundledNode = join(root, ...manifest.node.path.split("/"));
   const launcher = join(root, ...manifest.launcher.split("/"));
-  const scratch = await mkdtemp(join(tmpdir(), "clash-smoke-"));
+  // macOS caps Unix socket paths near 104 bytes; its per-user temp directory is too deep.
+  const scratch = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "clash-smoke-"));
   const hosts: string[] = [];
   // Nothing below may reach a Node other than the bundled one.
   const env: NodeJS.ProcessEnv = {

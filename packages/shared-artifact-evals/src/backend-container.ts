@@ -94,13 +94,19 @@ export type ContainerBackendOptions = {
   timeoutMs?: number;
   /** Argv that starts the worker inside the image, before `worker --unit`. */
   workerCommand?: string[];
+  /**
+   * Absolute path of a Node binary on this machine that runs the worker. It is
+   * mounted read-only at the same path and invoked by that path, so the image
+   * needs no Node and none is put on the Agent's PATH.
+   */
+  runnerNode?: string;
   run?: ContainerCommandRunner;
 };
 
-function defaultWorkerCommand(runnerRoot: string): string[] {
+function defaultWorkerCommand(runnerRoot: string, node = "node"): string[] {
   const pkg = join(runnerRoot, "packages", "shared-artifact-evals");
   return [
-    "node",
+    node,
     join(pkg, "node_modules", "tsx", "dist", "cli.mjs"),
     "--tsconfig",
     join(pkg, "tsconfig.dev.json"),
@@ -196,10 +202,14 @@ export function createContainerBackend(
       const unitPath = join(unitDir, "unit.json");
       await writeAttemptUnit(unitPath, unit);
 
+      if (options.runnerNode && !isAbsolute(options.runnerNode)) {
+        throw new Error("The container runner Node must be an absolute path");
+      }
       const candidates = [
         ...new Set([
           dispatch.suiteRoot,
           options.runnerRoot,
+          ...(options.runnerNode ? [options.runnerNode] : []),
           ...(dispatch.subject ? [dispatch.subject.pluginRoot] : []),
         ]),
       ];
@@ -234,7 +244,8 @@ export function createContainerBackend(
           ...new Set([...unit.envNames, ...(unit.judgeEnvNames ?? [])]),
         ].flatMap((name) => ["--env", name]),
         options.image,
-        ...(options.workerCommand ?? defaultWorkerCommand(options.runnerRoot)),
+        ...(options.workerCommand ??
+          defaultWorkerCommand(options.runnerRoot, options.runnerNode)),
         "worker",
         "--unit",
         unitPath,

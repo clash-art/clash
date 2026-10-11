@@ -129,6 +129,32 @@ function fakeEngine(
 }
 
 describe("container backend", () => {
+  it("mounts a named runner Node read-only and starts the worker with it, so the image needs none", async () => {
+    const { suiteRoot, outputRoot, suite } = await fixture();
+    const calls: EngineCall[] = [];
+    const runnerNode = "/opt/runner-toolchain/bin/node";
+    const report = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          runnerNode,
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+    expect(report.status).toBe("pass");
+    const { args } = calls.find((call) => call.args[0] === "run")!;
+    expect(args).toContain(`${runnerNode}:${runnerNode}:ro`);
+    expect(args[args.indexOf("bench:bare") + 1]).toBe(runnerNode);
+  });
+
   it("passes credentials by name, mounts inputs read-only, and records the image id", async () => {
     const { suiteRoot, outputRoot, suite } = await fixture();
     const calls: EngineCall[] = [];
