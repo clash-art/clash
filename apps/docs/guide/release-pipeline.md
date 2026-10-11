@@ -181,10 +181,27 @@ directories are not pruned automatically and can be deleted by hand.
 | `CLASH_BROWSER_CACHE_DIR`  | Cache root instead of `$CLASH_HOME/cache/browser` (for example a shared or pre-baked image directory) |
 | `CLASH_BROWSER_EXECUTABLE` | Passed straight through as `browserExecutable`; nothing is downloaded and the version is not checked  |
 | `CLASH_BROWSER_WARMUP=0`   | Disables the Host's background download; renders and `clash browser ensure` still fetch on demand     |
+| `CLASH_BROWSER_GL`         | Remotion `gl` backend for Director capture instead of the default below (for example `angle-egl`)     |
 
 Plugin processes do not inherit `CLASH_HOME`, so the Host forwards the resolved
 cache root and `CLASH_BROWSER_EXECUTABLE` to the Remotion plugin only. The
 offline smokes set `CLASH_BROWSER_WARMUP=0`.
+
+The cache root may be a symlink (a `CLASH_HOME` on another volume): Remotion
+reports the physical path of its download, and containment in the cache is
+checked by real path.
+
+### WebGL backend
+
+Director capture needs a WebGL context, so it opens the browser with an explicit
+`gl` from `resolveClashBrowserGl()`: `angle`, except on Linux without a DRM
+render node (`/dev/dri/renderD*`), where it is `swangle` (ANGLE on SwiftShader,
+software). `--use-gl=angle` alone gives a GPU-less Linux host no WebGL at all.
+Checked with the pinned 149.0.7790.0 headless shell on a GPU-less x64 host:
+`angle`, `angle-egl`, `egl`, `swiftshader` and `vulkan` create no WebGL2
+context; `swangle` and Remotion's own default do. `CLASH_BROWSER_GL` is read by
+the Host and passed to Remotion unchanged; a Linux GPU usually wants
+`angle-egl`. Timeline renders set no `gl` and keep Remotion's default.
 
 ### Linux system libraries
 

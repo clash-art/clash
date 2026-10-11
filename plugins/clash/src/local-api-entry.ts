@@ -5,9 +5,11 @@ import {
   createBoundedJsonlLogSink,
   installProcessStdioCapture,
 } from "@clash/shared-runtime/observability";
+import type { OpenGlRenderer } from "@remotion/renderer";
 import {
   clashBrowserWarmupEnabled,
   ensureClashBrowser,
+  resolveClashBrowserGl,
 } from "@clash/shared-runtime/render-browser";
 import {
   clashHomeForLocalDataDir,
@@ -146,7 +148,9 @@ async function main(): Promise<void> {
       const browser = await ensureClashBrowser();
       return renderer.openBrowser("chrome", {
         browserExecutable: browser.executablePath,
-        chromiumOptions: { gl: "angle" },
+        chromiumOptions: {
+          gl: resolveClashBrowserGl() as OpenGlRenderer,
+        },
         logLevel: "error",
       }) as never;
     },

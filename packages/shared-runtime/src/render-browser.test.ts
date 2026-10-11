@@ -2,9 +2,11 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +20,7 @@ import {
   resolveClashBrowserCacheDir,
   resolveClashBrowserCacheRoot,
   resolveClashBrowserExecutable,
+  resolveClashBrowserGl,
   type ClashBrowserDownloadRequest,
 } from "./render-browser.js";
 
@@ -103,6 +106,65 @@ describe("warm-up switch", () => {
     expect(clashBrowserWarmupEnabled({ CLASH_BROWSER_WARMUP: "0" })).toBe(false);
     expect(clashBrowserWarmupEnabled({ CLASH_BROWSER_WARMUP: "false" })).toBe(
       false,
+    );
+  });
+});
+
+describe("resolveClashBrowserGl", () => {
+  const withGpu = () => true;
+  const withoutGpu = () => false;
+
+  it("renders in software only on Linux without a GPU", () => {
+    const env = {};
+    expect(
+      resolveClashBrowserGl({ env, platform: "linux", hasGpu: withoutGpu }),
+    ).toBe("swangle");
+    expect(
+      resolveClashBrowserGl({ env, platform: "linux", hasGpu: withGpu }),
+    ).toBe("angle");
+    // Off Linux the GPU is not probed: /dev/dri says nothing about macOS or Windows.
+    const hasGpu = vi.fn(withoutGpu);
+    expect(resolveClashBrowserGl({ env, platform: "darwin", hasGpu })).toBe(
+      "angle",
+    );
+    expect(resolveClashBrowserGl({ env, platform: "win32", hasGpu })).toBe(
+      "angle",
+    );
+    expect(hasGpu).not.toHaveBeenCalled();
+  });
+
+  it("passes CLASH_BROWSER_GL through on every platform", () => {
+    const hasGpu = vi.fn(withoutGpu);
+    for (const platform of ["linux", "darwin"] as const) {
+      expect(
+        resolveClashBrowserGl({
+          env: { CLASH_BROWSER_GL: " angle-egl " },
+          platform,
+          hasGpu,
+        }),
+      ).toBe("angle-egl");
+    }
+    expect(hasGpu).not.toHaveBeenCalled();
+    expect(
+      resolveClashBrowserGl({
+        env: { CLASH_BROWSER_GL: "  " },
+        platform: "linux",
+        hasGpu,
+      }),
+    ).toBe("swangle");
+  });
+
+  it("agrees with this machine's DRM render nodes by default", () => {
+    let renderNode = false;
+    try {
+      renderNode = readdirSync("/dev/dri").some((name) =>
+        name.startsWith("renderD"),
+      );
+    } catch {
+      // No /dev/dri: no GPU.
+    }
+    expect(resolveClashBrowserGl({ env: {}, platform: "linux" })).toBe(
+      renderNode ? "angle" : "swangle",
     );
   });
 });
@@ -242,6 +304,60 @@ describe("ensureClashBrowser", () => {
     expect(resolveClashBrowserExecutable({ env, remotion })).toBeUndefined();
   });
 
+  it("accepts a download reported by real path when the cache is reached through a symlink", async () => {
+    // CLASH_HOME on another volume: Remotion's child reports process.cwd(), which is physical.
+    const physicalRoot = temporaryDirectory();
+    const linkedRoot = join(temporaryDirectory(), "browser-cache");
+    symlinkSync(physicalRoot, linkedRoot, "dir");
+    const env = { CLASH_BROWSER_CACHE_DIR: linkedRoot };
+    let reported = "";
+    const download = vi.fn(async (request: ClashBrowserDownloadRequest) => {
+      reported = installFakeBrowser(
+        realpathSync(request.cacheDir),
+        remotion.testedVersion,
+      );
+      return { executablePath: reported };
+    });
+
+    const browser = await ensureClashBrowser({ env, remotion, download });
+    expect(reported.startsWith(physicalRoot)).toBe(true);
+    expect(browser.cacheDir).toBe(resolveClashBrowserCacheDir({ env, remotion }));
+    expect(realpathSync(browser.executablePath)).toBe(reported);
+    await expect(ensureClashBrowser({ env, remotion, download })).resolves.toEqual(
+      browser,
+    );
+    expect(download).toHaveBeenCalledTimes(1);
+  });
+
+  it("still rejects a download outside a symlinked cache, existing or not", async () => {
+    const linkedRoot = join(temporaryDirectory(), "browser-cache");
+    symlinkSync(temporaryDirectory(), linkedRoot, "dir");
+    const env = { CLASH_BROWSER_CACHE_DIR: linkedRoot };
+    const outside = join(temporaryDirectory(), "chrome");
+    for (const exists of [false, true]) {
+      if (exists) writeFileSync(outside, "");
+      await expect(
+        ensureClashBrowser({
+          env,
+          remotion,
+          download: async () => ({ executablePath: outside }),
+        }),
+      ).rejects.toThrow(/outside the Clash browser cache/);
+    }
+    // A link inside the cache that leads out of it is outside too.
+    const cacheDir = resolveClashBrowserCacheDir({ env, remotion });
+    const escaping = join(cacheDir, "chrome");
+    symlinkSync(outside, escaping);
+    await expect(
+      ensureClashBrowser({
+        env,
+        remotion,
+        download: async () => ({ executablePath: escaping }),
+      }),
+    ).rejects.toThrow(/outside the Clash browser cache/);
+    expect(resolveClashBrowserExecutable({ env, remotion })).toBeUndefined();
+  });
+
   it("validates CLASH_BROWSER_EXECUTABLE instead of downloading", async () => {
     const download = vi.fn();
     const executable = join(temporaryDirectory(), "chrome");
@@ -309,6 +425,34 @@ describe("default child-process download", () => {
     });
     expect(onProgress).toHaveBeenCalledWith(
       expect.objectContaining({ percent: 1, totalSizeInBytes: 10 }),
+    );
+  });
+
+  it("installs through a symlinked CLASH_HOME, where the child's cwd is the real path", async () => {
+    const rendererEntry = fakeRenderer(`
+      const fs = require("node:fs");
+      const path = require("node:path");
+      exports.ensureBrowser = async () => {
+        const root = path.join(process.cwd(), "node_modules", ".remotion", "chrome-headless-shell");
+        const executable = path.join(root, "fake-platform", "chrome-headless-shell");
+        fs.mkdirSync(path.dirname(executable), { recursive: true });
+        fs.writeFileSync(executable, "");
+        fs.writeFileSync(path.join(root, "VERSION"), ${JSON.stringify(remotion.testedVersion)});
+        return { type: "local-puppeteer-browser", path: executable };
+      };
+    `);
+    const physicalHome = temporaryDirectory();
+    const linkedHome = join(temporaryDirectory(), "clash-home");
+    symlinkSync(physicalHome, linkedHome, "dir");
+
+    const browser = await ensureClashBrowser({
+      env: { ...process.env, CLASH_BROWSER_CACHE_DIR: "", CLASH_HOME: linkedHome },
+      remotion: { ...remotion, rendererEntry },
+    });
+
+    expect(browser.executablePath.startsWith(linkedHome)).toBe(true);
+    expect(realpathSync(browser.executablePath).startsWith(physicalHome)).toBe(
+      true,
     );
   });
 

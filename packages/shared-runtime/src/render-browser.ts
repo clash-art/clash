@@ -2,7 +2,9 @@ import { execFile, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
@@ -190,6 +192,36 @@ export function clashBrowserEnvironment(env: Env = process.env): Env {
   };
 }
 
+/** A DRM render node is what Chrome's hardware GL needs on Linux; a bare VM or container has none. */
+function hasLinuxRenderNode(): boolean {
+  try {
+    return readdirSync("/dev/dri").some((name) => name.startsWith("renderD"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The Remotion `gl` backend for a browser that must create a WebGL context (Director capture).
+ *
+ * `CLASH_BROWSER_GL` wins and is passed through for Remotion to validate. Otherwise this is
+ * `angle`, except on Linux without a GPU: there `--use-gl=angle` alone leaves Chrome with no
+ * WebGL at all, while `swangle` (ANGLE on SwiftShader) renders in software.
+ */
+export function resolveClashBrowserGl(
+  options: {
+    env?: Env;
+    platform?: NodeJS.Platform;
+    /** Injectable for tests; defaults to looking for a DRM render node. */
+    hasGpu?: () => boolean;
+  } = {},
+): string {
+  const explicit = (options.env ?? process.env).CLASH_BROWSER_GL?.trim();
+  if (explicit) return explicit;
+  if ((options.platform ?? process.platform) !== "linux") return "angle";
+  return (options.hasGpu ?? hasLinuxRenderNode)() ? "angle" : "swangle";
+}
+
 function readTrimmed(path: string): string | undefined {
   try {
     return readFileSync(path, "utf8").trim();
@@ -342,6 +374,15 @@ export function downloadClashBrowserInChildProcess(
   });
 }
 
+/** The path with symlinks resolved, or unchanged while it does not exist. */
+function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 function writeFileAtomically(path: string, contents: string): void {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, contents, "utf8");
@@ -375,7 +416,9 @@ async function ensureCachedBrowser(
     signal: options.signal,
     onProgress: options.onProgress,
   });
-  const recorded = relative(cacheDir, executablePath);
+  // Remotion reports the physical path of its cwd, so a cache reached through a symlink
+  // (`CLASH_HOME` on another volume) has to be compared by real path on both sides.
+  const recorded = relative(realPath(cacheDir), realPath(executablePath));
   if (recorded.startsWith("..") || isAbsolute(recorded)) {
     throw new Error(
       `Remotion installed Chrome Headless Shell outside the Clash browser cache: ${executablePath}`,
