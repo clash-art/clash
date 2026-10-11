@@ -11,6 +11,10 @@ import {
   createPiAgentAdapter,
 } from "./runner";
 import { runBenchmarkSuite, createNativeLocalBackend } from "./runner";
+import {
+  qualityJudgeEnvironmentNames,
+  resolveQualityJudgeEnvironment,
+} from "./quality-judge-environment";
 import { loadBenchmarkSuite } from "./suite";
 import {
   createClaudeCloudBackend,
@@ -39,10 +43,12 @@ type CliOptions = {
   agentSkills: string[];
   model?: string;
   provider?: string;
-  qualityReviewer?: "codex";
+  qualityReviewer?: "codex" | "gemini";
   qualityProvider?: string;
   qualityModel?: string;
   qualityReviewerCommand?: string;
+  qualityApiKeyEnv?: string;
+  qualityBaseUrl?: string;
   clashPluginRoot?: string;
   clashProfile?: "dev" | "prod";
   resume?: boolean;
@@ -79,10 +85,15 @@ Options:
   --case <case-id>            Run one benchmark case
   --model <model>             Agent model override
   --provider <provider>       Explicit Pi provider (required for ready Environments)
-  --quality-reviewer codex    Run an independent read-only content-effect judge
-  --quality-provider openai   Explicit quality reviewer provider
-  --quality-model <model>     Explicit quality reviewer model
+  --quality-reviewer codex|gemini  Run an independent read-only content-effect judge
+                              (default: CLASH_BENCH_QUALITY_REVIEWER)
+  --quality-provider openai|google  Quality reviewer provider (codex: openai, gemini: google;
+                              default: CLASH_BENCH_QUALITY_PROVIDER)
+  --quality-model <model>     Quality reviewer model (default: CLASH_BENCH_QUALITY_MODEL)
   --quality-reviewer-command <path>  Codex reviewer executable (default: codex)
+  --quality-api-key-env <name>  Variable holding the Gemini API key (default: GEMINI_API_KEY)
+  --quality-base-url <url>    Gemini-native API origin, e.g. a relay (default: GEMINI_BASE_URL,
+                              then Google)
   --clash-plugin-root <path>  Clash plugin root for clash-host cases (default: plugins/clash)
   --clash-profile dev|prod    Isolated Clash runtime profile (default: dev)
   --trials <n>                Run every case n times; reports pass@1, pass@k, pass^k
@@ -216,8 +227,8 @@ function parseArgs(args: string[]): CliOptions {
       options.provider = requiredValue(args, index++, flag);
     else if (flag === "--quality-reviewer") {
       const value = requiredValue(args, index++, flag);
-      if (value !== "codex") {
-        throw new Error("--quality-reviewer must be codex");
+      if (value !== "codex" && value !== "gemini") {
+        throw new Error("--quality-reviewer must be codex or gemini");
       }
       options.qualityReviewer = value;
     } else if (flag === "--quality-provider")
@@ -226,6 +237,10 @@ function parseArgs(args: string[]): CliOptions {
       options.qualityModel = requiredValue(args, index++, flag);
     else if (flag === "--quality-reviewer-command")
       options.qualityReviewerCommand = requiredValue(args, index++, flag);
+    else if (flag === "--quality-api-key-env")
+      options.qualityApiKeyEnv = requiredValue(args, index++, flag);
+    else if (flag === "--quality-base-url")
+      options.qualityBaseUrl = requiredValue(args, index++, flag);
     else if (flag === "--clash-plugin-root")
       options.clashPluginRoot = requiredValue(args, index++, flag);
     else if (flag === "--clash-profile") {
@@ -354,35 +369,50 @@ async function main(): Promise<void> {
   if (requiresExplicitSelection && adapter === "pi" && !options.provider) {
     throw new Error("--provider is required for a ready Pi Environment");
   }
-  const hasQualityOption = Boolean(
-    options.qualityProvider ||
-    options.qualityModel ||
-    options.qualityReviewerCommand,
-  );
-  if (hasQualityOption && !options.qualityReviewer) {
-    throw new Error(
-      "--quality-provider, --quality-model, and --quality-reviewer-command require --quality-reviewer codex",
-    );
-  }
-  if (options.qualityReviewer) {
-    if (options.qualityProvider !== "openai") {
-      throw new Error(
-        "--quality-provider openai is required for the Codex quality reviewer",
-      );
-    }
-    if (!options.qualityModel) {
-      throw new Error(
-        "--quality-model is required for the Codex quality reviewer",
-      );
-    }
+  let qualityReviewer = resolveQualityJudgeEnvironment({
+    env: process.env,
+    overrides: {
+      ...(options.qualityReviewer ? { reviewer: options.qualityReviewer } : {}),
+      ...(options.qualityProvider ? { provider: options.qualityProvider } : {}),
+      ...(options.qualityModel ? { model: options.qualityModel } : {}),
+      ...(options.qualityReviewerCommand
+        ? { reviewerCommand: options.qualityReviewerCommand }
+        : {}),
+      ...(options.qualityApiKeyEnv
+        ? { apiKeyEnv: options.qualityApiKeyEnv }
+        : {}),
+      ...(options.qualityBaseUrl ? { baseUrl: options.qualityBaseUrl } : {}),
+    },
+  });
+  if (qualityReviewer) {
     if (
       !suite.cases.some(
         (benchmarkCase) =>
           benchmarkCase.execution?.environment?.track === "content-effect",
       )
     ) {
+      if (options.qualityReviewer) {
+        throw new Error(
+          "--quality-reviewer requires at least one content-effect case",
+        );
+      }
+      // A judge configured only in the harness environment has nothing to review here.
+      qualityReviewer = undefined;
+    }
+  }
+  if (qualityReviewer) {
+    // A cloud session reads the key from its own environment's secrets.
+    const readsHarnessEnvironment =
+      options.backends.length === 0 ||
+      options.backends.some((kind) => kind !== "claude-cloud");
+    const missing = readsHarnessEnvironment
+      ? qualityJudgeEnvironmentNames(qualityReviewer).filter(
+          (name) => !process.env[name]?.trim(),
+        )
+      : [];
+    if (missing.length > 0) {
       throw new Error(
-        "--quality-reviewer requires at least one content-effect case",
+        `The ${qualityReviewer.adapter} quality reviewer requires ${missing.join(", ")} in the harness environment`,
       );
     }
   }
@@ -488,18 +518,7 @@ async function main(): Promise<void> {
       outputRoot: resolve(invocationRoot, options.output),
       runId: options.runId ?? `run-${Date.now()}`,
       agent,
-      ...(options.qualityReviewer
-        ? {
-            qualityReviewer: {
-              adapter: "codex" as const,
-              provider: "openai" as const,
-              model: options.qualityModel!,
-              ...(options.qualityReviewerCommand
-                ? { command: options.qualityReviewerCommand }
-                : {}),
-            },
-          }
-        : {}),
+      ...(qualityReviewer ? { qualityReviewer } : {}),
       ...(options.resume ? { resume: true } : {}),
       ...(options.force ? { force: true } : {}),
       ...(options.maxInfrastructureAttempts

@@ -127,6 +127,15 @@ export async function runAttemptUnit(
       "The worker's copy of the benchmark case differs from the dispatched one",
     );
   }
+  const workerEnv = options.env ?? process.env;
+  const missingJudgeEnv = (unit.judgeEnvNames ?? []).filter(
+    (name) => !workerEnv[name]?.trim(),
+  );
+  if (missingJudgeEnv.length > 0) {
+    throw new Error(
+      `Worker environment is missing quality judge variables the dispatcher named: ${missingJudgeEnv.join(", ")}`,
+    );
+  }
   benchmark.skills = await resolveTaskSkillPack(benchmark, suiteRoot);
   await mkdir(unit.caseRoot, { recursive: true });
   if ((await readdir(unit.caseRoot)).length > 0) {

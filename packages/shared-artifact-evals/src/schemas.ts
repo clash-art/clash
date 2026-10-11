@@ -159,10 +159,19 @@ export const QualityJudgeResponseSchema = z
 
 export const QualityReviewerProvenanceSchema = z
   .object({
-    kind: z.enum(["codex", "human"]),
+    kind: z.enum(["codex", "gemini", "human"]),
     provider: PublicReviewerIdentitySchema,
     model: PublicReviewerIdentitySchema,
     adapterVersion: PublicReviewerIdentitySchema,
+    /** Judge endpoint host and key variable *name*; never a URL path, credential, or key value. */
+    endpointHost: z
+      .string()
+      .regex(/^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(:\d{1,5})?$/u)
+      .optional(),
+    apiKeyEnv: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u)
+      .optional(),
   })
   .strict();
 

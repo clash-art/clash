@@ -25,6 +25,10 @@ import { fileURLToPath } from "node:url";
 
 import type { WorkspaceBundleManifest } from "@clash/shared-types";
 
+import {
+  lockedQualityJudge,
+  type BenchmarkLockedQualityJudge,
+} from "./quality-judge-environment";
 import type {
   BenchmarkObservedRuntime,
   BenchmarkRuntimeClaim,
@@ -193,7 +197,23 @@ export type BenchmarkEnvironmentExecutionLock = {
     providers: string[];
   };
   resolvedEnvironment: BenchmarkResolvedEnvironment;
+  /**
+   * The configured content-effect judge: variable names and non-secret identity
+   * only. It sits outside `resolvedEnvironment` because it is evaluator
+   * identity, so one Agent Environment stays comparable across judges.
+   */
+  qualityJudge?: BenchmarkLockedQualityJudge;
 };
+
+/** The lock without its evaluator identity: what an Attempt's Agent actually ran in. */
+export function agentEnvironmentLock<T extends object>(
+  lock: T,
+): Omit<T, "qualityJudge"> {
+  const { qualityJudge: _qualityJudge, ...agentEnvironment } = lock as T & {
+    qualityJudge?: unknown;
+  };
+  return agentEnvironment;
+}
 
 /** The resolved build under test; `pluginRoot` is runner-private and never serialized. */
 export type BenchmarkLockSubject = {
@@ -1044,10 +1064,11 @@ export async function captureBenchmarkExecutionLock(input: {
       "Native Agent arguments must not override the Environment model or provider",
     );
   }
-  if (
-    input.qualityReviewer &&
-    hasNativeSelectionOverride(input.qualityReviewer)
-  ) {
+  const codexReviewer =
+    input.qualityReviewer?.adapter === "codex"
+      ? input.qualityReviewer
+      : undefined;
+  if (codexReviewer && hasNativeSelectionOverride(codexReviewer)) {
     throw new Error(
       "Native quality-reviewer arguments must not override the Environment model or provider",
     );
@@ -1063,9 +1084,17 @@ export async function captureBenchmarkExecutionLock(input: {
   ) {
     throw new Error("A ready Environment requires an explicit Pi provider");
   }
-  if (input.qualityReviewer && input.qualityReviewer.provider !== "openai") {
+  if (codexReviewer && codexReviewer.provider !== "openai") {
     throw new Error(
       "The Codex quality reviewer provider must be bound to openai",
+    );
+  }
+  if (
+    input.qualityReviewer?.adapter === "gemini" &&
+    input.qualityReviewer.provider !== "google"
+  ) {
+    throw new Error(
+      "The Gemini quality reviewer provider must be bound to google",
     );
   }
   assertAdapterProviderBinding(input.agent, model);
@@ -1080,11 +1109,8 @@ export async function captureBenchmarkExecutionLock(input: {
   const [executable, reviewerExecutable, skills, clash, runnerManifest, task] =
     await Promise.all([
       lockExecutable(input.agent, input.executionIntent === "execute"),
-      input.qualityReviewer
-        ? lockExecutable(
-            input.qualityReviewer,
-            input.executionIntent === "execute",
-          )
+      codexReviewer
+        ? lockExecutable(codexReviewer, input.executionIntent === "execute")
         : undefined,
       lockSkills(input),
       lockClashPlugin(
@@ -1125,6 +1151,9 @@ export async function captureBenchmarkExecutionLock(input: {
     ...(clash ? { clash: clash.public } : {}),
     requirements,
     resolvedEnvironment,
+    ...(input.qualityReviewer
+      ? { qualityJudge: lockedQualityJudge(input.qualityReviewer) }
+      : {}),
   };
   const lockFile = join(input.caseRoot, "environment-lock.json");
   await writeJsonAtomically(lockFile, lock);

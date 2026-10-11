@@ -135,7 +135,9 @@ Requirements and limits:
 Credentials never enter a unit, a prompt, a mount, an argv, or any file under the
 run directory. A unit names variables (`envNames`); the container backend passes
 them with `--env NAME` so the engine reads the value from its own environment,
-and the cloud session reads them from its environment's secrets. A worker that
+and the cloud session reads them from its environment's secrets. The content-effect
+judge's key variable is named separately (`judgeEnvNames`) and reaches the worker
+the same way, without being added to the Agent's explicit environment. A worker that
 cannot find a named variable fails the Attempt and names the variable. Agent arguments
 (`--agent-arg`) are part of the unit and, for the cloud backend, of the prompt:
 never put a credential in one.

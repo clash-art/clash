@@ -15,6 +15,7 @@ import type {
 } from "./backend-types";
 import type { BenchmarkAttemptCompletion } from "./execution-backend";
 import { verifyBenchmarkAttempt } from "./attempt-manifest";
+import { qualityJudgeEnvironmentNames } from "./quality-judge-environment";
 import type { BenchmarkAttemptExecutionInput } from "./runner";
 import type {
   ArtifactBenchmarkCase,
@@ -56,6 +57,11 @@ export type AttemptUnit = {
   /** Names of variables the worker must find in its own environment. */
   envNames: string[];
   qualityReviewer?: BenchmarkQualityReviewer;
+  /**
+   * Variables the judge reads in the worker's own environment. They are never
+   * handed to the Agent as explicit environment.
+   */
+  judgeEnvNames?: string[];
   runtime: BenchmarkRuntimeClaim;
   subject?: {
     record: BenchmarkSubjectRecord;
@@ -113,6 +119,7 @@ export function createAttemptUnit(input: {
 }): AttemptUnit {
   const { dispatch } = input;
   const { agent, envNames } = toPortableAgent(dispatch.agent, input.forwardEnv);
+  const judgeEnvNames = qualityJudgeEnvironmentNames(dispatch.qualityReviewer);
   return {
     schemaVersion: 1,
     kind: "clash.benchmark.attempt-unit",
@@ -133,6 +140,7 @@ export function createAttemptUnit(input: {
     ...(dispatch.qualityReviewer
       ? { qualityReviewer: dispatch.qualityReviewer }
       : {}),
+    ...(judgeEnvNames.length > 0 ? { judgeEnvNames } : {}),
     runtime: input.claim,
     ...(input.subject ? { subject: input.subject } : {}),
   };

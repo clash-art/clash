@@ -377,10 +377,12 @@ export type QualityJudgeResponse = {
 };
 
 export type QualityReviewerProvenance = {
-  kind: "codex" | "human";
+  kind: "codex" | "gemini" | "human";
   provider: string;
   model: string;
   adapterVersion: string;
+  endpointHost?: string;
+  apiKeyEnv?: string;
 };
 
 export type QualityReviewResult = {
@@ -423,7 +425,20 @@ export type CodexQualityReviewer = {
   timeoutMs?: number;
 };
 
-export type BenchmarkQualityReviewer = CodexQualityReviewer;
+export type GeminiQualityReviewer = {
+  adapter: "gemini";
+  provider: "google";
+  model: string;
+  /** Environment variable holding the API key; the key itself is never part of the reviewer. */
+  apiKeyEnv?: string;
+  baseUrl?: string;
+  /** Harness environment variable `baseUrl` was read from, when it was not an explicit override. */
+  baseUrlEnv?: string;
+  timeoutMs?: number;
+};
+
+export type BenchmarkQualityReviewer =
+  CodexQualityReviewer | GeminiQualityReviewer;
 
 export type EvaluationCheck = {
   id: string;

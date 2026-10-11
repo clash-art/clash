@@ -86,6 +86,7 @@ export {
   type WriteBenchmarkResultBundleInput,
 } from "./result-bundle";
 export {
+  agentEnvironmentLock,
   captureBenchmarkExecutionLock,
   verifyBenchmarkExecutionLock,
   type BenchmarkEnvironmentExecutionLock,
@@ -104,6 +105,25 @@ export {
   runCodexQualityJudge,
   sanitizeQualityReviewerEnvironment,
 } from "./quality-review-codex";
+export {
+  buildGeminiQualityJudgeRequest,
+  geminiJudgeIdentity,
+  geminiQualityJudgeSupportsRequest,
+  parseGeminiQualityJudgeResponse,
+  runGeminiQualityJudge,
+} from "./quality-review-gemini";
+export {
+  qualityJudgeSupportsRequest,
+  runQualityJudge,
+} from "./quality-review-judge";
+export {
+  QUALITY_JUDGE_ENVIRONMENT,
+  lockedQualityJudge,
+  qualityJudgeEnvironmentNames,
+  resolveQualityJudgeEnvironment,
+  type BenchmarkLockedQualityJudge,
+  type QualityJudgeOverrides,
+} from "./quality-judge-environment";
 export {
   createQualityReviewRequest,
   createQualityReviewResult,

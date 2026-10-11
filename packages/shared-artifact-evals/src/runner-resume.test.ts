@@ -104,11 +104,11 @@ describe("benchmark batch recovery", () => {
     });
 
     expect(report.status).toBe("pass");
-    await expect(readRunProgress(outputRoot, "completed-run")).resolves.toMatchObject({
+    await expect(
+      readRunProgress(outputRoot, "completed-run"),
+    ).resolves.toMatchObject({
       status: "pass",
-      completedCases: [
-        { id: "completed-case", status: "pass", attempt: 1 },
-      ],
+      completedCases: [{ id: "completed-case", status: "pass", attempt: 1 }],
     });
   });
 
@@ -183,6 +183,109 @@ describe("benchmark batch recovery", () => {
         outputRoot,
         runId: "environment-selection",
         agent: { adapter: "codex", model: "gpt-5.6-terra" },
+        resume: true,
+      }),
+    ).rejects.toThrow(/resolved Environment.*does not match/iu);
+  });
+
+  it("resumes an Environment under a different judge and keeps the judge the Attempt recorded", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-bench-judge-resume-"));
+    const suiteRoot = join(root, "suite");
+    const outputRoot = join(root, "runs");
+    await mkdir(suiteRoot);
+    const benchmarkSuite = suite([
+      benchmarkCase("blocked-environment", {
+        execution: {
+          profile: "clash-host",
+          lane: "blocked-contract",
+          requiredProductOperations: ["asset.get"],
+          requiredCapabilities: ["generator-agent-surface"],
+          preflight: {
+            status: "blocked",
+            checks: [
+              {
+                capability: "generator-agent-surface",
+                status: "missing",
+                detail: "The agent-facing contract is intentionally absent.",
+              },
+            ],
+          },
+          evidence: { traceRequired: true, submissionRequired: true },
+          productReadback: {
+            required: true,
+            mechanism: "generator-authority-readback",
+            artifactIds: ["result"],
+            description: "Read the frozen Generator authority.",
+          },
+          environment: {
+            profile: "clash-agent-environment-v1",
+            track: "functional",
+            outputs: {
+              modifiedWorkspace: true,
+              rawTrajectory: true,
+              normalizedTrajectory: "clash-normalized-v1",
+              atifTrajectory: "ATIF-v1.7-when-supported",
+              otlpTrace: "otlp-json",
+              attempt: "clash-attempt-v1",
+            },
+          },
+        },
+      }),
+    ]);
+
+    const judge = {
+      adapter: "gemini" as const,
+      provider: "google" as const,
+      model: "gemini-judge",
+      apiKeyEnv: "CLASH_TEST_JUDGE_KEY",
+    };
+    await runBenchmarkSuite({
+      suite: benchmarkSuite,
+      suiteRoot,
+      outputRoot,
+      runId: "judge-selection",
+      agent: { adapter: "codex", model: "gpt-5.6-sol" },
+      qualityReviewer: judge,
+    });
+    const progress = await readRunProgress(outputRoot, "judge-selection");
+    const lockPath = join(
+      outputRoot,
+      "judge-selection",
+      progress.attempts[0]!.caseRoot as string,
+      "environment-lock.json",
+    );
+    const sealed = await readFile(lockPath, "utf8");
+    expect(JSON.parse(sealed)).toMatchObject({
+      qualityJudge: { kind: "gemini", model: judge.model },
+    });
+
+    for (const qualityReviewer of [
+      { ...judge, model: "gemini-judge-next" },
+      { ...judge, baseUrl: "https://relay.example" },
+      undefined,
+    ]) {
+      await expect(
+        runBenchmarkSuite({
+          suite: benchmarkSuite,
+          suiteRoot,
+          outputRoot,
+          runId: "judge-selection",
+          agent: { adapter: "codex", model: "gpt-5.6-sol" },
+          ...(qualityReviewer ? { qualityReviewer } : {}),
+          resume: true,
+        }),
+      ).resolves.toMatchObject({ status: "blocked", resumed: true });
+    }
+    expect(await readFile(lockPath, "utf8")).toBe(sealed);
+
+    await expect(
+      runBenchmarkSuite({
+        suite: benchmarkSuite,
+        suiteRoot,
+        outputRoot,
+        runId: "judge-selection",
+        agent: { adapter: "codex", model: "gpt-5.6-terra" },
+        qualityReviewer: judge,
         resume: true,
       }),
     ).rejects.toThrow(/resolved Environment.*does not match/iu);
