@@ -77,6 +77,7 @@ test("bundled CLI and peer plugin MCP share one persistent Clash daemon", async 
     CLASH_HOME: clashHome,
     CLASH_PROFILE: "prod",
     CLASH_LOCAL_DATA_DIR: join(clashHome, "local-api"),
+    CLASH_BROWSER_WARMUP: "0",
   };
   let daemonPid: number | undefined;
 

@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { resolveClashProfile } from "@clash/shared-runtime/local-paths";
 import { assetsCommand } from "./commands/assets";
 import { auditCommand } from "./commands/audit";
+import { browserCommand } from "./commands/browser";
 import { authCommand } from "./commands/auth";
 import { canvasCommand } from "./commands/canvas";
 import { canvasesCommand } from "./commands/canvases";
@@ -48,9 +49,18 @@ Environment variables:
   CLASH_PROJECT_ID   Project override when no cwd marker is available
   CLASH_CANVAS_ID    Canvas scope for canvas node commands
   CLASH_API_KEY      Remote/cloud credential override (not needed for local-api)
+  CLASH_BROWSER_EXECUTABLE  Render with this Chrome instead of the downloaded headless shell
 
 Project identity lives in .clash/project.toml; native file edits are drafts until applied.
 Optional cloud sync: clash auth login.`;
+
+const HOSTLESS_COMMANDS = new Set(["logs", "browser"]);
+
+function topLevelCommandName(command: Command): string {
+  let current = command;
+  while (current.parent?.parent) current = current.parent;
+  return current.name();
+}
 
 export type CliProgramOptions = {
   beforeAction?: (program: Command) => void | Promise<void>;
@@ -77,8 +87,11 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
       ...process.env,
       ...(requested ? { CLASH_PROFILE: requested } : {}),
     });
-    // Offline diagnostics must remain available when Host startup itself failed.
-    if (actionCommand.name() !== "logs") await options.beforeAction?.(program);
+    // Offline diagnostics must remain available when Host startup itself failed, and preparing
+    // the render browser (for example while building a container image) needs no Host at all.
+    if (!HOSTLESS_COMMANDS.has(topLevelCommandName(actionCommand))) {
+      await options.beforeAction?.(program);
+    }
   });
 
   program.addCommand(authCommand.summary("Manage optional cloud-sync login"));
@@ -96,6 +109,7 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
   registerProviderCommands(program);
   program.addCommand(timelineCommand);
   program.addCommand(doctorCommand);
+  program.addCommand(browserCommand);
   program.addCommand(textCommand.summary("Pull and apply editable text node files"));
   program.addCommand(projectionCommand.summary("Pull and apply entity files using their own DSL"));
   program.addCommand(assetsCommand);

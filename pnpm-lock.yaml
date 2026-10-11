@@ -2150,6 +2150,9 @@ importers:
       '@clash/action-sdk':
         specifier: workspace:*
         version: link:../../packages/action-sdk
+      '@clash/shared-runtime':
+        specifier: workspace:*
+        version: link:../../packages/shared-runtime
       '@clash/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

@@ -109,6 +109,8 @@ async function runSmoke(root: string): Promise<void> {
     ...Object.fromEntries(Object.entries(process.env).filter(([name]) =>
       !name.startsWith("CLASH_") && !name.startsWith("NODE_") && !name.startsWith("npm_"))),
     CLASH_PROFILE: "prod",
+    // The smoke runs offline in the container and must not start a Chrome download elsewhere.
+    CLASH_BROWSER_WARMUP: "0",
   };
   const clash = async (home: string, cwd: string, args: string[]) => {
     const options = { cwd, env: { ...env, CLASH_HOME: home }, maxBuffer: 16 * 1024 * 1024 };

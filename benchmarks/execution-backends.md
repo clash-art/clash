@@ -92,6 +92,29 @@ is mounted read-only at the same absolute path; the Attempt directory is mounted
 at its host path, so absolute paths in current-view reports stay valid. The image
 tag is resolved to its content id once per run.
 
+Rendering is the one thing a bare image cannot do. Clash downloads Remotion's
+pinned Chrome Headless Shell into `$CLASH_HOME/cache/browser` on demand, and the
+browser needs shared libraries `debian:bookworm-slim` does not ship. An image
+whose tasks render a Timeline or a director stage must add them:
+
+```dockerfile
+RUN apt-get update && apt-get install -y --no-install-recommends libnss3 libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+plus fonts for any text the tasks render (`fonts-liberation`,
+`fonts-noto-color-emoji`, `fonts-noto-cjk`, …). The download also needs the
+network, so with `--network none` the browser has to be in the image already:
+run `CLASH_BROWSER_CACHE_DIR=/opt/clash-browser clash browser ensure` at build
+time and make the subject's Host see the same `CLASH_BROWSER_CACHE_DIR`. (That
+last step has not been exercised through this benchmark's environment handling.)
+`clash browser ensure` exits non-zero and names the missing libraries when the
+image is incomplete. Everything else in the benchmark still works on a bare
+image: without the libraries only render steps fail, and a Host that cannot
+fetch the browser logs one `browser.warmup_failed` record and carries on. See
+[Chrome Headless Shell](../apps/docs/guide/release-pipeline.md#chrome-headless-shell)
+for older glibc and arm64.
+
 ### Claude Code cloud backend (experimental)
 
 > **Experimental.** This backend has been exercised only against a simulated
