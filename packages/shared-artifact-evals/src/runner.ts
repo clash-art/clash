@@ -47,6 +47,27 @@ import {
   type ProjectDirectorStage,
 } from "@clash/shared-types";
 
+import {
+  BENCHMARK_BACKEND_KINDS,
+  type BenchmarkBackendKind,
+  type BenchmarkRuntimeClaim,
+  type BenchmarkSubjectRecord,
+} from "./backend-types";
+import {
+  createSerializer,
+  scheduleTrialUnits,
+  type ExecutionBackend,
+  type TrialUnit,
+} from "./execution-backend";
+import { subjectIdentity, type ResolvedBenchmarkSubject } from "./subject";
+import {
+  assertSingleSubject,
+  createTrialAggregateRecord,
+  writeTrialAggregateRecord,
+  type TrialAttemptInput,
+  type TrialOutcome,
+  type TrialPlacement,
+} from "./trial-aggregate";
 import { loadSubmission } from "./artifacts";
 import { writeAtifTrajectory } from "./atif";
 import {
@@ -80,6 +101,7 @@ import {
   captureBenchmarkExecutionLock,
   verifyBenchmarkExecutionLock,
   type BenchmarkExecutionLockReceipt,
+  type BenchmarkLockSubject,
 } from "./environment-lock";
 import {
   installBenchmarkInputFixture,
@@ -343,7 +365,7 @@ async function terminateChildAndWait(child: ChildProcess): Promise<void> {
   await waitForProcessClose(child, 1_000);
 }
 
-class BenchmarkProcessScope {
+export class BenchmarkProcessScope {
   private readonly children = new Set<ChildProcess>();
   private installed = false;
   private forceKillTimer: NodeJS.Timeout | undefined;
@@ -3678,10 +3700,22 @@ async function runCase(input: {
   suiteRoot: string;
   caseRoot: string;
   processScope: BenchmarkProcessScope;
+  runtime?: BenchmarkRuntimeClaim;
+  subject?: BenchmarkLockSubject;
+  adoptCaseRoot?: boolean;
 }): Promise<BenchmarkCaseReport> {
   assertSafePathSegment(input.benchmark.id, "Benchmark case id");
   const caseRoot = input.caseRoot;
-  await createFreshDirectory(caseRoot, "Case directory");
+  if (input.adoptCaseRoot) {
+    if ((await readdir(caseRoot)).length > 0) {
+      throw new BenchmarkInfrastructureError(
+        "dispatch",
+        `Dispatcher-provided case directory must be empty: ${caseRoot}`,
+      );
+    }
+  } else {
+    await createFreshDirectory(caseRoot, "Case directory");
+  }
   if (input.benchmark.execution?.environment) {
     await writeBenchmarkTaskManifest({
       caseRoot,
@@ -3754,6 +3788,8 @@ async function runCase(input: {
           : {}),
         executionIntent: "execute",
         inputManifest: verifiedInput.manifest,
+        ...(input.runtime ? { runtime: input.runtime } : {}),
+        ...(input.subject ? { subject: input.subject } : {}),
       });
       const importHost = await startClashHost(
         clashHostConfig,
@@ -4266,6 +4302,13 @@ type RunManifest = {
   runId: string;
   suiteSha256: string;
   startedAt: string;
+  /** Present only when the run repeats trials or selects a subject. */
+  execution?: {
+    trials: number;
+    subjectIdentity?: string;
+    /** Present only for the opt-in `spread` placement; absent means per-task. */
+    placement?: "spread";
+  };
 };
 
 type RunProgressCase = {
@@ -4308,6 +4351,8 @@ async function assertEnvironmentResumeLockMatches(input: {
   benchmark: ArtifactBenchmarkCase;
   agent: BenchmarkAgent;
   qualityReviewer?: BenchmarkQualityReviewer;
+  backend: ExecutionBackend;
+  subject?: ResolvedBenchmarkSubject;
 }): Promise<void> {
   const environment = input.benchmark.execution?.environment;
   if (!environment) return;
@@ -4316,6 +4361,34 @@ async function assertEnvironmentResumeLockMatches(input: {
   const priorLock = JSON.parse(
     await readFile(join(priorRoot, "environment-lock.json"), "utf8"),
   ) as unknown;
+  if (input.backend.kind !== "native-local") {
+    // The remote worker's executables and platform cannot be re-observed here.
+    // What can be compared is the placement claim and the selected subject.
+    const claim = await input.backend.runtimeClaim();
+    const prior = priorLock as {
+      resolvedEnvironment?: { runtime?: { kind?: string; backend?: unknown } };
+      clash?: { subject?: BenchmarkSubjectRecord };
+    };
+    if (
+      prior.resolvedEnvironment?.runtime?.kind !== claim.kind ||
+      sha256Json(prior.resolvedEnvironment.runtime.backend) !==
+        sha256Json(claim)
+    ) {
+      throw new Error(
+        `Cannot resume case '${input.benchmark.id}': the execution backend differs from the completed attempt`,
+      );
+    }
+    const priorSubject = prior.clash?.subject;
+    if (
+      (priorSubject ? subjectIdentity(priorSubject) : undefined) !==
+      (input.subject ? subjectIdentity(input.subject.record) : undefined)
+    ) {
+      throw new Error(
+        `Cannot resume case '${input.benchmark.id}': the selected subject differs from the completed attempt`,
+      );
+    }
+    return;
+  }
   const comparisonRoot = await mkdtemp(
     join(input.runRoot, ".resume-environment-lock-"),
   );
@@ -4350,6 +4423,7 @@ async function assertEnvironmentResumeLockMatches(input: {
           ? "blocked-no-run"
           : "execute",
       ...(inputManifest ? { inputManifest } : {}),
+      ...(input.subject ? { subject: input.subject } : {}),
     });
     if (sha256Json(priorLock) !== sha256Json(current.lock)) {
       throw new Error(
@@ -4829,6 +4903,7 @@ async function createBlockedCaseReport(input: {
   suiteRoot: string;
   caseRoot: string;
   attempt: number;
+  subject?: BenchmarkLockSubject;
 }): Promise<BenchmarkCaseReport> {
   await createFreshDirectory(input.caseRoot, "Case directory");
   if (input.benchmark.execution?.environment) {
@@ -4847,6 +4922,7 @@ async function createBlockedCaseReport(input: {
         ? { qualityReviewer: input.qualityReviewer }
         : {}),
       executionIntent: "blocked-no-run",
+      ...(input.subject ? { subject: input.subject } : {}),
     });
   }
   const workspace = join(input.caseRoot, "workspace");
@@ -5080,10 +5156,21 @@ async function loadRunProgress(input: {
   return progress;
 }
 
-function attemptRoot(runRoot: string, caseId: string, attempt: number): string {
+function attemptRoot(
+  runRoot: string,
+  caseId: string,
+  attempt: number,
+  trial = 1,
+): string {
+  // Later trials live beside, never inside, the first trial's case directory:
+  // concurrent trials must not create the parent that another trial claims.
+  const trialRoot =
+    trial === 1
+      ? join(runRoot, caseId)
+      : join(runRoot, "trials", String(trial).padStart(3, "0"), caseId);
   return attempt === 1
-    ? join(runRoot, caseId)
-    : join(runRoot, caseId, "attempts", String(attempt).padStart(3, "0"));
+    ? trialRoot
+    : join(trialRoot, "attempts", String(attempt).padStart(3, "0"));
 }
 
 function suiteStatus(
@@ -5167,6 +5254,182 @@ export function createPiAgentAdapter(
   return { adapter: "pi", ...options };
 }
 
+export type BenchmarkAttemptExecutionInput = {
+  suiteId: string;
+  runId: string;
+  benchmark: ArtifactBenchmarkCase;
+  agent: BenchmarkAgent;
+  qualityReviewer?: BenchmarkQualityReviewer;
+  suiteRoot: string;
+  /** The run directory that contains `caseRoot`. */
+  runRoot: string;
+  caseRoot: string;
+  attempt: number;
+  /** Trial index (1-based) this Attempt belongs to. */
+  trial: number;
+  /** The run repeats trials, so the report records which one this is. */
+  repeated?: boolean;
+  forced: boolean;
+  startedAt: string;
+  processScope: BenchmarkProcessScope;
+  /** Where this Attempt runs; recorded in the Environment lock. */
+  runtime?: BenchmarkRuntimeClaim;
+  /** The build under test; verified against the locked plugin runtime. */
+  subject?: BenchmarkLockSubject;
+  /** `caseRoot` already exists, is empty, and is a dispatcher-provided mount. */
+  adoptCaseRoot?: boolean;
+  /** The dispatcher failed before the Attempt could run; seal it as infrastructure. */
+  dispatchFailure?: unknown;
+};
+
+/**
+ * Everything one Attempt needs from "start the Agent" to "sealed Attempt and
+ * published Evaluation". Backends run this where the Attempt executes: in
+ * process for native-local, inside the worker for container and cloud.
+ */
+export async function executeBenchmarkAttempt(
+  input: BenchmarkAttemptExecutionInput,
+): Promise<{
+  report: BenchmarkCaseReport;
+  attemptReceipt?: BenchmarkAttemptReceipt;
+}> {
+  const { benchmark, suiteRoot, caseRoot, processScope } = input;
+  const nextAttempt = input.attempt;
+  const forcedRetryRequested = input.forced;
+  let report: BenchmarkCaseReport;
+  try {
+    if (input.dispatchFailure !== undefined) throw input.dispatchFailure;
+    report =
+      benchmark.execution?.preflight?.status === "blocked"
+        ? await createBlockedCaseReport({
+            suiteId: input.suiteId,
+            benchmark,
+            agent: input.agent,
+            ...(input.qualityReviewer
+              ? { qualityReviewer: input.qualityReviewer }
+              : {}),
+            suiteRoot,
+            caseRoot,
+            attempt: nextAttempt,
+            ...(input.subject ? { subject: input.subject } : {}),
+          })
+        : await runCase({
+            suiteId: input.suiteId,
+            benchmark,
+            agent: input.agent,
+            ...(input.qualityReviewer
+              ? { qualityReviewer: input.qualityReviewer }
+              : {}),
+            suiteRoot,
+            caseRoot,
+            processScope,
+            ...(input.runtime ? { runtime: input.runtime } : {}),
+            ...(input.subject ? { subject: input.subject } : {}),
+            ...(input.adoptCaseRoot ? { adoptCaseRoot: true } : {}),
+          });
+  } catch (error) {
+    report = await createInfrastructureFailureReport({
+      suiteId: input.suiteId,
+      benchmark,
+      agent: input.agent,
+      caseRoot,
+      attempt: nextAttempt,
+      error,
+    });
+  }
+  report.attempt = nextAttempt;
+  if (input.repeated) report.trial = input.trial;
+  report.failure = classifyCaseFailure(report);
+  if (forcedRetryRequested && report.status !== "pass") {
+    report.forcePending = true;
+  }
+  await writeJson(join(caseRoot, "case-report.json"), report);
+
+  let attemptReceipt: BenchmarkAttemptReceipt | undefined;
+
+  if (benchmark.execution?.environment) {
+    let environmentCapture: BenchmarkModifiedWorkspaceCapture;
+    if (benchmark.execution.preflight?.status === "blocked") {
+      environmentCapture = { status: "blocked" };
+    } else {
+      try {
+        const recorded = JSON.parse(
+          await readFile(join(caseRoot, "environment-capture.json"), "utf8"),
+        ) as Record<string, unknown>;
+        environmentCapture =
+          recorded.status === "complete" && typeof recorded.path === "string"
+            ? {
+                status: "complete",
+                path: resolve(caseRoot, recorded.path),
+              }
+            : recorded.status === "failed" && typeof recorded.error === "string"
+              ? { status: "failed", error: recorded.error }
+              : {
+                  status: "failed",
+                  error: "Modified Workspace capture receipt is invalid",
+                };
+      } catch (error) {
+        environmentCapture = {
+          status: "failed",
+          error:
+            report.failure?.detail ??
+            `Modified Workspace capture receipt is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+    }
+    if (environmentCapture.status !== "complete" && report.status === "pass") {
+      const detail =
+        environmentCapture.status === "failed"
+          ? environmentCapture.error
+          : "Modified Workspace capture was blocked";
+      report.status = "fail";
+      report.execution.status = "fail";
+      report.execution.detail =
+        `${report.execution.detail} Modified Workspace capture failed: ${detail}`.trim();
+      report.outcome.status = "failed";
+      report.outcome.executionStatus = "fail";
+      report.failure = {
+        classification: "infrastructure",
+        retryable: true,
+        phase: "environment-capture",
+        detail,
+      };
+      await writeCaseReportFiles(caseRoot, report);
+    }
+    const inputWorkspace =
+      benchmark.execution.environment.initialState?.workspace;
+    await writeBenchmarkAttemptCapture({
+      caseRoot,
+      suiteId: input.suiteId,
+      runId: input.runId,
+      benchmark,
+      agent: input.agent,
+      report,
+      attempt: nextAttempt,
+      startedAt: input.startedAt,
+      finishedAt: new Date().toISOString(),
+      ...(inputWorkspace
+        ? {
+            inputWorkspaceBundle: resolve(suiteRoot, inputWorkspace.path),
+          }
+        : {}),
+      modifiedWorkspaceCapture: environmentCapture,
+      serviceVersion: "0.1.0",
+    });
+    attemptReceipt = await writeBenchmarkAttempt({
+      caseRoot,
+      suiteRoot,
+    });
+    await publishBenchmarkEvaluationResults({
+      caseRoot,
+      suiteRoot,
+      benchmark,
+      report,
+    });
+  }
+  return { report, attemptReceipt };
+}
+
 async function runBenchmarkSuiteInProcessScope(
   input: RunBenchmarkSuiteInput,
   processScope: BenchmarkProcessScope,
@@ -5197,6 +5460,30 @@ async function runBenchmarkSuiteInProcessScope(
     throw new Error("outputRoot must be a directory");
   const configuredRunRoot = join(outputRoot, input.runId);
   const suiteSha256 = sha256Json(parsedSuite.data);
+  const trials = input.trials ?? 1;
+  if (!Number.isInteger(trials) || trials < 1) {
+    throw new Error("trials must be a positive integer");
+  }
+  const passK = input.passK ?? trials;
+  if (!Number.isInteger(passK) || passK < 1 || passK > trials) {
+    throw new Error("passK must be an integer between 1 and trials");
+  }
+  const placement: TrialPlacement = input.placement ?? "per-task";
+  const backends = input.backends?.length
+    ? input.backends
+    : [createNativeLocalBackend()];
+  // Only a non-default plan is written, so single-trial runs keep their
+  // original manifest bytes.
+  const executionPlan: RunManifest["execution"] | undefined =
+    trials > 1 || input.subject || placement === "spread"
+      ? {
+          trials,
+          ...(input.subject
+            ? { subjectIdentity: subjectIdentity(input.subject.record) }
+            : {}),
+          ...(placement === "spread" ? { placement } : {}),
+        }
+      : undefined;
   let runRoot: string;
   let manifest: RunManifest;
   if (input.resume) {
@@ -5237,6 +5524,16 @@ async function runBenchmarkSuiteInProcessScope(
         "Cannot resume: the benchmark suite does not match the existing run manifest",
       );
     }
+    const recorded = parsedManifest.execution ?? { trials: 1 };
+    if (
+      recorded.trials !== trials ||
+      recorded.subjectIdentity !== executionPlan?.subjectIdentity ||
+      (recorded.placement ?? "per-task") !== placement
+    ) {
+      throw new Error(
+        "Cannot resume: the trial count, trial placement, or selected subject differs from the existing run manifest",
+      );
+    }
     manifest = parsedManifest;
   } else {
     await createFreshDirectory(configuredRunRoot, "Run directory");
@@ -5247,6 +5544,7 @@ async function runBenchmarkSuiteInProcessScope(
       runId: input.runId,
       suiteSha256,
       startedAt: new Date().toISOString(),
+      ...(executionPlan ? { execution: executionPlan } : {}),
     };
     await writeJsonAtomically(join(runRoot, "run-manifest.json"), manifest);
   }
@@ -5266,11 +5564,50 @@ async function runBenchmarkSuiteInProcessScope(
   });
   const ledger = progress.attempts;
   const startedAt = manifest.startedAt;
-  const cases: BenchmarkCaseReport[] = [];
-  for (const benchmark of parsedSuite.data.cases) {
-    if (processScope.interruptedSignal) break;
+  const units = planTrialUnits({
+    cases: parsedSuite.data.cases,
+    trials,
+    backends,
+    placement,
+  });
+  const locked = createSerializer();
+  const reports: Array<BenchmarkCaseReport | undefined> = units.map(
+    () => undefined,
+  );
+  const currentCases = () =>
+    reports.filter((report): report is BenchmarkCaseReport => Boolean(report));
+  // One run measures one build. The first sealed identity fixes it, and an
+  // Attempt that measured another stops the run instead of being averaged in.
+  let runSubject: string | undefined;
+  const settle = (unit: TrialUnit, report: BenchmarkCaseReport) =>
+    locked(async () => {
+      const identity = await sealedAttemptIdentity({
+        runRoot,
+        ledger,
+        unit,
+        report,
+      });
+      if (identity) {
+        const measured = identity.subjectIdentity ?? "unrecorded";
+        assertSingleSubject(runSubject ? [runSubject, measured] : [measured]);
+        runSubject = measured;
+      }
+      reports[unit.index] = report;
+      await writeSuiteProgress({
+        progressPath,
+        progress,
+        resumed: Boolean(input.resume),
+        cases: currentCases(),
+      });
+    });
+  const record = (entry: BenchmarkAttemptLedgerEntry) =>
+    locked(() => recordAttemptEntry(progressPath, progress, entry));
+  const runUnit = async (unit: TrialUnit): Promise<void> => {
+    const { benchmark, trial, backend } = unit;
+    if (processScope.interruptedSignal) return;
+    const trialField = trial > 1 ? { trial } : {};
     const existingEntries = ledger.filter(
-      ({ caseId }) => caseId === benchmark.id,
+      (entry) => entry.caseId === benchmark.id && (entry.trial ?? 1) === trial,
     );
     const terminalAttempts = new Set(
       existingEntries
@@ -5293,13 +5630,14 @@ async function runBenchmarkSuiteInProcessScope(
         suiteId: parsedSuite.data.id,
         runId: input.runId,
         caseId: benchmark.id,
+        ...trialField,
         attempt: entry.attempt,
         event: "abandoned",
         at: new Date().toISOString(),
         caseRoot: entry.caseRoot,
         failure,
       };
-      await recordAttemptEntry(progressPath, progress, abandoned);
+      await record(abandoned);
       existingEntries.push(abandoned);
     }
 
@@ -5317,6 +5655,8 @@ async function runBenchmarkSuiteInProcessScope(
         priorCaseRoot: latestCompleted.caseRoot,
         benchmark,
         agent: input.agent,
+        backend,
+        ...(input.subject ? { subject: input.subject } : {}),
         ...(input.qualityReviewer
           ? { qualityReviewer: input.qualityReviewer }
           : {}),
@@ -5339,6 +5679,7 @@ async function runBenchmarkSuiteInProcessScope(
         );
       }
       latestReport.attempt ??= latestCompleted.attempt;
+      if (trials > 1) latestReport.trial = trial;
       latestReport.failure ??= classifyCaseFailure(latestReport);
     }
 
@@ -5389,174 +5730,65 @@ async function runBenchmarkSuiteInProcessScope(
         !latestReport.failure.retryable ||
         completedInfrastructureFailures >= maxInfrastructureAttempts)
     ) {
-      cases.push(latestReport);
-      await writeSuiteProgress({
-        progressPath,
-        progress,
-        resumed: Boolean(input.resume),
-        cases,
-      });
-      continue;
+      await settle(unit, latestReport);
+      return;
     }
 
     let infrastructureFailures = completedInfrastructureFailures;
     let nextAttempt =
       Math.max(0, ...existingEntries.map(({ attempt }) => attempt)) + 1;
     while (true) {
-      const caseRoot = attemptRoot(runRoot, benchmark.id, nextAttempt);
+      const caseRoot = attemptRoot(runRoot, benchmark.id, nextAttempt, trial);
       await mkdir(dirname(caseRoot), { recursive: true });
       const startedEntry: BenchmarkAttemptLedgerEntry = {
         schemaVersion: 1,
         suiteId: parsedSuite.data.id,
         runId: input.runId,
         caseId: benchmark.id,
+        ...trialField,
         attempt: nextAttempt,
         event: "started",
         at: new Date().toISOString(),
         caseRoot: relativeRunPath(runRoot, caseRoot),
         ...(forcedRetryRequested ? { forced: true } : {}),
       };
-      await recordAttemptEntry(progressPath, progress, startedEntry);
+      await record(startedEntry);
 
-      let report: BenchmarkCaseReport;
-      try {
-        report =
-          benchmark.execution?.preflight?.status === "blocked"
-            ? await createBlockedCaseReport({
-                suiteId: parsedSuite.data.id,
-                benchmark,
-                agent: input.agent,
-                ...(input.qualityReviewer
-                  ? { qualityReviewer: input.qualityReviewer }
-                  : {}),
-                suiteRoot,
-                caseRoot,
-                attempt: nextAttempt,
-              })
-            : await runCase({
-                suiteId: parsedSuite.data.id,
-                benchmark,
-                agent: input.agent,
-                ...(input.qualityReviewer
-                  ? { qualityReviewer: input.qualityReviewer }
-                  : {}),
-                suiteRoot,
-                caseRoot,
-                processScope,
-              });
-      } catch (error) {
-        report = await createInfrastructureFailureReport({
-          suiteId: parsedSuite.data.id,
-          benchmark,
-          agent: input.agent,
-          caseRoot,
-          attempt: nextAttempt,
-          error,
-        });
-      }
-      report.attempt = nextAttempt;
-      report.failure = classifyCaseFailure(report);
-      if (forcedRetryRequested && report.status !== "pass") {
-        report.forcePending = true;
-      }
-      await writeJson(join(caseRoot, "case-report.json"), report);
-
-      let attemptReceipt: BenchmarkAttemptReceipt | undefined;
-
-      if (benchmark.execution?.environment) {
-        let environmentCapture: BenchmarkModifiedWorkspaceCapture;
-        if (benchmark.execution.preflight?.status === "blocked") {
-          environmentCapture = { status: "blocked" };
-        } else {
-          try {
-            const recorded = JSON.parse(
-              await readFile(
-                join(caseRoot, "environment-capture.json"),
-                "utf8",
-              ),
-            ) as Record<string, unknown>;
-            environmentCapture =
-              recorded.status === "complete" &&
-              typeof recorded.path === "string"
-                ? {
-                    status: "complete",
-                    path: resolve(caseRoot, recorded.path),
-                  }
-                : recorded.status === "failed" &&
-                    typeof recorded.error === "string"
-                  ? { status: "failed", error: recorded.error }
-                  : {
-                      status: "failed",
-                      error: "Modified Workspace capture receipt is invalid",
-                    };
-          } catch (error) {
-            environmentCapture = {
-              status: "failed",
-              error:
-                report.failure?.detail ??
-                `Modified Workspace capture receipt is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-            };
-          }
-        }
-        if (
-          environmentCapture.status !== "complete" &&
-          report.status === "pass"
-        ) {
-          const detail =
-            environmentCapture.status === "failed"
-              ? environmentCapture.error
-              : "Modified Workspace capture was blocked";
-          report.status = "fail";
-          report.execution.status = "fail";
-          report.execution.detail =
-            `${report.execution.detail} Modified Workspace capture failed: ${detail}`.trim();
-          report.outcome.status = "failed";
-          report.outcome.executionStatus = "fail";
-          report.failure = {
-            classification: "infrastructure",
-            retryable: true,
-            phase: "environment-capture",
-            detail,
-          };
-          await writeCaseReportFiles(caseRoot, report);
-        }
-        const inputWorkspace =
-          benchmark.execution.environment.initialState?.workspace;
-        await writeBenchmarkAttemptCapture({
-          caseRoot,
-          suiteId: parsedSuite.data.id,
-          runId: input.runId,
-          benchmark,
-          agent: input.agent,
-          report,
-          attempt: nextAttempt,
-          startedAt: startedEntry.at,
-          finishedAt: new Date().toISOString(),
-          ...(inputWorkspace
-            ? {
-                inputWorkspaceBundle: resolve(suiteRoot, inputWorkspace.path),
-              }
-            : {}),
-          modifiedWorkspaceCapture: environmentCapture,
-          serviceVersion: "0.1.0",
-        });
-        attemptReceipt = await writeBenchmarkAttempt({
-          caseRoot,
-          suiteRoot,
-        });
-        await publishBenchmarkEvaluationResults({
-          caseRoot,
-          suiteRoot,
-          benchmark,
-          report,
-        });
-      }
+      const dispatch = {
+        suiteId: parsedSuite.data.id,
+        runId: input.runId,
+        benchmark,
+        agent: input.agent,
+        ...(input.qualityReviewer
+          ? { qualityReviewer: input.qualityReviewer }
+          : {}),
+        suiteRoot,
+        runRoot,
+        caseRoot,
+        attempt: nextAttempt,
+        trial,
+        ...(trials > 1 ? { repeated: true } : {}),
+        forced: forcedRetryRequested,
+        startedAt: startedEntry.at,
+        processScope,
+        ...(input.subject ? { subject: input.subject } : {}),
+      };
+      // A backend reports Agent and product outcomes through the Attempt. If
+      // it cannot even place the work, that is an infrastructure failure and
+      // is still sealed as an Attempt instead of aborting the batch.
+      const completion = await backend
+        .runAttempt(dispatch)
+        .catch((error) =>
+          executeBenchmarkAttempt({ ...dispatch, dispatchFailure: error }),
+        );
+      const { report, attemptReceipt } = completion;
 
       const completedEntry: BenchmarkAttemptLedgerEntry = {
         schemaVersion: 1,
         suiteId: parsedSuite.data.id,
         runId: input.runId,
         caseId: benchmark.id,
+        ...trialField,
         attempt: nextAttempt,
         event: "completed",
         at: new Date().toISOString(),
@@ -5579,7 +5811,7 @@ async function runBenchmarkSuiteInProcessScope(
             }
           : {}),
       };
-      await recordAttemptEntry(progressPath, progress, completedEntry);
+      await record(completedEntry);
 
       if (forcedRetryRequested && report.status !== "pass") {
         const forcePendingEntry: BenchmarkAttemptLedgerEntry = {
@@ -5587,6 +5819,7 @@ async function runBenchmarkSuiteInProcessScope(
           suiteId: parsedSuite.data.id,
           runId: input.runId,
           caseId: benchmark.id,
+          ...trialField,
           attempt: nextAttempt,
           event: "force-pending",
           at: new Date().toISOString(),
@@ -5599,18 +5832,12 @@ async function runBenchmarkSuiteInProcessScope(
             join(caseRoot, "case-report.json"),
           ),
         };
-        await recordAttemptEntry(progressPath, progress, forcePendingEntry);
+        await record(forcePendingEntry);
       }
 
       if (processScope.interruptedSignal) {
-        cases.push(report);
-        await writeSuiteProgress({
-          progressPath,
-          progress,
-          resumed: Boolean(input.resume),
-          cases,
-        });
-        break;
+        await settle(unit, report);
+        return;
       }
 
       if (
@@ -5624,17 +5851,32 @@ async function runBenchmarkSuiteInProcessScope(
           continue;
         }
       }
-      cases.push(report);
-      await writeSuiteProgress({
-        progressPath,
-        progress,
-        resumed: Boolean(input.resume),
-        cases,
-      });
-      break;
+      await settle(unit, report);
+      return;
     }
-    if (processScope.interruptedSignal) break;
-  }
+  };
+  await scheduleTrialUnits({
+    units,
+    backends,
+    ...(input.parallelism ? { parallelism: input.parallelism } : {}),
+    stopped: () => Boolean(processScope.interruptedSignal),
+    run: runUnit,
+  });
+  const cases = currentCases();
+  const trialAggregate =
+    input.trials !== undefined && !processScope.interruptedSignal
+      ? await publishRunTrialAggregate({
+          runRoot,
+          suiteId: parsedSuite.data.id,
+          runId: input.runId,
+          trials,
+          passK,
+          placement,
+          units,
+          reports,
+          ledger,
+        })
+      : undefined;
   const report: BenchmarkSuiteReport = {
     schemaVersion: 1,
     suiteId: parsedSuite.data.id,
@@ -5644,6 +5886,7 @@ async function runBenchmarkSuiteInProcessScope(
     finishedAt: new Date().toISOString(),
     resumed: Boolean(input.resume),
     qualityReview: suiteQualityReview(cases),
+    ...(trialAggregate ? { trials, passK, trialAggregate } : {}),
     cases,
   };
   await Promise.all([
@@ -5660,6 +5903,178 @@ async function runBenchmarkSuiteInProcessScope(
   return report;
 }
 
+export function createNativeLocalBackend(
+  options: { concurrency?: number } = {},
+): ExecutionBackend {
+  return {
+    kind: "native-local",
+    maxConcurrency: options.concurrency ?? 1,
+    runtimeClaim: async () => ({ kind: "native-local" }),
+    runAttempt: (dispatch) => executeBenchmarkAttempt(dispatch),
+  };
+}
+
+function trialOutcome(report: BenchmarkCaseReport): TrialOutcome {
+  if (report.status === "pass") return "pass";
+  if (report.status === "fail") {
+    return report.failure?.classification === "infrastructure"
+      ? "unscored"
+      : "fail";
+  }
+  return "unscored";
+}
+
+/** The sealed lock is the authority for where an Attempt ran and what it measured. */
+async function readSealedLockIdentity(
+  caseRoot: string,
+): Promise<
+  { backend?: BenchmarkBackendKind; subjectIdentity?: string } | undefined
+> {
+  try {
+    const lock = JSON.parse(
+      await readFile(join(caseRoot, "environment-lock.json"), "utf8"),
+    ) as {
+      resolvedEnvironment?: { runtime?: { kind?: unknown } };
+      clash?: { subject?: BenchmarkSubjectRecord };
+    };
+    const kind = lock.resolvedEnvironment?.runtime?.kind;
+    return {
+      ...((BENCHMARK_BACKEND_KINDS as readonly unknown[]).includes(kind)
+        ? { backend: kind as BenchmarkBackendKind }
+        : {}),
+      ...(lock.clash?.subject
+        ? { subjectIdentity: subjectIdentity(lock.clash.subject) }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function publishRunTrialAggregate(input: {
+  runRoot: string;
+  suiteId: string;
+  runId: string;
+  trials: number;
+  passK: number;
+  placement: TrialPlacement;
+  units: readonly TrialUnit[];
+  reports: ReadonlyArray<BenchmarkCaseReport | undefined>;
+  ledger: readonly BenchmarkAttemptLedgerEntry[];
+}): Promise<NonNullable<BenchmarkSuiteReport["trialAggregate"]>> {
+  const attempts: TrialAttemptInput[] = [];
+  for (const unit of input.units) {
+    const report = input.reports[unit.index];
+    if (!report || report.status === "blocked") continue;
+    const completed = completedLedgerEntry(input.ledger, unit, report);
+    const identity = await sealedAttemptIdentity({
+      runRoot: input.runRoot,
+      ledger: input.ledger,
+      unit,
+      report,
+    });
+    attempts.push({
+      caseId: unit.benchmark.id,
+      trial: unit.trial,
+      outcome: trialOutcome(report),
+      backend: identity?.backend ?? unit.backend.kind,
+      ...(report.attempt !== undefined ? { attempt: report.attempt } : {}),
+      ...(completed?.attemptDigest
+        ? { attemptDigest: completed.attemptDigest }
+        : {}),
+      ...(identity?.subjectIdentity
+        ? { subjectIdentity: identity.subjectIdentity }
+        : {}),
+    });
+  }
+  const record = createTrialAggregateRecord({
+    suiteId: input.suiteId,
+    runId: input.runId,
+    trials: input.trials,
+    k: input.passK,
+    placement: input.placement,
+    attempts,
+  });
+  const receipt = await writeTrialAggregateRecord({
+    storeRoot: input.runRoot,
+    record,
+  });
+  return {
+    path: receipt.path,
+    sha256: receipt.sha256,
+    digest: record.digest,
+    summary: record.summary,
+    byBackend: record.byBackend,
+  };
+}
+
+function completedLedgerEntry(
+  ledger: readonly BenchmarkAttemptLedgerEntry[],
+  unit: TrialUnit,
+  report: BenchmarkCaseReport,
+): BenchmarkAttemptLedgerEntry | undefined {
+  return ledger
+    .filter(
+      (entry) =>
+        entry.caseId === unit.benchmark.id &&
+        (entry.trial ?? 1) === unit.trial &&
+        entry.event === "completed" &&
+        entry.attempt === report.attempt,
+    )
+    .at(-1);
+}
+
+/** Where the settled Attempt of a unit ran and what it measured, from its sealed lock. */
+async function sealedAttemptIdentity(input: {
+  runRoot: string;
+  ledger: readonly BenchmarkAttemptLedgerEntry[];
+  unit: TrialUnit;
+  report: BenchmarkCaseReport;
+}): Promise<
+  { backend?: BenchmarkBackendKind; subjectIdentity?: string } | undefined
+> {
+  if (input.report.status === "blocked") return undefined;
+  const completed = completedLedgerEntry(
+    input.ledger,
+    input.unit,
+    input.report,
+  );
+  return completed
+    ? readSealedLockIdentity(resolve(input.runRoot, completed.caseRoot))
+    : undefined;
+}
+
+/**
+ * Case-major, trial-minor plan. By default every trial of a task runs on the
+ * same backend (task `c` on backend `c mod n`), so a task's pass@k is measured
+ * on one backend and backends can be compared. `spread` instead places unit
+ * `i` on backend `i mod n`. Either way placement is deterministic, so a
+ * resumed run places a unit where it ran.
+ */
+export function planTrialUnits(input: {
+  cases: readonly ArtifactBenchmarkCase[];
+  trials: number;
+  backends: readonly ExecutionBackend[];
+  placement: TrialPlacement;
+}): TrialUnit[] {
+  const units: TrialUnit[] = [];
+  input.cases.forEach((benchmark, caseIndex) => {
+    // A blocked case is never dispatched, so repeating it measures nothing.
+    const count =
+      benchmark.execution?.preflight?.status === "blocked" ? 1 : input.trials;
+    for (let trial = 1; trial <= count; trial += 1) {
+      const slot = input.placement === "spread" ? units.length : caseIndex;
+      units.push({
+        benchmark,
+        trial,
+        index: units.length,
+        backend: input.backends[slot % input.backends.length]!,
+      });
+    }
+  });
+  return units;
+}
+
 export async function runBenchmarkSuite(
   input: RunBenchmarkSuiteInput,
 ): Promise<BenchmarkSuiteReport> {
@@ -5669,6 +6084,9 @@ export async function runBenchmarkSuite(
     return await runBenchmarkSuiteInProcessScope(input, processScope);
   } finally {
     await processScope.dispose();
+    await Promise.allSettled(
+      (input.backends ?? []).map((backend) => backend.dispose?.()),
+    );
   }
 }
 
