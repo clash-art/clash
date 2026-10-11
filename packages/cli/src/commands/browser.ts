@@ -87,7 +87,11 @@ function printBrowser(
     stdout("Run `clash browser ensure` to download it.");
     return;
   }
-  stdout("Browser: ready");
+  stdout(
+    output.missingLibraries.length > 0
+      ? "Browser: downloaded, but missing system libraries"
+      : "Browser: ready",
+  );
   stdout(`Path: ${output.executablePath}`);
   if (output.source === "override") {
     stdout("Source: CLASH_BROWSER_EXECUTABLE");

@@ -182,3 +182,22 @@ it("browser commands run without invoking the Host bootstrap hook", async () => 
     vi.unstubAllEnvs();
   }
 });
+
+it("browser ensure fails and names the libraries when the downloaded browser cannot start", async () => {
+  const lines: string[] = [];
+  const errors: string[] = [];
+  await expect(
+    runBrowserEnsure({
+      stdout: (line) => lines.push(line),
+      stderr: (line) => errors.push(line),
+      dependencies: dependencies({
+        findMissingLibraries: async () => ["libnss3.so", "libexpat.so.1"],
+      }),
+    }),
+  ).rejects.toThrow(/cannot start until those libraries are installed/);
+
+  expect(lines[0]).toBe("Browser: downloaded, but missing system libraries");
+  expect(errors[0]).toBe(
+    `Missing shared libraries for ${cached.executablePath}: libnss3.so, libexpat.so.1`,
+  );
+});
