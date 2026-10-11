@@ -262,11 +262,13 @@ describe("Environment lock runtime and subject", () => {
           observeRuntime: observed(true),
         })
       ).lock.resolvedEnvironment.resolvedEnvironmentDigest;
-    const digests = await Promise.all([
-      digest(),
-      digest(container),
-      digest(cloud),
-    ]);
+    // Sequential on purpose: every capture atomically replaces the same
+    // environment-lock.json under caseRoot and then hashes it, so concurrent
+    // captures trip the "source changed while it was being hashed" guard.
+    const digests: string[] = [];
+    for (const runtime of [undefined, container, cloud]) {
+      digests.push(await digest(runtime));
+    }
     expect(new Set(digests).size).toBe(3);
   });
 
