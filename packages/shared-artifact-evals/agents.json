@@ -25,6 +25,7 @@
     "src/backend-claude-cloud.ts": "EXPERIMENTAL Claude Code cloud backend (claude --cloud, optional self-hosted --environment), opt-in only: fixed worker script, result archive on a result branch that is deleted after it is read and swept on dispose (pruneCloudResultBranches), isolation recorded as dispatcher-declared.",
     "src/attempt-unit.ts": "Portable attempt-unit wire format (incapable of carrying a credential) and dispatcher-side verification of a worker's sealed Attempt against the dispatched backend.",
     "src/attempt-worker.ts": "Worker entry (clash-artifact-bench worker --unit): runs one dispatched Attempt and seals it; reproduces and checks the subject before running.",
+    "src/subject-runtime.ts": "Reads a self-contained release's manifest, re-hashes its bundled Node, ffmpeg and ffprobe, and names the Node the Attempt's Host, CLI and MCP run on.",
     "src/subject.ts": "Selects the Clash build under test: working tree, exact commit, or released version (tarball, installed directory, npm spec), with digest pins.",
     "src/trial-aggregate.ts": "Content-addressed Trial Aggregate: unbiased pass@1, pass@k, pass^k (n >= k) per task, suite, and backend; unscored trials kept out of Agent failure counts; at most one subject identity per run.",
     "src/atif.ts": "Codex exec-event and Pi agent-event to ATIF-v1.7 structured projection with reasoning omission and recursive privacy redaction.",

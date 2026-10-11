@@ -356,7 +356,13 @@ describe("self-contained release subjects", () => {
     await writePlugin(pluginRoot, "0.5.0", "runtime 0.5.0");
     const written = await writeSelfContainedRuntime(pluginRoot, options);
     const tarball = join(root, "clash-0.5.0-self-contained.tgz");
-    execFileSync("tar", ["-czf", tarball, "-C", join(root, "stage"), "package"]);
+    execFileSync("tar", [
+      "-czf",
+      tarball,
+      "-C",
+      join(root, "stage"),
+      "package",
+    ]);
     return { tarball, pluginRoot, ...written };
   }
 

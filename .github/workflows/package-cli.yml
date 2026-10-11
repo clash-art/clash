@@ -159,7 +159,7 @@ jobs:
       # Signed build provenance needs the OIDC token, which fork pull requests never get.
       - name: Attest build provenance
         if: github.event_name != 'pull_request'
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest@v4
         with:
           subject-checksums: cli-artifacts/SHA256SUMS
 

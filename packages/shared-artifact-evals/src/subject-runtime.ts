@@ -54,7 +54,10 @@ export async function readSubjectBundledRuntime(
   if (manifest.schemaVersion !== 1) {
     throw new Error("Self-contained subject manifest has an unknown schema");
   }
-  if (manifest.platform !== process.platform || manifest.arch !== process.arch) {
+  if (
+    manifest.platform !== process.platform ||
+    manifest.arch !== process.arch
+  ) {
     throw new Error(
       `Self-contained subject targets ${String(manifest.platform)}-${String(manifest.arch)}, not ${process.platform}-${process.arch}`,
     );
@@ -76,7 +79,10 @@ export async function readSubjectBundledRuntime(
   const ffmpeg = await verified(manifest.media?.ffmpeg, "ffmpeg");
   const ffprobe = await verified(manifest.media?.ffprobe, "ffprobe");
   const nodeVersion = manifest.node?.version;
-  if (typeof nodeVersion !== "string" || !/^\d+\.\d+\.\d+$/u.test(nodeVersion)) {
+  if (
+    typeof nodeVersion !== "string" ||
+    !/^\d+\.\d+\.\d+$/u.test(nodeVersion)
+  ) {
     throw new Error("Self-contained subject manifest has no Node version");
   }
   // The dependency tree identity is written beside the runtime at pack time.
