@@ -1,16 +1,18 @@
 import { spawnSync } from "node:child_process";
 import {
   access,
-  chmod,
   cp,
   mkdir,
   readFile,
   rm,
   writeFile,
 } from "node:fs/promises";
-import { constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  ensurePackagedMediaBinariesExecutable,
+  resolveNpmInvocation,
+} from "../../../scripts/packaged-runtime-binaries.ts";
 import { writeRuntimeDependencyIdentity } from "../../../scripts/runtime-dependency-identity.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,51 +46,9 @@ export function packagedRuntimeArtifacts(packageJson: { clashRuntime?: unknown }
   );
 }
 
-export function resolveNpmInvocation({
-  env = process.env,
-  platform = process.platform,
-} = {}) {
-  if (platform === "win32") {
-    return {
-      command: env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
-      argsPrefix: ["/d", "/s", "/c", "npm"],
-    };
-  }
-  return { command: "npm", argsPrefix: [] };
-}
-
-export async function ensurePackagedMediaBinariesExecutable(
-  runtimeDir: string,
-  { platform = process.platform, arch = process.arch }: { platform?: NodeJS.Platform; arch?: string } = {},
-) {
-  const target = `${platform}-${arch}`;
-  const suffix = platform === "win32" ? ".exe" : "";
-  const binaries = {
-    ffmpeg: path.join(
-      runtimeDir,
-      "node_modules",
-      "@ffmpeg-installer",
-      target,
-      `ffmpeg${suffix}`,
-    ),
-    ffprobe: path.join(
-      runtimeDir,
-      "node_modules",
-      "@ffprobe-installer",
-      target,
-      `ffprobe${suffix}`,
-    ),
-  };
-  for (const binary of Object.values(binaries)) {
-    await access(binary);
-    if (platform !== "win32") await chmod(binary, 0o755);
-    await access(
-      binary,
-      platform === "win32" ? constants.F_OK : constants.X_OK,
-    );
-  }
-  return binaries;
-}
+// Shared with the npm/self-contained distribution packer; re-exported for
+// existing Desktop callers and tests.
+export { ensurePackagedMediaBinariesExecutable, resolveNpmInvocation };
 
 function runNpm(args: string[], { cwd, ...options }: { cwd: string; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform }) {
   const invocation = resolveNpmInvocation(options);
