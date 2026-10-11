@@ -1914,6 +1914,23 @@ async function createFreshDirectory(
   }
 }
 
+/** A worker adopts the empty directory its dispatcher mounted; otherwise the Attempt creates it. */
+async function claimCaseRoot(
+  caseRoot: string,
+  adopt: boolean | undefined,
+): Promise<void> {
+  if (!adopt) {
+    await createFreshDirectory(caseRoot, "Case directory");
+    return;
+  }
+  if ((await readdir(caseRoot)).length > 0) {
+    throw new BenchmarkInfrastructureError(
+      "dispatch",
+      `Dispatcher-provided case directory must be empty: ${caseRoot}`,
+    );
+  }
+}
+
 export async function installCaseSkills(
   skillPaths: string[],
   suiteRoot: string,
@@ -3721,16 +3738,7 @@ async function runCase(input: {
 }): Promise<BenchmarkCaseReport> {
   assertSafePathSegment(input.benchmark.id, "Benchmark case id");
   const caseRoot = input.caseRoot;
-  if (input.adoptCaseRoot) {
-    if ((await readdir(caseRoot)).length > 0) {
-      throw new BenchmarkInfrastructureError(
-        "dispatch",
-        `Dispatcher-provided case directory must be empty: ${caseRoot}`,
-      );
-    }
-  } else {
-    await createFreshDirectory(caseRoot, "Case directory");
-  }
+  await claimCaseRoot(caseRoot, input.adoptCaseRoot);
   if (input.benchmark.execution?.environment) {
     await writeBenchmarkTaskManifest({
       caseRoot,
@@ -4928,8 +4936,9 @@ async function createBlockedCaseReport(input: {
   caseRoot: string;
   attempt: number;
   subject?: BenchmarkLockSubject;
+  adoptCaseRoot?: boolean;
 }): Promise<BenchmarkCaseReport> {
-  await createFreshDirectory(input.caseRoot, "Case directory");
+  await claimCaseRoot(input.caseRoot, input.adoptCaseRoot);
   if (input.benchmark.execution?.environment) {
     await writeBenchmarkTaskManifest({
       caseRoot: input.caseRoot,
@@ -5336,6 +5345,7 @@ export async function executeBenchmarkAttempt(
             caseRoot,
             attempt: nextAttempt,
             ...(input.subject ? { subject: input.subject } : {}),
+            ...(input.adoptCaseRoot ? { adoptCaseRoot: true } : {}),
           })
         : await runCase({
             suiteId: input.suiteId,
@@ -5797,14 +5807,22 @@ async function runBenchmarkSuiteInProcessScope(
         processScope,
         ...(input.subject ? { subject: input.subject } : {}),
       };
-      // A backend reports Agent and product outcomes through the Attempt. If
-      // it cannot even place the work, that is an infrastructure failure and
-      // is still sealed as an Attempt instead of aborting the batch.
-      const completion = await backend
-        .runAttempt(dispatch)
-        .catch((error) =>
-          executeBenchmarkAttempt({ ...dispatch, dispatchFailure: error }),
-        );
+      // A preflight-blocked case runs no Agent, so there is nothing to place:
+      // the dispatcher records the not-run Attempt itself on every backend.
+      // Otherwise a backend reports Agent and product outcomes through the
+      // Attempt. If it cannot even place the work, that is an infrastructure
+      // failure and is still sealed as an Attempt instead of aborting the batch.
+      const completion =
+        benchmark.execution?.preflight?.status === "blocked"
+          ? await executeBenchmarkAttempt(dispatch)
+          : await backend
+              .runAttempt(dispatch)
+              .catch((error) =>
+                executeBenchmarkAttempt({
+                  ...dispatch,
+                  dispatchFailure: error,
+                }),
+              );
       const { report, attemptReceipt } = completion;
 
       const completedEntry: BenchmarkAttemptLedgerEntry = {
