@@ -155,6 +155,13 @@ export function resolveClashBrowserCacheRoot(env: Env = process.env): string {
     : join(defaultClashHome(env), "cache", "browser");
 }
 
+/** The Chrome version the installed Remotion renders with. */
+export function clashBrowserPinnedVersion(
+  options: ClashBrowserOptions = {},
+): string {
+  return resolvePin(options).testedVersion;
+}
+
 /** One directory per Remotion-pinned browser, so a Remotion upgrade never reuses an old Chrome. */
 export function resolveClashBrowserCacheDir(
   options: ClashBrowserOptions = {},
