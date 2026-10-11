@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
@@ -33,7 +35,6 @@ import {
   createServer as createNetServer,
   type Socket,
 } from "node:net";
-import { fileURLToPath } from "node:url";
 import type { ProjectHostResponse } from "@clash/shared-runtime/project-host-client";
 import { createGeneratorClient } from "@clash/shared-runtime/generator-client";
 import { createProjectAssetHttpClient } from "@clash/asset-sdk";
@@ -69,6 +70,13 @@ import {
   type TrialOutcome,
   type TrialPlacement,
 } from "./trial-aggregate";
+import { runAcpAgentSession, type AcpAgentRunResult } from "./acp-agent";
+import {
+  acpLaunchArgs,
+  isAcpAgent,
+  resolveAcpHarness,
+  type AcpBenchmarkAgent,
+} from "./acp-harness";
 import { loadSubmission } from "./artifacts";
 import { writeAtifTrajectory } from "./atif";
 import {
@@ -1432,7 +1440,7 @@ async function terminateResidualProcessGroup(
 }
 
 function resolveAgentCommand(
-  agent: BenchmarkAgent,
+  agent: Exclude<BenchmarkAgent, AcpBenchmarkAgent>,
   workspace: string,
   prompt: string,
   clashAccess?: AgentClashAccess,
@@ -1539,36 +1547,6 @@ function resolveAgentCommand(
     ];
     return { command: agent.command ?? "claude", args };
   }
-  if (agent.adapter === "pi") {
-    const currentModulePath = fileURLToPath(import.meta.url);
-    const extensionPath = join(
-      dirname(currentModulePath),
-      currentModulePath.endsWith(".ts")
-        ? "pi-clash-extension.ts"
-        : "pi-clash-extension.js",
-    );
-    const args = [
-      "--print",
-      "--mode",
-      "json",
-      "--no-session",
-      "--no-extensions",
-      ...(clashAccess?.mcp ? ["--extension", extensionPath] : []),
-      "--no-skills",
-      "--skill",
-      join(workspace, ".agents", "skills"),
-      "--no-prompt-templates",
-      "--no-context-files",
-      "--approve",
-      "--thinking",
-      "medium",
-      ...(agent.provider ? ["--provider", agent.provider] : []),
-      ...(agent.model ? ["--model", agent.model] : []),
-      ...(agent.args ?? []),
-      prompt,
-    ];
-    return { command: agent.command ?? "pi", args };
-  }
   return { command: agent.command, args: agent.args ?? [] };
 }
 
@@ -1592,6 +1570,23 @@ function isolatedAgentEnvironment(
   }
   env.PWD = workspace;
   return env;
+}
+
+/**
+ * ACP harnesses installed from the registry are Node programs started through
+ * `env node`. Where the Agent's PATH has no Node (a bare container image whose
+ * worker runs on a mounted Node), the runner's own Node directory is appended
+ * so the harness can start. The Agent's shell then sees that `node` as well.
+ */
+function acpProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const directories = (env.PATH ?? "").split(delimiter).filter(Boolean);
+  if (directories.some((directory) => existsSync(join(directory, "node")))) {
+    return env;
+  }
+  return {
+    ...env,
+    PATH: [...directories, dirname(process.execPath)].join(delimiter),
+  };
 }
 
 function claudeResultError(eventsText: string): string | undefined {
@@ -1701,14 +1696,17 @@ async function runAgent(input: {
   const stderr = await open(stderrPath, "w");
   const startedAt = Date.now();
   const startedMonotonic = process.hrtime.bigint();
-  const resolvedAgent = resolveAgentCommand(
-    input.agent,
-    input.workspace,
-    input.prompt,
-    input.clashAccess,
-    taskSkillContext,
-  );
-  if (input.lockedExecutablePath) {
+  const agent = input.agent;
+  const resolvedAgent = isAcpAgent(agent)
+    ? undefined
+    : resolveAgentCommand(
+        agent,
+        input.workspace,
+        input.prompt,
+        input.clashAccess,
+        taskSkillContext,
+      );
+  if (resolvedAgent && input.lockedExecutablePath) {
     resolvedAgent.command = input.lockedExecutablePath;
   }
   const inheritedEnvironment =
@@ -1743,10 +1741,84 @@ async function runAgent(input: {
     env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = "1";
   }
   if (input.agent.adapter === "pi") env.PI_TELEMETRY = "0";
-  if (input.agent.adapter === "pi" && input.clashAccess?.mcp) {
-    env.CLASH_PI_MCP_RUNTIME_PATH = input.clashAccess.mcp.runtimePath;
-    env.CLASH_PI_MCP_PLUGIN_ROOT = input.clashAccess.mcp.pluginRoot;
-    env.CLASH_PI_MCP_NODE_PATH = input.clashAccess.mcp.nodeExecPath;
+
+  if (!resolvedAgent) {
+    if (!isAcpAgent(agent)) {
+      throw new Error("Agent adapter has no launch command");
+    }
+    // An ACP agent is a server: the runner drives one prompt turn and records
+    // the standard `session/update` stream as the Attempt's event log.
+    const events = new PassThrough();
+    const capture = captureObservedOutput({
+      stream: events,
+      rawPath: stdoutPath,
+      observedPath: observedEventsPath,
+      startedMonotonic,
+    });
+    const sessionDir = await mkdtemp(join(tmpdir(), "clash-benchmark-acp-"));
+    let acpChild: ChildProcess | undefined;
+    let result: AcpAgentRunResult;
+    try {
+      // The managed bin directory is runner configuration: it is read here
+      // and, like every other CLASH_* variable, withheld from the Agent.
+      const harness = await resolveAcpHarness(agent, {
+        ...inheritedEnvironment,
+        ...agent.env,
+      });
+      const mcp = input.clashAccess?.mcp;
+      result = await runAcpAgentSession({
+        harness,
+        command: input.lockedExecutablePath ?? harness.command,
+        args: acpLaunchArgs(agent, harness, { sessionDir }),
+        cwd: input.workspace,
+        env: acpProcessEnvironment({ ...env, ...harness.env }),
+        prompt: input.prompt,
+        mcpServers: mcp
+          ? [
+              {
+                name: "clash",
+                command: mcp.nodeExecPath,
+                args: [mcp.runtimePath],
+                env: [],
+              },
+            ]
+          : [],
+        timeoutMs: input.benchmark.timeoutMs,
+        stderrFd: stderr.fd,
+        events,
+        onSpawn: (spawned) => {
+          acpChild = input.processScope.track(spawned);
+        },
+      });
+    } catch (error) {
+      events.end();
+      const message = error instanceof Error ? error.message : String(error);
+      await stderr.write(`${message}\n`);
+      result = {
+        status: "spawn-error",
+        exitCode: null,
+        signal: null,
+        error: message,
+      };
+    }
+    await capture;
+    await stderr.close();
+    if (acpChild) await terminateResidualProcessGroup(acpChild);
+    await rm(sessionDir, { recursive: true, force: true });
+    const trajectoryPath = await writeNormalizedTrajectory({
+      agent: input.agent,
+      logsRoot: input.logsRoot,
+      rawPath: stdoutPath,
+      observedPath: observedEventsPath,
+    });
+    return {
+      ...result,
+      durationMs: Date.now() - startedAt,
+      stdoutPath,
+      stderrPath,
+      observedEventsPath,
+      trajectoryPath,
+    };
   }
 
   let child: ChildProcess;

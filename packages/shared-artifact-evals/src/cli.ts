@@ -70,6 +70,7 @@ type CliOptions = {
   containerEngine?: "docker" | "podman";
   containerNetwork?: "default" | "none";
   containerRunnerNode?: string;
+  containerAcpBinDir?: string;
   forwardEnv: string[];
   cloudEnvironment?: string;
   cloudRunnerRev?: string;
@@ -117,6 +118,8 @@ Options:
                               unless --container-runner-node is given)
   --container-runner-node <path>  Mount this Node binary read-only to run the worker,
                               so the image itself needs no Node
+  --container-acp-bin-dir <path>  Mount this managed ACP harness directory (see
+                              acp-install) read-only, so the image needs no harness
   --container-engine docker|podman
   --container-network default|none
   --forward-env <NAME>        Pass a credential into workers by name (repeatable)
@@ -124,6 +127,9 @@ Options:
   --cloud-runner-rev <rev>    Pushed revision of this runner for claude-cloud sessions
   --run-id <id>               Stable run id (default: run-<timestamp>)
 
+  clash-artifact-bench acp-install --agent pi --bin-dir <directory>
+                              Install the agent's ACP harness (Pi runs through pi-acp);
+                              run with CLASH_ACP_BIN_DIR=<directory>
   clash-artifact-bench prune-cloud-results [--run-id <id>] [--remote <name>] [--repo <path>]
                               Delete bench-results/<run>/... branches claude-cloud pushed
   --resume                    Continue a compatible existing run id
@@ -214,6 +220,8 @@ function parseArgs(args: string[]): CliOptions {
       options.containerEngine = value;
     } else if (flag === "--container-runner-node") {
       options.containerRunnerNode = requiredValue(args, index++, flag);
+    } else if (flag === "--container-acp-bin-dir") {
+      options.containerAcpBinDir = requiredValue(args, index++, flag);
     } else if (flag === "--container-network") {
       const value = requiredValue(args, index++, flag);
       if (value !== "default" && value !== "none")
@@ -291,6 +299,23 @@ async function runWorker(args: string[]): Promise<void> {
   await runAttemptUnit(unit, suiteRoot ? { suiteRoot } : {});
 }
 
+async function acpInstall(args: string[]): Promise<void> {
+  const valueOf = (name: string) => {
+    const index = args.indexOf(name);
+    return index >= 0 ? requiredValue(args, index, name) : undefined;
+  };
+  const adapter = valueOf("--agent");
+  const binDir = valueOf("--bin-dir");
+  if (adapter !== "pi") throw new Error("acp-install requires --agent pi");
+  if (!binDir) throw new Error("acp-install requires --bin-dir <directory>");
+  const { installAcpHarness } = await import("./acp-harness");
+  const installed = await installAcpHarness({
+    adapter,
+    binDir: resolve(process.env.INIT_CWD ?? process.cwd(), binDir),
+  });
+  process.stdout.write(`${JSON.stringify(installed, null, 2)}\n`);
+}
+
 async function pruneCloudResults(args: string[]): Promise<void> {
   const valueOf = (name: string) => {
     const index = args.indexOf(name);
@@ -313,6 +338,10 @@ async function pruneCloudResults(args: string[]): Promise<void> {
 async function main(): Promise<void> {
   if (process.argv[2] === "worker") {
     await runWorker(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "acp-install") {
+    await acpInstall(process.argv.slice(3));
     return;
   }
   if (process.argv[2] === "prune-cloud-results") {
@@ -651,6 +680,9 @@ async function buildBackends(input: {
         ...(options.containerEngine ? { engine: options.containerEngine } : {}),
         ...(options.containerNetwork
           ? { network: options.containerNetwork }
+          : {}),
+        ...(options.containerAcpBinDir
+          ? { acpBinDir: resolve(options.containerAcpBinDir) }
           : {}),
         ...(options.containerRunnerNode
           ? { runnerNode: resolve(options.containerRunnerNode) }

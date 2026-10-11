@@ -23,6 +23,12 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  isAcpAgent,
+  resolveAcpHarness,
+  type AcpBenchmarkAgent,
+  type ResolvedAcpHarness,
+} from "./acp-harness";
 import { readSubjectBundledRuntime } from "./subject-runtime";
 import type { WorkspaceBundleManifest } from "@clash/shared-types";
 
@@ -431,7 +437,25 @@ function effectivePath(agent: BenchmarkAgent): string {
     .join(delimiter);
 }
 
+/**
+ * An ACP-driven adapter is launched through its registry harness; that
+ * launcher is the executable the Attempt actually runs.
+ */
+function lockedAcpHarness(
+  agent: AcpBenchmarkAgent,
+): Promise<ResolvedAcpHarness> {
+  return resolveAcpHarness(agent, {
+    ...(agent.inheritEnv === false ? {} : process.env),
+    ...agent.env,
+  });
+}
+
 async function resolveExecutable(agent: BenchmarkAgent): Promise<string> {
+  if (isAcpAgent(agent)) {
+    const candidate = await realpath((await lockedAcpHarness(agent)).command);
+    await access(candidate, constants.X_OK);
+    return candidate;
+  }
   const command =
     agent.adapter === undefined || agent.adapter === "command"
       ? agent.command
@@ -588,11 +612,16 @@ async function lockExecutable(
     return undefined;
   }
   const evidence = await hashRegularFile(path);
-  const commandName =
-    agent.adapter === undefined || agent.adapter === "command"
+  const commandName = isAcpAgent(agent)
+    ? basename(path)
+    : agent.adapter === undefined || agent.adapter === "command"
       ? basename(agent.command.replaceAll("\\", "/"))
       : basename((agent.command ?? agent.adapter).replaceAll("\\", "/"));
-  const version = await reportedVersion(path);
+  // The managed install states the harness package version without running it.
+  const version =
+    (isAcpAgent(agent)
+      ? (await lockedAcpHarness(agent)).packageVersion
+      : undefined) ?? (await reportedVersion(path));
   const afterVersionEvidence = await hashRegularFile(path);
   if (!sameEvidence(afterVersionEvidence, evidence)) {
     throw new Error(

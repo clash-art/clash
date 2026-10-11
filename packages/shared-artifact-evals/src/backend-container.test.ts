@@ -166,6 +166,54 @@ describe("container backend", () => {
     expect(args[args.indexOf("bench:bare") + 1]).toBe(runnerNode);
   });
 
+  it("mounts a managed ACP harness directory read-only and points the worker at it", async () => {
+    const { suiteRoot, outputRoot, suite } = await fixture();
+    const calls: EngineCall[] = [];
+    const acpBinDir = "/opt/clash-acp";
+    await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          acpBinDir,
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+    const args = calls.find((call) => call.args[0] === "run")!.args;
+    expect(args).toContain(`${acpBinDir}:${acpBinDir}:ro`);
+    expect(args[args.indexOf(`CLASH_ACP_BIN_DIR=${acpBinDir}`) - 1]).toBe(
+      "--env",
+    );
+
+    const refused = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "relative",
+      agent,
+      maxInfrastructureAttempts: 1,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          acpBinDir: "acp",
+          run: fakeEngine([]),
+        }),
+      ],
+    });
+    expect(refused.cases[0]?.failure?.detail).toContain(
+      "ACP bin directory must be absolute",
+    );
+  });
+
   it("passes credentials by name, mounts inputs read-only, and records the image id", async () => {
     const { suiteRoot, outputRoot, suite } = await fixture();
     const calls: EngineCall[] = [];

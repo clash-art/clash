@@ -100,6 +100,13 @@ export type ContainerBackendOptions = {
    * needs no Node and none is put on the Agent's PATH.
    */
   runnerNode?: string;
+  /**
+   * Absolute path of a managed ACP harness directory on this machine (see
+   * `installAcpHarness`). It is mounted read-only at the same path, because the
+   * launchers in it name their install by absolute path, and the worker is
+   * pointed at it, so the image needs no Agent harness of its own.
+   */
+  acpBinDir?: string;
   run?: ContainerCommandRunner;
 };
 
@@ -205,11 +212,15 @@ export function createContainerBackend(
       if (options.runnerNode && !isAbsolute(options.runnerNode)) {
         throw new Error("The container runner Node must be an absolute path");
       }
+      if (options.acpBinDir && !isAbsolute(options.acpBinDir)) {
+        throw new Error("The container ACP bin directory must be absolute");
+      }
       const candidates = [
         ...new Set([
           dispatch.suiteRoot,
           options.runnerRoot,
           ...(options.runnerNode ? [options.runnerNode] : []),
+          ...(options.acpBinDir ? [options.acpBinDir] : []),
           ...(dispatch.subject ? [dispatch.subject.pluginRoot] : []),
         ]),
       ];
@@ -240,6 +251,9 @@ export function createContainerBackend(
         "/tmp",
         "--env",
         "HOME=/tmp",
+        ...(options.acpBinDir
+          ? ["--env", `CLASH_ACP_BIN_DIR=${options.acpBinDir}`]
+          : []),
         ...[
           ...new Set([...unit.envNames, ...(unit.judgeEnvNames ?? [])]),
         ].flatMap((name) => ["--env", name]),

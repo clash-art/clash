@@ -83,11 +83,11 @@ pnpm --filter @clash/artifact-evals benchmark \
 ```
 
 The image needs Node ≥ 24.18 and every executable the Agent uses (`codex`,
-`claude`, `pi`, …) on `PATH`. With `--container-runner-node <path>` the named
+`claude`, …) on `PATH`. With `--container-runner-node <path>` the named
 Node binary is mounted read-only and starts the worker by absolute path, so the
-image needs no Node; combined with a self-contained subject, a bare image plus
-the Agent harness is enough (`debian:bookworm-slim` with the Pi binary has been
-run this way). The runner checkout (with dependencies installed)
+image needs no Node; combined with a self-contained subject and a mounted ACP
+harness (below), a bare image is enough (`debian:bookworm-slim` has been run
+this way with Pi). The runner checkout (with dependencies installed)
 is mounted read-only at the same absolute path; the Attempt directory is mounted
 at its host path, so absolute paths in current-view reports stay valid. The image
 tag is resolved to its content id once per run.
@@ -114,6 +114,53 @@ image: without the libraries only render steps fail, and a Host that cannot
 fetch the browser logs one `browser.warmup_failed` record and carries on. See
 [Chrome Headless Shell](../apps/docs/guide/release-pipeline.md#chrome-headless-shell)
 for older glibc and arm64.
+
+### Pi runs through ACP
+
+The Pi adapter does not run the `pi` CLI. It starts the `pi-acp` harness — the
+entry of that id in the OpenMA harness registry (`@openma/common`), which is
+also where the package and launch command come from — and drives one prompt
+turn over the Agent Client Protocol with the shared OpenMA ACP runtime. The
+Attempt's `logs/events.jsonl` is the standard `session/update` stream
+(`agent_message_chunk`, `tool_call`, `tool_call_update`, `plan`,
+`usage_update`, …), so a new Pi release cannot break the trajectory projection
+by adding a private event type. The Clash MCP server is passed to the agent as
+an ACP `mcpServers` entry; Pi exposes those tools as `mcp__clash__<tool>` and
+loads them through its `tool_search` tool before the first call.
+
+Install the harness once and point the runner at it:
+
+```bash
+pnpm --filter @clash/artifact-evals benchmark acp-install --agent pi --bin-dir /opt/clash-acp
+CLASH_ACP_BIN_DIR=/opt/clash-acp pnpm --filter @clash/artifact-evals benchmark \
+  --suite … --agent pi --provider <provider> --model <model> …
+```
+
+`acp-install` uses the same installer the Local Host uses for its harnesses and
+needs `npm` and the network. The launcher it writes names its install by
+absolute path, so the directory cannot be moved afterwards. The lock records
+the launcher and the installed `pi-acp` package version as the Agent
+executable; the Pi SDK that package resolved at install time is not pinned
+separately, so reinstalling can change it under the same `pi-acp` version.
+Pi's user-level configuration (`~/.pi/agent`: credentials, model definitions,
+extensions, skills) is still read, as it was by the CLI; case skills come from
+the workspace's `.agents/skills`.
+
+On the container backend, either bake that directory into the image at the path
+it was installed to and set `CLASH_ACP_BIN_DIR` there, or mount it:
+
+```bash
+… --backend container --container-image <bare image> \
+  --container-runner-node /path/to/node \
+  --container-acp-bin-dir /opt/clash-acp
+```
+
+`--container-acp-bin-dir` mounts the directory read-only at the same absolute
+path and sets `CLASH_ACP_BIN_DIR` for the worker. The harness is a Node program
+started through `env node`: an image without Node on `PATH` still works, because
+the runner then appends its own Node's directory to the harness `PATH` — which
+also makes that `node` visible to the Agent's shell. The image no longer needs a
+`pi` binary.
 
 ### Claude Code cloud backend (experimental)
 
