@@ -13,6 +13,7 @@ import {
 import { dirname, join } from "node:path";
 import { parseDocument } from "yaml";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
+import { watchablePath } from "./runtime/host/lib/watch-path.js";
 import { HostSkillInstallationsSchema } from "@clash/shared-types";
 
 export interface ClashUserConfigStore {
@@ -555,7 +556,7 @@ export function watchClashUserConfig(
     lastAppliedConfig = value;
   };
 
-  const watcher = watch(store.clashHome, (eventType, filename) => {
+  const watcher = watch(watchablePath(store.clashHome), (eventType, filename) => {
     if (closed || filename?.toString() !== "config.yaml") return;
     if (eventType !== "change" && eventType !== "rename") return;
     if (timer) clearTimeout(timer);

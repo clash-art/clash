@@ -98,7 +98,8 @@ async function runSmoke(root: string): Promise<void> {
   // macOS caps Unix socket paths near 104 bytes; its per-user temp directory is too deep.
   const created = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "clash-smoke-"));
   // Canonical like `root` on POSIX: the CLI and Host see their cwd as a real path. Windows keeps
-  // the temp spelling as given (often an 8.3 name such as RUNNER~1), as a user's %TEMP% would.
+  // the temp spelling as given (often an 8.3 name such as RUNNER~1), as a user's %TEMP% would:
+  // it guards against the libuv fs-event abort a Host watcher hits on an 8.3 CLASH_HOME.
   const scratch = windows ? created : realpathSync.native(created);
   console.log(`scratch ${scratch}`);
   const hosts: string[] = [];

@@ -61,6 +61,7 @@ import {
   resolvePluginLanguage,
 } from "@clash/shared-types";
 import { paths } from "./platform.js";
+import { watchablePath } from "./watch-path.js";
 import {
   PluginStdioSession,
   type PluginBroker,
@@ -942,7 +943,7 @@ export class ActionsHost {
     const root = this.root;
     try {
       this.watcher = watch(
-        root,
+        watchablePath(root),
         { recursive: true, persistent: false },
         (_eventType, filename) => {
           // Ignore swap/temp files that editors create — they churn the
@@ -979,7 +980,7 @@ export class ActionsHost {
         if (this.developmentWatchers.has(watcherKey)) continue;
         try {
           const watcher = watch(
-            sourceRoot,
+            watchablePath(sourceRoot),
             { recursive: true, persistent: false },
             (_eventType, filename) => {
               if (

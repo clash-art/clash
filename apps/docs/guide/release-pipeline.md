@@ -119,6 +119,19 @@ Why the deferrals:
   The matrix entry is `experimental` (`continue-on-error`) so an untested
   platform cannot block Linux and macOS archives. Make it blocking after the
   first green run.
+- **win32 Host abort on 8.3 paths.** The first `win32-x64` smoke runs died right
+  after `host.listening` with `Assertion failed: !_wcsnicmp(filename, dir,
+  dirlen), file src\win\fs-event.c, line 72`. That is libuv, not Clash: an
+  `fs.watch` root spelled with 8.3 short names (`C:\Users\RUNNER~1\…`, the
+  runner's `%TEMP%`) does not prefix the long-form names Windows reports for
+  changes, and libuv asserts instead of returning an error, so the whole Host
+  exits. The Host watches `CLASH_HOME` for `config.yaml` and the actions root
+  under it, so any short-name home triggers it. `watchablePath`
+  (`apps/local-api/src/runtime/host/lib/watch-path.ts`) now canonicalises each
+  watch root with `realpathSync.native` on win32 only, falling back to the path
+  as given when it cannot be resolved; other platforms pass the path through
+  untouched. The smoke keeps the short temp path on Windows on purpose so this
+  stays covered.
 - **Chrome Headless Shell is not in the archive.** `@remotion/renderer`
   downloads it from `chrome-for-testing-public` on first render, and on Linux it
   needs system libraries the bare Debian image does not have. Timeline rendering
