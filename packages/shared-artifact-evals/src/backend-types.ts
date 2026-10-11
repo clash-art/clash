@@ -82,4 +82,18 @@ export type BenchmarkSubjectRecord = {
    * prove was produced from `commit`.
    */
   build?: { performed: boolean; commandsSha256?: string };
+  /**
+   * Present when the subject carries its own runtime (a self-contained
+   * release). Every digest is re-computed from the unpacked files, and the Host,
+   * CLI and MCP of the Attempt run on this Node instead of the runner's.
+   */
+  bundledRuntime?: {
+    platform: string;
+    arch: string;
+    node: { version: string; sha256: string };
+    /** Identity of the bundled production dependency tree. */
+    runtimeDependenciesSha256: string;
+    ffmpegSha256: string;
+    ffprobeSha256: string;
+  };
 };

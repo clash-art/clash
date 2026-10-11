@@ -69,6 +69,7 @@ type CliOptions = {
   containerImage?: string;
   containerEngine?: "docker" | "podman";
   containerNetwork?: "default" | "none";
+  containerRunnerNode?: string;
   forwardEnv: string[];
   cloudEnvironment?: string;
   cloudRunnerRev?: string;
@@ -112,7 +113,10 @@ Options:
   --subject-version <v>       Refuse a release whose manifest declares another version
   --subject-sha256 <hex>      Refuse a release tarball or tree with another digest
   --subject-build             Rebuild the working-tree plugin runtime before locking it
-  --container-image <ref>     Image for the container backend (Node >= 24.18)
+  --container-image <ref>     Image for the container backend (Node >= 24.18 on PATH,
+                              unless --container-runner-node is given)
+  --container-runner-node <path>  Mount this Node binary read-only to run the worker,
+                              so the image itself needs no Node
   --container-engine docker|podman
   --container-network default|none
   --forward-env <NAME>        Pass a credential into workers by name (repeatable)
@@ -208,6 +212,8 @@ function parseArgs(args: string[]): CliOptions {
       if (value !== "docker" && value !== "podman")
         throw new Error("--container-engine must be docker or podman");
       options.containerEngine = value;
+    } else if (flag === "--container-runner-node") {
+      options.containerRunnerNode = requiredValue(args, index++, flag);
     } else if (flag === "--container-network") {
       const value = requiredValue(args, index++, flag);
       if (value !== "default" && value !== "none")
@@ -645,6 +651,9 @@ async function buildBackends(input: {
         ...(options.containerEngine ? { engine: options.containerEngine } : {}),
         ...(options.containerNetwork
           ? { network: options.containerNetwork }
+          : {}),
+        ...(options.containerRunnerNode
+          ? { runnerNode: resolve(options.containerRunnerNode) }
           : {}),
         runnerRoot: input.repoRoot,
         suiteFile: relative(dirname(input.suitePath), input.suitePath),

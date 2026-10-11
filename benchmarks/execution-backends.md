@@ -27,6 +27,16 @@ For a release, `--subject-version` and `--subject-sha256` pin what the artifact
 must be. The tarball digest is checked **before** anything is unpacked, and
 archives containing links or paths outside `package/` are refused.
 
+A **self-contained** release (`pack:distribution --self-contained`, see the
+[release pipeline](../apps/docs/guide/release-pipeline.md)) carries its own Node,
+ffmpeg and ffprobe. Its record adds `bundledRuntime`: the Node version and
+SHA-256, the dependency-tree identity, and the ffmpeg and ffprobe SHA-256, each
+re-hashed from the unpacked files and refused if it differs from the archive's
+manifest. The Attempt's Host, CLI, MCP runtime and the runner's relay shims then
+run on that Node instead of the runner's. The runner, the worker and the
+evaluator keep their own toolchain; the evaluator never uses the subject's
+`ffprobe`.
+
 The subject record carries the version, the commit (source subjects), the
 artifact kind and SHA-256 (built runtime tree, release tarball, or installed
 tree), and `runtimeSha256`. Locking fails if `runtimeSha256` or the version
@@ -73,7 +83,11 @@ pnpm --filter @clash/artifact-evals benchmark \
 ```
 
 The image needs Node ≥ 24.18 and every executable the Agent uses (`codex`,
-`claude`, `pi`, …) on `PATH`. The runner checkout (with dependencies installed)
+`claude`, `pi`, …) on `PATH`. With `--container-runner-node <path>` the named
+Node binary is mounted read-only and starts the worker by absolute path, so the
+image needs no Node; combined with a self-contained subject, a bare image plus
+the Agent harness is enough (`debian:bookworm-slim` with the Pi binary has been
+run this way). The runner checkout (with dependencies installed)
 is mounted read-only at the same absolute path; the Attempt directory is mounted
 at its host path, so absolute paths in current-view reports stay valid. The image
 tag is resolved to its content id once per run.

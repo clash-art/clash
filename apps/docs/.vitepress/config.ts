@@ -27,6 +27,7 @@ export default withMermaid(defineConfig({
             },
             { text: "Asset System", link: "/guide/asset-system" },
             { text: "Build Architecture", link: "/guide/build-architecture" },
+            { text: "Release Pipeline", link: "/guide/release-pipeline" },
             {
               text: "Model Cards, Providers & Bindings",
               link: "/guide/model-cards",

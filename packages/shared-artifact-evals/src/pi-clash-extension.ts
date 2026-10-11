@@ -186,7 +186,8 @@ export default async function piClashExtension(
   const runtimePath = requiredEnvironment("CLASH_PI_MCP_RUNTIME_PATH");
   const pluginRoot = requiredEnvironment("CLASH_PI_MCP_PLUGIN_ROOT");
   const transport = new StdioClientTransport({
-    command: process.execPath,
+    // Pi may be a compiled binary, so its own executable is not a Node.
+    command: process.env.CLASH_PI_MCP_NODE_PATH?.trim() || process.execPath,
     args: [runtimePath],
     cwd: pluginRoot,
     env: clashMcpEnvironment(),
