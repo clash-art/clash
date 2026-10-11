@@ -17,6 +17,50 @@ jobs:
     uses: ./.github/workflows/package-desktop.yml
     secrets: inherit
 
+  package-cli:
+    needs: [desktop-checks]
+    uses: ./.github/workflows/package-cli.yml
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+      attestations: write
+
+  publish-cli-preview:
+    name: Publish CLI Preview
+    runs-on: ubuntu-latest
+    needs: [package-cli]
+    # Same gate shape as the Desktop preview: packaging is automatic, publication
+    # needs an explicit dispatch, the repository switch and environment approval.
+    if: github.event_name == 'workflow_dispatch' && vars.CLASH_CLI_PREVIEW_PUBLICATION_ENABLED == 'true'
+    environment: cli-preview-acceptance
+    permissions:
+      contents: write
+    steps:
+      - name: Download the tested CLI archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: clash-cli-*
+          path: cli-artifacts
+          merge-multiple: true
+
+      - name: Create or update the rolling CLI preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          (cd cli-artifacts && sha256sum --check --strict SHA256SUMS)
+          notes="Self-contained CLI/daemon archives built from ${GITHUB_SHA}. Verify with SHA256SUMS or \`gh attestation verify\`."
+          if gh release view cli-preview >/dev/null 2>&1; then
+            gh release edit cli-preview --title "Clash CLI Preview" --notes "${notes}" --prerelease --target "${GITHUB_SHA}"
+          else
+            gh release create cli-preview --title "Clash CLI Preview" --notes "${notes}" --prerelease --target "${GITHUB_SHA}"
+          fi
+          shopt -s nullglob
+          gh release upload cli-preview cli-artifacts/clash-*.tgz cli-artifacts/clash-*.zip \
+            cli-artifacts/SHA256SUMS cli-artifacts/install.sh cli-artifacts/install.ps1 --clobber
+
   publish-desktop-preview:
     name: Publish Desktop Preview
     runs-on: ubuntu-latest

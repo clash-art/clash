@@ -1,0 +1,174 @@
+name: Package CLI
+
+# Self-contained CLI/daemon archives (bundled Node, native dependencies, ffmpeg
+# and ffprobe). Packaging without publication: archives are workflow artifacts.
+# A pull request always builds linux-x64; the full matrix runs for
+# workflow_dispatch, callers (Release), the ci:package label, or a pull request
+# that changes the packaging itself.
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    branches: [master, main]
+    types: [opened, synchronize, reopened, labeled]
+
+permissions: {}
+
+concurrency:
+  group: package-cli-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Select targets
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'ci:package') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          packaging='^(plugins/clash/(scripts/|package\.json$|node-runtime\.lock\.json$|install\.)|scripts/(packaged-runtime-binaries|runtime-dependency-identity)\.ts$|\.github/workflows/package-cli\.yml$)'
+          full=true
+          if [ "${EVENT_NAME}" = "pull_request" ] && [ "${LABELLED}" != "true" ]; then
+            if ! gh pr diff "${PR_NUMBER}" --repo "${GITHUB_REPOSITORY}" --name-only | grep -Eq "${packaging}"; then
+              full=false
+            fi
+          fi
+          # Every target builds natively: npm installs the host's native optional dependencies.
+          linux_x64='{"target":"linux-x64","os":"ubuntu-24.04","experimental":false}'
+          rest='{"target":"linux-arm64","os":"ubuntu-24.04-arm","experimental":false},
+                {"target":"darwin-arm64","os":"macos-14","experimental":false},
+                {"target":"darwin-x64","os":"macos-15-intel","experimental":false},
+                {"target":"win32-x64","os":"windows-latest","experimental":true}'
+          if [ "${full}" = "true" ]; then include="${linux_x64},${rest}"; else include="${linux_x64}"; fi
+          echo "matrix={\"include\":[$(echo "${include}" | tr -d '\n ')]}" >> "${GITHUB_OUTPUT}"
+
+  package:
+    name: Package CLI (${{ matrix.target }})
+    needs: [plan]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    # win32-x64 has never been exercised outside CI; it reports without gating
+    # until its first green run (see apps/docs/guide/release-pipeline.md).
+    continue-on-error: ${{ matrix.experimental }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      - run: pnpm build:package clash
+
+      - name: Pack the self-contained distribution
+        shell: bash
+        run: pnpm --dir plugins/clash pack:distribution --self-contained "${GITHUB_WORKSPACE}/cli-artifacts"
+
+      - name: Check the archive targets this runner
+        shell: bash
+        run: ls -l cli-artifacts && test -f cli-artifacts/clash-*-${{ matrix.target }}.SHA256SUMS
+
+      # Each smoke runs the archive's own Node and fails if `node` resolves on PATH.
+      - name: Smoke in a bare container without Node
+        if: runner.os == 'Linux'
+        run: node plugins/clash/scripts/smoke-self-contained.ts --container debian:bookworm-slim --archive cli-artifacts/clash-*-${{ matrix.target }}.tgz
+
+      - name: Smoke with only the bundled Node reachable
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d /tmp/clash-cli.XXXXXX)"
+          tar -xzf cli-artifacts/clash-*-${{ matrix.target }}.tgz -C "${work}"
+          cp plugins/clash/scripts/smoke-self-contained.ts "${work}/"
+          cd "${work}"
+          env -i HOME="${HOME}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+            "${work}/package/node/bin/node" "${work}/smoke-self-contained.ts" \
+            --root "${work}/package" --require-no-system-node
+
+      - name: Smoke with only the bundled Node reachable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $env:RUNNER_TEMP 'clash-cli'
+          New-Item -ItemType Directory -Force $work | Out-Null
+          $archive = (Get-ChildItem cli-artifacts -Filter 'clash-*-${{ matrix.target }}.zip').FullName
+          & "$env:SystemRoot\System32\tar.exe" -xf $archive -C $work
+          if ($LASTEXITCODE -ne 0) { throw 'unpacking the archive failed' }
+          Copy-Item plugins/clash/scripts/smoke-self-contained.ts $work
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          Set-Location $work
+          & "$work\package\node\node.exe" "$work\smoke-self-contained.ts" --root "$work\package" --require-no-system-node
+          if ($LASTEXITCODE -ne 0) { throw 'self-contained smoke failed' }
+
+      - name: Retain the exact tested archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: clash-cli-${{ matrix.target }}
+          path: cli-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  checksums:
+    name: Checksums and provenance
+    needs: [package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: plugins/clash
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: clash-cli-*
+          path: cli-artifacts
+          merge-multiple: true
+
+      - name: Verify every archive and write SHA256SUMS
+        working-directory: cli-artifacts
+        run: |
+          set -euo pipefail
+          cp ../plugins/clash/install.sh ../plugins/clash/install.ps1 .
+          for part in *.SHA256SUMS; do sha256sum --check --strict "${part}"; done
+          shopt -s nullglob
+          archives=(clash-*.tgz clash-*.zip)
+          test "${#archives[@]}" -gt 0
+          sha256sum "${archives[@]}" install.sh install.ps1 | sort -k 2 > SHA256SUMS
+          sha256sum --check --strict SHA256SUMS
+          cat SHA256SUMS
+
+      # Signed build provenance needs the OIDC token, which fork pull requests never get.
+      - name: Attest build provenance
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: cli-artifacts/SHA256SUMS
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: clash-cli-release
+          path: |
+            cli-artifacts/SHA256SUMS
+            cli-artifacts/install.sh
+            cli-artifacts/install.ps1
+          if-no-files-found: error
+          retention-days: 14
