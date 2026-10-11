@@ -20,6 +20,8 @@ jobs:
   package-cli:
     needs: [desktop-checks]
     uses: ./.github/workflows/package-cli.yml
+    # The macOS archives reuse the Desktop signing identity and notarization key.
+    secrets: inherit
     permissions:
       contents: read
       pull-requests: read

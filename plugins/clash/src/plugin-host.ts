@@ -156,6 +156,8 @@ async function startBundledHost(
     cliEntryPath: layout.cliEntry,
     dataDir: context.dataDir,
     runDir: context.runDir,
+    // The Host's own log starts after its modules load; a failure before that only reaches stderr.
+    diagnosticLogPath: join(clashHomeForLocalDataDir(context.dataDir), "logs", "host-startup.log"),
     env: context.env,
     daemonEnv: {
       CLASH_DAEMON_STARTED_BY: context.startedBy,

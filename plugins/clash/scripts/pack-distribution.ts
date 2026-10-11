@@ -9,6 +9,7 @@ import {
   resolveNpmInvocation,
 } from "../../../scripts/packaged-runtime-binaries.ts";
 import { writeRuntimeDependencyIdentity } from "../../../scripts/runtime-dependency-identity.ts";
+import { NODE_ENTITLEMENTS, macSigningFromEnv, signMachO, signMachOTree } from "./mac-codesign.ts";
 import {
   SELF_CONTAINED_MANIFEST,
   acquirePinnedNodeArchive,
@@ -63,6 +64,9 @@ export async function packDistribution(source: string, destination: string, opti
     });
     // Upstream ffprobe has no executable bit; a read-only install cannot fix it later.
     await ensurePackagedMediaBinariesExecutable(stage, target);
+    // Signing rewrites the binaries, so it precedes every digest taken below.
+    const signing = options.selfContained ? macSigningFromEnv() : undefined;
+    if (signing) console.error(`Signed ${await signMachOTree(stage, signing)} Mach-O file(s) as ${signing.identity}`);
     const dependencies = await writeRuntimeDependencyIdentity(join(stage, "node_modules"), join(stage, "runtime"));
     if (!options.selfContained) {
       const packed = await execute(npm.command, [...npm.argsPrefix, "pack", "--json", "--pack-destination", output], {
@@ -81,6 +85,7 @@ export async function packDistribution(source: string, destination: string, opti
     const selfContained = await stageSelfContainedRuntime(stage, {
       lock, target, nodeArchivePath, runtimeDependenciesSha256: dependencies,
       package: { name: manifest.name, version: manifest.version },
+      ...(signing ? { sealNode: (nodePath: string) => signMachO(nodePath, signing, NODE_ENTITLEMENTS) } : {}),
     });
     manifest.files = [...manifest.files, "bin", "node", SELF_CONTAINED_MANIFEST];
     await writeFile(join(stage, "package.json"), JSON.stringify(manifest, null, 2) + "\n");

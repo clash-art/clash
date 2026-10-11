@@ -8,8 +8,8 @@
 // the archive is unpacked and `command -v node` is asserted to fail first.
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,23 @@ function systemNodes(env: NodeJS.ProcessEnv): string[] {
   return (env.PATH ?? env.Path ?? "").split(delimiter).filter(Boolean)
     .flatMap((directory) => names.map((name) => join(directory, name)))
     .filter((candidate) => existsSync(candidate));
+}
+
+/**
+ * A Host that dies before readiness reports only "exited before becoming
+ * ready"; what killed it is in the logs it left under its CLASH_HOME.
+ */
+async function printHostLogs(home: string): Promise<void> {
+  const logs = join(home, "logs");
+  const files = (await readdir(logs, { recursive: true }).catch(() => [] as string[])).sort();
+  if (files.length === 0) console.error(`--- no Host logs under ${logs}`);
+  for (const file of files) {
+    const path = join(logs, file);
+    if (!(await stat(path)).isFile()) continue;
+    const lines = (await readFile(path, "utf8")).trimEnd().split("\n");
+    console.error(`--- ${path} (last ${Math.min(lines.length, 80)} of ${lines.length} line(s))`);
+    console.error(lines.slice(-80).join("\n"));
+  }
 }
 
 async function runContainer(image: string, archive: string): Promise<void> {
@@ -79,8 +96,10 @@ async function runSmoke(root: string): Promise<void> {
   const bundledNode = join(root, ...manifest.node.path.split("/"));
   const launcher = join(root, ...manifest.launcher.split("/"));
   // macOS caps Unix socket paths near 104 bytes; its per-user temp directory is too deep.
-  const scratch = await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "clash-smoke-"));
+  // Canonical like `root`: the CLI and Host see their cwd as a real path.
+  const scratch = realpathSync.native(await mkdtemp(join(process.platform === "darwin" ? "/tmp" : tmpdir(), "clash-smoke-")));
   const hosts: string[] = [];
+  let reportFailures = true;
   // Nothing below may reach a Node other than the bundled one.
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -90,15 +109,25 @@ async function runSmoke(root: string): Promise<void> {
   const clash = async (home: string, cwd: string, args: string[]) => {
     const options = { cwd, env: { ...env, CLASH_HOME: home }, maxBuffer: 16 * 1024 * 1024 };
     // A .cmd launcher has to go through the command interpreter.
-    const { stdout } = windows
-      ? await execute(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", launcher, ...args], options)
-      : await execute(launcher, args, options);
-    return stdout;
+    try {
+      const { stdout } = windows
+        ? await execute(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", launcher, ...args], options)
+        : await execute(launcher, args, options);
+      return stdout;
+    } catch (error) {
+      if (reportFailures) {
+        console.error(`--- clash ${args.join(" ")} failed (exit ${(error as { code?: unknown }).code})`);
+        await printHostLogs(home).catch((failure) => console.error(`--- reading Host logs failed: ${failure}`));
+      }
+      throw error;
+    }
   };
   try {
     check(process.platform === manifest.platform && process.arch === manifest.arch,
       `archive targets ${manifest.platform}-${manifest.arch}, not ${process.platform}-${process.arch}`);
-    check(resolve(process.execPath) === resolve(bundledNode), `smoke must run on the bundled Node, not ${process.execPath}`);
+    // process.execPath is a real path, while macOS /tmp is a symlink and Windows temp may be an 8.3 name.
+    check(realpathSync.native(process.execPath) === realpathSync.native(bundledNode),
+      `smoke must run on the bundled Node ${bundledNode}, not ${process.execPath}`);
     check(process.version === `v${manifest.node.version}`, `bundled Node reports ${process.version}`);
     check((await sha256(bundledNode)) === manifest.node.sha256, "bundled Node differs from its manifest digest");
     pass(`bundled Node ${process.version} matches the manifest digest`);
@@ -172,6 +201,8 @@ async function runSmoke(root: string): Promise<void> {
     pass(`MCP initialize and tools/list returned ${tools.length} tool(s): ${tools.slice(0, 5).join(", ")}`);
     console.log("self-contained smoke passed");
   } finally {
+    // A home that never started a Host fails `host status` by design.
+    reportFailures = false;
     for (const home of hosts) {
       try {
         const status = JSON.parse(await clash(home, scratch, ["host", "status", "--json"])) as { pid?: number };
@@ -237,5 +268,6 @@ if (container) {
 } else {
   const root = option("--root");
   check(root, "pass --root <unpacked package directory>");
-  await runSmoke(resolve(root));
+  // The launcher resolves its own root physically (`pwd -P`); compare like with like.
+  await runSmoke(realpathSync.native(resolve(root)));
 }

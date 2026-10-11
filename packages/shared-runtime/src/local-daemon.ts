@@ -37,6 +37,8 @@ export interface LocalDaemonLaunchResult {
   pid: number;
   /** Which Node actually runs this host, and why it was chosen. */
   runtime?: DaemonNodeRuntime;
+  /** Where this launch's stdout/stderr went, when it was captured. */
+  diagnosticLogPath?: string;
   stop?: () => Promise<void>;
 }
 
@@ -247,6 +249,7 @@ export function launchDetachedLocalDaemon(
   return {
     pid,
     runtime,
+    diagnosticLogPath: options.diagnosticLogPath,
     stop: async () => {
       if (!launchedProcessExists(pid)) return;
       try {
@@ -266,6 +269,14 @@ export function launchDetachedLocalDaemon(
       }
     },
   };
+}
+
+/** The tail of what a dead daemon printed, so its launcher can say why it died. */
+async function startupDiagnostics(path: string | undefined): Promise<string> {
+  if (!path) return "";
+  const output = await readFile(path, "utf8").catch(() => "");
+  const tail = output.trimEnd().split("\n").slice(-40).join("\n");
+  return tail ? `:\n${tail}\n(startup output: ${path})` : ` (no startup output in ${path})`;
 }
 
 function delay(ms: number): Promise<void> {
@@ -551,7 +562,10 @@ export function createLocalDaemonBootstrap(
           );
         }
         if (!pidExists(launched.pid)) {
-          throw new Error("Clash daemon exited before becoming ready");
+          throw new Error(
+            "Clash daemon exited before becoming ready" +
+              (await startupDiagnostics(launched.diagnosticLogPath)),
+          );
         }
         await delay(pollIntervalMs);
       }

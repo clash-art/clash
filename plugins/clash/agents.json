@@ -17,6 +17,7 @@
     "scripts/build-host-runtime.ts",
     "scripts/pack-distribution.ts",
     "scripts/self-contained-runtime.ts",
+    "scripts/mac-codesign.ts",
     "scripts/smoke-self-contained.ts",
     "node-runtime.lock.json",
     "install.sh",

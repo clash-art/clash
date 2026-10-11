@@ -141,6 +141,8 @@ export async function stageSelfContainedRuntime(stage: string, input: {
   nodeArchivePath: string;
   package: { name: string; version: string };
   runtimeDependenciesSha256: string;
+  /** Runs on the staged Node binary before its digest is recorded (macOS code signing). */
+  sealNode?: (nodePath: string) => Promise<void>;
 }): Promise<SelfContainedManifest> {
   const { lock, target } = input;
   const windows = target.platform === "win32";
@@ -168,6 +170,7 @@ export async function stageSelfContainedRuntime(stage: string, input: {
     await chmod(nodePath, 0o755);
     await chmod(launcher, 0o755);
   }
+  await input.sealNode?.(nodePath);
   // A plugin cache launches the MCP from this file; it must not need `node` on PATH either.
   const mcpPath = join(stage, ".mcp.json");
   const mcp = JSON.parse(await readFile(mcpPath, "utf8")) as {

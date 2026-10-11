@@ -106,6 +106,8 @@ export class FileReplicaStore {
     this.syncDirectory =
       options.syncDirectory ??
       (async (path) => {
+        // Windows cannot flush a directory handle; the file's own fsync is the durability there.
+        if (process.platform === "win32") return;
         const handle = await open(path, "r");
         try {
           await handle.sync();
