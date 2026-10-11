@@ -132,11 +132,89 @@ Why the deferrals:
   as given when it cannot be resolved; other platforms pass the path through
   untouched. The smoke keeps the short temp path on Windows on purpose so this
   stays covered.
-- **Chrome Headless Shell is not in the archive.** `@remotion/renderer`
-  downloads it from `chrome-for-testing-public` on first render, and on Linux it
-  needs system libraries the bare Debian image does not have. Timeline rendering
-  is therefore outside the smoke test and outside the "no network after install"
-  claim. Bundling a pinned Chrome per target is deferred (about 100 MB each).
+- **Chrome Headless Shell is not in the archive, by design.** It is downloaded
+  once into the Clash home, as Remotion recommends, instead of adding about
+  100 MB to every archive. Timeline rendering therefore stays outside the smoke
+  test and outside the "no network after install" claim until the browser has
+  been fetched. See [Chrome Headless Shell](#chrome-headless-shell).
+
+## Chrome Headless Shell
+
+Rendering (the `render-timeline` Action and the director stage renderer) needs
+the Chrome Headless Shell that `@remotion/renderer` pins as `TESTED_VERSION`.
+Remotion owns the version and the download; Clash only decides where it lands
+and never picks a version itself.
+
+**Why Clash has to steer the location.** Remotion's download directory is not
+configurable: there is no option and no environment variable. It walks up from
+`process.cwd()` to the nearest `package.json` and uses that directory's
+`node_modules/.remotion` (or `<cwd>/.remotion`). In the archive that is the
+installation itself, which may be read-only, and a plugin process runs with its
+plugin directory as cwd. So `packages/shared-runtime/src/render-browser.ts` runs
+Remotion's own `ensureBrowser()` in a child process (the bundled Node) whose cwd
+is a cache directory holding a stub `package.json`, and every render passes the
+result explicitly as `browserExecutable`. The Host never calls `process.chdir()`.
+
+**Cache location.** `$CLASH_HOME/cache/browser/headless-shell-<TESTED_VERSION>/`,
+with Remotion's files below `node_modules/.remotion/` and a `browser.json`
+receipt naming the executable. The cached browser is used only while Remotion's
+`VERSION` file there equals the installed `TESTED_VERSION`; a Remotion upgrade
+that changes the pin selects a new directory and downloads again. Older
+directories are not pruned automatically and can be deleted by hand.
+
+**When it is downloaded.**
+
+- `clash browser ensure` downloads it explicitly and prints the path, version
+  and cache directory (`--json` for the same object). It exits non-zero with the
+  cause when the download fails, and also when the browser is present but `ldd`
+  reports unresolved shared libraries. `clash browser status` reports the same
+  without downloading. Neither starts a Host, so both work in an image build.
+- The Host warms it in the background a few seconds after it is ready. This is
+  best-effort: failure is a single `browser.warmup_failed` record in the Host
+  log (`browser.ready` on success), never a startup failure, and an in-flight
+  download is aborted when the Host stops.
+- A render ensures it first if it is still missing, so no render downloads into
+  `node_modules`. Remotion's lock file serialises concurrent downloads.
+
+| Variable                   | Effect                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `CLASH_BROWSER_CACHE_DIR`  | Cache root instead of `$CLASH_HOME/cache/browser` (for example a shared or pre-baked image directory) |
+| `CLASH_BROWSER_EXECUTABLE` | Passed straight through as `browserExecutable`; nothing is downloaded and the version is not checked  |
+| `CLASH_BROWSER_WARMUP=0`   | Disables the Host's background download; renders and `clash browser ensure` still fetch on demand     |
+
+Plugin processes do not inherit `CLASH_HOME`, so the Host forwards the resolved
+cache root and `CLASH_BROWSER_EXECUTABLE` to the Remotion plugin only. The
+offline smokes set `CLASH_BROWSER_WARMUP=0`.
+
+### Linux system libraries
+
+The download succeeds on a bare image; launching does not. On
+`debian:bookworm-slim` (x64) the headless shell Remotion serves for glibc ≥ 2.35
+(149.0.7790.0 with `@remotion/renderer` 4.0.507) is missing exactly
+`libnss3.so`, `libnssutil3.so`, `libnspr4.so` and `libexpat.so.1`. This is
+enough to launch it and render:
+
+```bash
+apt-get update && apt-get install -y --no-install-recommends libnss3 libexpat1
+```
+
+Checked in a fresh `debian:bookworm-slim` container: `openBrowser` with
+`gl: "angle"`, then `selectComposition` and an H.264 `renderMedia` of an empty
+five-frame timeline. Not covered by that check:
+
+- **Fonts.** The image has none, so text needs font packages chosen for the
+  content, for example `fonts-liberation`, `fonts-noto-color-emoji`,
+  `fonts-noto-cjk`.
+- **`linux-arm64`**, which downloads a different binary.
+- **glibc older than 2.35** (Debian 11, Ubuntu 20.04), where Remotion falls back
+  to Google's build with a longer dependency list. Use Remotion's
+  [Linux dependencies](https://www.remotion.dev/docs/miscellaneous/linux-dependencies)
+  list there: `libnss3 libdbus-1-3 libatk1.0-0 libgbm-dev libasound2 libxrandr2
+libxkbcommon-dev libxfixes3 libxcomposite1 libxdamage1 libpango-1.0-0 libcairo2
+libcups2 libatk-bridge2.0-0` (`libasound2t64` on Ubuntu 24.04).
+
+`clash browser ensure` lists whatever the loader still cannot find. Alpine/musl
+is not supported by Remotion's browser builds.
 
 ## CLI archive layout
 
@@ -421,4 +499,6 @@ $2.30. Release assets on GitHub Releases are not billed as Actions storage.
 5. Declare `permissions:` in the existing workflows; pin actions by SHA.
 6. Stable CLI channel, version suffix for previews, and `clash update`.
 7. Homebrew, WinGet, apt/dnf; npm with per-platform packages once a name exists.
-8. Bundle a pinned Chrome Headless Shell; `win32-arm64`; musl.
+8. `win32-arm64`; musl. (Remotion has no Chrome Headless Shell for either.)
+9. Prune browser cache directories left behind by older Remotion pins; exercise a
+   render in the Linux smoke once an image with the libraries above is used.
