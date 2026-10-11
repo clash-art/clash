@@ -330,9 +330,12 @@ export function downloadClashBrowserInChildProcess(
       const reason = signal
         ? `was terminated by ${signal}`
         : `exited with code ${code}`;
+      // Remotion's network failures surface as an uncaught exception dump; keep the error line.
+      const output = stderr.trim();
+      const detail = /^\w*Error: .+$/m.exec(output)?.[0] ?? output;
       rejectDownload(
         new Error(
-          `Chrome Headless Shell download ${reason}${stderr.trim() ? `: ${stderr.trim()}` : "."}`,
+          `Chrome Headless Shell download ${reason}${detail ? `: ${detail}` : "."}`,
         ),
       );
     });
