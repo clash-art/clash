@@ -307,17 +307,8 @@ describe("desktop Electron runtime", () => {
     ).toBe(true);
   });
 
-  it("installs OpenMA common from the one ref pin.env names in every manifest", () => {
-    const pinEnv = readFileSync(
-      new URL("../../../.github/actions/setup-common/pin.env", import.meta.url),
-      "utf8",
-    );
-    const value = (name: string) =>
-      new RegExp(`^${name}=(.*)$`, "m").exec(pinEnv)?.[1]?.trim() ?? "";
-    // A release is named by its tag. An empty tag is the temporary pin to an
-    // unreleased commit described in pin.env, named by its full SHA.
-    const ref = value("OPENMA_COMMON_TAG") || value("OPENMA_COMMON_SHA");
-    expect(ref).toMatch(/^(?:v\d+\.\d+\.\d+|[0-9a-f]{40})$/);
+  it("installs published OpenMA common from the v0.8.0 git tag", () => {
+    const pin = /github:openma-ai\/openma-common#v0\.8\.0/;
     for (const relativePath of [
       "../../../package.json",
       "../../../apps/local-api/package.json",
@@ -326,17 +317,8 @@ describe("desktop Electron runtime", () => {
       "../../../apps/web/package.json",
       "../../../packages/shared-artifact-evals/package.json",
     ]) {
-      const manifest = JSON.parse(
-        readFileSync(new URL(relativePath, import.meta.url), "utf8"),
-      ) as {
-        dependencies?: Record<string, string>;
-        devDependencies?: Record<string, string>;
-      };
-      expect(
-        manifest.dependencies?.["@openma/common"] ??
-          manifest.devDependencies?.["@openma/common"],
-        relativePath,
-      ).toBe(`github:openma-ai/openma-common#${ref}`);
+      const manifest = readFileSync(new URL(relativePath, import.meta.url), "utf8");
+      expect(sourceMatches(manifest, pin)).toBe(true);
     }
   });
 
@@ -364,8 +346,10 @@ describe("desktop Electron runtime", () => {
       new URL("../../../.github/actions/setup-common/pin.env", import.meta.url),
       "utf8",
     );
-    expect(pin).toMatch(/^OPENMA_COMMON_SHA=[0-9a-f]{40}$/m);
-    expect(pin).toMatch(/^OPENMA_COMMON_TAG=(?:v\d+\.\d+\.\d+)?$/m);
+    expect(pin).toContain(
+      "OPENMA_COMMON_SHA=fc9c958c46ff48853001a1a4866f7f420e050840",
+    );
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.8.0");
     expect(pin).toContain("OPENMA_COMMON_TARBALL_SHA256=\n");
     expect(pin).toContain("OPENMA_COMMON_TARBALL_URL=\n");
     expect(commonSetup).toContain(".github/actions/setup-common/pin.env");
@@ -430,18 +414,13 @@ describe("desktop Electron runtime", () => {
     expect(builderConfig).toContain("appId: app.clash.video");
     expect(builderConfig).not.toContain("dev.openma.backchat");
     expect(builderConfig).toContain("hardenedRuntime: true");
-    expect(builderConfig).toContain(
-      "entitlements: build/entitlements.mac.plist",
-    );
+    expect(builderConfig).toContain("entitlements: build/entitlements.mac.plist");
     expect(builderConfig).toContain("notarize: true");
     expect(builderConfig).not.toContain('identity: "-"');
     expect(release).toContain("secrets: inherit");
     expect(
       readFileSync(
-        new URL(
-          "../../../.github/workflows/package-check.yml",
-          import.meta.url,
-        ),
+        new URL("../../../.github/workflows/package-check.yml", import.meta.url),
         "utf8",
       ),
     ).toContain("secrets: inherit");

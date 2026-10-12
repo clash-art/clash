@@ -135,7 +135,7 @@ const committedDist = [
   "dist/protocol/acp/index.js",
 ];
 
-/** A release asset is optional. v0.7.9 publishes the prebuilt tree only in git. */
+/** A release asset is optional. v0.8.0 publishes the prebuilt tree only in git. */
 export function tarballPinMode(url: string, digest: string): "tarball" | "git" {
   const hasUrl = url.trim().length > 0;
   const hasDigest = digest.trim().length > 0;
@@ -145,14 +145,6 @@ export function tarballPinMode(url: string, digest: string): "tarball" | "git" {
     );
   }
   return hasUrl ? "tarball" : "git";
-}
-
-/**
- * The release tag the pin names. An empty value is a temporary pin to an
- * unreleased commit, which has no tag to peel and no release tarball.
- */
-export function pinnedTag(value: string | undefined): string | undefined {
-  return value?.trim() || undefined;
 }
 
 function assertCommittedDist(root: string, sha: string): void {
@@ -168,19 +160,12 @@ function assertCommittedDist(root: string, sha: string): void {
 export function verifyOpenmaPrebuilt(): void {
   const workspace = requireEnv("GITHUB_WORKSPACE");
   const sha = requireEnv("OPENMA_COMMON_SHA");
-  const tag = pinnedTag(process.env.OPENMA_COMMON_TAG);
+  const tag = requireEnv("OPENMA_COMMON_TAG");
   const expectedDigest = process.env.OPENMA_COMMON_TARBALL_SHA256 ?? "";
   const tarballUrl = process.env.OPENMA_COMMON_TARBALL_URL ?? "";
   const root = path.resolve(workspace, "..", "openma-common");
   if (git(["-C", root, "rev-parse", "HEAD"]) !== sha) {
     throw new Error(`OpenMA checkout is not ${sha}`);
-  }
-  if (tag === undefined) {
-    console.log(
-      `::warning::@openma/common is pinned to unreleased commit ${sha}. This is a temporary pin: move it to a release tag before merging.`,
-    );
-    assertCommittedDist(root, sha);
-    return;
   }
   if (git(["-C", root, "rev-parse", `${tag}^{commit}`]) !== sha) {
     throw new Error(`OpenMA tag ${tag} does not peel to ${sha}`);

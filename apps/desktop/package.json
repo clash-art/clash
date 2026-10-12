@@ -73,6 +73,6 @@
     "vitest": "^4.1.4",
     "@clash/gui": "workspace:*",
     "@clash/web": "workspace:*",
-    "@openma/common": "github:openma-ai/openma-common#cd5cf3c17c770be445ee46c2e188290a678e0fee"
+    "@openma/common": "github:openma-ai/openma-common#v0.8.0"
   }
 }
