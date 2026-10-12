@@ -39,6 +39,8 @@ export interface ProjectAssetHttpClient {
       fileName?: string;
       kind: AssetKind;
       projectAssetId: string;
+      /** `reject` asks the Host to fail rather than add a second active Asset over the same bytes. */
+      duplicateContent?: "allow" | "reject";
     },
   ): Promise<ResolvedAsset>;
   admit(
@@ -122,6 +124,7 @@ type ProjectImportCommandSnapshot = {
   appendFileName: boolean;
   kind: AssetKind;
   projectAssetId: string;
+  duplicateContent?: "allow" | "reject";
 };
 
 function snapshotProjectImport(
@@ -138,6 +141,9 @@ function snapshotProjectImport(
     appendFileName: input.fileName !== undefined || sourceFileName !== fileName,
     kind: input.kind,
     projectAssetId: required(input.projectAssetId, "project asset id"),
+    ...(input.duplicateContent
+      ? { duplicateContent: input.duplicateContent }
+      : {}),
   };
 }
 
@@ -298,6 +304,9 @@ export function createProjectAssetHttpClient(
       }
       form.append("kind", snapshot.kind);
       form.append("projectAssetId", snapshot.projectAssetId);
+      if (snapshot.duplicateContent) {
+        form.append("duplicateContent", snapshot.duplicateContent);
+      }
       const response = await fetch(
         url,
         requestInit({

@@ -215,14 +215,16 @@ test("bundled CLI and peer plugin MCP share one persistent Clash daemon", async 
         true,
         JSON.stringify(timelineContracts),
       );
-      for (const [name, contracts] of [
-        ["clash_assets", ["content_list", "content_search", "content_read"]],
-        ["clash_generators", ["actions_list", "action_invoke", "action_wait"]],
+      // Only Assets takes a contract batch; Generators reveals its contracts
+      // when called without an operation.
+      for (const [name, args] of [
+        [
+          "clash_assets",
+          { contracts: ["content_list", "content_search", "content_read"] },
+        ],
+        ["clash_generators", {}],
       ] as const) {
-        const result = await client.callTool({
-          name,
-          arguments: { contracts },
-        });
+        const result = await client.callTool({ name, arguments: args });
         assert.notEqual(result.isError, true, JSON.stringify(result));
       }
       const dispatcher = join(pluginRoot, "runtime/dispatcher.js");
@@ -335,7 +337,10 @@ test("bundled CLI and peer plugin MCP share one persistent Clash daemon", async 
       );
       const searched = await client.callTool({
         name: "clash_assets",
-        arguments: { operation: "content_list", arguments: { kind: "video" } },
+        arguments: {
+          operation: "content_list",
+          arguments: { kinds: ["video"] },
+        },
       });
       assert.notEqual(searched.isError, true, JSON.stringify(searched));
       assert.ok(

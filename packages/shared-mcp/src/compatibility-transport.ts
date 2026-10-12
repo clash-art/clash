@@ -17,19 +17,47 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function toolsListRequestId(message: JSONRPCMessage): RequestId | undefined {
   if (!isRecord(message)) return undefined;
   const record = message as unknown as Record<string, unknown>;
-  return record.method === "tools/list"
-    && (typeof record.id === "string" || typeof record.id === "number")
+  return record.method === "tools/list" &&
+    (typeof record.id === "string" || typeof record.id === "number")
     ? record.id
     : undefined;
 }
 
 function responseId(message: JSONRPCMessage): RequestId | undefined {
   if (!isRecord(message)) return undefined;
-  return ("result" in message || "error" in message)
-    && (typeof message.id === "string" || typeof message.id === "number")
+  return ("result" in message || "error" in message) &&
+    (typeof message.id === "string" || typeof message.id === "number")
     ? message.id
     : undefined;
 }
+
+function toolCallRequest(
+  message: JSONRPCMessage,
+):
+  | { id: RequestId; name: string; arguments: Record<string, unknown> }
+  | undefined {
+  if (!isRecord(message)) return undefined;
+  const record = message as unknown as Record<string, unknown>;
+  if (
+    record.method !== "tools/call" ||
+    (typeof record.id !== "string" && typeof record.id !== "number") ||
+    !isRecord(record.params) ||
+    typeof record.params.name !== "string"
+  ) {
+    return undefined;
+  }
+  return {
+    id: record.id,
+    name: record.params.name,
+    arguments: isRecord(record.params.arguments) ? record.params.arguments : {},
+  };
+}
+
+/** Returns corrective text for a tools/call that must not reach a handler. */
+export type ClashMcpToolCallGuard = (call: {
+  name: string;
+  arguments: Record<string, unknown>;
+}) => string | undefined;
 
 export type ClashMcpToolListFilter = (
   tools: Array<Record<string, unknown>>,
@@ -73,7 +101,10 @@ function projectToolsListResponse(
   } as JSONRPCMessage;
 }
 
-function internalErrorResponse(message: JSONRPCMessage, error: unknown): JSONRPCMessage {
+function internalErrorResponse(
+  message: JSONRPCMessage,
+  error: unknown,
+): JSONRPCMessage {
   const id = responseId(message);
   if (id === undefined) return message;
   return {
@@ -88,10 +119,14 @@ function internalErrorResponse(message: JSONRPCMessage, error: unknown): JSONRPC
   };
 }
 
-/** Transport decorator that applies compatibility only to tools/list egress. */
+/**
+ * Transport decorator that applies compatibility to tools/list egress and
+ * answers a misaddressed tools/call with corrective guidance before dispatch.
+ */
 export class McpSchemaCompatibilityTransport implements Transport {
   readonly #transport: Transport;
   readonly #filterTools?: ClashMcpToolListFilter;
+  readonly #guardToolCall?: ClashMcpToolCallGuard;
   readonly #pendingToolsListIds = new Set<RequestId>();
 
   onclose?: () => void;
@@ -101,9 +136,16 @@ export class McpSchemaCompatibilityTransport implements Transport {
     extra?: MessageExtraInfo,
   ) => void;
 
-  constructor(transport: Transport, options: { filterTools?: ClashMcpToolListFilter } = {}) {
+  constructor(
+    transport: Transport,
+    options: {
+      filterTools?: ClashMcpToolListFilter;
+      guardToolCall?: ClashMcpToolCallGuard;
+    } = {},
+  ) {
     this.#transport = transport;
     this.#filterTools = options.filterTools;
+    this.#guardToolCall = options.guardToolCall;
   }
 
   get sessionId(): string | undefined {
@@ -136,6 +178,21 @@ export class McpSchemaCompatibilityTransport implements Transport {
       extra?: MessageExtraInfo,
     ) => {
       existingMessage?.(message, extra);
+      const call = toolCallRequest(message);
+      const guidance = call && this.#guardToolCall?.(call);
+      if (call && guidance) {
+        void this.#transport
+          .send({
+            jsonrpc: "2.0",
+            id: call.id,
+            result: {
+              content: [{ type: "text", text: guidance }],
+              isError: true,
+            },
+          })
+          .catch((error) => this.onerror?.(error as Error));
+        return;
+      }
       const id = toolsListRequestId(message);
       if (id !== undefined) this.#pendingToolsListIds.add(id);
       this.onmessage?.(message, extra);

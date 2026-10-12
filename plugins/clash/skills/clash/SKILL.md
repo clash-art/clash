@@ -134,7 +134,7 @@ then call with `operation` and `arguments`:
 
 | Dispatcher | Common operations |
 | --- | --- |
-| `clash_assets` | `content_list`, `content_search`, `content_read`, `import_file`, `record_operation`, `record_observation` |
+| `clash_assets` | `content_list`, `content_search`, `content_read`, `import_file`, `list`, `get`, `record_operation`, `record_observation` |
 | `clash_generators` | `actions_list`, `action_invoke`, `action_wait` |
 | `clash_composition` with `kind: "timeline"` | Reveal contracts for the needed Timeline operation |
 

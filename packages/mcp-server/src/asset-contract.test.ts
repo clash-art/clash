@@ -113,17 +113,34 @@ test("MCP Asset failures preserve Host codes and give read recovery without expo
     assetId: "asset:one",
   });
   assert.equal(failure?.isError, true);
-  assert.deepEqual(failure?.structuredContent, {
-    error: {
-      code: "READ_REQUIRED",
-      message: "READ_REQUIRED: Read the Project Asset first",
-      operation: "clash_assets_trash",
-      retryTool: {
-        name: "clash_assets_get",
-        arguments: { projectId: "project-a", assetId: "asset:one" },
-      },
+  const readStep = (assetId: string) => ({
+    name: "clash_assets",
+    arguments: {
+      operation: "get",
+      arguments: { projectId: "project-a", assetId },
     },
   });
+  assert.equal(failure?.structuredContent.error.code, "READ_REQUIRED");
+  assert.equal(
+    failure?.structuredContent.error.operation,
+    "clash_assets_trash",
+  );
+  assert.deepEqual(failure?.structuredContent.error.retryTool, {
+    name: "clash_assets_get",
+    arguments: { projectId: "project-a", assetId: "asset:one" },
+  });
+  assert.deepEqual(
+    failure?.structuredContent.error.nextSteps.map(
+      ({ tool }: { tool: unknown }) => tool,
+    ),
+    [readStep("asset:one")],
+  );
+  // The text an agent reads carries the same call it can copy.
+  assert.ok(
+    failure?.content[0].text.includes(
+      JSON.stringify(readStep("asset:one").arguments),
+    ),
+  );
   assert.doesNotMatch(
     JSON.stringify(failure),
     /readToken|receipt|ifMatch|if-match|force/i,
@@ -133,16 +150,134 @@ test("MCP Asset failures preserve Host codes and give read recovery without expo
     projectId: "project-a",
     assetId: "asset:stale",
   });
-  assert.deepEqual(stale?.structuredContent, {
-    error: {
-      code: "STALE_READ",
-      message: "Project Asset changed after the last read",
-      operation: "clash_assets_trash",
-      projectAssetId: "asset:stale",
-      retryTool: {
-        name: "clash_assets_get",
-        arguments: { projectId: "project-a", assetId: "asset:stale" },
+  assert.equal(stale?.structuredContent.error.code, "STALE_READ");
+  assert.equal(stale?.structuredContent.error.projectAssetId, "asset:stale");
+  assert.deepEqual(stale?.structuredContent.error.retryTool, {
+    name: "clash_assets_get",
+    arguments: { projectId: "project-a", assetId: "asset:stale" },
+  });
+  assert.deepEqual(
+    stale?.structuredContent.error.nextSteps.map(
+      ({ tool }: { tool: unknown }) => tool,
+    ),
+    [readStep("asset:stale")],
+  );
+});
+
+test("MCP Asset misuse answers with what went wrong and the exact next call", async () => {
+  const { registerClashAssetMcp } = await import("./server");
+  const tools = new Map<string, { callback: (input: any) => Promise<any> }>();
+  const failures: Record<string, Record<string, unknown>> = {
+    clash_assets_import_file: {
+      code: "PROJECT_ASSET_DUPLICATE_CONTENT",
+      error: "This content is already imported",
+      projectAssetId: "preassigned",
+      existingProjectAssetIds: ["asset:minted"],
+    },
+    clash_assets_get: {
+      code: "PROJECT_ASSET_NOT_FOUND",
+      error: "Project Asset not found",
+      projectAssetId: "minted",
+      suggestedProjectAssetIds: ["asset:minted"],
+    },
+    clash_assets_admit: {
+      code: "PROJECT_ASSET_TRASHED",
+      error: "in the trash",
+      projectAssetId: "asset:minted",
+    },
+  };
+  registerClashAssetMcp(
+    {
+      registerTool(
+        name: string,
+        _config: unknown,
+        callback: (input: any) => Promise<any>,
+      ) {
+        tools.set(name, { callback });
+        return {};
+      },
+    } as never,
+    {
+      async invoke(name, input) {
+        const body = failures[name];
+        if (body) throw { body };
+        return {
+          id: input.assetId,
+          lifecycle: { state: name.endsWith("trash") ? "trashed" : "active" },
+        };
       },
     },
+  );
+  const call = (name: string, input: Record<string, unknown>) =>
+    tools.get(name)!.callback(input);
+  const steps = (result: any) =>
+    result.structuredContent.error.nextSteps.map(
+      ({ tool }: { tool: { arguments: unknown } }) => tool.arguments,
+    );
+  const said = (result: any, step: unknown) =>
+    assert.ok(
+      result.content[0].text.includes(JSON.stringify(step)),
+      result.content[0].text,
+    );
+
+  // Duplicate import: the file was first imported without the id, then again with it.
+  const duplicate = await call("clash_assets_import_file", {
+    filePath: "inputs/exact-source.svg",
+    projectAssetId: "preassigned",
   });
+  assert.equal(duplicate.isError, true);
+  assert.equal(
+    duplicate.structuredContent.error.code,
+    "PROJECT_ASSET_DUPLICATE_CONTENT",
+  );
+  assert.deepEqual(steps(duplicate), [
+    { operation: "get", arguments: { assetId: "asset:minted" } },
+    { operation: "trash", arguments: { assetId: "asset:minted" } },
+    {
+      operation: "import_file",
+      arguments: {
+        filePath: "inputs/exact-source.svg",
+        projectAssetId: "preassigned",
+      },
+    },
+    {
+      operation: "import_file",
+      arguments: {
+        filePath: "inputs/exact-source.svg",
+        projectAssetId: "preassigned",
+        allowDuplicate: true,
+      },
+    },
+  ]);
+  for (const step of steps(duplicate)) said(duplicate, step);
+
+  // Wrong id on a read or lifecycle call: the existing id is offered back.
+  const missing = await call("clash_assets_get", { assetId: "minted" });
+  assert.deepEqual(steps(missing), [
+    { operation: "get", arguments: { assetId: "asset:minted" } },
+    { operation: "list", arguments: {} },
+  ]);
+  said(missing, steps(missing)[0]);
+
+  // Re-importing something that sits in the trash: restore, not import.
+  const trashed = await call("clash_assets_admit", {
+    globalAssetId: "global:one",
+  });
+  assert.deepEqual(steps(trashed), [
+    { operation: "get", arguments: { assetId: "asset:minted" } },
+    { operation: "restore", arguments: { assetId: "asset:minted" } },
+  ]);
+
+  // Trashing the wrong Asset: the result carries the one call that undoes it.
+  const removed = await call("clash_assets_trash", { assetId: "asset:wrong" });
+  assert.notEqual(removed.isError, true);
+  assert.ok(
+    removed.content[0].text.includes(
+      JSON.stringify({
+        operation: "restore",
+        arguments: { assetId: "asset:wrong" },
+      }),
+    ),
+    removed.content[0].text,
+  );
 });

@@ -1564,6 +1564,12 @@ function localProjectAssetErrorResponse(error: unknown): Response {
             ? "Project Asset not found"
             : error.message,
         code: error.code,
+        ...(error.projectAssetId
+          ? { projectAssetId: error.projectAssetId }
+          : {}),
+        ...(error.existingProjectAssetIds
+          ? { existingProjectAssetIds: error.existingProjectAssetIds }
+          : {}),
       },
       status,
     );
@@ -4701,6 +4707,20 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         400,
       );
     }
+    const duplicateContent = form.get("duplicateContent");
+    if (
+      duplicateContent !== null &&
+      duplicateContent !== "allow" &&
+      duplicateContent !== "reject"
+    ) {
+      return c.json(
+        {
+          error: "duplicateContent must be allow or reject",
+          code: "INVALID_PROJECT_ASSET_IMPORT",
+        },
+        400,
+      );
+    }
 
     try {
       // A user's filename/File.type is a format hint, not a byte assertion.
@@ -4708,6 +4728,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       const asset = await projectAssetServiceAt(requestOrigin(c)).installOwned({
         projectId: c.req.param("projectId"),
         projectAssetId: projectAssetIdValue.trim(),
+        ...(duplicateContent ? { duplicateContent } : {}),
         kind: kind.data,
         bytes: new Uint8Array(await file.arrayBuffer()),
         name: file.name,
