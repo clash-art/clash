@@ -358,13 +358,37 @@ function verifiedDecodedMediaType(input: {
   return decoded;
 }
 
+/** The DocType element must begin inside this prefix of the EBML header. */
+const EBML_DOC_TYPE_SCAN_BYTES = 64 * 1024;
+/** Element id (2) + longest size vint (8) + longest accepted DocType (32). */
+const EBML_DOC_TYPE_ELEMENT_BYTES = 2 + 8 + 32;
+
 async function inspectEbmlDocType(
   sourcePath: string,
   resource: Resource,
 ): Promise<"matroska" | "webm"> {
-  const bytes = await readFile(sourcePath);
-  if (bytes.byteLength !== resource.byteLength) {
-    throw new Error("EBML Asset bytes do not match immutable Resource length.");
+  // Only the leading header is read: a Matroska file can be tens of gigabytes
+  // and its DocType never lives past the first few hundred bytes.
+  const handle = await open(sourcePath, "r");
+  let bytes: Buffer;
+  try {
+    const { size } = await handle.stat();
+    if (size !== resource.byteLength) {
+      throw new Error(
+        "EBML Asset bytes do not match immutable Resource length.",
+      );
+    }
+    const header = await readFileSlice(
+      handle,
+      0,
+      Math.min(size, EBML_DOC_TYPE_SCAN_BYTES + EBML_DOC_TYPE_ELEMENT_BYTES),
+    );
+    if (!header) {
+      throw new Error("Matroska/WebM Asset bytes ended inside the EBML header.");
+    }
+    bytes = header;
+  } finally {
+    await handle.close();
   }
   if (
     bytes.byteLength < 8 ||
@@ -375,7 +399,7 @@ async function inspectEbmlDocType(
   ) {
     throw new Error("Matroska/WebM Asset bytes contain no EBML header.");
   }
-  const limit = Math.min(bytes.byteLength - 3, 64 * 1024);
+  const limit = Math.min(bytes.byteLength - 3, EBML_DOC_TYPE_SCAN_BYTES);
   for (let offset = 4; offset < limit; offset += 1) {
     if (bytes[offset] !== 0x42 || bytes[offset + 1] !== 0x82) continue;
     const first = bytes[offset + 2]!;
