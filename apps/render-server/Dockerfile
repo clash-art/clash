@@ -13,6 +13,13 @@
 FROM node:24-slim AS builder
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 
+# git: `pnpm deploy` re-resolves git-hosted dependencies (the root workspace
+# depends on github:openma-ai/openma-common) with `git ls-remote`, which the
+# slim image lacks. Builder stage only; the runtime image does not get git.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Workspace topology so pnpm can resolve the deps graph.
