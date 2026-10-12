@@ -1695,7 +1695,9 @@ interface AssetImportUpload {
  * `multipart/form-data` is the compatibility transport: the parser holds the
  * whole file before the route sees it. Any other content type is the streaming
  * transport: the body is the file's raw bytes, and the command fields travel
- * in the query together with `fileName` and the declared `byteLength`.
+ * in the query together with `fileName` and the declared `byteLength`. When
+ * the query omits `byteLength`, the request's `Content-Length` declares it; a
+ * body with neither (chunked transfer) has no declared length and is rejected.
  * Returns undefined when a multipart body cannot be parsed.
  */
 async function readAssetImportUpload(

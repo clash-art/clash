@@ -231,6 +231,50 @@ describe("import-file accepts the file as a streamed request body", () => {
     });
   }
 
+  for (const scope of scopes) {
+    it(`${scope.name}: Content-Length declares the byte length when the query omits byteLength`, async () => {
+      const { app } = await fixture();
+      const bytes = new Uint8Array(randomBytes(64 * 1024));
+      const importWith = (id: string, headers: Record<string, string>) =>
+        app.request(
+          `${scope.collection}/import-file?${new URLSearchParams({
+            kind: "image",
+            [scope.idField]: id,
+            fileName: "frame.png",
+          })}`,
+          {
+            method: "POST",
+            headers: { "content-type": "image/png", ...headers },
+            body: chunkedBody(bytes, 16 * 1024),
+            duplex: "half",
+          } as RequestInit,
+        );
+
+      const declared = await importWith("asset:content-length", {
+        "content-length": String(bytes.byteLength),
+      });
+      expect(declared.status, await declared.clone().text()).toBe(201);
+      expect((await declared.json()).metadata.bytes).toBe(bytes.byteLength);
+
+      // The header is held to the same check as the query field.
+      const contradicted = await importWith("asset:content-length-mismatch", {
+        "content-length": String(bytes.byteLength + 1),
+      });
+      expect(contradicted.status).toBe(400);
+      expect((await contradicted.json()).code).toBe(scope.errorCode);
+
+      // A chunked body carries no Content-Length, so nothing declares it.
+      const undeclared = await importWith("asset:undeclared", {});
+      expect(undeclared.status).toBe(400);
+      expect((await undeclared.json()).code).toBe(scope.errorCode);
+
+      const listed = await (await app.request(scope.collection)).json();
+      expect(listed.assets.map((asset: { id: string }) => asset.id)).toEqual([
+        "asset:content-length",
+      ]);
+    });
+  }
+
   it("project: the streamed transport honours duplicateContent against a multipart import", async () => {
     const { app } = await fixture();
     const collection = scopes[0].collection;

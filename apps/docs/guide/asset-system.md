@@ -1814,8 +1814,15 @@ format hint; the command travels in the query: `kind`, `fileName`, the declared
 `byteLength`, the already-fixed `projectAssetId` or `globalAssetId`, and for a
 Project the optional `duplicateContent`. The Host hashes and writes the body
 chunk by chunk through the Resource store's `stageStream`, so neither side
-holds a large file in memory, and a body that contradicts its declared length
-is rejected before anything is staged. The SDK clients send a `Blob` as that
+holds a large file in memory. The declared length is the `byteLength` query
+field; when the query omits it, the request's `Content-Length` header declares
+it instead, and `byteLength` wins when both are present. A body that
+contradicts its declared length, or declares none at all (a chunked body
+without `byteLength`), gets a 400 and publishes nothing. A streamed upload has
+no whole-request deadline: the Host disables Node's `requestTimeout`, which
+would otherwise cut off any upload at 300 s, keeps a 60 s limit on the request
+head, and drops a connection whose unfinished body has received no byte for
+five minutes (`configureHostServerTimeouts`). The SDK clients send a `Blob` as that
 body (a browser `File`, or Node's file-backed `openAsBlob`); an optional
 `onProgress` listener switches them to a streamed body where the runtime
 supports one. `multipart/form-data` with the same fields remains accepted for
