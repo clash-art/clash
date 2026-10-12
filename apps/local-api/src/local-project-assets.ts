@@ -373,7 +373,7 @@ export function publishLocalProjectAsset(
     if (sameEntry(existing, entry)) return { entry: existing, changed: false };
     throw new LocalProjectAssetMigrationError(
       "PROJECT_ASSET_ID_COLLISION",
-      `Project Asset ${entry.id} already identifies different immutable content.`,
+      `Project Asset ${entry.id} already identifies different immutable content. An existing Asset is never overwritten: read ${entry.id} to use it, or publish this content under a new Project Asset ID.`,
     );
   }
   const created = createProjectAsset(doc, entry);

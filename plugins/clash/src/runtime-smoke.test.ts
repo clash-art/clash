@@ -335,7 +335,10 @@ test("bundled CLI and peer plugin MCP share one persistent Clash daemon", async 
       );
       const searched = await client.callTool({
         name: "clash_assets",
-        arguments: { operation: "content_list", arguments: { kind: "video" } },
+        arguments: {
+          operation: "content_list",
+          arguments: { kinds: ["video"] },
+        },
       });
       assert.notEqual(searched.isError, true, JSON.stringify(searched));
       assert.ok(

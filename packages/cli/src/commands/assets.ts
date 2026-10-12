@@ -826,7 +826,7 @@ assetsCommand
   )
   .option(
     "--asset-id <id>",
-    "Preassigned Project Asset ID; reuse it to replay an import with an unknown result",
+    "Project Asset ID this import creates. Pass it on the first import when the Asset needs a known identity; repeating it with the same file returns the existing Asset. Without it every import mints a new asset:<uuid>",
   )
   .option("--name <file>", "Link file name under assets/links")
   .option("--no-link", "Do not create a project assets/links entry")
@@ -1175,7 +1175,7 @@ personalGlobalAssetsCommand
   .option("--kind <kind>", "Asset kind: image, video, audio, or model")
   .option(
     "--asset-id <id>",
-    "Preassigned Global Asset ID; reuse it to replay an import with an unknown result",
+    "Global Asset ID this import creates. Pass it on the first import when the Asset needs a known identity; repeating it with the same file returns the existing Asset. Without it every import mints a new global:<uuid>",
   )
   .option("--json", "Output result as JSON")
   .action(

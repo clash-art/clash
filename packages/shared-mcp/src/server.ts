@@ -132,6 +132,59 @@ function nextGuidance(description: string | undefined): string {
   );
 }
 
+function nameTokens(name: string): string[] {
+  return name
+    .replace(/([a-z0-9])([A-Z])/gu, "$1_$2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean)
+    .map((token) => token.replace(/s$/u, ""));
+}
+
+/**
+ * Recovery text for a name the host does not know. Suggestions share a word
+ * with the request (`assetId` -> `projectAssetId`); the full list always
+ * follows so the caller never has to guess a second time.
+ */
+function unknownNameGuidance(
+  requested: readonly string[],
+  available: readonly string[],
+  label: string,
+): string {
+  const wanted = new Set(requested.flatMap(nameTokens));
+  const scored = available
+    .map((name) => ({
+      name,
+      score: nameTokens(name).filter((token) => wanted.has(token)).length,
+    }))
+    .filter(({ score }) => score > 0);
+  const best = Math.max(0, ...scored.map(({ score }) => score));
+  const closest = scored
+    .filter(({ score }) => score === best)
+    .map(({ name }) => name);
+  return [
+    closest.length ? ` Did you mean ${closest.join(" or ")}?` : "",
+    ` ${label}: ${available.length ? available.join(", ") : "none"}.`,
+  ].join("");
+}
+
+/**
+ * Top-level argument names the live schema declares. Undefined when the schema
+ * accepts extras or does not enumerate its properties, so those stay unguarded.
+ */
+function declaredArgumentNames(handle: RegisteredTool): string[] | undefined {
+  const schema = inputJsonSchemaOf(handle);
+  const properties = schema.properties;
+  if (
+    schema.additionalProperties ||
+    !properties ||
+    typeof properties !== "object"
+  ) {
+    return undefined;
+  }
+  return Object.keys(properties).sort();
+}
+
 function clashMetadata(
   meta: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
@@ -851,8 +904,11 @@ export class ClashMcpServer extends McpServer {
         this.#commandLocalOperation(name) === operation,
     );
     if (matches.length === 0) {
+      const available = this.#liveModelTools()
+        .filter(({ name }) => classifyClashMcpTool(name) === selectedCommand)
+        .map(({ name }) => this.#commandLocalOperation(name));
       throw new Error(
-        `Clash ${selectedCommand} operation ${operation} is not registered, enabled, and model-visible in this host.`,
+        `Clash ${selectedCommand} operation ${operation} is not registered, enabled, and model-visible in this host.${unknownNameGuidance([operation], available, `Available ${selectedCommand} operations`)}`,
       );
     }
     if (matches.length > 1) {
@@ -903,6 +959,19 @@ export class ClashMcpServer extends McpServer {
     const normalizedInput = normalizeObjectSchema(handle.inputSchema);
     const schemaToParse = normalizedInput ?? handle.inputSchema;
     let parsedArguments: unknown = undefined;
+    if (normalizedInput) {
+      // Schema parsing strips undeclared keys. A misspelled identity argument
+      // would then run the operation without it, so reject before any effect.
+      const declared = declaredArgumentNames(handle);
+      const unknown = declared
+        ? Object.keys(input.arguments).filter((key) => !declared.includes(key))
+        : [];
+      if (unknown.length > 0) {
+        throw new Error(
+          `Unknown argument${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")} for Clash operation ${registered.name}; nothing was executed.${unknownNameGuidance(unknown, declared ?? [], "Accepted arguments")}`,
+        );
+      }
+    }
     if (schemaToParse) {
       const parsed = await safeParseAsync(schemaToParse, input.arguments);
       if (!parsed.success) {

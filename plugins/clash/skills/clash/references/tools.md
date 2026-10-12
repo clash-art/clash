@@ -48,6 +48,15 @@ the `import_file`, `list`, and `get` contracts together, then execute those
 short operations. Use the index when the required Asset operation is not
 already identified.
 
+An import's identity is decided by its first call. When the Asset needs a known
+or preassigned ID, pass it in that call: `projectAssetId` on MCP `import_file`,
+`--asset-id` on `clash assets import`. Repeating the same ID with the same file
+returns the existing Asset; the same ID with different bytes is rejected.
+Without an ID Clash mints `asset:<uuid>` and every import creates another
+Asset, and an imported Asset cannot be renamed afterwards. Dispatchers reject
+arguments a contract does not declare instead of ignoring them, so read the
+contract rather than guessing a spelling.
+
 For media processing, `clash actions list --query <operation>` reveals installed
 project-available Actions, including project custom Actions, with their real
 state, parameters and input/output contracts. `actions run <key>` invokes the
@@ -70,7 +79,8 @@ For content lookup, use the smallest useful sequence:
 These commands return structured JSON and resolve the cwd Project, with
 `--project <id>` available for explicit scope. MCP uses `content_list`,
 `content_search`, and `content_read` on the Assets dispatcher; `within` and
-`ref` are objects in MCP. They reuse existing Media and exact Document revision
+`ref` are objects in MCP. `content_list` browses media and Documents; the
+Project Asset inventory with lifecycle state is the separate `list` operation. They reuse existing Media and exact Document revision
 references, without a virtual filesystem or a new reference syntax. A Media
 read returns its descriptor and delivery information; a Document read returns
 the pinned body and provenance even if its head has advanced.

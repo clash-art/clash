@@ -223,10 +223,12 @@ const assetToolDefinitions: Record<
   clash_assets_list: {
     title: "List Project Assets",
     description: describeClashTool({
-      useWhen: "you need candidate media identities in the selected Project",
+      useWhen:
+        "you need the Project Asset inventory: every Asset identity in the selected Project with its lifecycle state, for example to confirm an import or find an Asset to get, trash, or restore",
       effect:
         "reads storage-neutral ResolvedAsset summaries without changing product state",
-      returns: "the Project's ResolvedAsset list with stable Project Asset IDs",
+      returns:
+        "the Project's ResolvedAsset list with stable Project Asset IDs; content_list is the separate browse/search overview of media and Documents and is not this inventory",
       next: "read the selected Asset with get before trashing or restoring it",
     }),
     inputSchema: assetScope,
@@ -266,9 +268,10 @@ const assetToolDefinitions: Record<
       useWhen:
         "a local workspace media file should become an immutable Project Asset",
       effect:
-        "uploads through the Host's canonical multipart route with one stable Project Asset id across an unknown-result retry",
-      returns: "the newly created Project-scoped ResolvedAsset",
-      next: "use the returned Project Asset ID in Actions or read it before a lifecycle mutation",
+        "creates one Project Asset per distinct projectAssetId. Pass projectAssetId in the first call whenever the Asset must have a known or preassigned identity; when it is omitted Clash mints asset:<uuid> and every call creates another Asset. Repeating a call with the same projectAssetId and the same file returns the existing Asset; the same projectAssetId with different bytes fails with PROJECT_ASSET_ID_COLLISION. An imported Asset cannot be renamed or re-identified",
+      returns:
+        "the Project-scoped ResolvedAsset whose id is the projectAssetId you passed, or the minted id",
+      next: "use the returned Project Asset ID in Actions, confirm it with list or get, or read it before a lifecycle mutation",
     }),
     inputSchema: {
       ...assetScope,
@@ -291,7 +294,7 @@ const assetToolDefinitions: Record<
         .min(1)
         .optional()
         .describe(
-          "Optional caller-owned logical command id; reuse it only when retrying the same import",
+          "The Project Asset ID this import creates (get, trash, and restore call the same value assetId). Required for a preassigned identity; safe to repeat with the same file; omit only when a minted asset:<uuid> is acceptable",
         ),
     },
   },
@@ -381,8 +384,9 @@ const assetToolDefinitions: Record<
       useWhen:
         "a local media file should become reusable outside any one Project",
       effect:
-        "uploads through the Host's canonical personal-library route with one stable Global Asset id across an unknown-result retry",
-      returns: "the newly created personal Global ResolvedAsset",
+        "creates one personal Global Asset per distinct globalAssetId. Pass globalAssetId in the first call whenever the Asset must have a known or preassigned identity; when it is omitted Clash mints global:<uuid> and every call creates another Asset. Repeating a call with the same globalAssetId and the same file returns the existing Asset",
+      returns:
+        "the personal Global ResolvedAsset whose id is the globalAssetId you passed, or the minted id",
       next: "admit the returned Global Asset into a Project when needed",
     }),
     inputSchema: {
@@ -404,7 +408,7 @@ const assetToolDefinitions: Record<
         .min(1)
         .optional()
         .describe(
-          "Optional caller-owned logical command id; reuse it only when retrying the same import",
+          "The Global Asset ID this import creates. Required for a preassigned identity; safe to repeat with the same file; omit only when a minted global:<uuid> is acceptable",
         ),
     },
   },
@@ -722,7 +726,11 @@ function contentSummary(name: CanvasMcpToolName, value: unknown): string {
   return JSON.stringify(value);
 }
 
-function assetContentSummary(name: AssetMcpToolName, value: unknown): string {
+function assetContentSummary(
+  name: AssetMcpToolName,
+  value: unknown,
+  input: AssetToolInput = {},
+): string {
   if (name === "clash_assets_list" || name === "clash_assets_global_list") {
     const count = Array.isArray(value) ? value.length : 0;
     const scope =
@@ -736,9 +744,19 @@ function assetContentSummary(name: AssetMcpToolName, value: unknown): string {
     return `Found ${count} Project Asset reference${count === 1 ? "" : "s"}.`;
   }
   const id = (value as { id?: unknown } | undefined)?.id;
-  return typeof id === "string"
-    ? `${name.replace("clash_assets_", "")} ${id}.`
-    : JSON.stringify(value);
+  if (typeof id !== "string") return JSON.stringify(value);
+  const summary = `${name.replace("clash_assets_", "")} ${id}.`;
+  const mintedIdArgument =
+    name === "clash_assets_import_file" && !input.projectAssetId
+      ? "projectAssetId"
+      : name === "clash_assets_global_import_file" && !input.globalAssetId
+        ? "globalAssetId"
+        : undefined;
+  // The identity is fixed from here on; say so before the caller tries to
+  // "correct" it with a second import, which would add another Asset.
+  return mintedIdArgument
+    ? `${summary} Clash minted this id because ${mintedIdArgument} was omitted. It is permanent: importing the file again, with or without ${mintedIdArgument}, creates another Asset instead of renaming this one.`
+    : summary;
 }
 
 function assetErrorResult(
@@ -824,7 +842,10 @@ export function registerClashAssetMcp(
             : (value as Record<string, unknown>);
           return {
             content: [
-              { type: "text" as const, text: assetContentSummary(name, value) },
+              {
+                type: "text" as const,
+                text: assetContentSummary(name, value, input as AssetToolInput),
+              },
             ],
             structuredContent,
           };
