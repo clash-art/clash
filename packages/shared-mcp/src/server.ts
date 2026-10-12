@@ -1018,6 +1018,77 @@ export class ClashMcpServer extends McpServer {
     return result;
   }
 
+  /**
+   * Corrective text for a tools/call that names no tool, or that passes
+   * operation arguments beside `arguments` instead of inside it. Undefined
+   * lets the call through.
+   */
+  #toolCallGuidance(call: {
+    name: string;
+    arguments: Record<string, unknown>;
+  }): string | undefined {
+    // The SDK keeps every registered tool, dispatchers included, in this map.
+    const registered = (
+      this as unknown as { _registeredTools: Record<string, RegisteredTool> }
+    )._registeredTools;
+    const handle = registered[call.name];
+    const live = this.#liveModelTools();
+    if (handle) {
+      if (live.some(({ name }) => name === call.name)) return undefined;
+      const declared = declaredArgumentNames(handle);
+      const unknown = declared
+        ? Object.keys(call.arguments).filter((key) => !declared.includes(key))
+        : [];
+      if (unknown.length === 0) return undefined;
+      const operation = call.arguments.operation;
+      const nested = call.arguments.arguments;
+      const corrected =
+        declared?.includes("arguments") && typeof operation === "string"
+          ? ` Operation arguments belong inside "arguments". Call ${call.name} with ${JSON.stringify(
+              {
+                ...Object.fromEntries(
+                  Object.entries(call.arguments).filter(
+                    ([key]) => !unknown.includes(key) && key !== "arguments",
+                  ),
+                ),
+                arguments: {
+                  ...(nested && typeof nested === "object" ? nested : {}),
+                  ...Object.fromEntries(
+                    unknown.map((key) => [key, call.arguments[key]]),
+                  ),
+                },
+              },
+            )}.`
+          : "";
+      return `Unknown argument${unknown.length === 1 ? "" : "s"} ${unknown.join(", ")} for tool ${call.name}; nothing was executed.${corrected}${unknownNameGuidance(unknown, declared ?? [], "Accepted arguments")}`;
+    }
+    const tools = this.#visibleTools(
+      Object.keys(registered).map((name) => ({ name })),
+    ).map(({ name }) => name as string);
+    const operations = live.filter(
+      ({ name }) =>
+        name === call.name ||
+        name === `clash_${call.name}` ||
+        this.#commandLocalOperation(name) === call.name,
+    );
+    const calls = operations.flatMap(({ name }) => {
+      const family = classifyClashMcpTool(name);
+      if (family === "other") return [];
+      const menu = this.#rootView(family);
+      if (!menu.selectedDispatcher || family === "workspace") return [];
+      return [
+        `${menu.selectedDispatcher} ${JSON.stringify({
+          ...(menu.selectedKind ? { kind: menu.selectedKind } : {}),
+          operation: this.#commandLocalOperation(name),
+          arguments: call.arguments,
+        })}`,
+      ];
+    });
+    return calls.length > 0
+      ? `${call.name} is not a tool; it is an operation of a Clash dispatcher. Nothing was executed. Call ${calls.join(" or ")}.`
+      : `Tool ${call.name} does not exist; nothing was executed.${unknownNameGuidance([call.name], tools, "Available Clash tools")} Each dispatcher lists its operations when called without an operation.`;
+  }
+
   #visibleTools(
     tools: Array<Record<string, unknown>>,
   ): Array<Record<string, unknown>> {
@@ -1047,6 +1118,7 @@ export class ClashMcpServer extends McpServer {
     await super.connect(
       new McpSchemaCompatibilityTransport(transport, {
         filterTools: (tools) => this.#visibleTools(tools),
+        guardToolCall: (call) => this.#toolCallGuidance(call),
       }),
     );
   }

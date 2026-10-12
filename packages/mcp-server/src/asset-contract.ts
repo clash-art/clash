@@ -26,4 +26,5 @@ export type AssetToolInput = {
   globalAssetId?: string;
   filePath?: string;
   kind?: AssetKind;
+  allowDuplicate?: boolean;
 };

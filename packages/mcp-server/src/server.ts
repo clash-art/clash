@@ -17,8 +17,10 @@ import { initializeClashWorkspace } from "@clash/shared-runtime";
 import {
   createPersonalGlobalAssetHostClient,
   createProjectAssetHostClient,
+  projectAssetRecovery,
   type PersonalGlobalAssetHostClient,
   type ProjectAssetHostClient,
+  type ProjectAssetRecoveryStep,
 } from "@clash/shared-runtime/project-asset-client";
 import {
   createProjectHostClient,
@@ -295,6 +297,12 @@ const assetToolDefinitions: Record<
         .optional()
         .describe(
           "The Project Asset ID this import creates (get, trash, and restore call the same value assetId). Required for a preassigned identity; safe to repeat with the same file; omit only when a minted asset:<uuid> is acceptable",
+        ),
+      allowDuplicate: z
+        .boolean()
+        .optional()
+        .describe(
+          "Leave unset. An import of bytes the Project already holds under another id fails with PROJECT_ASSET_DUPLICATE_CONTENT and names the existing Asset; set true only when a second independent Asset over the same bytes is intended",
         ),
     },
   },
@@ -746,6 +754,13 @@ function assetContentSummary(
   const id = (value as { id?: unknown } | undefined)?.id;
   if (typeof id !== "string") return JSON.stringify(value);
   const summary = `${name.replace("clash_assets_", "")} ${id}.`;
+  if (name === "clash_assets_trash") {
+    // The trash result is itself the read a restore needs, so the undo is one call.
+    return `${summary} It is in the trash, not deleted. If this was not the Asset you meant to trash, undo it now: ${assetStepCall({ why: "", operation: "restore", assetId: id }, input)}.`;
+  }
+  if (name === "clash_assets_restore") {
+    return `${summary} It is active again and usable under the same id.`;
+  }
   const mintedIdArgument =
     name === "clash_assets_import_file" && !input.projectAssetId
       ? "projectAssetId"
@@ -754,9 +769,53 @@ function assetContentSummary(
         : undefined;
   // The identity is fixed from here on; say so before the caller tries to
   // "correct" it with a second import, which would add another Asset.
-  return mintedIdArgument
-    ? `${summary} Clash minted this id because ${mintedIdArgument} was omitted. It is permanent: importing the file again, with or without ${mintedIdArgument}, creates another Asset instead of renaming this one.`
-    : summary;
+  if (!mintedIdArgument) return summary;
+  const minted = `${summary} Clash minted this id because ${mintedIdArgument} was omitted. It is permanent: an imported Asset cannot be renamed.`;
+  return name === "clash_assets_import_file"
+    ? `${minted} If the task named a specific Project Asset ID, do not import again on top of this one: first ${assetStepCall({ why: "", operation: "get", assetId: id }, input)}, then ${assetStepCall({ why: "", operation: "trash", assetId: id }, input)}, then call import_file once more with projectAssetId set to the required id. Otherwise keep using ${id}.`
+    : `${minted} Keep using ${id}.`;
+}
+
+const ASSET_STEP_OPERATION = {
+  list: "list",
+  get: "get",
+  references: "references",
+  trash: "trash",
+  restore: "restore",
+  import: "import_file",
+} as const;
+
+/** One recovery step as the exact clash_assets call an agent can copy. */
+function assetStepToolCall(
+  step: ProjectAssetRecoveryStep,
+  input: AssetToolInput,
+): { name: "clash_assets"; arguments: Record<string, unknown> } {
+  return {
+    name: "clash_assets",
+    arguments: {
+      operation: ASSET_STEP_OPERATION[step.operation],
+      arguments: {
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(step.assetId ? { assetId: step.assetId } : {}),
+        ...(step.operation === "import" && input.filePath
+          ? { filePath: input.filePath }
+          : {}),
+        ...(step.projectAssetId
+          ? { projectAssetId: step.projectAssetId }
+          : {}),
+        ...(step.allowDuplicate ? { allowDuplicate: true } : {}),
+      },
+    },
+  };
+}
+
+function assetStepCall(
+  step: ProjectAssetRecoveryStep,
+  input: AssetToolInput,
+): string {
+  const call = assetStepToolCall(step, input);
+  return `${call.name} ${JSON.stringify(call.arguments)}`;
 }
 
 function assetErrorResult(
@@ -785,6 +844,22 @@ function assetErrorResult(
         (message.startsWith("READ_REQUIRED")
           ? "READ_REQUIRED"
           : "PROJECT_ASSET_OPERATION_FAILED"));
+  const recovery = projectAssetRecovery(error, {
+    code,
+    projectAssetId: input.assetId ?? input.projectAssetId,
+  });
+  const nextSteps = recovery?.steps.map((step) => ({
+    why: step.why,
+    tool: assetStepToolCall(step, input),
+  }));
+  const text = recovery
+    ? `${code}: ${recovery.problem} Next: ${recovery.steps
+        .map(
+          (step, index) =>
+            `(${index + 1}) ${step.why}: ${assetStepCall(step, input)}`,
+        )
+        .join(" ")}`
+    : message;
   const retryTool =
     ["READ_REQUIRED", "STALE_READ", "INVALID_READ_PROOF"].includes(code) &&
     input.assetId?.trim()
@@ -798,12 +873,13 @@ function assetErrorResult(
         }
       : undefined;
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{ type: "text" as const, text }],
     structuredContent: {
       error: {
         code,
-        message,
+        message: text,
         operation: name,
+        ...(nextSteps ? { nextSteps } : {}),
         ...(body?.projectAssetId
           ? { projectAssetId: body.projectAssetId }
           : {}),

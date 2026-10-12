@@ -1556,3 +1556,90 @@ test("an unknown short operation names the live operations of its command", asyn
   assert.match(text, /Did you mean content_list or list\?/u);
   assert.match(text, /Available assets operations: content_list, get, list\./u);
 });
+
+test("a call that names an operation as a tool is redirected to its dispatcher before any handler runs", async (t) => {
+  const server = new ClashMcpServer({
+    name: "misaddressed-call-test",
+    version: "1.0.0",
+  });
+  let executions = 0;
+  for (const name of ["clash_assets_content_list", "clash_timeline_get"]) {
+    server.registerTool(
+      name,
+      {
+        title: name,
+        inputSchema: { id: z.string().optional() },
+        _meta: { ui: { visibility: ["model"] } },
+      },
+      async () => {
+        executions += 1;
+        return { content: [{ type: "text", text: name }] };
+      },
+    );
+  }
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({
+    name: "misaddressed-call-client",
+    version: "1.0.0",
+  });
+  t.after(async () => {
+    await client.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const asTool = await client.callTool({ name: "content_list", arguments: {} });
+  assert.equal(asTool.isError, true);
+  assert.ok(
+    firstTextContent(asTool).includes(
+      `clash_assets ${JSON.stringify({ operation: "content_list", arguments: {} })}`,
+    ),
+    firstTextContent(asTool),
+  );
+  // Composition operations also need their kind.
+  const timeline = await client.callTool({
+    name: "timeline_get",
+    arguments: { id: "cut" },
+  });
+  assert.ok(
+    firstTextContent(timeline).includes(
+      `clash_composition ${JSON.stringify({ kind: "timeline", operation: "get", arguments: { id: "cut" } })}`,
+    ),
+    firstTextContent(timeline),
+  );
+
+  const flat = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "content_list", id: "x" },
+  });
+  assert.equal(flat.isError, true);
+  assert.match(
+    firstTextContent(flat),
+    /Unknown argument id for tool clash_assets/u,
+  );
+  assert.ok(
+    firstTextContent(flat).includes(
+      JSON.stringify({ operation: "content_list", arguments: { id: "x" } }),
+    ),
+    firstTextContent(flat),
+  );
+
+  const nonexistent = await client.callTool({ name: "nope", arguments: {} });
+  assert.equal(nonexistent.isError, true);
+  assert.match(firstTextContent(nonexistent), /Tool nope does not exist/u);
+  assert.match(
+    firstTextContent(nonexistent),
+    /Available Clash tools: .*clash_assets/u,
+  );
+  assert.equal(executions, 0);
+
+  // A correctly addressed call still runs.
+  const ok = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "content_list", arguments: {} },
+  });
+  assert.notEqual(ok.isError, true, firstTextContent(ok));
+  assert.equal(executions, 1);
+});

@@ -67,6 +67,8 @@ import { FileReplicaStore } from "./loro/file-replica-store.js";
 
 export type LocalProjectAssetMigrationErrorCode =
   | "PROJECT_ASSET_ID_COLLISION"
+  | "PROJECT_ASSET_DUPLICATE_CONTENT"
+  | "PROJECT_ASSET_TRASHED"
   | "ACTION_ASSET_BINDING_ID_COLLISION"
   | "ACTION_ASSET_BINDING_MATERIALIZATION_CONFLICT"
   | "RESOURCE_DIGEST_UNAVAILABLE"
@@ -77,15 +79,24 @@ export type LocalProjectAssetMigrationErrorCode =
 
 export class LocalProjectAssetMigrationError extends Error {
   readonly code: LocalProjectAssetMigrationErrorCode;
+  /** The identity the caller asked for, when the failure is about one. */
+  readonly projectAssetId?: string;
+  /** Existing identities the caller should use instead of creating another. */
+  readonly existingProjectAssetIds?: string[];
 
   constructor(
     code: LocalProjectAssetMigrationErrorCode,
     message: string,
-    options?: ErrorOptions,
+    options?: ErrorOptions & {
+      projectAssetId?: string;
+      existingProjectAssetIds?: string[];
+    },
   ) {
     super(message, options);
     this.name = "LocalProjectAssetMigrationError";
     this.code = code;
+    this.projectAssetId = options?.projectAssetId;
+    this.existingProjectAssetIds = options?.existingProjectAssetIds;
   }
 }
 
@@ -144,6 +155,8 @@ export interface LocalProjectAssetService {
     name?: string;
     metadata: ProjectAssetMetadata;
     provenance?: ProjectAssetProvenance;
+    /** `reject` fails instead of adding a second active Asset over bytes the Project already holds. */
+    duplicateContent?: "allow" | "reject";
   }): Promise<ResolvedAsset>;
   /** Host-private Project membership read; Resource identity is never exposed by public routes. */
   readEntry(
@@ -374,6 +387,7 @@ export function publishLocalProjectAsset(
     throw new LocalProjectAssetMigrationError(
       "PROJECT_ASSET_ID_COLLISION",
       `Project Asset ${entry.id} already identifies different immutable content. An existing Asset is never overwritten: read ${entry.id} to use it, or publish this content under a new Project Asset ID.`,
+      { projectAssetId: entry.id },
     );
   }
   const created = createProjectAsset(doc, entry);
@@ -1288,9 +1302,40 @@ export function createLocalProjectAssetService(options: {
         bytes: input.bytes,
         ...(input.name ? { originalName: input.name } : {}),
       });
+      const projectId = nonEmpty(input.projectId, "projectId");
+      const projectAssetId = nonEmpty(input.projectAssetId, "projectAssetId");
+      await materialize(projectId);
+      const entries = await authority.list(projectId);
+      const sameContent = (entry: ProjectAssetEntry) =>
+        entry.source.resourceId === staged.resourceId;
+      const current = entries.find((entry) => entry.id === projectAssetId);
+      // Without this, a re-import of a trashed identity reads as an id
+      // collision and hides the one action that brings the Asset back.
+      if (current?.lifecycle.state === "trashed" && sameContent(current)) {
+        throw new LocalProjectAssetMigrationError(
+          "PROJECT_ASSET_TRASHED",
+          `Project Asset ${projectAssetId} already holds this content and is in the trash. Importing does not bring it back: restore it instead.`,
+          { projectAssetId },
+        );
+      }
+      if (input.duplicateContent === "reject" && !current) {
+        const existingProjectAssetIds = entries
+          .filter(
+            (entry) => entry.lifecycle.state === "active" && sameContent(entry),
+          )
+          .map((entry) => entry.id)
+          .sort();
+        if (existingProjectAssetIds.length > 0) {
+          throw new LocalProjectAssetMigrationError(
+            "PROJECT_ASSET_DUPLICATE_CONTENT",
+            `This content is already imported as Project Asset ${existingProjectAssetIds.join(", ")}. Nothing was imported as ${projectAssetId}.`,
+            { projectAssetId, existingProjectAssetIds },
+          );
+        }
+      }
       return publishInstalled({
-        projectId: nonEmpty(input.projectId, "projectId"),
-        projectAssetId: nonEmpty(input.projectAssetId, "projectAssetId"),
+        projectId,
+        projectAssetId,
         kind: input.kind,
         resourceId: staged.resourceId,
         ...(input.name ? { name: input.name } : {}),

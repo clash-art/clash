@@ -348,6 +348,51 @@ test("bundled MCP import never runs without the identity an agent tried to assig
   const minted = await importFile({ filePath: "inputs/exact-source.svg" });
   assert.notEqual(minted.isError, true, text(minted));
   assert.match(text(minted), /minted[^.]*projectAssetId was omitted/u);
+  // ...and names the calls that replace it when a specific id was required.
+  for (const operation of ["get", "trash"]) {
+    assert.ok(
+      text(minted).includes(
+        JSON.stringify({ operation, arguments: { assetId: "asset:minted" } }),
+      ),
+      text(minted),
+    );
+  }
+
+  // Calling an operation as if it were a tool, or passing its arguments beside
+  // "arguments", is answered with the corrected dispatcher call.
+  const asTool = await client.callTool({
+    name: "content_list",
+    arguments: { kinds: ["image"] },
+  });
+  assert.equal(asTool.isError, true);
+  assert.ok(
+    text(asTool).includes(
+      `clash_assets ${JSON.stringify({ operation: "content_list", arguments: { kinds: ["image"] } })}`,
+    ),
+    text(asTool),
+  );
+  const flat = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "get", assetId: "asset:minted" },
+  });
+  assert.equal(flat.isError, true);
+  assert.ok(
+    text(flat).includes(
+      JSON.stringify({
+        operation: "get",
+        arguments: { assetId: "asset:minted" },
+      }),
+    ),
+    text(flat),
+  );
+  const nonexistent = await client.callTool({
+    name: "clash_asset_inventory",
+    arguments: {},
+  });
+  assert.equal(nonexistent.isError, true);
+  assert.match(text(nonexistent), /does not exist/u);
+  assert.match(text(nonexistent), /\bclash_assets\b/u);
+  assert.equal(assetCalls.length, 2);
   assert.equal(
     (minted.structuredContent as { id?: string }).id,
     "asset:minted",

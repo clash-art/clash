@@ -18,9 +18,11 @@ import type {
 } from "@clash/shared-types";
 import {
   createProjectAssetHostClient,
+  projectAssetRecovery,
   resolveAssetImportFileType,
   type PersonalGlobalAssetHostClient,
   type ProjectAssetHostClient,
+  type ProjectAssetRecoveryStep,
 } from "@clash/shared-runtime/project-asset-client";
 import { downloadAssetById, replaceCanvasAssetNode } from "./canvas";
 import { requireDestructiveConfirmation } from "../lib/destructive-guardrails";
@@ -225,9 +227,66 @@ export async function linkAssetIntoProject(options: {
   };
 }
 
+function shellWord(value: string): string {
+  return /^[\w:./@=-]+$/u.test(value)
+    ? value
+    : `'${value.replace(/'/gu, `'\\''`)}'`;
+}
+
+function assetStepCommand(
+  step: ProjectAssetRecoveryStep,
+  context: { project?: string; filePath?: string },
+): string {
+  const project = context.project
+    ? ` --project ${shellWord(context.project)}`
+    : "";
+  const asset = step.assetId ? ` --asset ${shellWord(step.assetId)}` : "";
+  switch (step.operation) {
+    case "list":
+      return `clash assets list${project} --json`;
+    case "get":
+      return `clash assets get${asset}${project} --json`;
+    case "references":
+      return `clash assets refs${asset}${project} --json`;
+    case "trash":
+      return `clash assets delete${asset}${project} --yes`;
+    case "restore":
+      return `clash assets restore${asset}${project}`;
+    case "import":
+      return `clash assets import --file ${shellWord(context.filePath ?? "<path>")} --asset-id ${shellWord(step.projectAssetId ?? "<unused-id>")}${step.allowDuplicate ? " --allow-duplicate" : ""}${project} --json`;
+  }
+}
+
+/**
+ * What went wrong and the exact commands that fix it, for a failed Project
+ * Asset command. Falls back to the plain message when the failure carries no
+ * recovery the CLI can name.
+ */
+export function describeProjectAssetFailure(
+  error: unknown,
+  context: { assetId?: string; project?: string; filePath?: string } = {},
+): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const recovery = projectAssetRecovery(error, {
+    code: /^([A-Z][A-Z0-9_]+):/u.exec(message)?.[1],
+    projectAssetId: context.assetId,
+  });
+  if (!recovery) return message;
+  return [
+    `${recovery.code}: ${recovery.problem}`,
+    "Next:",
+    ...recovery.steps.map(
+      (step, index) =>
+        `  ${index + 1}. ${step.why}: ${assetStepCommand(step, context)}`,
+    ),
+  ].join("\n");
+}
+
 export async function importAssetFile(options: {
   filePath: string;
   projectAssetId?: string;
+  /** `reject` fails instead of adding a second Asset over bytes the Project already holds. */
+  duplicateContent?: "allow" | "reject";
   project?: string;
   cwd?: string;
   env?: Record<string, string | undefined>;
@@ -278,6 +337,9 @@ export async function importAssetFile(options: {
           projectImportIds,
           "asset",
         ),
+        ...(options.duplicateContent
+          ? { duplicateContent: options.duplicateContent }
+          : {}),
       },
     };
     projectImports.set(options, snapshot);
@@ -770,7 +832,12 @@ assetsCommand
           console.log(`${result.id} ${result.kind} ${result.status}`);
         }
       } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
+        console.error(
+          describeProjectAssetFailure(error, {
+            assetId: options.asset,
+            project: options.project,
+          }),
+        );
         process.exit(1);
       }
     },
@@ -828,6 +895,10 @@ assetsCommand
     "--asset-id <id>",
     "Project Asset ID this import creates. Pass it on the first import when the Asset needs a known identity; repeating it with the same file returns the existing Asset. Without it every import mints a new asset:<uuid>",
   )
+  .option(
+    "--allow-duplicate",
+    "Import even when the Project already holds these bytes under another ID. Without it such an import fails and names the existing Asset",
+  )
   .option("--name <file>", "Link file name under assets/links")
   .option("--no-link", "Do not create a project assets/links entry")
   .option("--json", "Output result as JSON")
@@ -837,6 +908,7 @@ assetsCommand
       kind?: string;
       project?: string;
       assetId?: string;
+      allowDuplicate?: boolean;
       name?: string;
       link?: boolean;
       json?: boolean;
@@ -849,6 +921,7 @@ assetsCommand
           kind: options.kind,
           project: options.project,
           projectAssetId,
+          duplicateContent: options.allowDuplicate ? "allow" : "reject",
           name: options.name,
           link: options.link,
         });
@@ -858,12 +931,24 @@ assetsCommand
           const link = result.linkPath ? `, link ${result.linkPath}` : "";
           console.log(`imported Project Asset ${result.assetId}${link}`);
         }
+        if (!options.assetId?.trim()) {
+          // stderr keeps --json stdout parseable.
+          console.error(
+            `note: no --asset-id was given, so Clash minted ${result.assetId}. That ID is permanent. If the task named a specific Project Asset ID, do not import again on top of it: run ${assetStepCommand({ why: "", operation: "get", assetId: result.assetId }, options)}, then ${assetStepCommand({ why: "", operation: "trash", assetId: result.assetId }, options)}, then import once more with --asset-id <required-id>.`,
+          );
+        }
       } catch (error) {
+        const described = describeProjectAssetFailure(error, {
+          assetId: projectAssetId,
+          project: options.project,
+          filePath: options.file,
+        });
         const message = error instanceof Error ? error.message : String(error);
-        const retryHint = projectAssetId
-          ? ` Retry an unknown result with --asset-id ${projectAssetId}.`
-          : "";
-        console.error(`${message}${retryHint}`);
+        const retryHint =
+          described === message && projectAssetId
+            ? ` Retry an unknown result with --asset-id ${projectAssetId}.`
+            : "";
+        console.error(`${described}${retryHint}`);
         process.exit(1);
       }
     },
@@ -961,7 +1046,12 @@ assetsCommand
           }
         }
       } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
+        console.error(
+          describeProjectAssetFailure(error, {
+            assetId: options.asset,
+            project: options.project,
+          }),
+        );
         process.exit(1);
       }
     },
@@ -1073,8 +1163,16 @@ assetsCommand
         } else {
           console.log(`trashed Project Asset ${result.id}`);
         }
+        console.error(
+          `note: ${result.id} is in the trash, not deleted. If this was not the Asset you meant, undo it: ${assetStepCommand({ why: "", operation: "restore", assetId: result.id }, options)}`,
+        );
       } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
+        console.error(
+          describeProjectAssetFailure(error, {
+            assetId: options.asset,
+            project: options.project,
+          }),
+        );
         process.exit(1);
       }
     },
@@ -1110,7 +1208,12 @@ assetsCommand
           console.log(`restored Project Asset ${result.id}`);
         }
       } catch (error) {
-        console.error(error instanceof Error ? error.message : String(error));
+        console.error(
+          describeProjectAssetFailure(error, {
+            assetId: options.asset,
+            project: options.project,
+          }),
+        );
         process.exit(1);
       }
     },
