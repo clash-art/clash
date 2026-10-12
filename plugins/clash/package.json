@@ -57,6 +57,7 @@
   "devDependencies": {
     "@clash-plugin/asset-edit": "workspace:*",
     "@clash-plugin/remotion": "workspace:*",
+    "@clash-plugin/storyboard": "workspace:*",
     "@clash/cli": "workspace:*",
     "@clash/director-plugin": "workspace:*",
     "@clash/gui": "workspace:*",

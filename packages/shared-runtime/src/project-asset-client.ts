@@ -91,6 +91,196 @@ function requiredImportId(value: string | undefined, label: string): string {
   return normalized;
 }
 
+/** One concrete action that resolves a Project Asset failure. */
+export type ProjectAssetRecoveryStep = {
+  /** Why this step is the right one, written as the start of a sentence. */
+  why: string;
+  operation: "list" | "get" | "references" | "trash" | "restore" | "import";
+  assetId?: string;
+  /** For `import`: the identity to pass. */
+  projectAssetId?: string;
+  /** For `import`: opt in to a second Asset over the same bytes. */
+  allowDuplicate?: true;
+};
+
+export type ProjectAssetRecovery = {
+  code: string;
+  problem: string;
+  steps: ProjectAssetRecoveryStep[];
+};
+
+function hostErrorBody(error: unknown): Record<string, unknown> | undefined {
+  const body =
+    error && typeof error === "object" && "body" in error
+      ? (error as { body?: unknown }).body
+      : undefined;
+  return body && typeof body === "object" && !Array.isArray(body)
+    ? (body as Record<string, unknown>)
+    : undefined;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+/** Existing ids an agent most plausibly meant by an id the Project does not have. */
+export function suggestProjectAssetIds(
+  requested: string,
+  assets: readonly Pick<ResolvedAsset, "id" | "name">[],
+): string[] {
+  const wanted = requested.trim().toLowerCase();
+  if (!wanted) return [];
+  const stem = (value: string) => value.replace(/\.[a-z0-9]+$/u, "");
+  return assets
+    .filter(({ id, name }) => {
+      const candidate = id.toLowerCase();
+      const label = name?.toLowerCase();
+      return (
+        candidate.endsWith(`:${wanted}`) ||
+        candidate.includes(wanted) ||
+        wanted.includes(candidate) ||
+        (label !== undefined && (label === wanted || stem(label) === wanted))
+      );
+    })
+    .map(({ id }) => id)
+    .sort()
+    .slice(0, 5);
+}
+
+/**
+ * Turns a Host Project Asset failure into what went wrong and the exact next
+ * operations. MCP and CLI render the same steps in their own call syntax, so
+ * the two surfaces cannot give different advice.
+ */
+export function projectAssetRecovery(
+  error: unknown,
+  /** Facts the caller knows when the failure did not come from the Host. */
+  known: { code?: string; projectAssetId?: string } = {},
+): ProjectAssetRecovery | undefined {
+  const body = hostErrorBody(error) ?? {};
+  const code = typeof body.code === "string" ? body.code : known.code;
+  if (!code) return undefined;
+  const requested =
+    typeof body.projectAssetId === "string"
+      ? body.projectAssetId
+      : known.projectAssetId?.trim() || undefined;
+  switch (code) {
+    case "PROJECT_ASSET_NOT_FOUND": {
+      const suggestions = stringList(body.suggestedProjectAssetIds);
+      return {
+        code,
+        problem: `Project Asset ${requested ?? "(unknown id)"} does not exist in this Project. Project Asset IDs must be passed exactly as list returns them, including any prefix such as asset:.`,
+        steps: [
+          ...suggestions.map((assetId): ProjectAssetRecoveryStep => ({
+            why: "Closest existing Project Asset",
+            operation: "get",
+            assetId,
+          })),
+          { why: "See every Project Asset ID", operation: "list" },
+        ],
+      };
+    }
+    case "PROJECT_ASSET_DUPLICATE_CONTENT": {
+      const existing = stringList(body.existingProjectAssetIds);
+      const first = existing[0];
+      if (!first) return undefined;
+      return {
+        code,
+        problem: `This file is already imported as Project Asset ${existing.join(", ")}; nothing new was imported${requested ? ` as ${requested}` : ""}. Importing the same bytes again would add a second Asset, not rename the first.`,
+        steps: [
+          { why: "Use the existing Asset", operation: "get", assetId: first },
+          ...(requested
+            ? ([
+                {
+                  why: `Only if the Asset must be identified as ${requested}: read ${first}, trash it`,
+                  operation: "trash",
+                  assetId: first,
+                },
+                {
+                  why: "and then import the file under that id",
+                  operation: "import",
+                  projectAssetId: requested,
+                },
+              ] satisfies ProjectAssetRecoveryStep[])
+            : []),
+          {
+            why: "Only if a second independent Asset over the same bytes is intended",
+            operation: "import",
+            ...(requested ? { projectAssetId: requested } : {}),
+            allowDuplicate: true,
+          },
+        ],
+      };
+    }
+    case "PROJECT_ASSET_TRASHED":
+      if (!requested) return undefined;
+      return {
+        code,
+        problem: `Project Asset ${requested} already holds this content and is in the trash. Importing it again does not bring it back.`,
+        steps: [
+          {
+            why: "Read the trashed Asset",
+            operation: "get",
+            assetId: requested,
+          },
+          { why: "then restore it", operation: "restore", assetId: requested },
+        ],
+      };
+    case "PROJECT_ASSET_ID_COLLISION":
+      if (!requested) return undefined;
+      return {
+        code,
+        problem: `Project Asset ID ${requested} is already taken by different content. An existing Asset is never overwritten.`,
+        steps: [
+          {
+            why: "See what already owns the id",
+            operation: "get",
+            assetId: requested,
+          },
+          {
+            why: "or import this file under an id that is not in use",
+            operation: "import",
+          },
+        ],
+      };
+    case "ASSET_IN_USE":
+      if (!requested) return undefined;
+      return {
+        code,
+        problem: `Project Asset ${requested} is still used by Actions and was not trashed.`,
+        steps: [
+          {
+            why: "See which Actions reference it; trash a different Asset or leave this one",
+            operation: "references",
+            assetId: requested,
+          },
+        ],
+      };
+    case "READ_REQUIRED":
+    case "STALE_READ":
+    case "INVALID_READ_PROOF":
+      if (!requested) return undefined;
+      return {
+        code,
+        problem:
+          code === "READ_REQUIRED"
+            ? `Project Asset ${requested} must be read before it is trashed or restored, so the change applies to the state you saw.`
+            : `Project Asset ${requested} changed since it was last read; nothing was changed.`,
+        steps: [
+          {
+            why: "Read it, check it is the Asset you mean and its lifecycle state",
+            operation: "get",
+            assetId: requested,
+          },
+        ],
+      };
+    default:
+      return undefined;
+  }
+}
+
 export type ProjectAssetHostClient = {
   resolveContext(
     input?: ProjectAssetHostScope,
@@ -118,6 +308,7 @@ export type ProjectAssetHostClient = {
       contentType: string;
       kind: AssetKind;
       projectAssetId: string;
+      duplicateContent?: "allow" | "reject";
     },
   ): Promise<ProjectAssetHostResult<ResolvedAsset>>;
   admit(
@@ -237,6 +428,32 @@ export function createProjectAssetHostClient(
     value,
   });
 
+  // A wrong id is the commonest lifecycle mistake. Answer it with the ids that
+  // do exist instead of a bare 404, without a second round trip by the caller.
+  const withKnownIds = async <T>(
+    projectId: string,
+    assetId: string,
+    run: () => Promise<T>,
+  ): Promise<T> => {
+    try {
+      return await run();
+    } catch (error) {
+      const body = hostErrorBody(error);
+      if (
+        !(error instanceof ProjectHostHttpError) ||
+        body?.code !== "PROJECT_ASSET_NOT_FOUND"
+      ) {
+        throw error;
+      }
+      const known = await http.list({ projectId }).catch(() => []);
+      throw new ProjectHostHttpError(error.status, {
+        ...body,
+        projectAssetId: assetId,
+        suggestedProjectAssetIds: suggestProjectAssetIds(assetId, known),
+      });
+    }
+  };
+
   return {
     resolveContext: context,
     async list(input = {}) {
@@ -258,10 +475,15 @@ export function createProjectAssetHostClient(
     },
     async get(input) {
       const resolved = await context(input);
-      const observed = await http.get({
-        projectId: resolved.projectId,
-        assetId: input.assetId,
-      });
+      const observed = await withKnownIds(
+        resolved.projectId,
+        input.assetId,
+        () =>
+          http.get({
+            projectId: resolved.projectId,
+            assetId: input.assetId,
+          }),
+      );
       return {
         ...result(resolved, observed.value),
         receipt: observed.receipt,
@@ -269,10 +491,15 @@ export function createProjectAssetHostClient(
     },
     async references(input) {
       const resolved = await context(input);
-      const observed = await http.references({
-        projectId: resolved.projectId,
-        assetId: input.assetId,
-      });
+      const observed = await withKnownIds(
+        resolved.projectId,
+        input.assetId,
+        () =>
+          http.references({
+            projectId: resolved.projectId,
+            assetId: input.assetId,
+          }),
+      );
       return {
         ...result(resolved, observed.value),
         receipt: observed.receipt,
@@ -294,6 +521,9 @@ export function createProjectAssetHostClient(
               input.projectAssetId,
               "project asset id",
             ),
+            ...(input.duplicateContent
+              ? { duplicateContent: input.duplicateContent }
+              : {}),
           },
         };
         importCommands.set(input, snapshot);
@@ -327,7 +557,12 @@ export function createProjectAssetHostClient(
         };
         trashCommands.set(input, command);
       }
-      const observed = await http.trash(command);
+      const trashCommand = command;
+      const observed = await withKnownIds(
+        resolved.projectId,
+        input.assetId,
+        () => http.trash(trashCommand),
+      );
       return {
         ...result(resolved, observed.value),
         receipt: observed.receipt,
@@ -335,12 +570,17 @@ export function createProjectAssetHostClient(
     },
     async restore(input) {
       const resolved = await context(input);
-      const observed = await http.restore({
-        projectId: resolved.projectId,
-        assetId: input.assetId,
-        actorClientType: input.actorClientType,
-        receipt: input.receipt,
-      });
+      const observed = await withKnownIds(
+        resolved.projectId,
+        input.assetId,
+        () =>
+          http.restore({
+            projectId: resolved.projectId,
+            assetId: input.assetId,
+            actorClientType: input.actorClientType,
+            receipt: input.receipt,
+          }),
+      );
       return {
         ...result(resolved, observed.value),
         receipt: observed.receipt,

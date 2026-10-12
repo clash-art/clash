@@ -309,6 +309,31 @@ test("MCP Project import keeps one pending Asset id until the Host confirms succ
   assert.notEqual(importedIds[2], importedIds[1]);
 });
 
+test("MCP Project import asks the Host to reject duplicate content unless a copy is requested", async () => {
+  const { createAssetProjectHostGateway } = await import("./asset-gateway");
+  const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-import-dup-"));
+  await writeFile(join(workspace, "voice.mp3"), new Uint8Array([4, 5, 6]));
+  const policies: unknown[] = [];
+  const client = fakeClient([]);
+  client.importFile = async (input) => {
+    policies.push(input.duplicateContent);
+    return { projectId: "project-a", value: asset };
+  };
+  const gateway = createAssetProjectHostGateway(client);
+
+  await gateway.invoke("clash_assets_import_file", {
+    cwd: workspace,
+    filePath: "voice.mp3",
+  });
+  await gateway.invoke("clash_assets_import_file", {
+    cwd: workspace,
+    filePath: "voice.mp3",
+    allowDuplicate: true,
+  });
+
+  assert.deepEqual(policies, ["reject", "allow"]);
+});
+
 test("MCP Project import releases its pending id after a known Host rejection", async () => {
   const { createAssetProjectHostGateway } = await import("./asset-gateway");
   const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-import-reject-"));

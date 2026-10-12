@@ -5,6 +5,7 @@
     "paths": {
       "@clash/action-sdk": ["../../packages/action-sdk/src/index.ts"],
       "@clash/render-server": ["../../apps/render-server/src/index.ts"],
+      "@clash/shared-runtime/*": ["../../packages/shared-runtime/src/*.ts"],
       "@clash/shared-types": ["../../packages/shared-types/src/index.ts"],
       "@clash/shared-types/*": ["../../packages/shared-types/src/*.ts"]
     }

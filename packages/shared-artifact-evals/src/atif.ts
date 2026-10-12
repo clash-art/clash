@@ -83,11 +83,16 @@ export type AtifProjection = {
   redactionCount: number;
   trainingEligible: boolean;
   source: {
-    format: "codex-exec-jsonl" | "pi-events";
+    format: "codex-exec-jsonl" | "pi-events" | "acp-events";
     bytes: number;
     sha256: string;
     lines: number;
   };
+  /**
+   * Event types the projection does not understand, with their counts. They
+   * are skipped: a newer agent that adds an event must not fail the Attempt.
+   */
+  skippedEventTypes?: Record<string, number>;
 };
 
 export type AtifReceipt = {
@@ -142,6 +147,16 @@ type Turn = {
   status?: "completed" | "failed";
   usage?: JsonRecord;
   failure?: unknown;
+  /** Latest ACP `usage_update` seen while this message was open. */
+  contextUsage?: JsonRecord;
+};
+
+type ParsedTurns = {
+  sessionId: string;
+  turns: Turn[];
+  /** Whole-session usage, when the protocol reports no per-message usage. */
+  sessionUsage?: JsonRecord;
+  skipped: Map<string, number>;
 };
 
 const OUTPUT_NAME = "trajectory.atif.json";
@@ -387,6 +402,7 @@ const TOOL_ITEM_TYPES = new Set([
   "web_search",
   "collab_tool_call",
   "pi_tool_call",
+  "acp_tool_call",
 ]);
 
 const PASSIVE_ITEM_TYPES = new Set(["reasoning", "todo_list", "error"]);
@@ -508,13 +524,16 @@ function toolProjection(
       sanitizer,
       item.result ?? (isRecord(item.error) ? item.error.message : item.error),
     );
-  } else if (type === "pi_tool_call") {
+  } else if (type === "pi_tool_call" || type === "acp_tool_call") {
     functionName = sanitizer.value(
       typeof item.toolName === "string" ? item.toolName : "unknown",
     ) as string;
     argumentsValue = sanitizeArguments(sanitizer, item.arguments ?? {});
     content = observationContent(sanitizer, item.result);
     if (item.isError === true) extra.is_error = true;
+    if (typeof item.kind === "string") {
+      extra.kind = sanitizer.value(item.kind) as string;
+    }
   } else if (type === "command_execution") {
     functionName = "command_execution";
     argumentsValue = sanitizeArguments(sanitizer, {
@@ -558,7 +577,7 @@ function turnStep(
   stepId: number,
   model: string,
   sanitizer: PrivacySanitizer,
-  adapter: "codex" | "pi",
+  adapter: "codex" | "pi" | "acp",
 ): AtifStep {
   const messages = turn.messages
     .sort((left, right) => left.order - right.order)
@@ -578,6 +597,9 @@ function turnStep(
   if (auxiliary.length > 0) extra.codex_auxiliary = auxiliary;
   if (turn.failure !== undefined) {
     extra.codex_failure = sanitizer.value(turn.failure);
+  }
+  if (turn.contextUsage) {
+    extra.acp_usage_update = sanitizer.value(turn.contextUsage);
   }
 
   let metrics: AtifStep["metrics"];
@@ -652,10 +674,7 @@ function turnStep(
   };
 }
 
-function parseCodexTurns(events: ParsedEvent[]): {
-  sessionId: string;
-  turns: Turn[];
-} {
+function parseCodexTurns(events: ParsedEvent[]): ParsedTurns {
   let sessionId: string | undefined;
   let current: Turn | undefined;
   const turns: Turn[] = [];
@@ -725,7 +744,7 @@ function parseCodexTurns(events: ParsedEvent[]): {
   if (!sessionId || current) {
     throw new Error("Codex event turn structure is invalid");
   }
-  return { sessionId, turns };
+  return { sessionId, turns, skipped: new Map() };
 }
 
 function piToolArguments(value: unknown): JsonRecord {
@@ -741,16 +760,14 @@ function sameJson(left: unknown, right: unknown): boolean {
   );
 }
 
-function parsePiTurns(events: ParsedEvent[]): {
-  sessionId: string;
-  turns: Turn[];
-} {
+function parsePiTurns(events: ParsedEvent[]): ParsedTurns {
   let sessionId: string | undefined;
   let current: Turn | undefined;
   let agentActive = false;
   let retryActive = false;
   let compactionActive = false;
   const turns: Turn[] = [];
+  const skipped = new Map<string, number>();
 
   for (const event of events) {
     const type = event.value.type as string;
@@ -916,12 +933,7 @@ function parsePiTurns(events: ParsedEvent[]): {
       continue;
     }
     if (type === "auto_retry_start") {
-      if (
-        !sessionId ||
-        current ||
-        agentActive ||
-        compactionActive
-      ) {
+      if (!sessionId || current || agentActive || compactionActive) {
         throw new Error("Pi event turn structure is invalid");
       }
       retryActive = true;
@@ -966,9 +978,9 @@ function parsePiTurns(events: ParsedEvent[]): {
       }
       continue;
     }
-    throw new Error(
-      `Unsupported Pi event type '${type}' at line ${event.line}`,
-    );
+    // Pi adds event types between releases (1.1.0 added `entry_appended`).
+    // An event this projection does not know carries no turn structure.
+    skipped.set(type, (skipped.get(type) ?? 0) + 1);
   }
 
   if (
@@ -981,7 +993,174 @@ function parsePiTurns(events: ParsedEvent[]): {
   ) {
     throw new Error("Pi event turn structure is invalid");
   }
-  return { sessionId, turns };
+  return { sessionId, turns, skipped };
+}
+
+/** Standard ACP updates that describe client-facing session state, not the rollout. */
+const ACP_SESSION_STATE_UPDATES = new Set([
+  "available_commands_update",
+  "config_option_update",
+  "current_mode_update",
+  "session_info_update",
+  "user_message_chunk",
+]);
+
+function acpText(content: unknown): string {
+  return isRecord(content) &&
+    content.type === "text" &&
+    typeof content.text === "string"
+    ? content.text
+    : "";
+}
+
+/**
+ * Projects the ACP event log an ACP-driven adapter records (see
+ * `AcpEventLine`). One ATIF step is one assistant message together with the
+ * tool calls it issued; `messageId` separates messages when the agent sends
+ * it, and a message that follows a tool call starts the next step otherwise.
+ */
+function parseAcpTurns(events: ParsedEvent[]): ParsedTurns {
+  // `isAcpEventLog` selected this parser, so the first line is the session.
+  const [session, ...updates] = events;
+  const sessionId = session?.value.sessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new Error("ACP session requires sessionId");
+  }
+  let sessionUsage: JsonRecord | undefined;
+  let current: (Turn & { key?: string; sawTool?: boolean }) | undefined;
+  const turns: Turn[] = [];
+  const toolOwners = new Map<string, Turn>();
+  const skipped = new Map<string, number>();
+  const skip = (type: string): void => {
+    skipped.set(type, (skipped.get(type) ?? 0) + 1);
+  };
+  const open = (key?: string): Turn => {
+    current = { ...newTurn(), ...(key ? { key } : {}) };
+    turns.push(current);
+    return current;
+  };
+  const messageTurn = (update: JsonRecord): Turn => {
+    const key =
+      typeof update.messageId === "string" && update.messageId
+        ? update.messageId
+        : undefined;
+    if (!current) return open(key);
+    if (key ? current.key !== key : current.sawTool) return open(key);
+    return current;
+  };
+
+  for (const event of updates) {
+    const type = event.value.type as string;
+    if (type === "acp.session") {
+      throw new Error("ACP event log has more than one session");
+    }
+    if (type === "acp.prompt_complete") {
+      if (isRecord(event.value.usage)) sessionUsage = event.value.usage;
+      for (const turn of turns) turn.status ??= "completed";
+      continue;
+    }
+    if (type === "acp.prompt_error") {
+      const failed = current ?? open();
+      failed.status = "failed";
+      failed.failure = event.value.message;
+      continue;
+    }
+    if (type !== "acp.session_update" || !isRecord(event.value.update)) {
+      skip(type);
+      continue;
+    }
+    const update = event.value.update;
+    const kind = update.sessionUpdate;
+    if (kind === "agent_thought_chunk") {
+      messageTurn(update);
+      continue;
+    }
+    if (kind === "agent_message_chunk") {
+      const turn = messageTurn(update);
+      const text = acpText(update.content);
+      if (!text) continue;
+      const message = turn.messages[0];
+      if (message) {
+        message.text += text;
+      } else {
+        turn.nextOrder += 1;
+        turn.messages.push({
+          order: turn.nextOrder,
+          id: `acp-message-${turns.length}`,
+          text,
+        });
+      }
+      continue;
+    }
+    if (kind === "tool_call" || kind === "tool_call_update") {
+      const id = update.toolCallId;
+      if (typeof id !== "string" || !id) {
+        throw new Error("ACP tool call requires toolCallId");
+      }
+      const turn = toolOwners.get(id) ?? current ?? open();
+      toolOwners.set(id, turn);
+      if (turn === current) current.sawTool = true;
+      let item = turn.tools.get(id);
+      if (!item) {
+        turn.nextOrder += 1;
+        item = {
+          order: turn.nextOrder,
+          value: { id, type: "acp_tool_call", arguments: {} },
+        };
+        turn.tools.set(id, item);
+      }
+      const value = item.value;
+      // `name` is the agent's own tool identifier when it sends one; `kind` is
+      // the standard ACP category. `title` is display text and changes while
+      // the arguments stream, so it never names the function.
+      if (typeof update.name === "string" && update.name) {
+        value.toolName = update.name;
+      }
+      if (typeof update.kind === "string") value.kind = update.kind;
+      value.toolName ??= value.kind ?? "tool";
+      if (isRecord(update.rawInput)) value.arguments = update.rawInput;
+      if (update.rawOutput !== undefined) value.result = update.rawOutput;
+      if (typeof update.status === "string") {
+        value.status = update.status;
+        value.isError = update.status === "failed";
+      }
+      continue;
+    }
+    if (kind === "plan") {
+      const turn = current ?? open();
+      turn.nextOrder += 1;
+      turn.auxiliary.push({
+        order: turn.nextOrder,
+        type: "todo_list",
+        value: update.entries,
+      });
+      continue;
+    }
+    if (kind === "usage_update") {
+      const { sessionUpdate: _kind, _meta: _meta, ...usage } = update;
+      (current ?? open()).contextUsage = usage;
+      continue;
+    }
+    if (typeof kind === "string" && ACP_SESSION_STATE_UPDATES.has(kind)) {
+      continue;
+    }
+    skip(typeof kind === "string" ? `session_update:${kind}` : type);
+  }
+
+  return {
+    sessionId,
+    turns,
+    ...(sessionUsage ? { sessionUsage } : {}),
+    skipped,
+  };
+}
+
+function isAcpEventLog(events: ParsedEvent[]): boolean {
+  return events[0]?.value.type === "acp.session";
+}
+
+function optionalTokenCount(value: unknown, label: string): number {
+  return value === undefined ? 0 : parseNonNegativeInteger(value, label);
 }
 
 function sumMetric(
@@ -1006,7 +1185,7 @@ export async function projectAtifTrajectory(
       "ATIF structured projection currently supports Codex and Pi",
     );
   }
-  const adapter: "codex" | "pi" = input.adapter;
+  const lockedAdapter: "codex" | "pi" = input.adapter;
   if (typeof input.publicPrompt !== "string" || !input.publicPrompt.trim()) {
     throw new Error("ATIF public prompt must be non-empty");
   }
@@ -1019,10 +1198,18 @@ export async function projectAtifTrajectory(
   }
 
   const loaded = await loadSource(input.source);
+  // Pi is driven over ACP. Attempts recorded before that hold Pi's own JSON
+  // event stream, which stays readable.
+  const adapter: "codex" | "pi" | "acp" =
+    lockedAdapter === "pi" && isAcpEventLog(loaded.events)
+      ? "acp"
+      : lockedAdapter;
   const parsed =
     adapter === "codex"
       ? parseCodexTurns(loaded.events)
-      : parsePiTurns(loaded.events);
+      : adapter === "acp"
+        ? parseAcpTurns(loaded.events)
+        : parsePiTurns(loaded.events);
   const sanitizer = new PrivacySanitizer(input.workspaceRoot);
   const sessionRedactions = sanitizer.redactionCount;
   const sanitizedSession = sanitizer.value(parsed.sessionId) as string;
@@ -1047,6 +1234,18 @@ export async function projectAtifTrajectory(
     agentSteps,
     "cache_write_input_tokens",
   );
+  const sessionUsage = parsed.sessionUsage;
+  const skippedEventTypes = Object.fromEntries(
+    [...parsed.skipped].sort(([left], [right]) => left.localeCompare(right)),
+  );
+  const skippedNote =
+    parsed.skipped.size > 0
+      ? ` Skipped unrecognized events: ${Object.entries(skippedEventTypes)
+          .map(
+            ([type, count]) => `${sanitizer.value(type) as string} x${count}`,
+          )
+          .join(", ")}.`
+      : "";
   const trainingEligible = sanitizer.redactionCount === 0;
   const trajectory: AtifTrajectory = {
     schema_version: "ATIF-v1.7",
@@ -1058,19 +1257,47 @@ export async function projectAtifTrajectory(
       model_name: input.lockedAgent.model,
     },
     steps,
-    notes: `Structured projection of ${adapter === "codex" ? "Codex exec" : "Pi agent"} JSONL. Native raw events and reasoning_content are intentionally not retained.`,
+    notes: `Structured projection of ${adapter === "codex" ? "Codex exec" : adapter === "acp" ? "ACP session" : "Pi agent"} JSONL. Native raw events and reasoning_content are intentionally not retained.${skippedNote}`,
     final_metrics: {
-      ...(hasUsage
+      ...(sessionUsage
         ? {
-            total_prompt_tokens: sumMetric(agentSteps, "prompt_tokens"),
-            total_completion_tokens: sumMetric(agentSteps, "completion_tokens"),
-            total_cached_tokens: sumMetric(agentSteps, "cached_tokens"),
+            total_prompt_tokens: optionalTokenCount(
+              sessionUsage.inputTokens,
+              "acp inputTokens",
+            ),
+            total_completion_tokens: optionalTokenCount(
+              sessionUsage.outputTokens,
+              "acp outputTokens",
+            ),
+            total_cached_tokens: optionalTokenCount(
+              sessionUsage.cachedReadTokens,
+              "acp cachedReadTokens",
+            ),
             extra: {
-              cache_write_input_tokens: cacheWriteTokens,
-              reasoning_output_tokens: reasoningTokens,
+              cache_write_input_tokens: optionalTokenCount(
+                sessionUsage.cachedWriteTokens,
+                "acp cachedWriteTokens",
+              ),
+              reasoning_output_tokens: optionalTokenCount(
+                sessionUsage.thoughtTokens,
+                "acp thoughtTokens",
+              ),
             },
           }
-        : {}),
+        : hasUsage
+          ? {
+              total_prompt_tokens: sumMetric(agentSteps, "prompt_tokens"),
+              total_completion_tokens: sumMetric(
+                agentSteps,
+                "completion_tokens",
+              ),
+              total_cached_tokens: sumMetric(agentSteps, "cached_tokens"),
+              extra: {
+                cache_write_input_tokens: cacheWriteTokens,
+                reasoning_output_tokens: reasoningTokens,
+              },
+            }
+          : {}),
       total_steps: steps.length,
     },
     extra: {
@@ -1087,11 +1314,17 @@ export async function projectAtifTrajectory(
     redactionCount: sanitizer.redactionCount,
     trainingEligible,
     source: {
-      format: adapter === "codex" ? "codex-exec-jsonl" : "pi-events",
+      format:
+        adapter === "codex"
+          ? "codex-exec-jsonl"
+          : adapter === "acp"
+            ? "acp-events"
+            : "pi-events",
       bytes: loaded.bytes.byteLength,
       sha256: createHash("sha256").update(loaded.bytes).digest("hex"),
       lines: loaded.events.length,
     },
+    ...(parsed.skipped.size > 0 ? { skippedEventTypes } : {}),
   };
 }
 
@@ -1156,6 +1389,11 @@ export async function writeAtifTrajectory(
   input: WriteAtifInput,
 ): Promise<AtifReceipt> {
   const projection = await projectAtifTrajectory(input);
+  if (projection.skippedEventTypes) {
+    console.warn(
+      `ATIF projection skipped unrecognized ${input.adapter} events: ${JSON.stringify(projection.skippedEventTypes)}`,
+    );
+  }
   const bytes = canonicalJson(projection.trajectory as unknown as JsonValue);
   const outputDirectory = await realpath(input.outputDirectory);
   const rootInfo = await lstat(outputDirectory);

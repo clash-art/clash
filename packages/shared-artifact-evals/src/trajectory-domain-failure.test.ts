@@ -186,4 +186,125 @@ describe("trajectory MCP domain failures", () => {
       error: "Timeline state is invalid",
     });
   });
+
+  it("observes only Clash and shell tools in an earlier Pi event log", async () => {
+    const trajectory = await normalizePiEvents([
+      {
+        type: "tool_execution_start",
+        toolCallId: "read-1",
+        toolName: "read",
+        args: { path: "notes.md" },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "read-1",
+        toolName: "read",
+        isError: false,
+        result: { content: [{ type: "text", text: "notes" }] },
+      },
+      {
+        type: "tool_execution_start",
+        toolCallId: "bash-1",
+        toolName: "bash",
+        args: { command: "true" },
+      },
+    ]);
+
+    expect(
+      trajectory.actions.map(({ kind, operation, status }) => ({
+        kind,
+        operation,
+        status,
+      })),
+    ).toEqual([{ kind: "shell", operation: "true", status: "started" }]);
+  });
+
+  it("classifies ACP tool calls from their settled arguments and marks a domain failure as failed", async () => {
+    const failureMessage = "Generation failed.";
+    const structuredContent = { status: "failed", error: failureMessage };
+    const update = (value: Record<string, unknown>) => ({
+      type: "acp.session_update",
+      update: value,
+    });
+    const trajectory = await normalizePiEvents([
+      { type: "acp.session", sessionId: "acp-session" },
+      // Arguments stream while the call is pending; nothing is observed yet.
+      update({
+        sessionUpdate: "tool_call",
+        toolCallId: "render-1",
+        name: "mcp__clash__clash_composition",
+        kind: "other",
+        status: "pending",
+        rawInput: {},
+      }),
+      update({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "render-1",
+        status: "in_progress",
+        rawInput: {
+          kind: "timeline",
+          operation: "clash_timeline_render",
+          arguments: { timelineId: "timeline-mixed-v1" },
+        },
+      }),
+      update({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "render-1",
+        status: "completed",
+        rawOutput: {
+          content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+          structuredContent,
+        },
+      }),
+      // An agent that reports only the standard ACP kind, settled in one update.
+      update({
+        sessionUpdate: "tool_call",
+        toolCallId: "shell-1",
+        kind: "execute",
+        status: "failed",
+        rawInput: { command: "false" },
+        rawOutput: { content: [{ type: "text", text: "exit 1" }] },
+      }),
+      // A tool that is neither a Clash operation nor a shell command.
+      update({
+        sessionUpdate: "tool_call",
+        toolCallId: "read-1",
+        name: "read",
+        kind: "read",
+        status: "completed",
+        rawInput: { path: "notes.md" },
+      }),
+      { type: "acp.prompt_complete", stopReason: "max_tokens" },
+    ]);
+
+    expect(
+      trajectory.actions.map(({ kind, operation, status, error }) => ({
+        kind,
+        operation,
+        status,
+        ...(error ? { error } : {}),
+      })),
+    ).toEqual([
+      {
+        kind: "mcp",
+        operation: "clash/clash_timeline_render",
+        status: "started",
+      },
+      {
+        kind: "mcp",
+        operation: "clash/clash_timeline_render",
+        status: "failed",
+        error: failureMessage,
+      },
+      { kind: "shell", operation: "false", status: "started" },
+      { kind: "shell", operation: "false", status: "failed", error: "exit 1" },
+    ]);
+    expect(trajectory.actions[0]).toMatchObject({ sourceLine: 3 });
+    // A turn that did not end normally is a failed turn.
+    expect(trajectory.errors).toContainEqual({
+      source: "pi",
+      sourceLine: 7,
+      message: "ACP turn stopped with 'max_tokens'",
+    });
+  });
 });

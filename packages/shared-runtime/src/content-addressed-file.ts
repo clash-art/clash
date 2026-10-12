@@ -33,6 +33,8 @@ function isMissing(error: unknown): boolean {
 }
 
 async function syncDirectory(path: string): Promise<void> {
+  // Windows cannot flush a directory handle; the file's own fsync is the durability there.
+  if (process.platform === "win32") return;
   const handle = await open(path, "r");
   try {
     await handle.sync();

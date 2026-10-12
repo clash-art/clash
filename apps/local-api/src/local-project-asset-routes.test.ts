@@ -27,7 +27,8 @@ import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { LocalLoroRoomHub } from "./sync.js";
 
 const temporaryDirectories: string[] = [];
-const { createApp: createLocalApiApp, close: closeApps } = managedLocalApiApps();
+const { createApp: createLocalApiApp, close: closeApps } =
+  managedLocalApiApps();
 const PROJECT_ASSET_RECEIPT_RE =
   /^project-asset-v1:[a-f0-9]{16}:receipt:[A-Za-z0-9._~-]+$/;
 
@@ -386,6 +387,88 @@ describe("Project-scoped ResolvedAsset routes", () => {
     expect(conflicting.status, await conflicting.clone().text()).toBe(409);
     await expect(conflicting.json()).resolves.toMatchObject({
       code: "PROJECT_ASSET_ID_COLLISION",
+    });
+  });
+
+  it("names the existing Asset instead of importing the same bytes under a second id when asked to reject duplicates", async () => {
+    const { app } = await fixture();
+    const base = "http://127.0.0.1:49152/api/v1/projects/project-a/assets";
+    const request = (
+      projectAssetId: string,
+      extra: Record<string, string> = {},
+    ) => {
+      const form = new FormData();
+      form.set(
+        "file",
+        new File(["one image"], "hero.png", { type: "image/png" }),
+      );
+      form.set("kind", "image");
+      form.set("projectAssetId", projectAssetId);
+      for (const [key, value] of Object.entries(extra)) form.set(key, value);
+      return app.request(`${base}/import-file`, { method: "POST", body: form });
+    };
+
+    // The observed mistake: a first import under a minted id, then the same
+    // file again under the id the task actually asked for.
+    expect((await request("asset:minted")).status).toBe(201);
+    const duplicate = await request("preassigned", {
+      duplicateContent: "reject",
+    });
+    expect(duplicate.status, await duplicate.clone().text()).toBe(409);
+    await expect(duplicate.json()).resolves.toMatchObject({
+      code: "PROJECT_ASSET_DUPLICATE_CONTENT",
+      projectAssetId: "preassigned",
+      existingProjectAssetIds: ["asset:minted"],
+    });
+    const afterRejection = (await (await app.request(base)).json()) as {
+      assets: Array<{ id: string }>;
+    };
+    expect(afterRejection.assets.map(({ id }) => id)).not.toContain(
+      "preassigned",
+    );
+
+    // Replaying the id that already owns the bytes is not a duplicate.
+    expect(
+      (await request("asset:minted", { duplicateContent: "reject" })).status,
+    ).toBe(201);
+    // A second Asset over the same bytes stays possible when it is asked for.
+    expect((await request("copy", { duplicateContent: "allow" })).status).toBe(
+      201,
+    );
+    expect((await request("default-copy")).status).toBe(201);
+
+    const invalid = await request("other", { duplicateContent: "maybe" });
+    expect(invalid.status).toBe(400);
+    await expect(invalid.json()).resolves.toMatchObject({
+      code: "INVALID_PROJECT_ASSET_IMPORT",
+    });
+  });
+
+  it("answers a re-import of a trashed Asset with restore instead of an id collision", async () => {
+    const { app } = await fixture();
+    const base = "http://127.0.0.1:49152/api/v1/projects/project-a/assets";
+    const request = () => {
+      const form = new FormData();
+      form.set(
+        "file",
+        new File(["trashed image"], "hero.png", { type: "image/png" }),
+      );
+      form.set("kind", "image");
+      form.set("projectAssetId", "imported:trashed");
+      return app.request(`${base}/import-file`, { method: "POST", body: form });
+    };
+    expect((await request()).status).toBe(201);
+    const trashed = await app.request(
+      `${base}/${encodeURIComponent("imported:trashed")}`,
+      projectTrashRequest("delete:reimport"),
+    );
+    expect(trashed.status, await trashed.clone().text()).toBe(200);
+
+    const reimport = await request();
+    expect(reimport.status).toBe(409);
+    await expect(reimport.json()).resolves.toMatchObject({
+      code: "PROJECT_ASSET_TRASHED",
+      projectAssetId: "imported:trashed",
     });
   });
 

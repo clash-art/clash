@@ -3,6 +3,7 @@
   "key_files": {
     "src/code-components.tsx": "Browser compilation and rendering of trusted single-file Director TSX with react/three imports. This is not a sandbox.",
     "src/DirectorViewport.tsx": "Shared interactive and headless scene, including code instances and optional default lighting.",
-    "src/headless-entry.tsx": "Exact-time capture entry; component errors reject capture."
+    "src/headless-entry.tsx": "Exact-time capture entry; component errors reject capture. The per-frame limit comes from directorCaptureTimeoutMs (one minute up to 1920x1080, proportional to pixels above).",
+    "src/headless-render-boundary.ts": "Publication gate and the one render-loop tick for headless capture. The loop must stop drawing once the frame is published: a software rasteriser cannot keep up with frames issued every animation frame, and the backlog delays the PNG readback and outlives the page."
   }
 }

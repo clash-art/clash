@@ -1,20 +1,16 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { spawn } from "node:child_process";
-import {
-  lstat,
-  mkdir,
-  readFile,
-  realpath,
-  stat,
-  writeFile,
-} from "node:fs/promises";
-import { delimiter, isAbsolute, join, relative, sep } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { delimiter, join } from "node:path";
 
 import {
   createQualityReviewResult,
   QualityJudgeResponseSchema,
 } from "./quality-review";
+import {
+  qualityRequestEvidenceKinds,
+  verifiedQualityEvidenceFiles,
+} from "./quality-review-evidence";
 import type {
   ArtifactEvidence,
   CodexQualityReviewer,
@@ -48,13 +44,8 @@ const TOOL_ITEM_TYPES = new Set([
 export function codexQualityJudgeSupportsRequest(
   request: QualityReviewRequest,
 ): boolean {
-  const artifactsById = new Map(
-    request.artifacts.map((artifact) => [artifact.id, artifact]),
-  );
-  return request.criteria.every((criterion) =>
-    criterion.evidenceArtifactIds.every(
-      (artifactId) => artifactsById.get(artifactId)?.kind === "image",
-    ),
+  return [...qualityRequestEvidenceKinds(request)].every(
+    (kind) => kind === "image",
   );
 }
 
@@ -75,27 +66,6 @@ export function sanitizeQualityReviewerEnvironment(
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function isInside(root: string, candidate: string): boolean {
-  const fromRoot = relative(root, candidate);
-  return (
-    fromRoot === "" ||
-    (fromRoot !== ".." &&
-      !fromRoot.startsWith(`..${sep}`) &&
-      !isAbsolute(fromRoot))
-  );
-}
-
-async function hashFile(path: string): Promise<string> {
-  const hash = createHash("sha256");
-  await new Promise<void>((resolveHash, rejectHash) => {
-    const stream = createReadStream(path);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.once("error", rejectHash);
-    stream.once("end", resolveHash);
-  });
-  return hash.digest("hex");
 }
 
 function assertReviewerArgs(args: string[]): void {
@@ -160,6 +130,7 @@ export function buildCodexQualityJudgeInvocation(input: {
 
 export function renderQualityJudgePrompt(
   request: QualityReviewRequest,
+  attachedEvidence = "images",
 ): string {
   const criteria = request.criteria
     .map(
@@ -173,7 +144,7 @@ export function renderQualityJudgePrompt(
         `- ${artifact.id} (${artifact.kind}, ${artifact.bytes} bytes, sha256 ${artifact.sha256})`,
     )
     .join("\n");
-  return `You are an independent content-effect judge. Judge semantic and creative effectiveness, not merely file validity. Use only the attached images and the public evidence below. Do not invoke tools, commands, MCP servers, Clash, or the filesystem. Return only JSON matching the supplied output schema.
+  return `You are an independent content-effect judge. Judge semantic and creative effectiveness, not merely file validity. Use only the attached ${attachedEvidence} and the public evidence below. Do not invoke tools, commands, MCP servers, Clash, or the filesystem. Return only JSON matching the supplied output schema.
 
 Benchmark: ${request.benchmarkId}
 Request SHA-256: ${request.requestSha256}
@@ -183,7 +154,7 @@ Pass threshold: ${request.passThreshold}/100
 Exact criteria:
 ${criteria}
 
-Bound artifact evidence (attached images follow this identity set):
+Bound artifact evidence (attached ${attachedEvidence} follow this identity set):
 ${artifacts}
 
 Score every criterion from 0 to 100 and give a concise evidence-based rationale. Preserve every criterion id exactly and in the listed order. Do not infer that technical validity implies semantic quality.`;
@@ -350,44 +321,11 @@ async function verifiedImagePaths(input: {
   evidence: ArtifactEvidence[];
   workspace: string;
 }): Promise<string[]> {
-  const canonicalWorkspace = await realpath(input.workspace);
-  const evidenceById = new Map(
-    input.evidence.map((artifact) => [artifact.id, artifact]),
-  );
-  const images: string[] = [];
-  for (const binding of input.request.artifacts) {
-    if (binding.kind !== "image") continue;
-    const evidence = evidenceById.get(binding.id);
-    if (
-      !evidence ||
-      evidence.kind !== binding.kind ||
-      evidence.bytes !== binding.bytes ||
-      evidence.sha256 !== binding.sha256
-    ) {
-      throw new Error(
-        `Quality judge image '${binding.id}' does not match evaluated artifact evidence`,
-      );
-    }
-    const path = join(canonicalWorkspace, evidence.path);
-    const pathInfo = await lstat(path);
-    const canonicalPath = await realpath(path);
-    const canonicalInfo = await stat(canonicalPath);
-    if (
-      !isInside(canonicalWorkspace, canonicalPath) ||
-      pathInfo.isSymbolicLink() ||
-      !pathInfo.isFile() ||
-      !canonicalInfo.isFile() ||
-      pathInfo.nlink !== 1 ||
-      canonicalInfo.size !== binding.bytes ||
-      (await hashFile(canonicalPath)) !== binding.sha256
-    ) {
-      throw new Error(
-        `Quality judge image '${binding.id}' failed exact SHA-256 readback`,
-      );
-    }
-    images.push(canonicalPath);
-  }
-  return images;
+  const files = await verifiedQualityEvidenceFiles({
+    ...input,
+    kinds: new Set(["image"]),
+  });
+  return files.map(({ path }) => path);
 }
 
 function reviewerEnvironment(

@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { writeWorkspaceBundleManifest } from "@clash/shared-runtime";
 import {
@@ -204,20 +205,19 @@ async function createAgent(
   };
 }
 
+/** Pi runs through ACP: a scripted ACP agent stands in for the pi-acp harness. */
 async function createPiAgent(
   root: string,
   counterPath: string,
-  options: { unsupportedAtifEvent?: boolean } = {},
+  options: { unknownSessionUpdate?: boolean } = {},
 ): Promise<BenchmarkAgent> {
-  const executable = join(root, "fake-pi");
+  const work = join(root, "fake-pi-work.cjs");
   await writeFile(
-    executable,
+    work,
     [
-      `#!${process.execPath}`,
       'const fs = require("node:fs")',
       'const path = require("node:path")',
       'const childProcess = require("node:child_process")',
-      'if (process.argv.includes("--version")) { process.stdout.write("0.80.7\\n"); process.exit(0) }',
       "const workspace = process.env.CLASH_BENCH_WORKSPACE",
       "const counter = process.env.AGENT_COUNTER_PATH",
       'childProcess.execFileSync(process.env.CLASH_CLI_ENTRY_PATH, ["project", "status", "--json"], {cwd:workspace,env:process.env,stdio:"ignore"})',
@@ -225,17 +225,44 @@ async function createPiAgent(
       "fs.writeFileSync(counter, String(count + 1))",
       'fs.writeFileSync(path.join(workspace, "frame.png"), Buffer.from([137,80,78,71,13,10,26,10]))',
       'fs.writeFileSync(path.join(workspace, "submission.json"), JSON.stringify({schemaVersion:1,taskId:"evaluation-decoupling",artifacts:[{id:"frame",kind:"image",path:"frame.png"}]}))',
-      'process.stdout.write(JSON.stringify({type:"session",version:3,id:"pi-evaluation-decoupling",timestamp:new Date().toISOString(),cwd:workspace}) + "\\n")',
-      'process.stdout.write(JSON.stringify({type:"agent_start"}) + "\\n")',
-      'process.stdout.write(JSON.stringify({type:"turn_start"}) + "\\n")',
-      'process.stdout.write(JSON.stringify({type:"turn_end",message:{role:"assistant",provider:"test-provider",model:"test-model",content:[{type:"thinking",thinking:"PRIVATE_PI_REASONING"},{type:"text",text:"Created the requested fixture."}],usage:{input:1,cacheRead:0,cacheWrite:0,output:1,reasoning:1,totalTokens:3}},toolResults:[]}) + "\\n")',
-      'process.stdout.write(JSON.stringify({type:"agent_end",messages:[],willRetry:false}) + "\\n")',
-      ...(options.unsupportedAtifEvent
-        ? [
-            'process.stdout.write(JSON.stringify({type:"future_pi_control"}) + "\\n")',
-          ]
+    ].join("\n"),
+    "utf8",
+  );
+  const update = (value: Record<string, unknown>) =>
+    JSON.stringify({ type: "acp.session_update", update: value });
+  const replay = join(root, "fake-pi-session.jsonl");
+  await writeFile(
+    replay,
+    [
+      update({
+        sessionUpdate: "agent_thought_chunk",
+        messageId: "message-1",
+        content: { type: "text", text: "PRIVATE_PI_REASONING" },
+      }),
+      ...(options.unknownSessionUpdate
+        ? [update({ sessionUpdate: "future_pi_control", detail: "new" })]
         : []),
-      'process.stdout.write(JSON.stringify({type:"agent_settled"}) + "\\n")',
+      update({
+        sessionUpdate: "agent_message_chunk",
+        messageId: "message-1",
+        content: { type: "text", text: "Created the requested fixture." },
+      }),
+      JSON.stringify({
+        type: "acp.prompt_complete",
+        stopReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1, thoughtTokens: 1 },
+      }),
+    ].join("\n"),
+    "utf8",
+  );
+  const executable = join(root, "fake-pi-acp");
+  await writeFile(
+    executable,
+    [
+      "#!/bin/sh",
+      'if [ "${1:-}" = "--version" ]; then echo 0.80.7; exit 0; fi',
+      `exec '${process.execPath}' '${fileURLToPath(new URL("./acp-agent.fixture.ts", import.meta.url))}' "$@"`,
+      "",
     ].join("\n"),
     "utf8",
   );
@@ -245,7 +272,11 @@ async function createPiAgent(
     command: executable,
     provider: "test-provider",
     model: "test-model",
-    env: { AGENT_COUNTER_PATH: counterPath },
+    env: {
+      AGENT_COUNTER_PATH: counterPath,
+      ACP_FIXTURE_WORK: work,
+      ACP_FIXTURE_REPLAY: replay,
+    },
     clashHost: {
       pluginRoot: join(repositoryRoot, "plugins", "clash"),
       profile: "dev",
@@ -315,7 +346,7 @@ describe("runner Evaluation decoupling", () => {
       extra: { reasoning_content_retained: false },
     });
     expect(trajectoryText).not.toContain("PRIVATE_PI_REASONING");
-    expect(receipt.source.format).toBe("pi-events");
+    expect(receipt.source.format).toBe("acp-events");
     expect(attempt.evidence.trajectories).toMatchObject({
       native: { adapter: "pi" },
       atif: { path: "logs/trajectory.atif.json" },
@@ -327,8 +358,8 @@ describe("runner Evaluation decoupling", () => {
     );
   }, 90_000);
 
-  it("seals a failed Attempt when Pi ATIF projection encounters an unsupported control event", async () => {
-    const root = await mkdtemp(join(tmpdir(), "clash-runner-pi-atif-failure-"));
+  it("keeps the trial scoreable when the Pi session carries an update type the projection does not know", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-runner-pi-atif-unknown-"));
     roots.push(root);
     const suiteRoot = join(root, "suite");
     const outputRoot = join(root, "runs");
@@ -339,46 +370,39 @@ describe("runner Evaluation decoupling", () => {
     );
     const benchmarkCase = benchmark(inputWorkspace.integrity.bundleDigest);
     const agent = await createPiAgent(root, counterPath, {
-      unsupportedAtifEvent: true,
+      unknownSessionUpdate: true,
     });
 
     const report = await runBenchmarkSuite({
       suite: {
         schemaVersion: 1,
-        id: "pi-atif-failure-suite",
-        title: "Pi ATIF failure suite",
+        id: "pi-atif-unknown-suite",
+        title: "Pi ATIF unknown update suite",
         cases: [benchmarkCase],
       },
       suiteRoot,
       outputRoot,
-      runId: "pi-atif-failure-run",
+      runId: "pi-atif-unknown-run",
       agent,
       maxInfrastructureAttempts: 1,
     });
 
-    expect(report.cases[0]).toMatchObject({
-      status: "fail",
-      agent: { status: "completed" },
-      failure: {
-        classification: "infrastructure",
-        retryable: true,
-        phase: "atif-projection",
-        detail: expect.stringMatching(/future_pi_control/iu),
-      },
-    });
-    const caseRoot = join(
-      outputRoot,
-      "pi-atif-failure-run",
-      benchmarkCase.id,
+    // An unknown event used to end the trial as an `atif-projection`
+    // infrastructure failure. The ACP client drops an update it cannot
+    // validate, and the rest of the session is projected.
+    expect(report.cases[0]?.agent).toMatchObject({ status: "completed" });
+    expect(report.cases[0]?.failure?.phase).not.toBe("atif-projection");
+    const caseRoot = join(outputRoot, "pi-atif-unknown-run", benchmarkCase.id);
+    const trajectory = JSON.parse(
+      await readFile(join(caseRoot, "logs", "trajectory.atif.json"), "utf8"),
+    ) as { steps: Array<{ message: string }> };
+    expect(trajectory.steps.at(-1)?.message).toBe(
+      "Created the requested fixture.",
     );
     const capture = JSON.parse(
       await readFile(join(caseRoot, "attempt-capture.json"), "utf8"),
-    ) as { atif: { status: string; detail: string } };
-    expect(capture.atif).toEqual({
-      status: "unsupported",
-      format: "ATIF-v1.7",
-      detail: expect.stringMatching(/future_pi_control/iu),
-    });
+    ) as { atif: { status: string } };
+    expect(capture.atif.status).not.toBe("unsupported");
     await expect(
       verifyBenchmarkAttempt({ caseRoot, suiteRoot }),
     ).resolves.toMatchObject({ receipt: { path: "attempt.json" } });

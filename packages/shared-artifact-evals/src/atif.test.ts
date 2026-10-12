@@ -9,8 +9,9 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   projectCodexAtifTrajectory,
@@ -817,5 +818,267 @@ describe("Codex ATIF v1.7 structured projection", () => {
         }),
       ),
     ).rejects.toThrow(/turn structure/iu);
+  });
+});
+
+describe("ACP ATIF v1.7 structured projection", () => {
+  /** A real Pi 1.1.0 session recorded through `@openma/pi-acp` 0.1.7. */
+  const recordedPath = fileURLToPath(
+    new URL("./acp-pi-session.fixture.jsonl", import.meta.url),
+  );
+
+  function acpInput(text: string): AtifProjectionInput {
+    return { ...piInput({ kind: "text", text }), workspaceRoot: "/tmp/ws" };
+  }
+
+  function update(value: Record<string, unknown>): Record<string, unknown> {
+    return { type: "acp.session_update", update: value };
+  }
+
+  const session = { type: "acp.session", sessionId: "acp-session-001" };
+
+  it("projects a recorded Pi ACP session into message, tool, and usage steps", async () => {
+    const recorded = (await readFile(recordedPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const usage = (recorded.at(-1) as { usage: Record<string, number> }).usage;
+
+    const projected = await projectAtifTrajectory(
+      piInput({ kind: "file", path: recordedPath }),
+    );
+    const { steps, final_metrics: metrics } = projected.trajectory;
+
+    expect(projected.source).toMatchObject({
+      format: "acp-events",
+      lines: recorded.length,
+    });
+    expect(projected.trajectory.session_id).toBe(
+      (recorded[0] as { sessionId: string }).sessionId,
+    );
+    // One step per assistant message: the startup banner this capture was
+    // recorded with, the tool-calling message, then the reply.
+    expect(steps.map(({ source }) => source)).toEqual([
+      "user",
+      "agent",
+      "agent",
+      "agent",
+    ]);
+    expect(steps[1]!.tool_calls).toBeUndefined();
+    expect(steps[2]).toMatchObject({
+      message: "",
+      tool_calls: [
+        {
+          function_name: "bash",
+          arguments: { command: "echo hi > note.txt", timeout: 10 },
+        },
+      ],
+      observation: {
+        results: [
+          {
+            content: expect.stringContaining("(no output)"),
+            extra: { status: "completed", kind: "execute" },
+          },
+        ],
+      },
+      extra: { acp_turn_status: "completed" },
+    });
+    expect(steps[2]!.tool_calls![0]!.tool_call_id).toBe(
+      steps[2]!.observation!.results[0]!.source_call_id,
+    );
+    expect(steps[2]!.extra).toHaveProperty("acp_usage_update.used");
+    expect(steps[3]).toMatchObject({ message: "done" });
+    expect(steps[3]!.tool_calls).toBeUndefined();
+    expect(metrics).toMatchObject({
+      total_prompt_tokens: usage.inputTokens,
+      total_completion_tokens: usage.outputTokens,
+      total_cached_tokens: usage.cachedReadTokens,
+      total_steps: 4,
+      extra: { reasoning_output_tokens: usage.thoughtTokens },
+    });
+    // Thought chunks are reasoning and are never retained.
+    const thought = recorded
+      .map((line) => (line.update ?? {}) as Record<string, unknown>)
+      .filter(({ sessionUpdate }) => sessionUpdate === "agent_thought_chunk")
+      .map(({ content }) => (content as { text: string }).text)
+      .join("");
+    expect(thought.length).toBeGreaterThan(20);
+    expect(JSON.stringify(projected.trajectory)).not.toContain(thought);
+    // The recorded `available_commands_update` is session state, not an unknown event.
+    expect(projected.skippedEventTypes).toBeUndefined();
+  });
+
+  it("separates messages without a messageId at tool boundaries and keeps late tool results with their call", async () => {
+    const projected = await projectAtifTrajectory(
+      acpInput(
+        jsonl([
+          session,
+          update({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Looking " },
+          }),
+          update({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "it up." },
+          }),
+          update({
+            sessionUpdate: "tool_call",
+            toolCallId: "call-1",
+            title: "Read /tmp/ws/notes.md",
+            kind: "read",
+            status: "pending",
+            rawInput: { path: "/tmp/ws/notes.md" },
+          }),
+          update({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Finished." },
+          }),
+          update({
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call-1",
+            status: "failed",
+            rawOutput: { content: [{ type: "text", text: "ENOENT" }] },
+          }),
+          { type: "acp.prompt_complete", stopReason: "end_turn" },
+        ]),
+      ),
+    );
+
+    const [, first, second] = projected.trajectory.steps;
+    expect(first).toMatchObject({
+      message: "Looking it up.",
+      // Without the agent's own tool name, the standard ACP kind names the call.
+      tool_calls: [
+        { function_name: "read", arguments: { path: "$WORKSPACE/notes.md" } },
+      ],
+      observation: {
+        results: [
+          {
+            content: expect.stringContaining("ENOENT"),
+            extra: { status: "failed", is_error: true },
+          },
+        ],
+      },
+    });
+    expect(second).toMatchObject({ message: "Finished." });
+    expect(second!.tool_calls).toBeUndefined();
+    expect(projected.trajectory.final_metrics).toEqual({ total_steps: 3 });
+  });
+
+  it("records a plan as a todo list and a rejected prompt as a failed step", async () => {
+    const entries = [
+      { content: "Inspect the Timeline", priority: "high", status: "pending" },
+    ];
+    const projected = await projectAtifTrajectory(
+      acpInput(
+        jsonl([
+          session,
+          update({ sessionUpdate: "plan", entries }),
+          { type: "acp.prompt_error", message: "Insufficient Balance" },
+        ]),
+      ),
+    );
+
+    expect(projected.trajectory.steps[1]).toMatchObject({
+      source: "agent",
+      extra: {
+        acp_turn_status: "failed",
+        codex_failure: "Insufficient Balance",
+        codex_auxiliary: [{ type: "todo_list", value: entries }],
+      },
+    });
+  });
+
+  it("skips session updates and runtime events it does not know instead of failing", async () => {
+    const projected = await projectAtifTrajectory(
+      acpInput(
+        jsonl([
+          session,
+          update({ sessionUpdate: "future_update", payload: 1 }),
+          { type: "acp.runtime_event", event: "acp.client_request" },
+          update({
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Done." },
+          }),
+          { type: "acp.prompt_complete", stopReason: "end_turn" },
+        ]),
+      ),
+    );
+
+    expect(projected.trajectory.steps[1]).toMatchObject({ message: "Done." });
+    expect(projected.skippedEventTypes).toEqual({
+      "acp.runtime_event": 1,
+      "session_update:future_update": 1,
+    });
+    expect(projected.trajectory.notes).toContain(
+      "session_update:future_update x1",
+    );
+  });
+
+  it("warns about skipped events when it publishes the trajectory", async () => {
+    const caseRoot = await mkdtemp(join(tmpdir(), "clash-acp-atif-writer-"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const receipt = await writeAtifTrajectory({
+        ...acpInput(
+          jsonl([
+            session,
+            // An update with no discriminator is counted under its line type.
+            update({ payload: 1 }),
+            { type: "acp.prompt_complete", stopReason: "end_turn" },
+          ]),
+        ),
+        outputDirectory: caseRoot,
+      });
+
+      expect(receipt.source.format).toBe("acp-events");
+      expect(warn).toHaveBeenCalledWith(
+        'ATIF projection skipped unrecognized pi events: {"acp.session_update":1}',
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("rejects an ACP log with no session or an unidentified tool call", async () => {
+    await expect(
+      projectAtifTrajectory(
+        acpInput(
+          jsonl([
+            { type: "acp.session" },
+            { type: "acp.prompt_complete", stopReason: "end_turn" },
+          ]),
+        ),
+      ),
+    ).rejects.toThrow(/requires sessionId/u);
+    await expect(
+      projectAtifTrajectory(
+        acpInput(
+          jsonl([session, update({ sessionUpdate: "tool_call", title: "x" })]),
+        ),
+      ),
+    ).rejects.toThrow(/requires toolCallId/u);
+    await expect(
+      projectAtifTrajectory(acpInput(jsonl([session, session]))),
+    ).rejects.toThrow(/more than one session/u);
+  });
+});
+
+describe("Pi JSON event projection of earlier Attempts", () => {
+  it("skips an event type added by a newer Pi instead of failing the projection", async () => {
+    const events = exactPiEvents().trimEnd().split("\n");
+    // Pi 1.1.0 reports each persisted session entry; it carries no turn structure.
+    events.splice(2, 0, JSON.stringify({ type: "entry_appended", entry: {} }));
+    events.push(JSON.stringify({ type: "entry_appended", entry: {} }));
+
+    const baseline = await projectAtifTrajectory(piInput());
+    const projected = await projectAtifTrajectory(
+      piInput({ kind: "text", text: `${events.join("\n")}\n` }),
+    );
+
+    expect(projected.trajectory.steps).toEqual(baseline.trajectory.steps);
+    expect(projected.skippedEventTypes).toEqual({ entry_appended: 2 });
+    expect(projected.trajectory.notes).toContain("entry_appended x2");
+    expect(baseline.skippedEventTypes).toBeUndefined();
   });
 });

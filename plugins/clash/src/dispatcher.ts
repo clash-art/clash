@@ -73,7 +73,7 @@ export function shouldStartCliHost(argv: readonly string[] = process.argv): bool
   for (let index = 0; index < args.length; index++) {
     if (args[index] === "--profile") { index++; continue; }
     if (args[index]?.startsWith("--profile=")) continue;
-    return args[index] !== "logs";
+    return args[index] !== "logs" && args[index] !== "browser";
   }
   return true;
 }

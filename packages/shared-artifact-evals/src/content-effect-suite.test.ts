@@ -41,15 +41,24 @@ describe("content-effect benchmark catalog", () => {
       const cases = suite.cases.filter((benchmarkCase) =>
         benchmarkCase.tags?.includes(contentCategory),
       );
-      expect(cases.length, contentCategory).toBeGreaterThan(0);
+      expect(
+        cases.some(
+          (benchmarkCase) =>
+            benchmarkCase.execution?.preflight?.status === "ready",
+        ),
+        contentCategory,
+      ).toBe(true);
       for (const benchmarkCase of cases) {
         expect(benchmarkCase.tags, benchmarkCase.id).toContain(
           "content-effect",
         );
-        expect(
-          benchmarkCase.execution?.preflight?.status,
-          benchmarkCase.id,
-        ).toBe("ready");
+        if (benchmarkCase.execution?.preflight?.status !== "ready") {
+          // A not-yet-runnable case stays in the explicit contract-gap lane,
+          // which the runner records as not-run instead of launching an Agent.
+          expect(benchmarkCase.execution?.lane, benchmarkCase.id).toBe(
+            "blocked-contract",
+          );
+        }
         expect(
           benchmarkCase.execution?.productReadback?.required,
           benchmarkCase.id,

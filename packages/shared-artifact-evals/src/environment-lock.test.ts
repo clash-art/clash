@@ -10,18 +10,21 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  agentEnvironmentLock,
   captureBenchmarkExecutionLock,
   verifyBenchmarkExecutionLock,
 } from "./environment-lock";
+import { writeManagedAcpInstall } from "./acp-install.fixture";
+import { ISOLATED_HOME_VARIABLES } from "./agent-home";
 import { runBenchmarkSuite } from "./runner";
 import { ArtifactBenchmarkCaseSchema } from "./schemas";
-import type { ArtifactBenchmarkCase } from "./types";
+import type { ArtifactBenchmarkCase, BenchmarkAgent } from "./types";
 
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -306,6 +309,136 @@ describe("benchmark Environment execution lock", () => {
         executionIntent: "execute",
       }),
     ).rejects.toThrow(/Pi model.*provider/iu);
+  });
+
+  it("locks the Pi harness at its pinned versions and records the isolated agent home", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const fixture = await createReadyFixture(root);
+    const binDir = join(root, "acp-bin");
+    const { shim, pinned } = await writeManagedAcpInstall({
+      binDir,
+      harnessId: "pi-acp",
+      launcher: "#!/bin/sh\nexit 0\n",
+    });
+    const capture = async (name: string, agent: BenchmarkAgent) => {
+      const caseRoot = join(root, name);
+      await mkdir(caseRoot);
+      const { lock } = await captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent,
+        executionIntent: "execute",
+      });
+      return lock;
+    };
+    const clashHost = {
+      pluginRoot: fixture.pluginRoot,
+      profile: "dev" as const,
+    };
+    const pi = {
+      adapter: "pi" as const,
+      provider: "test-provider",
+      model: "test-model",
+      clashHost,
+    };
+
+    const managed = await capture("managed", {
+      ...pi,
+      env: { CLASH_BENCH_ACP_BIN_DIR: binDir },
+    });
+    const harness = managed.agent.harness;
+    if (harness?.pinned !== "verified") throw new Error("harness not verified");
+    expect(harness.id).toBe("pi-acp");
+    expect(
+      Object.fromEntries(
+        [harness.package, ...harness.dependencies].map(({ name, version }) => [
+          name,
+          version,
+        ]),
+      ),
+    ).toEqual(pinned);
+    expect(managed.agent.executable).toMatchObject({
+      name: basename(shim),
+      reportedVersion: harness.package.version,
+    });
+    const isolation =
+      managed.resolvedEnvironment.phases.agent.userConfiguration;
+    expect(isolation).toMatchObject({
+      home: "fresh-per-attempt-directory",
+      userLevel: "not-loaded",
+    });
+    expect(isolation!.variables).toEqual(
+      [...ISOLATED_HOME_VARIABLES, "PI_CODING_AGENT_DIR"].sort(),
+    );
+    expect(managed.resolvedEnvironment.participants.agent.harness).toEqual(
+      harness,
+    );
+
+    // A launcher the operator names directly cannot be checked against pins.
+    const explicit = await capture("explicit", {
+      ...pi,
+      command: fixture.executable,
+    });
+    expect(explicit.agent.harness).toEqual({
+      id: "pi-acp",
+      pinned: "unverified-explicit-launcher",
+    });
+    expect(explicit.resolvedEnvironment.resolvedEnvironmentDigest).not.toBe(
+      managed.resolvedEnvironment.resolvedEnvironmentDigest,
+    );
+
+    // Adapters that still run in the operator's home record no isolation.
+    const codex = await capture("codex", {
+      adapter: "codex",
+      command: fixture.executable,
+      model: "gpt-5.6-sol",
+      clashHost,
+    });
+    expect(codex.agent.harness).toBeUndefined();
+    expect(
+      codex.resolvedEnvironment.phases.agent.userConfiguration,
+    ).toBeUndefined();
+  });
+
+  it("refuses to lock a Pi harness whose installed SDK differs from the pin", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+    const binDir = join(root, "acp-bin");
+    const { pinned } = await writeManagedAcpInstall({
+      binDir,
+      harnessId: "pi-acp",
+      launcher: "#!/bin/sh\nexit 0\n",
+    });
+    const drifted = Object.keys(pinned).at(-1)!;
+    await writeManagedAcpInstall({
+      binDir,
+      harnessId: "pi-acp",
+      launcher: "#!/bin/sh\nexit 0\n",
+      versions: { [drifted]: "0.0.1" },
+    });
+
+    await expect(
+      captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent: {
+          adapter: "pi",
+          provider: "test-provider",
+          model: "test-model",
+          env: { CLASH_BENCH_ACP_BIN_DIR: binDir },
+          clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+        },
+        executionIntent: "execute",
+      }),
+    ).rejects.toThrow(
+      `does not match the pinned versions: ${drifted} is 0.0.1, pinned ${pinned[drifted]}`,
+    );
   });
 
   it("rejects adapter environment flags that switch Claude away from Anthropic", async () => {
@@ -619,7 +752,7 @@ describe("benchmark Environment execution lock", () => {
     expect(digests[0]).toBe(digests[1]);
   });
 
-  it("keeps the Agent Environment lock identical across quality reviewer selections", async () => {
+  it("keeps the Agent Environment identical across judges and records each judge in its own section", async () => {
     const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
     roots.push(root);
     const fixture = await createReadyFixture(root);
@@ -631,6 +764,14 @@ describe("benchmark Environment execution lock", () => {
     ]);
     await Promise.all([chmod(reviewerA, 0o755), chmod(reviewerB, 0o755)]);
 
+    const gemini = {
+      adapter: "gemini" as const,
+      provider: "google" as const,
+      model: "gemini-judge",
+      apiKeyEnv: "CLASH_TEST_JUDGE_KEY",
+      baseUrl: "https://relay.example",
+      baseUrlEnv: "CLASH_TEST_JUDGE_BASE_URL",
+    };
     const selections = [
       undefined,
       {
@@ -645,8 +786,16 @@ describe("benchmark Environment execution lock", () => {
         provider: "openai" as const,
         model: "gpt-5.7-sol",
       },
+      gemini,
+      { ...gemini, model: "gemini-judge-next" },
+      { ...gemini, baseUrl: "https://other-relay.example" },
+      { ...gemini, apiKeyEnv: "CLASH_TEST_OTHER_JUDGE_KEY" },
     ];
-    const captures: Array<{ digest: string; bytes: string }> = [];
+    const captures: Array<{
+      digest: string;
+      agentEnvironment: string;
+      judge: unknown;
+    }> = [];
     for (const [index, qualityReviewer] of selections.entries()) {
       const caseRoot = join(root, `case-${index}`);
       await mkdir(caseRoot);
@@ -663,16 +812,97 @@ describe("benchmark Environment execution lock", () => {
         ...(qualityReviewer ? { qualityReviewer } : {}),
         executionIntent: "execute",
       });
+      const written = JSON.parse(
+        await readFile(receipt.lockFile, "utf8"),
+      ) as Record<string, unknown>;
       captures.push({
         digest: receipt.lock.resolvedEnvironment.resolvedEnvironmentDigest,
-        bytes: await readFile(receipt.lockFile, "utf8"),
+        agentEnvironment: JSON.stringify(agentEnvironmentLock(written)),
+        judge: written.qualityJudge,
       });
     }
 
-    expect(captures[1]!.digest).toBe(captures[0]!.digest);
-    expect(captures[2]!.digest).toBe(captures[0]!.digest);
-    expect(captures[1]!.bytes).toBe(captures[0]!.bytes);
-    expect(captures[2]!.bytes).toBe(captures[0]!.bytes);
+    for (const capture of captures) {
+      expect(capture.digest).toBe(captures[0]!.digest);
+      expect(capture.agentEnvironment).toBe(captures[0]!.agentEnvironment);
+    }
+    expect(captures[0]!.judge).toBeUndefined();
+    const judges = captures.slice(1).map(({ judge }) => JSON.stringify(judge));
+    expect(new Set(judges).size).toBe(judges.length);
+    expect(captures[3]!.judge).toEqual({
+      kind: "gemini",
+      provider: gemini.provider,
+      model: gemini.model,
+      endpointHost: new URL(gemini.baseUrl).host,
+      env: { apiKey: gemini.apiKeyEnv, baseUrl: gemini.baseUrlEnv },
+    });
+  });
+
+  it("records the judge's variable names in the lock and never a value they hold", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+    const secret = "judge-key-value-that-must-stay-private";
+    process.env.CLASH_TEST_JUDGE_KEY = secret;
+    try {
+      const receipt = await captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent: {
+          adapter: "codex",
+          command: fixture.executable,
+          model: "gpt-5.6-sol",
+          clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+        },
+        qualityReviewer: {
+          adapter: "gemini",
+          provider: "google",
+          model: "gemini-judge",
+          apiKeyEnv: "CLASH_TEST_JUDGE_KEY",
+          baseUrl: "https://relay.example/private/path",
+        },
+        executionIntent: "execute",
+      });
+      const bytes = await readFile(receipt.lockFile, "utf8");
+
+      expect(bytes).toContain("CLASH_TEST_JUDGE_KEY");
+      expect(bytes).not.toContain(secret);
+      expect(bytes).not.toContain("private/path");
+    } finally {
+      delete process.env.CLASH_TEST_JUDGE_KEY;
+    }
+  });
+
+  it("refuses a pasted key where the judge's key variable name belongs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+
+    await expect(
+      captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent: {
+          adapter: "codex",
+          command: fixture.executable,
+          model: "gpt-5.6-sol",
+          clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+        },
+        qualityReviewer: {
+          adapter: "gemini",
+          provider: "google",
+          model: "gemini-judge",
+          apiKeyEnv: "AIzaSyPastedKeyInsteadOfAName",
+        },
+        executionIntent: "execute",
+      }),
+    ).rejects.toThrow(/environment variable name/u);
   });
 
   it("publishes only rollout phases and participants in the Agent Environment lock", async () => {
@@ -978,7 +1208,11 @@ describe("benchmark Environment execution lock", () => {
       sha256: createHash("sha256").update(reviewerBytes).digest("hex"),
     });
     expect(receipt.lock).not.toHaveProperty("qualityReviewer");
-    expect(JSON.stringify(receipt.lock)).not.toContain("review-model-v2");
+    expect(receipt.lock.qualityJudge).toEqual({
+      kind: "codex",
+      provider: "openai",
+      model: "review-model-v2",
+    });
     expect(JSON.stringify(receipt.lock)).not.toContain("codex-review-fixture");
     expect(JSON.stringify(receipt.lock)).not.toContain(
       "sk-private-reviewer-value",
@@ -1012,6 +1246,65 @@ describe("benchmark Environment execution lock", () => {
         executionIntent: "execute",
       }),
     ).rejects.toThrow(/reviewer provider.*openai/iu);
+  });
+
+  it("rejects a Gemini quality reviewer that is not bound to Google", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+
+    await expect(
+      captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent: {
+          adapter: "codex",
+          command: fixture.executable,
+          model: "gpt-5.6-sol",
+          clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+        },
+        qualityReviewer: {
+          adapter: "gemini",
+          provider: "openai" as "google",
+          model: "gemini-judge",
+        },
+        executionIntent: "execute",
+      }),
+    ).rejects.toThrow(/reviewer provider.*google/iu);
+  });
+
+  it("binds no local executable for the HTTP Gemini quality reviewer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+
+    const receipt = await captureBenchmarkExecutionLock({
+      caseRoot,
+      suiteRoot: root,
+      benchmark: benchmark(),
+      agent: {
+        adapter: "codex",
+        command: fixture.executable,
+        model: "gpt-5.6-sol",
+        clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+      },
+      qualityReviewer: {
+        adapter: "gemini",
+        provider: "google",
+        model: "gemini-judge",
+      },
+      executionIntent: "execute",
+    });
+
+    expect(receipt.sources).not.toHaveProperty("qualityReviewerExecutable");
+    await expect(
+      verifyBenchmarkExecutionLock(receipt),
+    ).resolves.toBeUndefined();
   });
 
   it("rejects a mutated privately bound quality reviewer executable before review", async () => {

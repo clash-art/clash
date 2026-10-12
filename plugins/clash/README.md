@@ -24,6 +24,20 @@ The tarball includes native dependencies for the packaging machine and declares
 that OS/architecture. The first-release verification runner is macOS ARM64;
 these local artifacts do not claim cross-platform portability.
 
+### Self-contained archive
+
+`pnpm --dir plugins/clash pack:distribution --self-contained <directory>` adds
+the official Node binary pinned in `node-runtime.lock.json`, a `bin/clash`
+launcher and a `self-contained.json` manifest to the same payload, producing
+`clash-<version>-<platform>-<arch>.tgz` (`.zip` on Windows) that runs without a
+preinstalled Node. `scripts/smoke-self-contained.ts` is its acceptance test and
+runs on the bundled Node; `--container debian:bookworm-slim --archive <tgz>`
+runs it in a container that has no Node. `install.sh` and `install.ps1`
+install an archive after checking it against the release's `SHA256SUMS`.
+Targets, signing status and what is deferred are in the
+[release pipeline guide](../../apps/docs/guide/release-pipeline.md). No archive
+has been published yet.
+
 ## Runtime model
 
 The package contains the CLI, MCP tools, skills, bundled GUI resources,

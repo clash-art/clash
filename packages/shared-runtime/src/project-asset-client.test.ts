@@ -921,6 +921,144 @@ describe("Project Asset Host client", () => {
     ).rejects.toThrow(/unrecognized key.*storageKey/i);
   });
 
+  it("answers an id the Project does not have with the ids it does have", async () => {
+    const requests: string[] = [];
+    const client = createProjectAssetHostClient({
+      endpoint: "http://127.0.0.1:8789",
+      env: {},
+      fetch: async (input, init) => {
+        const url = new URL(String(input));
+        requests.push(`${init?.method ?? "GET"} ${url.pathname}`);
+        return url.pathname.endsWith("/assets")
+          ? new Response(
+              JSON.stringify({
+                assets: [
+                  readyAsset,
+                  { ...readyAsset, id: "asset:two", name: "other.png" },
+                ],
+              }),
+              { headers: { "content-type": "application/json" } },
+            )
+          : new Response(
+              JSON.stringify({
+                code: "PROJECT_ASSET_NOT_FOUND",
+                error: "Project Asset not found",
+              }),
+              { status: 404, headers: { "content-type": "application/json" } },
+            );
+      },
+    });
+
+    // The id was copied without its prefix, as the benchmark agent did.
+    for (const call of [
+      () => client.get({ projectId: "project-a", assetId: "one" }),
+      () => client.references({ projectId: "project-a", assetId: "one" }),
+      () => client.trash({ projectId: "project-a", assetId: "one" }),
+      () => client.restore({ projectId: "project-a", assetId: "one" }),
+    ]) {
+      const failure = await call().catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        status: 404,
+        body: {
+          code: "PROJECT_ASSET_NOT_FOUND",
+          projectAssetId: "one",
+          suggestedProjectAssetIds: ["asset:one"],
+        },
+      });
+      const recovery = projectAssetClients.projectAssetRecovery(failure);
+      expect(recovery?.steps).toEqual([
+        expect.objectContaining({ operation: "get", assetId: "asset:one" }),
+        expect.objectContaining({ operation: "list" }),
+      ]);
+    }
+    expect(
+      requests.filter((request) => request.endsWith("/assets")),
+    ).toHaveLength(4);
+  });
+
+  it("turns each Host import and lifecycle rejection into the operations that resolve it", () => {
+    const recovery = (body: Record<string, unknown>) =>
+      projectAssetClients.projectAssetRecovery({ body });
+
+    const duplicate = recovery({
+      code: "PROJECT_ASSET_DUPLICATE_CONTENT",
+      projectAssetId: "preassigned",
+      existingProjectAssetIds: ["asset:minted"],
+    });
+    expect(duplicate?.problem).toContain("asset:minted");
+    expect(duplicate?.steps).toEqual([
+      expect.objectContaining({ operation: "get", assetId: "asset:minted" }),
+      expect.objectContaining({ operation: "trash", assetId: "asset:minted" }),
+      expect.objectContaining({
+        operation: "import",
+        projectAssetId: "preassigned",
+      }),
+      expect.objectContaining({
+        operation: "import",
+        projectAssetId: "preassigned",
+        allowDuplicate: true,
+      }),
+    ]);
+
+    expect(
+      recovery({ code: "PROJECT_ASSET_TRASHED", projectAssetId: "asset:one" })
+        ?.steps,
+    ).toEqual([
+      expect.objectContaining({ operation: "get", assetId: "asset:one" }),
+      expect.objectContaining({ operation: "restore", assetId: "asset:one" }),
+    ]);
+    expect(
+      recovery({
+        code: "PROJECT_ASSET_ID_COLLISION",
+        projectAssetId: "asset:one",
+      })?.steps[0],
+    ).toMatchObject({ operation: "get", assetId: "asset:one" });
+    expect(
+      recovery({ code: "ASSET_IN_USE", projectAssetId: "asset:one" })?.steps,
+    ).toEqual([
+      expect.objectContaining({
+        operation: "references",
+        assetId: "asset:one",
+      }),
+    ]);
+    // A failure raised before any Host call still gets its step.
+    expect(
+      projectAssetClients.projectAssetRecovery(new Error("READ_REQUIRED"), {
+        code: "READ_REQUIRED",
+        projectAssetId: "asset:one",
+      })?.steps,
+    ).toEqual([
+      expect.objectContaining({ operation: "get", assetId: "asset:one" }),
+    ]);
+    expect(recovery({ code: "SOMETHING_ELSE" })).toBeUndefined();
+  });
+
+  it("forwards the duplicate-content policy only when a caller sets one", async () => {
+    const policies: Array<FormDataEntryValue | null> = [];
+    const client = createProjectAssetHostClient({
+      endpoint: "http://127.0.0.1:8789",
+      env: {},
+      fetch: async (_input, init) => {
+        policies.push((init?.body as FormData).get("duplicateContent"));
+        return new Response(JSON.stringify(readyAsset), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const file = {
+      projectId: "project-a",
+      bytes: new Uint8Array([1, 2, 3, 4]),
+      fileName: "frame.png",
+      contentType: "image/png",
+      kind: "image" as const,
+      projectAssetId: "asset:one",
+    };
+    await client.importFile({ ...file });
+    await client.importFile({ ...file, duplicateContent: "reject" });
+    expect(policies).toEqual([null, "reject"]);
+  });
+
   it("preserves the Host error code and message for CLI and MCP peers", async () => {
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",

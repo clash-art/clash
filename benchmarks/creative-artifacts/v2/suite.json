@@ -4611,7 +4611,7 @@
           "id": "audio-visual-synchrony",
           "description": "Impacts, chapter transitions, and the final hold feel synchronized to the supplied rhythm bed.",
           "weight": 1,
-          "evidenceArtifactIds": ["rhythm-audio"]
+          "evidenceArtifactIds": ["rhythm-audio", "final-video"]
         }
       ],
       "category": "mg-character",

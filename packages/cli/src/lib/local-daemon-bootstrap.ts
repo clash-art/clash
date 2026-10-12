@@ -43,6 +43,12 @@ export async function ensureCliLocalDaemon(options: {
         launchDetachedLocalDaemon({
           entryPath: options.daemonEntryPath,
           runtimeFingerprint,
+          // The Host's own log starts after its modules load; a failure before that only reaches stderr.
+          diagnosticLogPath: join(
+            clashHomeForLocalDataDir(dataDir),
+            "logs",
+            "host-startup.log",
+          ),
           cliEntryPath: options.cliEntryPath,
           dataDir,
           runDir,

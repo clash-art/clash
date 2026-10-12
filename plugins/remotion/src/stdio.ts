@@ -16,6 +16,7 @@ import {
   type ExecutablePluginInvocation,
   type ExecutablePluginReference,
 } from "@clash/shared-types/executable-plugin";
+import { ensureClashBrowser } from "@clash/shared-runtime/render-browser";
 import { ProjectTimelineEnvelopeSchema } from "@clash/shared-types/timeline-envelope";
 import {
   renderMedia as remotionRenderMedia,
@@ -33,6 +34,11 @@ type RendererApi = {
 
 export type RemotionPluginServices = {
   browserBundlePath: string;
+  /**
+   * The Remotion-pinned Chrome Headless Shell in the Clash browser cache, downloaded on demand.
+   * Always passed explicitly so Remotion never downloads below this plugin's own directory.
+   */
+  browserExecutable: () => Promise<string>;
   renderer: RendererApi;
 };
 
@@ -169,10 +175,12 @@ async function renderTimeline(
     `${safeTaskSegment(invocation.taskId)}.mp4`,
   );
   try {
+    const browserExecutable = await services.browserExecutable();
     const composition = await services.renderer.selectComposition({
       serveUrl: services.browserBundlePath,
       id: "VideoComposition",
       inputProps: timeline,
+      browserExecutable,
     });
     await services.renderer.renderMedia({
       composition,
@@ -180,6 +188,7 @@ async function renderTimeline(
       codec: "h264",
       outputLocation: outputPath,
       inputProps: timeline,
+      browserExecutable,
     });
     return {
       status: "completed" as const,
@@ -205,6 +214,7 @@ const defaultServices: RemotionPluginServices = {
   browserBundlePath: fileURLToPath(
     new URL("./browser-bundle/", import.meta.url),
   ),
+  browserExecutable: async () => (await ensureClashBrowser()).executablePath,
   renderer: {
     selectComposition: (options) =>
       remotionSelectComposition(

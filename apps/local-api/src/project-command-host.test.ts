@@ -935,6 +935,8 @@ test("local-api host plans native Timeline Actions and projects native Runs as l
     status: "completed", sourceTimelineId: "timeline-1", sourceTimelineRevisionId: created.timeline.revisionId,
     assetId: "asset-render-completed",
   });
+  assert.equal(completed.canvasId, PROJECT_ASSET_RENDER_CANVAS_ID);
+  assert.equal(completed.renders[0].node.canvas_id, completed.canvasId);
   assert.equal(completed.renders[0].version, canvasNodeReadToken(completed.renders[0].node));
   assert.match(completed.renders[0].readToken, /:receipt:/);
 
@@ -942,6 +944,7 @@ test("local-api host plans native Timeline Actions and projects native Runs as l
   assert.deepEqual(all.renders.map((render: any) => [render.node.id, render.node.data.status]), [
     ["run-completed", "completed"], ["run-pending", "generating"],
   ]);
+  assert.deepEqual(all.renders.map((render: any) => render.node.canvas_id), [all.canvasId, all.canvasId]);
   assert.equal(client.listCanvases().some((canvas) => canvas.id === PROJECT_ASSET_RENDER_CANVAS_ID), false);
 });
 

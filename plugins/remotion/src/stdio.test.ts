@@ -145,17 +145,21 @@ describe("Remotion bundled Action", () => {
     if (!module?.createRemotionPlugin) return;
 
     let browserInput: Record<string, any> | undefined;
+    const browserExecutables: unknown[] = [];
     let uploaded:
       | { slot: string; bytes?: Uint8Array; mediaType?: string; kind: string }
       | undefined;
     const plugin = module.createRemotionPlugin({
       browserBundlePath: "/plugin/dist/browser-bundle",
+      browserExecutable: async () => "/cache/browser/chrome-headless-shell",
       renderer: {
         selectComposition: async (options: Record<string, unknown>) => {
           browserInput = options.inputProps as Record<string, any>;
+          browserExecutables.push(options.browserExecutable);
           return { id: "VideoComposition" };
         },
         renderMedia: async (options: Record<string, unknown>) => {
+          browserExecutables.push(options.browserExecutable);
           await import("node:fs/promises").then(({ writeFile }) =>
             writeFile(
               String(options.outputLocation),
@@ -192,6 +196,11 @@ describe("Remotion bundled Action", () => {
         },
       ],
     });
+    // Both Remotion entry points get the cached browser; neither may download one itself.
+    expect(browserExecutables).toEqual([
+      "/cache/browser/chrome-headless-shell",
+      "/cache/browser/chrome-headless-shell",
+    ]);
     expect(browserInput?.tracks[0].items.map((item: any) => item.src)).toEqual([
       "http://127.0.0.1:43111/capabilities/hero",
       "http://127.0.0.1:43111/capabilities/demo",
@@ -233,6 +242,7 @@ describe("Remotion bundled Action", () => {
       if (!module?.createRemotionPlugin) return;
       const plugin = module.createRemotionPlugin({
         browserBundlePath: "/plugin/dist/browser-bundle",
+        browserExecutable: async () => "/cache/browser/chrome-headless-shell",
         renderer: {
           selectComposition: async () => ({ id: "VideoComposition" }),
           renderMedia: async () => undefined,

@@ -21,6 +21,11 @@ test("log queries work when the local Host is unavailable", () => {
   assert.equal(shouldStartCliHost(["node", "clash", "canvas", "list"]), true);
 });
 
+test("preparing the render browser does not start a Host", () => {
+  assert.equal(shouldStartCliHost(["node", "clash", "browser", "ensure"]), false);
+  assert.equal(shouldStartCliHost(["node", "clash", "--profile", "dev", "browser", "status", "--json"]), false);
+});
+
 test("the dispatcher reads the public version from the distribution manifest", async () => {
   const packageJson = JSON.parse(
     await import("node:fs/promises").then(({ readFile }) =>

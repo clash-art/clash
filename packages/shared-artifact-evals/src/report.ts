@@ -256,6 +256,9 @@ export async function writeSuiteGallery(input: {
       ]),
     );
     const attemptState = [
+      benchmarkCase.trial !== undefined
+        ? `Trial ${benchmarkCase.trial}`
+        : undefined,
       benchmarkCase.attempt !== undefined
         ? `Attempt ${benchmarkCase.attempt}`
         : undefined,

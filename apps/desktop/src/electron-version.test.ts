@@ -307,14 +307,15 @@ describe("desktop Electron runtime", () => {
     ).toBe(true);
   });
 
-  it("installs published OpenMA common from the v0.7.9 git tag", () => {
-    const pin = /github:openma-ai\/openma-common#v0\.7\.9/;
+  it("installs published OpenMA common from the v0.8.0 git tag", () => {
+    const pin = /github:openma-ai\/openma-common#v0\.8\.0/;
     for (const relativePath of [
       "../../../package.json",
       "../../../apps/local-api/package.json",
       "../../../apps/desktop/package.json",
       "../../../packages/web-ui/package.json",
       "../../../apps/web/package.json",
+      "../../../packages/shared-artifact-evals/package.json",
     ]) {
       const manifest = readFileSync(new URL(relativePath, import.meta.url), "utf8");
       expect(sourceMatches(manifest, pin)).toBe(true);
@@ -346,9 +347,9 @@ describe("desktop Electron runtime", () => {
       "utf8",
     );
     expect(pin).toContain(
-      "OPENMA_COMMON_SHA=afc628e5d624cc1aa61625185a1348bb87f32c05",
+      "OPENMA_COMMON_SHA=fc9c958c46ff48853001a1a4866f7f420e050840",
     );
-    expect(pin).toContain("OPENMA_COMMON_TAG=v0.7.9");
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.8.0");
     expect(pin).toContain("OPENMA_COMMON_TARBALL_SHA256=\n");
     expect(pin).toContain("OPENMA_COMMON_TARBALL_URL=\n");
     expect(commonSetup).toContain(".github/actions/setup-common/pin.env");

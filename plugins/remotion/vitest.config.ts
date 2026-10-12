@@ -13,6 +13,13 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/shared-runtime\/(.+)$/,
+        replacement: resolve(
+          __dirname,
+          "../../packages/shared-runtime/src/$1.ts",
+        ),
+      },
+      {
         find: /^@clash\/shared-types\/(.+)$/,
         replacement: resolve(
           __dirname,

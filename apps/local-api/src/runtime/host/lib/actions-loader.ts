@@ -1,5 +1,6 @@
 import { canonicalJson, executablePluginSchemaHash } from "@clash/shared-runtime/executable-plugin-schema-hash";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
+import { clashBrowserEnvironment } from "@clash/shared-runtime/render-browser";
 
 const actionLog = createStructuredLogger({ component: "local-api", module: "plugins", level: process.env.CLASH_LOG_LEVEL === "debug" ? "debug" : "info" });
 /**
@@ -61,6 +62,7 @@ import {
   resolvePluginLanguage,
 } from "@clash/shared-types";
 import { paths } from "./platform.js";
+import { watchablePath } from "./watch-path.js";
 import {
   PluginStdioSession,
   type PluginBroker,
@@ -942,7 +944,7 @@ export class ActionsHost {
     const root = this.root;
     try {
       this.watcher = watch(
-        root,
+        watchablePath(root),
         { recursive: true, persistent: false },
         (_eventType, filename) => {
           // Ignore swap/temp files that editors create — they churn the
@@ -979,7 +981,7 @@ export class ActionsHost {
         if (this.developmentWatchers.has(watcherKey)) continue;
         try {
           const watcher = watch(
-            sourceRoot,
+            watchablePath(sourceRoot),
             { recursive: true, persistent: false },
             (_eventType, filename) => {
               if (
@@ -1454,6 +1456,11 @@ export function credentialFreePluginEnv(
     inherited.CLASH_MINIMAX_TIMEOUT_MS !== undefined
   ) {
     env.CLASH_MINIMAX_TIMEOUT_MS = inherited.CLASH_MINIMAX_TIMEOUT_MS;
+  }
+  // The renderer needs the Host's browser cache, and CLASH_HOME does not cross this boundary:
+  // forward the resolved cache root (and a user-supplied Chrome) to the Remotion plugin only.
+  if (manifest.id === "clash.remotion") {
+    Object.assign(env, clashBrowserEnvironment(inherited));
   }
   return env;
 }

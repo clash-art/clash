@@ -51,6 +51,7 @@ export interface DirectorWebGlRendererLike {
 
 export function createDirectorFramePublicationGate(requiredStableFrames?: number): {
   tick(resourcesActive: boolean): boolean;
+  published(): boolean;
   reset(): void;
 };
 

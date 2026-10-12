@@ -86,6 +86,7 @@ export {
   type WriteBenchmarkResultBundleInput,
 } from "./result-bundle";
 export {
+  agentEnvironmentLock,
   captureBenchmarkExecutionLock,
   verifyBenchmarkExecutionLock,
   type BenchmarkEnvironmentExecutionLock,
@@ -104,6 +105,25 @@ export {
   runCodexQualityJudge,
   sanitizeQualityReviewerEnvironment,
 } from "./quality-review-codex";
+export {
+  buildGeminiQualityJudgeRequest,
+  geminiJudgeIdentity,
+  geminiQualityJudgeSupportsRequest,
+  parseGeminiQualityJudgeResponse,
+  runGeminiQualityJudge,
+} from "./quality-review-gemini";
+export {
+  qualityJudgeSupportsRequest,
+  runQualityJudge,
+} from "./quality-review-judge";
+export {
+  QUALITY_JUDGE_ENVIRONMENT,
+  lockedQualityJudge,
+  qualityJudgeEnvironmentNames,
+  resolveQualityJudgeEnvironment,
+  type BenchmarkLockedQualityJudge,
+  type QualityJudgeOverrides,
+} from "./quality-judge-environment";
 export {
   createQualityReviewRequest,
   createQualityReviewResult,
@@ -127,9 +147,61 @@ export {
 export { writeSuiteGallery } from "./report";
 export { matchRequiredProductOperations } from "./product-operations";
 export {
+  BENCHMARK_BACKEND_KINDS,
+  EXPERIMENTAL_BACKEND_KINDS,
+  isExperimentalBackend,
+  type BenchmarkBackendKind,
+  type BenchmarkObservedRuntime,
+  type BenchmarkRuntimeClaim,
+  type BenchmarkSubjectRecord,
+} from "./backend-types";
+export {
+  createClaudeCloudBackend,
+  pruneCloudResultBranches,
+  RESULT_BRANCH_PREFIX,
+  type ClaudeCloudBackendOptions,
+} from "./backend-claude-cloud";
+export {
+  createContainerBackend,
+  type ContainerBackendOptions,
+} from "./backend-container";
+export type {
+  BenchmarkAttemptCompletion,
+  BenchmarkAttemptDispatch,
+  ExecutionBackend,
+} from "./execution-backend";
+export {
+  DEFAULT_SUBJECT_BUILD,
+  resolveBenchmarkSubject,
+  subjectIdentity,
+  type BenchmarkSubjectBuild,
+  type BenchmarkSubjectSpec,
+  type ResolvedBenchmarkSubject,
+} from "./subject";
+export {
+  assertSingleSubject,
+  backendTrialStats,
+  createTrialAggregateRecord,
+  parseTrialAggregateRecord,
+  summarizeTrialStats,
+  taskTrialStats,
+  unbiasedPassAtK,
+  unbiasedPassPowK,
+  writeTrialAggregateRecord,
+  type BenchmarkTrialAggregateRecord,
+  type TaskTrialStats,
+  type TrialAggregateSummary,
+  type TrialAttemptInput,
+  type TrialOutcome,
+  type TrialPlacement,
+} from "./trial-aggregate";
+export {
   createClaudeAgentAdapter,
   createCodexAgentAdapter,
+  createNativeLocalBackend,
   createPiAgentAdapter,
+  executeBenchmarkAttempt,
+  planTrialUnits,
   reevaluateBenchmarkRun,
   runBenchmarkSuite,
   type ClaudeAgentAdapterOptions,

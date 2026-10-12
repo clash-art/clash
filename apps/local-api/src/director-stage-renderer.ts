@@ -64,6 +64,83 @@ type BrowserLike = {
   close(options?: { silent: boolean }): Promise<void>;
 };
 
+/** Hardware GL, which is what a desktop has and what the GUI viewport renders with. */
+const PREFERRED_GL = "angle";
+/** ANGLE on SwiftShader: software, so it also works on a host with no usable GPU. */
+const SOFTWARE_GL = "swangle";
+
+export type DirectorBrowserGlSelection<Gl extends string = string> = {
+  gl: Gl | typeof PREFERRED_GL | typeof SOFTWARE_GL;
+  reason: "override" | "preferred" | "software-fallback";
+};
+
+const PAGE_OPTIONS = {
+  context: () => null,
+  logLevel: "error",
+  indent: false,
+  pageIndex: 0,
+  onBrowserLog: null,
+  onLog: () => undefined,
+} as const;
+
+async function canCreateWebgl2(browser: BrowserLike): Promise<boolean> {
+  const page = await browser.newPage(PAGE_OPTIONS);
+  try {
+    return (await page.evaluate(
+      () => Boolean(document.createElement("canvas").getContext("webgl2")),
+      undefined,
+    )) === true;
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Open the capture browser with a GL backend that can actually create a WebGL2 context.
+ *
+ * Whether a backend works is only known by trying it: `angle` has no WebGL at all on a Linux host
+ * without a GPU, and nothing readable from outside the browser predicts that reliably. So the
+ * preferred backend is probed once and software rendering is the fallback. An explicit override is
+ * never replaced; if it has no WebGL2 the operator is told so.
+ */
+async function openWebglBrowser<Gl extends string>(options: {
+  openBrowser: (gl: Gl | typeof PREFERRED_GL | typeof SOFTWARE_GL) => Promise<BrowserLike>;
+  glOverride?: Gl;
+  onGlSelected?: (selection: DirectorBrowserGlSelection<Gl>) => void;
+}): Promise<BrowserLike> {
+  const attempt = async (selection: DirectorBrowserGlSelection<Gl>) => {
+    const browser = await options.openBrowser(selection.gl);
+    try {
+      if (await canCreateWebgl2(browser)) {
+        options.onGlSelected?.(selection);
+        return browser;
+      }
+    } catch (error) {
+      await browser.close({ silent: true }).catch(() => undefined);
+      throw error;
+    }
+    await browser.close({ silent: true }).catch(() => undefined);
+    return undefined;
+  };
+
+  if (options.glOverride !== undefined) {
+    const browser = await attempt({ gl: options.glOverride, reason: "override" });
+    if (browser) return browser;
+    throw new Error(
+      `CLASH_BROWSER_GL=${options.glOverride} cannot create a WebGL2 context on this host, which Director capture needs. ` +
+        "Unset CLASH_BROWSER_GL to let Clash choose a backend, or set another one.",
+    );
+  }
+  const browser =
+    (await attempt({ gl: PREFERRED_GL, reason: "preferred" })) ??
+    (await attempt({ gl: SOFTWARE_GL, reason: "software-fallback" }));
+  if (browser) return browser;
+  throw new Error(
+    `Director capture needs WebGL2, and the browser can create it with neither gl "${PREFERRED_GL}" nor "${SOFTWARE_GL}". ` +
+      "Set CLASH_BROWSER_GL to a backend this host supports.",
+  );
+}
+
 type BrowserCaptureResult = {
   dataUrl: string;
   width: number;
@@ -159,17 +236,22 @@ async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
 }
 
-export function createHeadlessDirectorStageRenderer(options: {
+export function createHeadlessDirectorStageRenderer<Gl extends string = never>(options: {
   bundleDir: string;
   /** Rebuilds the development browser asset when workspace source changed. */
   prepareBundle?: () => Promise<void>;
-  openBrowser: () => Promise<BrowserLike>;
+  /** Opens the browser with the given Remotion `gl` backend. Called again only to fall back. */
+  openBrowser: (gl: Gl | typeof PREFERRED_GL | typeof SOFTWARE_GL) => Promise<BrowserLike>;
+  /** An operator's explicit backend (`CLASH_BROWSER_GL`), already validated. */
+  glOverride?: Gl;
+  /** Reports the backend the reused browser runs with, once. */
+  onGlSelected?: (selection: DirectorBrowserGlSelection<Gl>) => void;
 }): LocalDirectorStageRenderer {
   let browserPromise: Promise<BrowserLike> | undefined;
   let serverPromise: Promise<{ server: Server; url: string }> | undefined;
   let renderQueue = Promise.resolve();
   let disposed = false;
-  const browser = () => browserPromise ??= options.openBrowser();
+  const browser = () => browserPromise ??= openWebglBrowser(options);
   const bundleServer = () => serverPromise ??= startBundleServer(options.bundleDir);
 
   const render = async (unvalidated: DirectorStageRenderRequest): Promise<DirectorStageRenderResult> => {
@@ -178,14 +260,7 @@ export function createHeadlessDirectorStageRenderer(options: {
     const run = renderQueue.then(async () => {
       await options.prepareBundle?.();
       const [activeBrowser, served] = await Promise.all([browser(), bundleServer()]);
-      const page = await activeBrowser.newPage({
-        context: () => null,
-        logLevel: "error",
-        indent: false,
-        pageIndex: 0,
-        onBrowserLog: null,
-        onLog: () => undefined,
-      });
+      const page = await activeBrowser.newPage(PAGE_OPTIONS);
       try {
         await page.goto({ url: served.url, timeout: 60_000 });
         const frames: DirectorStageRenderFrame[] = [];

@@ -23,6 +23,11 @@
       "import": "./dist/local-paths.js",
       "default": "./dist/local-paths.js"
     },
+    "./render-browser": {
+      "types": "./src/render-browser.ts",
+      "import": "./src/render-browser.ts",
+      "default": "./dist/render-browser.js"
+    },
     "./local-daemon": {
       "types": "./dist/local-daemon.d.ts",
       "import": "./dist/local-daemon.js",
