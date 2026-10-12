@@ -13,7 +13,9 @@ import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import type { Server as HttpServer } from "node:http";
 import { serve } from "@hono/node-server";
+import { configureHostServerTimeouts } from "./host-server-timeouts.js";
 import { createLocalModelExecutionPlanner } from "./local-model-generation.js";
 import {
   PluginHostClient,
@@ -2190,6 +2192,8 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       });
     },
   );
+  // A large import-file upload outlives Node's default whole-request timer.
+  configureHostServerTimeouts(server as HttpServer);
   wrapServerCloseWithLifecycleCleanup(
     server,
     async () => {
