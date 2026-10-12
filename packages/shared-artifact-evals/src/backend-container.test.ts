@@ -7,14 +7,16 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { assertSealedRuntimeMatches } from "./attempt-unit";
 import { runAttemptUnit } from "./attempt-worker";
 import {
+  bundleContainerWorker,
   createContainerBackend,
+  spawnContainerCommand,
   type ContainerCommandRunner,
 } from "./backend-container";
 import type { BenchmarkRuntimeClaim } from "./backend-types";
@@ -84,7 +86,28 @@ async function fixture() {
   return { root, suiteRoot, outputRoot: join(root, "runs"), suite };
 }
 
-type EngineCall = { args: string[]; env: NodeJS.ProcessEnv };
+type EngineCall = { args: string[]; env: NodeJS.ProcessEnv; stdin?: string };
+
+const WORKER_PROGRAM = "/* bundled worker */";
+const bundleWorker = async () => WORKER_PROGRAM;
+const REPO_ROOT = resolve(import.meta.dirname, "../../..");
+const GRADER_SOURCES = ["evaluator.ts", "product-readback.ts", "runner.ts"].map(
+  (name) => join(REPO_ROOT, "packages", "shared-artifact-evals", "src", name),
+);
+
+function mounts(args: string[]): Array<{ source: string; target: string }> {
+  return args.flatMap((arg, index) => {
+    if (args[index - 1] !== "--volume") return [];
+    const [source, target] = arg.split(":");
+    return [{ source: source!, target: target! }];
+  });
+}
+
+/** True when `path` is `root` or a file below it, so mounting `root` exposes it. */
+function reaches(root: string, path: string): boolean {
+  const local = relative(root, path);
+  return !local.startsWith("..") && !isAbsolute(local);
+}
 
 /** An engine that answers metadata calls and runs the worker with only the env it was handed by name. */
 function fakeEngine(
@@ -98,7 +121,11 @@ function fakeEngine(
   } = {},
 ): ContainerCommandRunner {
   return async (_command, args, options) => {
-    calls.push({ args, env: options.env });
+    calls.push({
+      args,
+      env: options.env,
+      ...(options.stdin === undefined ? {} : { stdin: options.stdin }),
+    });
     const ok = (stdout: string) => ({
       code: 0,
       signal: null,
@@ -154,6 +181,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:bare",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           runnerNode,
           run: fakeEngine(calls),
@@ -164,6 +192,112 @@ describe("container backend", () => {
     const { args } = calls.find((call) => call.args[0] === "run")!;
     expect(args).toContain(`${runnerNode}:${runnerNode}:ro`);
     expect(args[args.indexOf("bench:bare") + 1]).toBe(runnerNode);
+  });
+
+  it("keeps grader source out of the container: no mount reaches it and the worker arrives on stdin", async () => {
+    const { root, suiteRoot, outputRoot, suite } = await fixture();
+    // A skill outside the suite root, as the shipped suites reference theirs.
+    const skill = join(root, "plugin", "skills", "probe");
+    await mkdir(skill, { recursive: true });
+    await writeFile(
+      join(skill, "SKILL.md"),
+      "---\nname: probe\ndescription: Probe skill.\n---\nProbe.\n",
+    );
+    suite.cases[0]!.skills = [relative(suiteRoot, skill)];
+    const calls: EngineCall[] = [];
+    const report = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: REPO_ROOT,
+          suiteFile: "suite.json",
+          bundleWorker,
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+    expect(report.status).toBe("pass");
+    const call = calls.find(({ args }) => args[0] === "run")!;
+    const mounted = mounts(call.args);
+    for (const grader of GRADER_SOURCES) {
+      await expect(readFile(grader, "utf8")).resolves.toContain("export");
+      for (const { source, target } of mounted) {
+        expect(reaches(source, grader), `${source} exposes ${grader}`).toBe(
+          false,
+        );
+        expect(reaches(target, grader), `${target} exposes ${grader}`).toBe(
+          false,
+        );
+      }
+    }
+    expect(mounted.map(({ source }) => source)).not.toContain(REPO_ROOT);
+    // What the worker does need from outside the suite is mounted by itself.
+    expect(call.args).toContain(`${skill}:${skill}:ro`);
+    // The worker program is piped in rather than read from a mounted file.
+    expect(call.stdin).toBe(WORKER_PROGRAM);
+    expect(call.args).toContain("--interactive");
+    expect(call.args.slice(call.args.indexOf("bench:bare") + 1, -1)).toEqual([
+      "node",
+      "--input-type=module",
+      "-",
+      "worker",
+      "--unit",
+    ]);
+  });
+
+  it("refuses a suite root that would mount the runner's grader source", async () => {
+    const { outputRoot, suite } = await fixture();
+    const calls: EngineCall[] = [];
+    const report = await runBenchmarkSuite({
+      suite,
+      suiteRoot: REPO_ROOT,
+      outputRoot,
+      runId: "run",
+      agent,
+      maxInfrastructureAttempts: 1,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: REPO_ROOT,
+          suiteFile: "suite.json",
+          bundleWorker,
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+    expect(report.cases[0]?.failure?.detail).toContain("grader source");
+    expect(calls.some(({ args }) => args[0] === "run")).toBe(false);
+  });
+
+  it("bundles the worker into one program that runs from stdin after its sources are gone", async () => {
+    const runnerRoot = await mkdtemp(join(tmpdir(), "clash-bench-bundle-"));
+    const packageRoot = join(runnerRoot, "packages", "shared-artifact-evals");
+    await mkdir(join(packageRoot, "src"), { recursive: true });
+    await writeFile(join(packageRoot, "tsconfig.dev.json"), "{}");
+    await writeFile(
+      join(packageRoot, "src", "evaluator.ts"),
+      "export const grade = (value: string): string => `graded:${value}`;\n",
+    );
+    await writeFile(
+      join(packageRoot, "src", "cli.ts"),
+      'import { grade } from "./evaluator";\nprocess.stdout.write(grade(process.argv.slice(2).join(" ")));\n',
+    );
+    const program = await bundleContainerWorker(runnerRoot);
+    await rm(runnerRoot, { recursive: true, force: true });
+    const result = await spawnContainerCommand(
+      process.execPath,
+      ["--input-type=module", "-", "worker", "--unit", "unit.json"],
+      { env: process.env, stdin: program },
+    );
+    expect(result).toMatchObject({
+      code: 0,
+      stdout: "graded:worker --unit unit.json",
+    });
   });
 
   it("mounts a managed ACP harness directory read-only and points the worker at it", async () => {
@@ -180,6 +314,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:bare",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           acpBinDir,
           run: fakeEngine(calls),
@@ -203,6 +338,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:bare",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           acpBinDir: "acp",
           run: fakeEngine([]),
@@ -220,8 +356,8 @@ describe("container backend", () => {
     const backend = createContainerBackend({
       image: "bench:test",
       runnerRoot: process.cwd(),
+      bundleWorker,
       suiteFile: "suite.json",
-      workerCommand: ["worker-entry"],
       network: "none",
       run: fakeEngine(calls),
     });
@@ -259,6 +395,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:test",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           run: fakeEngine(defaultCalls),
         }),
@@ -302,6 +439,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:test",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           run: fakeEngine([], {
             // The engine forgot to forward the variable.
@@ -336,6 +474,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:test",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           run: fakeEngine([], {
             version: {
@@ -366,6 +505,7 @@ describe("container backend", () => {
         createContainerBackend({
           image: "bench:test",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           run: fakeEngine([], {
             runWorker: async (args) => {
@@ -477,6 +617,7 @@ describe("preflight-blocked cases", () => {
         createContainerBackend({
           image: "bench:test",
           runnerRoot: process.cwd(),
+          bundleWorker,
           suiteFile: "suite.json",
           run: fakeEngine(calls),
         }),
