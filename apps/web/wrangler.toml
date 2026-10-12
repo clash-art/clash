@@ -13,22 +13,22 @@ compatibility_flags = ["nodejs_compat"]
 [placement]
 mode = "smart"
 
-# Workers Logs + Traces. 10% of requests are sampled (head_sampling_rate =
-# 0.1) in staging and production to bound Workers Logs/Traces volume and
-# cost. To change it, edit head_sampling_rate (0 to 1; 1 = every request)
-# in the logs and traces tables here and in [env.staging.observability.*]
-# below, then redeploy with wrangler; each environment and signal is
-# independent, so staging can run at 1 while production stays at 0.1.
-# OTLP export targets are dashboard-managed destinations (Workers & Pages →
-# Observability → Destinations); list their names under
-# `destinations = [...]` once created. Workers metrics are not exportable
-# over OTLP. See apps/docs/guide/observability.md.
+# Workers Logs + Traces. Logs keep head_sampling_rate = 1 everywhere:
+# head sampling is decided before the request runs, so a lower rate would
+# drop the same share of error-request logs. Traces are sampled at 0.1 in
+# production only (cost/volume); staging keeps traces at 1. Tradeoff: ~90%
+# of production requests have no trace, but every request still has logs.
+# Override by editing head_sampling_rate (0..1) per env/signal below and
+# redeploying with wrangler. OTLP export targets are dashboard-managed
+# destinations (Workers & Pages → Observability → Destinations); list
+# their names under `destinations = [...]` once created. Workers metrics
+# are not exportable over OTLP. See apps/docs/guide/observability.md.
 [observability]
 enabled = true
 
 [observability.logs]
 enabled = true
-head_sampling_rate = 0.1
+head_sampling_rate = 1
 invocation_logs = true
 
 [observability.traces]
@@ -95,12 +95,12 @@ enabled = true
 
 [env.staging.observability.logs]
 enabled = true
-head_sampling_rate = 0.1
+head_sampling_rate = 1
 invocation_logs = true
 
 [env.staging.observability.traces]
 enabled = true
-head_sampling_rate = 0.1
+head_sampling_rate = 1
 
 [env.staging.placement]
 mode = "smart"

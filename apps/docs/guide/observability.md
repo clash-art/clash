@@ -115,11 +115,15 @@ timers frozen between I/O). Instead:
   console output to the active span itself.
 - `apps/api-cf/wrangler.toml` and `apps/web/wrangler.toml` enable
   `[observability.logs]` and `[observability.traces]` with
-  `head_sampling_rate = 0.1` (10% of requests) for production and
-  `[env.staging]`. The rate bounds Workers Logs/Traces volume and cost; a
-  request that is not sampled produces no platform log lines or spans.
+  logs at `head_sampling_rate = 1` everywhere, and traces at `0.1`
+  (10% of requests) in production and `1` in `[env.staging]`. Head
+  sampling is decided before the request runs, so sampling logs would drop
+  the same share of error-request logs; logs therefore stay complete.
+  Tradeoff: ~90% of production requests have no trace (an error is still
+  visible in its logs, but may lack a trace), in exchange for bounded
+  Traces volume and cost.
   To override, edit `head_sampling_rate` (0 to 1; `1` is every request) in
-  the four tables of the Worker concerned — `[observability.logs]`,
+  the tables of the Worker concerned — `[observability.logs]`,
   `[observability.traces]` and their `[env.staging.observability.*]`
   counterparts are independent — and redeploy. There is no environment
   variable or dashboard switch for it; the value in `wrangler.toml` at

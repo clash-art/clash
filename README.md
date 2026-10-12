@@ -257,8 +257,9 @@ docker push ghcr.io/<you>/clash-render:latest
 # Edit apps/render-server/Dockerfile.cf to FROM your image.
 ```
 
-Observability: both Workers ship with Workers Logs and Traces enabled at
-`head_sampling_rate = 0.1`; edit the value in each `wrangler.toml` to
+Observability: both Workers ship with Workers Logs and Traces enabled; logs
+are kept for every request, traces are sampled at `head_sampling_rate = 0.1`
+in production (1 in staging); edit the value in each `wrangler.toml` to
 change it. OTLP export needs a destination created by hand in the
 Cloudflare dashboard and listed in `wrangler.toml` before deploying, and
 the Node services (api-node, render-server) export nothing until

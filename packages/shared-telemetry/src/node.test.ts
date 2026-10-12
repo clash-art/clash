@@ -109,6 +109,26 @@ describe("resolveNodeTelemetrySignals", () => {
       resolveNodeTelemetrySignals({ OTEL_TRACES_EXPORTER: "console" }),
     ).toEqual({ traces: true, metrics: false, logs: false });
   });
+
+  it("an exporter list containing otlp needs an endpoint", () => {
+    // otlp,console without an endpoint stays off as a whole: the SDK would
+    // otherwise build the OTLP exporter against localhost:4318.
+    expect(
+      resolveNodeTelemetrySignals({ OTEL_TRACES_EXPORTER: "otlp,console" }),
+    ).toEqual({ traces: false, metrics: false, logs: false });
+    expect(
+      resolveNodeTelemetrySignals({
+        OTEL_TRACES_EXPORTER: " otlp , console ",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ENDPOINT,
+      }),
+    ).toEqual({ traces: true, metrics: false, logs: false });
+    expect(
+      resolveNodeTelemetrySignals({
+        OTEL_METRICS_EXPORTER: "console,none",
+        OTEL_EXPORTER_OTLP_ENDPOINT: ENDPOINT,
+      }),
+    ).toEqual({ traces: true, metrics: false, logs: true });
+  });
 });
 
 describe("startNodeTelemetry environment gate", () => {
