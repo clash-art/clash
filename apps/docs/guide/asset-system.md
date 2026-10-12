@@ -1809,12 +1809,21 @@ POST   /api/v1/libraries/personal/assets/:assetId/restore
 
 There is no JSON import route that accepts a local path, `localBlobKey`, object
 key, digest assertion, or storage row. Importing bytes always uses the one
-multipart `import-file` path. Every multipart request carries its already-fixed
-`projectAssetId` or `globalAssetId`; the route rejects omission instead of
-minting an identity after receipt. A command adapter allocates that id before
-calling the public SDK or Host client, and retries replay the same snapshot. The
-Host then stages, probes, and seals the bytes before publishing the entry. The
-corresponding SDK vocabulary is:
+`import-file` path. Its body is the file's raw bytes, with `Content-Type` as a
+format hint; the command travels in the query: `kind`, `fileName`, the declared
+`byteLength`, the already-fixed `projectAssetId` or `globalAssetId`, and for a
+Project the optional `duplicateContent`. The Host hashes and writes the body
+chunk by chunk through the Resource store's `stageStream`, so neither side
+holds a large file in memory, and a body that contradicts its declared length
+is rejected before anything is staged. The SDK clients send a `Blob` as that
+body (a browser `File`, or Node's file-backed `openAsBlob`); an optional
+`onProgress` listener switches them to a streamed body where the runtime
+supports one. `multipart/form-data` with the same fields remains accepted for
+older callers, but its parser buffers the file first. The route rejects a
+missing id instead of minting an identity after receipt. A command adapter
+allocates that id before calling the public SDK or Host client, and a retry
+replays the same id. The Host then stages, probes, and seals the bytes before
+publishing the entry. The corresponding SDK vocabulary is:
 
 ```text
 readResolvedAsset(scope, entryId)

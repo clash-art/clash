@@ -87,6 +87,46 @@ export interface LocalResourceStagingProjection {
 
 export type LocalResourceByteSource = AsyncIterable<Uint8Array> | Readable;
 
+/** The streamed bytes contradict what the transport declared; no staging receipt exists. */
+export class LocalResourceStreamMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LocalResourceStreamMismatchError";
+  }
+}
+
+/** Caller-held bytes, or a byte source the Host hashes and writes chunk by chunk. */
+export type LocalResourceStageInput =
+  | { bytes: Uint8Array; source?: never; declaredByteLength?: never }
+  | {
+      source: LocalResourceByteSource;
+      /** Exact byte length the transport declared, when it declared one. */
+      declaredByteLength?: number;
+      bytes?: never;
+    };
+
+/** Stages either input shape through the one Resource store; a source is never buffered whole. */
+export function stageLocalResourceInput(
+  resources: Pick<LocalResourceStore, "stage" | "stageStream">,
+  input: LocalResourceStageInput,
+  originalNameInput?: string,
+): Promise<LocalResourceStagingProjection> {
+  const originalName = originalNameInput
+    ? { originalName: originalNameInput }
+    : {};
+  if (input.source === undefined) {
+    return resources.stage({ bytes: input.bytes, ...originalName });
+  }
+  return resources.stageStream({
+    source: input.source,
+    ...(input.declaredByteLength === undefined
+      ? {}
+      : { declaredByteLength: input.declaredByteLength }),
+    maxByteLength: input.declaredByteLength ?? Number.MAX_SAFE_INTEGER,
+    ...originalName,
+  });
+}
+
 /** Host-private immutable read handle. Storage paths and keys stay inside the Resource store. */
 export interface LocalResourceStreamProjection {
   resource: Resource;
@@ -864,7 +904,7 @@ export function createLocalResourceStore(options: {
             !Number.isSafeInteger(nextByteLength) ||
             nextByteLength > maxByteLength
           ) {
-            throw new Error(
+            throw new LocalResourceStreamMismatchError(
               "Local Resource stream exceeds its maximum byte length.",
             );
           }
@@ -872,7 +912,7 @@ export function createLocalResourceStore(options: {
             declaredByteLength !== undefined &&
             nextByteLength > declaredByteLength
           ) {
-            throw new Error(
+            throw new LocalResourceStreamMismatchError(
               "Local Resource stream exceeds its declared byte length.",
             );
           }
@@ -884,7 +924,7 @@ export function createLocalResourceStore(options: {
           declaredByteLength !== undefined &&
           byteLength !== declaredByteLength
         ) {
-          throw new Error(
+          throw new LocalResourceStreamMismatchError(
             `Local Resource stream byte length ${byteLength} does not match its declared byte length ${declaredByteLength}.`,
           );
         }
@@ -893,7 +933,7 @@ export function createLocalResourceStore(options: {
           input.expectedDigest !== undefined &&
           digest !== input.expectedDigest
         ) {
-          throw new Error(
+          throw new LocalResourceStreamMismatchError(
             `Local Resource stream digest mismatch: expected ${input.expectedDigest}, got ${digest}.`,
           );
         }

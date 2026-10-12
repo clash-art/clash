@@ -21,6 +21,7 @@ import type { PostgresTransactionPort } from "@clash/shared-runtime/project-clou
 import { withProjectDocument } from "./project-document.ts";
 import {
   storedMediaPath,
+  readMediaUploadForm,
   storeMediaUpload,
   serveStoredMedia,
 } from "./media-store.ts";
@@ -133,9 +134,7 @@ export function createProjectAssetRoutes(options: {
   });
   app.post("/:projectId/assets/import-file", async (c) => {
     const id = c.req.param("projectId");
-    const form = await c.req.raw
-      .formData()
-      .catch(() => fail(400, "Invalid multipart upload"));
+    const form = await readMediaUploadForm(c.req.raw);
     const assetId = form.get("projectAssetId");
     if (typeof assetId !== "string" || !assetId.trim() || assetId.length > 512)
       return fail(400, "Invalid Asset ID");

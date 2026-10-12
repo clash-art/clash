@@ -53,6 +53,32 @@ const extensions: Record<string, string> = {
   gltf: "model/gltf+json",
 };
 
+/**
+ * Accepts both `import-file` transports of the shared Asset HTTP client:
+ * multipart, or the file as the raw body with its command fields in the query.
+ * Hosted uploads stay bounded by the route's body limit either way.
+ */
+export async function readMediaUploadForm(request: Request): Promise<FormData> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (/^multipart\/form-data\b/i.test(contentType)) {
+    return request
+      .formData()
+      .catch(() => fail(400, "Invalid multipart upload"));
+  }
+  const query = new URL(request.url).searchParams;
+  const form = new FormData();
+  for (const [name, value] of query) {
+    if (name !== "fileName" && name !== "byteLength") form.set(name, value);
+  }
+  form.set(
+    "file",
+    new File([await request.arrayBuffer()], query.get("fileName") ?? "", {
+      type: contentType.split(";")[0]!.trim(),
+    }),
+  );
+  return form;
+}
+
 export async function storeMediaUpload(directory: string, form: FormData) {
   const kind = AssetKindSchema.safeParse(form.get("kind"));
   const file = form.get("file");

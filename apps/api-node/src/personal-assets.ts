@@ -1,4 +1,8 @@
-import { storeMediaUpload, serveStoredMedia } from "./media-store.ts";
+import {
+  readMediaUploadForm,
+  storeMediaUpload,
+  serveStoredMedia,
+} from "./media-store.ts";
 import { stat } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { Hono } from "hono";
@@ -79,9 +83,7 @@ export function createPersonalAssetRoutes(options: {
     return c.json({ assets: await Promise.all(result.rows.map(project)) });
   });
   app.post("/import-file", async (c) => {
-    const form = await c.req.raw
-      .formData()
-      .catch(() => fail(400, "Invalid multipart upload"));
+    const form = await readMediaUploadForm(c.req.raw);
     const id = identity(form.get("globalAssetId"));
     const uploaded = await storeMediaUpload(directory, form);
     const resource = uploaded.resource;
