@@ -7,20 +7,22 @@
     "node": ">=24.18.0 <25"
   },
   "scripts": {
-    "dev": "tsx watch --tsconfig tsconfig.check.json src/server.ts",
-    "start": "tsx --tsconfig tsconfig.check.json src/server.ts",
+    "dev": "tsx watch --tsconfig tsconfig.check.json --import ./src/telemetry.ts src/server.ts",
+    "start": "tsx --tsconfig tsconfig.check.json --import ./src/telemetry.ts src/server.ts",
     "migrate": "node src/migrate.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --project tsconfig.check.json",
-    "worker:outbox": "node src/outbox-worker.ts",
+    "worker:outbox": "node --import ./src/telemetry-outbox.ts src/outbox-worker.ts",
     "test:cluster": "node scripts/test-cluster.ts"
   },
   "dependencies": {
     "@clash/asset-sdk": "workspace:*",
     "@clash/replica": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
+    "@clash/shared-telemetry": "workspace:*",
     "@clash/shared-types": "workspace:*",
     "@hono/node-server": "^1.13.0",
+    "@opentelemetry/api": "^1.9.1",
     "better-auth": "1.6.23",
     "bullmq": "6.3.6",
     "hono": "^4.7.10",
@@ -29,13 +31,14 @@
     "tsx": "^4.0.0"
   },
   "devDependencies": {
+    "@clash-plugin/remotion": "workspace:*",
+    "@clash/local-api": "workspace:*",
     "@electric-sql/pglite": "^0.5.8",
     "@loro-dev/streams-client": "0.7.0",
+    "@opentelemetry/sdk-metrics": "^2.12.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.5",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.2",
-    "@clash/local-api": "workspace:*",
-    "@clash-plugin/remotion": "workspace:*"
+    "vitest": "^4.1.2"
   }
 }

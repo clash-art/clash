@@ -1,3 +1,8 @@
+// Namespace import: a named `tracing` import would fail module linking on a
+// workerd build that predates the export; property access yields undefined.
+import * as workers from "cloudflare:workers";
+import { installWorkersTracing } from "@clash/shared-telemetry/cloudflare";
+import { serverLog } from "./logger";
 import { cleanupProjectContentUploads } from "./services/project-content-multipart";
 import { recoverHostedGenerations } from "./generation/recovery";
 import type { Env } from "./config";
@@ -6,6 +11,10 @@ import { ProjectRoom } from "./agents/project-room";
 import { SupervisorAgent } from "./agents/supervisor";
 import { GenerationWorkflow } from "./agents/generation";
 import { RuntimeRoom } from "./agents/runtime-room";
+
+// Route @opentelemetry/api spans (and the logger's trace correlation) through
+// the platform tracer, exported by the [observability.traces] destinations.
+installWorkersTracing(workers.tracing);
 
 // CF runtime swallows wrapper-chain async rejections inside DO lifecycle
 // hooks (webSocketClose, webSocketMessage, …) — surfaces them as
@@ -19,10 +28,7 @@ import { RuntimeRoom } from "./agents/runtime-room";
 if (typeof addEventListener === "function") {
   addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
     const reason = e.reason;
-    console.error(
-      "[unhandledrejection]",
-      reason instanceof Error ? `${reason.name}: ${reason.message}\n${reason.stack}` : String(reason),
-    );
+    serverLog.error("worker.unhandled_rejection", { error: reason });
     e.preventDefault();
   });
 }

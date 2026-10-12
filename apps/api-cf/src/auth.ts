@@ -7,6 +7,7 @@
  * Schema lives in ./auth-schema.ts (same shape as the OSS schema; the D1
  * tables already exist from apps/web/drizzle migrations).
  */
+import { serverLog } from "./logger";
 import type {
   D1Database,
   IncomingRequestCfProperties,
@@ -70,7 +71,7 @@ async function sendOtpEmail(
       text: `Your Clash verification code: ${otp}\nExpires in 10 minutes.`,
     });
   } catch (err) {
-    console.error("[auth] Email send failed:", err);
+    serverLog.child("auth").error("auth.email_send_failed", { error: err });
     // Fallback: log the OTP so a `wrangler tail` operator can still complete
     // login while the CF Email onboarding (DNS, destination verification) is
     // in flight. Safe-ish: prod tail requires CF account access.

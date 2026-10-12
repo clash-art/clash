@@ -12,7 +12,15 @@
  *                                  tasks, describe, generate, internal)
  *   /*                          → ASSETS binding (SPA shell + static files)
  */
+// Namespace import: a named `tracing` import would fail module linking on a
+// workerd build that predates the export; property access yields undefined.
+import * as workers from "cloudflare:workers";
+import { installWorkersTracing } from "@clash/shared-telemetry/cloudflare";
+import { createServerLogger } from "@clash/shared-telemetry/log";
 import { createAuth } from "../app/lib/auth/better-auth.server";
+
+installWorkersTracing(workers.tracing);
+const gatewayLog = createServerLogger({ component: "web-gateway", module: "proxy" });
 
 type AuthSession = {
   user?: {
@@ -49,7 +57,7 @@ async function proxyToApiCf(request: Request, env: Env): Promise<Response> {
   try {
     return await env.API_CF.fetch(request);
   } catch (err) {
-    console.error("[worker] api-cf proxy failure:", err);
+    gatewayLog.error("gateway.api_cf_proxy_failed", { error: err });
     return new Response("api-cf unavailable", { status: 502 });
   }
 }

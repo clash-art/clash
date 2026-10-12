@@ -27,7 +27,10 @@
  * On first new commit the log starts at seq 0.
  */
 
+import { serverLog } from "../logger";
 import { LoroDoc } from "loro-crdt";
+
+const storageLog = serverLog.child("loro-storage");
 
 export const SNAPSHOT_KEY = "loro:snapshot";
 export const SNAPSHOT_SEQ_KEY = "loro:snapshot-seq";
@@ -78,7 +81,7 @@ export async function loadDocState(
     try {
       doc.import(new Uint8Array(snapshot));
     } catch (e) {
-      console.error("[loro/storage] snapshot import failed, starting fresh:", e);
+      storageLog.error("loro.snapshot_import_failed", { error: e });
     }
   }
 
@@ -89,13 +92,10 @@ export async function loadDocState(
     try {
       doc.importBatch(batch);
     } catch (e) {
-      console.error(
-        "[loro/storage] update batch import failed, falling back per-update:",
-        e,
-      );
+      storageLog.error("loro.update_batch_import_failed", { error: e });
       for (const u of batch) {
         try { doc.import(u); } catch (ee) {
-          console.error("[loro/storage] single update import failed:", ee);
+          storageLog.error("loro.update_import_failed", { error: ee });
         }
       }
     }
@@ -150,7 +150,7 @@ export async function compactToSnapshot(
     // shallow-snapshot can fail on edge cases (e.g. brand-new empty doc).
     // Fall back to full snapshot — same correctness guarantee, slightly
     // larger storage.
-    console.warn("[loro/storage] shallow-snapshot failed, using full snapshot:", e);
+    storageLog.warn("loro.shallow_snapshot_failed", { error: e });
     snapshot = doc.export({ mode: "snapshot" });
   }
 

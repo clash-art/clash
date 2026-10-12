@@ -139,6 +139,7 @@ import {
   SettingsSectionLayout,
 } from "./SettingsPrimitives";
 import { type ThemePreference } from "../lib/theme";
+import { TelemetrySection } from "./SettingsTelemetrySection";
 
 /** Stable identifiers for each section pane — shared between the legacy
  *  SettingsSurface. The host uses these as its sidebar nav keys. */
@@ -150,6 +151,7 @@ export type SettingsSection =
   | "public-storage"
   | "audio"
   | "media-analysis"
+  | "telemetry"
   | "archive"
   | "tokens"
   | "providers"
@@ -1389,6 +1391,9 @@ export default function SettingsClient({
 
       {/* ── Media analysis ── */}
       {showSection("media-analysis") && <MediaAnalysisSection />}
+
+      {/* ── Telemetry ── */}
+      {showSection("telemetry") && <TelemetrySection />}
 
       {showAll && <hr className="border-warm-border" />}
 

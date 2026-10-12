@@ -7,6 +7,7 @@ import { format } from "node:util";
 import {
   createBoundedJsonlLogSink,
   createDeduplicatedLogEmitter,
+  type LogRetention,
   type LogSuppressionSummary,
   type StructuredLogSink,
 } from "@clash/shared-runtime/observability";
@@ -36,7 +37,7 @@ export type DesktopFileLogSink = StructuredLogSink;
 export function createDesktopFileLogSink(options: {
   directory: string;
   maxBytes: number;
-  maxFiles: number;
+  retention?: LogRetention;
   now?: () => number;
   pid?: number;
 }): DesktopFileLogSink {

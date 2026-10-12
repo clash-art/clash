@@ -665,6 +665,8 @@ export {
   type AgentObservationResult,
 } from "./agent-observation.js";
 
+export * from "./telemetry.js";
+
 export {
   hostMutationRejected,
   hostMutationSucceeded,

@@ -18,6 +18,7 @@ import {
   PlugsConnected,
   Cube,
   Archive,
+  Pulse,
 } from "@phosphor-icons/react";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
 import { getRuntimeConfig } from "@clash/web-ui/lib/runtimeConfig";
@@ -62,6 +63,7 @@ export const SETTINGS_NAV_ITEMS: NavItem[] = [
   { id: "public-storage", label: "Public storage", icon: CloudArrowUp },
   { id: "audio", label: "Voice input", icon: Microphone },
   { id: "media-analysis", label: "Media analysis", icon: VideoCamera },
+  { id: "telemetry", label: "Telemetry", icon: Pulse },
   { id: "archive", label: "Archive", icon: Archive },
   { id: "tokens", label: "API Tokens", icon: Key },
   { id: "providers", label: "Providers", icon: PlugsConnected },
@@ -81,6 +83,7 @@ const LOCAL_ONLY_SETTINGS_SECTIONS = new Set<SettingsSection>([
   "plugins",
   "public-storage",
   "media-analysis",
+  "telemetry",
 ]);
 
 type LoadState =

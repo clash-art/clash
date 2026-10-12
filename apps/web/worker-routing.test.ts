@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// workerd-only protocol module; Node has no `tracing`, so the gateway
+// keeps the no-op OTel provider in tests.
+vi.mock("cloudflare:workers", () => ({ tracing: undefined }));
 import worker, { type Env } from "./workers/app";
 
 function gatewayEnv(): Env {

@@ -10,12 +10,23 @@ import {
   type ReplicaOutbox,
   type ReplicaNotificationPublisher,
 } from "./replica-log.ts";
+import { shutdownNodeTelemetry } from "@clash/shared-telemetry/node";
+import { apiNodeLog, errorFacts } from "./log.ts";
+import {
+  observeOutboxBacklog,
+  recordOutboxDispatch,
+  type OutboxQueue,
+} from "./metrics.ts";
+
+const log = apiNodeLog.child("outbox-worker");
 
 export async function runOutboxWorker(options: {
   outbox: ReplicaOutbox;
   publisher: ReplicaNotificationPublisher;
   signal: AbortSignal;
   onError?: () => void;
+  /** Metric label for this outbox; defaults to the notification queue. */
+  queue?: OutboxQueue;
   claim?: { limit: number; leaseMs: number };
 }): Promise<void> {
   while (!options.signal.aborted) {
@@ -26,6 +37,7 @@ export async function runOutboxWorker(options: {
         options.publisher,
         { limit: 32, leaseMs: 30000, ...options.claim, signal: options.signal },
       );
+      recordOutboxDispatch(options.queue ?? "notification", result);
       pause = result.published === 0 || result.failed > 0 || result.stale > 0;
       if (result.failed > 0) options.onError?.();
     } catch {
@@ -47,11 +59,14 @@ if (
 ) {
   const stop = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => stop.abort());
+    // `on`, not `once`: a remaining listener keeps tsx's hidden signal
+    // handler from exiting before the workers drain.
+    process.on(signal, () => stop.abort());
   try {
     const database = openPostgres({
       connectionString: databaseUrl(process.env),
     });
+    observeOutboxBacklog(database.pool);
     const tasks = createNodeTaskRuntime({
       connectionString: databaseUrl(process.env),
       db: database.db,
@@ -63,28 +78,29 @@ if (
           outbox: createPostgresOutbox(database.db),
           publisher: createPostgresNotificationPublisher(database.db),
           signal: stop.signal,
+          // Queued work will retry.
           onError: () =>
-            console.error(
-              "Replica notification failed; queued work will retry",
-            ),
+            log.error("outbox.dispatch_failed", { queue: "notification" }),
         }),
         runOutboxWorker({
           outbox: createPostgresOutbox(database.db, "checkpoint"),
           publisher: tasks.checkpointPublisher,
           signal: stop.signal,
+          queue: "checkpoint",
           claim: { limit: 1, leaseMs: 300000 },
+          // Queued work and log are retained for retry.
           onError: () =>
-            console.error(
-              "Checkpoint task failed; queued work and log retained for retry",
-            ),
+            log.error("outbox.dispatch_failed", { queue: "checkpoint" }),
         }),
       ]);
     } finally {
       await tasks.close();
       await database.close();
     }
-  } catch {
-    console.error("Replica outbox worker failed");
+  } catch (error) {
+    log.error("outbox.worker_failed", errorFacts(error));
     process.exitCode = 1;
+  } finally {
+    await shutdownNodeTelemetry();
   }
 }

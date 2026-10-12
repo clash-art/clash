@@ -43,6 +43,7 @@ import {
   type ExecutablePluginModelBindingRegistration,
 } from "@clash/shared-types";
 import { createLocalApiApp, createLocalTtsGenerationHandler } from "./app.js";
+import { installHostTelemetry, type HostTelemetry } from "./telemetry/index.js";
 import {
   createHostDiscoveryRecord,
   removeHostDiscovery,
@@ -182,6 +183,11 @@ export interface LocalApiServerOptions {
   /** Shipped SPA assets served by this same daemon. */
   projectRendererRoot?: string;
   audioConfig?: LocalAudioConfigStore;
+  /**
+   * OpenTelemetry pipeline. Defaults to the process-wide Host provider (local
+   * `span.end` summaries; OTLP export only when enabled). `false` skips it.
+   */
+  hostTelemetry?: HostTelemetry | false;
   /** Injectable so a signed-in Desktop can provide managed Clash storage later. */
   publicAssetStorage?: PublicAssetStorageService;
   remotePersistence?: RemoteLoroPersistenceSource | null;
@@ -1866,6 +1872,9 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     },
     onProjectChanged: async projectId => { await projectCloudSync?.invalidate(projectId); },
     audioConfig,
+    ...(options.hostTelemetry === false
+      ? {}
+      : { hostTelemetry: options.hostTelemetry ?? installHostTelemetry() }),
     mediaAnalysisConfig,
     resolveGeneratorModelExecution: createLocalModelExecutionPlanner({
       dataDir: options.dataDir,

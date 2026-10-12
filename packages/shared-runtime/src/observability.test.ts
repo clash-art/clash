@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Console } from "node:console";
@@ -24,7 +24,7 @@ describe("bounded observability", () => {
         directory,
         filePrefix: "test-host",
         maxBytes: 1024 * 1024,
-        maxFiles: 5,
+        retention: { maxTotalBytes: 5 * 1024 * 1024, maxAgeDays: 7 },
       });
       sink.write({ event: "first" });
       const scans = vi.mocked(readdirSync).mock.calls.length;
@@ -49,7 +49,7 @@ describe("bounded observability", () => {
     }
   });
 
-  it("rotates JSONL records and removes files beyond the configured retention", () => {
+  it("starts a new file after maxBytes and prunes oldest files over the byte bound", () => {
     const directory = mkdtempSync(join(tmpdir(), "clash-observability-"));
 
     try {
@@ -58,7 +58,9 @@ describe("bounded observability", () => {
         directory,
         filePrefix: "test-host",
         maxBytes: 1,
-        maxFiles: 2,
+        // Bound by total bytes: three rotated segments cannot all fit,
+        // while the newest two do.
+        retention: { maxTotalBytes: 150 },
         now: () => now++,
         pid: 42,
       });
@@ -70,13 +72,88 @@ describe("bounded observability", () => {
       const files = readdirSync(directory)
         .filter((file) => file.endsWith(".jsonl"))
         .sort();
-      expect(files).toHaveLength(2);
       const retained = files.map((file) =>
         readFileSync(join(directory, file), "utf8"),
       );
       expect(retained.join("\n")).not.toContain("first");
       expect(retained.join("\n")).toContain("second");
       expect(retained.join("\n")).toContain("third");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a new file when the day changes", () => {
+    const directory = mkdtempSync(join(tmpdir(), "clash-log-days-"));
+    try {
+      let now = new Date(2026, 0, 5, 23, 0, 0).getTime();
+      const sink = createBoundedJsonlLogSink({
+        directory,
+        filePrefix: "test-host",
+        maxBytes: 1024 * 1024,
+        now: () => now,
+        pid: 7,
+      });
+      sink.write({ event: "before-midnight" });
+      now = new Date(2026, 0, 6, 1, 0, 0).getTime();
+      sink.write({ event: "after-midnight" });
+      sink.close();
+      expect(
+        readdirSync(directory).filter((file) => file.endsWith(".jsonl")),
+      ).toHaveLength(2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("never deletes without a retention bound and keeps the open file", () => {
+    const directory = mkdtempSync(join(tmpdir(), "clash-log-keep-"));
+    try {
+      let now = 1_000;
+      const sink = createBoundedJsonlLogSink({
+        directory,
+        filePrefix: "test-host",
+        maxBytes: 1,
+        // A caller that cannot read its retention config deletes nothing.
+        now: () => now++,
+        pid: 7,
+      });
+      sink.write({ event: "a" });
+      sink.write({ event: "b" });
+      sink.close();
+      expect(
+        readdirSync(directory).filter((file) => file.endsWith(".jsonl")),
+      ).toHaveLength(2);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("drops files older than maxAgeDays", () => {
+    const directory = mkdtempSync(join(tmpdir(), "clash-log-age-"));
+    try {
+      const sink = createBoundedJsonlLogSink({
+        directory,
+        filePrefix: "test-host",
+        maxBytes: 1,
+        retention: { maxAgeDays: 1 },
+        pid: 7,
+      });
+      sink.write({ event: "old" });
+      const [oldFile] = readdirSync(directory).filter((file) =>
+        file.endsWith(".jsonl"),
+      );
+      // The older segment's mtime predates the retention cutoff.
+      const past = new Date(Date.now() - 2 * 86_400_000);
+      utimesSync(join(directory, oldFile!), past, past);
+      sink.write({ event: "newest" });
+      sink.close();
+      const retained = readdirSync(directory)
+        .filter((file) => file.endsWith(".jsonl"))
+        .map((file) => readFileSync(join(directory, file), "utf8"))
+        .join("\n");
+      expect(retained).not.toContain('"old"');
+      expect(retained).toContain('"newest"');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

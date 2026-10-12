@@ -9,6 +9,7 @@ import {
   type CloudRunRow,
 } from "@clash/shared-runtime/cloud-run-journal";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
+import { recordGenerationTransition } from "./metrics.ts";
 
 /** Business state and initial dispatch intent commit together. BullMQ owns subsequent delivery. */
 export function createPostgresRunJournal(
@@ -88,7 +89,9 @@ export function createPostgresRunJournal(
           expectedRevision,
         ],
       );
-      return result.rows.length === 1;
+      const written = result.rows.length === 1;
+      if (written) recordGenerationTransition(current, next);
+      return written;
     },
     async listRecoverable(ownerId, now) {
       if (!ownerId.trim() || !Number.isFinite(now))

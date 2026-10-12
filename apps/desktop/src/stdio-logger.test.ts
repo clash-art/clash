@@ -148,7 +148,7 @@ describe("desktop stdio logger", () => {
       createDesktopFileLogSink?: (options: {
         directory: string;
         maxBytes: number;
-        maxFiles: number;
+        retention: { maxTotalBytes: number };
         now: () => number;
         pid: number;
       }) => {
@@ -164,7 +164,8 @@ describe("desktop stdio logger", () => {
       const sink = module.createDesktopFileLogSink?.({
         directory,
         maxBytes: 1,
-        maxFiles: 2,
+        // Small byte bound so rotation prunes the oldest segment.
+        retention: { maxTotalBytes: 150 },
         now: () => now++,
         pid: 42,
       });

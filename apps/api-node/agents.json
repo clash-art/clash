@@ -36,6 +36,10 @@
     "src/timeline-definition.ts": "Loads the bundled Remotion Timeline projection contract using the same schema hash as the local plugin host; does not claim an executable render runtime.",
     "src/project-assets.ts": "Project Asset SDK HTTP adapter: Loro-backed list/batch/read/references/import, signed account/project observations, and authenticated media ranges. Resource admission commits with Project log updates.",
     "src/media-store.ts": "Shared personal/project immutable media publication, MIME validation and byte-range delivery; content-addressed files require a persistent shared volume.",
-    "src/integration/project-assets.integration.test.ts": "Real PostgreSQL contract coverage for Project upload retries, immutable identity conflicts, Loro persistence, SDK read receipts, byte ranges and owner isolation."
+    "src/integration/project-assets.integration.test.ts": "Real PostgreSQL contract coverage for Project upload retries, immutable identity conflicts, Loro persistence, SDK read receipts, byte ranges and owner isolation.",
+    "src/telemetry.ts": "OpenTelemetry bootstrap for the server, loaded with --import before app code; standard OTEL_* environment (OTLP to localhost:4318 by default, OTEL_SDK_DISABLED=true off).",
+    "src/telemetry-outbox.ts": "Same bootstrap for the outbox worker process (default service.name clash-api-node-outbox).",
+    "src/log.ts": "Structured JSON-line logger (shared-telemetry) and errorFacts: logs error class/code only, never messages that may contain connection strings.",
+    "src/metrics.ts": "Business metrics on the OTel Metrics API: generation terminal duration, outbox dispatch outcomes, outbox backlog gauge. Bounded enum attributes only."
   }
 }

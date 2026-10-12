@@ -1,0 +1,128 @@
+name: Render Image
+
+# Builds apps/render-server/Dockerfile and smoke-tests the container.
+#   - pull_request: build + smoke test only, nothing is pushed.
+#   - push to master / workflow_dispatch: the same, then push
+#     ghcr.io/<owner>/render-server:<sha> and :latest.
+#
+# Pushing does not change production by itself: api-cf pulls :latest through
+# apps/render-server/Dockerfile.cf only when someone runs `wrangler deploy`.
+# Publishing was retired in 9db626a6 and restored here so the image tracks
+# master instead of whichever machine last had a working Docker. Only an
+# image that passed the smoke test is pushed.
+
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'apps/render-server/**'
+      - 'packages/shared-layout/**'
+      - 'packages/shared-types/**'
+      - 'packages/remotion-core/**'
+      - 'packages/remotion-effects/**'
+      - 'packages/remotion-components/**'
+      - 'packages/shared-telemetry/**'
+      - 'packages/shared-runtime/**'
+      - 'packages/action-sdk/**'
+      - 'packages/asset-sdk/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'turbo.json'
+      - '.dockerignore'
+      - '.github/workflows/render-image.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'apps/render-server/**'
+      - 'packages/shared-layout/**'
+      - 'packages/shared-types/**'
+      - 'packages/remotion-core/**'
+      - 'packages/remotion-effects/**'
+      - 'packages/remotion-components/**'
+      - 'packages/shared-telemetry/**'
+      - 'packages/shared-runtime/**'
+      - 'packages/action-sdk/**'
+      - 'packages/asset-sdk/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'turbo.json'
+      - '.dockerignore'
+      - '.github/workflows/render-image.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: ghcr.io
+  PUBLISH: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  build:
+    name: Build, smoke test and publish render-server image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Image name
+        id: img
+        run: echo "name=${REGISTRY}/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/render-server" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/render-server/Dockerfile
+          push: false
+          load: true
+          tags: render-server:check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Cloudflare Containers run on linux/amd64 only.
+          platforms: linux/amd64
+
+      - name: Smoke test
+        run: |
+          docker run -d --name render-check -p 8080:8080 \
+            -e OTEL_TRACES_EXPORTER=none -e OTEL_METRICS_EXPORTER=none -e OTEL_LOGS_EXPORTER=none \
+            render-server:check
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8080/health
+          docker logs render-check 2>&1 | grep -q '"event":"server.listening"'
+          # Cloudflare Containers standard plan caps images at 2 GB (see the
+          # Dockerfile header); fail here rather than at deploy time.
+          size=$(docker image inspect render-server:check --format '{{.Size}}')
+          echo "image size: $size bytes"
+          test "$size" -lt 2000000000
+
+      - name: Container logs
+        if: always()
+        run: docker logs render-check 2>&1 | tail -50 || true
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the smoke-tested image
+        if: env.PUBLISH == 'true'
+        run: |
+          for tag in "${{ github.sha }}" latest; do
+            docker tag render-server:check "${{ steps.img.outputs.name }}:$tag"
+            docker push "${{ steps.img.outputs.name }}:$tag"
+          done
