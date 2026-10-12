@@ -1,4 +1,4 @@
-import { createBoundedJsonlLogSink, installProcessStdioCapture } from "@clash/shared-runtime/observability";
+import { createBoundedJsonlLogSink, DEFAULT_JSONL_LOG_RETENTION, installProcessStdioCapture } from "@clash/shared-runtime/observability";
 import { clashHomeForLocalDataDir, defaultLocalApiDataDir } from "@clash/shared-runtime/local-paths";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -16,7 +16,7 @@ process.env.TSX_TSCONFIG_PATH ??= fileURLToPath(
 const dataDir = defaultLocalApiDataDir();
 const observability = installProcessStdioCapture({
   component: "local-api",
-  sink: createBoundedJsonlLogSink({ directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"), filePrefix: "local-api", maxBytes: 5 * 1024 * 1024, maxFiles: 5 }),
+  sink: createBoundedJsonlLogSink({ directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"), filePrefix: "local-api", maxBytes: 5 * 1024 * 1024, retention: DEFAULT_JSONL_LOG_RETENTION }),
   maxEventsPerWindow: 200,
   windowMs: 10_000,
 });

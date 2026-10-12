@@ -22,22 +22,49 @@ export interface StructuredLogSink {
   close(): void;
 }
 
+/** Deletion bounds for one JSONL log directory. */
+export interface LogRetention {
+  /** Delete oldest segments while retained bytes exceed this total. */
+  maxTotalBytes?: number;
+  /** Delete segments whose modification time is older than this many days. */
+  maxAgeDays?: number;
+}
+
+/** Product-wide default log retention for local JSONL segments. */
+export const DEFAULT_JSONL_LOG_RETENTION: LogRetention = {
+  maxTotalBytes: 25 * 1024 * 1024,
+  maxAgeDays: 7,
+};
+
+/**
+ * Rotating JSONL sink. A new file starts on creation, when the day changes,
+ * or when the open file would exceed `maxBytes`; file names embed timestamp,
+ * pid and segment so runs never collide.
+ *
+ * Deletion is opt-in: each bound in `retention` applies only when supplied
+ * (a caller that cannot read its retention config deletes nothing), and the
+ * file currently being written is never deleted. Segments are appended
+ * verbatim — no compression.
+ */
 export function createBoundedJsonlLogSink(options: {
   directory: string;
   filePrefix: string;
+  /** Start a new file rather than let the open one grow past this size. */
   maxBytes: number;
-  maxFiles: number;
+  /** Deletion bounds; omitted bounds never delete (and neither does absent retention). */
+  retention?: LogRetention;
   now?: () => number;
   pid?: number;
 }): StructuredLogSink {
   const now = options.now ?? Date.now;
   const pid = options.pid ?? process.pid;
   const maxBytes = Math.max(1, options.maxBytes);
-  const maxFiles = Math.max(1, options.maxFiles);
+  const retention = options.retention;
   const filePrefix =
     options.filePrefix.replace(/[^a-zA-Z0-9._-]/g, "-") || "clash";
   let segment = 0;
   let currentBytes = 0;
+  let currentDay = new Date(now()).toDateString();
   const runId = `${options.filePrefix}-${pid}-${now()}`;
 
   mkdirSync(options.directory, { recursive: true, mode: 0o700 });
@@ -50,7 +77,16 @@ export function createBoundedJsonlLogSink(options: {
   let currentPath = nextPath();
 
   const prune = () => {
-    const files = readdirSync(options.directory)
+    if (!retention?.maxTotalBytes && !retention?.maxAgeDays) return;
+    const maxTotalBytes =
+      retention?.maxTotalBytes !== undefined
+        ? Math.max(0, retention.maxTotalBytes)
+        : undefined;
+    const cutoff =
+      retention?.maxAgeDays !== undefined
+        ? now() - Math.max(0, retention.maxAgeDays) * 86_400_000
+        : undefined;
+    let files = readdirSync(options.directory)
       .filter(
         (file) => file.startsWith(`${filePrefix}-`) && file.endsWith(".jsonl"),
       )
@@ -59,21 +95,38 @@ export function createBoundedJsonlLogSink(options: {
           return [
             {
               file,
+              path: join(options.directory, file),
               modifiedAt: statSync(join(options.directory, file)).mtimeMs,
+              size: statSync(join(options.directory, file)).size,
             },
           ];
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
           throw error;
         }
-      })
-      .sort(
+      });
+    const remove = (file: string) => {
+      // The open segment is always kept so writes never race a delete.
+      if (join(options.directory, file) === currentPath) return;
+      rmSync(join(options.directory, file), { force: true });
+      files = files.filter((entry) => entry.file !== file);
+    };
+    if (cutoff !== undefined)
+      for (const entry of files)
+        if (entry.modifiedAt < cutoff) remove(entry.file);
+    if (maxTotalBytes !== undefined) {
+      files.sort(
         (left, right) =>
           left.modifiedAt - right.modifiedAt ||
           left.file.localeCompare(right.file),
       );
-    for (const entry of files.slice(0, Math.max(0, files.length - maxFiles))) {
-      rmSync(join(options.directory, entry.file), { force: true });
+      let total = files.reduce((sum, entry) => sum + entry.size, 0);
+      for (const entry of files) {
+        if (total <= maxTotalBytes) break;
+        const before = files.length;
+        remove(entry.file);
+        if (files.length < before) total -= entry.size;
+      }
     }
   };
 
@@ -83,9 +136,14 @@ export function createBoundedJsonlLogSink(options: {
     write(record) {
       const line = `${JSON.stringify({ ...(sanitizeLogValue(record) as Record<string, unknown>), pid, runId })}\n`;
       const bytes = Buffer.byteLength(line);
-      if (currentBytes > 0 && currentBytes + bytes > maxBytes) {
+      const day = new Date(now()).toDateString();
+      if (
+        currentBytes > 0 &&
+        (currentBytes + bytes > maxBytes || day !== currentDay)
+      ) {
         currentPath = nextPath();
         currentBytes = 0;
+        currentDay = day;
       }
       const newFile = currentBytes === 0;
       appendFileSync(currentPath, line, { encoding: "utf8", mode: 0o600 });

@@ -3,6 +3,10 @@ import { Hono } from "hono";
 import { renderTimeline } from "./render.js";
 import { extractFrame } from "./thumbnail.js";
 import { probeAudio } from "./audioProbe.js";
+import { shutdownNodeTelemetry } from "@clash/shared-telemetry/node";
+import { measured, publicErrorMessage, renderLog, sourceTag } from "./observability.js";
+
+const log = renderLog.child("http");
 
 const app = new Hono();
 
@@ -36,19 +40,27 @@ app.post("/thumbnail", async (c) => {
     return c.json({ error: "Missing sourceUrl" }, 400);
   }
 
-  const tag = { sourceUrl: body.sourceUrl.slice(0, 80), timeSec: body.timeSec ?? 1 };
-  console.log(`[render-server] Thumbnail requested:`, tag);
+  const tag = { source: sourceTag(body.sourceUrl), time_sec: body.timeSec ?? 1 };
+  log.info("thumbnail.requested", tag);
 
   try {
-    const { bytes, contentType, sourceWidth, sourceHeight, durationMs } = await extractFrame({
-      sourceUrl: body.sourceUrl,
-      timeSec: body.timeSec,
-      format: body.format,
-      width: body.width,
-    });
-    console.log(
-      `[render-server] Thumbnail done: ${bytes.byteLength} bytes, source=${sourceWidth ?? "?"}x${sourceHeight ?? "?"}, duration=${durationMs ?? "?"}ms`,
+    const sourceUrl = body.sourceUrl;
+    const { bytes, contentType, sourceWidth, sourceHeight, durationMs } = await measured(
+      "thumbnail",
+      () =>
+        extractFrame({
+          sourceUrl,
+          timeSec: body.timeSec,
+          format: body.format,
+          width: body.width,
+        }),
     );
+    log.info("thumbnail.completed", {
+      bytes: bytes.byteLength,
+      source_width: sourceWidth,
+      source_height: sourceHeight,
+      duration_ms: durationMs,
+    });
     const headers: Record<string, string> = {
       "Content-Type": contentType,
       "Content-Length": String(bytes.byteLength),
@@ -61,9 +73,9 @@ app.post("/thumbnail", async (c) => {
     if (sourceHeight) headers["X-Source-Height"] = String(sourceHeight);
     if (durationMs) headers["X-Duration-Ms"] = String(durationMs);
     return new Response(bytes.buffer as ArrayBuffer, { headers });
-  } catch (e: any) {
-    console.error(`[render-server] Thumbnail failed:`, tag, e);
-    return c.json({ error: e?.message ?? String(e) }, 500);
+  } catch (e) {
+    log.error("thumbnail.failed", { ...tag, error: e });
+    return c.json({ error: publicErrorMessage(e) }, 500);
   }
 });
 
@@ -87,18 +99,22 @@ app.post("/probe-audio", async (c) => {
     return c.json({ error: "Missing sourceUrl" }, 400);
   }
 
-  const tag = { sourceUrl: body.sourceUrl.slice(0, 80) };
-  console.log(`[render-server] Probe audio requested:`, tag);
+  const tag = { source: sourceTag(body.sourceUrl) };
+  log.info("probe_audio.requested", tag);
 
   try {
-    const { durationMs, waveform } = await probeAudio({ sourceUrl: body.sourceUrl });
-    console.log(
-      `[render-server] Probe audio done: duration=${durationMs}ms, peaks=${waveform.length}`,
+    const sourceUrl = body.sourceUrl;
+    const { durationMs, waveform } = await measured("probe_audio", () =>
+      probeAudio({ sourceUrl }),
     );
+    log.info("probe_audio.completed", {
+      duration_ms: durationMs,
+      peaks: waveform.length,
+    });
     return c.json({ durationMs, waveform });
-  } catch (e: any) {
-    console.error(`[render-server] Probe audio failed:`, tag, e);
-    return c.json({ error: e?.message ?? String(e) }, 500);
+  } catch (e) {
+    log.error("probe_audio.failed", { ...tag, error: e });
+    return c.json({ error: publicErrorMessage(e) }, 500);
   }
 });
 
@@ -113,7 +129,11 @@ app.post("/render", async (c) => {
     return c.json({ error: "Missing timelineDsl.tracks" }, 400);
   }
 
-  console.log(`[render-server] Starting render: task=${taskId} project=${projectId} tracks=${timelineDsl.tracks.length}`);
+  log.info("render.started", {
+    task_id: taskId,
+    project_id: projectId,
+    tracks: timelineDsl.tracks.length,
+  });
 
   try {
     const compositionWidth =
@@ -134,8 +154,8 @@ app.post("/render", async (c) => {
         : 300;
     const durationMs = Math.round((durationInFrames * 1000) / fps);
 
-    const buffer = await renderTimeline(timelineDsl, taskId);
-    console.log(`[render-server] Render complete: task=${taskId} size=${buffer.byteLength} bytes`);
+    const buffer = await measured("render", () => renderTimeline(timelineDsl, taskId));
+    log.info("render.completed", { task_id: taskId, bytes: buffer.byteLength });
 
     return new Response(new Uint8Array(buffer), {
       headers: {
@@ -146,12 +166,31 @@ app.post("/render", async (c) => {
         "X-Render-Duration-Ms": String(durationMs),
       },
     });
-  } catch (e: any) {
-    console.error(`[render-server] Render failed: task=${taskId}`, e);
-    return c.json({ error: e.message }, 500);
+  } catch (e) {
+    log.error("render.failed", { task_id: taskId, error: e });
+    return c.json({ error: publicErrorMessage(e) }, 500);
   }
 });
 
 const port = parseInt(process.env.PORT || "8080", 10);
-console.log(`[render-server] Listening on port ${port}`);
-serve({ fetch: app.fetch, port });
+log.info("server.listening", { port });
+const server = serve({ fetch: app.fetch, port });
+
+// Container stop sends SIGTERM: stop accepting requests, then flush the last
+// spans and metric interval before exiting (bounded so a stuck export or
+// long render cannot hold the container past its grace period).
+// `on`, not `once`: under tsx (dev) a hidden signal handler exits as soon as
+// no app listener remains. A repeated signal only re-arms the same exit.
+let stopping = false;
+for (const signal of ["SIGINT", "SIGTERM"] as const)
+  process.on(signal, () => {
+    if (stopping) return;
+    stopping = true;
+    log.info("server.stopping", { signal });
+    server.close();
+    const deadline = setTimeout(() => process.exit(0), 10_000);
+    deadline.unref();
+    void shutdownNodeTelemetry()
+      .catch(() => {})
+      .finally(() => process.exit(0));
+  });

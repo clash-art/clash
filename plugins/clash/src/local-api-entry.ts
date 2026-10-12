@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   createBoundedJsonlLogSink,
+  DEFAULT_JSONL_LOG_RETENTION,
   installProcessStdioCapture,
 } from "@clash/shared-runtime/observability";
 import {
@@ -31,7 +32,7 @@ const logSink = createBoundedJsonlLogSink({
   directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"),
   filePrefix: "local-api",
   maxBytes: 5 * 1024 * 1024,
-  maxFiles: 5,
+  retention: DEFAULT_JSONL_LOG_RETENTION,
 });
 const observability = installProcessStdioCapture({
   component: "local-api",

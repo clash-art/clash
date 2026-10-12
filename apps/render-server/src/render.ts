@@ -3,6 +3,9 @@ import fs from "fs";
 import os from "os";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
+import { renderLog } from "./observability.js";
+
+const log = renderLog.child("render");
 
 type DevelopmentBundle = { path: string; sourceFingerprint: string };
 
@@ -42,7 +45,7 @@ function developmentSourceFingerprint(): string {
 
 async function ensureBundle(): Promise<string> {
   if (fs.existsSync(PREBUILT_BUNDLE)) {
-    console.log("[render] Using pre-built bundle:", PREBUILT_BUNDLE);
+    log.debug("bundle.prebuilt", { path: PREBUILT_BUNDLE });
     return PREBUILT_BUNDLE;
   }
 
@@ -73,16 +76,14 @@ async function ensureBundle(): Promise<string> {
       : ensureBundle();
   }
 
-  console.log(
-    developmentBundle
-      ? "[render] Remotion workspace source changed; rebuilding development bundle..."
-      : "[render] Bundling Remotion components from source (dev)...",
-  );
+  log.info(developmentBundle ? "bundle.rebuilding" : "bundle.building", {
+    source: "development",
+  });
   const pending = (async (): Promise<DevelopmentBundle> => {
     const bundledPath = await bundle({
       entryPoint,
       onProgress: (pct) => {
-        if (pct % 25 === 0) console.log(`[render] Bundle progress: ${pct}%`);
+        if (pct % 25 === 0) log.debug("bundle.progress", { percent: pct });
       },
     });
     return { path: bundledPath, sourceFingerprint };
@@ -90,7 +91,7 @@ async function ensureBundle(): Promise<string> {
   developmentBundleInFlight = pending;
   try {
     developmentBundle = await pending;
-    console.log("[render] Bundle ready:", developmentBundle.path);
+    log.info("bundle.ready", { path: developmentBundle.path });
     return developmentBundle.path;
   } finally {
     if (developmentBundleInFlight === pending) developmentBundleInFlight = null;
@@ -122,7 +123,13 @@ export async function renderTimeline(
   const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "render-"));
   const outputPath = path.join(outputDir, `${taskId}.mp4`);
 
-  console.log(`[render] Rendering: ${compositionWidth}x${compositionHeight} @${fps}fps, ${durationInFrames} frames`);
+  log.info("render.composition", {
+    task_id: taskId,
+    width: compositionWidth,
+    height: compositionHeight,
+    fps,
+    frames: durationInFrames,
+  });
 
   await renderMedia({
     composition,
@@ -132,7 +139,10 @@ export async function renderTimeline(
     inputProps,
     onProgress: ({ progress }) => {
       if (Math.round(progress * 100) % 25 === 0) {
-        console.log(`[render] Progress: ${Math.round(progress * 100)}%`);
+        log.debug("render.progress", {
+          task_id: taskId,
+          percent: Math.round(progress * 100),
+        });
       }
     },
   });

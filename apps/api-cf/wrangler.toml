@@ -22,8 +22,22 @@ type = "CompiledWasm"
 globs = ["**/*.wasm"]
 fallthrough = true
 
+# Workers Logs + Traces. Every request is sampled (head_sampling_rate = 1)
+# in staging and production. OTLP export targets are dashboard-managed
+# destinations (Workers & Pages → Observability → Destinations); list
+# their names under `destinations = [...]` once created. Workers metrics
+# are not exportable over OTLP. See apps/docs/guide/observability.md.
 [observability]
 enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
 
 # Durable Objects
 [[durable_objects.bindings]]
@@ -41,10 +55,11 @@ binding = "GENERATION_WORKFLOW"
 class_name = "GenerationWorkflow"
 
 # Container (Remotion render server)
-# Uses Dockerfile.cf which `FROM ghcr.io/clash-space/render-server:latest` —
-# the heavy multi-stage build runs in CI (build-render-image.yml), pushed
-# to GHCR. Local `wrangler deploy` just pulls the prebuilt layer instead
-# of churning through node-prod-deps + chromium + ffmpeg locally.
+# Uses Dockerfile.cf which `FROM ghcr.io/clash-art/render-server:latest` —
+# the heavy multi-stage build pushed to GHCR. Local `wrangler deploy` just
+# pulls the prebuilt layer instead of churning through node-prod-deps +
+# chromium + ffmpeg locally. CI publishes it from master
+# (.github/workflows/render-image.yml); deploying picks up the new :latest.
 [[containers]]
 class_name = "RenderContainer"
 image = "../render-server/Dockerfile.cf"
@@ -164,6 +179,15 @@ name = "clash-api-staging"
 
 [env.staging.observability]
 enabled = true
+
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[env.staging.observability.traces]
+enabled = true
+head_sampling_rate = 1
 
 [env.staging.ai]
 binding = "AI"

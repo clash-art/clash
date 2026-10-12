@@ -13,6 +13,7 @@
 
 import { spawn } from "node:child_process";
 import ffmpegPath from "ffmpeg-static";
+import { sourceTag } from "./observability.js";
 
 export interface ExtractFrameParams {
   /** Absolute URL the ffmpeg process will fetch the source video from.
@@ -135,7 +136,7 @@ export async function extractFrame(params: ExtractFrameParams): Promise<ExtractF
       if (code !== 0) {
         reject(
           new Error(
-            `ffmpeg exited ${code} (source=${sourceUrl}, time=${timeSec}s): ${stderr.slice(-400)}`,
+            `ffmpeg exited ${code} (source=${sourceTag(sourceUrl)}, time=${timeSec}s): ${stderr.slice(-400)}`,
           ),
         );
         return;
@@ -144,7 +145,7 @@ export async function extractFrame(params: ExtractFrameParams): Promise<ExtractF
       if (bytes.byteLength === 0) {
         reject(
           new Error(
-            `ffmpeg produced empty output (source=${sourceUrl}, time=${timeSec}s): ${stderr.slice(-400)}`,
+            `ffmpeg produced empty output (source=${sourceTag(sourceUrl)}, time=${timeSec}s): ${stderr.slice(-400)}`,
           ),
         );
         return;

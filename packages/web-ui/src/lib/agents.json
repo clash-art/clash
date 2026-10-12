@@ -17,6 +17,8 @@
     "logger.ts": "Browser adapter for shared-runtime/logging. Stable module loggers, opt-in clash.logLevel and pagehide summary flush; no separate web.log file.",
     "useDirectorCodeSources.ts": "Loads exact Document revisions selected by the Director component registry; errors and source loading gate the viewport.",
     "marketplaceCatalog.ts": "Validates untrusted marketplace entries and retains only installation descriptors matching their product kind, runtime and identity; shared by cloud/local loaders.",
-    "storyboardViewState.ts": "Validated Storyboard state adapter for the framework-node patch accepted by useLoroSync.updateNode. Writes data.state; persistence regression reopens a real Loro snapshot."
+    "storyboardViewState.ts": "Validated Storyboard state adapter for the framework-node patch accepted by useLoroSync.updateNode. Writes data.state; persistence regression reopens a real Loro snapshot.",
+    "uiTrace.ts": "Typed GUI action tracing on @opentelemetry/api only (UiActionAttributes is a closed table — ids, counts, flags). The app shell installs the SDK; withActionTrace emits the action span and hands out its W3C traceparent for Host propagation (prompt frames).",
+    "localTelemetry.ts": "Typed client for GET/PATCH /api/v1/local/telemetry; validates views against the shared PublicTelemetryConfig schema."
   }
 }

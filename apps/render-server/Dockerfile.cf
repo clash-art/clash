@@ -1,9 +1,12 @@
-# Cloudflare Containers entry — references the heavy image pre-built by
-# .github/workflows/build-render-image.yml and published to GHCR.
+# Cloudflare Containers entry — references the heavy image published to GHCR.
+#
+# Published by .github/workflows/render-image.yml on every master push that
+# touches render-server or its workspace dependencies (:<sha> and :latest),
+# after a container smoke test. Pull requests build and test without pushing.
 #
 # Why two Dockerfiles:
 #   - Dockerfile      : the real multi-stage build (1.7 GB final image),
-#                       run once in GH Actions and pushed to GHCR.
+#                       built and pushed to GHCR by CI (above).
 #   - Dockerfile.cf   : `FROM` the GHCR image. Local `wrangler deploy`
 #                       uses this so it doesn't have to build anything
 #                       locally — just pulls the prebuilt layer.
@@ -13,4 +16,4 @@
 # Public), `wrangler deploy` works from any machine without local Docker
 # spinning up the full build chain.
 
-FROM ghcr.io/clash-space/render-server:latest
+FROM ghcr.io/clash-art/render-server:latest

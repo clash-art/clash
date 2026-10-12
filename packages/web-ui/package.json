@@ -54,6 +54,7 @@
     "@milkdown/theme-nord": "^7.17.2",
     "@milkdown/utils": "^7.17.2",
     "@openma/common": "github:openma-ai/openma-common#v0.8.0",
+    "@opentelemetry/api": "^1.9.1",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-use-controllable-state": "^1.2.2",
@@ -91,6 +92,8 @@
     "react-router": "^7"
   },
   "devDependencies": {
+    "@clash-plugin/agent-text": "workspace:*",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24.0.0",
@@ -99,7 +102,6 @@
     "fake-indexeddb": "^6.2.5",
     "jsdom": "^29.0.2",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.4",
-    "@clash-plugin/agent-text": "workspace:*"
+    "vitest": "^4.1.4"
   }
 }

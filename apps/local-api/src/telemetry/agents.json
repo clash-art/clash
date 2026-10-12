@@ -1,0 +1,20 @@
+{
+  "summary": "Host OpenTelemetry pipeline: local span summaries plus opt-in OTLP trace export configured by environment variables and Settings.",
+  "context_hints": [
+    "Only this directory depends on the OpenTelemetry SDK; instrumented code (e.g. runtime/host/lib/session-tracing.ts) uses @opentelemetry/api only.",
+    "Every finished span is written locally as a span.end LogRecord; OTLP export stays off unless CLASH_ENABLE_TELEMETRY is on.",
+    "Keys follow Claude Code's model: the master switch plus standard OTEL_* names; a key present in Settings wins over the environment, and an empty Settings value cancels it.",
+    "Settings values are resolved in memory and never written to process.env, so agent processes started by the Host do not inherit them.",
+    "Spans carry ids, counts and durations only; never prompts, tool arguments or tool output.",
+    "The Settings contract (keys, view, PATCH body) is the Zod schema in packages/shared-types/src/telemetry.ts.",
+    "Local clients (the GUI renderer) export with the official OTLP/HTTP JSON exporter to POST /api/v1/local/otlp/v1/traces; the Host decodes spans back into ReadableSpan and feeds its own processors, so client spans share the local summary and the configured exporter, and credentials never reach the client."
+  ],
+  "key_files": {
+    "resolve.ts": "Pure resolution of environment + Settings into an export decision, with per-key value sources. OTel specification defaults live here.",
+    "exporters.ts": "Official OTLP exporters keyed by protocol; hides OTEL_EXPORTER_OTLP_* endpoint/header env during construction so Settings stay authoritative.",
+    "processors.ts": "SpanLogProcessor (span.end LogRecords) and SwitchableSpanProcessor (hot-swappable export slot).",
+    "pipeline.ts": "NodeTracerProvider assembly, serialized export swaps, ingest() for client spans, and the process-wide installHostTelemetry singleton.",
+    "config-store.ts": "Telemetry Settings as a LocalConfigResource: config.yaml for plain keys, credentials.json for headers, pipeline reapplied after each update.",
+    "otlp-ingest.ts": "Decoder for OTLP JSON ExportTraceServiceRequest into SDK ReadableSpans, with per-request limits from the SDK environment defaults; tested by round-tripping the official JsonTraceSerializer."
+  }
+}

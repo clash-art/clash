@@ -21,6 +21,7 @@ import type {
 } from "@clash/shared-runtime/durable-run-engine";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import type { ReplicaNotificationPublisher } from "./replica-log.ts";
+import { apiNodeLog, errorFacts } from "./log.ts";
 
 const RUN_QUEUE = "cloud-generation";
 const CHECKPOINT_QUEUE = "cloud-checkpoint";
@@ -87,10 +88,11 @@ export function createNodeTaskRuntime(options: {
   const threads = new Set<Thread>();
   const onError =
     options.onError ??
-    (() =>
-      console.error(
-        "Cloud task runtime error; inspect retained job and business journal",
-      ));
+    // Inspect the retained job and business journal.
+    ((error: Error) =>
+      apiNodeLog
+        .child("task-runtime")
+        .error("task_runtime.error", errorFacts(error)));
   flows.on("error", onError);
   snapshots.on("error", onError);
   const jobOptions = {

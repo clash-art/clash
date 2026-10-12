@@ -9,6 +9,7 @@ import { createDesktopRuntimeController } from "./controller/runtime";
 import { createDesktopWindowController } from "./controller/windows";
 import { ownDesktopInstance } from "./single-instance";
 import { startDesktopWithRecovery } from "./startup-recovery";
+import { DEFAULT_JSONL_LOG_RETENTION } from "@clash/shared-runtime/observability";
 import { createDesktopFileLogSink, createDesktopLogger } from "./stdio-logger";
 import { createUpdateQuitGate } from "./update-quit";
 
@@ -22,7 +23,7 @@ if (ownsDesktopInstance) {
   const fileSink = createDesktopFileLogSink({
     directory: app.getPath("logs"),
     maxBytes: 5 * 1024 * 1024,
-    maxFiles: 5,
+    retention: DEFAULT_JSONL_LOG_RETENTION,
   });
   const desktopLog = createDesktopLogger(process.stdout, process.stderr, {
     fileSink,
