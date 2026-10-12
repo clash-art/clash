@@ -7,6 +7,7 @@ import { gzipSync } from "node:zlib";
 import {
   distMismatches,
   extractTarGz,
+  pinnedTag,
   tarballPinMode,
 } from "./verify-openma-prebuilt.ts";
 
@@ -25,6 +26,14 @@ test("a missing release tarball is a git-dist pin, not a partial one", () => {
     "tarball",
   );
   assert.throws(() => tarballPinMode("https://example.invalid/a.tgz", ""));
+});
+
+test("an empty tag is a pin to an unreleased commit", () => {
+  assert.equal(pinnedTag("v0.7.9"), "v0.7.9");
+  assert.equal(pinnedTag(" v0.7.9\n"), "v0.7.9");
+  assert.equal(pinnedTag(""), undefined);
+  assert.equal(pinnedTag("  "), undefined);
+  assert.equal(pinnedTag(undefined), undefined);
 });
 
 test("dist comparison accepts identical trees and reports drift", async () => {

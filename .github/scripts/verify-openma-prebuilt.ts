@@ -147,6 +147,14 @@ export function tarballPinMode(url: string, digest: string): "tarball" | "git" {
   return hasUrl ? "tarball" : "git";
 }
 
+/**
+ * The release tag the pin names. An empty value is a temporary pin to an
+ * unreleased commit, which has no tag to peel and no release tarball.
+ */
+export function pinnedTag(value: string | undefined): string | undefined {
+  return value?.trim() || undefined;
+}
+
 function assertCommittedDist(root: string, sha: string): void {
   for (const relative of committedDist) {
     git(["-C", root, "cat-file", "-e", `${sha}:${relative}`]);
@@ -160,12 +168,19 @@ function assertCommittedDist(root: string, sha: string): void {
 export function verifyOpenmaPrebuilt(): void {
   const workspace = requireEnv("GITHUB_WORKSPACE");
   const sha = requireEnv("OPENMA_COMMON_SHA");
-  const tag = requireEnv("OPENMA_COMMON_TAG");
+  const tag = pinnedTag(process.env.OPENMA_COMMON_TAG);
   const expectedDigest = process.env.OPENMA_COMMON_TARBALL_SHA256 ?? "";
   const tarballUrl = process.env.OPENMA_COMMON_TARBALL_URL ?? "";
   const root = path.resolve(workspace, "..", "openma-common");
   if (git(["-C", root, "rev-parse", "HEAD"]) !== sha) {
     throw new Error(`OpenMA checkout is not ${sha}`);
+  }
+  if (tag === undefined) {
+    console.log(
+      `::warning::@openma/common is pinned to unreleased commit ${sha}. This is a temporary pin: move it to a release tag before merging.`,
+    );
+    assertCommittedDist(root, sha);
+    return;
   }
   if (git(["-C", root, "rev-parse", `${tag}^{commit}`]) !== sha) {
     throw new Error(`OpenMA tag ${tag} does not peel to ${sha}`);

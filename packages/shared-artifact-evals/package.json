@@ -26,7 +26,7 @@
     "@clash/asset-sdk": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
-    "@openma/common": "github:openma-ai/openma-common#v0.7.9",
+    "@openma/common": "github:openma-ai/openma-common#4a58772e86de791049df40a671fb8960b44117ff",
     "yaml": "^2.6.0",
     "zod": "^3.23.0"
   },
