@@ -18,6 +18,7 @@ import {
   createLocalAssetInspectionService,
   type LocalAssetInspector,
 } from "./local-asset-inspections.js";
+import type { LocalAssetRepresentationService } from "./local-asset-representations.js";
 import { createSqliteDurableRunJournal } from "./durable-run-journal.js";
 import {
   createLocalProjectAssetService,
@@ -336,6 +337,95 @@ describe("Project-scoped ResolvedAsset routes", () => {
 
     const missing = await app.request(`${baseUrl}/missing-asset/local-file`);
     expect(missing.status).toBe(404);
+  });
+
+  it("projects a video proxy for preview playback and keeps /media on the original", async () => {
+    const { service, clashRoot, dataDir } = await fixture();
+    await service.installOwned({
+      projectId: "project-a",
+      projectAssetId: "clip:one",
+      kind: "video",
+      bytes: new TextEncoder().encode("original-video"),
+      contentType: "video/mp4",
+      name: "clip.mp4",
+      metadata: { durationMs: 2_000 },
+      provenance: { kind: "generation", actionRunId: "run-clip" },
+    });
+    const proxyPath = join(clashRoot, "proxy.mp4");
+    await writeFile(proxyPath, "proxy-bytes");
+    let proxyReady = false;
+    const proxy = {
+      role: "proxy" as const,
+      recipe: "video-proxy/v1:test",
+      resourceId: "resource-proxy",
+    };
+    const representations: LocalAssetRepresentationService = {
+      schedule() {},
+      async ensure() {
+        return [];
+      },
+      async read(_sourceResourceId, role) {
+        return role === "proxy" && proxyReady ? proxy : undefined;
+      },
+      async openThumbnail() {
+        return undefined;
+      },
+      async openProxy() {
+        return proxyReady
+          ? {
+              resource: {
+                id: proxy.resourceId,
+                kind: "video" as const,
+                digest: { algorithm: "sha256" as const, value: "b".repeat(64) },
+                byteLength: 11,
+                contentType: "video/mp4",
+              },
+              path: proxyPath,
+              createdAt: 1,
+              storageKey: "derived/resource-proxy.mp4",
+            }
+          : undefined;
+      },
+      async start() {},
+      async close() {},
+    };
+    const app = createLocalApiApp({
+      dataDir,
+      clashRoot,
+      userId: "local-user",
+      projectAssetProjectionOrigin: () => "http://127.0.0.1:49152",
+      inspectAssetResource: inspectFixtureAsset,
+      assetRepresentations: representations,
+    });
+    const assetUrl =
+      "http://127.0.0.1:49152/api/v1/projects/project-a/assets/clip%3Aone";
+
+    const pending = (await (await app.request(assetUrl)).json()) as {
+      url: string;
+      proxyUrl?: string;
+    };
+    expect(pending.url).toBe(`${assetUrl}/media`);
+    expect(pending.proxyUrl).toBeUndefined();
+    expect((await app.request(`${assetUrl}/proxy`)).status).toBe(404);
+
+    proxyReady = true;
+    const ready = (await (await app.request(assetUrl)).json()) as {
+      url: string;
+      proxyUrl?: string;
+    };
+    expect(ready.url).toBe(`${assetUrl}/media`);
+    expect(ready.proxyUrl).toBe(`${assetUrl}/proxy`);
+
+    const played = await app.request(ready.proxyUrl!, {
+      headers: { range: "bytes=0-4" },
+    });
+    expect(played.status).toBe(206);
+    expect(played.headers.get("content-type")).toBe("video/mp4");
+    expect(played.headers.get("content-range")).toBe("bytes 0-4/11");
+    await expect(played.text()).resolves.toBe("proxy");
+    await expect((await app.request(ready.url)).text()).resolves.toBe(
+      "original-video",
+    );
   });
 
   it("batch reads only requested Asset entries from the selected Project", async () => {

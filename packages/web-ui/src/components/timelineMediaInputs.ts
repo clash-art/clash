@@ -6,13 +6,22 @@ import type {
   AssetRelationEdge,
   AssetRelationNode,
 } from "../features/assets/relations";
-import { projectAssetPlaybackUrl } from "../features/assets/media-url";
+import {
+  projectAssetPlaybackUrl,
+  projectAssetPreviewPlaybackUrl,
+} from "../features/assets/media-url";
 
 export interface TimelineMediaInput {
   sourceNodeId: string;
   projectAssetId: string;
   type: "image" | "video" | "audio";
+  /** Preview and editing playback: the Host's proxy when it has one. */
   src: string;
+  /**
+   * The original media, for anything that leaves the preview. Absent when
+   * `src` already is the original.
+   */
+  originalSrc?: string;
   displayName?: string;
 }
 
@@ -101,8 +110,9 @@ export function selectTimelineMediaInputs(input: {
     // A Canvas node is a navigation hint, never the media storage authority.
     if (seenProjectAssetIds.has(candidate.projectAssetId)) continue;
     if (!projectAsset) continue;
-    const src = projectAssetPlaybackUrl(projectAsset);
-    if (!src) continue;
+    const originalSrc = projectAssetPlaybackUrl(projectAsset);
+    if (!originalSrc) continue;
+    const src = projectAssetPreviewPlaybackUrl(projectAsset) ?? originalSrc;
 
     seenSourceNodeIds.add(candidate.sourceNodeId);
     seenProjectAssetIds.add(candidate.projectAssetId);
@@ -111,6 +121,7 @@ export function selectTimelineMediaInputs(input: {
       projectAssetId: candidate.projectAssetId,
       type,
       src,
+      originalSrc,
       displayName: firstText(
         node?.data?.label,
         node?.data?.name,
@@ -119,6 +130,32 @@ export function selectTimelineMediaInputs(input: {
     });
   }
   return result;
+}
+
+/**
+ * Rebinds editor assets to their original media. The editor plays proxies,
+ * but a Timeline handed to another editor must reference the real footage.
+ */
+export function withOriginalMediaSources<
+  TAsset extends { projectAssetId?: string; src: string },
+>(
+  assets: readonly TAsset[],
+  mediaInputs: readonly TimelineMediaInput[],
+): TAsset[] {
+  const originalSrcByProjectAssetId = new Map(
+    mediaInputs.map((input) => [
+      input.projectAssetId,
+      input.originalSrc ?? input.src,
+    ]),
+  );
+  return assets.map((asset) => {
+    const originalSrc = asset.projectAssetId
+      ? originalSrcByProjectAssetId.get(asset.projectAssetId)
+      : undefined;
+    return originalSrc && originalSrc !== asset.src
+      ? { ...asset, src: originalSrc }
+      : asset;
+  });
 }
 
 /**

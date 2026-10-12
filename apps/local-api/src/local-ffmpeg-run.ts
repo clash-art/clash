@@ -11,10 +11,13 @@ export function runFfmpegToFile(input: {
   args: readonly string[];
   /** Names the work in the thrown error, e.g. "extract audio from clip.mp4". */
   task: string;
+  /** Kills the encode when aborted; the returned promise then rejects. */
+  signal?: AbortSignal;
 }): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(input.ffmpeg, [...input.args], {
       stdio: ["ignore", "ignore", "pipe"],
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     let errors = Buffer.alloc(0);
     child.stderr.on("data", (chunk: Buffer) => {

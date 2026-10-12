@@ -5081,6 +5081,38 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     },
   );
 
+  // Preview playback only. A missing proxy is not an error: it is still
+  // encoding, was never needed, or ffmpeg is unavailable; clients use /media.
+  app.get(
+    "/api/v1/projects/:projectId/assets/:projectAssetId/proxy",
+    async (c) => {
+      try {
+        const source = await projectAssetServiceAt(
+          requestOrigin(c),
+        ).openProjection(
+          c.req.param("projectId"),
+          c.req.param("projectAssetId"),
+        );
+        const projection = await assetRepresentations.openProxy(
+          source.resource.id,
+        );
+        if (!projection) {
+          return c.json({ error: "Asset proxy is not available" }, 404);
+        }
+        return await serveImmutableFileProjection({
+          path: projection.path,
+          contentType: projection.resource.contentType ?? "video/mp4",
+          expectedByteLength: projection.resource.byteLength,
+          ...(c.req.header("range")
+            ? { rangeHeader: c.req.header("range") }
+            : {}),
+        });
+      } catch (error) {
+        return localProjectAssetErrorResponse(error);
+      }
+    },
+  );
+
   app.get(
     "/api/v1/projects/:projectId/assets/:projectAssetId/waveform",
     async (c) => {

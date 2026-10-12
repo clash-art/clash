@@ -142,6 +142,7 @@ export function projectVisibleNodeData(
   delete visible.thumbnail;
   delete visible.thumbnailUrl;
   delete visible.waveformUrl;
+  delete visible.proxyUrl;
   delete visible.poster;
   delete visible.posterUrl;
   delete visible.coverUrl;

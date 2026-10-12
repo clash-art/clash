@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdir } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 
 import {
   DurableRunEngine,
@@ -18,7 +19,11 @@ import type {
 } from "@clash/shared-types";
 import sharp from "sharp";
 
-import type { LocalAssetInspectionService } from "./local-asset-inspections.js";
+import type {
+  LocalAssetInspectionFacts,
+  LocalAssetInspectionService,
+} from "./local-asset-inspections.js";
+import { runFfmpegToFile } from "./local-ffmpeg-run.js";
 import { localFfmpegPath } from "./local-media-binaries.js";
 import {
   createSqliteDurableRunJournal,
@@ -30,12 +35,18 @@ import {
   type LocalResourceStore,
 } from "./local-resource-store.js";
 
-export type LocalAssetRepresentationRole = "thumbnail" | "waveform";
+export type LocalAssetRepresentationRole = "thumbnail" | "waveform" | "proxy";
 const AUDIO_WAVEFORM_BARS = 128;
 
 export type LocalAssetRepresentation =
   | {
       role: "thumbnail";
+      recipe: string;
+      resourceId: string;
+    }
+  | {
+      /** A lighter video for preview and editing; never a render source. */
+      role: "proxy";
       recipe: string;
       resourceId: string;
     }
@@ -71,6 +82,13 @@ export type LocalAssetRepresentationCandidate =
       contentType: "image/webp";
     }
   | {
+      kind: "resource";
+      role: "proxy";
+      stagedResourceId: string;
+      resourceKind: "video";
+      contentType: "video/mp4";
+    }
+  | {
       kind: "waveform";
       role: "waveform";
       peaks: number[];
@@ -80,6 +98,8 @@ export type LocalAssetRepresentationCandidate =
 export type LocalAssetRepresentationRecipeRunner = (input: {
   source: LocalResourceProjection;
   recipe: LocalAssetRepresentationRecipe;
+  /** Aborted when the Host closes, so a long derivation does not outlive it. */
+  signal: AbortSignal;
 }) => Promise<LocalAssetRepresentationCandidate>;
 
 export interface LocalAssetRepresentationService {
@@ -92,6 +112,10 @@ export interface LocalAssetRepresentationService {
     role: LocalAssetRepresentationRole,
   ): Promise<LocalAssetRepresentation | undefined>;
   openThumbnail(
+    sourceResourceId: string,
+  ): Promise<LocalResourceProjection | undefined>;
+  /** The playback proxy of a video source, once one exists. */
+  openProxy(
     sourceResourceId: string,
   ): Promise<LocalResourceProjection | undefined>;
   /** Reclaims owner-private work after a Host restart. */
@@ -158,10 +182,35 @@ const AUDIO_WAVEFORM_RECIPE: LocalAssetRepresentationRecipe = {
   },
 };
 
+const VIDEO_PROXY_SHORT_SIDE = 720;
+
+const VIDEO_PROXY_RECIPE: LocalAssetRepresentationRecipe = {
+  id: "video-proxy",
+  version: 1,
+  role: "proxy",
+  outputSlot: "proxy",
+  parameters: {
+    container: "mp4",
+    videoCodec: "h264",
+    audioCodec: "aac",
+    maxShortSide: VIDEO_PROXY_SHORT_SIDE,
+    preset: "veryfast",
+    crf: 23,
+    keyframeInterval: 30,
+    audioBitrateKbps: 128,
+  },
+};
+
 const DEFAULT_OWNER_ID = "local-api:representations";
 const RUN_LIFETIME_MS = 24 * 60 * 60_000;
+/**
+ * A transcode of hours of footage is one submit attempt. Its lease must
+ * outlast the encode, or recovery would start a second ffmpeg beside it.
+ */
+const PROXY_SUBMIT_TIMEOUT_MS = 6 * 60 * 60_000;
 const nodeRequire = createRequire(import.meta.url);
 
+/** Cheap recipes an Asset read may wait for. */
 function recipesFor(
   kind: AssetKind,
 ): readonly LocalAssetRepresentationRecipe[] {
@@ -169,6 +218,98 @@ function recipesFor(
   if (kind === "video") return [VIDEO_POSTER_RECIPE];
   if (kind === "audio") return [AUDIO_WAVEFORM_RECIPE];
   return [];
+}
+
+/** Long derivations that only ever run in the background. */
+function backgroundRecipesFor(
+  kind: AssetKind,
+): readonly LocalAssetRepresentationRecipe[] {
+  return kind === "video" ? [VIDEO_PROXY_RECIPE] : [];
+}
+
+const BROWSER_VIDEO_CODECS: Record<string, readonly string[]> = {
+  "video/mp4": ["h264"],
+  "video/webm": ["vp8", "vp9", "av1"],
+};
+const BROWSER_AUDIO_CODECS: Record<string, readonly string[]> = {
+  "video/mp4": ["aac", "mp3"],
+  "video/webm": ["opus", "vorbis"],
+};
+
+/**
+ * A proxy is worth its encode only when the original is a poor playback
+ * source: more pixels than 720p, or a container/codec pairing a browser
+ * `<video>` cannot be relied on to decode.
+ */
+export function videoNeedsPlaybackProxy(
+  facts: Pick<
+    LocalAssetInspectionFacts,
+    "width" | "height" | "contentType" | "videoCodec" | "audioCodec"
+  >,
+): boolean {
+  if (
+    facts.width !== undefined &&
+    facts.height !== undefined &&
+    Math.min(facts.width, facts.height) > VIDEO_PROXY_SHORT_SIDE
+  ) {
+    return true;
+  }
+  const container = facts.contentType?.toLowerCase() ?? "";
+  const videoCodecs = BROWSER_VIDEO_CODECS[container];
+  if (!videoCodecs || !videoCodecs.includes(facts.videoCodec ?? "")) {
+    return true;
+  }
+  return (
+    facts.audioCodec !== undefined &&
+    !BROWSER_AUDIO_CODECS[container]!.includes(facts.audioCodec)
+  );
+}
+
+/** 720p H.264/AAC MP4 with the index up front, so playback can seek at once. */
+export function videoProxyFfmpegArgs(input: {
+  sourcePath: string;
+  outputPath: string;
+}): string[] {
+  const side = VIDEO_PROXY_SHORT_SIDE;
+  return [
+    "-v",
+    "error",
+    "-nostdin",
+    "-y",
+    "-i",
+    input.sourcePath,
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0?",
+    "-sn",
+    "-dn",
+    // Bound the short side, never upscale, and keep both dimensions even.
+    "-vf",
+    `scale='if(gt(iw,ih),-2,min(${side},iw))':'if(gt(iw,ih),min(${side},ih),-2)',scale=trunc(iw/2)*2:trunc(ih/2)*2`,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "23",
+    "-pix_fmt",
+    "yuv420p",
+    // Short GOPs keep scrubbing responsive in the editor.
+    "-g",
+    "30",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "128k",
+    "-ac",
+    "2",
+    "-movflags",
+    "+faststart",
+    "-f",
+    "mp4",
+    input.outputPath,
+  ];
 }
 
 function recipeKey(recipe: LocalAssetRepresentationRecipe): string {
@@ -223,7 +364,9 @@ function parseFrozenInput(value: unknown): FrozenRepresentationInput {
     !parsedRecipe.id ||
     !Number.isSafeInteger(parsedRecipe.version) ||
     (parsedRecipe.version as number) <= 0 ||
-    (parsedRecipe.role !== "thumbnail" && parsedRecipe.role !== "waveform") ||
+    (parsedRecipe.role !== "thumbnail" &&
+      parsedRecipe.role !== "waveform" &&
+      parsedRecipe.role !== "proxy") ||
     typeof parsedRecipe.outputSlot !== "string" ||
     !parsedRecipe.outputSlot ||
     !parsedRecipe.parameters ||
@@ -251,6 +394,16 @@ function parseCandidate(value: unknown): LocalAssetRepresentationCandidate {
     return candidate as unknown as LocalAssetRepresentationCandidate;
   }
   if (
+    candidate.kind === "resource" &&
+    candidate.role === "proxy" &&
+    typeof candidate.stagedResourceId === "string" &&
+    candidate.stagedResourceId &&
+    candidate.resourceKind === "video" &&
+    candidate.contentType === "video/mp4"
+  ) {
+    return candidate as unknown as LocalAssetRepresentationCandidate;
+  }
+  if (
     candidate.kind === "waveform" &&
     candidate.role === "waveform" &&
     Array.isArray(candidate.peaks) &&
@@ -273,7 +426,7 @@ function parseRepresentation(value: unknown): LocalAssetRepresentation {
   }
   const result = value as Record<string, unknown>;
   if (
-    result.role === "thumbnail" &&
+    (result.role === "thumbnail" || result.role === "proxy") &&
     typeof result.recipe === "string" &&
     result.recipe &&
     typeof result.resourceId === "string" &&
@@ -542,10 +695,66 @@ async function waveformPeaks(
   return peaks.map((peak) => peak / maximum);
 }
 
+async function videoProxy(input: {
+  resources: LocalResourceStore;
+  sourcePath: string;
+  workRoot: string;
+  ffmpegPath: () => string | null;
+  signal: AbortSignal;
+}): Promise<LocalAssetRepresentationCandidate> {
+  const ffmpeg = input.ffmpegPath();
+  if (!ffmpeg) {
+    throw new Error("ffmpeg is required to derive a video proxy.");
+  }
+  await mkdir(input.workRoot, { recursive: true });
+  // Beside the Resource store rather than the system temp directory: a proxy
+  // of long footage is gigabytes and must not land on a memory-backed tmpfs.
+  const workDir = await mkdtemp(join(input.workRoot, "proxy-"));
+  try {
+    const outputPath = join(workDir, "proxy.mp4");
+    await runFfmpegToFile({
+      ffmpeg,
+      args: videoProxyFfmpegArgs({
+        sourcePath: input.sourcePath,
+        outputPath,
+      }),
+      task: `transcode a proxy of ${basename(input.sourcePath)}`,
+      signal: input.signal,
+    });
+    const { size } = await stat(outputPath);
+    const staged = await input.resources.stageStream({
+      source: createReadStream(outputPath),
+      declaredByteLength: size,
+      maxByteLength: size,
+      originalName: "proxy.mp4",
+    });
+    return {
+      kind: "resource",
+      role: "proxy",
+      stagedResourceId: staged.resourceId,
+      resourceKind: "video",
+      contentType: "video/mp4",
+    };
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+  }
+}
+
 function defaultRecipeRunner(
   resources: LocalResourceStore,
+  workRoot: string,
+  ffmpegPath: () => string | null,
 ): LocalAssetRepresentationRecipeRunner {
-  return async ({ source, recipe }) => {
+  return async ({ source, recipe, signal }) => {
+    if (source.resource.kind === "video" && recipe.id === "video-proxy") {
+      return videoProxy({
+        resources,
+        sourcePath: source.path,
+        workRoot,
+        ffmpegPath,
+        signal,
+      });
+    }
     if (source.resource.kind === "audio" && recipe.id === "audio-waveform") {
       return {
         kind: "waveform",
@@ -598,6 +807,8 @@ export function createLocalAssetRepresentationService(options: {
   assetInspection: LocalAssetInspectionService;
   ownerId?: string;
   recipeRunner?: LocalAssetRepresentationRecipeRunner;
+  /** Resolves the ffmpeg that transcodes proxies; none means no proxies. */
+  ffmpegPath?: () => string | null;
   now?: () => number;
 }): LocalAssetRepresentationService {
   const databasePath = `${options.dataDir}/local.sqlite`;
@@ -610,8 +821,17 @@ export function createLocalAssetRepresentationService(options: {
     dataDir: options.dataDir,
     ...(options.clashRoot ? { clashRoot: options.clashRoot } : {}),
   });
-  const runRecipe = options.recipeRunner ?? defaultRecipeRunner(resources);
+  const ffmpegPath = options.ffmpegPath ?? localFfmpegPath;
+  const workRoot = join(options.dataDir, "representation-work");
+  const runRecipe =
+    options.recipeRunner ??
+    defaultRecipeRunner(resources, workRoot, ffmpegPath);
   const inFlight = new Map<string, Promise<LocalAssetRepresentation[]>>();
+  // Proxies transcode one at a time, behind every read-blocking recipe.
+  const backgroundPending = new Set<string>();
+  const backgroundUnneeded = new Set<string>();
+  let backgroundQueue: Promise<void> = Promise.resolve();
+  const closing = new AbortController();
   let wakeTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
@@ -690,139 +910,154 @@ export function createLocalAssetRepresentationService(options: {
     });
   }
 
-  const engine = new DurableRunEngine({
-    journal,
-    provider: {
-      async submit({ run }) {
-        const input = parseFrozenInput(run.executorInput);
-        const source = await resources.resolve(input.sourceResourceId);
-        if (!source) {
-          throw new Error(
-            `Source Resource ${input.sourceResourceId} is not installed.`,
-          );
-        }
-        if (source.resource.kind !== input.sourceKind) {
-          throw new Error(
-            `Source Resource ${input.sourceResourceId} changed kind.`,
-          );
-        }
-        const candidate = await runRecipe({ source, recipe: input.recipe });
-        return {
-          status: "completed" as const,
-          outputs: [
-            {
-              slot: input.recipe.outputSlot,
-              kind: "value" as const,
-              value: candidate as unknown as ExecutablePluginJsonValue,
+  const createEngine = (
+    attemptTimeoutMs?: Partial<Record<DurableRunOperation, number>>,
+  ) =>
+    new DurableRunEngine({
+      journal,
+      provider: {
+        async submit({ run }) {
+          const input = parseFrozenInput(run.executorInput);
+          const source = await resources.resolve(input.sourceResourceId);
+          if (!source) {
+            throw new Error(
+              `Source Resource ${input.sourceResourceId} is not installed.`,
+            );
+          }
+          if (source.resource.kind !== input.sourceKind) {
+            throw new Error(
+              `Source Resource ${input.sourceResourceId} changed kind.`,
+            );
+          }
+          const candidate = await runRecipe({
+            source,
+            recipe: input.recipe,
+            signal: closing.signal,
+          });
+          return {
+            status: "completed" as const,
+            outputs: [
+              {
+                slot: input.recipe.outputSlot,
+                kind: "value" as const,
+                value: candidate as unknown as ExecutablePluginJsonValue,
+              },
+            ],
+          };
+        },
+        async poll() {
+          return {
+            status: "failed" as const,
+            error: {
+              code: "contract_violation" as const,
+              message: "Local representation recipes never enter polling.",
+              retryable: false,
+              requestState: "accepted" as const,
             },
-          ],
-        };
+          };
+        },
       },
-      async poll() {
-        return {
-          status: "failed" as const,
-          error: {
-            code: "contract_violation" as const,
-            message: "Local representation recipes never enter polling.",
-            retryable: false,
-            requestState: "accepted" as const,
-          },
-        };
-      },
-    },
-    outputStore: {
-      async stage({ run, outputs }) {
-        const input = parseFrozenInput(run.executorInput);
-        const output = outputs.find(
-          (
-            candidate,
-          ): candidate is Extract<ExecutablePluginOutput, { kind: "value" }> =>
-            candidate.slot === input.recipe.outputSlot &&
-            candidate.kind === "value",
-        );
-        if (!output) {
-          throw new Error("Representation run completed without its output.");
-        }
-        const candidate = parseCandidate(output.value);
-        if (candidate.role !== input.recipe.role) {
-          throw new Error(
-            "Representation output role does not match its recipe.",
+      outputStore: {
+        async stage({ run, outputs }) {
+          const input = parseFrozenInput(run.executorInput);
+          const output = outputs.find(
+            (
+              candidate,
+            ): candidate is Extract<
+              ExecutablePluginOutput,
+              { kind: "value" }
+            > =>
+              candidate.slot === input.recipe.outputSlot &&
+              candidate.kind === "value",
           );
-        }
-        if (candidate.kind === "waveform") {
-          return candidate as unknown as ExecutablePluginJsonValue;
-        }
-        const finalized = await options.assetInspection.finalize({
-          resourceId: candidate.stagedResourceId,
-          kind: candidate.resourceKind,
-          contentType: candidate.contentType,
-        });
-        return {
-          kind: "resource",
-          role: "thumbnail",
-          resourceId: finalized.source.resource.id,
-        } as unknown as ExecutablePluginJsonValue;
+          if (!output) {
+            throw new Error("Representation run completed without its output.");
+          }
+          const candidate = parseCandidate(output.value);
+          if (candidate.role !== input.recipe.role) {
+            throw new Error(
+              "Representation output role does not match its recipe.",
+            );
+          }
+          if (candidate.kind === "waveform") {
+            return candidate as unknown as ExecutablePluginJsonValue;
+          }
+          const finalized = await options.assetInspection.finalize({
+            resourceId: candidate.stagedResourceId,
+            kind: candidate.resourceKind,
+            contentType: candidate.contentType,
+          });
+          return {
+            kind: "resource",
+            role: candidate.role,
+            resourceId: finalized.source.resource.id,
+          } as unknown as ExecutablePluginJsonValue;
+        },
       },
-    },
-    publisher: {
-      async publish({ run, stagedOutput }) {
-        const input = parseFrozenInput(run.executorInput);
-        const recipe = recipeKey(input.recipe);
-        const value = stagedOutput as Record<string, unknown>;
-        const result =
-          value.kind === "resource" &&
-          value.role === "thumbnail" &&
-          typeof value.resourceId === "string"
-            ? ({
-                role: "thumbnail",
-                recipe,
-                resourceId: value.resourceId,
-              } as const)
-            : value.kind === "waveform" &&
-                value.role === "waveform" &&
-                Array.isArray(value.peaks)
+      publisher: {
+        async publish({ run, stagedOutput }) {
+          const input = parseFrozenInput(run.executorInput);
+          const recipe = recipeKey(input.recipe);
+          const value = stagedOutput as Record<string, unknown>;
+          const result =
+            value.kind === "resource" &&
+            (value.role === "thumbnail" || value.role === "proxy") &&
+            typeof value.resourceId === "string"
               ? ({
-                  role: "waveform",
+                  role: value.role,
                   recipe,
-                  peaks: value.peaks,
-                  ...(typeof value.durationMs === "number"
-                    ? { durationMs: value.durationMs }
-                    : {}),
-                } as LocalAssetRepresentation)
-              : undefined;
-        if (!result) {
-          throw new Error("Staged representation output is invalid.");
-        }
-        await publishRepresentation({
-          sourceResourceId: input.sourceResourceId,
-          recipe: input.recipe,
-          result,
-        });
+                  resourceId: value.resourceId,
+                } as const)
+              : value.kind === "waveform" &&
+                  value.role === "waveform" &&
+                  Array.isArray(value.peaks)
+                ? ({
+                    role: "waveform",
+                    recipe,
+                    peaks: value.peaks,
+                    ...(typeof value.durationMs === "number"
+                      ? { durationMs: value.durationMs }
+                      : {}),
+                  } as LocalAssetRepresentation)
+                : undefined;
+          if (!result) {
+            throw new Error("Staged representation output is invalid.");
+          }
+          await publishRepresentation({
+            sourceResourceId: input.sourceResourceId,
+            recipe: input.recipe,
+            result,
+          });
+        },
+        async publishFailure() {
+          // Representation failure is Host-private. The journal is the diagnostic
+          // projection; Project/Global Asset state must remain unchanged.
+        },
       },
-      async publishFailure() {
-        // Representation failure is Host-private. The journal is the diagnostic
-        // projection; Project/Global Asset state must remain unchanged.
+      ownerGuard: {
+        async assertOwner(run) {
+          if (run.owner.realm !== "local" || run.owner.id !== ownerId) {
+            throw new Error(
+              "Representation run belongs to another Host owner.",
+            );
+          }
+        },
       },
-    },
-    ownerGuard: {
-      async assertOwner(run) {
-        if (run.owner.realm !== "local" || run.owner.id !== ownerId) {
-          throw new Error("Representation run belongs to another Host owner.");
-        }
+      retryPolicy: {
+        delayMs({ consecutiveFailures, failure }) {
+          if (!failure.retryable) return null;
+          return Math.min(
+            5 * 60_000,
+            1_000 * 2 ** Math.min(8, consecutiveFailures - 1),
+          );
+        },
       },
-    },
-    retryPolicy: {
-      delayMs({ consecutiveFailures, failure }) {
-        if (!failure.retryable) return null;
-        return Math.min(
-          5 * 60_000,
-          1_000 * 2 ** Math.min(8, consecutiveFailures - 1),
-        );
-      },
-    },
-    clock: { now },
-    classifyThrownError: retryableFailure,
-  });
+      clock: { now },
+      classifyThrownError: retryableFailure,
+      ...(attemptTimeoutMs ? { attemptTimeoutMs } : {}),
+    });
+  const engine = createEngine();
+  const proxyEngine = createEngine({ submit: PROXY_SUBMIT_TIMEOUT_MS });
 
   async function scheduleNextWake(): Promise<void> {
     if (closed) return;
@@ -844,9 +1079,11 @@ export function createLocalAssetRepresentationService(options: {
 
   async function drive(
     run: Pick<DurableRunRecord, "actionRunId" | "outputSlot">,
+    role: LocalAssetRepresentationRole,
   ): Promise<void> {
+    const runEngine = role === "proxy" ? proxyEngine : engine;
     for (let step = 0; step < 12; step += 1) {
-      const result = await engine.advance(run);
+      const result = await runEngine.advance(run);
       if (
         result.kind === "waiting" ||
         result.kind === "terminal" ||
@@ -860,17 +1097,42 @@ export function createLocalAssetRepresentationService(options: {
   async function recover(): Promise<void> {
     if (closed) return;
     const recoverable = await journal.listRecoverable(ownerId, now());
-    for (const run of recoverable) await drive(run);
+    for (const run of recoverable) {
+      await drive(run, parseFrozenInput(run.executorInput).recipe.role);
+    }
     await scheduleNextWake();
   }
 
-  async function ensureSource(
+  /** Whether a not-yet-started recipe should run for this source at all. */
+  async function recipeApplies(
+    source: LocalResourceProjection,
+    recipe: LocalAssetRepresentationRecipe,
+  ): Promise<boolean> {
+    if (recipe.role !== "proxy") return true;
+    if (backgroundUnneeded.has(source.resource.id)) return false;
+    let facts: LocalAssetInspectionFacts;
+    try {
+      ({ facts } = await options.assetInspection.inspect({ source }));
+    } catch {
+      // Without verified facts there is no basis for an encode.
+      return false;
+    }
+    if (!videoNeedsPlaybackProxy(facts)) {
+      // Resources are immutable, so this answer holds for the process.
+      backgroundUnneeded.add(source.resource.id);
+      return false;
+    }
+    return ffmpegPath() !== null;
+  }
+
+  async function ensureRecipes(
     sourceResourceId: string,
+    recipesOf: (kind: AssetKind) => readonly LocalAssetRepresentationRecipe[],
   ): Promise<LocalAssetRepresentation[]> {
     const source = await resources.resolve(sourceResourceId);
     if (!source) return [];
     const results: LocalAssetRepresentation[] = [];
-    for (const recipe of recipesFor(source.resource.kind)) {
+    for (const recipe of recipesOf(source.resource.kind)) {
       const ready = await readRecipe(sourceResourceId, recipe);
       if (ready) {
         results.push(ready);
@@ -886,6 +1148,7 @@ export function createLocalAssetRepresentationService(options: {
       const identity = runIdentity(executorInput);
       const existing = await journal.load(identity);
       if (!existing) {
+        if (!(await recipeApplies(source, recipe))) continue;
         const createdAt = now();
         await journal.create(
           createDurableRunRecord({
@@ -898,7 +1161,7 @@ export function createLocalAssetRepresentationService(options: {
           }),
         );
       }
-      await drive(identity);
+      await drive(identity, recipe.role);
       const derived = await readRecipe(sourceResourceId, recipe);
       if (derived) results.push(derived);
     }
@@ -906,22 +1169,50 @@ export function createLocalAssetRepresentationService(options: {
     return results;
   }
 
-  const service: LocalAssetRepresentationService = {
-    schedule(sourceResourceId) {
-      if (closed || !sourceResourceId.trim()) return;
-      void service.ensure(sourceResourceId).catch((error) => {
+  function scheduleBackground(sourceResourceId: string): void {
+    if (
+      backgroundPending.has(sourceResourceId) ||
+      backgroundUnneeded.has(sourceResourceId)
+    ) {
+      return;
+    }
+    backgroundPending.add(sourceResourceId);
+    backgroundQueue = backgroundQueue
+      .then(async () => {
+        if (closed) return;
+        await ensureRecipes(sourceResourceId, backgroundRecipesFor);
+      })
+      .catch((error) => {
         console.warn(
-          `[local-api] failed to derive representations for ${sourceResourceId}`,
+          `[local-api] failed to derive a proxy for ${sourceResourceId}`,
           error,
         );
+      })
+      .finally(() => {
+        backgroundPending.delete(sourceResourceId);
       });
+  }
+
+  const service: LocalAssetRepresentationService = {
+    schedule(sourceResourceId) {
+      const normalized = sourceResourceId.trim();
+      if (closed || !normalized) return;
+      void service
+        .ensure(normalized)
+        .catch((error) => {
+          console.warn(
+            `[local-api] failed to derive representations for ${normalized}`,
+            error,
+          );
+        })
+        .finally(() => scheduleBackground(normalized));
     },
     ensure(sourceResourceId) {
       const normalized = sourceResourceId.trim();
       if (closed || !normalized) return Promise.resolve([]);
       const active = inFlight.get(normalized);
       if (active) return active;
-      const task = ensureSource(normalized).finally(() => {
+      const task = ensureRecipes(normalized, recipesFor).finally(() => {
         if (inFlight.get(normalized) === task) inFlight.delete(normalized);
       });
       inFlight.set(normalized, task);
@@ -930,9 +1221,10 @@ export function createLocalAssetRepresentationService(options: {
     async read(sourceResourceId, role) {
       const source = await resources.resolve(sourceResourceId);
       const recipe = source
-        ? recipesFor(source.resource.kind).find(
-            (candidate) => candidate.role === role,
-          )
+        ? [
+            ...recipesFor(source.resource.kind),
+            ...backgroundRecipesFor(source.resource.kind),
+          ].find((candidate) => candidate.role === role)
         : undefined;
       return recipe ? readRecipe(sourceResourceId, recipe) : undefined;
     },
@@ -943,12 +1235,26 @@ export function createLocalAssetRepresentationService(options: {
       }
       return resources.resolve(representation.resourceId);
     },
-    start: recover,
+    async openProxy(sourceResourceId) {
+      const representation = await service.read(sourceResourceId, "proxy");
+      if (!representation || representation.role !== "proxy") {
+        return undefined;
+      }
+      return resources.resolve(representation.resourceId);
+    },
+    async start() {
+      // No encode survives a restart, so anything left here is debris.
+      if (backgroundPending.size === 0) {
+        await rm(workRoot, { recursive: true, force: true });
+      }
+      await recover();
+    },
     async close() {
       closed = true;
+      closing.abort();
       if (wakeTimer) clearTimeout(wakeTimer);
       wakeTimer = undefined;
-      await Promise.allSettled([...inFlight.values()]);
+      await Promise.allSettled([...inFlight.values(), backgroundQueue]);
     },
   };
 

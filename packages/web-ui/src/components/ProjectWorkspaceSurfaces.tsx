@@ -41,7 +41,10 @@ import {
   type TimelineExportProgress,
 } from "@clash/shared-types";
 import { stripSrcFromTracks } from "@clash/web-ui/lib/timelineDsl";
-import { resolveAssetMediaUrl } from "../features/assets/media-url";
+import {
+  projectAssetPreviewPlaybackUrl,
+  resolveAssetMediaUrl,
+} from "../features/assets/media-url";
 import { assetAvailabilityLabel } from "../features/assets/availability";
 import { getAsset } from "@clash/web-ui/lib/hooks/useAsset";
 import { ParentCanvasButton } from "./ParentCanvasButton";
@@ -51,6 +54,7 @@ import {
 } from "@clash/web-ui/lib/projectAssetDrag";
 import {
   canonicalizeTimelineItemScopeRefs,
+  withOriginalMediaSources,
   type TimelineMediaInput,
 } from "./timelineMediaInputs";
 import { IconButton } from "./ui/icon-button";
@@ -629,7 +633,7 @@ export function ProjectTimelineEditorSurface({
         try {
           if (!projectId) throw new Error("Project scope unavailable");
           const asset = await getAsset(projectId, input.projectAssetId);
-          const src = asset.url || input.src;
+          const src = projectAssetPreviewPlaybackUrl(asset) ?? input.src;
           const thumbnail = asset.thumbnailUrl;
           return {
             id: input.sourceNodeId,
@@ -822,7 +826,10 @@ export function ProjectTimelineEditorSurface({
       const state = editorStateRef.current;
       if (!state) throw new Error("Timeline is still loading.");
       const handoffTimeline: TimelineDsl = {
-        tracks: hydrateTimelineTracksForNle(state.tracks, state.assets),
+        tracks: hydrateTimelineTracksForNle(
+          state.tracks,
+          withOriginalMediaSources(state.assets, mediaInputs),
+        ),
         primaryTrackId: state.primaryTrackId,
         compositionWidth: state.compositionWidth,
         compositionHeight: state.compositionHeight,
@@ -845,7 +852,13 @@ export function ProjectTimelineEditorSurface({
         assets: handoff.assets,
       });
     },
-    [persistCurrentState, persistedTimelineState, timeline.id, timeline.name],
+    [
+      mediaInputs,
+      persistCurrentState,
+      persistedTimelineState,
+      timeline.id,
+      timeline.name,
+    ],
   );
 
   const exportTimelineVideo = useCallback(async () => {

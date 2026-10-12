@@ -619,6 +619,7 @@ type ResolvedAsset = Readonly<{
   url?: string;
   thumbnailUrl?: string;
   waveformUrl?: string;
+  proxyUrl?: string;
   progress?: number;
   error?: string;
 }>;
@@ -1621,6 +1622,14 @@ Assets, `thumbnailUrl` points at a current Host thumbnail/poster representation
 when ready. For audio Assets, `waveformUrl` points at a bounded JSON peak array
 when ready. Both are entry-authorized projections, never identities or raw
 storage locators.
+
+For video Assets, `proxyUrl` points at a 720p H.264/AAC MP4 playback proxy when
+the Host has one. The Host encodes it in the background with ffmpeg, one at a
+time, and only when the original is larger than 720p or is not a
+browser-playable container/codec pairing; without ffmpeg there is no proxy.
+Preview and editing playback prefer `proxyUrl` and fall back to `url`. Render,
+export, NLE handoff, and provider inputs always resolve the original: Timeline
+persistence strips runtime URLs and a render run binds frozen Asset identities.
 
 - Image thumbnails, video first-frame posters, and audio waveforms are
   Host-private derived representations keyed by immutable source Resource plus
