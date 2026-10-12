@@ -72,11 +72,12 @@ import {
 } from "./trial-aggregate";
 import { runAcpAgentSession, type AcpAgentRunResult } from "./acp-agent";
 import {
-  acpLaunchArgs,
+  acpHeadlessLaunch,
   isAcpAgent,
   resolveAcpHarness,
   type AcpBenchmarkAgent,
 } from "./acp-harness";
+import { createIsolatedAgentHome } from "./agent-home";
 import { loadSubmission } from "./artifacts";
 import { writeAtifTrajectory } from "./atif";
 import {
@@ -1697,6 +1698,7 @@ async function runAgent(input: {
   const startedAt = Date.now();
   const startedMonotonic = process.hrtime.bigint();
   const agent = input.agent;
+  const acpAgent = isAcpAgent(agent) ? agent : undefined;
   const resolvedAgent = isAcpAgent(agent)
     ? undefined
     : resolveAgentCommand(
@@ -1742,10 +1744,7 @@ async function runAgent(input: {
   }
   if (input.agent.adapter === "pi") env.PI_TELEMETRY = "0";
 
-  if (!resolvedAgent) {
-    if (!isAcpAgent(agent)) {
-      throw new Error("Agent adapter has no launch command");
-    }
+  if (acpAgent) {
     // An ACP agent is a server: the runner drives one prompt turn and records
     // the standard `session/update` stream as the Attempt's event log.
     const events = new PassThrough();
@@ -1755,23 +1754,29 @@ async function runAgent(input: {
       observedPath: observedEventsPath,
       startedMonotonic,
     });
-    const sessionDir = await mkdtemp(join(tmpdir(), "clash-benchmark-acp-"));
+    // The agent gets a home of its own for this Attempt, so nothing the
+    // operator has configured for the agent on this machine is loaded.
+    const agentHomeRoot = await mkdtemp(
+      join(tmpdir(), "clash-benchmark-agent-home-"),
+    );
     let acpChild: ChildProcess | undefined;
     let result: AcpAgentRunResult;
     try {
       // The managed bin directory is runner configuration: it is read here
       // and, like every other CLASH_* variable, withheld from the Agent.
-      const harness = await resolveAcpHarness(agent, {
+      const harness = await resolveAcpHarness(acpAgent, {
         ...inheritedEnvironment,
-        ...agent.env,
+        ...acpAgent.env,
       });
+      const home = await createIsolatedAgentHome(agentHomeRoot);
+      const launch = acpHeadlessLaunch(acpAgent, home);
       const mcp = input.clashAccess?.mcp;
       result = await runAcpAgentSession({
         harness,
         command: input.lockedExecutablePath ?? harness.command,
-        args: acpLaunchArgs(agent, harness, { sessionDir }),
+        args: launch.args,
         cwd: input.workspace,
-        env: acpProcessEnvironment({ ...env, ...harness.env }),
+        env: acpProcessEnvironment({ ...env, ...home.env, ...launch.env }),
         prompt: input.prompt,
         mcpServers: mcp
           ? [
@@ -1804,7 +1809,7 @@ async function runAgent(input: {
     await capture;
     await stderr.close();
     if (acpChild) await terminateResidualProcessGroup(acpChild);
-    await rm(sessionDir, { recursive: true, force: true });
+    await rm(agentHomeRoot, { recursive: true, force: true });
     const trajectoryPath = await writeNormalizedTrajectory({
       agent: input.agent,
       logsRoot: input.logsRoot,
@@ -1824,7 +1829,8 @@ async function runAgent(input: {
   let child: ChildProcess;
   try {
     child = input.processScope.track(
-      spawn(resolvedAgent.command, resolvedAgent.args, {
+      // Every adapter that is not driven over ACP resolved a command above.
+      spawn(resolvedAgent!.command, resolvedAgent!.args, {
         cwd: input.workspace,
         env,
         shell: false,
@@ -5887,14 +5893,12 @@ async function runBenchmarkSuiteInProcessScope(
       const completion =
         benchmark.execution?.preflight?.status === "blocked"
           ? await executeBenchmarkAttempt(dispatch)
-          : await backend
-              .runAttempt(dispatch)
-              .catch((error) =>
-                executeBenchmarkAttempt({
-                  ...dispatch,
-                  dispatchFailure: error,
-                }),
-              );
+          : await backend.runAttempt(dispatch).catch((error) =>
+              executeBenchmarkAttempt({
+                ...dispatch,
+                dispatchFailure: error,
+              }),
+            );
       const { report, attemptReceipt } = completion;
 
       const completedEntry: BenchmarkAttemptLedgerEntry = {

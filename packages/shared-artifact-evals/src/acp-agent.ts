@@ -48,7 +48,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * The benchmark is headless, so a permission request is answered with the
  * first option that grants it. Without one the request is cancelled.
  */
-const approvePermission: NonNullable<
+export const approvePermission: NonNullable<
   ClientCallbacks["requestPermission"]
 > = async (params) => {
   const allow =
@@ -59,7 +59,7 @@ const approvePermission: NonNullable<
     : { outcome: { outcome: "cancelled" } };
 };
 
-function eventLine(value: unknown): AcpEventLine {
+export function acpEventLine(value: unknown): AcpEventLine {
   if (!isRecord(value)) {
     return { type: "acp.runtime_event", event: "unknown" };
   }
@@ -101,7 +101,10 @@ function eventLine(value: unknown): AcpEventLine {
  * process-group tracking, stderr capture) and the log.
  */
 export async function runAcpAgentSession(input: {
-  harness: { id: string; packageName?: string; packageVersion?: string };
+  harness: {
+    id: string;
+    versions?: { package: { name: string; version: string } };
+  };
   command: string;
   args: string[];
   cwd: string;
@@ -216,11 +219,11 @@ export async function runAcpAgentSession(input: {
           : null,
       harness: {
         id: input.harness.id,
-        ...(input.harness.packageName
-          ? { package: input.harness.packageName }
-          : {}),
-        ...(input.harness.packageVersion
-          ? { version: input.harness.packageVersion }
+        ...(input.harness.versions
+          ? {
+              package: input.harness.versions.package.name,
+              version: input.harness.versions.package.version,
+            }
           : {}),
       },
       ...(session.agentInfo
@@ -233,7 +236,7 @@ export async function runAcpAgentSession(input: {
         : {}),
     });
     for await (const event of session.prompt(input.prompt)) {
-      const line = eventLine(event);
+      const line = acpEventLine(event);
       write(line);
       if (line.type === "acp.prompt_complete") stopReason = line.stopReason;
       if (line.type === "acp.prompt_error") {

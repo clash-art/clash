@@ -187,6 +187,38 @@ describe("trajectory MCP domain failures", () => {
     });
   });
 
+  it("observes only Clash and shell tools in an earlier Pi event log", async () => {
+    const trajectory = await normalizePiEvents([
+      {
+        type: "tool_execution_start",
+        toolCallId: "read-1",
+        toolName: "read",
+        args: { path: "notes.md" },
+      },
+      {
+        type: "tool_execution_end",
+        toolCallId: "read-1",
+        toolName: "read",
+        isError: false,
+        result: { content: [{ type: "text", text: "notes" }] },
+      },
+      {
+        type: "tool_execution_start",
+        toolCallId: "bash-1",
+        toolName: "bash",
+        args: { command: "true" },
+      },
+    ]);
+
+    expect(
+      trajectory.actions.map(({ kind, operation, status }) => ({
+        kind,
+        operation,
+        status,
+      })),
+    ).toEqual([{ kind: "shell", operation: "true", status: "started" }]);
+  });
+
   it("classifies ACP tool calls from their settled arguments and marks a domain failure as failed", async () => {
     const failureMessage = "Generation failed.";
     const structuredContent = { status: "failed", error: failureMessage };

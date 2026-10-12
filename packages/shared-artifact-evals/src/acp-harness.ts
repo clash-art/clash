@@ -1,9 +1,10 @@
-import { basename, delimiter, dirname, isAbsolute } from "node:path";
+import { delimiter, dirname, isAbsolute } from "node:path";
 
+import { buildAcpHeadlessLaunch } from "@openma/common/acp-harnesses/headless-launch";
 import {
-  installAcpRegistryAgent,
-  npmPackageNameFromSpec,
-  readInstalledNpmPackageVersion,
+  installPinnedAcpHarness,
+  readAcpHarnessPinState,
+  type AcpHarnessPinState,
 } from "@openma/common/acp-harnesses/installer";
 import {
   detectEntry,
@@ -17,23 +18,32 @@ import type { BenchmarkAgent } from "./types";
 /**
  * Benchmark adapters that are driven over the Agent Client Protocol, mapped to
  * the harness id that names them in the OpenMA harness registry. The id is the
- * only harness fact this package owns: the package, its version, and the launch
- * command all come from the registry entry.
+ * only harness fact this package owns: the package, its pinned versions, and
+ * every launch flag and variable come from the registry entry.
  */
 const ACP_HARNESS_IDS = { pi: "pi-acp" } as const;
 
+/** Reasoning effort every benchmark Attempt asks its agent for. */
+const BENCHMARK_THINKING_LEVEL = "medium";
+
 export type AcpBenchmarkAdapter = keyof typeof ACP_HARNESS_IDS;
+
+/** The exact versions an Attempt's harness runs, as found in its install. */
+export type AcpHarnessVersions = {
+  package: { name: string; version: string };
+  dependencies: Array<{ name: string; version: string }>;
+};
 
 export type ResolvedAcpHarness = {
   id: string;
   label: string;
   command: string;
-  args: string[];
-  env: Record<string, string>;
-  /** npm package the registry installs for this harness, when it is one. */
-  packageName?: string;
-  /** Version of that package found in the managed install. */
-  packageVersion?: string;
+  /**
+   * Present for a harness found in a managed bin directory, where the install
+   * was checked against the registry's pins. An explicit launcher is taken as
+   * given and has no verified versions.
+   */
+  versions?: AcpHarnessVersions;
 };
 
 export type AcpBenchmarkAgent = Extract<
@@ -70,147 +80,141 @@ function harnessEntry(adapter: AcpBenchmarkAdapter): KnownAgentEntry {
   return entry;
 }
 
-function definedEnv(
-  env: Record<string, string | undefined> | undefined,
-): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(env ?? {}).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-}
-
-function npmPackageName(entry: KnownAgentEntry): string | undefined {
-  const spec = entry.registryDistribution?.npx?.package;
-  return spec ? npmPackageNameFromSpec(spec) : undefined;
+function pinMismatches(state: AcpHarnessPinState): string[] {
+  return [state.package, ...state.dependencies]
+    .filter(({ pinned, installed }) => installed !== pinned)
+    .map(
+      ({ name, pinned, installed }) =>
+        `${name} is ${installed ?? "not installed"}, pinned ${pinned}`,
+    );
 }
 
 /**
  * Resolves the launch command of an ACP-driven adapter. An explicit
  * `agent.command` path is an operator override of the launcher; otherwise the
- * registry entry is detected in the managed ACP bin directories.
+ * registry entry is detected in the managed ACP bin directories and its
+ * install must match the versions the registry pins.
  */
 export async function resolveAcpHarness(
   agent: AcpBenchmarkAgent,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ResolvedAcpHarness> {
   const entry = harnessEntry(agent.adapter);
-  const packageName = npmPackageName(entry);
   if (agent.command) {
     if (!isAbsolute(agent.command)) {
       throw new Error(
         `An explicit ${entry.label} ACP launcher must be an absolute path`,
       );
     }
-    return {
-      id: entry.id,
-      label: entry.label,
-      command: agent.command,
-      args: [...(entry.spec.args ?? [])],
-      env: definedEnv(entry.spec.env),
-      ...(packageName ? { packageName } : {}),
-    };
+    return { id: entry.id, label: entry.label, command: agent.command };
   }
   const managedBinDirs = acpManagedBinDirs(env);
   const detected = await detectEntry(entry, { env, managedBinDirs });
+  const installHint = `clash-artifact-bench acp-install --agent ${agent.adapter} --bin-dir <dir>`;
   if (!detected) {
     throw new Error(
       [
         `The ${entry.label} ACP harness '${entry.id}' is not installed`,
         managedBinDirs.length > 0
-          ? `(looked for ${basename(entry.spec.command)} in ${managedBinDirs.join(", ")}).`
+          ? `(looked in ${managedBinDirs.join(", ")}).`
           : "(CLASH_ACP_BIN_DIR is not set).",
-        `Install it with: clash-artifact-bench acp-install --agent ${agent.adapter} --bin-dir <dir>`,
+        `Install it with: ${installHint}`,
         "and run with CLASH_ACP_BIN_DIR=<dir>.",
       ].join(" "),
     );
   }
-  const packageVersion = packageName
-    ? await readInstalledNpmPackageVersion({
-        shimPath: detected.spec.command,
-        packageName,
-        installRoot: dirname(detected.spec.command),
-        ...(entry.registryId ? { registryId: entry.registryId } : {}),
-      })
-    : undefined;
+  const command = detected.spec.command;
+  const pins = await readAcpHarnessPinState({ entry, shimPath: command });
+  if (!pins) {
+    throw new Error(
+      `The ACP harness registry pins no versions for '${entry.id}'`,
+    );
+  }
+  if (!pins.satisfied) {
+    throw new Error(
+      [
+        `The ${entry.label} ACP harness in ${dirname(command)} does not match the pinned versions:`,
+        `${pinMismatches(pins).join("; ")}.`,
+        `Reinstall it with: ${installHint}`,
+      ].join(" "),
+    );
+  }
   return {
     id: entry.id,
     label: entry.label,
-    command: detected.spec.command,
-    args: [...(detected.spec.args ?? [])],
-    env: definedEnv(detected.spec.env),
-    ...(packageName ? { packageName } : {}),
-    ...(packageVersion ? { packageVersion } : {}),
+    command,
+    versions: {
+      package: { name: pins.package.name, version: pins.package.pinned },
+      dependencies: pins.dependencies.map(({ name, pinned }) => ({
+        name,
+        version: pinned,
+      })),
+    },
   };
 }
 
 /**
- * Installs an ACP harness into a managed bin directory through the shared
- * OpenMA installer, the same call the Local Host makes for its harnesses.
+ * Installs an ACP harness into a managed bin directory at the exact versions
+ * the registry pins, through the shared OpenMA installer.
  */
 export async function installAcpHarness(input: {
   adapter: AcpBenchmarkAdapter;
   binDir: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<{ id: string; commandPath: string; version?: string }> {
+}): Promise<{
+  id: string;
+  commandPath: string;
+  version?: string;
+  dependencies?: Record<string, string>;
+}> {
   if (!isAbsolute(input.binDir)) {
     throw new Error("The ACP harness bin directory must be an absolute path");
   }
   await loadRegistry();
   const entry = harnessEntry(input.adapter);
-  if (entry.installSource !== "registry" || !entry.registryId) {
-    throw new Error(`${entry.label} is not installable from the ACP registry`);
-  }
-  const installed = await installAcpRegistryAgent({
-    registryId: entry.registryId,
-    ...(entry.registryDistribution
-      ? {
-          registryAgent: {
-            id: entry.registryId,
-            name: entry.label,
-            ...(entry.version ? { version: entry.version } : {}),
-            distribution: entry.registryDistribution,
-          },
-        }
-      : {}),
-    shimName: basename(entry.spec.command),
+  const installed = await installPinnedAcpHarness({
+    entry,
     binDir: input.binDir,
     installRoot: input.binDir,
-    ...(entry.spec.args ? { shimArgs: entry.spec.args } : {}),
-    ...(entry.spec.env ? { shimEnv: entry.spec.env } : {}),
     ...(input.env ? { env: input.env } : {}),
   });
-  return {
-    id: entry.id,
-    commandPath: installed.commandPath,
-    ...(installed.version ? { version: installed.version } : {}),
-  };
+  return { id: entry.id, ...installed };
 }
 
 /**
- * Launcher arguments for one headless benchmark Attempt. These are the
- * harness's own documented flags; the equivalent selection used to be passed
- * to the `pi` CLI directly.
+ * The launch of one headless benchmark Attempt, built by the registry entry's
+ * own recipe from generic options. The Attempt depends on every option it
+ * passes (an agent directory the harness ignored would load the operator's
+ * own configuration), so an option the recipe cannot express is an error.
  */
-export function acpLaunchArgs(
+export function acpHeadlessLaunch(
   agent: AcpBenchmarkAgent,
-  harness: ResolvedAcpHarness,
-  options: { sessionDir: string },
-): string[] {
-  const model =
-    agent.model && agent.provider && !agent.model.includes("/")
-      ? `${agent.provider}/${agent.model}`
-      : agent.model;
-  return [
-    ...harness.args,
-    // The runner provides no editor: tools run in the agent's own process.
-    "--no-delegation",
-    "--quiet-startup",
+  directories: { agentDir: string; sessionDir: string },
+): { args: string[]; env: Record<string, string> } {
+  const entry = harnessEntry(agent.adapter);
+  const launch = buildAcpHeadlessLaunch(entry, {
+    ...directories,
     // Case skills are installed in the workspace's `.agents/skills`.
-    "--trust-projects",
-    "--session-dir",
-    options.sessionDir,
-    ...(model ? ["--model", `${model}:medium`] : []),
-    ...(agent.args ?? []),
-  ];
+    trustProject: true,
+    ...(agent.provider ? { provider: agent.provider } : {}),
+    ...(agent.model
+      ? { model: agent.model, thinkingLevel: BENCHMARK_THINKING_LEVEL }
+      : {}),
+  });
+  if (launch.unsupported.length > 0) {
+    throw new Error(
+      `The ${entry.label} headless launch recipe cannot express: ${launch.unsupported.join(", ")}`,
+    );
+  }
+  return {
+    args: [...launch.args, ...(agent.args ?? [])],
+    env: launch.env,
+  };
+}
+
+/** Variables the harness's recipe sets to point the agent at its own configuration. */
+export function acpAgentDirectoryVariables(agent: AcpBenchmarkAgent): string[] {
+  return Object.keys(
+    acpHeadlessLaunch(agent, { agentDir: "", sessionDir: "" }).env,
+  ).sort();
 }

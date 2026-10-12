@@ -117,18 +117,23 @@ for older glibc and arm64.
 
 ### Pi runs through ACP
 
-The Pi adapter does not run the `pi` CLI. It starts the `pi-acp` harness — the
-entry of that id in the OpenMA harness registry (`@openma/common`), which is
-also where the package and launch command come from — and drives one prompt
-turn over the Agent Client Protocol with the shared OpenMA ACP runtime. The
-Attempt's `logs/events.jsonl` is the standard `session/update` stream
-(`agent_message_chunk`, `tool_call`, `tool_call_update`, `plan`,
+The Pi adapter does not run the `pi` CLI. It starts the `pi-acp` harness and
+drives one prompt turn over the Agent Client Protocol with the shared OpenMA
+ACP runtime. The Attempt's `logs/events.jsonl` is the standard `session/update`
+stream (`agent_message_chunk`, `tool_call`, `tool_call_update`, `plan`,
 `usage_update`, …), so a new Pi release cannot break the trajectory projection
 by adding a private event type. The Clash MCP server is passed to the agent as
 an ACP `mcpServers` entry; Pi exposes those tools as `mcp__clash__<tool>` and
 loads them through its `tool_search` tool before the first call.
 
-Install the harness once and point the runner at it:
+Clash names only the harness id. The package, its pinned versions, and every
+launch flag and variable come from that entry in the OpenMA harness registry
+(`@openma/common`): the runner passes generic options (agent directory, session
+directory, provider, model, thinking level `medium`) to
+`buildAcpHeadlessLaunch`, and refuses to run if the entry's recipe cannot
+express one of them.
+
+**Pinned versions.** Install the harness once and point the runner at it:
 
 ```bash
 pnpm --filter @clash/artifact-evals benchmark acp-install --agent pi --bin-dir /opt/clash-acp
@@ -136,18 +141,38 @@ CLASH_ACP_BIN_DIR=/opt/clash-acp pnpm --filter @clash/artifact-evals benchmark \
   --suite … --agent pi --provider <provider> --model <model> …
 ```
 
-`acp-install` uses the same installer the Local Host uses for its harnesses and
-needs `npm` and the network. The launcher it writes names its install by
-absolute path, so the directory cannot be moved afterwards. The lock records
-the launcher and the installed `pi-acp` package version as the Agent
-executable; the Pi SDK that package resolved at install time is not pinned
-separately, so reinstalling can change it under the same `pi-acp` version.
-Pi's user-level configuration (`~/.pi/agent`: credentials, model definitions,
-extensions, skills) is still read, as it was by the CLI; case skills come from
-the workspace's `.agents/skills`.
+`acp-install` installs the exact versions the registry entry pins: the
+`pi-acp` adapter and every Pi SDK package it resolves, enforced with npm
+`overrides`. It needs `npm` and the network. The launcher it writes names its
+install by absolute path, so the directory cannot be moved afterwards. Before
+each Attempt the runner compares the install with the pins and fails the lock
+(`… does not match the pinned versions: <package> is <x>, pinned <y>`) instead
+of running a different Pi. The lock records the result under
+`agent.harness`: the harness id, `pinned: "verified"`, the adapter version and
+each pinned dependency version. Dependencies outside the pins (third-party
+packages the Pi SDK itself depends on) still follow their own ranges at install
+time. Library callers that set the Pi agent's `command` to a launcher of their
+own bypass the check; that lock says `pinned: "unverified-explicit-launcher"`.
 
-On the container backend, either bake that directory into the image at the path
-it was installed to and set `CLASH_ACP_BIN_DIR` there, or mount it:
+**Isolation from the operator's machine.** Every Pi Attempt, on every backend,
+gets a home of its own that is removed afterwards. The runner points `HOME`,
+`USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
+`XDG_STATE_HOME` and the agent's own configuration directory (for Pi,
+`PI_CODING_AGENT_DIR` and `--agent-dir`, both named by the registry recipe) at
+empty directories. Nothing under the operator's `~/.pi/agent` or
+`~/.agents/skills` is loaded: no extensions, skills, settings, context files,
+model definitions or stored credentials (`auth.json` is not copied). Provider
+credentials reach Pi only as environment variables (`DEEPSEEK_API_KEY`, …,
+inherited or passed with `--forward-env`); a provider that needs `pi /login`
+or a custom `models.json` cannot be used. Case skills come from the workspace's
+`.agents/skills`. The lock records this under
+`resolvedEnvironment.phases.agent.userConfiguration` (`home:
+"fresh-per-attempt-directory"`, `userLevel: "not-loaded"`, and the variables
+set). Codex and Claude Code Attempts still run in the operator's home, because
+their sign-in state lives there; their locks carry no `userConfiguration`.
+
+On the container backend, either bake the installed directory into the image at
+the path it was installed to and set `CLASH_ACP_BIN_DIR` there, or mount it:
 
 ```bash
 … --backend container --container-image <bare image> \

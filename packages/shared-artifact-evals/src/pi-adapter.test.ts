@@ -8,12 +8,15 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { buildAcpHeadlessLaunch } from "@openma/common/acp-harnesses/headless-launch";
 import { resolveKnownAgent } from "@openma/common/acp-harnesses/registry";
 import { describe, expect, it } from "vitest";
+
+import { writeManagedAcpInstall } from "./acp-install.fixture";
 
 import { createPiAgentAdapter, runBenchmarkSuite } from "./runner";
 import type { ArtifactBenchmarkSuite } from "./types";
@@ -142,6 +145,19 @@ describe("Pi headless adapter", () => {
       "utf8",
     );
     process.env.ACP_FIXTURE_HOST_SECRET = "must-not-reach-the-agent";
+    // The operator's home holds user-level Pi configuration the Attempt must
+    // not see: an extension, a skill, settings and a context file.
+    const userHome = join(root, "operator-home");
+    for (const file of [
+      ".pi/agent/extensions/marker.ts",
+      ".pi/agent/skills/marker/SKILL.md",
+      ".pi/agent/settings.json",
+      ".pi/agent/AGENTS.md",
+      ".agents/skills/marker/SKILL.md",
+    ]) {
+      await mkdir(dirname(join(userHome, file)), { recursive: true });
+      await writeFile(join(userHome, file), "{}", "utf8");
+    }
     let report;
     try {
       report = await runBenchmarkSuite({
@@ -157,6 +173,8 @@ describe("Pi headless adapter", () => {
           inheritEnv: false,
           env: {
             PATH: process.env.PATH ?? "",
+            HOME: userHome,
+            XDG_CONFIG_HOME: join(userHome, ".config"),
             ACP_FIXTURE_REPLAY: RECORDED_SESSION,
           },
         }),
@@ -180,6 +198,8 @@ describe("Pi headless adapter", () => {
       mcpServers: unknown[];
       prompt: string;
       inheritedSecret: string | null;
+      home: Record<string, string>;
+      homeEntries: string[];
     };
     expect(observation.cwd).toMatch(/clash-benchmark-workspace-/u);
     // The agent process gets the isolated Attempt environment, not the runner's.
@@ -187,18 +207,43 @@ describe("Pi headless adapter", () => {
     expect(observation.prompt).toContain("Create a report through Pi.");
     expect(observation.prompt).toContain("`remotion-best-practices`");
     expect(observation.mcpServers).toEqual([]);
-    const modelIndex = observation.argv.indexOf("--model");
-    expect(observation.argv[modelIndex + 1]).toBe(
-      "test-provider/test-model:medium",
-    );
-    expect(observation.argv).toEqual(
-      expect.arrayContaining(["--trust-projects", "--no-delegation"]),
-    );
-    const sessionDir =
-      observation.argv[observation.argv.indexOf("--session-dir") + 1]!;
+    // The launch is exactly what the registry recipe builds from the generic
+    // options: this package spells no harness flag.
+    const agentDir = observation.home.PI_CODING_AGENT_DIR!;
+    const sessionDir = join(dirname(agentDir), "sessions");
+    const recipe = buildAcpHeadlessLaunch(resolveKnownAgent("pi-acp")!, {
+      agentDir,
+      sessionDir,
+      trustProject: true,
+      provider: "test-provider",
+      model: "test-model",
+      thinkingLevel: "medium",
+    });
+    expect(observation.argv).toEqual(recipe.args);
+    expect(observation.home).toMatchObject(recipe.env);
+
+    // The agent runs in a home of its own, not the operator's.
+    const home = observation.home.HOME!;
+    expect(home).toBe(join(dirname(agentDir), "home"));
+    expect(home.startsWith(userHome)).toBe(false);
+    expect(observation.homeEntries).not.toContain(".pi");
+    expect(Object.keys(observation.home).sort()).toEqual([
+      "HOME",
+      "PI_CODING_AGENT_DIR",
+      "USERPROFILE",
+      "XDG_CACHE_HOME",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "XDG_STATE_HOME",
+    ]);
+    for (const [name, value] of Object.entries(observation.home)) {
+      expect(value.startsWith(dirname(agentDir)), name).toBe(true);
+    }
     expect(sessionDir).not.toContain(observation.cwd);
-    // Pi's own session transcript is scratch state, removed with the Attempt.
-    await expect(stat(sessionDir)).rejects.toMatchObject({ code: "ENOENT" });
+    // The home, with Pi's session transcript, is removed with the Attempt.
+    await expect(stat(dirname(agentDir))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     for (const skill of ["test-skill", "remotion-best-practices"]) {
       await expect(
         readFile(join(workspace, ".agents", "skills", skill, "SKILL.md")),
@@ -350,12 +395,11 @@ describe("Pi headless adapter", () => {
     const { root, suiteRoot, outputRoot, launcher } = await fixture();
     const binDir = join(root, "acp-bin");
     await mkdir(binDir);
-    const shim = join(
+    await writeManagedAcpInstall({
       binDir,
-      basename(resolveKnownAgent("pi-acp")!.spec.command),
-    );
-    await writeFile(shim, await readFile(launcher), "utf8");
-    await chmod(shim, 0o755);
+      harnessId: "pi-acp",
+      launcher: await readFile(launcher, "utf8"),
+    });
     const report = await runBenchmarkSuite({
       suite: suite(),
       suiteRoot,

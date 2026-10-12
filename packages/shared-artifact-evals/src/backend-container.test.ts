@@ -555,6 +555,28 @@ describe("preflight-blocked cases", () => {
       failure: { classification: "preflight", retryable: false },
     });
     expect(adopted.attemptReceipt).toBeDefined();
+
+    // A directory that already holds something is not adopted: the worker
+    // refuses it and, with no lock of its own in it, cannot seal an Attempt.
+    const occupied = join(runRoot, "occupied-task");
+    await mkdir(occupied);
+    await writeFile(join(occupied, "stray.txt"), "left behind");
+    await expect(
+      executeBenchmarkAttempt({
+        ...attempt,
+        caseRoot: occupied,
+        adoptCaseRoot: true,
+      }),
+    ).rejects.toThrow(/ENOENT.*environment-lock\.json/u);
+    expect(
+      JSON.parse(await readFile(join(occupied, "case-report.json"), "utf8")),
+    ).toMatchObject({
+      failure: {
+        classification: "infrastructure",
+        phase: "dispatch",
+        detail: expect.stringContaining("must be empty"),
+      },
+    });
   });
 });
 

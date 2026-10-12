@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   projectCodexAtifTrajectory,
@@ -1013,6 +1013,31 @@ describe("ACP ATIF v1.7 structured projection", () => {
     expect(projected.trajectory.notes).toContain(
       "session_update:future_update x1",
     );
+  });
+
+  it("warns about skipped events when it publishes the trajectory", async () => {
+    const caseRoot = await mkdtemp(join(tmpdir(), "clash-acp-atif-writer-"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const receipt = await writeAtifTrajectory({
+        ...acpInput(
+          jsonl([
+            session,
+            // An update with no discriminator is counted under its line type.
+            update({ payload: 1 }),
+            { type: "acp.prompt_complete", stopReason: "end_turn" },
+          ]),
+        ),
+        outputDirectory: caseRoot,
+      });
+
+      expect(receipt.source.format).toBe("acp-events");
+      expect(warn).toHaveBeenCalledWith(
+        'ATIF projection skipped unrecognized pi events: {"acp.session_update":1}',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("rejects an ACP log with no session or an unidentified tool call", async () => {

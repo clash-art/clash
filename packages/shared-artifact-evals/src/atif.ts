@@ -1020,7 +1020,12 @@ function acpText(content: unknown): string {
  * it, and a message that follows a tool call starts the next step otherwise.
  */
 function parseAcpTurns(events: ParsedEvent[]): ParsedTurns {
-  let sessionId: string | undefined;
+  // `isAcpEventLog` selected this parser, so the first line is the session.
+  const [session, ...updates] = events;
+  const sessionId = session?.value.sessionId;
+  if (typeof sessionId !== "string" || !sessionId) {
+    throw new Error("ACP session requires sessionId");
+  }
   let sessionUsage: JsonRecord | undefined;
   let current: (Turn & { key?: string; sawTool?: boolean }) | undefined;
   const turns: Turn[] = [];
@@ -1044,19 +1049,11 @@ function parseAcpTurns(events: ParsedEvent[]): ParsedTurns {
     return current;
   };
 
-  for (const event of events) {
+  for (const event of updates) {
     const type = event.value.type as string;
     if (type === "acp.session") {
-      if (sessionId || turns.length > 0) {
-        throw new Error("ACP event log has more than one session");
-      }
-      if (typeof event.value.sessionId !== "string" || !event.value.sessionId) {
-        throw new Error("ACP session requires sessionId");
-      }
-      sessionId = event.value.sessionId;
-      continue;
+      throw new Error("ACP event log has more than one session");
     }
-    if (!sessionId) throw new Error("ACP event log must start with a session");
     if (type === "acp.prompt_complete") {
       if (isRecord(event.value.usage)) sessionUsage = event.value.usage;
       for (const turn of turns) turn.status ??= "completed";
@@ -1150,7 +1147,6 @@ function parseAcpTurns(events: ParsedEvent[]): ParsedTurns {
     skip(typeof kind === "string" ? `session_update:${kind}` : type);
   }
 
-  if (!sessionId) throw new Error("ACP event log must start with a session");
   return {
     sessionId,
     turns,
