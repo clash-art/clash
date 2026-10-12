@@ -55,7 +55,7 @@ binding = "GENERATION_WORKFLOW"
 class_name = "GenerationWorkflow"
 
 # Container (Remotion render server)
-# Uses Dockerfile.cf which `FROM ghcr.io/clash-space/render-server:latest` —
+# Uses Dockerfile.cf which `FROM ghcr.io/clash-art/render-server:latest` —
 # the heavy multi-stage build pushed to GHCR. Local `wrangler deploy` just
 # pulls the prebuilt layer instead of churning through node-prod-deps +
 # chromium + ffmpeg locally. CI publishes it from master

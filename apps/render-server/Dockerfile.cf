@@ -16,4 +16,4 @@
 # Public), `wrangler deploy` works from any machine without local Docker
 # spinning up the full build chain.
 
-FROM ghcr.io/clash-space/render-server:latest
+FROM ghcr.io/clash-art/render-server:latest
