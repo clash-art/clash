@@ -376,7 +376,9 @@ describe("trial placement", () => {
     // Resuming must not silently re-place units.
     await expect(
       runBenchmarkSuite({ ...common, resume: true }),
-    ).rejects.toThrow(/trial placement/u);
+    ).rejects.toThrow(
+      'execution.placement (stored "spread", requested "per-task")',
+    );
   });
 });
 
@@ -496,7 +498,7 @@ describe("resume with trials", () => {
     ).toBe(before);
     await expect(
       runBenchmarkSuite({ ...common, trials: 3, resume: true }),
-    ).rejects.toThrow(/trial count, trial placement, or selected subject/u);
+    ).rejects.toThrow("execution.trials (stored 2, requested 3)");
     await appendFile(log, "");
     await writeFile(join(suiteRoot, ".keep"), "");
   });
