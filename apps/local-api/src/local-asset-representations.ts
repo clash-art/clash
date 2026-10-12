@@ -706,6 +706,9 @@ async function videoProxy(input: {
   if (!ffmpeg) {
     throw new Error("ffmpeg is required to derive a video proxy.");
   }
+  // Encodes run one at a time, so anything already here is debris from an
+  // encode that a Host exit interrupted.
+  await rm(input.workRoot, { recursive: true, force: true });
   await mkdir(input.workRoot, { recursive: true });
   // Beside the Resource store rather than the system temp directory: a proxy
   // of long footage is gigabytes and must not land on a memory-backed tmpfs.
@@ -1254,13 +1257,7 @@ export function createLocalAssetRepresentationService(options: {
       }
       return resources.resolve(representation.resourceId);
     },
-    async start() {
-      // No encode survives a restart, so anything left here is debris.
-      if (backgroundPending.size === 0) {
-        await rm(workRoot, { recursive: true, force: true });
-      }
-      await recover();
-    },
+    start: recover,
     async close() {
       closed = true;
       closing.abort();
