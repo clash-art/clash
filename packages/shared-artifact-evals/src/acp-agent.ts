@@ -21,6 +21,13 @@ export type AcpEventLine =
       protocolVersion: number | null;
       harness: { id: string; package?: string; version?: string };
       agent?: { name?: string; version?: string };
+      /**
+       * The session's config options as the agent reported them when the
+       * session opened, unmodified. The launch only requests a model and a
+       * thinking level; the `model` and `thought_level` options here are what
+       * the harness resolved them to.
+       */
+      configOptions: Array<Record<string, unknown>>;
     }
   | { type: "acp.session_update"; update: Record<string, unknown> }
   | {
@@ -234,6 +241,7 @@ export async function runAcpAgentSession(input: {
             },
           }
         : {}),
+      configOptions: session.configOptions.map((option) => ({ ...option })),
     });
     for await (const event of session.prompt(input.prompt)) {
       const line = acpEventLine(event);
