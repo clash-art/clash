@@ -1407,3 +1407,239 @@ test("transport decoration preserves lifecycle callbacks, session state, and sen
   await transport.close();
   assert.equal(lifecycle.close, 1);
 });
+
+test("dispatchers reject undeclared arguments before executing, and keep open schemas open", async (t) => {
+  const server = new ClashMcpServer({
+    name: "undeclared-argument-test",
+    version: "1.0.0",
+  });
+  const imports: Array<Record<string, unknown>> = [];
+  const open: Array<Record<string, unknown>> = [];
+  server.registerTool(
+    "clash_assets_import_file",
+    {
+      title: "Import Project Asset file",
+      inputSchema: {
+        filePath: z.string().min(1),
+        projectAssetId: z.string().min(1).optional(),
+        kinds: z.array(z.string()).optional(),
+      },
+      _meta: { ui: { visibility: ["model"] } },
+    },
+    async (input) => {
+      imports.push(input);
+      return {
+        content: [{ type: "text", text: "Imported." }],
+        structuredContent: { id: input.projectAssetId ?? "asset:minted" },
+      };
+    },
+  );
+  server.registerTool(
+    "clash_assets_open",
+    {
+      title: "Open-schema operation",
+      inputSchema: z
+        .object({ known: z.string().optional() })
+        .catchall(z.unknown()),
+      _meta: { ui: { visibility: ["model"] } },
+    },
+    async (input) => {
+      open.push(input);
+      return { content: [{ type: "text", text: "Open." }] };
+    },
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({
+    name: "undeclared-argument-client",
+    version: "1.0.0",
+  });
+  t.after(async () => {
+    await client.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const call = (operation: string, args: Record<string, unknown>) =>
+    client.callTool({
+      name: "clash_assets",
+      arguments: { operation, arguments: args },
+    });
+
+  // The identity spellings an agent tried instead of projectAssetId. Each used
+  // to be stripped, so the import ran without an identity.
+  for (const misspelled of ["id", "assetId", "asset_id"]) {
+    const rejected = await call("import_file", {
+      filePath: "inputs/source.svg",
+      [misspelled]: "preassigned-asset",
+    });
+    assert.equal(rejected.isError, true, misspelled);
+    const text = firstTextContent(rejected);
+    assert.match(text, new RegExp(`Unknown argument ${misspelled}\\b`, "u"));
+    assert.match(text, /nothing was executed/u);
+    assert.match(text, /Did you mean [^?]*\bprojectAssetId\b/u);
+    assert.match(
+      text,
+      /Accepted arguments: filePath, kinds, projectAssetId\./u,
+    );
+  }
+  // The singular/plural slip the packaged smoke test itself made.
+  const singular = await call("import_file", {
+    filePath: "inputs/source.svg",
+    kind: "image",
+  });
+  assert.equal(singular.isError, true);
+  assert.match(firstTextContent(singular), /Did you mean kinds\?/u);
+  const unrelated = await call("import_file", {
+    filePath: "inputs/source.svg",
+    zzzBogusField: 12345,
+  });
+  assert.equal(unrelated.isError, true);
+  assert.doesNotMatch(firstTextContent(unrelated), /Did you mean/u);
+  assert.match(firstTextContent(unrelated), /Accepted arguments:/u);
+  assert.deepEqual(imports, []);
+
+  const accepted = await call("import_file", {
+    filePath: "inputs/source.svg",
+    projectAssetId: "preassigned-asset",
+  });
+  assert.notEqual(accepted.isError, true);
+  assert.deepEqual(imports, [
+    { filePath: "inputs/source.svg", projectAssetId: "preassigned-asset" },
+  ]);
+
+  const extra = await call("open", { known: "a", anything: 1 });
+  assert.notEqual(extra.isError, true, firstTextContent(extra));
+  assert.deepEqual(open, [{ known: "a", anything: 1 }]);
+});
+
+test("an unknown short operation names the live operations of its command", async (t) => {
+  const server = new ClashMcpServer({
+    name: "unknown-operation-test",
+    version: "1.0.0",
+  });
+  for (const name of [
+    "clash_assets_list",
+    "clash_assets_content_list",
+    "clash_assets_get",
+  ]) {
+    server.registerTool(
+      name,
+      {
+        title: name,
+        inputSchema: {},
+        _meta: { ui: { visibility: ["model"] } },
+      },
+      async () => ({ content: [{ type: "text", text: name }] }),
+    );
+  }
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({
+    name: "unknown-operation-client",
+    version: "1.0.0",
+  });
+  t.after(async () => {
+    await client.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const rejected = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "list_assets", arguments: {} },
+  });
+  assert.equal(rejected.isError, true);
+  const text = firstTextContent(rejected);
+  assert.match(text, /not registered, enabled, and model-visible/u);
+  assert.match(text, /Did you mean content_list or list\?/u);
+  assert.match(text, /Available assets operations: content_list, get, list\./u);
+});
+
+test("a call that names an operation as a tool is redirected to its dispatcher before any handler runs", async (t) => {
+  const server = new ClashMcpServer({
+    name: "misaddressed-call-test",
+    version: "1.0.0",
+  });
+  let executions = 0;
+  for (const name of ["clash_assets_content_list", "clash_timeline_get"]) {
+    server.registerTool(
+      name,
+      {
+        title: name,
+        inputSchema: { id: z.string().optional() },
+        _meta: { ui: { visibility: ["model"] } },
+      },
+      async () => {
+        executions += 1;
+        return { content: [{ type: "text", text: name }] };
+      },
+    );
+  }
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({
+    name: "misaddressed-call-client",
+    version: "1.0.0",
+  });
+  t.after(async () => {
+    await client.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const asTool = await client.callTool({ name: "content_list", arguments: {} });
+  assert.equal(asTool.isError, true);
+  assert.ok(
+    firstTextContent(asTool).includes(
+      `clash_assets ${JSON.stringify({ operation: "content_list", arguments: {} })}`,
+    ),
+    firstTextContent(asTool),
+  );
+  // Composition operations also need their kind.
+  const timeline = await client.callTool({
+    name: "timeline_get",
+    arguments: { id: "cut" },
+  });
+  assert.ok(
+    firstTextContent(timeline).includes(
+      `clash_composition ${JSON.stringify({ kind: "timeline", operation: "get", arguments: { id: "cut" } })}`,
+    ),
+    firstTextContent(timeline),
+  );
+
+  const flat = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "content_list", id: "x" },
+  });
+  assert.equal(flat.isError, true);
+  assert.match(
+    firstTextContent(flat),
+    /Unknown argument id for tool clash_assets/u,
+  );
+  assert.ok(
+    firstTextContent(flat).includes(
+      JSON.stringify({ operation: "content_list", arguments: { id: "x" } }),
+    ),
+    firstTextContent(flat),
+  );
+
+  const nonexistent = await client.callTool({ name: "nope", arguments: {} });
+  assert.equal(nonexistent.isError, true);
+  assert.match(firstTextContent(nonexistent), /Tool nope does not exist/u);
+  assert.match(
+    firstTextContent(nonexistent),
+    /Available Clash tools: .*clash_assets/u,
+  );
+  assert.equal(executions, 0);
+
+  // A correctly addressed call still runs.
+  const ok = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "content_list", arguments: {} },
+  });
+  assert.notEqual(ok.isError, true, firstTextContent(ok));
+  assert.equal(executions, 1);
+});

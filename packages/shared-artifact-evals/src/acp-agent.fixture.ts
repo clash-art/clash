@@ -8,6 +8,8 @@
  *                      "init-error" rejects initialize, "crash" exits during
  *                      the prompt, "refusal" stops the turn with a refusal,
  *                      "permission" asks the client for permission first
+ * ACP_FIXTURE_CONFIG_OPTIONS  JSON array returned as the new session's
+ *                      `configOptions`
  * ACP_FIXTURE_WORK     Node script that does the turn's work in the workspace,
  *                      in place of the default one-file submission
  */
@@ -69,7 +71,17 @@ function handle(message: Message & { result?: unknown }): void {
   if (method === "session/new") {
     cwd = params.cwd as string;
     mcpServers = params.mcpServers;
-    send({ id, result: { sessionId } });
+    send({
+      id,
+      result: {
+        sessionId,
+        ...(process.env.ACP_FIXTURE_CONFIG_OPTIONS
+          ? {
+              configOptions: JSON.parse(process.env.ACP_FIXTURE_CONFIG_OPTIONS),
+            }
+          : {}),
+      },
+    });
     return;
   }
   if (method === "session/prompt") {

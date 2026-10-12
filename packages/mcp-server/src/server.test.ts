@@ -268,6 +268,151 @@ test("bundled MCP gives Assets a lightweight operation index before execution", 
   ]);
 });
 
+test("bundled MCP import never runs without the identity an agent tried to assign", async (t) => {
+  const { createClashMcpServer } = await import("./server");
+  const assetCalls: Array<{ name: string; input: Record<string, unknown> }> =
+    [];
+  const server = createClashMcpServer({
+    bundledAppJavascript: "window.__CLASH_CANVAS__ = true;",
+    bundledStudioAppJavascript: "window.__CLASH_STUDIO__ = true;",
+    gateway: {
+      async invoke() {
+        return { ok: true };
+      },
+    },
+    assetGateway: {
+      async invoke(name, input) {
+        assetCalls.push({ name, input });
+        return {
+          id: input.projectAssetId ?? "asset:minted",
+          status: "ready",
+        };
+      },
+    },
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "asset-identity-test", version: "1.0.0" });
+  t.after(async () => {
+    await client.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const importFile = (args: Record<string, unknown>) =>
+    client.callTool({
+      name: "clash_assets",
+      arguments: { operation: "import_file", arguments: args },
+    });
+  const text = (result: unknown) =>
+    (result as { content?: Array<{ text?: string }> }).content?.[0]?.text ??
+    "";
+
+  // Argument sets recorded from the Pi agent in asset-image-exact-import-mcp-v1
+  // and asset-trash-restore-v1. Each one used to succeed under a fresh
+  // minted id, leaving an extra Asset per attempt.
+  for (const attempted of [
+    { id: "benchmark-asset-exact-import-mcp-v1" },
+    { name: "benchmark-asset-exact-import-mcp-v1" },
+    { zzzBogusField: 12345 },
+    { assetId: 12345 },
+    { kind: "image", assetId: "benchmark-asset-trash-restore-v1" },
+  ]) {
+    const rejected = await importFile({
+      filePath: "inputs/exact-source.svg",
+      ...attempted,
+    });
+    assert.equal(rejected.isError, true, JSON.stringify(attempted));
+    assert.match(text(rejected), /projectAssetId/u);
+  }
+  assert.deepEqual(assetCalls, []);
+
+  const assigned = await importFile({
+    filePath: "inputs/exact-source.svg",
+    projectAssetId: "benchmark-asset-exact-import-mcp-v1",
+  });
+  assert.notEqual(assigned.isError, true, text(assigned));
+  assert.deepEqual(assetCalls, [
+    {
+      name: "clash_assets_import_file",
+      input: {
+        filePath: "inputs/exact-source.svg",
+        projectAssetId: "benchmark-asset-exact-import-mcp-v1",
+      },
+    },
+  ]);
+  assert.doesNotMatch(text(assigned), /minted/u);
+
+  // An import without an identity stays valid, but the result says the id is
+  // now fixed instead of leaving the agent to re-import with one.
+  const minted = await importFile({ filePath: "inputs/exact-source.svg" });
+  assert.notEqual(minted.isError, true, text(minted));
+  assert.match(text(minted), /minted[^.]*projectAssetId was omitted/u);
+  // ...and names the calls that replace it when a specific id was required.
+  for (const operation of ["get", "trash"]) {
+    assert.ok(
+      text(minted).includes(
+        JSON.stringify({ operation, arguments: { assetId: "asset:minted" } }),
+      ),
+      text(minted),
+    );
+  }
+
+  // Calling an operation as if it were a tool, or passing its arguments beside
+  // "arguments", is answered with the corrected dispatcher call.
+  const asTool = await client.callTool({
+    name: "content_list",
+    arguments: { kinds: ["image"] },
+  });
+  assert.equal(asTool.isError, true);
+  assert.ok(
+    text(asTool).includes(
+      `clash_assets ${JSON.stringify({ operation: "content_list", arguments: { kinds: ["image"] } })}`,
+    ),
+    text(asTool),
+  );
+  const flat = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "get", assetId: "asset:minted" },
+  });
+  assert.equal(flat.isError, true);
+  assert.ok(
+    text(flat).includes(
+      JSON.stringify({
+        operation: "get",
+        arguments: { assetId: "asset:minted" },
+      }),
+    ),
+    text(flat),
+  );
+  const nonexistent = await client.callTool({
+    name: "clash_asset_inventory",
+    arguments: {},
+  });
+  assert.equal(nonexistent.isError, true);
+  assert.match(text(nonexistent), /does not exist/u);
+  assert.match(text(nonexistent), /\bclash_assets\b/u);
+  assert.equal(assetCalls.length, 2);
+  assert.equal(
+    (minted.structuredContent as { id?: string }).id,
+    "asset:minted",
+  );
+
+  // The real content and lifecycle leaves keep accepting their declared
+  // arguments under the same guard.
+  const listed = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "list", arguments: { projectId: "project-a" } },
+  });
+  assert.notEqual(listed.isError, true, text(listed));
+  const guessed = await client.callTool({
+    name: "clash_assets",
+    arguments: { operation: "assets_list", arguments: {} },
+  });
+  assert.equal(guessed.isError, true);
+  assert.match(text(guessed), /Did you mean [^?]*\blist\b/u);
+});
+
 test("bundled MCP registers Generator leaves with the authenticated Host API transport", async (t) => {
   const { createClashMcpServer } = await import("./server");
   const requests: Array<{ url: string; authorization: string | null }> = [];

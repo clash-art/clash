@@ -63,7 +63,7 @@ export function registerContentTools(
     "content_list",
     "List project content",
     "the available project media and Documents need to be browsed or filtered by name and overview facts",
-    "lists bounded project content and exact readable references without reading Document bodies",
+    "lists bounded project content and exact readable references without reading Document bodies; for the Project Asset inventory with lifecycle state use the list operation instead",
     { query, kinds, limit, cursor },
     async (args) => {
       const input = ProjectContentQuerySchema.parse({

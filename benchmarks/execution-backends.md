@@ -171,6 +171,14 @@ A model is required whenever a provider is given: the provider and the
 thinking level are written inside the model value, and the runner refuses a
 launch the recipe reports it cannot fully express.
 
+The thinking level is a request. Pi resolves it against the model's own levels
+and does not fail when the model has no `medium`: `deepseek-flash` and
+`deepseek-v4-pro` run at `high`. What the session really has is in the first
+line of `logs/events.jsonl`: `acp.session.configOptions` holds the config
+options the agent reported when the session opened, unmodified, and the option
+with `category: "thought_level"` names the current level and the levels the
+model offers. Read the level of a run from there, not from this document.
+
 **Isolation from the operator's machine.** Every Pi Attempt, on every backend,
 gets a home of its own that is removed afterwards. The runner points `HOME`,
 `USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,

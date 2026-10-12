@@ -106,6 +106,41 @@ describe("ACP agent session", () => {
     });
   });
 
+  it("logs the model and thinking level the session reports, not the ones the launch requested", async () => {
+    // What @openma/pi-acp 0.1.7 with the Pi SDK 1.1.0 answered `session/new`
+    // with for `--model deepseek/deepseek-flash:medium` (clash-art/clash#42):
+    // this model has no `medium`, and Pi ran it at `high` without an error.
+    const configOptions = [
+      {
+        id: "thinking",
+        name: "Thinking",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: ["off", "low", "high", "max"].map((value) => ({
+          value,
+          name: value,
+        })),
+      },
+    ];
+
+    const reported = await run({
+      ACP_FIXTURE_CONFIG_OPTIONS: JSON.stringify(configOptions),
+    });
+    const silent = await run({});
+
+    expect(reported.result.status).toBe("completed");
+    expect(reported.lines[0]).toMatchObject({
+      type: "acp.session",
+      configOptions,
+    });
+    // An agent that reports none is logged as reporting none.
+    expect(silent.lines[0]).toMatchObject({
+      type: "acp.session",
+      configOptions: [],
+    });
+  }, 30_000);
+
   it("fails a turn that stops for any reason other than its end", async () => {
     const { result, lines } = await run({ ACP_FIXTURE_MODE: "refusal" });
 
