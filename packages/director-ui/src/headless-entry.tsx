@@ -6,6 +6,7 @@ import {
   DirectorViewport,
   type DirectorViewportHandle,
 } from "./DirectorViewport";
+import { directorCaptureTimeoutMs } from "./headless-render-boundary";
 import { directorRenderPaletteFallback } from "./tokens";
 
 type DirectorAspectRatio = DirectorStageState["shots"][number]["aspectRatio"];
@@ -54,9 +55,13 @@ window.clashDirectorCapture = async (request) => {
   const evaluated = evaluateDirectorStage(request.state, request.timeSeconds);
 
   return await new Promise<CaptureResult>((resolve, reject) => {
+    const timeoutMs = directorCaptureTimeoutMs(dimensions.width, dimensions.height);
     const timeout = window.setTimeout(() => {
-      reject(new Error(`Director product renderer timed out at ${request.timeSeconds}s`));
-    }, 60_000);
+      reject(new Error(
+        `Director product renderer timed out at ${request.timeSeconds}s ` +
+          `(${dimensions.width}x${dimensions.height}, limit ${Math.round(timeoutMs / 1000)}s)`,
+      ));
+    }, timeoutMs);
     let settled = false;
     const finish = async () => {
       if (settled || sequence !== captureSequence) return;

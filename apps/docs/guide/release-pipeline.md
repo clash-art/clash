@@ -215,6 +215,14 @@ in a `debian:bookworm-slim` container with the two libraries below: `angle`,
 Linux with a GPU, where Remotion recommends `angle-egl`. Timeline renders set no
 `gl` and keep Remotion's default.
 
+Software rendering is slow for large frames, so two things keep a capture
+bounded. The headless render loop stops drawing once the frame is published;
+left running, it issues frames faster than SwiftShader finishes them, the PNG
+readback waits behind the backlog, and the GPU process stays busy after the page
+is closed. And the per-frame limit is one minute up to 1920×1080 and grows in
+proportion to the pixel count above that (about 4.5 minutes at 4096×2304),
+because rasterising on CPU threads is linear in pixels.
+
 ### Linux system libraries
 
 The download succeeds on a bare image; launching does not. On
