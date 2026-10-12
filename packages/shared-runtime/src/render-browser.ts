@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
@@ -190,6 +191,29 @@ export function clashBrowserEnvironment(env: Env = process.env): Env {
   };
 }
 
+/**
+ * `CLASH_BROWSER_GL`: an operator's Remotion `gl` backend for a browser that needs WebGL.
+ *
+ * The accepted values are Remotion's, so the caller supplies them from the installed
+ * `@remotion/renderer`; they are only loaded when the variable is set. A value Remotion would
+ * reject fails here, by name, instead of at the first capture.
+ */
+export async function resolveClashBrowserGlOverride<Backend extends string>(
+  loadValidBackends: () => readonly Backend[] | Promise<readonly Backend[]>,
+  env: Env = process.env,
+): Promise<Backend | undefined> {
+  const explicit = env.CLASH_BROWSER_GL?.trim();
+  if (!explicit) return undefined;
+  const validBackends = await loadValidBackends();
+  const backend = validBackends.find((candidate) => candidate === explicit);
+  if (backend === undefined) {
+    throw new Error(
+      `CLASH_BROWSER_GL is "${explicit}", which is not a Remotion gl backend. Accepted values: ${validBackends.join(", ")}.`,
+    );
+  }
+  return backend;
+}
+
 function readTrimmed(path: string): string | undefined {
   try {
     return readFileSync(path, "utf8").trim();
@@ -342,6 +366,15 @@ export function downloadClashBrowserInChildProcess(
   });
 }
 
+/** The path with symlinks resolved, or unchanged while it does not exist. */
+function realPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 function writeFileAtomically(path: string, contents: string): void {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, contents, "utf8");
@@ -375,7 +408,9 @@ async function ensureCachedBrowser(
     signal: options.signal,
     onProgress: options.onProgress,
   });
-  const recorded = relative(cacheDir, executablePath);
+  // Remotion reports the physical path of its cwd, so a cache reached through a symlink
+  // (`CLASH_HOME` on another volume) has to be compared by real path on both sides.
+  const recorded = relative(realPath(cacheDir), realPath(executablePath));
   if (recorded.startsWith("..") || isAbsolute(recorded)) {
     throw new Error(
       `Remotion installed Chrome Headless Shell outside the Clash browser cache: ${executablePath}`,

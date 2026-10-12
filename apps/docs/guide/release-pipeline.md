@@ -181,10 +181,47 @@ directories are not pruned automatically and can be deleted by hand.
 | `CLASH_BROWSER_CACHE_DIR`  | Cache root instead of `$CLASH_HOME/cache/browser` (for example a shared or pre-baked image directory) |
 | `CLASH_BROWSER_EXECUTABLE` | Passed straight through as `browserExecutable`; nothing is downloaded and the version is not checked  |
 | `CLASH_BROWSER_WARMUP=0`   | Disables the Host's background download; renders and `clash browser ensure` still fetch on demand     |
+| `CLASH_BROWSER_GL`         | Remotion `gl` backend for Director capture instead of the probed one below (for example `angle-egl`)  |
 
 Plugin processes do not inherit `CLASH_HOME`, so the Host forwards the resolved
 cache root and `CLASH_BROWSER_EXECUTABLE` to the Remotion plugin only. The
 offline smokes set `CLASH_BROWSER_WARMUP=0`.
+
+The cache root may be a symlink (a `CLASH_HOME` on another volume): Remotion
+reports the physical path of its download, and containment in the cache is
+checked by real path.
+
+### WebGL backend
+
+Director capture renders three.js and needs a WebGL2 context. Whether a `gl`
+backend can create one is only known by trying it, so the Host does not guess
+from the platform or from device nodes. The first capture opens the browser with
+`angle` (hardware, what a desktop has) and creates a WebGL2 context on a blank
+page once. If that fails it closes the browser and reopens it with `swangle`
+(ANGLE on SwiftShader, software). The browser is then reused for the Host's
+lifetime, so the probe runs once; the choice is one `director.browser_gl` record
+in the Host log (`reason`: `preferred`, `software-fallback` or `override`).
+
+`CLASH_BROWSER_GL` replaces that choice. It is validated at Host startup against
+the backends the installed Remotion accepts, and a value Remotion would reject
+stops the Host with an error naming the variable and the accepted values. An
+override is never replaced by the fallback: if its backend has no WebGL2, every
+capture fails with an error naming `CLASH_BROWSER_GL` and the backend.
+
+Checked with the pinned 149.0.7790.0 headless shell on a GPU-less x64 host and
+in a `debian:bookworm-slim` container with the two libraries below: `angle`,
+`angle-egl`, `egl`, `swiftshader` and `vulkan` create no WebGL2 context;
+`swangle` does, and the Host falls back to it. Not checked: macOS, Windows, and
+Linux with a GPU, where Remotion recommends `angle-egl`. Timeline renders set no
+`gl` and keep Remotion's default.
+
+Software rendering is slow for large frames, so two things keep a capture
+bounded. The headless render loop stops drawing once the frame is published;
+left running, it issues frames faster than SwiftShader finishes them, the PNG
+readback waits behind the backlog, and the GPU process stays busy after the page
+is closed. And the per-frame limit is one minute up to 1920×1080 and grows in
+proportion to the pixel count above that (about 4.5 minutes at 4096×2304),
+because rasterising on CPU threads is linear in pixels.
 
 ### Linux system libraries
 

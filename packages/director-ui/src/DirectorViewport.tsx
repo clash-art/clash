@@ -75,7 +75,7 @@ import {
 } from "./humanoid-motion";
 import {
   createDirectorFramePublicationGate,
-  renderDirectorFrameNow,
+  renderDirectorPublicationFrame,
   type DirectorRenderedFrame,
 } from "./headless-render-boundary";
 
@@ -1699,9 +1699,9 @@ function DirectorFramePublisher({
     publicationGate.current.reset();
   }, [timeSeconds]);
   useFrame(({ gl, scene, camera }) => {
-    gl.render(scene, camera);
-    if (!publicationGate.current.tick(active)) return;
-    renderDirectorFrameNow({
+    renderDirectorPublicationFrame({
+      gate: publicationGate.current,
+      resourcesActive: active,
       renderer: gl,
       scene,
       camera,
