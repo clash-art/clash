@@ -288,6 +288,10 @@ import {
   type LocalMetadataProject as LocalProject,
   type LocalMetadataSession as LocalSession,
 } from "./local-metadata-store.js";
+import {
+  isLoopbackRemoteAddress,
+  socketRemoteAddress,
+} from "./loopback-client.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { readThroughProjectCanvasPreviewEntry } from "./project-canvas-preview-cache.js";
 import {
@@ -5032,10 +5036,18 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   );
 
   // Same-machine clients (the CLI) link this read-only store file into a
-  // working tree instead of downloading a second copy of the bytes.
+  // working tree instead of downloading a second copy of the bytes. A store
+  // path is only meaningful, and only disclosed, to a loopback socket peer:
+  // a request with no socket or a forwarded one fails closed.
   app.get(
     "/api/v1/projects/:projectId/assets/:projectAssetId/local-file",
     async (c) => {
+      if (!isLoopbackRemoteAddress(socketRemoteAddress(c.env))) {
+        return c.json(
+          { error: "local file access is limited to this machine" },
+          403,
+        );
+      }
       try {
         const projection = await projectAssetServiceAt(
           requestOrigin(c),

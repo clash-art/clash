@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { serve } from "@hono/node-server";
 import { LoroDoc } from "loro-crdt";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -318,12 +321,19 @@ describe("Project-scoped ResolvedAsset routes", () => {
     expect(unsatisfiable.headers.get("content-range")).toBe("bytes */10");
   });
 
+  /** Stands in for the Node socket `@hono/node-server` passes as `c.env`. */
+  const socketPeer = (remoteAddress: string | undefined) => ({
+    incoming: { socket: { remoteAddress } },
+  });
+
   it("exposes the read-only store file of a Project Asset to same-machine clients", async () => {
     const { app, asset } = await fixture();
     const baseUrl = "http://127.0.0.1:49152/api/v1/projects/project-a/assets";
 
     const response = await app.request(
       `${baseUrl}/${encodeURIComponent(asset.id)}/local-file`,
+      {},
+      socketPeer("127.0.0.1"),
     );
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
@@ -335,8 +345,93 @@ describe("Project-scoped ResolvedAsset routes", () => {
     // Read-only for everyone: a linked working-tree file cannot rewrite it.
     expect((await stat(body.path)).mode & 0o222).toBe(0);
 
-    const missing = await app.request(`${baseUrl}/missing-asset/local-file`);
+    const missing = await app.request(
+      `${baseUrl}/missing-asset/local-file`,
+      {},
+      socketPeer("127.0.0.1"),
+    );
     expect(missing.status).toBe(404);
+  });
+
+  it.each(["127.0.0.1", "127.4.5.6", "::1", "::ffff:127.0.0.1"])(
+    "answers the store file to the loopback socket peer %s",
+    async (remoteAddress) => {
+      const { app, asset } = await fixture();
+      const response = await app.request(
+        `http://127.0.0.1:49152/api/v1/projects/project-a/assets/${encodeURIComponent(asset.id)}/local-file`,
+        {},
+        socketPeer(remoteAddress),
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { path: string };
+      await expect(readFile(body.path, "utf8")).resolves.toBe("0123456789");
+    },
+  );
+
+  it.each([
+    ["a LAN peer", socketPeer("192.168.1.5"), {}],
+    ["an IPv4-mapped non-loopback peer", socketPeer("::ffff:10.0.0.1"), {}],
+    ["a socket without a peer address", socketPeer(undefined), {}],
+    ["a request with no socket", undefined, {}],
+    [
+      "a non-loopback peer claiming loopback in headers",
+      socketPeer("192.168.1.5"),
+      {
+        "x-forwarded-for": "127.0.0.1",
+        "x-real-ip": "127.0.0.1",
+        forwarded: "for=127.0.0.1",
+        host: "127.0.0.1:49152",
+      },
+    ],
+  ])(
+    "refuses the store file to %s without revealing the path",
+    async (_label, env, headers) => {
+      const { app, asset, dataDir, clashRoot } = await fixture();
+      const baseUrl = "http://127.0.0.1:49152/api/v1/projects/project-a/assets";
+
+      const response = await app.request(
+        `${baseUrl}/${encodeURIComponent(asset.id)}/local-file`,
+        { headers },
+        env,
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.get("content-type")).toContain(
+        "application/json",
+      );
+      const text = await response.text();
+      const body = JSON.parse(text) as Record<string, unknown>;
+      expect(typeof body.error).toBe("string");
+      expect(body).not.toHaveProperty("path");
+      expect(body).not.toHaveProperty("byteLength");
+      expect(text).not.toContain(dataDir);
+      expect(text).not.toContain(clashRoot);
+
+      // Existence is not disclosed either: a missing Asset answers the same.
+      const missing = await app.request(
+        `${baseUrl}/missing-asset/local-file`,
+        { headers },
+        env,
+      );
+      expect(missing.status).toBe(403);
+    },
+  );
+
+  it("reads the peer address from the real Node socket behind the Host server", async () => {
+    const { app, asset } = await fixture();
+    const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 });
+    try {
+      await once(server, "listening");
+      const { port } = server.address() as AddressInfo;
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/v1/projects/project-a/assets/${encodeURIComponent(asset.id)}/local-file`,
+        { headers: { "x-forwarded-for": "192.168.1.5" } },
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { path: string };
+      await expect(readFile(body.path, "utf8")).resolves.toBe("0123456789");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it("projects a video proxy for preview playback and keeps /media on the original", async () => {
