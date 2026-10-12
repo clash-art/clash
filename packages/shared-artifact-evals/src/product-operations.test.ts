@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   effectiveMcpToolName,
   extractTrustedAssetOperationEvidence,
+  importedProjectAssetIdFromCliOutput,
   matchRequiredProductOperations,
 } from "./product-operations";
 
@@ -40,16 +41,20 @@ describe("transport-neutral product operation evidence", () => {
             },
           },
         ],
-        successfulCliArgv: [
-          [
-            "assets",
-            "delete",
-            "--asset",
-            "asset-benchmark-a",
-            "--yes",
-            "--json",
-          ],
-          ["assets", "restore", "--asset=asset-benchmark-a", "--json"],
+        successfulCliCalls: [
+          {
+            argv: [
+              "assets",
+              "delete",
+              "--asset",
+              "asset-benchmark-a",
+              "--yes",
+              "--json",
+            ],
+          },
+          {
+            argv: ["assets", "restore", "--asset=asset-benchmark-a", "--json"],
+          },
         ],
       }),
     ).toEqual([
@@ -81,7 +86,7 @@ describe("transport-neutral product operation evidence", () => {
     ]);
   });
 
-  it("fails closed when MCP result identity disagrees or CLI import has no preassigned identity", () => {
+  it("fails closed when a result identity disagrees or an import names no identity at all", () => {
     expect(
       extractTrustedAssetOperationEvidence({
         successfulMcpCalls: [
@@ -91,11 +96,105 @@ describe("transport-neutral product operation evidence", () => {
             result: { structured_content: { id: "asset-b" } },
           },
         ],
-        successfulCliArgv: [
-          ["assets", "import", "--file", "inputs/source.svg", "--json"],
+        successfulCliCalls: [
+          {
+            argv: ["assets", "import", "--file", "inputs/source.svg", "--json"],
+          },
+          {
+            argv: [
+              "assets",
+              "import",
+              "--file",
+              "inputs/source.svg",
+              "--asset-id",
+              "asset-a",
+            ],
+            importedProjectAssetId: "asset-b",
+          },
         ],
       }),
     ).toEqual([]);
+  });
+
+  it("takes a minted import identity from the product result on either transport", () => {
+    expect(
+      extractTrustedAssetOperationEvidence({
+        successfulMcpCalls: [
+          {
+            tool: "clash_assets_import_file",
+            arguments: { filePath: "inputs/source.svg" },
+            result: { structuredContent: { id: "asset:minted-mcp" } },
+          },
+        ],
+        successfulCliCalls: [
+          {
+            argv: ["assets", "import", "--file", "inputs/source.svg"],
+            importedProjectAssetId: "asset:minted-cli",
+          },
+        ],
+      }).map(({ transport, projectAssetId }) => ({
+        transport,
+        projectAssetId,
+      })),
+    ).toEqual([
+      { transport: "mcp", projectAssetId: "asset:minted-mcp" },
+      { transport: "cli", projectAssetId: "asset:minted-cli" },
+    ]);
+  });
+
+  it("reads the imported identity from the CLI import output only", () => {
+    const importArgv = ["assets", "import", "--file", "inputs/source.svg"];
+    expect(
+      importedProjectAssetIdFromCliOutput(
+        [...importArgv, "--json"],
+        `${JSON.stringify({ assetId: "asset:from-json", kind: "image" })}\n`,
+      ),
+    ).toBe("asset:from-json");
+    expect(
+      importedProjectAssetIdFromCliOutput(
+        importArgv,
+        "imported Project Asset asset:from-text, link assets/links/source.svg\n",
+      ),
+    ).toBe("asset:from-text");
+    expect(
+      importedProjectAssetIdFromCliOutput(
+        ["asset", "import", "--file", "inputs/source.svg"],
+        "imported Project Asset asset:from-alias\n",
+      ),
+    ).toBe("asset:from-alias");
+    expect(
+      importedProjectAssetIdFromCliOutput(
+        ["assets", "get", "--asset", "asset-a", "--json"],
+        JSON.stringify({ assetId: "asset-a" }),
+      ),
+    ).toBeUndefined();
+    expect(
+      importedProjectAssetIdFromCliOutput(importArgv, "nothing imported\n"),
+    ).toBeUndefined();
+  });
+
+  it("orders evidence across transports by the runner-sealed start time", () => {
+    expect(
+      extractTrustedAssetOperationEvidence({
+        successfulMcpCalls: [
+          {
+            tool: "clash_assets_get",
+            arguments: { assetId: "asset-a" },
+            startedAt: "2026-08-14T00:00:02.000Z",
+          },
+        ],
+        successfulCliCalls: [
+          {
+            argv: ["assets", "restore", "--asset", "asset-a"],
+            startedAt: "2026-08-14T00:00:03.000Z",
+          },
+          {
+            argv: ["assets", "delete", "--asset", "asset-a", "--yes"],
+            startedAt: "2026-08-14T00:00:01.000Z",
+          },
+        ],
+      }).map(({ operation }) => operation),
+    ).toEqual(["asset.trash", "asset.get", "asset.restore"]);
   });
 
   it("attributes root-dispatched MCP calls to the selected leaf operation", () => {
@@ -311,7 +410,7 @@ describe("transport-neutral product operation evidence", () => {
     expect(
       extractTrustedAssetOperationEvidence({
         successfulMcpCalls: [],
-        successfulCliArgv,
+        successfulCliCalls: successfulCliArgv.map((argv) => ({ argv })),
       }),
     ).toContainEqual({
       operation: "asset.import",

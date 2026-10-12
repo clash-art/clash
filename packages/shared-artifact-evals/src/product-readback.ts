@@ -18,6 +18,7 @@ import { loadSubmission } from "./artifacts";
 import { readRunnerSealedMcpCalls } from "./mcp-evidence";
 import {
   extractTrustedAssetOperationEvidence,
+  type SuccessfulAssetCliCall,
   type SuccessfulAssetMcpCall,
   type TrustedAssetOperationEvidence,
 } from "./product-operations";
@@ -101,6 +102,8 @@ export type AssetProductReadbackReport = {
   status: "pass" | "fail";
   projectId: string | null;
   expectedProjectAssetId?: string;
+  /** Identity taken from the first trusted import of the submitted media. */
+  importedProjectAssetId?: string;
   matchedArtifactIds: string[];
   operationEvidence: TrustedAssetOperationEvidence[];
   matches: Array<{
@@ -545,23 +548,33 @@ async function readTrustedAssetOperationEvidence(
       caseId,
     });
 
-  const successfulCliArgv = (
+  const successfulCliCalls = (
     await readJsonLinesIfPresent(
       join(caseRoot, "logs", "clash-cli-events.jsonl"),
     )
-  ).flatMap((value) => {
+  ).flatMap((value): SuccessfulAssetCliCall[] => {
     const event = recordOf(value);
     return event?.type === "clash.cli.completed" &&
       event.exitCode === 0 &&
       event.origin !== "mcp-transport" &&
       Array.isArray(event.argv) &&
       event.argv.every((argument) => typeof argument === "string")
-      ? [event.argv as string[]]
+      ? [
+          {
+            argv: event.argv as string[],
+            ...(typeof event.importedProjectAssetId === "string"
+              ? { importedProjectAssetId: event.importedProjectAssetId }
+              : {}),
+            ...(typeof event.startedAt === "string"
+              ? { startedAt: event.startedAt }
+              : {}),
+          },
+        ]
       : [];
   });
   return extractTrustedAssetOperationEvidence({
     successfulMcpCalls,
-    successfulCliArgv,
+    successfulCliCalls,
   });
 }
 
@@ -670,6 +683,11 @@ export async function captureAssetProductReadback(input: {
   const reportPath = join(input.caseRoot, "asset-readback.json");
   const expectedProjectAssetId =
     input.benchmark.execution?.productReadback?.expectedProjectAssetId;
+  const identityFromFirstImport =
+    !expectedProjectAssetId &&
+    input.benchmark.execution?.productReadback?.projectAssetIdentity ===
+      "first-import";
+  let requiredProjectAssetId = expectedProjectAssetId;
   const matchedArtifactIds: string[] = [];
   let operationEvidence: TrustedAssetOperationEvidence[] = [];
   const matches: AssetProductReadbackReport["matches"] = [];
@@ -713,11 +731,46 @@ export async function captureAssetProductReadback(input: {
       input.caseRoot,
       input.benchmark.id,
     );
-    if (expectedProjectAssetId) {
+    if (expectedProjectAssetId || identityFromFirstImport) {
       if (artifacts.length !== 1) {
         throw new Error(
-          "An expected Project Asset identity requires exactly one submitted media artifact",
+          "A Project Asset identity rule requires exactly one submitted media artifact",
         );
+      }
+      const submittedSha256 = artifacts[0]!.evidence!.sha256;
+      const importEvidence = operationEvidence.filter(
+        (evidence) => evidence.operation === "asset.import",
+      );
+      const importedSha256 = await Promise.all(
+        importEvidence.map(async (evidence) => {
+          const sourcePath = evidence.sourcePath
+            ? await mapImportSourceToSnapshot({
+                caseRoot: input.caseRoot,
+                declaredFinalWorkspace: input.workspace,
+                snapshotWorkspace: submission.workspace,
+                sourcePath: evidence.sourcePath,
+              })
+            : undefined;
+          return sourcePath ? await fileSha256(sourcePath) : undefined;
+        }),
+      );
+      if (identityFromFirstImport) {
+        const firstImportIndex = importedSha256.indexOf(submittedSha256);
+        const firstImport = importEvidence[firstImportIndex];
+        if (!firstImport) {
+          throw new Error(
+            "Trusted asset.import evidence is missing for the submitted media file, so no Project Asset identity was established",
+          );
+        }
+        requiredProjectAssetId = firstImport.projectAssetId;
+        const otherImport = importEvidence.find(
+          (evidence) => evidence.projectAssetId !== requiredProjectAssetId,
+        );
+        if (otherImport) {
+          throw new Error(
+            `Project Asset identity changed: the first successful import of the submitted media file created ${requiredProjectAssetId}, but another import created ${otherImport.projectAssetId}. Extra imports and trash-and-reimport are not accepted; keep operating the first imported Asset`,
+          );
+        }
       }
       const requiredEntityOperations = [
         ...new Set(
@@ -738,51 +791,29 @@ export async function captureAssetProductReadback(input: {
         );
         if (observed.length === 0) {
           throw new Error(
-            `Trusted ${operation} evidence is missing for expected Project Asset ${expectedProjectAssetId}`,
+            `Trusted ${operation} evidence is missing for ${identityFromFirstImport ? "first-imported" : "expected"} Project Asset ${requiredProjectAssetId}`,
           );
         }
-        if (
-          observed.some(
-            (evidence) => evidence.projectAssetId !== expectedProjectAssetId,
-          )
-        ) {
+        const stray = observed.find(
+          (evidence) => evidence.projectAssetId !== requiredProjectAssetId,
+        );
+        if (stray) {
           throw new Error(
-            `Every required Asset operation must target the same Project Asset identity ${expectedProjectAssetId}`,
+            `Every required Asset operation must target the same Project Asset identity ${requiredProjectAssetId}; ${operation} targeted ${stray.projectAssetId}`,
           );
         }
       }
-      const importEvidence = operationEvidence.filter(
-        (evidence) =>
-          evidence.operation === "asset.import" &&
-          evidence.projectAssetId === expectedProjectAssetId,
-      );
-      if (requiredEntityOperations.includes("asset.import")) {
-        const importedSnapshotPaths = await Promise.all(
-          importEvidence.map((evidence) =>
-            evidence.sourcePath
-              ? mapImportSourceToSnapshot({
-                  caseRoot: input.caseRoot,
-                  declaredFinalWorkspace: input.workspace,
-                  snapshotWorkspace: submission.workspace,
-                  sourcePath: evidence.sourcePath,
-                })
-              : undefined,
-          ),
+      if (
+        requiredEntityOperations.includes("asset.import") &&
+        importedSha256.some(
+          (sha256, index) =>
+            importEvidence[index]!.projectAssetId === requiredProjectAssetId &&
+            sha256 !== submittedSha256,
+        )
+      ) {
+        throw new Error(
+          `Trusted import evidence for ${requiredProjectAssetId} must use bytes matching the submitted media file`,
         );
-        const importedSha256 = await Promise.all(
-          importedSnapshotPaths.map((sourcePath) =>
-            sourcePath ? fileSha256(sourcePath) : undefined,
-          ),
-        );
-        if (
-          importedSha256.some(
-            (sha256) => sha256 !== artifacts[0]!.evidence!.sha256,
-          )
-        ) {
-          throw new Error(
-            `Trusted import evidence for ${expectedProjectAssetId} must use bytes matching the submitted media file`,
-          );
-        }
       }
     }
 
@@ -840,8 +871,8 @@ export async function captureAssetProductReadback(input: {
       const matchingCandidates = candidates.filter(
         (candidate) =>
           !usedAssetIds.has(candidate.assetId) &&
-          (!expectedProjectAssetId ||
-            candidate.assetId === expectedProjectAssetId) &&
+          (!requiredProjectAssetId ||
+            candidate.assetId === requiredProjectAssetId) &&
           candidate.kind === artifact.descriptor.kind &&
           candidate.sha256 === artifact.evidence!.sha256,
       );
@@ -866,6 +897,9 @@ export async function captureAssetProductReadback(input: {
       status: "pass",
       projectId: input.ready.projectId,
       ...(expectedProjectAssetId ? { expectedProjectAssetId } : {}),
+      ...(identityFromFirstImport && requiredProjectAssetId
+        ? { importedProjectAssetId: requiredProjectAssetId }
+        : {}),
       matchedArtifactIds,
       operationEvidence,
       matches,
@@ -879,6 +913,9 @@ export async function captureAssetProductReadback(input: {
       status: "fail",
       projectId: input.ready?.projectId ?? null,
       ...(expectedProjectAssetId ? { expectedProjectAssetId } : {}),
+      ...(identityFromFirstImport && requiredProjectAssetId
+        ? { importedProjectAssetId: requiredProjectAssetId }
+        : {}),
       matchedArtifactIds,
       operationEvidence,
       matches,

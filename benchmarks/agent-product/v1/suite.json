@@ -9,7 +9,7 @@
       "category": "asset",
       "tags": ["agent-product", "asset", "image", "exact-bytes"],
       "outcome": {
-        "objective": "Import inputs/exact-source.svg through Clash as the immutable Project image Asset `benchmark-asset-exact-import-v1`; preassign that exact identity in the import call. Preserve the fixture byte-for-byte, list the Project Assets, read that same Asset back, and submit the original SVG as the exact media evidence plus a short review containing the returned Project Asset identity.",
+        "objective": "Import inputs/exact-source.svg through Clash once as an immutable Project image Asset and keep the Project Asset identity that import returns. Preserve the fixture byte-for-byte, list the Project Assets, read that same Asset back, and submit the original SVG as the exact media evidence plus a short review containing the returned Project Asset identity.",
         "acceptanceCriteria": [
           "The SVG is imported through the real Clash Asset surface rather than represented by a handwritten record.",
           "The imported Project Asset is active, resolves as image media, and its Host-delivered bytes exactly match inputs/exact-source.svg.",
@@ -72,7 +72,7 @@
           "required": true,
           "mechanism": "asset-bytes-and-host-receipt",
           "artifactIds": ["imported-image"],
-          "expectedProjectAssetId": "benchmark-asset-exact-import-v1",
+          "projectAssetIdentity": "first-import",
           "description": "Match one active Project image Asset to the submitted SVG by exact SHA-256 and retain its opaque Host receipt."
         },
         "environment": {
@@ -126,7 +126,7 @@
       "category": "asset",
       "tags": ["agent-product", "asset", "image", "exact-bytes", "mcp"],
       "outcome": {
-        "objective": "Import inputs/exact-source.svg through Clash as the immutable Project image Asset `benchmark-asset-exact-import-mcp-v1`; preassign that exact identity in the import call. Preserve the fixture byte-for-byte, list the Project Assets, read that same Asset back, and submit the original SVG as the exact media evidence plus a short review containing the returned Project Asset identity.",
+        "objective": "Import inputs/exact-source.svg through Clash once as an immutable Project image Asset and keep the Project Asset identity that import returns. Preserve the fixture byte-for-byte, list the Project Assets, read that same Asset back, and submit the original SVG as the exact media evidence plus a short review containing the returned Project Asset identity.",
         "acceptanceCriteria": [
           "The SVG is imported through the real Clash Asset surface rather than represented by a handwritten record.",
           "The imported Project Asset is active, resolves as image media, and its Host-delivered bytes exactly match inputs/exact-source.svg.",
@@ -189,7 +189,7 @@
           "required": true,
           "mechanism": "asset-bytes-and-host-receipt",
           "artifactIds": ["imported-image-mcp"],
-          "expectedProjectAssetId": "benchmark-asset-exact-import-mcp-v1",
+          "projectAssetIdentity": "first-import",
           "description": "Match one active Project image Asset to the submitted SVG by exact SHA-256 and retain its opaque Host receipt."
         },
         "environment": {
@@ -243,7 +243,7 @@
       "category": "asset",
       "tags": ["agent-product", "asset", "image", "exact-bytes", "cli"],
       "outcome": {
-        "objective": "Import inputs/exact-source.svg through Clash as the immutable Project image Asset `benchmark-asset-exact-import-cli-v1`; preassign that exact identity in the import call. Preserve the fixture byte-for-byte, list the Project Assets, read that same Asset back, and submit the original SVG as the exact media evidence plus a short review containing the returned Project Asset identity.",
+        "objective": "Import inputs/exact-source.svg through Clash once as an immutable Project image Asset and keep the Project Asset identity that import returns. Preserve the fixture byte-for-byte, list the Project Assets, read that same Asset back, and submit the original SVG as the exact media evidence plus a short review containing the returned Project Asset identity.",
         "acceptanceCriteria": [
           "The SVG is imported through the real Clash Asset surface rather than represented by a handwritten record.",
           "The imported Project Asset is active, resolves as image media, and its Host-delivered bytes exactly match inputs/exact-source.svg.",
@@ -306,7 +306,7 @@
           "required": true,
           "mechanism": "asset-bytes-and-host-receipt",
           "artifactIds": ["imported-image-cli"],
-          "expectedProjectAssetId": "benchmark-asset-exact-import-cli-v1",
+          "projectAssetIdentity": "first-import",
           "description": "Match one active Project image Asset to the submitted SVG by exact SHA-256 and retain its opaque Host receipt."
         },
         "environment": {
@@ -360,7 +360,7 @@
       "category": "asset",
       "tags": ["agent-product", "asset", "lifecycle", "read-before-write"],
       "outcome": {
-        "objective": "Import inputs/exact-source.svg as Project image Asset `benchmark-asset-trash-restore-v1`; preassign that exact identity in the import call, read it before mutation, trash it, read the trashed state, restore it through Clash, and read the final active state. Submit the unchanged SVG as media evidence and a lifecycle review containing the stable Project Asset identity.",
+        "objective": "Import inputs/exact-source.svg through Clash once as a Project image Asset and keep the Project Asset identity that import returns. Read that Asset before mutation, trash it, read the trashed state, restore that same Asset through Clash, and read the final active state. Submit the unchanged SVG as media evidence and a lifecycle review containing the stable Project Asset identity.",
         "acceptanceCriteria": [
           "The same Project Asset identity is used for import, trash, restore, and final readback.",
           "Both guarded lifecycle mutations occur through Clash after the required reads; no force or fabricated receipt is used.",
@@ -424,7 +424,7 @@
           "required": true,
           "mechanism": "asset-bytes-and-host-receipt",
           "artifactIds": ["restored-image"],
-          "expectedProjectAssetId": "benchmark-asset-trash-restore-v1",
+          "projectAssetIdentity": "first-import",
           "description": "Match the final active Project image Asset to the submitted SVG by exact SHA-256 after the traced trash and restore operations."
         },
         "environment": {

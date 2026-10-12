@@ -6,11 +6,13 @@ export type RunnerSealedMcpCall = {
   tool: string;
   arguments: unknown;
   result: unknown;
+  startedAt: string;
 };
 
 export type RunnerSealedMcpInvocation = {
   tool: string;
   arguments: unknown;
+  startedAt: string;
   result?: unknown;
   error?: unknown;
   succeeded: boolean;
@@ -299,6 +301,7 @@ function parseRunnerMcpTrace(traceText: string):
     invocations: [...pairs.values()].map(({ started, completed }) => ({
       tool: started.tool,
       arguments: started.arguments,
+      startedAt: started.startedAt,
       ...(completed?.result === undefined ? {} : { result: completed.result }),
       ...(completed?.error === undefined ? {} : { error: completed.error }),
       succeeded: completed!.succeeded,
@@ -356,7 +359,7 @@ export async function readRunnerSealedMcpCalls(input: {
   caseId: string;
 }): Promise<RunnerSealedMcpCall[]> {
   return (await readRunnerSealedMcpInvocations(input)).flatMap(
-    ({ tool, arguments: argumentsValue, result, succeeded }) =>
-      succeeded ? [{ tool, arguments: argumentsValue, result }] : [],
+    ({ tool, arguments: argumentsValue, result, startedAt, succeeded }) =>
+      succeeded ? [{ tool, arguments: argumentsValue, result, startedAt }] : [],
   );
 }

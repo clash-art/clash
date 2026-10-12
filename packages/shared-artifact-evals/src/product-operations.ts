@@ -178,6 +178,15 @@ export type SuccessfulAssetMcpCall = {
   tool: string;
   arguments?: unknown;
   result?: unknown;
+  /** Runner-sealed start time; orders evidence across transports. */
+  startedAt?: string;
+};
+
+export type SuccessfulAssetCliCall = {
+  argv: string[];
+  /** Identity the runner read from a successful import's own output. */
+  importedProjectAssetId?: string;
+  startedAt?: string;
 };
 
 const ASSET_ENTITY_OPERATION_BY_MCP_TOOL: Record<
@@ -248,9 +257,35 @@ function mcpAssetOperationEvidence(
   };
 }
 
-function cliAssetOperationEvidence(
+/**
+ * Read the Project Asset identity a successful `assets import` reported. The
+ * runner calls this on the stdout it captured itself, so a minted id reaches
+ * the sealed trace without the Agent restating it.
+ */
+export function importedProjectAssetIdFromCliOutput(
   argv: string[],
+  stdout: string,
+): string | undefined {
+  const canonicalArgv =
+    argv[0] === "asset" ? ["assets", ...argv.slice(1)] : argv;
+  if (
+    canonicalArgv[0] !== "assets" ||
+    canonicalArgv[1] !== "import" ||
+    canonicalArgv.some((argument) => DISCOVERY_FLAGS.has(argument))
+  ) {
+    return undefined;
+  }
+  const json = stdout.trim().startsWith("{") ? asRecord(stdout) : undefined;
+  if (json) return nonEmptyString(json.assetId);
+  return nonEmptyString(
+    /^imported Project Asset (\S+?)(?:, link .*)?$/mu.exec(stdout)?.[1],
+  );
+}
+
+function cliAssetOperationEvidence(
+  call: SuccessfulAssetCliCall,
 ): TrustedAssetOperationEvidence | undefined {
+  const { argv } = call;
   const canonicalArgv =
     argv[0] === "asset" ? ["assets", ...argv.slice(1)] : argv;
   if (
@@ -271,10 +306,16 @@ function cliAssetOperationEvidence(
             ? "asset.restore"
             : undefined;
   if (!operation) return undefined;
-  const projectAssetId = cliOption(
+  const requestedId = cliOption(
     canonicalArgv,
     operation === "asset.import" ? "--asset-id" : "--asset",
   );
+  const resultId =
+    operation === "asset.import"
+      ? nonEmptyString(call.importedProjectAssetId)
+      : undefined;
+  if (requestedId && resultId && requestedId !== resultId) return undefined;
+  const projectAssetId = resultId ?? requestedId;
   if (!projectAssetId) return undefined;
   const sourcePath =
     operation === "asset.import"
@@ -291,21 +332,33 @@ function cliAssetOperationEvidence(
 }
 
 /**
- * Retain entity identity only from successful product calls. MCP structured
- * results may strengthen the requested identity and can never contradict it;
- * CLI imports must use the product's caller-owned `--asset-id` contract.
+ * Retain entity identity only from successful product calls, in the order the
+ * runner saw them start. A structured MCP result or the runner-captured CLI
+ * import output may strengthen the requested identity and can never
+ * contradict it; an import whose identity neither side names is not evidence.
  */
 export function extractTrustedAssetOperationEvidence(input: {
   successfulMcpCalls: SuccessfulAssetMcpCall[];
-  successfulCliArgv: string[][];
+  successfulCliCalls: SuccessfulAssetCliCall[];
 }): TrustedAssetOperationEvidence[] {
+  const startedMs = (startedAt: string | undefined): number => {
+    const parsed = startedAt === undefined ? Number.NaN : Date.parse(startedAt);
+    return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+  };
   return [
-    ...input.successfulMcpCalls.map(mcpAssetOperationEvidence),
-    ...input.successfulCliArgv.map(cliAssetOperationEvidence),
-  ].filter(
-    (evidence): evidence is TrustedAssetOperationEvidence =>
-      evidence !== undefined,
-  );
+    ...input.successfulMcpCalls.map((call) => ({
+      startedMs: startedMs(call.startedAt),
+      evidence: mcpAssetOperationEvidence(call),
+    })),
+    ...input.successfulCliCalls.map((call) => ({
+      startedMs: startedMs(call.startedAt),
+      evidence: cliAssetOperationEvidence(call),
+    })),
+  ]
+    .sort((left, right) =>
+      left.startedMs === right.startedMs ? 0 : left.startedMs - right.startedMs,
+    )
+    .flatMap(({ evidence }) => (evidence ? [evidence] : []));
 }
 
 type ProductOperationRule = {

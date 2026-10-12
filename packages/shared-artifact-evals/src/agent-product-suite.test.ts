@@ -156,18 +156,16 @@ describe("agent product benchmark catalog", () => {
       expect(rubricShapes[index], benchmarkCase.id).toEqual(rubricShapes[0]);
     }
 
-    const expectedProjectAssetIds = benchmarkCases.map(
-      (benchmarkCase) =>
-        benchmarkCase.execution?.productReadback?.expectedProjectAssetId,
-    );
-    expect(
-      expectedProjectAssetIds.every(
-        (assetId) => typeof assetId === "string" && assetId.length > 0,
-      ),
-    ).toBe(true);
-    expect(new Set(expectedProjectAssetIds).size).toBe(
-      expectedProjectAssetIds.length,
-    );
+    for (const benchmarkCase of benchmarkCases) {
+      const readback = benchmarkCase.execution?.productReadback;
+      expect(readback?.projectAssetIdentity, benchmarkCase.id).toBe(
+        "first-import",
+      );
+      expect(
+        readback?.expectedProjectAssetId,
+        benchmarkCase.id,
+      ).toBeUndefined();
+    }
 
     const reviewArtifactIds = benchmarkCases.map(
       (benchmarkCase) =>
@@ -216,18 +214,20 @@ describe("agent product benchmark catalog", () => {
       );
     }
     const assetCases = readyCaseIds.slice(0, 2).map((id) => cases.get(id)!);
-    const expectedIds = assetCases.map(
-      (benchmarkCase) =>
-        benchmarkCase.execution?.productReadback?.expectedProjectAssetId,
-    );
-    expect(
-      expectedIds.every((id) => typeof id === "string" && id.length > 0),
-    ).toBe(true);
-    expect(new Set(expectedIds).size).toBe(expectedIds.length);
-    for (const [index, benchmarkCase] of assetCases.entries()) {
-      expect(renderOutcomeMarkdown(benchmarkCase), benchmarkCase.id).toContain(
-        expectedIds[index],
+    for (const benchmarkCase of assetCases) {
+      const readback = benchmarkCase.execution?.productReadback;
+      expect(readback?.projectAssetIdentity, benchmarkCase.id).toBe(
+        "first-import",
       );
+      expect(
+        readback?.expectedProjectAssetId,
+        benchmarkCase.id,
+      ).toBeUndefined();
+      // The task leaves the identity to the import; it must not name one.
+      expect(
+        renderOutcomeMarkdown(benchmarkCase),
+        benchmarkCase.id,
+      ).not.toMatch(/preassign|benchmark-asset-/iu);
     }
   });
 
@@ -278,9 +278,9 @@ describe("agent product benchmark catalog", () => {
     expect(benchmarkCase?.execution?.requiredProductOperations).not.toContain(
       "timeline.validate",
     );
-    expect(benchmarkCase?.execution?.forbiddenProductOperations ?? []).not.toContain(
-      "timeline.validate",
-    );
+    expect(
+      benchmarkCase?.execution?.forbiddenProductOperations ?? [],
+    ).not.toContain("timeline.validate");
     const directorRubric = benchmarkCase?.rubric.find(
       (rubric) => rubric.type === "director-stage",
     );

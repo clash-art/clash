@@ -28,44 +28,53 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-async function writeSealedMcpTrace(input: {
-  caseRoot: string;
-  caseId: string;
+type SealedMcpCall = {
   tool: string;
   arguments: Record<string, unknown>;
   result: Record<string, unknown>;
+};
+
+async function writeSealedMcpCalls(input: {
+  caseRoot: string;
+  caseId: string;
+  calls: SealedMcpCall[];
 }): Promise<void> {
   const sessionId = "10000000-0000-4000-8000-000000000001";
-  const invocationId = "20000000-0000-4000-8000-000000000002";
-  const startedAt = "2026-08-14T00:00:00.000Z";
-  const argumentsSha256 = sha256(JSON.stringify(input.arguments));
-  const resultSha256 = sha256(JSON.stringify(input.result));
-  const events = [
-    {
-      type: "clash.mcp.started",
-      sessionId,
-      invocationId,
-      rpcId: 2,
-      startedAt,
-      tool: input.tool,
-      arguments: input.arguments,
-      argumentsSha256,
-    },
-    {
-      type: "clash.mcp.completed",
-      sessionId,
-      invocationId,
-      rpcId: 2,
-      startedAt,
-      finishedAt: "2026-08-14T00:00:00.010Z",
-      durationMs: 10,
-      tool: input.tool,
-      argumentsSha256,
-      result: input.result,
-      resultSha256,
-      succeeded: true,
-    },
-  ];
+  const events = input.calls.flatMap((call, index) => {
+    const invocationId = `20000000-0000-4000-8000-${String(index + 2).padStart(12, "0")}`;
+    const startedAt = new Date(
+      Date.UTC(2026, 7, 14, 0, 0, index),
+    ).toISOString();
+    const argumentsSha256 = sha256(JSON.stringify(call.arguments));
+    return [
+      {
+        type: "clash.mcp.started",
+        sessionId,
+        invocationId,
+        rpcId: index + 2,
+        startedAt,
+        tool: call.tool,
+        arguments: call.arguments,
+        argumentsSha256,
+      },
+      {
+        type: "clash.mcp.completed",
+        sessionId,
+        invocationId,
+        rpcId: index + 2,
+        startedAt,
+        finishedAt: new Date(
+          Date.UTC(2026, 7, 14, 0, 0, index, 10),
+        ).toISOString(),
+        durationMs: 10,
+        tool: call.tool,
+        argumentsSha256,
+        result: call.result,
+        resultSha256: sha256(JSON.stringify(call.result)),
+        succeeded: true,
+      },
+    ];
+  });
   const traceText = `${events.map((event) => JSON.stringify(event)).join("\n")}\n`;
   const logsRoot = join(input.caseRoot, "logs");
   await Promise.all([
@@ -80,6 +89,13 @@ async function writeSealedMcpTrace(input: {
       eventCount: events.length,
     }),
   ]);
+}
+
+async function writeSealedMcpTrace(
+  input: { caseRoot: string; caseId: string } & SealedMcpCall,
+): Promise<void> {
+  const { caseRoot, caseId, ...call } = input;
+  await writeSealedMcpCalls({ caseRoot, caseId, calls: [call] });
 }
 
 const componentSource = `import React from "react";
@@ -546,11 +562,11 @@ async function withProductHost<T>(
                   },
                   invocationFingerprint: "sha256:" + sha256("invocation"),
                   parameters: {
-                label:
-                  capturedAssetIndex === 0
-                    ? frame.artifactId
-                    : `${frame.artifactId}-${capturedAssetIndex + 1}`,
-                timeSeconds: capturedAssetIndex,
+                    label:
+                      capturedAssetIndex === 0
+                        ? frame.artifactId
+                        : `${frame.artifactId}-${capturedAssetIndex + 1}`,
+                    timeSeconds: capturedAssetIndex,
                     aspectRatio: frame.aspectRatio,
                     longEdge: Math.max(frame.width, frame.height),
                   },
@@ -1510,6 +1526,214 @@ describe("trusted Project Asset product readback", () => {
         trashedAssetIds: ["asset-image-copy"],
       },
     );
+  });
+
+  describe("identity taken from the first import", () => {
+    const firstImportBenchmark = (
+      requiredProductOperations: string[],
+    ): ArtifactBenchmarkCase => ({
+      ...assetBenchmark,
+      outcome: {
+        ...assetBenchmark.outcome,
+        deliverables: [assetBenchmark.outcome.deliverables[0]!],
+      },
+      execution: {
+        ...assetBenchmark.execution!,
+        requiredProductOperations,
+        productReadback: {
+          ...assetBenchmark.execution!.productReadback!,
+          artifactIds: ["hero-image"],
+          projectAssetIdentity: "first-import",
+        },
+      },
+    });
+    const mcpImport = (
+      resultId: string,
+      projectAssetId?: string,
+    ): SealedMcpCall => ({
+      tool: "clash_assets_import_file",
+      arguments: {
+        filePath: "hero.png",
+        ...(projectAssetId ? { projectAssetId } : {}),
+      },
+      result: {
+        structuredContent: { id: resultId, kind: "image", status: "ready" },
+      },
+    });
+    const mcpEntityCall = (
+      operation: "get" | "trash",
+      assetId: string,
+    ): SealedMcpCall => ({
+      tool: `clash_assets_${operation}`,
+      arguments: { assetId },
+      result: { structuredContent: { id: assetId, kind: "image" } },
+    });
+    const prepareCase = async (projectId: string) => {
+      const caseRoot = await mkdtemp(join("/tmp", "asset-readback-first-"));
+      const workspace = join(caseRoot, "workspace");
+      await mkdir(join(workspace, ".clash"), { recursive: true });
+      await mkdir(join(caseRoot, "logs"), { recursive: true });
+      await writeFile(
+        join(workspace, ".clash", "project.toml"),
+        `schema_version = 1\nproject_id = "${projectId}"\n`,
+        "utf8",
+      );
+      await writeFile(join(workspace, "hero.png"), "trusted-image", "utf8");
+      await writeJson(join(workspace, "submission.json"), {
+        schemaVersion: 1,
+        taskId: assetBenchmark.id,
+        artifacts: [{ id: "hero-image", kind: "image", path: "hero.png" }],
+      });
+      return { caseRoot, workspace };
+    };
+
+    it("accepts one import with a minted id followed by operations on that id", async () => {
+      await withAssetHost(async ({ projectId, apiUrl }) => {
+        const benchmark = firstImportBenchmark(["asset.import", "asset.get"]);
+        const { caseRoot, workspace } = await prepareCase(projectId);
+        await writeSealedMcpCalls({
+          caseRoot,
+          caseId: benchmark.id,
+          calls: [
+            mcpImport("asset-image"),
+            mcpEntityCall("get", "asset-image"),
+          ],
+        });
+
+        const report = await captureAssetProductReadback({
+          benchmark,
+          workspace,
+          caseRoot,
+          ready: { projectId, apiUrl },
+        });
+
+        expect(report.detail).toMatch(/^Matched 1 submitted media artifact/u);
+        expect(report).toMatchObject({
+          status: "pass",
+          importedProjectAssetId: "asset-image",
+          matches: [{ artifactId: "hero-image", assetId: "asset-image" }],
+        });
+        expect(report.expectedProjectAssetId).toBeUndefined();
+        await rm(caseRoot, { recursive: true, force: true });
+      });
+    });
+
+    it("rejects import without an id, trash, then re-import under another id", async () => {
+      await withAssetHost(
+        async ({ projectId, apiUrl }) => {
+          const benchmark = firstImportBenchmark(["asset.import", "asset.get"]);
+          const { caseRoot, workspace } = await prepareCase(projectId);
+          // The Flash t2 trajectory: the first import minted an id, the Agent
+          // trashed that Asset and imported the same file again under an id of
+          // its own, then read the second Asset back.
+          await writeSealedMcpCalls({
+            caseRoot,
+            caseId: benchmark.id,
+            calls: [
+              mcpImport("asset-image-copy"),
+              mcpEntityCall("get", "asset-image-copy"),
+              mcpEntityCall("trash", "asset-image-copy"),
+              mcpImport("asset-image", "asset-image"),
+              mcpEntityCall("get", "asset-image"),
+            ],
+          });
+
+          const report = await captureAssetProductReadback({
+            benchmark,
+            workspace,
+            caseRoot,
+            ready: { projectId, apiUrl },
+          });
+
+          expect(report.status).toBe("fail");
+          expect(report.detail).toMatch(/Project Asset identity changed/u);
+          expect(report.detail).toContain("asset-image-copy");
+          expect(report.detail).toMatch(/trash-and-reimport/u);
+          expect(report.matches).toEqual([]);
+          await rm(caseRoot, { recursive: true, force: true });
+        },
+        { duplicateImage: true, trashedAssetIds: ["asset-image-copy"] },
+      );
+    });
+
+    it("rejects a later required operation that targets another Asset", async () => {
+      await withAssetHost(
+        async ({ projectId, apiUrl }) => {
+          const benchmark = firstImportBenchmark(["asset.import", "asset.get"]);
+          const { caseRoot, workspace } = await prepareCase(projectId);
+          await writeSealedMcpCalls({
+            caseRoot,
+            caseId: benchmark.id,
+            calls: [
+              mcpImport("asset-image"),
+              mcpEntityCall("get", "asset-image-copy"),
+            ],
+          });
+
+          const report = await captureAssetProductReadback({
+            benchmark,
+            workspace,
+            caseRoot,
+            ready: { projectId, apiUrl },
+          });
+
+          expect(report.status).toBe("fail");
+          expect(report.detail).toMatch(/same Project Asset identity/iu);
+          await rm(caseRoot, { recursive: true, force: true });
+        },
+        { duplicateImage: true },
+      );
+    });
+
+    it("takes a CLI minted id only from the runner-recorded import result", async () => {
+      await withAssetHost(async ({ projectId, apiUrl }) => {
+        const benchmark = firstImportBenchmark(["asset.import", "asset.get"]);
+        const { caseRoot, workspace } = await prepareCase(projectId);
+        const writeCliTrace = (importedProjectAssetId?: string) =>
+          writeFile(
+            join(caseRoot, "logs", "clash-cli-events.jsonl"),
+            [
+              {
+                argv: ["assets", "import", "--file", "hero.png", "--json"],
+                ...(importedProjectAssetId ? { importedProjectAssetId } : {}),
+              },
+              { argv: ["assets", "get", "--asset", "asset-image", "--json"] },
+            ]
+              .map((event, index) =>
+                JSON.stringify({
+                  type: "clash.cli.completed",
+                  startedAt: new Date(
+                    Date.UTC(2026, 7, 14, 0, 0, index),
+                  ).toISOString(),
+                  exitCode: 0,
+                  signal: null,
+                  ...event,
+                }),
+              )
+              .join("\n") + "\n",
+            "utf8",
+          );
+        const capture = () =>
+          captureAssetProductReadback({
+            benchmark,
+            workspace,
+            caseRoot,
+            ready: { projectId, apiUrl },
+          });
+
+        await writeCliTrace();
+        const unidentified = await capture();
+        expect(unidentified.status).toBe("fail");
+        expect(unidentified.detail).toMatch(/no Project Asset identity/iu);
+
+        await writeCliTrace("asset-image");
+        await expect(capture()).resolves.toMatchObject({
+          status: "pass",
+          importedProjectAssetId: "asset-image",
+        });
+        await rm(caseRoot, { recursive: true, force: true });
+      });
+    });
   });
 
   it("fails closed when multiple active Assets have the submitted bytes", async () => {

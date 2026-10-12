@@ -209,6 +209,11 @@ export type BenchmarkExecution = {
     artifactIds: string[];
     /** Benchmark-owned Project Asset identity; never sourced from submission. */
     expectedProjectAssetId?: string;
+    /**
+     * Take the identity from the first trusted import of the submitted media
+     * instead of a benchmark-owned id; every later operation must keep it.
+     */
+    projectAssetIdentity?: "first-import";
     description: string;
   };
   environment?: BenchmarkEnvironmentContract;
