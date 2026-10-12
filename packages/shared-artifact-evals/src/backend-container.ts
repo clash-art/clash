@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
+import { BENCHMARK_ACP_BIN_DIR_VARIABLE } from "./acp-harness";
 import {
   collectWorkerAttempt,
   createAttemptUnit,
@@ -104,7 +105,8 @@ export type ContainerBackendOptions = {
    * Absolute path of a managed ACP harness directory on this machine (see
    * `installAcpHarness`). It is mounted read-only at the same path, because the
    * launchers in it name their install by absolute path, and the worker is
-   * pointed at it, so the image needs no Agent harness of its own.
+   * pointed at it, so the image needs no Agent harness of its own. This is the
+   * benchmark's own directory, never a product's managed ACP bin directory.
    */
   acpBinDir?: string;
   run?: ContainerCommandRunner;
@@ -252,7 +254,7 @@ export function createContainerBackend(
         "--env",
         "HOME=/tmp",
         ...(options.acpBinDir
-          ? ["--env", `CLASH_ACP_BIN_DIR=${options.acpBinDir}`]
+          ? ["--env", `${BENCHMARK_ACP_BIN_DIR_VARIABLE}=${options.acpBinDir}`]
           : []),
         ...[
           ...new Set([...unit.envNames, ...(unit.judgeEnvNames ?? [])]),

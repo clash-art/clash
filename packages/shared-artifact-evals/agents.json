@@ -3,6 +3,7 @@
   "context_hints": [
     "The execution agent receives only the outcome contract and copied built-in skills; rubric checks remain outside its workspace.",
     "Pi is driven over ACP through the pi-acp harness from the OpenMA registry, never through Pi's private JSON event stream. Reuse @openma/common's ACP runtime, registry, installer, and headless launch recipe; do not write an ACP client or spell a harness package, version, flag, or variable here. Only the harness id and generic options belong in this package.",
+    "Benchmark harness installs live in their own directory (CLASH_BENCH_ACP_BIN_DIR), never in a product's managed ACP bin directory; a directory holding a product install is refused.",
     "An ACP agent Attempt runs in a home created for it and removed afterwards; the operator's user-level agent configuration must never load. The lock records that isolation and the pinned harness versions, and refuses an install that differs from the pins.",
     "A preflight-blocked case is recorded by the dispatcher on every backend and is never placed on a worker.",
     "Never grade from the agent final message. Resolve submission paths inside the isolated workspace, reject symlinks, hash files, and independently validate artifacts.",

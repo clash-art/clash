@@ -346,7 +346,7 @@ describe("benchmark Environment execution lock", () => {
 
     const managed = await capture("managed", {
       ...pi,
-      env: { CLASH_ACP_BIN_DIR: binDir },
+      env: { CLASH_BENCH_ACP_BIN_DIR: binDir },
     });
     const harness = managed.agent.harness;
     if (harness?.pinned !== "verified") throw new Error("harness not verified");
@@ -431,7 +431,7 @@ describe("benchmark Environment execution lock", () => {
           adapter: "pi",
           provider: "test-provider",
           model: "test-model",
-          env: { CLASH_ACP_BIN_DIR: binDir },
+          env: { CLASH_BENCH_ACP_BIN_DIR: binDir },
           clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
         },
         executionIntent: "execute",

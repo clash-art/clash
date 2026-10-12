@@ -129,7 +129,8 @@ Options:
 
   clash-artifact-bench acp-install --agent pi --bin-dir <directory>
                               Install the agent's ACP harness at its pinned versions
-                              (Pi runs through pi-acp); run with CLASH_ACP_BIN_DIR=<directory>
+                              (Pi runs through pi-acp) into a directory used only by the
+                              benchmark; run with CLASH_BENCH_ACP_BIN_DIR=<directory>
   clash-artifact-bench prune-cloud-results [--run-id <id>] [--remote <name>] [--repo <path>]
                               Delete bench-results/<run>/... branches claude-cloud pushed
   --resume                    Continue a compatible existing run id

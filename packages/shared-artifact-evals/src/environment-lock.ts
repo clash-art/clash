@@ -66,9 +66,11 @@ export type BenchmarkLockedExecutable = LockedFile & {
 };
 
 /**
- * The ACP harness an ACP-driven adapter ran through. `versions` are the exact
- * package versions the registry pins, verified against the install before the
- * lock is written; an operator-supplied launcher is recorded as unverified.
+ * The ACP harness an ACP-driven adapter ran through. `package` and
+ * `dependencies` are the versions the installer recorded it installed
+ * (`InstallResult.dependencies`), accepted only when they, and the packages on
+ * disk, equal the registry's pins; an operator-supplied launcher is recorded
+ * as unverified.
  */
 export type BenchmarkLockedHarness = { id: string } & (
   | ({ pinned: "verified" } & AcpHarnessVersions)

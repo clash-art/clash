@@ -391,7 +391,7 @@ describe("Pi headless adapter", () => {
     });
   }, 30_000);
 
-  it("resolves the launcher from the managed ACP bin directory by its registry name", async () => {
+  it("resolves the pinned launcher from the benchmark ACP bin directory", async () => {
     const { root, suiteRoot, outputRoot, launcher } = await fixture();
     const binDir = join(root, "acp-bin");
     await mkdir(binDir);
@@ -409,7 +409,7 @@ describe("Pi headless adapter", () => {
         provider: "test-provider",
         model: "test-model",
         env: {
-          CLASH_ACP_BIN_DIR: binDir,
+          CLASH_BENCH_ACP_BIN_DIR: binDir,
           ACP_FIXTURE_REPLAY: RECORDED_SESSION,
         },
       }),
@@ -428,7 +428,7 @@ describe("Pi headless adapter", () => {
       agent: createPiAgentAdapter({
         provider: "test-provider",
         model: "test-model",
-        env: { CLASH_ACP_BIN_DIR: join(root, "empty") },
+        env: { CLASH_BENCH_ACP_BIN_DIR: join(root, "empty") },
       }),
     });
 

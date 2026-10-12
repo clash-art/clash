@@ -133,26 +133,43 @@ directory, provider, model, thinking level `medium`) to
 `buildAcpHeadlessLaunch`, and refuses to run if the entry's recipe cannot
 express one of them.
 
-**Pinned versions.** Install the harness once and point the runner at it:
+**Pinned versions.** Install the harness once, into a directory the benchmark
+owns, and point the runner at it:
 
 ```bash
-pnpm --filter @clash/artifact-evals benchmark acp-install --agent pi --bin-dir /opt/clash-acp
-CLASH_ACP_BIN_DIR=/opt/clash-acp pnpm --filter @clash/artifact-evals benchmark \
+pnpm --filter @clash/artifact-evals benchmark acp-install --agent pi --bin-dir /opt/clash-bench-acp
+CLASH_BENCH_ACP_BIN_DIR=/opt/clash-bench-acp pnpm --filter @clash/artifact-evals benchmark \
   --suite … --agent pi --provider <provider> --model <model> …
 ```
 
+Use a directory that nothing else installs into. The runner reads only
+`CLASH_BENCH_ACP_BIN_DIR`; it ignores `CLASH_ACP_BIN_DIR` and
+`OPENMA_ACP_BIN_DIR`, which the Local Host and other OpenMA products use for
+their own managed harnesses, and both `acp-install` and the runner refuse a
+directory that already holds a product harness install. The pinned install has
+its own launcher (`openma-acp-pi-acp-pinned`) and state
+(`registry/pi-acp-pinned/`), named by `@openma/common`, so even a shared
+directory would not be overwritten — the refusal keeps benchmark state out of
+product directories altogether.
+
 `acp-install` installs the exact versions the registry entry pins: the
 `pi-acp` adapter and every Pi SDK package it resolves, enforced with npm
-`overrides`. It needs `npm` and the network. The launcher it writes names its
-install by absolute path, so the directory cannot be moved afterwards. Before
-each Attempt the runner compares the install with the pins and fails the lock
-(`… does not match the pinned versions: <package> is <x>, pinned <y>`) instead
-of running a different Pi. The lock records the result under
-`agent.harness`: the harness id, `pinned: "verified"`, the adapter version and
-each pinned dependency version. Dependencies outside the pins (third-party
-packages the Pi SDK itself depends on) still follow their own ranges at install
-time. Library callers that set the Pi agent's `command` to a launcher of their
-own bypass the check; that lock says `pinned: "unverified-explicit-launcher"`.
+`overrides`, and records what it installed. It needs `npm` and the network.
+The launcher names its install by absolute path, so the directory cannot be
+moved afterwards. Before each Attempt the runner compares three things — the
+registry's pins, the packages on disk, and the installer's record — and fails
+the lock on any difference (`… does not match the pinned versions: <package>
+is <x>, pinned <y>`) instead of running a different Pi. The lock records the
+result under `agent.harness`: the harness id, `pinned: "verified"`, the adapter
+version, and each dependency version from the installer's record. Dependencies
+outside the pins (third-party packages the Pi SDK itself depends on) still
+follow their own ranges at install time. Library callers that set the Pi
+agent's `command` to a launcher of their own bypass the check; that lock says
+`pinned: "unverified-explicit-launcher"`.
+
+A model is required whenever a provider is given: the provider and the
+thinking level are written inside the model value, and the runner refuses a
+launch the recipe reports it cannot fully express.
 
 **Isolation from the operator's machine.** Every Pi Attempt, on every backend,
 gets a home of its own that is removed afterwards. The runner points `HOME`,
@@ -172,16 +189,16 @@ set). Codex and Claude Code Attempts still run in the operator's home, because
 their sign-in state lives there; their locks carry no `userConfiguration`.
 
 On the container backend, either bake the installed directory into the image at
-the path it was installed to and set `CLASH_ACP_BIN_DIR` there, or mount it:
+the path it was installed to and set `CLASH_BENCH_ACP_BIN_DIR` there, or mount it:
 
 ```bash
 … --backend container --container-image <bare image> \
   --container-runner-node /path/to/node \
-  --container-acp-bin-dir /opt/clash-acp
+  --container-acp-bin-dir /opt/clash-bench-acp
 ```
 
 `--container-acp-bin-dir` mounts the directory read-only at the same absolute
-path and sets `CLASH_ACP_BIN_DIR` for the worker. The harness is a Node program
+path and sets `CLASH_BENCH_ACP_BIN_DIR` for the worker. The harness is a Node program
 started through `env node`: an image without Node on `PATH` still works, because
 the runner then appends its own Node's directory to the harness `PATH` — which
 also makes that `node` visible to the Agent's shell. The image no longer needs a

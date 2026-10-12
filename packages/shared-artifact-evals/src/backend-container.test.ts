@@ -188,7 +188,7 @@ describe("container backend", () => {
     });
     const args = calls.find((call) => call.args[0] === "run")!.args;
     expect(args).toContain(`${acpBinDir}:${acpBinDir}:ro`);
-    expect(args[args.indexOf(`CLASH_ACP_BIN_DIR=${acpBinDir}`) - 1]).toBe(
+    expect(args[args.indexOf(`CLASH_BENCH_ACP_BIN_DIR=${acpBinDir}`) - 1]).toBe(
       "--env",
     );
 
