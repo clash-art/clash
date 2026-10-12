@@ -829,7 +829,7 @@ export function createLocalAssetRepresentationService(options: {
   const inFlight = new Map<string, Promise<LocalAssetRepresentation[]>>();
   // Proxies transcode one at a time, behind every read-blocking recipe.
   const backgroundPending = new Set<string>();
-  const backgroundUnneeded = new Set<string>();
+  const backgroundSettled = new Set<string>();
   let backgroundQueue: Promise<void> = Promise.resolve();
   const closing = new AbortController();
   let wakeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1109,7 +1109,7 @@ export function createLocalAssetRepresentationService(options: {
     recipe: LocalAssetRepresentationRecipe,
   ): Promise<boolean> {
     if (recipe.role !== "proxy") return true;
-    if (backgroundUnneeded.has(source.resource.id)) return false;
+    if (backgroundSettled.has(source.resource.id)) return false;
     let facts: LocalAssetInspectionFacts;
     try {
       ({ facts } = await options.assetInspection.inspect({ source }));
@@ -1119,7 +1119,7 @@ export function createLocalAssetRepresentationService(options: {
     }
     if (!videoNeedsPlaybackProxy(facts)) {
       // Resources are immutable, so this answer holds for the process.
-      backgroundUnneeded.add(source.resource.id);
+      backgroundSettled.add(source.resource.id);
       return false;
     }
     return ffmpegPath() !== null;
@@ -1172,7 +1172,7 @@ export function createLocalAssetRepresentationService(options: {
   function scheduleBackground(sourceResourceId: string): void {
     if (
       backgroundPending.has(sourceResourceId) ||
-      backgroundUnneeded.has(sourceResourceId)
+      backgroundSettled.has(sourceResourceId)
     ) {
       return;
     }
@@ -1180,7 +1180,19 @@ export function createLocalAssetRepresentationService(options: {
     backgroundQueue = backgroundQueue
       .then(async () => {
         if (closed) return;
-        await ensureRecipes(sourceResourceId, backgroundRecipesFor);
+        const derived = await ensureRecipes(
+          sourceResourceId,
+          backgroundRecipesFor,
+        );
+        const source = await resources.resolve(sourceResourceId);
+        // Nothing to derive, or all of it derived: later reads of this
+        // immutable source need not queue another check.
+        if (
+          source &&
+          derived.length === backgroundRecipesFor(source.resource.kind).length
+        ) {
+          backgroundSettled.add(sourceResourceId);
+        }
       })
       .catch((error) => {
         console.warn(
