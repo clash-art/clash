@@ -618,10 +618,16 @@ test("asset links refuse accidental overwrite", async () => {
   );
 });
 
-test("asset link copy fallback is read-only", async () => {
+function symlinkDisabled(): never {
+  const error = new Error("symlink disabled") as NodeJS.ErrnoException;
+  error.code = "EPERM";
+  throw error;
+}
+
+test("asset link falls back to a hardlink before copying", async () => {
   const homeDir = await tempDir();
   const cwd = await tempDir();
-  const source = join(await tempDir(), "asset-copy.txt");
+  const source = join(await tempDir(), "asset-hardlink.txt");
   await writeFile(source, "asset-bytes", "utf8");
   await initProject({ cwd, projectId: "asset_project" });
 
@@ -631,14 +637,45 @@ test("asset link copy fallback is read-only", async () => {
     env: {},
     homeDir,
     download: async () => source,
+    createSymlink: symlinkDisabled,
+  });
+
+  assert.equal(result.method, "hardlink");
+  assert.equal((await lstat(result.linkPath)).isSymbolicLink(), false);
+  // One inode: the link shares the source bytes instead of duplicating them.
+  assert.equal((await stat(result.linkPath)).ino, (await stat(source)).ino);
+  assert.equal(await readFile(result.linkPath, "utf8"), "asset-bytes");
+});
+
+test("asset link copies read-only only when no link can be made", async () => {
+  const homeDir = await tempDir();
+  const cwd = await tempDir();
+  const source = join(await tempDir(), "asset-copy.txt");
+  await writeFile(source, "asset-bytes", "utf8");
+  await initProject({ cwd, projectId: "asset_project" });
+  const attempts: string[] = [];
+
+  const result = await linkAssetIntoProject({
+    assetId: "asset-1",
+    cwd,
+    env: {},
+    homeDir,
+    download: async () => source,
     createSymlink: () => {
-      const error = new Error("symlink disabled") as NodeJS.ErrnoException;
-      error.code = "EPERM";
+      attempts.push("symlink");
+      symlinkDisabled();
+    },
+    createHardlink: () => {
+      attempts.push("hardlink");
+      const error = new Error("cross-device link") as NodeJS.ErrnoException;
+      error.code = "EXDEV";
       throw error;
     },
   });
 
+  assert.deepEqual(attempts, ["symlink", "hardlink"]);
   assert.equal(result.method, "copy");
+  assert.notEqual((await stat(result.linkPath)).ino, (await stat(source)).ino);
   assert.equal(await readFile(result.linkPath, "utf8"), "asset-bytes");
   assert.equal((await stat(result.linkPath)).mode & 0o777, 0o444);
 });

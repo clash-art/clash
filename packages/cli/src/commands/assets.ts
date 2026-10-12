@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   symlinkSync,
+  linkSync,
   copyFileSync,
   statSync,
 } from "node:fs";
@@ -25,7 +26,11 @@ import {
   type ProjectAssetHostClient,
   type ProjectAssetRecoveryStep,
 } from "@clash/shared-runtime/project-asset-client";
-import { downloadAssetById, replaceCanvasAssetNode } from "./canvas";
+import {
+  downloadAssetById,
+  replaceCanvasAssetNode,
+  resolveAssetFile,
+} from "./canvas";
 import { requireDestructiveConfirmation } from "../lib/destructive-guardrails";
 import { isJsonMode, printJson } from "../lib/output";
 import { assetMetadataCommand } from "./asset-metadata";
@@ -45,7 +50,7 @@ import {
   createCliProjectAssetHostClient,
 } from "../lib/project-host-client";
 
-export type AssetLinkMethod = "symlink" | "copy";
+export type AssetLinkMethod = "symlink" | "hardlink" | "copy";
 
 export interface AssetLinkResult {
   projectId: string;
@@ -151,6 +156,7 @@ function createAssetLink(options: {
   assetLinksRoot: string;
   name?: string;
   createSymlink?: (target: string, path: string) => void;
+  createHardlink?: (existingPath: string, path: string) => void;
 }): { linkPath: string; method: AssetLinkMethod } {
   const linkName = resolveAssetLinkName(
     options.assetId,
@@ -170,6 +176,8 @@ function createAssetLink(options: {
     );
   }
 
+  // Cheapest first: a symlink costs nothing, a hardlink shares the bytes on
+  // the same volume, and only a copy duplicates the Asset on disk.
   let method: AssetLinkMethod = "symlink";
   try {
     (options.createSymlink ?? symlinkSync)(options.sourcePath, linkPath);
@@ -180,9 +188,14 @@ function createAssetLink(options: {
         : "";
     if (!["EPERM", "EACCES", "ENOTSUP", "EOPNOTSUPP"].includes(code))
       throw error;
-    copyFileSync(options.sourcePath, linkPath);
-    chmodSync(linkPath, 0o444);
-    method = "copy";
+    try {
+      (options.createHardlink ?? linkSync)(options.sourcePath, linkPath);
+      method = "hardlink";
+    } catch {
+      copyFileSync(options.sourcePath, linkPath);
+      chmodSync(linkPath, 0o444);
+      method = "copy";
+    }
   }
 
   return { linkPath, method };
@@ -197,6 +210,7 @@ export async function linkAssetIntoProject(options: {
   name?: string;
   download?: (assetId: string, projectId: string) => Promise<string | null>;
   createSymlink?: (target: string, path: string) => void;
+  createHardlink?: (existingPath: string, path: string) => void;
 }): Promise<AssetLinkResult> {
   const assetId = options.assetId.trim();
   if (!assetId) throw new Error("asset id is required");
@@ -206,17 +220,22 @@ export async function linkAssetIntoProject(options: {
     env: options.env,
     homeDir: options.homeDir,
   });
-  const sourcePath = await (options.download ?? downloadAssetById)(
-    assetId,
-    status.projectId,
-  );
-  if (!sourcePath) throw new Error(`Unable to resolve asset ${assetId}`);
+  // The Host's store file is content-addressed, so the default link name
+  // comes from the Asset, not from where its bytes happen to live.
+  const source = options.download
+    ? await options.download(assetId, status.projectId).then((path) =>
+        path ? { path, name: undefined } : null,
+      )
+    : await resolveAssetFile(assetId, status.projectId);
+  if (!source) throw new Error(`Unable to resolve asset ${assetId}`);
+  const sourcePath = source.path;
   const { linkPath, method } = createAssetLink({
     assetId,
     sourcePath,
     assetLinksRoot: status.assetLinksRoot,
-    name: options.name,
+    name: options.name ?? source.name,
     createSymlink: options.createSymlink,
+    createHardlink: options.createHardlink,
   });
 
   return {

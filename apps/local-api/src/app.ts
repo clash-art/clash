@@ -5031,6 +5031,28 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     },
   );
 
+  // Same-machine clients (the CLI) link this read-only store file into a
+  // working tree instead of downloading a second copy of the bytes.
+  app.get(
+    "/api/v1/projects/:projectId/assets/:projectAssetId/local-file",
+    async (c) => {
+      try {
+        const projection = await projectAssetServiceAt(
+          requestOrigin(c),
+        ).openProjection(
+          c.req.param("projectId"),
+          c.req.param("projectAssetId"),
+        );
+        return c.json({
+          path: projection.path,
+          byteLength: projection.resource.byteLength,
+        });
+      } catch (error) {
+        return localProjectAssetErrorResponse(error);
+      }
+    },
+  );
+
   app.get(
     "/api/v1/projects/:projectId/assets/:projectAssetId/thumbnail",
     async (c) => {

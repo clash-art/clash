@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -315,6 +315,27 @@ describe("Project-scoped ResolvedAsset routes", () => {
     });
     expect(unsatisfiable.status).toBe(416);
     expect(unsatisfiable.headers.get("content-range")).toBe("bytes */10");
+  });
+
+  it("exposes the read-only store file of a Project Asset to same-machine clients", async () => {
+    const { app, asset } = await fixture();
+    const baseUrl = "http://127.0.0.1:49152/api/v1/projects/project-a/assets";
+
+    const response = await app.request(
+      `${baseUrl}/${encodeURIComponent(asset.id)}/local-file`,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      path: string;
+      byteLength: number;
+    };
+    expect(body.byteLength).toBe(10);
+    await expect(readFile(body.path, "utf8")).resolves.toBe("0123456789");
+    // Read-only for everyone: a linked working-tree file cannot rewrite it.
+    expect((await stat(body.path)).mode & 0o222).toBe(0);
+
+    const missing = await app.request(`${baseUrl}/missing-asset/local-file`);
+    expect(missing.status).toBe(404);
   });
 
   it("batch reads only requested Asset entries from the selected Project", async () => {

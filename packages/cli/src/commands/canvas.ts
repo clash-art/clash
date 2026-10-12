@@ -1,6 +1,19 @@
 import { Command } from "commander";
-import { chmodSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { extname, join } from "node:path";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  createWriteStream,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { extname, isAbsolute, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import {
   DEFAULT_CANVAS_ID,
   StoryboardViewStateSchema,
@@ -9,13 +22,13 @@ import {
 } from "@clash/shared-types";
 import { resolveWorkspaceTextInput } from "@clash/shared-runtime";
 import type { ProjectAssetHostClient } from "@clash/shared-runtime/project-asset-client";
-import { getServerUrl } from "../lib/config";
+import { getServerUrl, isLoopbackServerUrl } from "../lib/config";
 import { isJsonMode, printJson } from "../lib/output";
 import {
   createCliProjectAssetHostClient,
   sendProjectCommand,
 } from "../lib/project-host-client";
-import { apiJson } from "../lib/api";
+import { apiFetch, apiJson } from "../lib/api";
 import { resolveClashRoot } from "../lib/clash-home";
 import { resolveProjectContext, type ResolvedProjectContext } from "../lib/project-context";
 import { publicAgentCommandResult } from "../lib/agent-worktree-observation";
@@ -368,16 +381,64 @@ function resolvedAssetExtension(asset: ResolvedAsset): string {
   return "";
 }
 
-/** Download one immutable Project Asset through the Host's ResolvedAsset projection. */
-export async function downloadAssetById(
+/**
+ * Asks a Host on this machine for the read-only store file behind one Project
+ * Asset. A remote or older Host has no usable answer, which is not an error.
+ */
+export async function hostLocalAssetFile(
   assetId: string,
   projectId: string,
-  options: {
-    cacheDir?: string;
-    client?: Pick<ProjectAssetHostClient, "get">;
-    fetch?: typeof fetch;
-  } = {},
-): Promise<string | null> {
+): Promise<{ path: string; byteLength: number } | null> {
+  if (!isLoopbackServerUrl(getServerUrl())) return null;
+  const res = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/local-file`,
+  );
+  if (!res.ok) return null;
+  const body = (await res.json()) as { path?: unknown; byteLength?: unknown };
+  return typeof body.path === "string" && typeof body.byteLength === "number"
+    ? { path: body.path, byteLength: body.byteLength }
+    : null;
+}
+
+/** A loopback URL may be a tunnel: only a file this process can see counts. */
+function readableLocalAssetPath(
+  file: { path: string; byteLength: number } | null,
+): string | null {
+  if (!file || !isAbsolute(file.path)) return null;
+  try {
+    const info = statSync(file.path);
+    if (!info.isFile() || info.size !== file.byteLength) return null;
+    accessSync(file.path, constants.R_OK);
+    return file.path;
+  } catch {
+    return null;
+  }
+}
+
+export interface ResolvedAssetFile {
+  /** Read-only local file holding the Asset bytes. */
+  path: string;
+  /** Project-scoped file name with the Asset's extension. */
+  name: string;
+}
+
+interface ResolveAssetFileOptions {
+  cacheDir?: string;
+  client?: Pick<ProjectAssetHostClient, "get">;
+  fetch?: typeof fetch;
+  localFile?: typeof hostLocalAssetFile;
+}
+
+/**
+ * Resolve one immutable Project Asset to a local read-only file. A Host on
+ * this machine answers with its own store file, so no bytes move; otherwise
+ * the ResolvedAsset projection is streamed into the CLI cache.
+ */
+export async function resolveAssetFile(
+  assetId: string,
+  projectId: string,
+  options: ResolveAssetFileOptions = {},
+): Promise<ResolvedAssetFile | null> {
   try {
     const cacheDir = options.cacheDir ?? assetCacheDir();
     mkdirSync(cacheDir, { recursive: true });
@@ -388,7 +449,7 @@ export async function downloadAssetById(
       if (name === safeId || name.startsWith(`${safeId}.`)) {
         const cachedPath = join(cacheDir, name);
         try { chmodSync(cachedPath, 0o444); } catch {}
-        return cachedPath;
+        return { path: cachedPath, name };
       }
     }
 
@@ -400,19 +461,45 @@ export async function downloadAssetById(
       return null;
     }
 
-    const ext = resolvedAssetExtension(asset);
-    const filePath = join(cacheDir, `${safeId}${ext}`);
+    const name = `${safeId}${resolvedAssetExtension(asset)}`;
+    const localPath = readableLocalAssetPath(
+      await (options.localFile ?? hostLocalAssetFile)(assetId, projectId).catch(
+        () => null,
+      ),
+    );
+    if (localPath) return { path: localPath, name };
 
+    const filePath = join(cacheDir, name);
     const fullUrl = resolveAssetDownloadUrl(asset.url);
     const res = await (options.fetch ?? fetch)(fullUrl);
-    if (!res.ok) return null;
+    if (!res.ok || !res.body) return null;
 
-    writeFileSync(filePath, Buffer.from(await res.arrayBuffer()), { mode: 0o444 });
+    // Streamed to a sibling name the cache lookup never matches, then renamed:
+    // an interrupted download cannot be mistaken for the complete Asset.
+    const partialPath = join(cacheDir, `.partial-${process.pid}-${name}`);
+    try {
+      await pipeline(
+        Readable.fromWeb(res.body as NodeReadableStream<Uint8Array>),
+        createWriteStream(partialPath, { mode: 0o444 }),
+      );
+      renameSync(partialPath, filePath);
+    } finally {
+      rmSync(partialPath, { force: true });
+    }
     try { chmodSync(filePath, 0o444); } catch {}
-    return filePath;
+    return { path: filePath, name };
   } catch {
     return null;
   }
+}
+
+/** Path-only form of {@link resolveAssetFile}. */
+export async function downloadAssetById(
+  assetId: string,
+  projectId: string,
+  options: ResolveAssetFileOptions = {},
+): Promise<string | null> {
+  return (await resolveAssetFile(assetId, projectId, options))?.path ?? null;
 }
 
 function printNodeInfo(n: any) {
