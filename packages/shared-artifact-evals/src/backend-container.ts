@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { BENCHMARK_ACP_BIN_DIR_VARIABLE } from "./acp-harness";
 import {
@@ -12,6 +13,7 @@ import {
   writeAttemptUnit,
 } from "./attempt-unit";
 import type { BenchmarkRuntimeClaim } from "./backend-types";
+import { resolveTaskSkillPack } from "./task-skill-pack";
 import type {
   BenchmarkAttemptCompletion,
   BenchmarkAttemptDispatch,
@@ -32,6 +34,8 @@ export type ContainerCommandRunner = (
   options: {
     env: NodeJS.ProcessEnv;
     timeoutMs?: number;
+    /** Written to the engine's standard input, then closed. */
+    stdin?: string;
     onSpawn?: (kill: () => void) => void;
   },
 ) => Promise<ContainerCommandResult>;
@@ -46,8 +50,11 @@ export const spawnContainerCommand: ContainerCommandRunner = (
   new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
+    // A worker that dies early closes the pipe; its exit status reports that.
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(options.stdin);
     let stdout = "";
     let stderr = "";
     const keepTail = (current: string, chunk: Buffer) =>
@@ -79,9 +86,9 @@ export type ContainerBackendOptions = {
   /** Image reference. The lock records the engine's content id, not this tag. */
   image: string;
   /**
-   * A checkout of this repository with dependencies installed. It is mounted
-   * read-only at the same absolute path so the in-image worker runs this
-   * runner's exact sources.
+   * A checkout of this repository with dependencies installed and workspace
+   * packages built. It is never mounted: the worker is bundled from it once and
+   * piped to each container, so the Agent finds no runner source on disk.
    */
   runnerRoot: string;
   /** Suite file, relative to the suite root. */
@@ -93,8 +100,8 @@ export type ContainerBackendOptions = {
   forwardEnv?: string[];
   /** Hard wall-clock limit per Attempt. Defaults to two hours. */
   timeoutMs?: number;
-  /** Argv that starts the worker inside the image, before `worker --unit`. */
-  workerCommand?: string[];
+  /** Produces the worker program text. Defaults to `bundleContainerWorker`. */
+  bundleWorker?: (runnerRoot: string) => Promise<string>;
   /**
    * Absolute path of a Node binary on this machine that runs the worker. It is
    * mounted read-only at the same path and invoked by that path, so the image
@@ -112,15 +119,51 @@ export type ContainerBackendOptions = {
   run?: ContainerCommandRunner;
 };
 
-function defaultWorkerCommand(runnerRoot: string, node = "node"): string[] {
-  const pkg = join(runnerRoot, "packages", "shared-artifact-evals");
-  return [
-    node,
-    join(pkg, "node_modules", "tsx", "dist", "cli.mjs"),
-    "--tsconfig",
-    join(pkg, "tsconfig.dev.json"),
-    join(pkg, "src", "cli.ts"),
-  ];
+const RUNNER_PACKAGE = join("packages", "shared-artifact-evals");
+
+/**
+ * Bundles the worker CLI and everything it imports into one ES module that
+ * runs from standard input with no file of its own. `import.meta.url` keeps
+ * naming the source entry, so the runner manifest is still found beside it.
+ */
+export async function bundleContainerWorker(
+  runnerRoot: string,
+): Promise<string> {
+  const packageRoot = join(runnerRoot, RUNNER_PACKAGE);
+  const entry = join(packageRoot, "src", "cli.ts");
+  const { build } = await import("esbuild");
+  const result = await build({
+    absWorkingDir: packageRoot,
+    entryPoints: [entry],
+    tsconfig: join(packageRoot, "tsconfig.dev.json"),
+    bundle: true,
+    write: false,
+    platform: "node",
+    format: "esm",
+    target: "node24",
+    logLevel: "silent",
+    // Only the dispatcher bundles; the worker never reaches this import.
+    external: ["esbuild"],
+    define: { "import.meta.url": JSON.stringify(pathToFileURL(entry).href) },
+    banner: {
+      js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire("/");',
+    },
+    plugins: [
+      {
+        // The Node build of Loro reads its wasm from a sibling file.
+        name: "inline-loro-wasm",
+        setup(pluginBuild) {
+          pluginBuild.onResolve({ filter: /^loro-crdt$/u }, (args) =>
+            pluginBuild.resolve("loro-crdt/base64", {
+              kind: args.kind,
+              resolveDir: args.resolveDir,
+            }),
+          );
+        },
+      },
+    ],
+  });
+  return result.outputFiles[0]!.text;
 }
 
 function isInside(parent: string, child: string): boolean {
@@ -134,9 +177,12 @@ function isInside(parent: string, child: string): boolean {
 /**
  * Runs each Attempt in a fresh container. Isolation that is actually
  * established, and therefore recorded: a private root filesystem from the
- * image, read-only suite/runner/plugin/unit mounts, one read-write mount (the
+ * image, read-only suite/skill/plugin/unit mounts, one read-write mount (the
  * Attempt directory), the selected network mode, and a per-Attempt container
- * that is removed afterwards. Not established: any resource limit, syscall
+ * that is removed afterwards. The runner checkout is not mounted; the worker
+ * arrives on standard input, so grader source is not a file the Agent can
+ * read. The suite file and the worker's memory are not hidden from an Agent
+ * that shares the worker's user. Not established: any resource limit, syscall
  * filtering beyond the engine default, or egress filtering in `default` mode.
  */
 export function createContainerBackend(
@@ -145,7 +191,9 @@ export function createContainerBackend(
   const engine = options.engine ?? "docker";
   const run = options.run ?? spawnContainerCommand;
   const network = options.network ?? "default";
+  const bundleWorker = options.bundleWorker ?? bundleContainerWorker;
   let claim: Promise<BenchmarkRuntimeClaim> | undefined;
+  let worker: Promise<string> | undefined;
 
   const resolveClaim = async (): Promise<BenchmarkRuntimeClaim> => {
     const version = await run(
@@ -217,10 +265,17 @@ export function createContainerBackend(
       if (options.acpBinDir && !isAbsolute(options.acpBinDir)) {
         throw new Error("The container ACP bin directory must be absolute");
       }
+      const runnerPackage = join(options.runnerRoot, RUNNER_PACKAGE);
+      const skillPack = dispatch.benchmark.skillPack;
       const candidates = [
         ...new Set([
           dispatch.suiteRoot,
-          options.runnerRoot,
+          // The Environment lock hashes the runner manifest by path.
+          join(runnerPackage, "package.json"),
+          ...(skillPack ? [resolve(dispatch.suiteRoot, skillPack.path)] : []),
+          ...(
+            await resolveTaskSkillPack(dispatch.benchmark, dispatch.suiteRoot)
+          ).map((path) => resolve(dispatch.suiteRoot, path)),
           ...(options.runnerNode ? [options.runnerNode] : []),
           ...(options.acpBinDir ? [options.acpBinDir] : []),
           ...(dispatch.subject ? [dispatch.subject.pluginRoot] : []),
@@ -231,6 +286,14 @@ export function createContainerBackend(
         (path) =>
           !candidates.some((other) => other !== path && isInside(other, path)),
       );
+      const exposed = readOnlyRoots.find((path) =>
+        isInside(path, join(runnerPackage, "src")),
+      );
+      if (exposed) {
+        throw new Error(
+          `Refusing to mount ${exposed}: it contains the benchmark runner's grader source`,
+        );
+      }
       const env: NodeJS.ProcessEnv = { ...process.env };
       const agentEnv = (dispatch.agent as { env?: Record<string, string> }).env;
       for (const [name, value] of Object.entries(agentEnv ?? {})) {
@@ -239,6 +302,7 @@ export function createContainerBackend(
       const args = [
         "run",
         "--rm",
+        "--interactive",
         "--name",
         containerName,
         ...(network === "none" ? ["--network", "none"] : []),
@@ -260,8 +324,9 @@ export function createContainerBackend(
           ...new Set([...unit.envNames, ...(unit.judgeEnvNames ?? [])]),
         ].flatMap((name) => ["--env", name]),
         options.image,
-        ...(options.workerCommand ??
-          defaultWorkerCommand(options.runnerRoot, options.runnerNode)),
+        options.runnerNode ?? "node",
+        "--input-type=module",
+        "-",
         "worker",
         "--unit",
         unitPath,
@@ -282,6 +347,7 @@ export function createContainerBackend(
         result = await run(engine, args, {
           env,
           timeoutMs: options.timeoutMs ?? 2 * 60 * 60_000,
+          stdin: await (worker ??= bundleWorker(options.runnerRoot)),
           onSpawn: (k) => (kill = k),
         });
       } finally {
