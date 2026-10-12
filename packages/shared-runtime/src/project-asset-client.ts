@@ -1,7 +1,12 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { Readable } from "node:stream";
+
 import {
   PROJECT_ASSET_READ_RECEIPT_HEADER as SHARED_PROJECT_ASSET_READ_RECEIPT_HEADER,
   createPersonalGlobalAssetHttpClient,
   createProjectAssetHttpClient,
+  type AssetImportFile,
   type AssetImportProgressListener,
 } from "@clash/asset-sdk";
 import type {
@@ -18,7 +23,7 @@ import {
   type ResolvedProjectHostContext,
 } from "./project-host-client.js";
 
-export type { AssetImportProgressListener };
+export type { AssetImportFile, AssetImportProgressListener };
 
 export const PROJECT_ASSET_READ_RECEIPT_HEADER =
   SHARED_PROJECT_ASSET_READ_RECEIPT_HEADER;
@@ -71,6 +76,32 @@ export function resolveAssetImportFileType(
     );
   }
   return { ...inferred, ...(requestedKind ? { kind: requestedKind } : {}) };
+}
+
+/**
+ * Opens a local file as an import source without reading it: the length is the
+ * file's stat size and each `stream()` call reads the file from disk again, so
+ * a retry replays it and nothing is held in memory.
+ *
+ * `fs.openAsBlob` is deliberately not used. Its Blob reports `size` modulo
+ * 2^32 for a file of 4 GiB or more (Node 24) while its stream still yields
+ * every byte, so the declared length and the body disagree and the upload
+ * never completes.
+ */
+export async function openAssetImportFile(
+  filePath: string,
+  contentType: string,
+): Promise<AssetImportFile> {
+  const { size } = await stat(filePath);
+  return {
+    size,
+    type: contentType,
+    // Node's stream/web type and the global one differ under Worker typings.
+    stream: () =>
+      Readable.toWeb(
+        createReadStream(filePath),
+      ) as unknown as ReadableStream<Uint8Array>,
+  };
 }
 
 export type ProjectAssetHostScope = {
@@ -306,8 +337,8 @@ export type ProjectAssetHostClient = {
   ): Promise<ProjectAssetHostObservation<ActionAssetBinding[]>>;
   importFile(
     input: ProjectAssetHostScope & {
-      /** Sent as the request body; a file-backed Blob is never read into memory whole. */
-      file: Blob;
+      /** Sent as the request body; a file-backed source is never read into memory whole. */
+      file: AssetImportFile;
       fileName: string;
       kind: AssetKind;
       projectAssetId: string;
@@ -341,8 +372,8 @@ export type PersonalGlobalAssetHostClient = {
   list(): Promise<ResolvedAsset[]>;
   get(input: { globalAssetId: string }): Promise<ResolvedAsset>;
   importFile(input: {
-    /** Sent as the request body; a file-backed Blob is never read into memory whole. */
-    file: Blob;
+    /** Sent as the request body; a file-backed source is never read into memory whole. */
+    file: AssetImportFile;
     fileName: string;
     kind: AssetKind;
     globalAssetId: string;
@@ -416,7 +447,7 @@ export function createProjectAssetHostClient(
   };
   // Object identity is the in-process logical command boundary. Equal bytes in
   // a different object are a new import; retrying this object replays its first
-  // immutable Blob snapshot.
+  // immutable file snapshot.
   const importCommands = new WeakMap<object, ProjectImportSnapshot>();
   type HttpTrashCommand = Parameters<typeof http.trash>[0] & {
     deleteOperationId?: string;

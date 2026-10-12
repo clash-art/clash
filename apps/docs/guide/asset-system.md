@@ -1822,10 +1822,14 @@ without `byteLength`), gets a 400 and publishes nothing. A streamed upload has
 no whole-request deadline: the Host disables Node's `requestTimeout`, which
 would otherwise cut off any upload at 300 s, keeps a 60 s limit on the request
 head, and drops a connection whose unfinished body has received no byte for
-five minutes (`configureHostServerTimeouts`). The SDK clients send a `Blob` as that
-body (a browser `File`, or Node's file-backed `openAsBlob`); an optional
-`onProgress` listener switches them to a streamed body where the runtime
-supports one. `multipart/form-data` with the same fields remains accepted for
+five minutes (`configureHostServerTimeouts`). The SDK clients send a browser
+`File`/`Blob` as that body; an optional `onProgress` listener switches them to
+a streamed body where the runtime supports one. Node callers (CLI, MCP) always
+send a streamed, chunked body from `openAssetImportFile`, which reads the file
+from disk per attempt and declares `byteLength` from the file's stat size.
+They do not use `fs.openAsBlob`: on Node 24 its Blob reports `size` modulo
+2^32 for a file of 4 GiB or more while still streaming every byte, so the
+declared length contradicts the body. `multipart/form-data` with the same fields remains accepted for
 older callers, but its parser buffers the file first. The route rejects a
 missing id instead of minting an identity after receipt. A command adapter
 allocates that id before calling the public SDK or Host client, and a retry

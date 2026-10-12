@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
+  AssetImportFile,
   ProjectAssetHostClient,
   ProjectAssetHostObservation,
   ProjectAssetHostResult,
@@ -39,9 +40,33 @@ const globalAsset: ResolvedAsset = {
   url: "http://127.0.0.1:8789/api/v1/libraries/personal/assets/global%3Aone/media",
 };
 
-/** Reads the file-backed Blob an import handed to its client. */
-async function sentBytes(file: Blob | undefined): Promise<number[]> {
-  return file ? Array.from(new Uint8Array(await file.arrayBuffer())) : [];
+/** Reads the file-backed source an import handed to its client. */
+async function sentBytes(file: AssetImportFile | undefined): Promise<number[]> {
+  return file
+    ? Array.from(
+        new Uint8Array(await new Response(file.stream()).arrayBuffer()),
+      )
+    : [];
+}
+
+/**
+ * A file past 4 GiB that occupies no disk, or null where the filesystem cannot
+ * make one. `fs.openAsBlob` reports such a file's size modulo 2^32.
+ */
+async function sparseFileOver4GiB(path: string): Promise<number | null> {
+  const byteLength = 4608 * 1024 * 1024;
+  try {
+    await writeFile(path, "");
+    await truncate(path, byteLength);
+    const info = await stat(path);
+    if (info.size === byteLength && info.blocks * 512 < byteLength) {
+      return byteLength;
+    }
+  } catch {
+    // Fall through: no sparse file here.
+  }
+  await rm(path, { force: true });
+  return null;
 }
 
 function fakeClient(
@@ -285,14 +310,16 @@ test("MCP imports hand the Host client the file itself, never a copy of its byte
   const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-import-blob-"));
   const filePath = join(workspace, "voice.mp3");
   await writeFile(filePath, new Uint8Array([4, 5, 6]));
-  const sent: Array<Record<string, unknown> & { file: Blob }> = [];
+  const sent: Array<Record<string, unknown> & { file: AssetImportFile }> = [];
   const client = fakeClient([]);
   client.importFile = async (input) => {
     sent.push(input);
     return { projectId: "project-a", value: asset };
   };
   const gateway = createAssetProjectHostGateway(client, {
-    async importFile(input: Record<string, unknown> & { file: Blob }) {
+    async importFile(
+      input: Record<string, unknown> & { file: AssetImportFile },
+    ) {
       sent.push(input);
       return globalAsset;
     },
@@ -310,14 +337,52 @@ test("MCP imports hand the Host client the file itself, never a copy of its byte
   assert.equal(sent.length, 2);
   for (const input of sent) {
     assert.equal("bytes" in input, false);
-    assert.ok(input.file instanceof Blob);
     assert.equal(input.file.size, 3);
     assert.equal(input.file.type, "audio/mpeg");
   }
-  // The Blob reads from disk on demand: with the source gone short there is
-  // no in-memory copy left to send.
+  // The source reads from disk on demand: with the file emptied there is no
+  // in-memory copy left to send.
   await truncate(filePath, 0);
-  for (const input of sent) await assert.rejects(input.file.arrayBuffer());
+  for (const input of sent) assert.deepEqual(await sentBytes(input.file), []);
+});
+
+test("MCP imports declare the stat size of a file past 4 GiB", async (t) => {
+  const { createAssetProjectHostGateway } = await import("./asset-gateway");
+  const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-import-4gib-"));
+  const filePath = join(workspace, "long.mp4");
+  const byteLength = await sparseFileOver4GiB(filePath);
+  if (byteLength === null) {
+    t.skip("filesystem cannot hold a sparse file past 4 GiB");
+    return;
+  }
+  t.after(() => rm(filePath, { force: true }));
+  const sent: AssetImportFile[] = [];
+  const client = fakeClient([]);
+  client.importFile = async (input) => {
+    sent.push(input.file);
+    return { projectId: "project-a", value: asset };
+  };
+  const gateway = createAssetProjectHostGateway(client, {
+    async importFile(input: { file: AssetImportFile }) {
+      sent.push(input.file);
+      return globalAsset;
+    },
+  } as never);
+
+  await gateway.invoke("clash_assets_import_file", {
+    cwd: workspace,
+    filePath: "long.mp4",
+  });
+  await gateway.invoke("clash_assets_global_import_file", {
+    cwd: workspace,
+    filePath: "long.mp4",
+  });
+
+  // The Host client declares `file.size` as byteLength; nothing is uploaded.
+  assert.deepEqual(
+    sent.map((file) => file.size),
+    [byteLength, byteLength],
+  );
 });
 
 test("MCP Project import keeps one pending Asset id until the Host confirms success", async () => {

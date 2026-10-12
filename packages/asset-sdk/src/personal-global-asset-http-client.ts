@@ -6,6 +6,7 @@ import {
 
 import {
   assetImportRequest,
+  type AssetImportFile,
   type AssetImportProgressListener,
 } from "./asset-import-request.js";
 import type {
@@ -17,7 +18,7 @@ export interface PersonalGlobalAssetHttpClient {
   list(): Promise<ResolvedAsset[]>;
   get(input: { globalAssetId: string }): Promise<ResolvedAsset>;
   importFile(input: {
-    file: Blob;
+    file: AssetImportFile;
     fileName?: string;
     kind: AssetKind;
     globalAssetId: string;
@@ -79,7 +80,7 @@ function libraryAssetsUrl(endpoint: string): string {
   return `${endpoint.trim().replace(/\/+$/, "")}/api/v1/libraries/personal/assets`;
 }
 
-function fileNameOf(file: Blob): string | undefined {
+function fileNameOf(file: AssetImportFile): string | undefined {
   return "name" in file && typeof file.name === "string"
     ? file.name
     : undefined;

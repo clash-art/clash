@@ -31,6 +31,7 @@ export {
 } from "./global-asset-client.js";
 
 export type {
+  AssetImportFile,
   AssetImportProgress,
   AssetImportProgressListener,
 } from "./asset-import-request.js";

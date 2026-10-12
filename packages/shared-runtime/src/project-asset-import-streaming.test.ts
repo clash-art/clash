@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { openAsBlob } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createPersonalGlobalAssetHostClient,
   createProjectAssetHostClient,
+  openAssetImportFile,
 } from "./project-asset-client.js";
 
 const readyAsset = {
@@ -123,6 +124,65 @@ describe("Asset Host clients stream an imported file to the Host", () => {
     expect(upload.chunkCount).toBeGreaterThan(1);
   });
 
+  it("streams a local file source as a chunked body that declares the file's stat size", async () => {
+    const host = await recordingHost();
+    const file = await multiChunkFile();
+    const client = createProjectAssetHostClient({
+      endpoint: host.endpoint,
+      env: {},
+    });
+    const command = {
+      projectId: "project-a",
+      file: await openAssetImportFile(file.path, "video/mp4"),
+      fileName: "clip.mp4",
+      kind: "video" as const,
+      projectAssetId: "asset:one",
+    };
+
+    await client.importFile(command);
+    // A retry of the same command reads the file from disk again.
+    await client.importFile(command);
+
+    expect(host.received).toHaveLength(2);
+    for (const upload of host.received) {
+      expect(upload.url.searchParams.get("byteLength")).toBe(
+        String(file.byteLength),
+      );
+      expect(upload.headers["content-type"]).toBe("video/mp4");
+      // Only the query declares the length: the body's framing cannot
+      // contradict it.
+      expect(upload.headers["content-length"]).toBeUndefined();
+      expect(upload.byteLength).toBe(file.byteLength);
+      expect(upload.sha256).toBe(file.sha256);
+      expect(upload.chunkCount).toBeGreaterThan(1);
+    }
+  });
+
+  it("declares the stat size of a file past 4 GiB", async (context) => {
+    const directory = await mkdtemp(join(tmpdir(), "clash-import-4gib-"));
+    cleanups.push(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, "long.mp4");
+    // Sparse, so it occupies no disk; `fs.openAsBlob` reports this file's
+    // size modulo 2^32.
+    const byteLength = 4608 * 1024 * 1024;
+    const sparse = await writeFile(path, "")
+      .then(() => truncate(path, byteLength))
+      .then(() => stat(path))
+      .then(
+        (info) => info.size === byteLength && info.blocks * 512 < byteLength,
+        () => false,
+      );
+    if (!sparse) {
+      context.skip();
+      return;
+    }
+
+    const file = await openAssetImportFile(path, "video/mp4");
+
+    expect(file.size).toBe(byteLength);
+    expect(file).not.toBeInstanceOf(Blob);
+  });
+
   it("reports cumulative progress while streaming when a listener is given", async () => {
     const host = await recordingHost();
     const file = await multiChunkFile();
@@ -133,7 +193,7 @@ describe("Asset Host clients stream an imported file to the Host", () => {
     const progress: Array<{ loadedBytes: number; totalBytes: number }> = [];
 
     await client.importFile({
-      file: await openAsBlob(file.path, { type: "video/mp4" }),
+      file: await openAssetImportFile(file.path, "video/mp4"),
       fileName: "clip.mp4",
       kind: "video",
       globalAssetId: "global:one",

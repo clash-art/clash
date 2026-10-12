@@ -6,7 +6,6 @@ import {
   symlinkSync,
   copyFileSync,
   statSync,
-  openAsBlob,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, extname, join, resolve } from "node:path";
@@ -18,6 +17,7 @@ import type {
 } from "@clash/shared-types";
 import {
   createProjectAssetHostClient,
+  openAssetImportFile,
   projectAssetRecovery,
   resolveAssetImportFileType,
   type AssetImportProgressListener,
@@ -344,7 +344,7 @@ export async function importAssetFile(options: {
       request: {
         projectId: status.projectId,
         // File-backed: the Host receives the bytes as they are read from disk.
-        file: await openAsBlob(sourcePath, { type: fileType.contentType }),
+        file: await openAssetImportFile(sourcePath, fileType.contentType),
         fileName: basename(sourcePath),
         kind: fileType.kind,
         ...(options.onProgress ? { onProgress: options.onProgress } : {}),
@@ -587,7 +587,7 @@ export async function importPersonalGlobalAssetFile(options: {
     );
     snapshot = {
       request: {
-        file: await openAsBlob(sourcePath, { type: fileType.contentType }),
+        file: await openAssetImportFile(sourcePath, fileType.contentType),
         fileName: basename(sourcePath),
         kind: fileType.kind,
         ...(options.onProgress ? { onProgress: options.onProgress } : {}),

@@ -7,6 +7,7 @@ import {
 } from "@clash/shared-types";
 import {
   assetImportRequest,
+  type AssetImportFile,
   type AssetImportProgressListener,
 } from "./asset-import-request.js";
 
@@ -39,7 +40,7 @@ export interface ProjectAssetHttpClient {
   ): Promise<ProjectAssetHttpObservation<ActionAssetBinding[]>>;
   importFile(
     input: ProjectAssetHttpScope & {
-      file: Blob;
+      file: AssetImportFile;
       fileName?: string;
       kind: AssetKind;
       projectAssetId: string;
@@ -117,7 +118,7 @@ function projectAssetsUrl(endpoint: string, projectId: string): string {
   return `${endpoint.trim().replace(/\/+$/, "")}/api/v1/projects/${encodeURIComponent(projectId)}/assets`;
 }
 
-function fileNameOf(file: Blob): string | undefined {
+function fileNameOf(file: AssetImportFile): string | undefined {
   return "name" in file && typeof file.name === "string"
     ? file.name
     : undefined;
@@ -125,7 +126,7 @@ function fileNameOf(file: Blob): string | undefined {
 
 type ProjectImportCommandSnapshot = {
   projectId: string;
-  file: Blob;
+  file: AssetImportFile;
   fileName: string;
   kind: AssetKind;
   projectAssetId: string;

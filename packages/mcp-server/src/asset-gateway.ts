@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { openAsBlob } from "node:fs";
 import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import type { AssetKind } from "@clash/shared-types";
 import {
   createPersonalGlobalAssetHostClient,
   createProjectAssetHostClient,
+  openAssetImportFile,
   resolveAssetImportFileType,
+  type AssetImportFile,
   type PersonalGlobalAssetHostClient,
   type ProjectAssetHostClient,
   type ProjectAssetHostScope,
@@ -35,7 +36,7 @@ async function readAssetImportFile(
   workspaceRoot: string,
 ): Promise<{
   sourcePath: string;
-  file: Blob;
+  file: AssetImportFile;
   fileName: string;
   kind: AssetKind;
 }> {
@@ -49,7 +50,7 @@ async function readAssetImportFile(
   return {
     sourcePath: filePath,
     // File-backed: the Host receives the bytes as they are read from disk.
-    file: await openAsBlob(filePath, { type: fileType.contentType }),
+    file: await openAssetImportFile(filePath, fileType.contentType),
     fileName: basename(filePath),
     kind: fileType.kind,
   };

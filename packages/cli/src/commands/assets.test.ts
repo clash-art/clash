@@ -5,6 +5,7 @@ import {
   readFile,
   writeFile,
   lstat,
+  rm,
   stat,
   truncate,
 } from "node:fs/promises";
@@ -25,6 +26,7 @@ import {
 } from "./assets";
 import * as assetCommands from "./assets";
 import type {
+  AssetImportFile,
   PersonalGlobalAssetHostClient,
   ProjectAssetHostClient,
 } from "@clash/shared-runtime/project-asset-client";
@@ -177,13 +179,35 @@ test("global asset list and read use the personal-library client without Project
   ]);
 });
 
-/** Reads the file-backed Blob an import handed to its client back as plain facts. */
-async function sentFile<T extends { file: Blob }>(input: T) {
+/**
+ * A file past 4 GiB that occupies no disk, or null where the filesystem cannot
+ * make one. `fs.openAsBlob` reports such a file's size modulo 2^32.
+ */
+async function sparseFileOver4GiB(path: string): Promise<number | null> {
+  const byteLength = 4608 * 1024 * 1024;
+  try {
+    await writeFile(path, "");
+    await truncate(path, byteLength);
+    const info = await stat(path);
+    if (info.size === byteLength && info.blocks * 512 < byteLength) {
+      return byteLength;
+    }
+  } catch {
+    // Fall through: no sparse file here.
+  }
+  await rm(path, { force: true });
+  return null;
+}
+
+/** Reads the file-backed source an import handed to its client back as plain facts. */
+async function sentFile<T extends { file: AssetImportFile }>(input: T) {
   const { file, ...command } = input;
   return {
     ...command,
     contentType: file.type,
-    bytes: Array.from(new Uint8Array(await file.arrayBuffer())),
+    bytes: Array.from(
+      new Uint8Array(await new Response(file.stream()).arrayBuffer()),
+    ),
   };
 }
 
@@ -206,7 +230,7 @@ test("global asset import sends local bytes through the personal-library client"
         client: {
           importFile(input: {
             globalAssetId?: string;
-            file: Blob;
+            file: AssetImportFile;
             fileName: string;
             kind: "audio";
           }): Promise<typeof globalAsset>;
@@ -249,7 +273,7 @@ test("CLI Global import reuses its Asset id when the same command object retries
     client: {
       async importFile(input: {
         globalAssetId?: string;
-        file: Blob;
+        file: AssetImportFile;
         fileName: string;
         kind: "audio";
       }) {
@@ -683,7 +707,7 @@ test("CLI imports hand the Host client the file itself, never a copy of its byte
   const source = join(await tempDir(), "hero.png");
   await writeFile(source, "asset-bytes", "utf8");
   await initProject({ cwd, projectId: "asset_project" });
-  const sent: Array<Record<string, unknown> & { file: Blob }> = [];
+  const sent: Array<Record<string, unknown> & { file: AssetImportFile }> = [];
   const value = {
     id: "asset:host-import",
     kind: "image" as const,
@@ -717,14 +741,64 @@ test("CLI imports hand the Host client the file itself, never a copy of its byte
   assert.equal(sent.length, 2);
   for (const input of sent) {
     assert.equal("bytes" in input, false);
-    assert.ok(input.file instanceof Blob);
     assert.equal(input.file.size, 11);
     assert.equal(input.file.type, "image/png");
   }
-  // The Blob reads from disk on demand: with the source gone short there is
-  // no in-memory copy left to send.
+  // The source reads from disk on demand: with the file emptied there is no
+  // in-memory copy left to send.
   await truncate(source, 0);
-  for (const input of sent) await assert.rejects(input.file.arrayBuffer());
+  for (const input of sent) {
+    const body = await new Response(input.file.stream()).arrayBuffer();
+    assert.equal(body.byteLength, 0);
+  }
+});
+
+test("CLI imports declare the stat size of a file past 4 GiB", async (t) => {
+  const cwd = await tempDir();
+  const source = join(await tempDir(), "long.mp4");
+  const byteLength = await sparseFileOver4GiB(source);
+  if (byteLength === null) {
+    t.skip("filesystem cannot hold a sparse file past 4 GiB");
+    return;
+  }
+  t.after(() => rm(source, { force: true }));
+  await initProject({ cwd, projectId: "asset_project" });
+  const sent: AssetImportFile[] = [];
+  const value = {
+    id: "asset:long",
+    kind: "video" as const,
+    lifecycle: { state: "active" as const },
+    status: "ready" as const,
+    metadata: { bytes: byteLength, contentType: "video/mp4" },
+  };
+
+  await importAssetFile({
+    filePath: source,
+    cwd,
+    env: {},
+    link: false,
+    client: {
+      async importFile(input) {
+        sent.push(input.file);
+        return { projectId: "asset_project", value };
+      },
+    } as ProjectAssetHostClient,
+  });
+  await assetCommands.importPersonalGlobalAssetFile({
+    filePath: source,
+    client: {
+      async importFile(input) {
+        sent.push(input.file);
+        return value;
+      },
+    } as PersonalGlobalAssetHostClient,
+  });
+
+  // The Host client declares `file.size` as byteLength; nothing is uploaded.
+  assert.deepEqual(
+    sent.map((file) => file.size),
+    [byteLength, byteLength],
+  );
 });
 
 test("CLI Project import reuses its Asset id when the same command object retries an unknown result", async () => {
