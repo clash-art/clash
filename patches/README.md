@@ -2,7 +2,7 @@
 
 > **PENDING — do not merge while this note is here.** `@openma/common` is
 > temporarily pinned to the unreleased commit
-> `4a58772e86de791049df40a671fb8960b44117ff`
+> `cd5cf3c17c770be445ee46c2e188290a678e0fee`
 > ([openma-ai/openma-common#31](https://github.com/openma-ai/openma-common/pull/31),
 > branch `feat/acp-headless-launch-pinned-install`). It adds the headless launch
 > recipe and the pinned harness install the benchmark runner uses for Pi. Once
