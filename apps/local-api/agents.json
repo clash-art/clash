@@ -57,6 +57,7 @@
     "src/media-analysis-config.ts": "Persistent video/model Settings and the shared executable-compatible model option/save/run authority.",
     "src/local-durable-output-staging.ts": "Stable consumer-CAS receipt for at-least-once Host-local media output.",
     "src/local-resource-store.ts": "Unsealed byte staging and canonical L0 Resource sealing; staged bytes are not readable as Resources before successful inspection. Pre-v4 compatibility rows remain explicitly unverified until one complete v4 probe promotes the canonical kind/media facts by CAS.",
+    "src/immutable-file-projection.ts": "Single-range HTTP projection of one immutable Resource file. Every 200/206 body is a descriptor-backed read stream over the requested byte window; no route may buffer media.",
     "src/local-asset-inspections.ts": "Versioned asset-inspection/v4 byte probe and L1 fact receipt used by every new Local media publication, including safe promotion of old unverified or no-MIME Resource rows.",
     "src/local-asset-representations.ts": "Owner-private Durable Run consumer for image thumbnails, video first-frame posters, and bounded audio waveforms, including stable recipe identity, SQLite CAS publication, retry scheduling, and restart recovery.",
     "src/local-metadata-store.ts": "Legacy SQLite typed-metadata body/query projection used by compatibility workflows; it is not the native Project Document Asset authority.",
