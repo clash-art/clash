@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createProjectAssetHttpClient } from "./project-asset-http-client.js";
 
+/** Reads a streaming import-file request back as the command it carries. */
+function importForm(input: unknown, init?: RequestInit): FormData {
+  const query = new URL(String(input), "http://host.test").searchParams;
+  const form = new FormData();
+  for (const [name, value] of query) {
+    if (name !== "fileName" && name !== "byteLength") form.set(name, value);
+  }
+  form.set(
+    "file",
+    new File([init?.body as Blob], query.get("fileName") ?? "", {
+      type: new Headers(init?.headers).get("content-type") ?? "",
+    }),
+  );
+  return form;
+}
+
 const readyAsset = {
   id: "asset:one",
   kind: "image" as const,
@@ -55,9 +71,9 @@ describe("Project Asset HTTP client", () => {
     });
   });
 
-  it("imports the browser File through the one multipart route and preserves the caller id", async () => {
+  it("sends the browser File itself as the import-file body and preserves the caller id", async () => {
     const fetch = vi.fn(
-      async () =>
+      async (_input: string | URL | Request, _init?: RequestInit) =>
         new Response(JSON.stringify(readyAsset), {
           status: 201,
           headers: { "content-type": "application/json" },
@@ -78,11 +94,14 @@ describe("Project Asset HTTP client", () => {
     ).resolves.toEqual(readyAsset);
 
     const [url, init] = fetch.mock.calls[0]!;
-    expect(String(url)).toBe(
+    expect(String(url).split("?")[0]).toBe(
       "/api/v1/projects/project%2Fone/assets/import-file",
     );
-    const form = init?.body as FormData;
-    expect(form.get("file")).toBe(file);
+    // The File is the body: nothing copies or re-encodes its bytes client-side.
+    expect(init?.body).toBe(file);
+    const form = importForm(url, init);
+    expect((form.get("file") as File).name).toBe("frame.png");
+    expect((form.get("file") as File).type).toBe("image/png");
     expect(form.get("kind")).toBe("image");
     expect(form.get("projectAssetId")).toBe("asset:one");
   });
@@ -108,8 +127,8 @@ describe("Project Asset HTTP client", () => {
   it("replays the preassigned Project Asset id when the same import command retries an unknown result", async () => {
     const requests: FormData[] = [];
     const client = createProjectAssetHttpClient({
-      fetch: async (_input, init) => {
-        requests.push(init?.body as FormData);
+      fetch: async (input, init) => {
+        requests.push(importForm(input, init));
         if (requests.length === 1) throw new TypeError("connection lost");
         return new Response(JSON.stringify(readyAsset), {
           status: 201,
@@ -143,8 +162,8 @@ describe("Project Asset HTTP client", () => {
       type: "image/png",
     });
     const client = createProjectAssetHttpClient({
-      fetch: async (_input, init) => {
-        const importedId = (init?.body as FormData).get("projectAssetId");
+      fetch: async (input, init) => {
+        const importedId = importForm(input, init).get("projectAssetId");
         if (importedId !== null) importedIds.push(importedId);
         return new Response(JSON.stringify(readyAsset), {
           status: 201,
@@ -177,7 +196,10 @@ describe("Project Asset HTTP client", () => {
     const requests: Array<{ url: string; form: FormData }> = [];
     const client = createProjectAssetHttpClient({
       fetch: async (input, init) => {
-        requests.push({ url: String(input), form: init?.body as FormData });
+        requests.push({
+          url: String(input).split("?")[0]!,
+          form: importForm(input, init),
+        });
         if (requests.length === 1) throw new TypeError("connection lost");
         return new Response(JSON.stringify(readyAsset), {
           status: 201,

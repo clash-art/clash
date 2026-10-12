@@ -82,10 +82,13 @@ describe("GlobalAssetsClient", () => {
     expect(fetchSpy.mock.calls[0]?.[0]).toContain(
       "/api/v1/libraries/personal/assets/import-file",
     );
-    const body = fetchSpy.mock.calls[0]?.[1]?.body;
-    expect(body).toBeInstanceOf(FormData);
-    expect((body as FormData).get("kind")).toBe("image");
-    expect((body as FormData).get("file")).toBe(file);
+    expect(
+      new URL(
+        String(fetchSpy.mock.calls[0]?.[0]),
+        "http://host.test",
+      ).searchParams.get("kind"),
+    ).toBe("image");
+    expect(fetchSpy.mock.calls[0]?.[1]?.body).toBe(file);
   });
 
   it("keeps device availability separate from library Trash and restores only trashed entries", async () => {

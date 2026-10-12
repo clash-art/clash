@@ -8,6 +8,22 @@ import {
 import * as projectAssetClients from "./project-asset-client.js";
 import { createProjectHostClient } from "./project-host-client.js";
 
+/** Reads a streaming import-file request back as the command it carries. */
+function importForm(input: unknown, init?: RequestInit): FormData {
+  const query = new URL(String(input), "http://host.test").searchParams;
+  const form = new FormData();
+  for (const [name, value] of query) {
+    if (name !== "fileName" && name !== "byteLength") form.set(name, value);
+  }
+  form.set(
+    "file",
+    new File([init?.body as Blob], query.get("fileName") ?? "", {
+      type: new Headers(init?.headers).get("content-type") ?? "",
+    }),
+  );
+  return form;
+}
+
 const readyAsset = {
   id: "asset:one",
   kind: "image" as const,
@@ -215,7 +231,7 @@ describe("Project Asset Host client", () => {
     expect(operationIds[1]).toBe(operationIds[0]);
   });
 
-  it("uploads workspace bytes through the single multipart import-file route", async () => {
+  it("uploads the workspace file as the body of the single import-file route", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",
@@ -232,21 +248,19 @@ describe("Project Asset Host client", () => {
     await expect(
       client.importFile({
         projectId: "project-a",
-        bytes: new Uint8Array([1, 2, 3, 4]),
+        file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
         fileName: "frame.png",
-        contentType: "image/png",
         kind: "image",
         projectAssetId: "asset:multipart-command",
       }),
     ).resolves.toEqual({ projectId: "project-a", value: readyAsset });
-    expect(requests[0]?.url).toBe(
+    expect(requests[0]?.url.split("?")[0]).toBe(
       "http://127.0.0.1:8789/api/v1/projects/project-a/assets/import-file",
     );
     expect(requests[0]?.init?.method).toBe("POST");
-    const form = requests[0]?.init?.body;
-    expect(form).toBeInstanceOf(FormData);
-    expect((form as FormData).get("kind")).toBe("image");
-    const file = (form as FormData).get("file");
+    const form = importForm(requests[0]?.url, requests[0]?.init);
+    expect(form.get("kind")).toBe("image");
+    const file = form.get("file");
     expect(file).toBeInstanceOf(File);
     expect((file as File).name).toBe("frame.png");
     expect(
@@ -259,8 +273,8 @@ describe("Project Asset Host client", () => {
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input, init) => {
-        const form = init?.body as FormData;
+      fetch: async (input, init) => {
+        const form = importForm(input, init);
         importedIds.push(String(form.get("projectAssetId") ?? ""));
         if (importedIds.length === 1) throw new TypeError("connection lost");
         return new Response(JSON.stringify(readyAsset), {
@@ -271,9 +285,8 @@ describe("Project Asset Host client", () => {
     });
     const command = {
       projectId: "project-a",
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image" as const,
       projectAssetId: "asset:retry-command",
     };
@@ -294,8 +307,8 @@ describe("Project Asset Host client", () => {
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input, init) => {
-        const form = init?.body as FormData;
+      fetch: async (input, init) => {
+        const form = importForm(input, init);
         const file = form.get("file") as File;
         requests.push({
           fileName: file.name,
@@ -311,17 +324,17 @@ describe("Project Asset Host client", () => {
     });
     const command: Parameters<typeof client.importFile>[0] = {
       projectId: "project-a",
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image",
       projectAssetId: "asset:original-command",
     };
 
     await expect(client.importFile(command)).rejects.toThrow("connection lost");
-    command.bytes.fill(9);
+    command.file = new Blob([new Uint8Array([9, 9, 9, 9])], {
+      type: "video/mp4",
+    });
     command.fileName = "changed.mp4";
-    command.contentType = "video/mp4";
     command.kind = "video";
     await client.importFile(command);
 
@@ -336,9 +349,9 @@ describe("Project Asset Host client", () => {
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input, init) => {
+      fetch: async (input, init) => {
         importedIds.push(
-          String((init?.body as FormData).get("projectAssetId") ?? ""),
+          String(importForm(input, init).get("projectAssetId") ?? ""),
         );
         return new Response(JSON.stringify(readyAsset), {
           status: 201,
@@ -348,9 +361,8 @@ describe("Project Asset Host client", () => {
     });
     const file = {
       projectId: "project-a",
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image" as const,
       projectAssetId: "asset:first-command",
     };
@@ -372,8 +384,8 @@ describe("Project Asset Host client", () => {
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input, init) => {
-        importedId = (init?.body as FormData).get("projectAssetId");
+      fetch: async (input, init) => {
+        importedId = importForm(input, init).get("projectAssetId");
         return new Response(JSON.stringify(readyAsset), {
           status: 201,
           headers: { "content-type": "application/json" },
@@ -384,9 +396,8 @@ describe("Project Asset Host client", () => {
     await client.importFile({
       projectId: "project-a",
       projectAssetId: "asset:caller-command",
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image",
     });
 
@@ -406,9 +417,8 @@ describe("Project Asset Host client", () => {
     await expect(
       client.importFile({
         projectId: "project-a",
-        bytes: new Uint8Array([1]),
+        file: new Blob([new Uint8Array([1])], { type: "image/png" }),
         fileName: "frame.png",
-        contentType: "image/png",
         kind: "image",
       } as never),
     ).rejects.toThrow("project asset id is required");
@@ -580,9 +590,8 @@ describe("Project Asset Host client", () => {
       | ((options: Record<string, unknown>) => {
           importFile(input: {
             globalAssetId: string;
-            bytes: Uint8Array;
+            file: Blob;
             fileName: string;
-            contentType: string;
             kind: "image";
           }): Promise<typeof globalAsset>;
           publish(input: {
@@ -605,9 +614,8 @@ describe("Project Asset Host client", () => {
     await expect(
       client.importFile({
         globalAssetId: "global:multipart-command",
-        bytes: new Uint8Array([1, 2, 3, 4]),
+        file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
         fileName: "frame.png",
-        contentType: "image/png",
         kind: "image",
       }),
     ).resolves.toEqual(globalAsset);
@@ -619,7 +627,10 @@ describe("Project Asset Host client", () => {
     ).resolves.toEqual(globalAsset);
 
     expect(
-      requests.map(({ url, init }) => ({ url, method: init?.method })),
+      requests.map(({ url, init }) => ({
+        url: url.split("?")[0],
+        method: init?.method,
+      })),
     ).toEqual([
       {
         url: "http://127.0.0.1:8789/api/v1/libraries/personal/assets/import-file",
@@ -630,10 +641,9 @@ describe("Project Asset Host client", () => {
         method: "POST",
       },
     ]);
-    const importForm = requests[0]?.init?.body;
-    expect(importForm).toBeInstanceOf(FormData);
-    expect((importForm as FormData).get("kind")).toBe("image");
-    const file = (importForm as FormData).get("file");
+    const form = importForm(requests[0]?.url, requests[0]?.init);
+    expect(form.get("kind")).toBe("image");
+    const file = form.get("file");
     expect(file).toBeInstanceOf(File);
     expect((file as File).name).toBe("frame.png");
     expect(
@@ -657,27 +667,25 @@ describe("Project Asset Host client", () => {
     ) => {
       importFile(input: {
         globalAssetId: string;
-        bytes: Uint8Array;
+        file: Blob;
         fileName: string;
-        contentType: string;
         kind: "image";
       }): Promise<typeof globalAsset>;
     };
     const client = createGlobalClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
         importedIds.push(
-          String((init?.body as FormData).get("globalAssetId") ?? ""),
+          String(importForm(input, init).get("globalAssetId") ?? ""),
         );
         if (importedIds.length === 1) throw new TypeError("connection lost");
         return new Response(JSON.stringify(globalAsset), { status: 201 });
       },
     });
     const command = {
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image" as const,
       globalAssetId: "global:retry-command",
     };
@@ -706,17 +714,16 @@ describe("Project Asset Host client", () => {
     ) => {
       importFile(input: {
         globalAssetId: string;
-        bytes: Uint8Array;
+        file: Blob;
         fileName: string;
-        contentType: string;
         kind: "image" | "video";
       }): Promise<typeof globalAsset>;
     };
     const client = createGlobalClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
-        const form = init?.body as FormData;
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const form = importForm(input, init);
         const file = form.get("file") as File;
         requests.push({
           fileName: file.name,
@@ -728,17 +735,17 @@ describe("Project Asset Host client", () => {
       },
     });
     const command = {
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image" as "image" | "video",
       globalAssetId: "global:original-command",
     };
 
     await expect(client.importFile(command)).rejects.toThrow("connection lost");
-    command.bytes.fill(9);
+    command.file = new Blob([new Uint8Array([9, 9, 9, 9])], {
+      type: "video/mp4",
+    });
     command.fileName = "changed.mp4";
-    command.contentType = "video/mp4";
     command.kind = "video";
     await client.importFile(command);
 
@@ -761,26 +768,24 @@ describe("Project Asset Host client", () => {
     ) => {
       importFile(input: {
         globalAssetId: string;
-        bytes: Uint8Array;
+        file: Blob;
         fileName: string;
-        contentType: string;
         kind: "image";
       }): Promise<typeof globalAsset>;
     };
     const client = createGlobalClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input: RequestInfo | URL, init?: RequestInit) => {
-        importedId = (init?.body as FormData).get("globalAssetId");
+      fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        importedId = importForm(input, init).get("globalAssetId");
         return new Response(JSON.stringify(globalAsset), { status: 201 });
       },
     });
 
     await client.importFile({
       globalAssetId: "global:caller-command",
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image",
     });
 
@@ -799,9 +804,8 @@ describe("Project Asset Host client", () => {
 
     await expect(
       client.importFile({
-        bytes: new Uint8Array([1]),
+        file: new Blob([new Uint8Array([1])], { type: "image/png" }),
         fileName: "frame.png",
-        contentType: "image/png",
         kind: "image",
       } as never),
     ).rejects.toThrow("global asset id is required");
@@ -1038,8 +1042,8 @@ describe("Project Asset Host client", () => {
     const client = createProjectAssetHostClient({
       endpoint: "http://127.0.0.1:8789",
       env: {},
-      fetch: async (_input, init) => {
-        policies.push((init?.body as FormData).get("duplicateContent"));
+      fetch: async (input, init) => {
+        policies.push(importForm(input, init).get("duplicateContent"));
         return new Response(JSON.stringify(readyAsset), {
           status: 201,
           headers: { "content-type": "application/json" },
@@ -1048,9 +1052,8 @@ describe("Project Asset Host client", () => {
     });
     const file = {
       projectId: "project-a",
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      file: new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
       fileName: "frame.png",
-      contentType: "image/png",
       kind: "image" as const,
       projectAssetId: "asset:one",
     };

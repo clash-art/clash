@@ -271,11 +271,13 @@ describe("ChatInput", () => {
     const [url, init] = fetchSpy.mock.calls.find(([input]) =>
       String(input).includes("/assets/import-file"),
     )!;
-    expect(url).toBe("/api/v1/projects/project-1/assets/import-file");
-    const form = init?.body as FormData;
-    expect(form.get("file")).toBe(file);
-    expect(form.get("kind")).toBe("image");
-    expect(form.get("projectAssetId")).toBe(assetId);
+    const importUrl = new URL(String(url), "http://host.test");
+    expect(importUrl.pathname).toBe(
+      "/api/v1/projects/project-1/assets/import-file",
+    );
+    expect(init?.body).toBe(file);
+    expect(importUrl.searchParams.get("kind")).toBe("image");
+    expect(importUrl.searchParams.get("projectAssetId")).toBe(assetId);
   });
 
   it("submits imported media as a typed Project Asset reference without its Host URL", async () => {
@@ -446,7 +448,9 @@ describe("ChatInput", () => {
     await waitFor(() => expect(ensureProjectId).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/v1/projects/draft-project/assets/import-file",
+        expect.stringMatching(
+          /^\/api\/v1\/projects\/draft-project\/assets\/import-file\?/,
+        ),
         expect.objectContaining({ method: "POST" }),
       ),
     );

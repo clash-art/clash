@@ -2,6 +2,7 @@ import {
   PROJECT_ASSET_READ_RECEIPT_HEADER as SHARED_PROJECT_ASSET_READ_RECEIPT_HEADER,
   createPersonalGlobalAssetHttpClient,
   createProjectAssetHttpClient,
+  type AssetImportProgressListener,
 } from "@clash/asset-sdk";
 import type {
   ActionAssetBinding,
@@ -16,6 +17,8 @@ import {
   type ProjectHostClient,
   type ResolvedProjectHostContext,
 } from "./project-host-client.js";
+
+export type { AssetImportProgressListener };
 
 export const PROJECT_ASSET_READ_RECEIPT_HEADER =
   SHARED_PROJECT_ASSET_READ_RECEIPT_HEADER;
@@ -303,12 +306,13 @@ export type ProjectAssetHostClient = {
   ): Promise<ProjectAssetHostObservation<ActionAssetBinding[]>>;
   importFile(
     input: ProjectAssetHostScope & {
-      bytes: Uint8Array;
+      /** Sent as the request body; a file-backed Blob is never read into memory whole. */
+      file: Blob;
       fileName: string;
-      contentType: string;
       kind: AssetKind;
       projectAssetId: string;
       duplicateContent?: "allow" | "reject";
+      onProgress?: AssetImportProgressListener;
     },
   ): Promise<ProjectAssetHostResult<ResolvedAsset>>;
   admit(
@@ -337,11 +341,12 @@ export type PersonalGlobalAssetHostClient = {
   list(): Promise<ResolvedAsset[]>;
   get(input: { globalAssetId: string }): Promise<ResolvedAsset>;
   importFile(input: {
-    bytes: Uint8Array;
+    /** Sent as the request body; a file-backed Blob is never read into memory whole. */
+    file: Blob;
     fileName: string;
-    contentType: string;
     kind: AssetKind;
     globalAssetId: string;
+    onProgress?: AssetImportProgressListener;
   }): Promise<ResolvedAsset>;
   publish(input: {
     projectId: string;
@@ -411,7 +416,7 @@ export function createProjectAssetHostClient(
   };
   // Object identity is the in-process logical command boundary. Equal bytes in
   // a different object are a new import; retrying this object replays its first
-  // immutable multipart snapshot.
+  // immutable Blob snapshot.
   const importCommands = new WeakMap<object, ProjectImportSnapshot>();
   type HttpTrashCommand = Parameters<typeof http.trash>[0] & {
     deleteOperationId?: string;
@@ -509,12 +514,11 @@ export function createProjectAssetHostClient(
       let snapshot = importCommands.get(input);
       if (!snapshot) {
         const resolved = await context(input);
-        const bytes = input.bytes.slice().buffer as ArrayBuffer;
         snapshot = {
           resolved,
           command: {
             projectId: resolved.projectId,
-            file: new Blob([bytes], { type: input.contentType }),
+            file: input.file,
             fileName: input.fileName,
             kind: input.kind,
             projectAssetId: requiredImportId(
@@ -524,6 +528,7 @@ export function createProjectAssetHostClient(
             ...(input.duplicateContent
               ? { duplicateContent: input.duplicateContent }
               : {}),
+            ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           },
         };
         importCommands.set(input, snapshot);
@@ -611,15 +616,15 @@ export function createPersonalGlobalAssetHostClient(
     async importFile(input) {
       let command = importCommands.get(input);
       if (!command) {
-        const bytes = input.bytes.slice().buffer as ArrayBuffer;
         command = {
-          file: new Blob([bytes], { type: input.contentType }),
+          file: input.file,
           fileName: input.fileName,
           kind: input.kind,
           globalAssetId: requiredImportId(
             input.globalAssetId,
             "global asset id",
           ),
+          ...(input.onProgress ? { onProgress: input.onProgress } : {}),
         };
         importCommands.set(input, command);
       }

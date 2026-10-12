@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -38,6 +38,11 @@ const globalAsset: ResolvedAsset = {
   id: "global:one",
   url: "http://127.0.0.1:8789/api/v1/libraries/personal/assets/global%3Aone/media",
 };
+
+/** Reads the file-backed Blob an import handed to its client. */
+async function sentBytes(file: Blob | undefined): Promise<number[]> {
+  return file ? Array.from(new Uint8Array(await file.arrayBuffer())) : [];
+}
 
 function fakeClient(
   calls: Array<{ method: string; input: unknown }>,
@@ -260,9 +265,9 @@ test("MCP imports a local workspace file through Host import-file without CLI ex
       projectId: calls[0]?.input.projectId,
       kind: calls[0]?.input.kind,
       fileName: calls[0]?.input.fileName,
-      contentType: calls[0]?.input.contentType,
+      contentType: calls[0]?.input.file?.type,
       projectAssetId: calls[0]?.input.projectAssetId,
-      bytes: Array.from(calls[0]?.input.bytes ?? []),
+      bytes: await sentBytes(calls[0]?.input.file),
     },
     {
       projectId: "project-a",
@@ -273,6 +278,46 @@ test("MCP imports a local workspace file through Host import-file without CLI ex
       bytes: [4, 5, 6],
     },
   );
+});
+
+test("MCP imports hand the Host client the file itself, never a copy of its bytes", async () => {
+  const { createAssetProjectHostGateway } = await import("./asset-gateway");
+  const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-import-blob-"));
+  const filePath = join(workspace, "voice.mp3");
+  await writeFile(filePath, new Uint8Array([4, 5, 6]));
+  const sent: Array<Record<string, unknown> & { file: Blob }> = [];
+  const client = fakeClient([]);
+  client.importFile = async (input) => {
+    sent.push(input);
+    return { projectId: "project-a", value: asset };
+  };
+  const gateway = createAssetProjectHostGateway(client, {
+    async importFile(input: Record<string, unknown> & { file: Blob }) {
+      sent.push(input);
+      return globalAsset;
+    },
+  } as never);
+
+  await gateway.invoke("clash_assets_import_file", {
+    cwd: workspace,
+    filePath: "voice.mp3",
+  });
+  await gateway.invoke("clash_assets_global_import_file", {
+    cwd: workspace,
+    filePath: "voice.mp3",
+  });
+
+  assert.equal(sent.length, 2);
+  for (const input of sent) {
+    assert.equal("bytes" in input, false);
+    assert.ok(input.file instanceof Blob);
+    assert.equal(input.file.size, 3);
+    assert.equal(input.file.type, "audio/mpeg");
+  }
+  // The Blob reads from disk on demand: with the source gone short there is
+  // no in-memory copy left to send.
+  await truncate(filePath, 0);
+  for (const input of sent) await assert.rejects(input.file.arrayBuffer());
 });
 
 test("MCP Project import keeps one pending Asset id until the Host confirms success", async () => {
@@ -365,7 +410,7 @@ test("MCP Project import releases its pending id after a known Host rejection", 
   assert.notEqual(importedIds[1], importedIds[0]);
 });
 
-test("MCP Project import snapshots a caller-assigned command across an unknown result", async () => {
+test("MCP Project import keeps a caller-assigned id across an unknown result and reads the file per attempt", async () => {
   const { createAssetProjectHostGateway } = await import("./asset-gateway");
   const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-explicit-retry-"));
   const filePath = join(workspace, "voice.mp3");
@@ -375,7 +420,7 @@ test("MCP Project import snapshots a caller-assigned command across an unknown r
   client.importFile = async (input) => {
     requests.push({
       id: input.projectAssetId ?? "",
-      bytes: Array.from(input.bytes),
+      bytes: await sentBytes(input.file),
     });
     if (requests.length === 1) throw new TypeError("connection lost");
     return { projectId: "project-a", value: asset };
@@ -399,7 +444,9 @@ test("MCP Project import snapshots a caller-assigned command across an unknown r
 
   assert.deepEqual(requests, [
     { id: "asset:caller-command", bytes: [4, 5, 6] },
-    { id: "asset:caller-command", bytes: [4, 5, 6] },
+    // No copy of the first attempt is held in memory; the Host, not the
+    // gateway, decides whether this id may now name the rewritten file.
+    { id: "asset:caller-command", bytes: [9, 9, 9] },
   ]);
 });
 
@@ -559,9 +606,9 @@ test("MCP imports a local file directly into the personal Global library", async
       method: globalCalls[0]?.method,
       kind: globalCalls[0]?.input.kind,
       fileName: globalCalls[0]?.input.fileName,
-      contentType: globalCalls[0]?.input.contentType,
+      contentType: globalCalls[0]?.input.file?.type,
       globalAssetId: globalCalls[0]?.input.globalAssetId,
-      bytes: Array.from(globalCalls[0]?.input.bytes ?? []),
+      bytes: await sentBytes(globalCalls[0]?.input.file),
     },
     {
       method: "importFile",
@@ -639,7 +686,7 @@ test("MCP Global import releases its pending id after a known Host rejection", a
   assert.notEqual(importedIds[1], importedIds[0]);
 });
 
-test("MCP Global import snapshots a caller-assigned command across an unknown result", async () => {
+test("MCP Global import keeps a caller-assigned id across an unknown result and reads the file per attempt", async () => {
   const { createAssetProjectHostGateway } = await import("./asset-gateway");
   const workspace = await mkdtemp(join(tmpdir(), "clash-mcp-global-explicit-"));
   const filePath = join(workspace, "voice.mp3");
@@ -649,7 +696,7 @@ test("MCP Global import snapshots a caller-assigned command across an unknown re
     async importFile(input: any) {
       requests.push({
         id: input.globalAssetId ?? "",
-        bytes: Array.from(input.bytes),
+        bytes: await sentBytes(input.file),
       });
       if (requests.length === 1) throw new TypeError("connection lost");
       return globalAsset;
@@ -673,7 +720,7 @@ test("MCP Global import snapshots a caller-assigned command across an unknown re
 
   assert.deepEqual(requests, [
     { id: "global:caller-command", bytes: [7, 8, 9] },
-    { id: "global:caller-command", bytes: [7, 8, 9] },
+    { id: "global:caller-command", bytes: [9, 9, 9] },
   ]);
 });
 

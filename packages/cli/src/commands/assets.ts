@@ -6,7 +6,7 @@ import {
   symlinkSync,
   copyFileSync,
   statSync,
-  readFileSync,
+  openAsBlob,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { basename, extname, join, resolve } from "node:path";
@@ -20,6 +20,7 @@ import {
   createProjectAssetHostClient,
   projectAssetRecovery,
   resolveAssetImportFileType,
+  type AssetImportProgressListener,
   type PersonalGlobalAssetHostClient,
   type ProjectAssetHostClient,
   type ProjectAssetRecoveryStep,
@@ -282,6 +283,20 @@ export function describeProjectAssetFailure(
   ].join("\n");
 }
 
+/** Upload progress in 10% steps for a person at a terminal; scripts and --json stay quiet. */
+function importProgressReporter(options: {
+  json?: boolean;
+}): AssetImportProgressListener | undefined {
+  if (isJsonMode(options) || !process.stderr.isTTY) return undefined;
+  let reported = 0;
+  return ({ loadedBytes, totalBytes }) => {
+    const step = Math.floor((loadedBytes / totalBytes) * 10);
+    if (step <= reported) return;
+    reported = step;
+    console.error(`Uploading to the Host: ${step * 10}%`);
+  };
+}
+
 export async function importAssetFile(options: {
   filePath: string;
   projectAssetId?: string;
@@ -294,6 +309,7 @@ export async function importAssetFile(options: {
   kind?: string;
   name?: string;
   link?: boolean;
+  onProgress?: AssetImportProgressListener;
   client?: ProjectAssetHostClient;
   download?: (assetId: string, projectId: string) => Promise<string | null>;
   createSymlink?: (target: string, path: string) => void;
@@ -327,10 +343,11 @@ export async function importAssetFile(options: {
       kind: fileType.kind,
       request: {
         projectId: status.projectId,
-        bytes: new Uint8Array(readFileSync(sourcePath)),
+        // File-backed: the Host receives the bytes as they are read from disk.
+        file: await openAsBlob(sourcePath, { type: fileType.contentType }),
         fileName: basename(sourcePath),
-        contentType: fileType.contentType,
         kind: fileType.kind,
+        ...(options.onProgress ? { onProgress: options.onProgress } : {}),
         projectAssetId: stableCliImportId(
           options,
           options.projectAssetId,
@@ -546,6 +563,7 @@ export async function importPersonalGlobalAssetFile(options: {
   filePath: string;
   globalAssetId?: string;
   kind?: string;
+  onProgress?: AssetImportProgressListener;
   client?: PersonalGlobalAssetHostClient;
 }): Promise<ResolvedAsset> {
   let snapshot = globalImports.get(options);
@@ -569,10 +587,10 @@ export async function importPersonalGlobalAssetFile(options: {
     );
     snapshot = {
       request: {
-        bytes: new Uint8Array(readFileSync(sourcePath)),
+        file: await openAsBlob(sourcePath, { type: fileType.contentType }),
         fileName: basename(sourcePath),
-        contentType: fileType.contentType,
         kind: fileType.kind,
+        ...(options.onProgress ? { onProgress: options.onProgress } : {}),
         globalAssetId: stableCliImportId(
           options,
           options.globalAssetId,
@@ -924,6 +942,7 @@ assetsCommand
           duplicateContent: options.allowDuplicate ? "allow" : "reject",
           name: options.name,
           link: options.link,
+          onProgress: importProgressReporter(options),
         });
         if (isJsonMode(options)) {
           printJson(publicAssetResult(result));
@@ -1295,6 +1314,7 @@ personalGlobalAssetsCommand
           filePath: options.file,
           kind: options.kind,
           globalAssetId,
+          onProgress: importProgressReporter(options),
         });
         if (isJsonMode(options)) {
           printJson(publicAssetResult(result));

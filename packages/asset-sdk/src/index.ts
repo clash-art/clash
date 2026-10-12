@@ -30,6 +30,11 @@ export {
   type GlobalResourceRegistryPort,
 } from "./global-asset-client.js";
 
+export type {
+  AssetImportProgress,
+  AssetImportProgressListener,
+} from "./asset-import-request.js";
+
 export {
   PROJECT_ASSET_READ_RECEIPT_HEADER,
   ProjectAssetHttpError,

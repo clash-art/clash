@@ -4,6 +4,10 @@ import {
   type ResolvedAsset,
 } from "@clash/shared-types";
 
+import {
+  assetImportRequest,
+  type AssetImportProgressListener,
+} from "./asset-import-request.js";
 import type {
   ProjectAssetHttpClientOptions,
   ProjectAssetHttpConnection,
@@ -17,6 +21,8 @@ export interface PersonalGlobalAssetHttpClient {
     fileName?: string;
     kind: AssetKind;
     globalAssetId: string;
+    /** Opts in to a streamed body; see `assetImportRequest`. */
+    onProgress?: AssetImportProgressListener;
   }): Promise<ResolvedAsset>;
   publish(input: {
     projectId: string;
@@ -176,24 +182,15 @@ export function createPersonalGlobalAssetHttpClient(
         "file name",
       );
       const { connected, url } = await target("/import-file");
-      const form = new FormData();
-      if (input.fileName === undefined && fileNameOf(input.file) === fileName) {
-        form.append("file", input.file);
-      } else {
-        form.append("file", input.file, fileName);
-      }
-      form.append("kind", input.kind);
-      form.append("globalAssetId", globalAssetId);
-      return resolvedAsset(
-        await fetch(
-          url,
-          requestInit({
-            method: "POST",
-            headers: headers(connected),
-            body: form,
-          }),
-        ),
-      );
+      const request = assetImportRequest({
+        url,
+        file: input.file,
+        fileName,
+        fields: { kind: input.kind, globalAssetId },
+        headers: headers(connected),
+        ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+      });
+      return resolvedAsset(await fetch(request.url, requestInit(request.init)));
     },
     async publish(input) {
       const projectId = required(input.projectId, "project id");

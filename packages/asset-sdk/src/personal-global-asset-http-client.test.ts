@@ -2,6 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createPersonalGlobalAssetHttpClient } from "./personal-global-asset-http-client.js";
 
+/** Reads a streaming import-file request back as the command it carries. */
+function importForm(input: unknown, init?: RequestInit): FormData {
+  const query = new URL(String(input), "http://host.test").searchParams;
+  const form = new FormData();
+  for (const [name, value] of query) {
+    if (name !== "fileName" && name !== "byteLength") form.set(name, value);
+  }
+  form.set(
+    "file",
+    new File([init?.body as Blob], query.get("fileName") ?? "", {
+      type: new Headers(init?.headers).get("content-type") ?? "",
+    }),
+  );
+  return form;
+}
+
 const readyAsset = {
   id: "global:one",
   kind: "image" as const,
@@ -42,7 +58,10 @@ describe("Personal Global Asset HTTP client", () => {
   });
 
   it("owns import and Project-to-Global publish request shapes", async () => {
-    const fetch = vi.fn(async () => Response.json(readyAsset, { status: 201 }));
+    const fetch = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json(readyAsset, { status: 201 }),
+    );
     const client = createPersonalGlobalAssetHttpClient({ fetch });
     const file = new File([new Uint8Array([1, 2, 3, 4])], "frame.png", {
       type: "image/png",
@@ -58,11 +77,12 @@ describe("Personal Global Asset HTTP client", () => {
       projectAssetId: "asset:one",
     });
 
-    expect(String(fetch.mock.calls[0]?.[0])).toBe(
+    expect(String(fetch.mock.calls[0]?.[0]).split("?")[0]).toBe(
       "/api/v1/libraries/personal/assets/import-file",
     );
-    const form = fetch.mock.calls[0]?.[1]?.body as FormData;
-    expect(form.get("file")).toBe(file);
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(file);
+    const form = importForm(...fetch.mock.calls[0]!);
+    expect((form.get("file") as File).name).toBe("frame.png");
     expect(form.get("kind")).toBe("image");
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({
       method: "POST",
@@ -73,8 +93,11 @@ describe("Personal Global Asset HTTP client", () => {
     });
   });
 
-  it("preserves the caller's Global Asset id in the multipart import", async () => {
-    const fetch = vi.fn(async () => Response.json(readyAsset, { status: 201 }));
+  it("preserves the caller's Global Asset id in the import", async () => {
+    const fetch = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json(readyAsset, { status: 201 }),
+    );
     const client = createPersonalGlobalAssetHttpClient({ fetch });
     const file = new File([new Uint8Array([1, 2, 3, 4])], "frame.png", {
       type: "image/png",
@@ -86,7 +109,7 @@ describe("Personal Global Asset HTTP client", () => {
       globalAssetId: "global:caller-operation",
     });
 
-    const form = fetch.mock.calls[0]?.[1]?.body as FormData;
+    const form = importForm(...fetch.mock.calls[0]!);
     expect(form.get("globalAssetId")).toBe("global:caller-operation");
   });
 
@@ -110,8 +133,8 @@ describe("Personal Global Asset HTTP client", () => {
   it("replays its preassigned Global Asset id when the same failed import is retried", async () => {
     const requests: FormData[] = [];
     const fetch = vi.fn(
-      async (_input: string | URL | Request, init?: RequestInit) => {
-        const form = init?.body as FormData;
+      async (input: string | URL | Request, init?: RequestInit) => {
+        const form = importForm(input, init);
         requests.push(form);
         if (requests.length === 1) throw new TypeError("connection lost");
         return Response.json(

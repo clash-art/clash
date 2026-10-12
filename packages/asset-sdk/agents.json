@@ -3,8 +3,8 @@
   "context_hints": [
     "Do not duplicate Asset shapes here; import the canonical schemas and types from @clash/shared-types",
     "Adapters own Project Loro, Global library state, registries, storage and URL projection; this package owns semantic orchestration and validation",
-    "The browser-safe Project and personal Global Asset HTTP clients own route construction, auth headers, multipart import and response validation; the Project client additionally owns read receipts. Consumers may add Host discovery or UI caching but must not reimplement the transport",
-    "Project multipart imports are at-least-once commands: the HTTP client snapshots the first command object and assigns its stable Project Asset id before I/O. Retrying that object replays the snapshot; a different object remains a distinct import even when it shares the same Blob. The client does not add automatic retries or content deduplication",
+    "The browser-safe Project and personal Global Asset HTTP clients own route construction, auth headers, streamed import and response validation; the Project client additionally owns read receipts. Consumers may add Host discovery or UI caching but must not reimplement the transport",
+    "Imports send the Blob itself as the import-file body with the command in the query, so a browser File or a Node file-backed Blob is never copied into memory; `onProgress` opts in to a streamed body. Project imports are at-least-once commands: the HTTP client snapshots the first command object and assigns its stable Project Asset id before I/O. Retrying that object replays the snapshot; a different object remains a distinct import even when it shares the same Blob. The client does not add automatic retries or content deduplication",
     "Project trash must use the authority port's atomic trash-if-unreferenced operation; never split reference checking from lifecycle mutation in the SDK",
     "Global lifecycle is at-least-once: trash retries one stable deleteOperationId and restore CASes the deleteOperationId observed from the trashed entry; a stale operation must never restore a newer trash",
     "Client mutations accept ProjectAsset product facts only and never storage keys, paths, URLs or credentials"
@@ -14,6 +14,7 @@
     "src/asset-client.ts": "Validated ProjectAsset resolution, Action binding, reference, and lifecycle behavior.",
     "src/global-asset-client.ts": "Validated host-neutral Global library entry client and authority port, including consumer-side trash/restore CAS.",
     "src/project-asset-http-client.ts": "Shared browser/Node Project Asset HTTP transport returning only canonical ResolvedAsset values and opaque observations.",
+    "src/asset-import-request.ts": "The one builder of the streaming import-file request shared by both HTTP clients: Blob body, command fields plus fileName/byteLength in the query, optional progress.",
     "src/personal-global-asset-http-client.ts": "Shared browser/Node personal Global library HTTP transport returning only canonical ResolvedAsset values.",
     "src/asset-delivery.ts": "Host-neutral signed URL issuance port for read and upload capabilities.",
     "src/asset-delivery-capability.ts": "Opaque HMAC capabilities, including optional exact localReplicaId in signed Project scope; no storage locators. Cloud adapters reauthorize admission and Project references at use.",
