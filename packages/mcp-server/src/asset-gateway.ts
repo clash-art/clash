@@ -203,6 +203,7 @@ export function createAssetProjectHostGateway(
               ...resolved.requestScope,
               ...pending.file,
               projectAssetId: pending.id,
+              duplicateContent: input.allowDuplicate ? "allow" : "reject",
             });
           } catch (error) {
             if (error instanceof ProjectHostHttpError) {

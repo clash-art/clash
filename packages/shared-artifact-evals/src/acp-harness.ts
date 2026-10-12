@@ -26,7 +26,7 @@ import type { BenchmarkAgent } from "./types";
 const ACP_HARNESS_IDS = { pi: "pi-acp" } as const;
 
 /** Reasoning effort every benchmark Attempt asks its agent for. */
-const BENCHMARK_THINKING_LEVEL = "medium";
+export const BENCHMARK_THINKING_LEVEL = "medium";
 
 export type AcpBenchmarkAdapter = keyof typeof ACP_HARNESS_IDS;
 

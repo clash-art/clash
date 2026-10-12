@@ -16,7 +16,7 @@
   "key_files": {
     "src/schemas.ts": "Versioned benchmark, outcome, submission, and rubric schemas.",
     "src/evaluator.ts": "Director, Timeline, MG, media, artifact-set, and mixed-lineage grading.",
-    "src/runner.ts": "Isolated workspace provisioning, native Agent execution, product-operation gates, trusted readback dispatch, logs, resume, and outcome generation. Director frame origin uses native Action Run plus Output Commit and exact Asset bytes, not legacy ActionAssetBinding.",
+    "src/runner.ts": "Isolated workspace provisioning, native Agent execution, product-operation gates, trusted readback dispatch, logs, resume, and outcome generation. The run manifest records the cases, Agent selection (adapter, provider, model, thinking, args, Clash profile), backend kinds, trials, placement, and subject; resume rejects any difference by field with stored and requested values. Director frame origin uses native Action Run plus Output Commit and exact Asset bytes, not legacy ActionAssetBinding.",
     "src/product-readback.ts": "Independent Asset, Timeline, and Remotion readback matched to submitted bytes or canonical product state.",
     "src/fixture.ts": "Fixture manifest creation, safe installation, provenance receipt, and post-Agent integrity verification.",
     "src/environment.ts": "Score-free functional/content-effect Attempt capture, runner-scaffold separation, modified Workspace capture, and OTLP receipts.",

@@ -171,6 +171,14 @@ A model is required whenever a provider is given: the provider and the
 thinking level are written inside the model value, and the runner refuses a
 launch the recipe reports it cannot fully express.
 
+The thinking level is a request. Pi resolves it against the model's own levels
+and does not fail when the model has no `medium`: `deepseek-flash` and
+`deepseek-v4-pro` run at `high`. What the session really has is in the first
+line of `logs/events.jsonl`: `acp.session.configOptions` holds the config
+options the agent reported when the session opened, unmodified, and the option
+with `category: "thought_level"` names the current level and the levels the
+model offers. Read the level of a run from there, not from this document.
+
 **Isolation from the operator's machine.** Every Pi Attempt, on every backend,
 gets a home of its own that is removed afterwards. The runner points `HOME`,
 `USERPROFILE`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`,
@@ -274,8 +282,19 @@ never put a credential in one.
 `--pass-k k` (1 ≤ k ≤ n, default n) sets the _k_ of pass@k and pass^k. Trial 1
 keeps the original layout (`<run>/<case>/…`); later trials live in
 `<run>/trials/00N/<case>/…`. The ledger entries and case reports carry `trial`.
-Blocked cases are not repeated. Resume refuses a different trial count,
-placement, or subject.
+Blocked cases are not repeated.
+
+## Resume
+
+`--resume` continues a run id only under the configuration that started it. The
+run manifest records the case ids, the Agent selection (adapter, provider,
+model, the reasoning effort requested with it, `--agent-arg` values, and the
+Clash profile), the backend kinds in placement order, the trial count,
+placement, and subject. A resume that changes any of them fails before any
+Attempt starts, naming each field with its stored and requested value, for
+example `agent.model (stored "a", requested "b")`. A command Agent is an opaque
+launcher, so only its adapter is compared. The judge is evaluator identity and
+may change. To measure a different configuration, start a new run id.
 
 When `--trials` is given, `suite-report.json` links a content-addressed
 **Trial Aggregate** (`trial-aggregates/sha256/<digest>.json`) listing, per task,

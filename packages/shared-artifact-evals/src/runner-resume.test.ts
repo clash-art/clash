@@ -10,7 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { runBenchmarkSuite } from "./runner";
+import type { BenchmarkRuntimeClaim } from "./backend-types";
+import type { ExecutionBackend } from "./execution-backend";
+import {
+  createNativeLocalBackend,
+  executeBenchmarkAttempt,
+  runBenchmarkSuite,
+} from "./runner";
 import type {
   ArtifactBenchmarkCase,
   ArtifactBenchmarkSuite,
@@ -71,6 +77,64 @@ function successfulAgent(extraSource = ""): BenchmarkAgent {
     .filter(Boolean)
     .join(";");
   return { command: process.execPath, args: ["-e", source] };
+}
+
+/** A preflight-blocked Environment case: it seals an Attempt without launching an Agent. */
+function blockedEnvironmentCase(id: string): ArtifactBenchmarkCase {
+  return benchmarkCase(id, {
+    execution: {
+      profile: "clash-host",
+      lane: "blocked-contract",
+      requiredProductOperations: ["asset.get"],
+      requiredCapabilities: ["generator-agent-surface"],
+      preflight: {
+        status: "blocked",
+        checks: [
+          {
+            capability: "generator-agent-surface",
+            status: "missing",
+            detail: "The agent-facing contract is intentionally absent.",
+          },
+        ],
+      },
+      evidence: { traceRequired: true, submissionRequired: true },
+      productReadback: {
+        required: true,
+        mechanism: "generator-authority-readback",
+        artifactIds: ["result"],
+        description: "Read the frozen Generator authority.",
+      },
+      environment: {
+        profile: "clash-agent-environment-v1",
+        track: "functional",
+        outputs: {
+          modifiedWorkspace: true,
+          rawTrajectory: true,
+          normalizedTrajectory: "clash-normalized-v1",
+          atifTrajectory: "ATIF-v1.7-when-supported",
+          otlpTrace: "otlp-json",
+          attempt: "clash-attempt-v1",
+        },
+      },
+    },
+  });
+}
+
+/** A remote-kind backend that runs the Attempt in process under its claim. */
+function containerClaimBackend(): ExecutionBackend {
+  const claim: BenchmarkRuntimeClaim = {
+    kind: "container",
+    engine: { name: "docker", version: "0.0.0" },
+    image: { id: `sha256:${"0".repeat(64)}` },
+    network: "none",
+  };
+  return {
+    kind: "container",
+    maxConcurrency: 1,
+    runtimeClaim: async () => claim,
+    runAttempt: (dispatch) =>
+      executeBenchmarkAttempt({ ...dispatch, runtime: claim }),
+  };
 }
 
 type TestRunProgress = {
@@ -185,7 +249,174 @@ describe("benchmark batch recovery", () => {
         agent: { adapter: "codex", model: "gpt-5.6-terra" },
         resume: true,
       }),
-    ).rejects.toThrow(/resolved Environment.*does not match/iu);
+    ).rejects.toThrow(
+      'agent.model (stored "gpt-5.6-sol", requested "gpt-5.6-terra")',
+    );
+  });
+
+  it("rejects a resumed model switch for a case that sealed no Environment lock", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-bench-model-resume-"));
+    const suiteRoot = join(root, "suite");
+    const outputRoot = join(root, "runs");
+    await mkdir(suiteRoot);
+    // Stands in for the Agent executable: it ignores its arguments and exits.
+    const agentPath = join(root, "agent.cjs");
+    await writeFile(agentPath, "#!/usr/bin/env node\n", "utf8");
+    await chmod(agentPath, 0o755);
+    const common = {
+      suite: suite([benchmarkCase("plain-case")]),
+      suiteRoot,
+      outputRoot,
+      runId: "model-switch",
+    };
+    const agent = {
+      adapter: "codex" as const,
+      command: agentPath,
+      model: "deepseek-flash",
+    };
+
+    await runBenchmarkSuite({ ...common, agent });
+    const progressPath = join(
+      outputRoot,
+      "model-switch",
+      "suite-progress.json",
+    );
+    const sealed = await readFile(progressPath, "utf8");
+
+    await expect(
+      runBenchmarkSuite({
+        ...common,
+        agent: { ...agent, model: "another-model" },
+        resume: true,
+      }),
+    ).rejects.toThrow(
+      'agent.model (stored "deepseek-flash", requested "another-model")',
+    );
+    // A refused resume leaves the run as it was.
+    expect(await readFile(progressPath, "utf8")).toBe(sealed);
+
+    await expect(
+      runBenchmarkSuite({ ...common, agent, resume: true }),
+    ).resolves.toMatchObject({ resumed: true });
+  });
+
+  it("names every run configuration field a resume changes, with both values", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-bench-config-resume-"));
+    const suiteRoot = join(root, "suite");
+    const outputRoot = join(root, "runs");
+    await mkdir(suiteRoot);
+    const cases = [
+      blockedEnvironmentCase("first-case"),
+      blockedEnvironmentCase("second-case"),
+    ];
+    const original = {
+      suite: suite(cases),
+      suiteRoot,
+      outputRoot,
+      runId: "config-run",
+      agent: {
+        adapter: "pi" as const,
+        provider: "deepseek",
+        model: "deepseek-flash",
+        args: ["--verbose"],
+      },
+      trials: 2,
+    };
+    await runBenchmarkSuite(original);
+
+    const changes: Array<[Partial<typeof original> | object, string]> = [
+      [
+        { agent: { ...original.agent, adapter: "codex" as const } },
+        'agent.adapter (stored "pi", requested "codex")',
+      ],
+      [
+        { agent: { ...original.agent, provider: "openrouter" } },
+        'agent.provider (stored "deepseek", requested "openrouter")',
+      ],
+      [
+        { agent: { adapter: "pi" as const, provider: "deepseek" } },
+        'agent.model (stored "deepseek-flash", requested (not recorded))',
+      ],
+      [
+        { agent: { ...original.agent, args: [] } },
+        'agent.args (stored ["--verbose"], requested (not recorded))',
+      ],
+      [
+        { backends: [containerClaimBackend()] },
+        'backends (stored ["native-local"], requested ["container"])',
+      ],
+      [
+        {
+          backends: [createNativeLocalBackend(), createNativeLocalBackend()],
+        },
+        'backends (stored ["native-local"], requested ["native-local","native-local"])',
+      ],
+      [
+        { suite: suite([cases[0]!]) },
+        'cases (stored ["first-case","second-case"], requested ["first-case"])',
+      ],
+      [{ trials: 3 }, "execution.trials (stored 2, requested 3)"],
+      [
+        { placement: "spread" as const },
+        'execution.placement (stored "per-task", requested "spread")',
+      ],
+    ];
+    for (const [change, mismatch] of changes) {
+      const resumed = runBenchmarkSuite({
+        ...original,
+        ...change,
+        resume: true,
+      });
+      await expect(resumed).rejects.toThrow(
+        "Cannot resume run 'config-run': the requested configuration differs from the existing run manifest",
+      );
+      await expect(resumed).rejects.toThrow(mismatch);
+    }
+
+    // One error reports every changed field.
+    const combined = runBenchmarkSuite({
+      ...original,
+      agent: { ...original.agent, model: "another-model" },
+      trials: 3,
+      resume: true,
+    });
+    await expect(combined).rejects.toThrow(
+      /agent\.model .*; execution\.trials /u,
+    );
+
+    await expect(
+      runBenchmarkSuite({ ...original, resume: true }),
+    ).resolves.toMatchObject({ resumed: true });
+  });
+
+  it("refuses to resume a run manifest that does not record its Agent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-bench-legacy-resume-"));
+    const suiteRoot = join(root, "suite");
+    const outputRoot = join(root, "runs");
+    await mkdir(suiteRoot);
+    const common = {
+      suite: suite([blockedEnvironmentCase("blocked-environment")]),
+      suiteRoot,
+      outputRoot,
+      runId: "unrecorded-agent",
+      agent: { adapter: "codex" as const, model: "gpt-5.6-sol" },
+    };
+    await runBenchmarkSuite(common);
+    const manifestPath = join(
+      outputRoot,
+      "unrecorded-agent",
+      "run-manifest.json",
+    );
+    const { agent: _agent, ...unrecorded } = JSON.parse(
+      await readFile(manifestPath, "utf8"),
+    ) as Record<string, unknown>;
+    await writeFile(manifestPath, JSON.stringify(unrecorded), "utf8");
+
+    await expect(
+      runBenchmarkSuite({ ...common, resume: true }),
+    ).rejects.toThrow(
+      'agent.model (stored (not recorded), requested "gpt-5.6-sol")',
+    );
   });
 
   it("resumes an Environment under a different judge and keeps the judge the Attempt recorded", async () => {
@@ -288,7 +519,9 @@ describe("benchmark batch recovery", () => {
         qualityReviewer: judge,
         resume: true,
       }),
-    ).rejects.toThrow(/resolved Environment.*does not match/iu);
+    ).rejects.toThrow(
+      'agent.model (stored "gpt-5.6-sol", requested "gpt-5.6-terra")',
+    );
   });
 
   it("ignores Evaluation changes on resume but rejects a mutated immutable Attempt", async () => {
