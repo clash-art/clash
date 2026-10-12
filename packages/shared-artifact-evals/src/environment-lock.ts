@@ -23,6 +23,15 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  acpAgentDirectoryVariables,
+  isAcpAgent,
+  resolveAcpHarness,
+  type AcpBenchmarkAgent,
+  type AcpHarnessVersions,
+  type ResolvedAcpHarness,
+} from "./acp-harness";
+import { ISOLATED_HOME_VARIABLES } from "./agent-home";
 import { readSubjectBundledRuntime } from "./subject-runtime";
 import type { WorkspaceBundleManifest } from "@clash/shared-types";
 
@@ -56,12 +65,26 @@ export type BenchmarkLockedExecutable = LockedFile & {
   reportedVersion?: string;
 };
 
+/**
+ * The ACP harness an ACP-driven adapter ran through. `package` and
+ * `dependencies` are the versions the installer recorded it installed
+ * (`InstallResult.dependencies`), accepted only when they, and the packages on
+ * disk, equal the registry's pins; an operator-supplied launcher is recorded
+ * as unverified.
+ */
+export type BenchmarkLockedHarness = { id: string } & (
+  | ({ pinned: "verified" } & AcpHarnessVersions)
+  | { pinned: "unverified-explicit-launcher" }
+);
+
 export type BenchmarkLockedParticipant = {
   adapter: "codex" | "claude" | "pi" | "command";
   provider:
     { kind: "adapter-bound" | "explicit"; id: string } | { kind: "unselected" };
   model: { kind: "explicit"; id: string } | { kind: "unselected" };
   executable?: BenchmarkLockedExecutable;
+  /** Present only for adapters driven over ACP. */
+  harness?: BenchmarkLockedHarness;
 };
 
 export type BenchmarkLockedSkill =
@@ -90,6 +113,18 @@ type BenchmarkResolvedPhasePolicy = {
       | "codex-workspace-write-sandbox"
       | "not-enforced-by-runner"
       | "not-applicable";
+  };
+  /**
+   * Present when the runner gives the agent a home of its own for the
+   * Attempt, so the operator's user-level agent configuration (settings,
+   * extensions, skills, context files, stored credentials) is not loaded.
+   * `variables` are the environment variables pointed at that home. Absent for
+   * adapters that still run in the operator's home.
+   */
+  userConfiguration?: {
+    home: "fresh-per-attempt-directory";
+    userLevel: "not-loaded";
+    variables: string[];
   };
 };
 
@@ -431,7 +466,25 @@ function effectivePath(agent: BenchmarkAgent): string {
     .join(delimiter);
 }
 
+/**
+ * An ACP-driven adapter is launched through its registry harness; that
+ * launcher is the executable the Attempt actually runs.
+ */
+function lockedAcpHarness(
+  agent: AcpBenchmarkAgent,
+): Promise<ResolvedAcpHarness> {
+  return resolveAcpHarness(agent, {
+    ...(agent.inheritEnv === false ? {} : process.env),
+    ...agent.env,
+  });
+}
+
 async function resolveExecutable(agent: BenchmarkAgent): Promise<string> {
+  if (isAcpAgent(agent)) {
+    const candidate = await realpath((await lockedAcpHarness(agent)).command);
+    await access(candidate, constants.X_OK);
+    return candidate;
+  }
   const command =
     agent.adapter === undefined || agent.adapter === "command"
       ? agent.command
@@ -588,11 +641,16 @@ async function lockExecutable(
     return undefined;
   }
   const evidence = await hashRegularFile(path);
-  const commandName =
-    agent.adapter === undefined || agent.adapter === "command"
+  const commandName = isAcpAgent(agent)
+    ? basename(path)
+    : agent.adapter === undefined || agent.adapter === "command"
       ? basename(agent.command.replaceAll("\\", "/"))
       : basename((agent.command ?? agent.adapter).replaceAll("\\", "/"));
-  const version = await reportedVersion(path);
+  // The managed install states the harness package version without running it.
+  const version =
+    (isAcpAgent(agent)
+      ? (await lockedAcpHarness(agent)).versions?.package.version
+      : undefined) ?? (await reportedVersion(path));
   const afterVersionEvidence = await hashRegularFile(path);
   if (!sameEvidence(afterVersionEvidence, evidence)) {
     throw new Error(
@@ -853,6 +911,18 @@ function resolvedAgentPhase(
           ? "codex-workspace-write-sandbox"
           : "not-enforced-by-runner",
     },
+    ...(isAcpAgent(agent)
+      ? {
+          userConfiguration: {
+            home: "fresh-per-attempt-directory" as const,
+            userLevel: "not-loaded" as const,
+            variables: [
+              ...ISOLATED_HOME_VARIABLES,
+              ...acpAgentDirectoryVariables(agent),
+            ].sort(),
+          },
+        }
+      : {}),
   };
 }
 
@@ -1132,6 +1202,13 @@ export async function captureBenchmarkExecutionLock(input: {
       lockOptionalTask(input.caseRoot),
     ]);
   if (executable) participant.executable = executable.public;
+  if (isAcpAgent(input.agent) && input.executionIntent === "execute") {
+    // Resolving fails here when the install differs from the pinned versions.
+    const harness = await lockedAcpHarness(input.agent);
+    participant.harness = harness.versions
+      ? { id: harness.id, pinned: "verified", ...harness.versions }
+      : { id: harness.id, pinned: "unverified-explicit-launcher" };
+  }
   const requirements = publicRequirements({
     benchmark: input.benchmark,
     inputManifest: input.inputManifest,

@@ -64,6 +64,7 @@ export type NormalizedTrajectory = {
       | "codex-events"
       | "claude-events"
       | "pi-events"
+      | "acp-events"
       | "command-stdout"
       | "runner-observations"
       | "clash-cli-events";
@@ -295,9 +296,7 @@ const DOMAIN_FAILURE_STATUSES = new Set([
   "rejected",
 ]);
 
-function structuredRecordFailureMessage(
-  value: unknown,
-): string | undefined {
+function structuredRecordFailureMessage(value: unknown): string | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
   const status =
@@ -395,6 +394,46 @@ function normalizePiUsage(
     outputTokens: usageNumber(usage.output),
     reasoningOutputTokens: usageNumber(usage.reasoning),
   };
+}
+
+function normalizeAcpUsage(
+  value: unknown,
+): NormalizedTrajectory["turns"][number]["usage"] {
+  const usage = asRecord(value) ?? {};
+  return {
+    inputTokens: usageNumber(usage.inputTokens),
+    cachedInputTokens: usageNumber(usage.cachedReadTokens),
+    outputTokens: usageNumber(usage.outputTokens),
+    reasoningOutputTokens: usageNumber(usage.thoughtTokens),
+  };
+}
+
+/**
+ * Names the product operation behind a tool call, for both Pi's own event
+ * stream and ACP `tool_call` updates. `acpKind` is the standard ACP category
+ * an agent reports when it does not expose its own tool identifier.
+ */
+function agentToolOperation(
+  toolName: string | undefined,
+  args: Record<string, unknown>,
+  acpKind?: string,
+): { kind: "mcp" | "shell"; operation: string } | undefined {
+  const rawMcpName =
+    toolName === undefined
+      ? undefined
+      : (/^mcp__clash__(.+)$/u.exec(toolName)?.[1] ??
+        (toolName.startsWith("clash") ? toolName : undefined));
+  if (rawMcpName) {
+    return {
+      kind: "mcp",
+      operation: `clash/${effectiveMcpToolName({ tool: rawMcpName, arguments: args }) ?? rawMcpName}`,
+    };
+  }
+  const isShell =
+    toolName === "bash" || (toolName === undefined && acpKind === "execute");
+  return isShell && typeof args.command === "string"
+    ? { kind: "shell", operation: args.command }
+    : undefined;
 }
 
 function cliOperation(argv: string[]): string {
@@ -640,7 +679,10 @@ function isContractDiscoveryOperation(operation: string): boolean {
   return (
     MCP_ROOT_TOOLS.has(tool) ||
     CONTRACT_DISCOVERY_VERBS.has(
-      tool.split(/[_\s/]+/u).filter(Boolean).at(-1) ?? "",
+      tool
+        .split(/[_\s/]+/u)
+        .filter(Boolean)
+        .at(-1) ?? "",
     )
   );
 }
@@ -771,15 +813,21 @@ export async function writeNormalizedTrajectory(input: {
   observedPath: string;
 }): Promise<string> {
   const trajectoryPath = join(input.logsRoot, "trajectory.json");
+  const rawLines = await readJsonLines(input.rawPath);
+  // Pi is driven over ACP; logs recorded before that hold Pi's own events.
+  const acpLog =
+    input.agent.adapter === "pi" &&
+    asRecord(rawLines[0]?.value)?.type === "acp.session";
   const rawKind =
     input.agent.adapter === "codex"
       ? "codex-events"
       : input.agent.adapter === "claude"
         ? "claude-events"
-        : input.agent.adapter === "pi"
-          ? "pi-events"
-          : "command-stdout";
-  const rawLines = await readJsonLines(input.rawPath);
+        : acpLog
+          ? "acp-events"
+          : input.agent.adapter === "pi"
+            ? "pi-events"
+            : "command-stdout";
   const observationLines = await readJsonLines(input.observedPath);
   const observations = observationLines.flatMap(({ value }) => {
     const record = asRecord(value);
@@ -816,6 +864,16 @@ export async function writeNormalizedTrajectory(input: {
     string,
     { kind: "mcp" | "shell"; operation: string }
   >();
+  const acpTools = new Map<
+    string,
+    {
+      name?: string;
+      acpKind?: string;
+      args: Record<string, unknown>;
+      started?: { kind: "mcp" | "shell"; operation: string };
+    }
+  >();
+  const acpMessageIds = new Set<string>();
   const contractResponses: Array<{ operation: string; bytes: number }> = [];
   let stableOrder = 0;
 
@@ -826,6 +884,111 @@ export async function writeNormalizedTrajectory(input: {
     const observedAt =
       observation?.observedAt ?? new Date(runOriginEpochMs).toISOString();
     const monotonicMs = observation?.monotonicMs ?? 0;
+    if (acpLog) {
+      if (
+        envelope.type === "acp.prompt_complete" ||
+        envelope.type === "acp.prompt_error"
+      ) {
+        const failed =
+          envelope.type === "acp.prompt_error" ||
+          envelope.stopReason !== "end_turn";
+        const message = failed
+          ? (errorMessage(envelope.message) ??
+            `ACP turn stopped with '${String(envelope.stopReason)}'`)
+          : undefined;
+        turns.push({
+          status: failed ? "failed" : "completed",
+          turnCount: Math.max(1, acpMessageIds.size),
+          usage: normalizeAcpUsage(envelope.usage),
+          ...(message ? { error: message } : {}),
+        });
+        if (message) errors.push({ source: "pi", sourceLine: line, message });
+        continue;
+      }
+      const update =
+        envelope.type === "acp.session_update"
+          ? asRecord(envelope.update)
+          : undefined;
+      if (!update) continue;
+      if (
+        update.sessionUpdate === "agent_message_chunk" &&
+        typeof update.messageId === "string"
+      ) {
+        acpMessageIds.add(update.messageId);
+        continue;
+      }
+      if (
+        (update.sessionUpdate !== "tool_call" &&
+          update.sessionUpdate !== "tool_call_update") ||
+        typeof update.toolCallId !== "string"
+      ) {
+        continue;
+      }
+      const toolCallId = update.toolCallId;
+      const tool = acpTools.get(toolCallId) ?? { args: {} };
+      acpTools.set(toolCallId, tool);
+      if (typeof update.name === "string") tool.name = update.name;
+      if (typeof update.kind === "string") tool.acpKind = update.kind;
+      const rawInput = asRecord(update.rawInput);
+      if (rawInput) tool.args = rawInput;
+      const settled =
+        update.status === "completed" || update.status === "failed";
+      // Arguments stream while the call is `pending`; it starts executing,
+      // with complete arguments, at `in_progress`.
+      if (!tool.started && (update.status === "in_progress" || settled)) {
+        tool.started = agentToolOperation(tool.name, tool.args, tool.acpKind);
+        if (tool.started) {
+          stableOrder += 1;
+          pendingActions.push({
+            source: "pi",
+            sourceLine: line,
+            ...tool.started,
+            status: "started",
+            observedAt,
+            monotonicMs,
+            correlationId: toolCallId,
+            epochMs: Date.parse(observedAt),
+            stableOrder,
+          });
+        }
+      }
+      if (!settled) continue;
+      acpTools.delete(toolCallId);
+      const pending = tool.started;
+      if (!pending) continue;
+      const result = asRecord(update.rawOutput);
+      const domainFailure =
+        pending.kind === "mcp"
+          ? structuredResultFailureMessage(result)
+          : undefined;
+      const failed = update.status === "failed" || domainFailure !== undefined;
+      const failure = failed
+        ? (domainFailure ??
+          contentMessage(result?.content) ??
+          "ACP tool call failed")
+        : undefined;
+      const responseBytes = responseByteLength(result?.content);
+      if (pending.kind === "mcp" && responseBytes !== undefined) {
+        contractResponses.push({
+          operation: pending.operation,
+          bytes: responseBytes,
+        });
+      }
+      stableOrder += 1;
+      pendingActions.push({
+        source: "pi",
+        sourceLine: line,
+        ...pending,
+        status: failed ? "failed" : "succeeded",
+        observedAt,
+        monotonicMs,
+        correlationId: toolCallId,
+        ...(failure ? { error: failure } : {}),
+        epochMs: Date.parse(observedAt),
+        stableOrder,
+      });
+      continue;
+    }
     if (input.agent.adapter === "pi") {
       if (envelope.type === "turn_end") {
         const message = asRecord(envelope.message);
@@ -849,22 +1012,13 @@ export async function writeNormalizedTrajectory(input: {
         typeof envelope.toolName === "string" ? envelope.toolName : undefined;
       if (!toolCallId || !toolName) continue;
       if (envelope.type === "tool_execution_start") {
-        const args = asRecord(envelope.args) ?? {};
-        const rawMcpName =
-          /^mcp__clash__(.+)$/u.exec(toolName)?.[1] ??
-          (toolName.startsWith("clash") ? toolName : undefined);
-        const kind = rawMcpName
-          ? "mcp"
-          : toolName === "bash"
-            ? "shell"
-            : undefined;
-        const operation = rawMcpName
-          ? `clash/${effectiveMcpToolName({ tool: rawMcpName, arguments: args }) ?? rawMcpName}`
-          : toolName === "bash" && typeof args.command === "string"
-            ? args.command
-            : undefined;
-        if (!kind || !operation) continue;
-        piTools.set(toolCallId, { kind, operation });
+        const classified = agentToolOperation(
+          toolName,
+          asRecord(envelope.args) ?? {},
+        );
+        if (!classified) continue;
+        const { kind, operation } = classified;
+        piTools.set(toolCallId, classified);
         stableOrder += 1;
         pendingActions.push({
           source: "pi",
@@ -893,9 +1047,7 @@ export async function writeNormalizedTrajectory(input: {
           contentMessage(result?.content) ??
           "Pi tool call failed")
         : undefined;
-      const responseBytes = responseByteLength(
-        result?.content,
-      );
+      const responseBytes = responseByteLength(result?.content);
       if (pending.kind === "mcp" && responseBytes !== undefined) {
         contractResponses.push({
           operation: pending.operation,
@@ -1064,9 +1216,7 @@ export async function writeNormalizedTrajectory(input: {
           : "shell";
     const domainFailure =
       kind === "mcp" ? structuredResultFailureMessage(item.result) : undefined;
-    const status = domainFailure
-      ? "failed"
-      : actionStatus(envelope.type, item);
+    const status = domainFailure ? "failed" : actionStatus(envelope.type, item);
     const failure =
       status === "failed"
         ? (domainFailure ??

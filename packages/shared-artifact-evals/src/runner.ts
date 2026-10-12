@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
+import { PassThrough } from "node:stream";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmod,
@@ -33,7 +35,6 @@ import {
   createServer as createNetServer,
   type Socket,
 } from "node:net";
-import { fileURLToPath } from "node:url";
 import type { ProjectHostResponse } from "@clash/shared-runtime/project-host-client";
 import { createGeneratorClient } from "@clash/shared-runtime/generator-client";
 import { createProjectAssetHttpClient } from "@clash/asset-sdk";
@@ -69,6 +70,14 @@ import {
   type TrialOutcome,
   type TrialPlacement,
 } from "./trial-aggregate";
+import { runAcpAgentSession, type AcpAgentRunResult } from "./acp-agent";
+import {
+  acpHeadlessLaunch,
+  isAcpAgent,
+  resolveAcpHarness,
+  type AcpBenchmarkAgent,
+} from "./acp-harness";
+import { createIsolatedAgentHome } from "./agent-home";
 import { loadSubmission } from "./artifacts";
 import { writeAtifTrajectory } from "./atif";
 import {
@@ -1432,7 +1441,7 @@ async function terminateResidualProcessGroup(
 }
 
 function resolveAgentCommand(
-  agent: BenchmarkAgent,
+  agent: Exclude<BenchmarkAgent, AcpBenchmarkAgent>,
   workspace: string,
   prompt: string,
   clashAccess?: AgentClashAccess,
@@ -1539,36 +1548,6 @@ function resolveAgentCommand(
     ];
     return { command: agent.command ?? "claude", args };
   }
-  if (agent.adapter === "pi") {
-    const currentModulePath = fileURLToPath(import.meta.url);
-    const extensionPath = join(
-      dirname(currentModulePath),
-      currentModulePath.endsWith(".ts")
-        ? "pi-clash-extension.ts"
-        : "pi-clash-extension.js",
-    );
-    const args = [
-      "--print",
-      "--mode",
-      "json",
-      "--no-session",
-      "--no-extensions",
-      ...(clashAccess?.mcp ? ["--extension", extensionPath] : []),
-      "--no-skills",
-      "--skill",
-      join(workspace, ".agents", "skills"),
-      "--no-prompt-templates",
-      "--no-context-files",
-      "--approve",
-      "--thinking",
-      "medium",
-      ...(agent.provider ? ["--provider", agent.provider] : []),
-      ...(agent.model ? ["--model", agent.model] : []),
-      ...(agent.args ?? []),
-      prompt,
-    ];
-    return { command: agent.command ?? "pi", args };
-  }
   return { command: agent.command, args: agent.args ?? [] };
 }
 
@@ -1592,6 +1571,23 @@ function isolatedAgentEnvironment(
   }
   env.PWD = workspace;
   return env;
+}
+
+/**
+ * ACP harnesses installed from the registry are Node programs started through
+ * `env node`. Where the Agent's PATH has no Node (a bare container image whose
+ * worker runs on a mounted Node), the runner's own Node directory is appended
+ * so the harness can start. The Agent's shell then sees that `node` as well.
+ */
+function acpProcessEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const directories = (env.PATH ?? "").split(delimiter).filter(Boolean);
+  if (directories.some((directory) => existsSync(join(directory, "node")))) {
+    return env;
+  }
+  return {
+    ...env,
+    PATH: [...directories, dirname(process.execPath)].join(delimiter),
+  };
 }
 
 function claudeResultError(eventsText: string): string | undefined {
@@ -1701,14 +1697,18 @@ async function runAgent(input: {
   const stderr = await open(stderrPath, "w");
   const startedAt = Date.now();
   const startedMonotonic = process.hrtime.bigint();
-  const resolvedAgent = resolveAgentCommand(
-    input.agent,
-    input.workspace,
-    input.prompt,
-    input.clashAccess,
-    taskSkillContext,
-  );
-  if (input.lockedExecutablePath) {
+  const agent = input.agent;
+  const acpAgent = isAcpAgent(agent) ? agent : undefined;
+  const resolvedAgent = isAcpAgent(agent)
+    ? undefined
+    : resolveAgentCommand(
+        agent,
+        input.workspace,
+        input.prompt,
+        input.clashAccess,
+        taskSkillContext,
+      );
+  if (resolvedAgent && input.lockedExecutablePath) {
     resolvedAgent.command = input.lockedExecutablePath;
   }
   const inheritedEnvironment =
@@ -1743,16 +1743,94 @@ async function runAgent(input: {
     env.CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = "1";
   }
   if (input.agent.adapter === "pi") env.PI_TELEMETRY = "0";
-  if (input.agent.adapter === "pi" && input.clashAccess?.mcp) {
-    env.CLASH_PI_MCP_RUNTIME_PATH = input.clashAccess.mcp.runtimePath;
-    env.CLASH_PI_MCP_PLUGIN_ROOT = input.clashAccess.mcp.pluginRoot;
-    env.CLASH_PI_MCP_NODE_PATH = input.clashAccess.mcp.nodeExecPath;
+
+  if (acpAgent) {
+    // An ACP agent is a server: the runner drives one prompt turn and records
+    // the standard `session/update` stream as the Attempt's event log.
+    const events = new PassThrough();
+    const capture = captureObservedOutput({
+      stream: events,
+      rawPath: stdoutPath,
+      observedPath: observedEventsPath,
+      startedMonotonic,
+    });
+    // The agent gets a home of its own for this Attempt, so nothing the
+    // operator has configured for the agent on this machine is loaded.
+    const agentHomeRoot = await mkdtemp(
+      join(tmpdir(), "clash-benchmark-agent-home-"),
+    );
+    let acpChild: ChildProcess | undefined;
+    let result: AcpAgentRunResult;
+    try {
+      // The managed bin directory is runner configuration: it is read here
+      // and, like every other CLASH_* variable, withheld from the Agent.
+      const harness = await resolveAcpHarness(acpAgent, {
+        ...inheritedEnvironment,
+        ...acpAgent.env,
+      });
+      const home = await createIsolatedAgentHome(agentHomeRoot);
+      const launch = acpHeadlessLaunch(acpAgent, home);
+      const mcp = input.clashAccess?.mcp;
+      result = await runAcpAgentSession({
+        harness,
+        command: input.lockedExecutablePath ?? harness.command,
+        args: launch.args,
+        cwd: input.workspace,
+        env: acpProcessEnvironment({ ...env, ...home.env, ...launch.env }),
+        prompt: input.prompt,
+        mcpServers: mcp
+          ? [
+              {
+                name: "clash",
+                command: mcp.nodeExecPath,
+                args: [mcp.runtimePath],
+                env: [],
+              },
+            ]
+          : [],
+        timeoutMs: input.benchmark.timeoutMs,
+        stderrFd: stderr.fd,
+        events,
+        onSpawn: (spawned) => {
+          acpChild = input.processScope.track(spawned);
+        },
+      });
+    } catch (error) {
+      events.end();
+      const message = error instanceof Error ? error.message : String(error);
+      await stderr.write(`${message}\n`);
+      result = {
+        status: "spawn-error",
+        exitCode: null,
+        signal: null,
+        error: message,
+      };
+    }
+    await capture;
+    await stderr.close();
+    if (acpChild) await terminateResidualProcessGroup(acpChild);
+    await rm(agentHomeRoot, { recursive: true, force: true });
+    const trajectoryPath = await writeNormalizedTrajectory({
+      agent: input.agent,
+      logsRoot: input.logsRoot,
+      rawPath: stdoutPath,
+      observedPath: observedEventsPath,
+    });
+    return {
+      ...result,
+      durationMs: Date.now() - startedAt,
+      stdoutPath,
+      stderrPath,
+      observedEventsPath,
+      trajectoryPath,
+    };
   }
 
   let child: ChildProcess;
   try {
     child = input.processScope.track(
-      spawn(resolvedAgent.command, resolvedAgent.args, {
+      // Every adapter that is not driven over ACP resolved a command above.
+      spawn(resolvedAgent!.command, resolvedAgent!.args, {
         cwd: input.workspace,
         env,
         shell: false,
@@ -1911,6 +1989,23 @@ async function createFreshDirectory(
       throw new Error(`${label} already exists: ${path}`);
     }
     throw error;
+  }
+}
+
+/** A worker adopts the empty directory its dispatcher mounted; otherwise the Attempt creates it. */
+async function claimCaseRoot(
+  caseRoot: string,
+  adopt: boolean | undefined,
+): Promise<void> {
+  if (!adopt) {
+    await createFreshDirectory(caseRoot, "Case directory");
+    return;
+  }
+  if ((await readdir(caseRoot)).length > 0) {
+    throw new BenchmarkInfrastructureError(
+      "dispatch",
+      `Dispatcher-provided case directory must be empty: ${caseRoot}`,
+    );
   }
 }
 
@@ -3721,16 +3816,7 @@ async function runCase(input: {
 }): Promise<BenchmarkCaseReport> {
   assertSafePathSegment(input.benchmark.id, "Benchmark case id");
   const caseRoot = input.caseRoot;
-  if (input.adoptCaseRoot) {
-    if ((await readdir(caseRoot)).length > 0) {
-      throw new BenchmarkInfrastructureError(
-        "dispatch",
-        `Dispatcher-provided case directory must be empty: ${caseRoot}`,
-      );
-    }
-  } else {
-    await createFreshDirectory(caseRoot, "Case directory");
-  }
+  await claimCaseRoot(caseRoot, input.adoptCaseRoot);
   if (input.benchmark.execution?.environment) {
     await writeBenchmarkTaskManifest({
       caseRoot,
@@ -4928,8 +5014,9 @@ async function createBlockedCaseReport(input: {
   caseRoot: string;
   attempt: number;
   subject?: BenchmarkLockSubject;
+  adoptCaseRoot?: boolean;
 }): Promise<BenchmarkCaseReport> {
-  await createFreshDirectory(input.caseRoot, "Case directory");
+  await claimCaseRoot(input.caseRoot, input.adoptCaseRoot);
   if (input.benchmark.execution?.environment) {
     await writeBenchmarkTaskManifest({
       caseRoot: input.caseRoot,
@@ -5336,6 +5423,7 @@ export async function executeBenchmarkAttempt(
             caseRoot,
             attempt: nextAttempt,
             ...(input.subject ? { subject: input.subject } : {}),
+            ...(input.adoptCaseRoot ? { adoptCaseRoot: true } : {}),
           })
         : await runCase({
             suiteId: input.suiteId,
@@ -5797,14 +5885,20 @@ async function runBenchmarkSuiteInProcessScope(
         processScope,
         ...(input.subject ? { subject: input.subject } : {}),
       };
-      // A backend reports Agent and product outcomes through the Attempt. If
-      // it cannot even place the work, that is an infrastructure failure and
-      // is still sealed as an Attempt instead of aborting the batch.
-      const completion = await backend
-        .runAttempt(dispatch)
-        .catch((error) =>
-          executeBenchmarkAttempt({ ...dispatch, dispatchFailure: error }),
-        );
+      // A preflight-blocked case runs no Agent, so there is nothing to place:
+      // the dispatcher records the not-run Attempt itself on every backend.
+      // Otherwise a backend reports Agent and product outcomes through the
+      // Attempt. If it cannot even place the work, that is an infrastructure
+      // failure and is still sealed as an Attempt instead of aborting the batch.
+      const completion =
+        benchmark.execution?.preflight?.status === "blocked"
+          ? await executeBenchmarkAttempt(dispatch)
+          : await backend.runAttempt(dispatch).catch((error) =>
+              executeBenchmarkAttempt({
+                ...dispatch,
+                dispatchFailure: error,
+              }),
+            );
       const { report, attemptReceipt } = completion;
 
       const completedEntry: BenchmarkAttemptLedgerEntry = {

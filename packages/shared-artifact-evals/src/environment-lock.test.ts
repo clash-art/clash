@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,9 +20,11 @@ import {
   captureBenchmarkExecutionLock,
   verifyBenchmarkExecutionLock,
 } from "./environment-lock";
+import { writeManagedAcpInstall } from "./acp-install.fixture";
+import { ISOLATED_HOME_VARIABLES } from "./agent-home";
 import { runBenchmarkSuite } from "./runner";
 import { ArtifactBenchmarkCaseSchema } from "./schemas";
-import type { ArtifactBenchmarkCase } from "./types";
+import type { ArtifactBenchmarkCase, BenchmarkAgent } from "./types";
 
 const roots: string[] = [];
 const execFileAsync = promisify(execFile);
@@ -307,6 +309,136 @@ describe("benchmark Environment execution lock", () => {
         executionIntent: "execute",
       }),
     ).rejects.toThrow(/Pi model.*provider/iu);
+  });
+
+  it("locks the Pi harness at its pinned versions and records the isolated agent home", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const fixture = await createReadyFixture(root);
+    const binDir = join(root, "acp-bin");
+    const { shim, pinned } = await writeManagedAcpInstall({
+      binDir,
+      harnessId: "pi-acp",
+      launcher: "#!/bin/sh\nexit 0\n",
+    });
+    const capture = async (name: string, agent: BenchmarkAgent) => {
+      const caseRoot = join(root, name);
+      await mkdir(caseRoot);
+      const { lock } = await captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent,
+        executionIntent: "execute",
+      });
+      return lock;
+    };
+    const clashHost = {
+      pluginRoot: fixture.pluginRoot,
+      profile: "dev" as const,
+    };
+    const pi = {
+      adapter: "pi" as const,
+      provider: "test-provider",
+      model: "test-model",
+      clashHost,
+    };
+
+    const managed = await capture("managed", {
+      ...pi,
+      env: { CLASH_BENCH_ACP_BIN_DIR: binDir },
+    });
+    const harness = managed.agent.harness;
+    if (harness?.pinned !== "verified") throw new Error("harness not verified");
+    expect(harness.id).toBe("pi-acp");
+    expect(
+      Object.fromEntries(
+        [harness.package, ...harness.dependencies].map(({ name, version }) => [
+          name,
+          version,
+        ]),
+      ),
+    ).toEqual(pinned);
+    expect(managed.agent.executable).toMatchObject({
+      name: basename(shim),
+      reportedVersion: harness.package.version,
+    });
+    const isolation =
+      managed.resolvedEnvironment.phases.agent.userConfiguration;
+    expect(isolation).toMatchObject({
+      home: "fresh-per-attempt-directory",
+      userLevel: "not-loaded",
+    });
+    expect(isolation!.variables).toEqual(
+      [...ISOLATED_HOME_VARIABLES, "PI_CODING_AGENT_DIR"].sort(),
+    );
+    expect(managed.resolvedEnvironment.participants.agent.harness).toEqual(
+      harness,
+    );
+
+    // A launcher the operator names directly cannot be checked against pins.
+    const explicit = await capture("explicit", {
+      ...pi,
+      command: fixture.executable,
+    });
+    expect(explicit.agent.harness).toEqual({
+      id: "pi-acp",
+      pinned: "unverified-explicit-launcher",
+    });
+    expect(explicit.resolvedEnvironment.resolvedEnvironmentDigest).not.toBe(
+      managed.resolvedEnvironment.resolvedEnvironmentDigest,
+    );
+
+    // Adapters that still run in the operator's home record no isolation.
+    const codex = await capture("codex", {
+      adapter: "codex",
+      command: fixture.executable,
+      model: "gpt-5.6-sol",
+      clashHost,
+    });
+    expect(codex.agent.harness).toBeUndefined();
+    expect(
+      codex.resolvedEnvironment.phases.agent.userConfiguration,
+    ).toBeUndefined();
+  });
+
+  it("refuses to lock a Pi harness whose installed SDK differs from the pin", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-environment-lock-"));
+    roots.push(root);
+    const caseRoot = join(root, "case");
+    await mkdir(caseRoot);
+    const fixture = await createReadyFixture(root);
+    const binDir = join(root, "acp-bin");
+    const { pinned } = await writeManagedAcpInstall({
+      binDir,
+      harnessId: "pi-acp",
+      launcher: "#!/bin/sh\nexit 0\n",
+    });
+    const drifted = Object.keys(pinned).at(-1)!;
+    await writeManagedAcpInstall({
+      binDir,
+      harnessId: "pi-acp",
+      launcher: "#!/bin/sh\nexit 0\n",
+      versions: { [drifted]: "0.0.1" },
+    });
+
+    await expect(
+      captureBenchmarkExecutionLock({
+        caseRoot,
+        suiteRoot: root,
+        benchmark: benchmark(),
+        agent: {
+          adapter: "pi",
+          provider: "test-provider",
+          model: "test-model",
+          env: { CLASH_BENCH_ACP_BIN_DIR: binDir },
+          clashHost: { pluginRoot: fixture.pluginRoot, profile: "dev" },
+        },
+        executionIntent: "execute",
+      }),
+    ).rejects.toThrow(
+      `does not match the pinned versions: ${drifted} is 0.0.1, pinned ${pinned[drifted]}`,
+    );
   });
 
   it("rejects adapter environment flags that switch Claude away from Anthropic", async () => {

@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +18,11 @@ import {
   type ContainerCommandRunner,
 } from "./backend-container";
 import type { BenchmarkRuntimeClaim } from "./backend-types";
-import { runBenchmarkSuite } from "./runner";
+import {
+  BenchmarkProcessScope,
+  executeBenchmarkAttempt,
+  runBenchmarkSuite,
+} from "./runner";
 import type { ArtifactBenchmarkCase, BenchmarkAgent } from "./types";
 
 const SECRET = "sk-test-credential-that-must-never-leave-the-environment";
@@ -153,6 +164,54 @@ describe("container backend", () => {
     const { args } = calls.find((call) => call.args[0] === "run")!;
     expect(args).toContain(`${runnerNode}:${runnerNode}:ro`);
     expect(args[args.indexOf("bench:bare") + 1]).toBe(runnerNode);
+  });
+
+  it("mounts a managed ACP harness directory read-only and points the worker at it", async () => {
+    const { suiteRoot, outputRoot, suite } = await fixture();
+    const calls: EngineCall[] = [];
+    const acpBinDir = "/opt/clash-acp";
+    await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          acpBinDir,
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+    const args = calls.find((call) => call.args[0] === "run")!.args;
+    expect(args).toContain(`${acpBinDir}:${acpBinDir}:ro`);
+    expect(args[args.indexOf(`CLASH_BENCH_ACP_BIN_DIR=${acpBinDir}`) - 1]).toBe(
+      "--env",
+    );
+
+    const refused = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "relative",
+      agent,
+      maxInfrastructureAttempts: 1,
+      backends: [
+        createContainerBackend({
+          image: "bench:bare",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          acpBinDir: "acp",
+          run: fakeEngine([]),
+        }),
+      ],
+    });
+    expect(refused.cases[0]?.failure?.detail).toContain(
+      "ACP bin directory must be absolute",
+    );
   });
 
   it("passes credentials by name, mounts inputs read-only, and records the image id", async () => {
@@ -329,6 +388,195 @@ describe("container backend", () => {
     expect(await readFile(join(rejected, "half-written.txt"), "utf8")).toBe(
       "partial",
     );
+  });
+});
+
+/** A case whose capability contract blocks it before any Agent runs. */
+function blockedCase(id: string): ArtifactBenchmarkCase {
+  return {
+    ...benchmarkCase(id),
+    execution: {
+      profile: "clash-host",
+      lane: "blocked-contract",
+      requiredProductOperations: ["asset.get"],
+      requiredCapabilities: ["generator-agent-surface"],
+      preflight: {
+        status: "blocked",
+        checks: [
+          {
+            capability: "generator-agent-surface",
+            status: "missing",
+            detail: "The agent-facing contract is intentionally absent.",
+          },
+        ],
+      },
+      evidence: { traceRequired: true, submissionRequired: true },
+      productReadback: {
+        required: true,
+        mechanism: "generator-authority-readback",
+        artifactIds: ["result"],
+        description: "Read the frozen Generator authority.",
+      },
+      environment: {
+        profile: "clash-agent-environment-v1",
+        track: "functional",
+        outputs: {
+          modifiedWorkspace: true,
+          rawTrajectory: true,
+          normalizedTrajectory: "clash-normalized-v1",
+          atifTrajectory: "ATIF-v1.7-when-supported",
+          otlpTrace: "otlp-json",
+          attempt: "clash-attempt-v1",
+        },
+      },
+    },
+  };
+}
+
+describe("preflight-blocked cases", () => {
+  async function blockedFixture() {
+    const base = await fixture();
+    const suite = { ...base.suite, cases: [blockedCase("blocked-task")] };
+    await writeFile(join(base.suiteRoot, "suite.json"), JSON.stringify(suite));
+    return { ...base, suite };
+  }
+
+  async function expectBlockedRecord(
+    outputRoot: string,
+    report: Awaited<ReturnType<typeof runBenchmarkSuite>>,
+  ) {
+    expect(report.status).toBe("blocked");
+    expect(report.cases[0]).toMatchObject({
+      status: "blocked",
+      attempt: 1,
+      agent: { status: "not-run" },
+      failure: { classification: "preflight", retryable: false },
+    });
+    const runRoot = join(outputRoot, "run");
+    const caseRoot = join(runRoot, "blocked-task");
+    expect(await readdir(runRoot)).not.toContain(".rejected-worker-output");
+    expect(
+      JSON.parse(await readFile(join(caseRoot, "preflight.json"), "utf8")),
+    ).toMatchObject({ status: "blocked" });
+    const sealed = await readdir(caseRoot);
+    expect(sealed).toEqual(
+      expect.arrayContaining(["environment-lock.json", "attempt.json"]),
+    );
+  }
+
+  it("records the not-run Attempt in the dispatcher on the container backend, without starting a worker", async () => {
+    const { suiteRoot, outputRoot, suite } = await blockedFixture();
+    const calls: EngineCall[] = [];
+    const report = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent: { adapter: "pi", provider: "test-provider", model: "test-model" },
+      backends: [
+        createContainerBackend({
+          image: "bench:test",
+          runnerRoot: process.cwd(),
+          suiteFile: "suite.json",
+          run: fakeEngine(calls),
+        }),
+      ],
+    });
+
+    await expectBlockedRecord(outputRoot, report);
+    expect(calls.filter(({ args }) => args[0] === "run")).toEqual([]);
+  });
+
+  it("records the not-run Attempt without dispatching on the native backend", async () => {
+    const { suiteRoot, outputRoot, suite } = await blockedFixture();
+    let dispatched = 0;
+    const report = await runBenchmarkSuite({
+      suite,
+      suiteRoot,
+      outputRoot,
+      runId: "run",
+      agent: { adapter: "pi", provider: "test-provider", model: "test-model" },
+      backends: [
+        {
+          kind: "native-local",
+          maxConcurrency: 1,
+          runtimeClaim: async () => ({ kind: "native-local" }),
+          runAttempt: async (dispatch) => {
+            dispatched += 1;
+            return executeBenchmarkAttempt(dispatch);
+          },
+        },
+      ],
+    });
+
+    await expectBlockedRecord(outputRoot, report);
+    expect(dispatched).toBe(0);
+  });
+
+  it("lets a worker seal a blocked case into the directory its dispatcher created", async () => {
+    const { suiteRoot, outputRoot, suite } = await blockedFixture();
+    const runRoot = join(outputRoot, "run");
+    const caseRoot = join(runRoot, "blocked-task");
+    await mkdir(caseRoot, { recursive: true });
+    const processScope = new BenchmarkProcessScope();
+    const attempt = {
+      suiteId: suite.id,
+      runId: "run",
+      benchmark: suite.cases[0]!,
+      agent: {
+        adapter: "pi",
+        provider: "test-provider",
+        model: "test-model",
+      } satisfies BenchmarkAgent,
+      suiteRoot,
+      runRoot,
+      caseRoot,
+      attempt: 1,
+      trial: 1,
+      forced: false,
+      startedAt: new Date().toISOString(),
+      processScope,
+    };
+
+    // Without adoption the worker refuses the existing directory and then
+    // cannot seal: the ENOENT a blocked case used to end in on this backend.
+    await expect(executeBenchmarkAttempt(attempt)).rejects.toThrow(
+      /ENOENT.*environment-lock\.json/u,
+    );
+
+    await rm(caseRoot, { recursive: true });
+    await mkdir(caseRoot);
+    const adopted = await executeBenchmarkAttempt({
+      ...attempt,
+      adoptCaseRoot: true,
+    });
+    expect(adopted.report).toMatchObject({
+      status: "blocked",
+      failure: { classification: "preflight", retryable: false },
+    });
+    expect(adopted.attemptReceipt).toBeDefined();
+
+    // A directory that already holds something is not adopted: the worker
+    // refuses it and, with no lock of its own in it, cannot seal an Attempt.
+    const occupied = join(runRoot, "occupied-task");
+    await mkdir(occupied);
+    await writeFile(join(occupied, "stray.txt"), "left behind");
+    await expect(
+      executeBenchmarkAttempt({
+        ...attempt,
+        caseRoot: occupied,
+        adoptCaseRoot: true,
+      }),
+    ).rejects.toThrow(/ENOENT.*environment-lock\.json/u);
+    expect(
+      JSON.parse(await readFile(join(occupied, "case-report.json"), "utf8")),
+    ).toMatchObject({
+      failure: {
+        classification: "infrastructure",
+        phase: "dispatch",
+        detail: expect.stringContaining("must be empty"),
+      },
+    });
   });
 });
 
