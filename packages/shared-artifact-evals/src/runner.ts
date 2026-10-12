@@ -73,6 +73,7 @@ import {
 import { runAcpAgentSession, type AcpAgentRunResult } from "./acp-agent";
 import {
   acpHeadlessLaunch,
+  BENCHMARK_THINKING_LEVEL,
   isAcpAgent,
   resolveAcpHarness,
   type AcpBenchmarkAgent,
@@ -4405,6 +4406,12 @@ type RunManifest = {
   runId: string;
   suiteSha256: string;
   startedAt: string;
+  /** Case ids of the suite as run, so a changed case selection is named. */
+  cases: string[];
+  /** The Agent selection every Attempt of the run shares. */
+  agent: RunManifestAgent;
+  /** Backend kinds in placement order. */
+  backends: BenchmarkBackendKind[];
   /** Present only when the run repeats trials or selects a subject. */
   execution?: {
     trials: number;
@@ -4413,6 +4420,96 @@ type RunManifest = {
     placement?: "spread";
   };
 };
+
+type RunManifestAgent = {
+  adapter: NonNullable<BenchmarkAgent["adapter"]>;
+  provider?: string;
+  model?: string;
+  /** Reasoning effort requested together with the model. */
+  thinking?: string;
+  args?: string[];
+  clashProfile?: "dev" | "prod";
+};
+
+/**
+ * The Agent selection a run is measured under. A command Agent is an opaque
+ * launcher whose executable and arguments are the program itself, so only its
+ * adapter is recorded. Host paths and environment values are never recorded.
+ */
+function runManifestAgent(agent: BenchmarkAgent): RunManifestAgent {
+  if (
+    agent.adapter !== "codex" &&
+    agent.adapter !== "claude" &&
+    agent.adapter !== "pi"
+  ) {
+    return { adapter: "command" };
+  }
+  return {
+    adapter: agent.adapter,
+    ...(agent.adapter === "pi" && agent.provider
+      ? { provider: agent.provider }
+      : {}),
+    ...(agent.model
+      ? {
+          model: agent.model,
+          ...(isAcpAgent(agent) ? { thinking: BENCHMARK_THINKING_LEVEL } : {}),
+        }
+      : {}),
+    ...(agent.args?.length ? { args: agent.args } : {}),
+    ...(agent.clashHost ? { clashProfile: agent.clashHost.profile } : {}),
+  };
+}
+
+/**
+ * Every outcome-affecting value a resumed run must repeat, by manifest field.
+ * `startedAt` is the run's own fact and the judge is evaluator identity, so
+ * neither is listed.
+ */
+function runManifestResumeFields(
+  manifest: Partial<Omit<RunManifest, "startedAt">>,
+): Array<[field: string, value: unknown]> {
+  return [
+    ["suiteId", manifest.suiteId],
+    ["runId", manifest.runId],
+    ["cases", manifest.cases],
+    ["suiteSha256", manifest.suiteSha256],
+    ["agent.adapter", manifest.agent?.adapter],
+    ["agent.provider", manifest.agent?.provider],
+    ["agent.model", manifest.agent?.model],
+    ["agent.thinking", manifest.agent?.thinking],
+    ["agent.args", manifest.agent?.args],
+    ["agent.clashProfile", manifest.agent?.clashProfile],
+    ["backends", manifest.backends],
+    ["execution.trials", manifest.execution?.trials ?? 1],
+    ["execution.placement", manifest.execution?.placement ?? "per-task"],
+    ["execution.subjectIdentity", manifest.execution?.subjectIdentity],
+  ];
+}
+
+function assertRunManifestResumeMatches(
+  stored: Partial<RunManifest>,
+  requested: Omit<RunManifest, "startedAt">,
+): void {
+  const show = (value: unknown) =>
+    value === undefined ? "(not recorded)" : JSON.stringify(value);
+  const storedFields = new Map(runManifestResumeFields(stored));
+  const mismatches = runManifestResumeFields(requested)
+    .map(([field, value]) => ({
+      field,
+      stored: show(storedFields.get(field)),
+      requested: show(value),
+    }))
+    .filter((entry) => entry.stored !== entry.requested)
+    .map(
+      ({ field, stored, requested }) =>
+        `${field} (stored ${stored}, requested ${requested})`,
+    );
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Cannot resume run '${requested.runId}': the requested configuration differs from the existing run manifest: ${mismatches.join("; ")}. Repeat the original configuration, or start a new run id.`,
+    );
+  }
+}
 
 type RunProgressCase = {
   id: string;
@@ -5596,6 +5693,17 @@ async function runBenchmarkSuiteInProcessScope(
           ...(placement === "spread" ? { placement } : {}),
         }
       : undefined;
+  // What a fresh run records and a resumed run must repeat.
+  const requestedManifest: Omit<RunManifest, "startedAt"> = {
+    schemaVersion: 1,
+    suiteId: parsedSuite.data.id,
+    runId: input.runId,
+    suiteSha256,
+    cases: parsedSuite.data.cases.map(({ id }) => id),
+    agent: runManifestAgent(input.agent),
+    backends: backends.map(({ kind }) => kind),
+    ...(executionPlan ? { execution: executionPlan } : {}),
+  };
   let runRoot: string;
   let manifest: RunManifest;
   if (input.resume) {
@@ -5626,38 +5734,17 @@ async function runBenchmarkSuiteInProcessScope(
         `Cannot resume without a readable run manifest: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (
-      parsedManifest.schemaVersion !== 1 ||
-      parsedManifest.suiteId !== parsedSuite.data.id ||
-      parsedManifest.runId !== input.runId ||
-      parsedManifest.suiteSha256 !== suiteSha256
-    ) {
+    if (parsedManifest.schemaVersion !== 1) {
       throw new Error(
-        "Cannot resume: the benchmark suite does not match the existing run manifest",
+        "Cannot resume: the existing run manifest has an unsupported schema version",
       );
     }
-    const recorded = parsedManifest.execution ?? { trials: 1 };
-    if (
-      recorded.trials !== trials ||
-      recorded.subjectIdentity !== executionPlan?.subjectIdentity ||
-      (recorded.placement ?? "per-task") !== placement
-    ) {
-      throw new Error(
-        "Cannot resume: the trial count, trial placement, or selected subject differs from the existing run manifest",
-      );
-    }
+    assertRunManifestResumeMatches(parsedManifest, requestedManifest);
     manifest = parsedManifest;
   } else {
     await createFreshDirectory(configuredRunRoot, "Run directory");
     runRoot = await realpath(configuredRunRoot);
-    manifest = {
-      schemaVersion: 1,
-      suiteId: parsedSuite.data.id,
-      runId: input.runId,
-      suiteSha256,
-      startedAt: new Date().toISOString(),
-      ...(executionPlan ? { execution: executionPlan } : {}),
-    };
+    manifest = { ...requestedManifest, startedAt: new Date().toISOString() };
     await writeJsonAtomically(join(runRoot, "run-manifest.json"), manifest);
   }
 

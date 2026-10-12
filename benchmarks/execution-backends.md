@@ -282,8 +282,19 @@ never put a credential in one.
 `--pass-k k` (1 ≤ k ≤ n, default n) sets the _k_ of pass@k and pass^k. Trial 1
 keeps the original layout (`<run>/<case>/…`); later trials live in
 `<run>/trials/00N/<case>/…`. The ledger entries and case reports carry `trial`.
-Blocked cases are not repeated. Resume refuses a different trial count,
-placement, or subject.
+Blocked cases are not repeated.
+
+## Resume
+
+`--resume` continues a run id only under the configuration that started it. The
+run manifest records the case ids, the Agent selection (adapter, provider,
+model, the reasoning effort requested with it, `--agent-arg` values, and the
+Clash profile), the backend kinds in placement order, the trial count,
+placement, and subject. A resume that changes any of them fails before any
+Attempt starts, naming each field with its stored and requested value, for
+example `agent.model (stored "a", requested "b")`. A command Agent is an opaque
+launcher, so only its adapter is compared. The judge is evaluator identity and
+may change. To measure a different configuration, start a new run id.
 
 When `--trials` is given, `suite-report.json` links a content-addressed
 **Trial Aggregate** (`trial-aggregates/sha256/<digest>.json`) listing, per task,
