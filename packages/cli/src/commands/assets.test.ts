@@ -1095,3 +1095,100 @@ test("asset restore returns the opaque receipt through client glue and sends age
     },
   ]);
 });
+
+test("a failed asset command says what went wrong and prints the exact commands that fix it", () => {
+  const failure = (body: Record<string, unknown>) =>
+    Object.assign(new Error(`${body.code}: host`), { body });
+
+  // Duplicate import: imported once without the id, then again with it.
+  const duplicate = assetCommands.describeProjectAssetFailure(
+    failure({
+      code: "PROJECT_ASSET_DUPLICATE_CONTENT",
+      projectAssetId: "preassigned",
+      existingProjectAssetIds: ["asset:minted"],
+    }),
+    { assetId: "preassigned", filePath: "inputs/source.svg" },
+  );
+  for (const command of [
+    "clash assets get --asset asset:minted --json",
+    "clash assets delete --asset asset:minted --yes",
+    "clash assets import --file inputs/source.svg --asset-id preassigned --json",
+    "clash assets import --file inputs/source.svg --asset-id preassigned --allow-duplicate --json",
+  ]) {
+    assert.ok(duplicate.includes(command), duplicate);
+  }
+
+  // Wrong id on get/delete/restore.
+  const missing = assetCommands.describeProjectAssetFailure(
+    failure({
+      code: "PROJECT_ASSET_NOT_FOUND",
+      projectAssetId: "minted",
+      suggestedProjectAssetIds: ["asset:minted"],
+    }),
+    { assetId: "minted", project: "project a" },
+  );
+  assert.ok(
+    missing.includes(
+      "clash assets get --asset asset:minted --project 'project a' --json",
+    ),
+    missing,
+  );
+  assert.ok(
+    missing.includes("clash assets list --project 'project a' --json"),
+    missing,
+  );
+
+  // Re-import of a trashed Asset, and a delete/restore without a prior read.
+  const trashed = assetCommands.describeProjectAssetFailure(
+    failure({ code: "PROJECT_ASSET_TRASHED", projectAssetId: "asset:one" }),
+  );
+  assert.ok(
+    trashed.includes("clash assets restore --asset asset:one"),
+    trashed,
+  );
+  const unread = assetCommands.describeProjectAssetFailure(
+    new Error("READ_REQUIRED: read the target first"),
+    { assetId: "asset:one" },
+  );
+  assert.ok(
+    unread.includes("clash assets get --asset asset:one --json"),
+    unread,
+  );
+
+  // A failure without a known recovery is passed through unchanged.
+  assert.equal(
+    assetCommands.describeProjectAssetFailure(new Error("disk full")),
+    "disk full",
+  );
+});
+
+test("CLI import rejects duplicate content by default and exposes the explicit opt-in", async () => {
+  const importCommand = assetsCommand.commands.find(
+    (command) => command.name() === "import",
+  );
+  assert.ok(
+    importCommand?.options.some(
+      (option) => option.long === "--allow-duplicate",
+    ),
+  );
+  const dir = await tempDir();
+  const filePath = join(dir, "clip.mp4");
+  await writeFile(filePath, "bytes");
+  const policies: unknown[] = [];
+  const client = {
+    async importFile(input: { duplicateContent?: string }) {
+      policies.push(input.duplicateContent);
+      return { projectId: "project-a", value: { id: "asset:one" } };
+    },
+  } as unknown as ProjectAssetHostClient;
+  for (const duplicateContent of ["reject", "allow"] as const) {
+    await importAssetFile({
+      filePath,
+      project: "project-a",
+      link: false,
+      duplicateContent,
+      client,
+    });
+  }
+  assert.deepEqual(policies, ["reject", "allow"]);
+});

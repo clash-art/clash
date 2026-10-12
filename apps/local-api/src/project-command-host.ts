@@ -634,6 +634,7 @@ function handleCommand(
           : run.status === "failed" ? "failed" : "generating";
         const node = {
           id: run.actionRunId,
+          canvas_id: PROJECT_ASSET_RENDER_CANVAS_ID,
           type: "video",
           position: { x: 0, y: 0 },
           parent_id: null,

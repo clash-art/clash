@@ -17,8 +17,10 @@ import { initializeClashWorkspace } from "@clash/shared-runtime";
 import {
   createPersonalGlobalAssetHostClient,
   createProjectAssetHostClient,
+  projectAssetRecovery,
   type PersonalGlobalAssetHostClient,
   type ProjectAssetHostClient,
+  type ProjectAssetRecoveryStep,
 } from "@clash/shared-runtime/project-asset-client";
 import {
   createProjectHostClient,
@@ -223,10 +225,12 @@ const assetToolDefinitions: Record<
   clash_assets_list: {
     title: "List Project Assets",
     description: describeClashTool({
-      useWhen: "you need candidate media identities in the selected Project",
+      useWhen:
+        "you need the Project Asset inventory: every Asset identity in the selected Project with its lifecycle state, for example to confirm an import or find an Asset to get, trash, or restore",
       effect:
         "reads storage-neutral ResolvedAsset summaries without changing product state",
-      returns: "the Project's ResolvedAsset list with stable Project Asset IDs",
+      returns:
+        "the Project's ResolvedAsset list with stable Project Asset IDs; content_list is the separate browse/search overview of media and Documents and is not this inventory",
       next: "read the selected Asset with get before trashing or restoring it",
     }),
     inputSchema: assetScope,
@@ -266,9 +270,10 @@ const assetToolDefinitions: Record<
       useWhen:
         "a local workspace media file should become an immutable Project Asset",
       effect:
-        "uploads through the Host's canonical multipart route with one stable Project Asset id across an unknown-result retry",
-      returns: "the newly created Project-scoped ResolvedAsset",
-      next: "use the returned Project Asset ID in Actions or read it before a lifecycle mutation",
+        "creates one Project Asset per distinct projectAssetId. Pass projectAssetId in the first call whenever the Asset must have a known or preassigned identity; when it is omitted Clash mints asset:<uuid> and every call creates another Asset. Repeating a call with the same projectAssetId and the same file returns the existing Asset; the same projectAssetId with different bytes fails with PROJECT_ASSET_ID_COLLISION. An imported Asset cannot be renamed or re-identified",
+      returns:
+        "the Project-scoped ResolvedAsset whose id is the projectAssetId you passed, or the minted id",
+      next: "use the returned Project Asset ID in Actions, confirm it with list or get, or read it before a lifecycle mutation",
     }),
     inputSchema: {
       ...assetScope,
@@ -291,7 +296,13 @@ const assetToolDefinitions: Record<
         .min(1)
         .optional()
         .describe(
-          "Optional caller-owned logical command id; reuse it only when retrying the same import",
+          "The Project Asset ID this import creates (get, trash, and restore call the same value assetId). Required for a preassigned identity; safe to repeat with the same file; omit only when a minted asset:<uuid> is acceptable",
+        ),
+      allowDuplicate: z
+        .boolean()
+        .optional()
+        .describe(
+          "Leave unset. An import of bytes the Project already holds under another id fails with PROJECT_ASSET_DUPLICATE_CONTENT and names the existing Asset; set true only when a second independent Asset over the same bytes is intended",
         ),
     },
   },
@@ -381,8 +392,9 @@ const assetToolDefinitions: Record<
       useWhen:
         "a local media file should become reusable outside any one Project",
       effect:
-        "uploads through the Host's canonical personal-library route with one stable Global Asset id across an unknown-result retry",
-      returns: "the newly created personal Global ResolvedAsset",
+        "creates one personal Global Asset per distinct globalAssetId. Pass globalAssetId in the first call whenever the Asset must have a known or preassigned identity; when it is omitted Clash mints global:<uuid> and every call creates another Asset. Repeating a call with the same globalAssetId and the same file returns the existing Asset",
+      returns:
+        "the personal Global ResolvedAsset whose id is the globalAssetId you passed, or the minted id",
       next: "admit the returned Global Asset into a Project when needed",
     }),
     inputSchema: {
@@ -404,7 +416,7 @@ const assetToolDefinitions: Record<
         .min(1)
         .optional()
         .describe(
-          "Optional caller-owned logical command id; reuse it only when retrying the same import",
+          "The Global Asset ID this import creates. Required for a preassigned identity; safe to repeat with the same file; omit only when a minted global:<uuid> is acceptable",
         ),
     },
   },
@@ -722,7 +734,11 @@ function contentSummary(name: CanvasMcpToolName, value: unknown): string {
   return JSON.stringify(value);
 }
 
-function assetContentSummary(name: AssetMcpToolName, value: unknown): string {
+function assetContentSummary(
+  name: AssetMcpToolName,
+  value: unknown,
+  input: AssetToolInput = {},
+): string {
   if (name === "clash_assets_list" || name === "clash_assets_global_list") {
     const count = Array.isArray(value) ? value.length : 0;
     const scope =
@@ -736,9 +752,70 @@ function assetContentSummary(name: AssetMcpToolName, value: unknown): string {
     return `Found ${count} Project Asset reference${count === 1 ? "" : "s"}.`;
   }
   const id = (value as { id?: unknown } | undefined)?.id;
-  return typeof id === "string"
-    ? `${name.replace("clash_assets_", "")} ${id}.`
-    : JSON.stringify(value);
+  if (typeof id !== "string") return JSON.stringify(value);
+  const summary = `${name.replace("clash_assets_", "")} ${id}.`;
+  if (name === "clash_assets_trash") {
+    // The trash result is itself the read a restore needs, so the undo is one call.
+    return `${summary} It is in the trash, not deleted. If this was not the Asset you meant to trash, undo it now: ${assetStepCall({ why: "", operation: "restore", assetId: id }, input)}.`;
+  }
+  if (name === "clash_assets_restore") {
+    return `${summary} It is active again and usable under the same id.`;
+  }
+  const mintedIdArgument =
+    name === "clash_assets_import_file" && !input.projectAssetId
+      ? "projectAssetId"
+      : name === "clash_assets_global_import_file" && !input.globalAssetId
+        ? "globalAssetId"
+        : undefined;
+  // The identity is fixed from here on; say so before the caller tries to
+  // "correct" it with a second import, which would add another Asset.
+  if (!mintedIdArgument) return summary;
+  const minted = `${summary} Clash minted this id because ${mintedIdArgument} was omitted. It is permanent: an imported Asset cannot be renamed.`;
+  return name === "clash_assets_import_file"
+    ? `${minted} If the task named a specific Project Asset ID, do not import again on top of this one: first ${assetStepCall({ why: "", operation: "get", assetId: id }, input)}, then ${assetStepCall({ why: "", operation: "trash", assetId: id }, input)}, then call import_file once more with projectAssetId set to the required id. Otherwise keep using ${id}.`
+    : `${minted} Keep using ${id}.`;
+}
+
+const ASSET_STEP_OPERATION = {
+  list: "list",
+  get: "get",
+  references: "references",
+  trash: "trash",
+  restore: "restore",
+  import: "import_file",
+} as const;
+
+/** One recovery step as the exact clash_assets call an agent can copy. */
+function assetStepToolCall(
+  step: ProjectAssetRecoveryStep,
+  input: AssetToolInput,
+): { name: "clash_assets"; arguments: Record<string, unknown> } {
+  return {
+    name: "clash_assets",
+    arguments: {
+      operation: ASSET_STEP_OPERATION[step.operation],
+      arguments: {
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(step.assetId ? { assetId: step.assetId } : {}),
+        ...(step.operation === "import" && input.filePath
+          ? { filePath: input.filePath }
+          : {}),
+        ...(step.projectAssetId
+          ? { projectAssetId: step.projectAssetId }
+          : {}),
+        ...(step.allowDuplicate ? { allowDuplicate: true } : {}),
+      },
+    },
+  };
+}
+
+function assetStepCall(
+  step: ProjectAssetRecoveryStep,
+  input: AssetToolInput,
+): string {
+  const call = assetStepToolCall(step, input);
+  return `${call.name} ${JSON.stringify(call.arguments)}`;
 }
 
 function assetErrorResult(
@@ -767,6 +844,22 @@ function assetErrorResult(
         (message.startsWith("READ_REQUIRED")
           ? "READ_REQUIRED"
           : "PROJECT_ASSET_OPERATION_FAILED"));
+  const recovery = projectAssetRecovery(error, {
+    code,
+    projectAssetId: input.assetId ?? input.projectAssetId,
+  });
+  const nextSteps = recovery?.steps.map((step) => ({
+    why: step.why,
+    tool: assetStepToolCall(step, input),
+  }));
+  const text = recovery
+    ? `${code}: ${recovery.problem} Next: ${recovery.steps
+        .map(
+          (step, index) =>
+            `(${index + 1}) ${step.why}: ${assetStepCall(step, input)}`,
+        )
+        .join(" ")}`
+    : message;
   const retryTool =
     ["READ_REQUIRED", "STALE_READ", "INVALID_READ_PROOF"].includes(code) &&
     input.assetId?.trim()
@@ -780,12 +873,13 @@ function assetErrorResult(
         }
       : undefined;
   return {
-    content: [{ type: "text" as const, text: message }],
+    content: [{ type: "text" as const, text }],
     structuredContent: {
       error: {
         code,
-        message,
+        message: text,
         operation: name,
+        ...(nextSteps ? { nextSteps } : {}),
         ...(body?.projectAssetId
           ? { projectAssetId: body.projectAssetId }
           : {}),
@@ -824,7 +918,10 @@ export function registerClashAssetMcp(
             : (value as Record<string, unknown>);
           return {
             content: [
-              { type: "text" as const, text: assetContentSummary(name, value) },
+              {
+                type: "text" as const,
+                text: assetContentSummary(name, value, input as AssetToolInput),
+              },
             ],
             structuredContent,
           };
