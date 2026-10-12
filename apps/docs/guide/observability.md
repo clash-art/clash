@@ -113,13 +113,42 @@ timers frozen between I/O). Instead:
   platform does not expose span ids, so span events, links and
   `trace_id` correlation in log lines are unavailable; Workers attaches
   console output to the active span itself.
-- `wrangler.toml` enables `[observability.logs]` and
-  `[observability.traces]` with `head_sampling_rate = 1` (every request) for
-  production and `[env.staging]`.
+- `apps/api-cf/wrangler.toml` and `apps/web/wrangler.toml` enable
+  `[observability.logs]` and `[observability.traces]` with
+  `head_sampling_rate = 0.1` (10% of requests) for production and
+  `[env.staging]`. The rate bounds Workers Logs/Traces volume and cost; a
+  request that is not sampled produces no platform log lines or spans.
+  To override, edit `head_sampling_rate` (0 to 1; `1` is every request) in
+  the four tables of the Worker concerned — `[observability.logs]`,
+  `[observability.traces]` and their `[env.staging.observability.*]`
+  counterparts are independent — and redeploy. There is no environment
+  variable or dashboard switch for it; the value in `wrangler.toml` at
+  deploy time is what runs.
 - OTLP export targets are **destinations** created in the Cloudflare
   dashboard (Workers & Pages → Observability → Destinations). Add their
   names under `destinations = [...]` in the matching wrangler section.
   Workers metrics cannot be exported over OTLP.
+
+#### Manual deploy steps
+
+Nothing in the repository creates destinations or deploys the Workers; both
+are done by hand:
+
+1. In the Cloudflare dashboard (Workers & Pages → Observability →
+   Destinations) create an OTLP destination per signal you want exported
+   (traces, logs), with the backend's OTLP endpoint and auth headers. The
+   credentials live in the dashboard only.
+2. Add the destination names to the matching wrangler tables, for example
+   `destinations = ["<traces-destination>"]` under `[observability.traces]`
+   and `[env.staging.observability.traces]`, likewise for logs, in both
+   `apps/api-cf/wrangler.toml` and `apps/web/wrangler.toml`. Until a table
+   lists a destination, its data stays in the Workers dashboard only.
+3. Deploy each Worker with wrangler: `pnpm run deploy` in `apps/web` and
+   `apps/api-cf` (`wrangler deploy`; add `--env staging` for staging).
+   Sampling and destination changes take effect only after this deploy.
+4. For api-node, the outbox worker and render-server, set
+   `OTEL_EXPORTER_OTLP_ENDPOINT` (and headers) in each service's deployment
+   environment — see below. Without it they export nothing.
 
 ### Node services
 
@@ -147,14 +176,36 @@ Shutdown handlers use `process.on`, not `process.once`: tsx (api-node
 `start`, render-server `dev`) adds a hidden signal handler that exits as soon
 as no application listener remains, which would cut off the final flush.
 
-Export uses only the standard SDK environment. All three signals default to
-OTLP at `http://localhost:4318`:
+Export is **off until an OTLP endpoint is configured**. The SDK's own
+default would send all three signals to `http://localhost:4318`, which in a
+deployment without a collector means failed exports and retries forever, so
+`startNodeTelemetry` (`resolveNodeTelemetrySignals`) decides per signal:
+
+- A signal whose exporter is `otlp` (the default) is on only when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` or its own
+  `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `..._METRICS_ENDPOINT` /
+  `..._LOGS_ENDPOINT` is set. A signal-specific endpoint enables that
+  signal alone.
+- An exporter that does not use OTLP (`console`, and `prometheus` for
+  metrics) needs no endpoint. An exporter list that includes `otlp` still
+  needs one, and `none` is always off.
+- With no signal on, the SDK is not constructed: no exporters, no loader
+  hook, no instrumentation, nothing sent anywhere. `OTEL_SDK_DISABLED=true`
+  does the same regardless of endpoints.
+
+The stdout JSON lines from `createServerLogger` do not depend on the SDK and
+are written in every case; without a tracer provider they carry no
+`trace_id`/`span_id`.
+
+Everything else is the standard SDK environment:
 
 | Variable | Meaning |
 | --- | --- |
-| `OTEL_SDK_DISABLED` | `true` turns the SDK off |
+| `OTEL_SDK_DISABLED` | `true` turns the SDK off, even with an endpoint set |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector base URL; enables all three signals. Unset = no export |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `..._METRICS_ENDPOINT` / `..._LOGS_ENDPOINT` | Full per-signal URL; enables that signal |
 | `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` / `OTEL_LOGS_EXPORTER` | `otlp` (default), `console` or `none` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`, `..._PROTOCOL`, `..._HEADERS` | Collector address, protocol, auth headers |
+| `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_HEADERS` | Protocol and auth headers |
 | `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES` | Override the default service name and add attributes (e.g. `deployment.environment.name`) |
 | `OTEL_METRIC_EXPORT_INTERVAL` | Metric export period in ms (default 60000) |
 

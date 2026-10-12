@@ -90,5 +90,6 @@ COPY --from=builder /app/apps/render-server/.remotion-bundle /app/.remotion-bund
 
 EXPOSE 8080
 # OpenTelemetry loads first so node:http and fetch are instrumented. Export
-# uses the standard OTEL_* environment; OTEL_SDK_DISABLED=true turns it off.
+# uses the standard OTEL_* environment and stays off until an OTLP endpoint
+# is set (OTEL_EXPORTER_OTLP_ENDPOINT); OTEL_SDK_DISABLED=true turns it off.
 CMD ["node", "--import", "./dist/telemetry.js", "dist/index.js"]

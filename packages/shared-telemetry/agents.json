@@ -2,14 +2,14 @@
   "summary": "Backend logging and OpenTelemetry bootstrap shared by Clash Node services (api-node, render-server) and Cloudflare Workers (api-cf). Instrumented code depends on @opentelemetry/api only; this package is the pipeline edge.",
   "context_hints": [
     "Log lines use the product-wide LogRecord envelope from @clash/shared-runtime/logging, one JSON line per record, plus an OpenTelemetry Logs API emit (no-op until a provider is registered).",
-    "Node services start the official NodeSDK before application code with `node --import <bootstrap>`; export follows the SDK's standard OTEL_* environment behaviour (all signals default to otlp; OTEL_SDK_DISABLED=true turns it off).",
+    "Node services start the official NodeSDK before application code with `node --import <bootstrap>`; export follows the SDK's standard OTEL_* environment behaviour, except that an otlp exporter needs an explicit endpoint: with no OTEL_EXPORTER_OTLP_ENDPOINT (or signal-specific ..._{TRACES,METRICS,LOGS}_ENDPOINT) that signal is off, and with no signal on the SDK is not started. OTEL_SDK_DISABLED=true turns it off regardless.",
     "Workers do not run the Node SDK: the cloudflare adapter maps @opentelemetry/api onto native `cloudflare:workers` tracing so shared-code spans nest under platform spans; export is configured in wrangler [observability].",
     "Spans and logs carry ids, counts and durations; never prompts, credentials or user content."
   ],
   "key_files": {
     "src/log.ts": "createServerLogger: LogRecord JSON line to console (with active trace/span ids) + OTel Logs API emit.",
     "src/cloudflare.ts": "WorkersTracerProvider / installWorkersTracing: OTel Tracer over native Workers custom spans; status -> otel.status_code attributes, no span ids yet (platform limitation).",
-    "src/node.ts": "startNodeTelemetry: NodeSDK with http, undici, pg and runtime-node instrumentations, ESM loader hook via module.register; default service.name overridable by OTEL_SERVICE_NAME.",
-    "src/node.test.ts": "Subprocess smoke test: --import bootstrap really instruments ES-module node:http and fetch, and logs carry the server span's trace id."
+    "src/node.ts": "resolveNodeTelemetrySignals: which signals the environment enables (endpoint required for otlp). startNodeTelemetry: NodeSDK with http, undici, pg and runtime-node instrumentations, ESM loader hook via module.register; default service.name overridable by OTEL_SERVICE_NAME.",
+    "src/node.test.ts": "Signal resolution and SDK start/no-start per environment (mocked NodeSDK), plus subprocess smoke tests: --import bootstrap really instruments ES-module node:http and fetch, and logs carry the server span's trace id."
   }
 }
