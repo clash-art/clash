@@ -6,7 +6,7 @@ import { LocalProjectUpgradeError } from "./local-project-upgrade.js";
 import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./local-marketplace.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
-import { readGeneratorRevision } from "@clash/shared-types";
+import { LOCAL_OTLP_TRACES_PATH, readGeneratorRevision } from "@clash/shared-types";
 import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.js";
 import { commitProjectMutation } from "@clash/shared-types";
 import { migrateLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
@@ -29,6 +29,7 @@ import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
@@ -226,6 +227,16 @@ import {
   type ProviderPluginExecutor,
 } from "./local-aigc.js";
 import { createLocalPluginAssetStagingStore } from "./local-plugin-asset-staging.js";
+import {
+  createTelemetryConfigResource,
+  decodeOtlpJsonTraces,
+  type HostTelemetry,
+  type TelemetryConfigResource,
+} from "./telemetry/index.js";
+import {
+  mountLocalConfigRoutes,
+  type LocalConfigAuthority,
+} from "./local-config-routes.js";
 import {
   createLocalAudioConfigStore,
   LocalAudioConfigError,
@@ -466,7 +477,14 @@ export interface LocalApiOptions {
     remove(id: string): Promise<object>;
   };
   directorStageRenderer?: LocalDirectorStageRenderer;
+  /** OpenTelemetry export Settings; defaults to config.yaml + credentials. */
+  telemetryConfig?: TelemetryConfigResource;
+  /** Process telemetry pipeline that Settings changes are applied to. */
+  hostTelemetry?: HostTelemetry;
 }
+
+/** Upper bound for one client OTLP trace export request body. */
+const OTLP_INGEST_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 export type LocalAcpRuntimeStatus = "online" | "offline";
 
@@ -2514,6 +2532,67 @@ function validateLocalSyncConfigMutation(options: {
   });
 }
 
+/**
+ * Host read-receipt and audit authority for generic local config routes
+ * (see local-config-routes.ts). Implemented once here because receipts are
+ * signed with this process's secret and audits go to the Host database.
+ */
+function createLocalConfigAuthority(
+  db: ReturnType<typeof createDb>,
+): LocalConfigAuthority {
+  return {
+    readToken: (id, snapshot) =>
+      localConfigReceiptReadToken({
+        id,
+        config: snapshot.view,
+        updatedAt: snapshot.updatedAt,
+      }),
+    guardMutation({ id, operation, snapshot, header, body }) {
+      const preconditions = requestProjectWritePreconditions({ req: { header } }, body);
+      const entity = { kind: "local-config", id };
+      if (!preconditions.actorClientType && !preconditions.expectedReadToken) {
+        return { kind: "unguarded", envelope: { operation, entity } };
+      }
+      const currentReadToken = localConfigReadToken({
+        id,
+        config: snapshot.view,
+        updatedAt: snapshot.updatedAt,
+      });
+      const result = validateHostMutationEnvelope({
+        operation,
+        entity,
+        expectedReadToken: preconditions.expectedReadToken,
+        currentReadToken,
+        guard: validateAgentReadProof({
+          actorClientType: preconditions.actorClientType,
+          operation: `local ${id} config update`,
+          currentReadToken,
+          observedVersion: preconditions.observedVersion,
+          expectedReadToken: preconditions.expectedReadToken,
+          requireReceipt: true,
+          readReceiptVerifier: verifyLocalApiLocalConfigReadReceipt,
+          readCommandHint: `Read /api/v1/local/${id} first, then retry.`,
+        }),
+      });
+      if (!result.ok) {
+        return { kind: "rejected", error: result.error, mutation: result.mutation };
+      }
+      return {
+        kind: "guarded",
+        envelope: result.envelope,
+        ...(preconditions.actorClientType
+          ? { actorClientType: preconditions.actorClientType }
+          : {}),
+      };
+    },
+    async audit(mutation, actorClientType, reason) {
+      await db.appendMutationAudit(
+        mutationAuditRecord({ mutation, actorClientType, reason }),
+      );
+    },
+  };
+}
+
 function validateLocalAudioConfigMutation(options: {
   readState: LocalAudioConfigReadState;
   preconditions: ProjectWritePreconditions;
@@ -3958,6 +4037,21 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       dataDir: options.dataDir,
       env: options.syncEnv ?? process.env,
     });
+  const localConfigAuthority = createLocalConfigAuthority(db);
+  const telemetryConfig =
+    options.telemetryConfig ??
+    createTelemetryConfigResource({
+      dataDir: options.dataDir,
+      pipeline: options.hostTelemetry,
+    });
+  void telemetryConfig.applyToPipeline().catch((error: unknown) => {
+    console.error(
+      JSON.stringify({
+        event: "telemetry.apply_failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  });
   const readProjectStatus = async (projectId: string) => {
     const replicaId = await localReplicaId();
     const admission = await db.getProjectCloudAdmission(projectId, replicaId);
@@ -4399,6 +4493,48 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       },
     }),
   );
+
+  /**
+   * OTLP/HTTP JSON trace receiver for local clients (the GUI renderer).
+   * Spans join the Host pipeline: local `span.end` summaries always, OTLP
+   * export only when telemetry export is enabled. Mounted only when a Host
+   * pipeline exists, so clients get a non-retryable 404 otherwise.
+   */
+  const hostTelemetry = options.hostTelemetry;
+  if (hostTelemetry) {
+    app.post(
+      LOCAL_OTLP_TRACES_PATH,
+      bodyLimit({
+        maxSize: OTLP_INGEST_MAX_BODY_BYTES,
+        onError: (c) => c.json({ message: "trace export too large" }, 413),
+      }),
+      async (c) => {
+        const contentType = c.req.header("content-type") ?? "";
+        if (!/^application\/json\b/i.test(contentType))
+          return c.json({ message: "only OTLP/HTTP JSON is accepted" }, 415);
+        let body: unknown;
+        try {
+          body = await c.req.json();
+        } catch {
+          return c.json({ message: "invalid JSON" }, 400);
+        }
+        const decoded = decodeOtlpJsonTraces(body);
+        if (!decoded.ok) return c.json({ message: decoded.error }, 400);
+        hostTelemetry.ingest(decoded.spans);
+        // ExportTraceServiceResponse; partial success per the OTLP spec.
+        return c.json(
+          decoded.rejected > 0
+            ? {
+                partialSuccess: {
+                  rejectedSpans: decoded.rejected,
+                  errorMessage: "malformed or over-limit spans were dropped",
+                },
+              }
+            : {},
+        );
+      },
+    );
+  }
 
   app.post("/api/v1/local/director-stage/capture", async (c) => {
     if (!options.directorStageRenderer) {
@@ -7369,6 +7505,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       );
     }
   });
+
+  mountLocalConfigRoutes(app, telemetryConfig, localConfigAuthority);
 
   app.get("/api/v1/local/audio", async (c) =>
     c.json(publicLocalAudioConfig(await localAudioReadState(audioConfig))),

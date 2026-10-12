@@ -40,6 +40,11 @@ import {
   type SessionElicitationBroker,
   type SessionPermissionBroker,
 } from "./runtime/host/lib/session-manager.js";
+import {
+  createAcpSessionTracing,
+  type AcpSessionTracing,
+} from "./runtime/host/lib/session-tracing.js";
+import { trace } from "@opentelemetry/api";
 import type {
   CreateElicitationRequest,
   CreateElicitationResponse,
@@ -316,6 +321,8 @@ interface BrowserMessage {
   value?: string | boolean;
   text?: string;
   queue_mode?: string;
+  /** W3C trace context of the GUI action that sent this prompt. */
+  traceparent?: string;
   turn_ids?: unknown[];
   request_id?: string;
   option_id?: string | null;
@@ -1033,12 +1040,32 @@ export function createLocalAcpCapabilityCacheStore(
   };
 }
 
+let acpSessionTracing: AcpSessionTracing | undefined;
+
+/**
+ * Process-wide ACP instrumentation. Spans go to the global OpenTelemetry
+ * tracer; they are no-ops until the host registers a TracerProvider (see
+ * telemetry/pipeline.ts), which records local `span.end` summaries and, only
+ * when telemetry export is explicitly enabled, OTLP export.
+ */
+function sharedAcpSessionTracing(): AcpSessionTracing {
+  acpSessionTracing ??= createAcpSessionTracing({
+    tracer: trace.getTracer("clash.acp"),
+  });
+  return acpSessionTracing;
+}
+
 function createDefaultSessionManager(
   send: SessionSender,
   requestPermission?: SessionPermissionBroker,
   requestElicitation?: SessionElicitationBroker,
 ): SessionManagerLike {
-  return new SessionManager(send, { requestPermission, requestElicitation });
+  const tracing = sharedAcpSessionTracing();
+  const manager = new SessionManager(tracing.wrapSend(send), {
+    requestPermission,
+    requestElicitation,
+  });
+  return tracing.wrapManager(manager);
 }
 
 type FormElicitationRequest = CreateElicitationRequest & {
@@ -3750,6 +3777,12 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
           if (msg.turn_id && typeof msg.text === "string") {
             if (isPromptQueueMode(msg.queue_mode))
               entry.promptQueueMode = msg.queue_mode;
+            if (typeof msg.traceparent === "string")
+              sharedAcpSessionTracing().linkTurn(
+                entry.id,
+                msg.turn_id,
+                msg.traceparent,
+              );
             try {
               this.dispatchPrompt(entry, msg.turn_id, msg.text);
             } catch (error) {

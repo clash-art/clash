@@ -1,9 +1,12 @@
+import { serverLog } from "../logger";
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { DEV_USER_ID } from "./session";
 import { projects, assets, assetRefs } from "../db/app.schema";
 import { signAssetPath } from "./asset-signing";
 import type { Env as AppEnv } from "../config";
+
+const projectsLog = serverLog.child("projects-d1");
 
 type ApiFetcher = { fetch: (request: Request | string) => Promise<Response> };
 type Env = Pick<AppEnv, "DB" | "JWT_SECRET"> & {
@@ -53,28 +56,26 @@ async function fetchNodes(env: Env, projectId: string): Promise<unknown[]> {
       const id = env.ROOM.idFromName(projectId);
       const res = await env.ROOM.get(id).fetch(`https://room${path}`);
       if (res.ok) return (await res.json()) as unknown[];
-      console.warn(`[projects-d1] ROOM /nodes ${projectId} -> ${res.status}`);
+      projectsLog.warn("project_nodes.fetch_failed", { via: "ROOM", project_id: projectId, status: res.status });
     } catch (err) {
-      console.warn(`[projects-d1] ROOM /nodes ${projectId} threw`, err);
+      projectsLog.warn("project_nodes.fetch_failed", { via: "ROOM", project_id: projectId, error: err });
     }
   }
   if (env.API_CF) {
     try {
       const res = await env.API_CF.fetch(`https://api-cf${path}`);
       if (res.ok) return (await res.json()) as unknown[];
-      console.warn(`[projects-d1] API_CF /nodes ${projectId} -> ${res.status}`);
+      projectsLog.warn("project_nodes.fetch_failed", { via: "API_CF", project_id: projectId, status: res.status });
     } catch (err) {
-      console.warn(`[projects-d1] API_CF /nodes ${projectId} threw`, err);
+      projectsLog.warn("project_nodes.fetch_failed", { via: "API_CF", project_id: projectId, error: err });
     }
   } else if (env.API_CF_URL) {
     try {
       const res = await fetch(`${env.API_CF_URL}${path}`);
       if (res.ok) return (await res.json()) as unknown[];
-      console.warn(
-        `[projects-d1] API_CF_URL /nodes ${projectId} -> ${res.status}`,
-      );
+      projectsLog.warn("project_nodes.fetch_failed", { via: "API_CF_URL", project_id: projectId, status: res.status });
     } catch (err) {
-      console.warn(`[projects-d1] API_CF_URL /nodes ${projectId} threw`, err);
+      projectsLog.warn("project_nodes.fetch_failed", { via: "API_CF_URL", project_id: projectId, error: err });
     }
   }
   return [];

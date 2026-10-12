@@ -28,6 +28,7 @@ import {
 } from "@clash/web-ui/lib/acpEvents";
 import type { RuntimeResumeSession } from "@clash/web-ui/lib/runtimeResume";
 import { runtimeApiUrl, runtimeWebSocketUrl } from "../lib/runtimeConfig";
+import { withActionTrace } from "../lib/uiTrace";
 import {
   HARNESS_UPDATED_EVENT,
   SESSION_RESTART_COMPLETE_VISIBLE_MS,
@@ -1669,13 +1670,23 @@ export function useClashRuntime(): UseClashRuntimeReturn {
         setTransientStatus(null);
         setRuntimeStatus("sending");
       }
-      ws.send(
-        JSON.stringify({
-          type: "prompt",
-          turn_id: prompt.turnId,
-          text: prompt.text,
-          ...(opts.queueMode ? { queue_mode: opts.queueMode } : {}),
-        }),
+      withActionTrace(
+        "prompt.send",
+        {
+          "clash.prompt.chars": prompt.text.length,
+          "clash.prompt.queued": opts.markActive === false,
+        },
+        ({ traceparent }) =>
+          ws.send(
+            JSON.stringify({
+              type: "prompt",
+              turn_id: prompt.turnId,
+              text: prompt.text,
+              ...(opts.queueMode ? { queue_mode: opts.queueMode } : {}),
+              // Lets the Host parent the agent turn under this GUI action.
+              ...(traceparent ? { traceparent } : {}),
+            }),
+          ),
       );
       return true;
     },

@@ -1,3 +1,4 @@
+import { serverLog } from "../logger";
 import { Container } from "@cloudflare/containers";
 
 export class RenderContainer extends Container {
@@ -13,6 +14,6 @@ export class RenderContainer extends Container {
   }
 
   override onError(error: unknown) {
-    console.error("[RenderContainer] Error:", error);
+    serverLog.child("render-container").error("render_container.error", { error });
   }
 }

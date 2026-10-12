@@ -46,6 +46,7 @@ export default withMermaid(defineConfig({
               link: "/guide/reusable-plugin-content",
             },
             { text: "What a Test May Assert", link: "/guide/testing-rules" },
+            { text: "Observability & Telemetry", link: "/guide/observability" },
           ],
         },
       ],

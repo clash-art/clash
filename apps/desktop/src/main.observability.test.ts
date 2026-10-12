@@ -14,7 +14,7 @@ describe("desktop main observability wiring", () => {
     expect(
       sourceMatches(
         source,
-        /createDesktopFileLogSink\(\{[\s\S]*?directory:\s*app\.getPath\("logs"\)[\s\S]*?maxBytes:[\s\S]*?maxFiles:/,
+        /createDesktopFileLogSink\(\{[\s\S]*?directory:\s*app\.getPath\("logs"\)[\s\S]*?maxBytes:[\s\S]*?retention:/,
       ),
     ).toBe(true);
     expect(

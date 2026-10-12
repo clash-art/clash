@@ -214,6 +214,19 @@ export function validateClashUserConfig(
     }
   }
 
+  const telemetry = optionalRecord(value, "telemetry");
+  if (telemetry) {
+    const env = optionalRecord(telemetry, "env");
+    if (env) {
+      for (const [key, entry] of Object.entries(env)) {
+        if (typeof entry !== "string") {
+          throw new Error(`telemetry.env.${key} must be a string`);
+        }
+      }
+    }
+    validateStringField(telemetry, "updated_at", "telemetry");
+  }
+
   const publicStorage = optionalRecord(value, "public_storage");
   if (publicStorage) {
     if (

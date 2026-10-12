@@ -21,6 +21,7 @@
 
 import { spawn } from "node:child_process";
 import ffmpegPath from "ffmpeg-static";
+import { sourceTag } from "./observability.js";
 
 export interface ProbeAudioParams {
   /** Absolute URL ffmpeg will fetch the audio from.
@@ -104,7 +105,7 @@ export async function probeAudio(params: ProbeAudioParams): Promise<ProbeAudioRe
       if (code !== 0) {
         reject(
           new Error(
-            `ffmpeg exited ${code} (source=${sourceUrl}): ${stderr.slice(-400)}`,
+            `ffmpeg exited ${code} (source=${sourceTag(sourceUrl)}): ${stderr.slice(-400)}`,
           ),
         );
         return;

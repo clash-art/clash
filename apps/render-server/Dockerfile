@@ -22,6 +22,11 @@ COPY packages/shared-types/package.json packages/shared-types/
 COPY packages/remotion-core/package.json packages/remotion-core/
 COPY packages/remotion-effects/package.json packages/remotion-effects/
 COPY packages/remotion-components/package.json packages/remotion-components/
+# Telemetry (bundled into dist by tsup) and the workspace packages it builds on.
+COPY packages/shared-telemetry/package.json packages/shared-telemetry/
+COPY packages/shared-runtime/package.json packages/shared-runtime/
+COPY packages/action-sdk/package.json packages/action-sdk/
+COPY packages/asset-sdk/package.json packages/asset-sdk/
 COPY apps/render-server/package.json apps/render-server/
 
 # Bootstrap pnpm via corepack against the configured mirror.
@@ -35,6 +40,10 @@ COPY packages/shared-types/ packages/shared-types/
 COPY packages/remotion-core/ packages/remotion-core/
 COPY packages/remotion-effects/ packages/remotion-effects/
 COPY packages/remotion-components/ packages/remotion-components/
+COPY packages/shared-telemetry/ packages/shared-telemetry/
+COPY packages/shared-runtime/ packages/shared-runtime/
+COPY packages/action-sdk/ packages/action-sdk/
+COPY packages/asset-sdk/ packages/asset-sdk/
 COPY apps/render-server/ apps/render-server/
 
 RUN pnpm build:package @clash/render-server
@@ -73,4 +82,6 @@ COPY --from=builder /tmp/deploy/ /app/
 COPY --from=builder /app/apps/render-server/.remotion-bundle /app/.remotion-bundle
 
 EXPOSE 8080
-CMD ["node", "dist/index.js"]
+# OpenTelemetry loads first so node:http and fetch are instrumented. Export
+# uses the standard OTEL_* environment; OTEL_SDK_DISABLED=true turns it off.
+CMD ["node", "--import", "./dist/telemetry.js", "dist/index.js"]

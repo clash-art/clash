@@ -1,5 +1,6 @@
 import { Pool, type PoolConfig } from "pg";
 import type { PostgresQueryPort } from "@clash/shared-runtime/project-authorization-postgres";
+import { apiNodeLog, errorFacts } from "./log.ts";
 export interface ReservedConnection extends PostgresQueryPort {
   release(destroy?: boolean): void;
 }
@@ -52,6 +53,10 @@ export function openPostgres(config: PoolConfig) {
     ...config,
   });
   // An idle socket error must not crash the process or disclose connection credentials.
-  pool.on("error", () => console.error("PostgreSQL idle connection failed"));
+  pool.on("error", (error) =>
+    apiNodeLog
+      .child("postgres")
+      .error("postgres.idle_connection_failed", errorFacts(error)),
+  );
   return { pool, db: createPostgresDatabase(pool), close: () => pool.end() };
 }

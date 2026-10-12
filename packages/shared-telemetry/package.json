@@ -1,0 +1,52 @@
+{
+  "name": "@clash/shared-telemetry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Server-side logging and OpenTelemetry bootstrap for Clash backends (Node services and Cloudflare Workers)",
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "exports": {
+    "./log": {
+      "types": "./src/log.ts",
+      "import": "./src/log.ts",
+      "default": "./src/log.ts"
+    },
+    "./cloudflare": {
+      "types": "./src/cloudflare.ts",
+      "import": "./src/cloudflare.ts",
+      "default": "./src/cloudflare.ts"
+    },
+    "./node": {
+      "types": "./src/node.ts",
+      "import": "./src/node.ts",
+      "default": "./src/node.ts"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
+  },
+  "dependencies": {
+    "@clash/shared-runtime": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.223.0",
+    "@opentelemetry/instrumentation": "^0.223.0",
+    "@opentelemetry/instrumentation-http": "^0.223.0",
+    "@opentelemetry/instrumentation-pg": "^0.75.0",
+    "@opentelemetry/instrumentation-runtime-node": "^0.36.0",
+    "@opentelemetry/instrumentation-undici": "^0.33.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-node": "^0.223.0",
+    "import-in-the-middle": "^3.5.2"
+  },
+  "devDependencies": {
+    "@opentelemetry/context-async-hooks": "^2.12.0",
+    "@opentelemetry/sdk-logs": "^0.223.0",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
+    "@types/node": "^24.13.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.2"
+  }
+}

@@ -8,6 +8,10 @@ import { readConfig } from "./config.ts";
 import { openPostgres } from "./postgres.ts";
 import { createReplicaHttpGateway } from "./relay-http.ts";
 import { createPostgresNotificationSource } from "./pg-notifications.ts";
+import { shutdownNodeTelemetry } from "@clash/shared-telemetry/node";
+import { apiNodeLog, errorFacts } from "./log.ts";
+
+const log = apiNodeLog.child("server");
 
 export function startServer(
   env: Record<string, string | undefined> = process.env,
@@ -69,22 +73,27 @@ if (
 ) {
   try {
     const running = startServer();
-    running.server.on("error", () => {
-      console.error("Node cloud listener failed");
+    running.server.on("error", (error) => {
+      log.error("server.listener_failed", errorFacts(error));
       process.exitCode = 1;
       void running.close().catch(() => {});
     });
+    // `on`, not `once`: under tsx a hidden signal handler exits the process
+    // as soon as no app listener remains, cutting async shutdown short.
+    // close() is idempotent, so a repeated signal is harmless.
     for (const signal of ["SIGINT", "SIGTERM"] as const)
-      process.once(signal, () => {
-        void running.close().catch(() => {
-          console.error("Node cloud shutdown failed");
-          process.exitCode = 1;
-        });
+      process.on(signal, () => {
+        void running
+          .close()
+          .catch((error: unknown) => {
+            log.error("server.shutdown_failed", errorFacts(error));
+            process.exitCode = 1;
+          })
+          .finally(() => shutdownNodeTelemetry());
       });
-  } catch {
-    console.error(
-      "Node cloud startup failed; check database and listener configuration",
-    );
+  } catch (error) {
+    // Check database and listener configuration.
+    log.error("server.startup_failed", errorFacts(error));
     process.exitCode = 1;
   }
 }

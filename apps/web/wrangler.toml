@@ -13,6 +13,23 @@ compatibility_flags = ["nodejs_compat"]
 [placement]
 mode = "smart"
 
+# Workers Logs + Traces. Every request is sampled (head_sampling_rate = 1)
+# in staging and production. OTLP export targets are dashboard-managed
+# destinations (Workers & Pages → Observability → Destinations); list
+# their names under `destinations = [...]` once created. Workers metrics
+# are not exportable over OTLP. See apps/docs/guide/observability.md.
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+head_sampling_rate = 1
+
 [assets]
 binding = "ASSETS"
 directory = "./dist/client"
@@ -66,6 +83,18 @@ ip = "0.0.0.0"
 # Deploy with:  wrangler deploy --env staging   (or `make deploy-web-staging`)
 [env.staging]
 name = "clash-web-staging"
+
+[env.staging.observability]
+enabled = true
+
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[env.staging.observability.traces]
+enabled = true
+head_sampling_rate = 1
 
 [env.staging.placement]
 mode = "smart"

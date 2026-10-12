@@ -103,6 +103,11 @@
       "import": "./src/logging.ts",
       "default": "./dist/logging.js"
     },
+    "./tracing": {
+      "types": "./src/tracing.ts",
+      "import": "./src/tracing.ts",
+      "default": "./dist/tracing.js"
+    },
     "./log-reader": {
       "types": "./src/log-reader.ts",
       "import": "./src/log-reader.ts",
