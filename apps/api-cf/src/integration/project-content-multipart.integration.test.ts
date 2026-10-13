@@ -22,6 +22,17 @@ it("keeps multipart bytes private until full integrity verification and resumes 
     1,
     bytes.subarray(0, PROJECT_CLOUD_CONTENT_PART_BYTES),
   );
+  // A restarted sender re-begins the same session and learns what to skip.
+  expect(await upload.begin(session)).toEqual({
+    parts: [
+      {
+        partNumber: 1,
+        sha256: await contentHash(
+          bytes.subarray(0, PROJECT_CLOUD_CONTENT_PART_BYTES),
+        ),
+      },
+    ],
+  });
   expect(await store.head(target.locator)).toBeUndefined();
   await expect(upload.complete(session, async () => {})).rejects.toThrow();
   await upload.part(

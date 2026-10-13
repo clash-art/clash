@@ -49,6 +49,7 @@ export type {
   AssetDeliveryByteRange,
   AssetDeliveryStore,
   AssetDeliveryStoredObject,
+  AssetDeliveryMultipartPart,
   AssetDeliveryMultipartSession,
   AssetDeliveryMultipartStore,
 } from "./asset-delivery-store.js";
@@ -67,5 +68,6 @@ export {
 export {
   uploadCloudContent,
   type CloudContentUploadOptions,
+  type CloudContentUploadSession,
   type CloudContentUploadSource,
 } from "./cloud-content-upload.js";

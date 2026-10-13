@@ -23,6 +23,7 @@ import {
   type AssetDeliveryUrl,
   type ResourceByteStore,
 } from "@clash/asset-sdk/delivery";
+import { cloudContentUploadSession } from "./cloud-content-upload-sessions.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { createLocalResourceStore } from "./local-resource-store.js";
@@ -156,6 +157,21 @@ export function createLocalProjectCloudSync(
       return response;
     };
     const base = `/api/v1/projects/${encodeURIComponent(projectId)}`;
+    // Mirrors what the cloud binds a staging session to, so a restarted Host
+    // finds the session it left behind and never one for different bytes.
+    const uploadSession = (kind: string, id: string, digest: string) =>
+      cloudContentUploadSession(
+        options.dataDir,
+        JSON.stringify([
+          initial.admission.syncBaseUrl,
+          initial.admission.tenantId,
+          projectId,
+          replicaId,
+          kind,
+          id,
+          digest,
+        ]),
+      );
     const deliveryFor = (resource: Resource): AssetDeliveryPort => {
       const issue = async (
         operation: "read" | "upload",
@@ -380,6 +396,11 @@ export function createLocalProjectCloudSync(
                     url: capability.url,
                     headers: capability.headers,
                     fetch: common.fetch,
+                    session: uploadSession(
+                      "resource",
+                      resource.id,
+                      resource.digest.value,
+                    ),
                   });
                 } else await pushResource(common);
               }
@@ -448,6 +469,11 @@ export function createLocalProjectCloudSync(
                 if (body.byteLength > PROJECT_CLOUD_CONTENT_PART_BYTES) {
                   await uploadCloudContentFile({
                     ...file,
+                    session: uploadSession(
+                      "document",
+                      body.digest,
+                      body.digest,
+                    ),
                     url: `${initial.admission.syncBaseUrl.replace(/\/+$/, "")}${path}`,
                     fetch: async (input, init) => {
                       const target = new URL(String(input));

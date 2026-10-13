@@ -47,6 +47,13 @@ function sameTarget(a: Session["target"], b: Session["target"]) {
     a.contentType === b.contentType
   );
 }
+function held(state: State) {
+  return {
+    parts: Object.values(state.parts)
+      .map((part) => ({ partNumber: part.partNumber, sha256: part.hash }))
+      .sort((a, b) => a.partNumber - b.partNumber),
+  };
+}
 async function load(bucket: R2Bucket, key: string) {
   const object = await bucket.get(key);
   return object
@@ -116,7 +123,7 @@ export function createR2ProjectMultipartStore(
             410,
             "Upload was aborted; begin a new session",
           );
-        return;
+        return held(existing.state);
       }
       const upload = await bucket.createMultipartUpload(`${prefix}staging`);
       const state: State = {
@@ -128,8 +135,9 @@ export function createR2ProjectMultipartStore(
       };
       if (!(await cas(bucket, key, state))) {
         await upload.abort();
-        await current(session);
+        return held((await current(session)).state);
       }
+      return held(state);
     },
     async part(session, partNumber, bytes) {
       let value = await current(session);

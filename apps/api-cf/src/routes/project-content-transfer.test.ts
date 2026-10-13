@@ -47,3 +47,32 @@ it("rejects unsupported multipart storage without attempting a buffered put", as
   ).rejects.toMatchObject({ status: 501 });
   expect(put).not.toHaveBeenCalled();
 });
+
+it("reports the parts a re-begun session already holds so the sender can resume", async () => {
+  const parts = [{ partNumber: 1, sha256: "a".repeat(64) }];
+  const begin = vi.fn(async () => ({ parts }));
+  const store = {
+    head: () => undefined,
+    get: () => undefined,
+    put: vi.fn(),
+    multipart: { begin, part: vi.fn(), complete: vi.fn(), abort: vi.fn() },
+  };
+  const response = await handleMultipartContent(
+    new Request(
+      "https://cloud.test/upload?upload=begin&uploadId=fixture-session-id",
+      { method: "PUT" },
+    ),
+    store,
+    {
+      identity: "project/replica/document",
+      locator: "private-body",
+      byteLength: 1,
+      digest: `sha256:${"0".repeat(64)}`,
+    },
+    async () => {},
+  );
+  expect(await response!.json()).toMatchObject({
+    uploadId: "fixture-session-id",
+    parts,
+  });
+});
