@@ -209,11 +209,15 @@ export function createApp(
   });
 
   // Project metadata is ordinary client-server state, not part of the CRDT
-  // byte stream and not owned by the ProjectRoom Durable Object.
+  // byte stream and not owned by the ProjectRoom Durable Object. It carries
+  // the soft-delete tombstone, so the owner must still reach it for a deleted
+  // Project: otherwise no Host can pull the deletion or push a restore.
   app.get("/loro/:projectId/metadata", async (c) => {
     const projectId = decodeProjectIdParam(c.req.param("projectId"));
     try {
-      await authenticateRequest(c.req.raw, c.env as any, projectId);
+      await authenticateRequest(c.req.raw, c.env as any, projectId, {
+        allowDeleted: true,
+      });
     } catch {
       return c.text("Unauthorized", 401);
     }
@@ -229,7 +233,9 @@ export function createApp(
   app.put("/loro/:projectId/metadata", async (c) => {
     const projectId = decodeProjectIdParam(c.req.param("projectId"));
     try {
-      await authenticateRequest(c.req.raw, c.env as any, projectId);
+      await authenticateRequest(c.req.raw, c.env as any, projectId, {
+        allowDeleted: true,
+      });
     } catch {
       return c.text("Unauthorized", 401);
     }

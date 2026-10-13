@@ -87,6 +87,34 @@ export function createLocalProjectCloudSync(
       resources: [],
       documents: [],
     };
+    // The soft-delete tombstone lives in Project metadata, and the cloud
+    // refuses every other transport once it is set. Reconcile it first so a
+    // remote delete is pulled (and a local restore pushed) instead of
+    // surfacing as an authorization failure on the snapshot.
+    const syncTombstone = async (configured: RemoteLoroPersistence) => {
+      const pulled = await configured.loadProjectMetadata!(projectId, signal);
+      const local = await options.metadata.read(projectId);
+      if (!local || !pulled || (!local.deletedAt && !pulled.deletedAt)) return;
+      await createProjectMetadataReplicator({
+        enabled: true,
+        local: { read: async () => local, write: options.metadata.write },
+        remote: {
+          pull: async () => pulled,
+          push: (metadata) =>
+            configured.saveProjectMetadata!(projectId, metadata, signal),
+        },
+      }).sync();
+    };
+    if ((await options.metadata.read(projectId))?.deletedAt) {
+      // A locally deleted Project replicates nothing but its tombstone; this
+      // is how a restore made on another Host reaches this one.
+      const configured = initial.admission.capabilities.projectMetadata
+        ? await options.remote(projectId)
+        : undefined;
+      if (configured?.loadProjectMetadata && configured.saveProjectMetadata)
+        await syncTombstone(configured);
+      if ((await options.metadata.read(projectId))?.deletedAt) return;
+    }
     const assertCurrent = async () => {
       signal.throwIfAborted();
       const current = await store.getProjectCloudAdmission(
@@ -237,6 +265,8 @@ export function createLocalProjectCloudSync(
               "Cloud deployment does not support Project snapshot and metadata replication",
             );
           remote = configured;
+          await syncTombstone(remote);
+          await assertCurrent();
           const room = await options.rooms.room(projectId);
           const incoming = await remote.loadSnapshot!(projectId, signal);
           if (incoming) await room.mergeRemoteSnapshot(incoming);

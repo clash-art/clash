@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectMetadata } from "@clash/shared-types";
 import type { Env } from "./config";
 
 vi.mock("agents", () => ({ Agent: class MockAgent {} }));
@@ -208,4 +209,89 @@ describe("public project transport authorization", () => {
       expect(forwarded).toEqual([]);
     });
   }
+
+  // Issue #83: the tombstone travels in Project metadata, so the owner of a
+  // soft-deleted Project must still read and rewrite it while every content
+  // transport stays closed.
+  describe("soft-deleted project metadata", () => {
+    function deleted(ownerId = "owner") {
+      let metadata: ProjectMetadata = {
+        projectId: "project",
+        name: "Project",
+        description: null,
+        createdAt: "2026-09-01T00:00:00.000Z",
+        updatedAt: "2026-09-02T00:00:00.000Z",
+        deletedAt: "2026-09-02T00:00:00.000Z",
+      };
+      const app = createApp({
+        projectMetadataStore: () => ({
+          read: async () => metadata,
+          write: async (next) => {
+            metadata = next;
+            return true;
+          },
+        }),
+      });
+      const env = {
+        ...bindings,
+        DB: {
+          prepare: () => ({
+            bind: () => ({
+              all: async () => ({
+                results: [{ owner_id: ownerId, deleted_at: 1 }],
+              }),
+            }),
+          }),
+        },
+      } as unknown as Env;
+      return { app, env, read: () => metadata };
+    }
+
+    it("lets the owner pull the tombstone and push a restore", async () => {
+      const { app, env, read } = deleted();
+      const authorization = `Bearer ${await token()}`;
+      const pulled = await app.request(
+        "/loro/project/metadata",
+        { headers: { authorization } },
+        env,
+      );
+      expect(pulled.status).toBe(200);
+      const envelope = (await pulled.json()) as { metadata: ProjectMetadata };
+      expect(envelope.metadata).toEqual(read());
+
+      const restored = { ...read(), deletedAt: null };
+      const pushed = await app.request(
+        "/loro/project/metadata",
+        {
+          method: "PUT",
+          headers: { authorization, "content-type": "application/json" },
+          body: JSON.stringify({ schemaVersion: 1, metadata: restored }),
+        },
+        env,
+      );
+      expect(pushed.status).toBe(204);
+      expect(read()).toEqual(restored);
+    });
+
+    it("still denies another user", async () => {
+      const { app, env } = deleted("someone-else");
+      const response = await app.request(
+        "/loro/project/metadata",
+        { headers: { authorization: `Bearer ${await token()}` } },
+        env,
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it("keeps the snapshot closed", async () => {
+      const { app, env } = deleted();
+      const response = await app.request(
+        "/loro/project/snapshot",
+        { headers: { authorization: `Bearer ${await token()}` } },
+        env,
+      );
+      expect(response.status).toBe(401);
+      expect(forwarded).toEqual([]);
+    });
+  });
 });

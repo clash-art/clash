@@ -2121,7 +2121,8 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     dataDir: options.dataDir, rooms: roomHub, inspection: assetInspection,
     remote: async projectId => typeof remotePersistence === "function" ? remotePersistence(projectId) : remotePersistence,
     metadata: {
-      list: async () => (await cloudSyncMetadata.load()).projects.filter(project => !project.deletedAt).map(project => project.id),
+      // Deleted Projects stay listed: their tombstone still replicates, which is how a remote restore arrives.
+      list: async () => (await cloudSyncMetadata.load()).projects.map(project => project.id),
       read: async projectId => {
         const project = (await cloudSyncMetadata.load()).projects.find(project => project.id === projectId);
         return project ? localProjectSyncMetadata(project) : null;

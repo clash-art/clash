@@ -3,6 +3,7 @@ import * as jose from "jose";
 import {
   createProjectAuthenticator,
   type AuthResult,
+  type ProjectAuthorizationPolicy,
   type ProjectAuthorizationStore,
   type SessionIdentity,
 } from "@clash/shared-runtime/project-authorization";
@@ -103,8 +104,9 @@ export async function authenticateRequest(
   request: Request,
   env: Env,
   projectId: string,
+  policy?: ProjectAuthorizationPolicy,
 ): Promise<AuthResult> {
-  return authenticator(env).authenticate(request, projectId);
+  return authenticator(env).authenticate(request, projectId, policy);
 }
 
 export async function revalidateProjectConnection(

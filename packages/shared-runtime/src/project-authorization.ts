@@ -37,13 +37,25 @@ export interface AuthResult {
   authorization: ProjectConnectionAuthorization;
 }
 
+/** The soft-delete tombstone is itself Project metadata. Only the route that
+ * replicates that metadata may admit the owner of a deleted Project; content
+ * and live transports keep failing closed. */
+export interface ProjectAuthorizationPolicy {
+  allowDeleted?: boolean;
+}
+
 async function assertProjectOwner(
   options: ProjectAuthenticatorOptions,
   projectId: string,
   userId: string,
+  policy: ProjectAuthorizationPolicy = {},
 ) {
   const row = await options.store.readProject(projectId);
-  if (!row || row.ownerId !== userId || row.deletedAt != null)
+  if (
+    !row ||
+    row.ownerId !== userId ||
+    (row.deletedAt != null && policy.allowDeleted !== true)
+  )
     throw new Error("Forbidden");
 }
 
@@ -53,13 +65,14 @@ async function assertProjectOwner(
 export async function revalidateProjectConnection(
   options: ProjectAuthenticatorOptions,
   auth: AuthResult,
+  policy: ProjectAuthorizationPolicy = {},
 ): Promise<boolean> {
   try {
     if (!auth?.authorization || !auth.userId || !auth.projectId) return false;
     const proof = auth.authorization;
     if (proof.kind === "development") return options.development === true;
     if (options.development !== true)
-      await assertProjectOwner(options, auth.projectId, auth.userId);
+      await assertProjectOwner(options, auth.projectId, auth.userId, policy);
     if (proof.kind === "jwt")
       return Number.isFinite(proof.expiresAt) && proof.expiresAt > Date.now();
     if (proof.kind === "api-token") {
@@ -112,13 +125,15 @@ export async function authenticateRequest(
   request: Request,
   options: ProjectAuthenticatorOptions,
   projectId: string,
+  policy: ProjectAuthorizationPolicy = {},
 ): Promise<AuthResult> {
   const development = options.development === true;
   const rawToken = request.headers
     .get("authorization")
     ?.match(/^Bearer (.+)$/i)?.[1];
   const verifyOwnership = async (userId: string) => {
-    if (!development) await assertProjectOwner(options, projectId, userId);
+    if (!development)
+      await assertProjectOwner(options, projectId, userId, policy);
   };
 
   // Known API credentials are resolved locally, never sent to a session service.
@@ -161,7 +176,7 @@ export async function authenticateRequest(
       };
       if (
         !development &&
-        !(await revalidateProjectConnection(options, identity))
+        !(await revalidateProjectConnection(options, identity, policy))
       )
         throw new Error("Unauthorized");
       return identity;
@@ -202,8 +217,11 @@ export function createProjectAuthenticator(
   options: ProjectAuthenticatorOptions,
 ) {
   return {
-    authenticate: (request: Request, projectId: string) =>
-      authenticateRequest(request, options, projectId),
+    authenticate: (
+      request: Request,
+      projectId: string,
+      policy?: ProjectAuthorizationPolicy,
+    ) => authenticateRequest(request, options, projectId, policy),
     revalidate: (identity: AuthResult) =>
       revalidateProjectConnection(options, identity),
   };
