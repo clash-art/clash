@@ -5,6 +5,7 @@ import {
   primaryKey,
   sqliteTable,
   text,
+  uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 // No foreign keys — see AGENTS.md
 
@@ -121,7 +122,7 @@ export const userVariables = sqliteTable(
   },
   (table) => ({
     userVariableUserIdx: index("user_variable_userId_idx").on(table.userId),
-    userVariableUniqueIdx: index("user_variable_unique_idx").on(
+    userVariableUniqueIdx: uniqueIndex("user_variable_unique_idx").on(
       table.userId,
       table.key,
     ),
