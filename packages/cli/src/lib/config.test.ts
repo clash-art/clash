@@ -147,6 +147,27 @@ test("clearing the server URL keeps unrelated config and tolerates a non-map ser
   }
 });
 
+test("setting the server URL replaces a non-map server", async () => {
+  const originalClashHome = process.env.CLASH_HOME;
+  const clashHome = await tempDir();
+  process.env.CLASH_HOME = clashHome;
+  try {
+    for (const server of ["server: null", "server:", "server: dev", "server:\n  - dev"]) {
+      await writeFile(configFilePath(), `${server}\nname: kept\n`, "utf8");
+      saveConfig({ apiKey: "clsh_test", serverUrl: "http://localhost:8788" });
+      assert.deepEqual(
+        loadConfig(),
+        { apiKey: "clsh_test", serverUrl: "http://localhost:8788" },
+        server,
+      );
+      assert.match(await readFile(configFilePath(), "utf8"), /name: kept/);
+    }
+  } finally {
+    if (originalClashHome === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = originalClashHome;
+  }
+});
+
 test("loopback local-api use does not require a cloud credential", async () => {
   const originalClashHome = process.env.CLASH_HOME;
   const originalApiKey = process.env.CLASH_API_KEY;
