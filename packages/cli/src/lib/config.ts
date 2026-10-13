@@ -107,7 +107,7 @@ function updateYamlServerUrl(path: string, serverUrl: string | undefined): void 
   document.set("version", 1);
   if (serverUrl) {
     document.setIn(["server", "url"], serverUrl);
-  } else {
+  } else if (document.hasIn(["server", "url"])) {
     document.deleteIn(["server", "url"]);
   }
   atomicWrite(path, document.toString({ lineWidth: 0 }));

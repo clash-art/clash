@@ -112,6 +112,41 @@ test("saved CLI config uses owner-only permissions", async () => {
   }
 });
 
+test("saving a credential without a server URL works on a fresh home", async () => {
+  const originalClashHome = process.env.CLASH_HOME;
+  const clashHome = join(await tempDir(), "fresh");
+  process.env.CLASH_HOME = clashHome;
+  try {
+    saveConfig({ apiKey: "clsh_test" });
+    assert.deepEqual(loadConfig(), { apiKey: "clsh_test" });
+
+    saveConfig({});
+    assert.deepEqual(loadConfig(), {});
+  } finally {
+    if (originalClashHome === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = originalClashHome;
+  }
+});
+
+test("clearing the server URL keeps unrelated config and tolerates a non-map server", async () => {
+  const originalClashHome = process.env.CLASH_HOME;
+  const clashHome = await tempDir();
+  process.env.CLASH_HOME = clashHome;
+  try {
+    await writeFile(configFilePath(), "server:\n  url: http://localhost:8788\n  name: dev\n", "utf8");
+    saveConfig({ apiKey: "clsh_test" });
+    assert.deepEqual(loadConfig(), { apiKey: "clsh_test" });
+    assert.match(await readFile(configFilePath(), "utf8"), /name: dev/);
+
+    await writeFile(configFilePath(), "server: null\n", "utf8");
+    saveConfig({ apiKey: "clsh_test" });
+    assert.deepEqual(loadConfig(), { apiKey: "clsh_test" });
+  } finally {
+    if (originalClashHome === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = originalClashHome;
+  }
+});
+
 test("loopback local-api use does not require a cloud credential", async () => {
   const originalClashHome = process.env.CLASH_HOME;
   const originalApiKey = process.env.CLASH_API_KEY;
