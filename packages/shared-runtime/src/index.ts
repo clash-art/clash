@@ -240,6 +240,7 @@ export {
   PROJECT_ASSET_READ_RECEIPT_HEADER,
   createPersonalGlobalAssetHostClient,
   createProjectAssetHostClient,
+  openAssetImportFile,
   projectAssetRecovery,
   resolveAssetImportFileType,
   suggestProjectAssetIds,

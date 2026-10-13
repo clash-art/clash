@@ -53,6 +53,18 @@ it("persists imports, isolates owners, serves ranges and protects delete/restore
       lifecycle: { state: "active" },
     });
     expect((await upload()).status).toBe(201);
+    // The shared Asset HTTP client sends the file as the raw body instead.
+    const rawBody = (bytes: string) =>
+      request(
+        `/import-file?${new URLSearchParams({ kind: "image", globalAssetId: "global:test", fileName: "frame.png", byteLength: String(bytes.length) })}`,
+        {
+          method: "POST",
+          headers: { "content-type": "image/png" },
+          body: bytes,
+        },
+      );
+    expect((await rawBody("test-media")).status).toBe(201);
+    expect((await rawBody("changed")).status).toBe(409);
     expect((await upload("changed")).status).toBe(409);
     expect((await upload("x", "video")).status).toBe(400);
     expect((await upload("<script/>", "image", "text/html")).status).toBe(400);

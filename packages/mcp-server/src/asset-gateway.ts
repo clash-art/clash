@@ -1,11 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { basename, resolve } from "node:path";
 import type { AssetKind } from "@clash/shared-types";
 import {
   createPersonalGlobalAssetHostClient,
   createProjectAssetHostClient,
+  openAssetImportFile,
   resolveAssetImportFileType,
+  type AssetImportFile,
   type PersonalGlobalAssetHostClient,
   type ProjectAssetHostClient,
   type ProjectAssetHostScope,
@@ -34,9 +36,8 @@ async function readAssetImportFile(
   workspaceRoot: string,
 ): Promise<{
   sourcePath: string;
-  bytes: Uint8Array;
+  file: AssetImportFile;
   fileName: string;
-  contentType: string;
   kind: AssetKind;
 }> {
   const requestedPath = requiredString(input, "filePath");
@@ -48,9 +49,9 @@ async function readAssetImportFile(
   const fileType = resolveAssetImportFileType(filePath, input.kind);
   return {
     sourcePath: filePath,
-    bytes: new Uint8Array(await readFile(filePath)),
+    // File-backed: the Host receives the bytes as they are read from disk.
+    file: await openAssetImportFile(filePath, fileType.contentType),
     fileName: basename(filePath),
-    contentType: fileType.contentType,
     kind: fileType.kind,
   };
 }
@@ -67,10 +68,7 @@ function optionalImportId(
   return value.trim();
 }
 
-type PendingImport = {
-  id: string;
-  file: Omit<Awaited<ReturnType<typeof readAssetImportFile>>, "sourcePath">;
-};
+type PendingImport = { id: string };
 
 /** Direct Project Asset transport with MCP-session read receipts and no CLI process. */
 export function createAssetProjectHostGateway(
@@ -80,7 +78,8 @@ export function createAssetProjectHostGateway(
   const observations = new Map<string, string>();
   const deleteOperations = new Map<string, string>();
   // These are pending logical commands, not a content index. Unknown results
-  // retain the first snapshot; success or a structured Host rejection clears it.
+  // retain the first id; success or a structured Host rejection clears it. The
+  // file is reopened per attempt, so a retry never holds its bytes in memory.
   const pendingProjectImports = new Map<string, PendingImport>();
   const pendingGlobalImports = new Map<string, PendingImport>();
   const pendingGlobalTrash = new Map<string, string>();
@@ -192,7 +191,6 @@ export function createAssetProjectHostGateway(
               ]);
           const pending = pendingProjectImports.get(pendingKey) ?? {
             id: explicitId ?? `asset:${randomUUID()}`,
-            file: readFile,
           };
           if (!pendingProjectImports.has(pendingKey)) {
             pendingProjectImports.set(pendingKey, pending);
@@ -201,7 +199,7 @@ export function createAssetProjectHostGateway(
           try {
             imported = await client.importFile({
               ...resolved.requestScope,
-              ...pending.file,
+              ...readFile,
               projectAssetId: pending.id,
               duplicateContent: input.allowDuplicate ? "allow" : "reject",
             });
@@ -295,7 +293,6 @@ export function createAssetProjectHostGateway(
             : JSON.stringify(["global", sourcePath, readFile.kind]);
           const pending = pendingGlobalImports.get(pendingKey) ?? {
             id: explicitId ?? `global:${randomUUID()}`,
-            file: readFile,
           };
           if (!pendingGlobalImports.has(pendingKey)) {
             pendingGlobalImports.set(pendingKey, pending);
@@ -303,7 +300,7 @@ export function createAssetProjectHostGateway(
           let imported;
           try {
             imported = await globalClient.importFile({
-              ...pending.file,
+              ...readFile,
               globalAssetId: pending.id,
             });
           } catch (error) {

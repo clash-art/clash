@@ -33,6 +33,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
+import { LocalResourceStreamMismatchError } from "./local-resource-store.js";
 import {
   handleProjectCommand,
   projectCommandMutates,
@@ -1629,7 +1630,9 @@ function localGlobalAssetErrorResponse(error: unknown): Response {
   return json({ error: errorMessage(error) }, 500);
 }
 
-function inferProjectAssetFileKind(file: File): AssetKind | undefined {
+function inferProjectAssetFileKind(
+  file: Pick<File, "name" | "type">,
+): AssetKind | undefined {
   const contentType = file.type.trim().toLowerCase();
   if (contentType.startsWith("image/")) return "image";
   if (contentType.startsWith("video/")) return "video";
@@ -1661,7 +1664,7 @@ function inferProjectAssetFileKind(file: File): AssetKind | undefined {
 }
 
 function validateProjectAssetImportFile(
-  file: File,
+  file: Pick<File, "name" | "type" | "size">,
   kind: AssetKind,
 ): string | undefined {
   if (!file.name.trim()) return "Project Asset file must have a name";
@@ -1675,6 +1678,78 @@ function validateProjectAssetImportFile(
     return `Project Asset kind ${kind} does not match the selected ${inferred} file`;
   }
   return undefined;
+}
+
+/** One Asset import command, whichever transport carried it. */
+interface AssetImportUpload {
+  file?: {
+    name: string;
+    type: string;
+    size: number;
+    stream(): Readable;
+  };
+  field(name: string): FormDataEntryValue | null;
+}
+
+/**
+ * `multipart/form-data` is the compatibility transport: the parser holds the
+ * whole file before the route sees it. Any other content type is the streaming
+ * transport: the body is the file's raw bytes, and the command fields travel
+ * in the query together with `fileName` and the declared `byteLength`. When
+ * the query omits `byteLength`, the request's `Content-Length` declares it; a
+ * body with neither (chunked transfer) has no declared length and is rejected.
+ * Returns undefined when a multipart body cannot be parsed.
+ */
+async function readAssetImportUpload(
+  c: Context,
+): Promise<AssetImportUpload | undefined> {
+  const contentType = c.req.header("content-type") ?? "";
+  if (/^multipart\/form-data\b/i.test(contentType)) {
+    let form: FormData;
+    try {
+      form = await c.req.formData();
+    } catch {
+      return undefined;
+    }
+    const file = form.get("file");
+    return {
+      ...(file && typeof file !== "string"
+        ? {
+            file: {
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              stream: () =>
+                Readable.fromWeb(
+                  file.stream() as import("node:stream/web").ReadableStream,
+                ),
+            },
+          }
+        : {}),
+      field: (name) => form.get(name),
+    };
+  }
+  const body = c.req.raw.body;
+  const declared = c.req.query("byteLength") ?? c.req.header("content-length");
+  return {
+    ...(body
+      ? {
+          file: {
+            name: c.req.query("fileName") ?? "",
+            type: contentType.split(";")[0]!.trim(),
+            size:
+              declared !== undefined && /^\d+$/.test(declared)
+                ? Number(declared)
+                : Number.NaN,
+            stream: () =>
+              Readable.fromWeb(
+                body as import("node:stream/web").ReadableStream,
+              ),
+          },
+        }
+      : {}),
+    field: (name) => c.req.query(name) ?? null,
+  };
 }
 
 function requestOrigin(c: { req: { url: string } }): string {
@@ -4794,10 +4869,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   });
 
   app.post("/api/v1/projects/:projectId/assets/import-file", async (c) => {
-    let form: FormData;
-    try {
-      form = await c.req.formData();
-    } catch {
+    const upload = await readAssetImportUpload(c);
+    if (!upload) {
       return c.json(
         {
           error: "Invalid multipart Project Asset import",
@@ -4806,15 +4879,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         400,
       );
     }
-    const file = form.get("file");
-    const kind = AssetKindSchema.safeParse(form.get("kind"));
-    const projectAssetIdValue = form.get("projectAssetId");
-    if (
-      !file ||
-      typeof file === "string" ||
-      !kind.success ||
-      projectAssetIdValue === null
-    ) {
+    const file = upload.file;
+    const kind = AssetKindSchema.safeParse(upload.field("kind"));
+    const projectAssetIdValue = upload.field("projectAssetId");
+    if (!file || !kind.success || projectAssetIdValue === null) {
       return c.json(
         {
           error: "Project Asset import requires file, kind, and projectAssetId",
@@ -4843,7 +4911,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         400,
       );
     }
-    const duplicateContent = form.get("duplicateContent");
+    const duplicateContent = upload.field("duplicateContent");
     if (
       duplicateContent !== null &&
       duplicateContent !== "allow" &&
@@ -4866,13 +4934,20 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         projectAssetId: projectAssetIdValue.trim(),
         ...(duplicateContent ? { duplicateContent } : {}),
         kind: kind.data,
-        bytes: new Uint8Array(await file.arrayBuffer()),
+        source: file.stream(),
+        declaredByteLength: file.size,
         name: file.name,
         metadata: {},
         provenance: { kind: "import" },
       });
       return c.json(asset, 201);
     } catch (error) {
+      if (error instanceof LocalResourceStreamMismatchError) {
+        return c.json(
+          { error: error.message, code: "INVALID_PROJECT_ASSET_IMPORT" },
+          400,
+        );
+      }
       return localProjectAssetErrorResponse(error);
     }
   });
@@ -5154,10 +5229,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   });
 
   app.post("/api/v1/libraries/personal/assets/import-file", async (c) => {
-    let form: FormData;
-    try {
-      form = await c.req.formData();
-    } catch {
+    const upload = await readAssetImportUpload(c);
+    if (!upload) {
       return c.json(
         {
           error: "Invalid multipart Global Asset import",
@@ -5166,15 +5239,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         400,
       );
     }
-    const file = form.get("file");
-    const kind = AssetKindSchema.safeParse(form.get("kind"));
-    const globalAssetIdValue = form.get("globalAssetId");
-    if (
-      !file ||
-      typeof file === "string" ||
-      !kind.success ||
-      globalAssetIdValue === null
-    ) {
+    const file = upload.file;
+    const kind = AssetKindSchema.safeParse(upload.field("kind"));
+    const globalAssetIdValue = upload.field("globalAssetId");
+    if (!file || !kind.success || globalAssetIdValue === null) {
       return c.json(
         {
           error: "Global Asset import requires file, kind, and globalAssetId",
@@ -5210,13 +5278,20 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         libraryId: PERSONAL_GLOBAL_ASSET_LIBRARY_ID,
         globalAssetId: globalAssetIdValue.trim(),
         kind: kind.data,
-        bytes: new Uint8Array(await file.arrayBuffer()),
+        source: file.stream(),
+        declaredByteLength: file.size,
         originalName: file.name,
         name: file.name,
         provenance: { kind: "import" },
       });
       return c.json(asset, 201);
     } catch (error) {
+      if (error instanceof LocalResourceStreamMismatchError) {
+        return c.json(
+          { error: error.message, code: "INVALID_GLOBAL_ASSET_IMPORT" },
+          400,
+        );
+      }
       return localGlobalAssetErrorResponse(error);
     }
   });

@@ -54,7 +54,9 @@ import { assetPathForRead } from "./local-asset-paths.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import {
   createLocalResourceStore,
+  stageLocalResourceInput,
   type LocalResourceProjection,
+  type LocalResourceStageInput,
   type LocalResourceStagingProjection,
 } from "./local-resource-store.js";
 import {
@@ -146,18 +148,19 @@ export interface LocalProjectAssetService {
     /** Host-private invariant checked inside the same serialized Project mutation. */
     assertProjectState?: (doc: import("loro-crdt").LoroDoc) => void;
   }): Promise<ResolvedAsset>;
-  installOwned(input: {
-    projectId: string;
-    projectAssetId: string;
-    kind: AssetKind;
-    bytes: Uint8Array;
-    contentType?: string;
-    name?: string;
-    metadata: ProjectAssetMetadata;
-    provenance?: ProjectAssetProvenance;
-    /** `reject` fails instead of adding a second active Asset over bytes the Project already holds. */
-    duplicateContent?: "allow" | "reject";
-  }): Promise<ResolvedAsset>;
+  installOwned(
+    input: {
+      projectId: string;
+      projectAssetId: string;
+      kind: AssetKind;
+      contentType?: string;
+      name?: string;
+      metadata: ProjectAssetMetadata;
+      provenance?: ProjectAssetProvenance;
+      /** `reject` fails instead of adding a second active Asset over bytes the Project already holds. */
+      duplicateContent?: "allow" | "reject";
+    } & LocalResourceStageInput,
+  ): Promise<ResolvedAsset>;
   /** Host-private Project membership read; Resource identity is never exposed by public routes. */
   readEntry(
     projectId: string,
@@ -1298,10 +1301,11 @@ export function createLocalProjectAssetService(options: {
     },
 
     async installOwned(input) {
-      const staged = await resources.stage({
-        bytes: input.bytes,
-        ...(input.name ? { originalName: input.name } : {}),
-      });
+      const staged = await stageLocalResourceInput(
+        resources,
+        input,
+        input.name,
+      );
       const projectId = nonEmpty(input.projectId, "projectId");
       const projectAssetId = nonEmpty(input.projectAssetId, "projectAssetId");
       await materialize(projectId);

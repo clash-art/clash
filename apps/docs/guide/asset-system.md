@@ -1809,12 +1809,32 @@ POST   /api/v1/libraries/personal/assets/:assetId/restore
 
 There is no JSON import route that accepts a local path, `localBlobKey`, object
 key, digest assertion, or storage row. Importing bytes always uses the one
-multipart `import-file` path. Every multipart request carries its already-fixed
-`projectAssetId` or `globalAssetId`; the route rejects omission instead of
-minting an identity after receipt. A command adapter allocates that id before
-calling the public SDK or Host client, and retries replay the same snapshot. The
-Host then stages, probes, and seals the bytes before publishing the entry. The
-corresponding SDK vocabulary is:
+`import-file` path. Its body is the file's raw bytes, with `Content-Type` as a
+format hint; the command travels in the query: `kind`, `fileName`, the declared
+`byteLength`, the already-fixed `projectAssetId` or `globalAssetId`, and for a
+Project the optional `duplicateContent`. The Host hashes and writes the body
+chunk by chunk through the Resource store's `stageStream`, so neither side
+holds a large file in memory. The declared length is the `byteLength` query
+field; when the query omits it, the request's `Content-Length` header declares
+it instead, and `byteLength` wins when both are present. A body that
+contradicts its declared length, or declares none at all (a chunked body
+without `byteLength`), gets a 400 and publishes nothing. A streamed upload has
+no whole-request deadline: the Host disables Node's `requestTimeout`, which
+would otherwise cut off any upload at 300 s, keeps a 60 s limit on the request
+head, and drops a connection whose unfinished body has received no byte for
+five minutes (`configureHostServerTimeouts`). The SDK clients send a browser
+`File`/`Blob` as that body; an optional `onProgress` listener switches them to
+a streamed body where the runtime supports one. Node callers (CLI, MCP) always
+send a streamed, chunked body from `openAssetImportFile`, which reads the file
+from disk per attempt and declares `byteLength` from the file's stat size.
+They do not use `fs.openAsBlob`: on Node 24 its Blob reports `size` modulo
+2^32 for a file of 4 GiB or more while still streaming every byte, so the
+declared length contradicts the body. `multipart/form-data` with the same fields remains accepted for
+older callers, but its parser buffers the file first. The route rejects a
+missing id instead of minting an identity after receipt. A command adapter
+allocates that id before calling the public SDK or Host client, and a retry
+replays the same id. The Host then stages, probes, and seals the bytes before
+publishing the entry. The corresponding SDK vocabulary is:
 
 ```text
 readResolvedAsset(scope, entryId)

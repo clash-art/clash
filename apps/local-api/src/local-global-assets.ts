@@ -21,7 +21,9 @@ import { assetPathForRead } from "./local-asset-paths.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import {
   createLocalResourceStore,
+  stageLocalResourceInput,
   type LocalResourceProjection,
+  type LocalResourceStageInput,
 } from "./local-resource-store.js";
 import {
   canonicalAssetMediaTypeAssertion,
@@ -50,17 +52,18 @@ export class LocalGlobalAssetError extends Error {
 }
 
 export interface LocalGlobalAssetService {
-  importBytes(input: {
-    libraryId: string;
-    globalAssetId: string;
-    kind: AssetKind;
-    bytes: Uint8Array;
-    contentType?: string;
-    originalName?: string;
-    name?: string;
-    metadata?: ProjectAssetMetadata;
-    provenance?: ProjectAssetProvenance;
-  }): Promise<ResolvedAsset>;
+  importBytes(
+    input: {
+      libraryId: string;
+      globalAssetId: string;
+      kind: AssetKind;
+      contentType?: string;
+      originalName?: string;
+      name?: string;
+      metadata?: ProjectAssetMetadata;
+      provenance?: ProjectAssetProvenance;
+    } & LocalResourceStageInput,
+  ): Promise<ResolvedAsset>;
   publishResource(input: {
     libraryId: string;
     globalAssetId: string;
@@ -567,10 +570,11 @@ export function createLocalGlobalAssetService(options: {
 
   return {
     async importBytes(input) {
-      const staged = await resources.stage({
-        bytes: input.bytes,
-        ...(input.originalName ? { originalName: input.originalName } : {}),
-      });
+      const staged = await stageLocalResourceInput(
+        resources,
+        input,
+        input.originalName,
+      );
       return publish({
         libraryId: input.libraryId,
         globalAssetId: input.globalAssetId,

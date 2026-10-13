@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, lstat, stat } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  writeFile,
+  lstat,
+  rm,
+  stat,
+  truncate,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,6 +26,7 @@ import {
 } from "./assets";
 import * as assetCommands from "./assets";
 import type {
+  AssetImportFile,
   PersonalGlobalAssetHostClient,
   ProjectAssetHostClient,
 } from "@clash/shared-runtime/project-asset-client";
@@ -170,6 +179,38 @@ test("global asset list and read use the personal-library client without Project
   ]);
 });
 
+/**
+ * A file past 4 GiB that occupies no disk, or null where the filesystem cannot
+ * make one. `fs.openAsBlob` reports such a file's size modulo 2^32.
+ */
+async function sparseFileOver4GiB(path: string): Promise<number | null> {
+  const byteLength = 4608 * 1024 * 1024;
+  try {
+    await writeFile(path, "");
+    await truncate(path, byteLength);
+    const info = await stat(path);
+    if (info.size === byteLength && info.blocks * 512 < byteLength) {
+      return byteLength;
+    }
+  } catch {
+    // Fall through: no sparse file here.
+  }
+  await rm(path, { force: true });
+  return null;
+}
+
+/** Reads the file-backed source an import handed to its client back as plain facts. */
+async function sentFile<T extends { file: AssetImportFile }>(input: T) {
+  const { file, ...command } = input;
+  return {
+    ...command,
+    contentType: file.type,
+    bytes: Array.from(
+      new Uint8Array(await new Response(file.stream()).arrayBuffer()),
+    ),
+  };
+}
+
 test("global asset import sends local bytes through the personal-library client", async () => {
   const source = join(await tempDir(), "voice.mp3");
   await writeFile(source, new Uint8Array([4, 5, 6]));
@@ -189,9 +230,8 @@ test("global asset import sends local bytes through the personal-library client"
         client: {
           importFile(input: {
             globalAssetId?: string;
-            bytes: Uint8Array;
+            file: AssetImportFile;
             fileName: string;
-            contentType: string;
             kind: "audio";
           }): Promise<typeof globalAsset>;
         };
@@ -206,7 +246,7 @@ test("global asset import sends local bytes through the personal-library client"
     globalAssetId: "global:voice-command",
     client: {
       async importFile(input) {
-        calls.push({ ...input, bytes: Array.from(input.bytes) });
+        calls.push(await sentFile(input));
         return globalAsset;
       },
     },
@@ -233,14 +273,13 @@ test("CLI Global import reuses its Asset id when the same command object retries
     client: {
       async importFile(input: {
         globalAssetId?: string;
-        bytes: Uint8Array;
+        file: AssetImportFile;
         fileName: string;
-        contentType: string;
         kind: "audio";
       }) {
         imports.push({
           id: input.globalAssetId ?? "",
-          bytes: Array.from(input.bytes),
+          bytes: (await sentFile(input)).bytes,
         });
         if (imports.length === 1) throw new TypeError("connection lost");
         return {
@@ -258,7 +297,6 @@ test("CLI Global import reuses its Asset id when the same command object retries
     assetCommands.importPersonalGlobalAssetFile(command),
     /connection lost/,
   );
-  await writeFile(source, new Uint8Array([9, 9, 9]));
   await assetCommands.importPersonalGlobalAssetFile(command);
 
   assert.notEqual(imports[0]?.id, "");
@@ -276,10 +314,7 @@ test("CLI Global import accepts the same OGG audio representation as MCP", async
     globalAssetId: "global:ogg-command",
     client: {
       async importFile(input) {
-        imports.push({
-          ...input,
-          bytes: Array.from(input.bytes),
-        });
+        imports.push(await sentFile(input));
         return {
           id: "global:ogg",
           kind: "audio",
@@ -627,10 +662,7 @@ test("asset import sends workspace bytes through the shared Host client and link
     kind: "image",
     client: {
       async importFile(input) {
-        imports.push({
-          ...input,
-          bytes: Array.from(input.bytes),
-        });
+        imports.push(await sentFile(input));
         return {
           projectId: "asset_project",
           value: {
@@ -670,6 +702,105 @@ test("asset import sends workspace bytes through the shared Host client and link
   assert.equal(JSON.stringify(imports).includes("localBlobKey"), false);
 });
 
+test("CLI imports hand the Host client the file itself, never a copy of its bytes", async () => {
+  const cwd = await tempDir();
+  const source = join(await tempDir(), "hero.png");
+  await writeFile(source, "asset-bytes", "utf8");
+  await initProject({ cwd, projectId: "asset_project" });
+  const sent: Array<Record<string, unknown> & { file: AssetImportFile }> = [];
+  const value = {
+    id: "asset:host-import",
+    kind: "image" as const,
+    lifecycle: { state: "active" as const },
+    status: "ready" as const,
+    metadata: { bytes: 11, contentType: "image/png" },
+  };
+
+  await importAssetFile({
+    filePath: source,
+    cwd,
+    env: {},
+    link: false,
+    client: {
+      async importFile(input) {
+        sent.push(input);
+        return { projectId: "asset_project", value };
+      },
+    } as ProjectAssetHostClient,
+  });
+  await assetCommands.importPersonalGlobalAssetFile({
+    filePath: source,
+    client: {
+      async importFile(input) {
+        sent.push(input);
+        return value;
+      },
+    } as PersonalGlobalAssetHostClient,
+  });
+
+  assert.equal(sent.length, 2);
+  for (const input of sent) {
+    assert.equal("bytes" in input, false);
+    assert.equal(input.file.size, 11);
+    assert.equal(input.file.type, "image/png");
+  }
+  // The source reads from disk on demand: with the file emptied there is no
+  // in-memory copy left to send.
+  await truncate(source, 0);
+  for (const input of sent) {
+    const body = await new Response(input.file.stream()).arrayBuffer();
+    assert.equal(body.byteLength, 0);
+  }
+});
+
+test("CLI imports declare the stat size of a file past 4 GiB", async (t) => {
+  const cwd = await tempDir();
+  const source = join(await tempDir(), "long.mp4");
+  const byteLength = await sparseFileOver4GiB(source);
+  if (byteLength === null) {
+    t.skip("filesystem cannot hold a sparse file past 4 GiB");
+    return;
+  }
+  t.after(() => rm(source, { force: true }));
+  await initProject({ cwd, projectId: "asset_project" });
+  const sent: AssetImportFile[] = [];
+  const value = {
+    id: "asset:long",
+    kind: "video" as const,
+    lifecycle: { state: "active" as const },
+    status: "ready" as const,
+    metadata: { bytes: byteLength, contentType: "video/mp4" },
+  };
+
+  await importAssetFile({
+    filePath: source,
+    cwd,
+    env: {},
+    link: false,
+    client: {
+      async importFile(input) {
+        sent.push(input.file);
+        return { projectId: "asset_project", value };
+      },
+    } as ProjectAssetHostClient,
+  });
+  await assetCommands.importPersonalGlobalAssetFile({
+    filePath: source,
+    client: {
+      async importFile(input) {
+        sent.push(input.file);
+        return value;
+      },
+    } as PersonalGlobalAssetHostClient,
+  });
+
+  // The Host client declares `file.size` as byteLength; nothing is uploaded.
+  assert.deepEqual(
+    sent.map((file) => file.size),
+    [byteLength, byteLength],
+  );
+});
+
 test("CLI Project import reuses its Asset id when the same command object retries an unknown result", async () => {
   const cwd = await tempDir();
   const source = join(await tempDir(), "hero.png");
@@ -685,7 +816,7 @@ test("CLI Project import reuses its Asset id when the same command object retrie
       async importFile(input) {
         imports.push({
           id: input.projectAssetId ?? "",
-          bytes: Array.from(input.bytes),
+          bytes: (await sentFile(input)).bytes,
         });
         if (imports.length === 1) throw new TypeError("connection lost");
         return {
@@ -703,7 +834,6 @@ test("CLI Project import reuses its Asset id when the same command object retrie
   };
 
   await assert.rejects(importAssetFile(command), /connection lost/);
-  await writeFile(source, "changed!!!!", "utf8");
   await importAssetFile(command);
 
   assert.notEqual(imports[0]?.id, "");

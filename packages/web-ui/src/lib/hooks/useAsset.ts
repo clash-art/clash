@@ -261,7 +261,7 @@ export function watchAssetProjection(input: {
 
 /**
  * Import immutable bytes and publish one ProjectAsset in a single Host operation.
- * The client-selected id makes a retried multipart request idempotent; callers only
+ * The client-selected id makes a retried import request idempotent; callers only
  * receive the same read-only ResolvedAsset projection used by every other surface.
  */
 export async function importProjectAssetFile(

@@ -10,6 +10,12 @@ import {
   type ProjectAssetMetadata,
   type Resource,
 } from "@clash/shared-types";
+import {
+  Logger,
+  NodeIO,
+  type GLTF,
+  type JSONDocument,
+} from "@gltf-transform/core";
 import { SaxesParser } from "saxes";
 
 import {
@@ -489,7 +495,62 @@ function requireFact<T>(
   return value;
 }
 
-function parseGltfDocument(value: unknown): void {
+const GLB_JSON_CHUNK_TYPE = 0x4e4f534a;
+// The GLB header stores its total length as uint32.
+const GLB_MAX_BYTE_LENGTH = 0xffff_ffff;
+const GLB_MAX_JSON_CHUNK_BYTE_LENGTH = 64 * 1024 * 1024;
+const GLTF_INSPECTION_IMAGE_URI = "__clash-inspection-image";
+const gltfIo = new NodeIO().setLogger(new Logger(Logger.Verbosity.SILENT));
+
+// The glTF Transform reader copies every accessor and embedded image out of
+// its buffer, so reading the real document needs the whole BIN payload in
+// memory. Inspection only has the JSON, so the reader gets a copy with the
+// payload-bearing structure removed: no buffers or buffer views, zero-length
+// accessors, and one empty placeholder resource for every image. Scenes, nodes,
+// meshes, materials, skins, animations, and cameras are still parsed by the
+// library. Extension declarations are dropped because the reader rejects any
+// required extension it has no implementation for, and a compressed model is
+// still a model.
+function gltfStructureDocument(json: GLTF.IGLTF): JSONDocument {
+  const {
+    buffers: _buffers,
+    bufferViews: _bufferViews,
+    extensionsUsed: _extensionsUsed,
+    extensionsRequired: _extensionsRequired,
+    ...structure
+  } = json;
+  return {
+    json: {
+      ...structure,
+      // The reader accepts exactly "2.0"; parseGltfDocument owns the 2.x rule.
+      asset: { ...json.asset, version: "2.0" },
+      ...(json.accessors
+        ? {
+            accessors: json.accessors.map(
+              ({ bufferView: _bufferView, sparse: _sparse, ...accessor }) => ({
+                ...accessor,
+                count: 0,
+              }),
+            ),
+          }
+        : {}),
+      ...(json.images
+        ? {
+            images: json.images.map(
+              ({ bufferView: _bufferView, uri: _uri, ...image }) => ({
+                ...image,
+                uri: GLTF_INSPECTION_IMAGE_URI,
+              }),
+            ),
+          }
+        : {}),
+    },
+    resources: { [GLTF_INSPECTION_IMAGE_URI]: new Uint8Array(0) },
+  };
+}
+
+async function parseGltfDocument(text: string): Promise<void> {
+  const value: unknown = JSON.parse(text);
   const root = record(value);
   const asset = record(root?.asset);
   const version = optionalNonEmptyString(asset?.version);
@@ -498,6 +559,7 @@ function parseGltfDocument(value: unknown): void {
       "glTF Asset bytes do not declare a supported 2.x asset version.",
     );
   }
+  await gltfIo.readJSON(gltfStructureDocument(value as GLTF.IGLTF));
 }
 
 async function inspectGltf(
@@ -505,60 +567,78 @@ async function inspectGltf(
   resource: Resource,
   registeredEssence: string | undefined,
 ): Promise<LocalAssetInspectionFacts> {
-  const bytes = await readFile(sourcePath);
-  if (bytes.byteLength !== resource.byteLength) {
-    throw new Error("glTF Asset bytes do not match immutable Resource length.");
-  }
-  const decodedEssence =
-    bytes.byteLength >= 4 && bytes.subarray(0, 4).toString() === "glTF"
-      ? "model/gltf-binary"
-      : "model/gltf+json";
-  if (registeredEssence !== undefined && registeredEssence !== decodedEssence) {
-    throw new Error(
-      `Decoded model Asset has canonical media type ${decodedEssence}, not registered ${registeredEssence}.`,
-    );
-  }
-  if (decodedEssence === "model/gltf+json") {
-    try {
-      parseGltfDocument(JSON.parse(bytes.toString("utf8")));
-    } catch (error) {
-      throw new Error("glTF JSON Asset bytes are invalid.", { cause: error });
+  const file = await open(sourcePath, "r");
+  try {
+    const { size } = await file.stat();
+    if (size !== resource.byteLength) {
+      throw new Error(
+        "glTF Asset bytes do not match immutable Resource length.",
+      );
     }
-  } else {
-    if (bytes.byteLength < 20 || bytes.subarray(0, 4).toString() !== "glTF") {
-      throw new Error("GLB Asset bytes do not contain a valid glTF header.");
-    }
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const version = view.getUint32(4, true);
-    const declaredLength = view.getUint32(8, true);
-    const jsonLength = view.getUint32(12, true);
-    const jsonType = view.getUint32(16, true);
+    const magic = await readFileSlice(file, 0, Math.min(size, 4));
+    const decodedEssence =
+      size >= 4 && magic?.toString() === "glTF"
+        ? "model/gltf-binary"
+        : "model/gltf+json";
     if (
-      version !== 2 ||
-      declaredLength !== bytes.byteLength ||
-      jsonType !== 0x4e4f534a ||
-      jsonLength > bytes.byteLength - 20
+      registeredEssence !== undefined &&
+      registeredEssence !== decodedEssence
     ) {
       throw new Error(
-        "GLB Asset bytes do not contain a valid glTF 2 JSON chunk.",
+        `Decoded model Asset has canonical media type ${decodedEssence}, not registered ${registeredEssence}.`,
       );
     }
-    try {
-      parseGltfDocument(
-        JSON.parse(
-          bytes
-            .subarray(20, 20 + jsonLength)
-            .toString("utf8")
-            .trim(),
-        ),
-      );
-    } catch (error) {
-      throw new Error("GLB Asset JSON chunk is invalid.", { cause: error });
+    if (decodedEssence === "model/gltf+json") {
+      try {
+        await parseGltfDocument(await file.readFile("utf8"));
+      } catch (error) {
+        throw new Error("glTF JSON Asset bytes are invalid.", { cause: error });
+      }
+    } else {
+      if (size > GLB_MAX_BYTE_LENGTH) {
+        throw new Error(
+          `GLB Asset is ${size} bytes; a glTF binary container cannot exceed ${GLB_MAX_BYTE_LENGTH} bytes (4 GiB).`,
+        );
+      }
+      // Only the container header and the JSON chunk are read; the BIN chunk
+      // can be gigabytes and inspection publishes nothing derived from it.
+      const header = size >= 20 ? await readFileSlice(file, 0, 20) : undefined;
+      if (!header) {
+        throw new Error("GLB Asset bytes do not contain a valid glTF header.");
+      }
+      const version = header.readUInt32LE(4);
+      const declaredLength = header.readUInt32LE(8);
+      const jsonLength = header.readUInt32LE(12);
+      const jsonType = header.readUInt32LE(16);
+      if (
+        version !== 2 ||
+        declaredLength !== size ||
+        jsonType !== GLB_JSON_CHUNK_TYPE ||
+        jsonLength > size - 20
+      ) {
+        throw new Error(
+          "GLB Asset bytes do not contain a valid glTF 2 JSON chunk.",
+        );
+      }
+      if (jsonLength > GLB_MAX_JSON_CHUNK_BYTE_LENGTH) {
+        throw new Error(
+          `GLB Asset JSON chunk is ${jsonLength} bytes; inspection accepts at most ${GLB_MAX_JSON_CHUNK_BYTE_LENGTH} bytes.`,
+        );
+      }
+      try {
+        const json = await readFileSlice(file, 20, jsonLength);
+        if (!json) throw new Error("GLB Asset JSON chunk is truncated.");
+        await parseGltfDocument(json.toString("utf8"));
+      } catch (error) {
+        throw new Error("GLB Asset JSON chunk is invalid.", { cause: error });
+      }
     }
+    return LocalAssetInspectionFactsSchema.parse({
+      contentType: decodedEssence,
+    });
+  } finally {
+    await file.close();
   }
-  return LocalAssetInspectionFactsSchema.parse({
-    contentType: decodedEssence,
-  });
 }
 
 function svgPixelLength(value: string | undefined): number | undefined {

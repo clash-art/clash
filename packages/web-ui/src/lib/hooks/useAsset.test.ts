@@ -402,12 +402,15 @@ describe("useAsset", () => {
     ).resolves.toEqual(imported);
 
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe("/api/v1/projects/project-1/assets/import-file");
+    const importUrl = new URL(String(url), "http://host.test");
+    expect(importUrl.pathname).toBe(
+      "/api/v1/projects/project-1/assets/import-file",
+    );
     expect(init?.method).toBe("POST");
-    const form = init?.body as FormData;
-    expect(form.get("file")).toBe(file);
-    expect(form.get("kind")).toBe("image");
-    expect(form.get("projectAssetId")).toBe("asset-imported");
+    // The File is the request body, so the browser streams it from disk.
+    expect(init?.body).toBe(file);
+    expect(importUrl.searchParams.get("kind")).toBe("image");
+    expect(importUrl.searchParams.get("projectAssetId")).toBe("asset-imported");
 
     await expect(getAsset("project-1", "asset-imported")).resolves.toEqual(
       imported,
@@ -536,15 +539,20 @@ describe("useAsset", () => {
       publishProjectAssetToPersonalLibrary("project-1", "asset-1"),
     ).resolves.toEqual(globalAsset);
 
-    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual([
+    expect(
+      fetchSpy.mock.calls.map(([url]) => String(url).split("?")[0]),
+    ).toEqual([
       "/api/v1/libraries/personal/assets",
       "/api/v1/libraries/personal/assets/import-file",
       "/api/v1/libraries/personal/assets/publish",
     ]);
-    const importForm = fetchSpy.mock.calls[1]?.[1]?.body as FormData;
-    expect(importForm.get("file")).toBe(file);
-    expect(importForm.get("kind")).toBe("image");
-    expect(String(importForm.get("globalAssetId"))).toMatch(/^global:/u);
+    const importQuery = new URL(
+      String(fetchSpy.mock.calls[1]?.[0]),
+      "http://host.test",
+    ).searchParams;
+    expect(fetchSpy.mock.calls[1]?.[1]?.body).toBe(file);
+    expect(importQuery.get("kind")).toBe("image");
+    expect(String(importQuery.get("globalAssetId"))).toMatch(/^global:/u);
     expect(fetchSpy.mock.calls[2]?.[1]).toMatchObject({
       body: JSON.stringify({
         projectId: "project-1",

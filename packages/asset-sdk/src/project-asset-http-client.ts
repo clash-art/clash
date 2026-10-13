@@ -5,6 +5,11 @@ import {
   type AssetKind,
   type ResolvedAsset,
 } from "@clash/shared-types";
+import {
+  assetImportRequest,
+  type AssetImportFile,
+  type AssetImportProgressListener,
+} from "./asset-import-request.js";
 
 export const PROJECT_ASSET_READ_RECEIPT_HEADER = "x-clash-read-receipt";
 
@@ -35,12 +40,14 @@ export interface ProjectAssetHttpClient {
   ): Promise<ProjectAssetHttpObservation<ActionAssetBinding[]>>;
   importFile(
     input: ProjectAssetHttpScope & {
-      file: Blob;
+      file: AssetImportFile;
       fileName?: string;
       kind: AssetKind;
       projectAssetId: string;
       /** `reject` asks the Host to fail rather than add a second active Asset over the same bytes. */
       duplicateContent?: "allow" | "reject";
+      /** Opts in to a streamed body; see `assetImportRequest`. */
+      onProgress?: AssetImportProgressListener;
     },
   ): Promise<ResolvedAsset>;
   admit(
@@ -111,7 +118,7 @@ function projectAssetsUrl(endpoint: string, projectId: string): string {
   return `${endpoint.trim().replace(/\/+$/, "")}/api/v1/projects/${encodeURIComponent(projectId)}/assets`;
 }
 
-function fileNameOf(file: Blob): string | undefined {
+function fileNameOf(file: AssetImportFile): string | undefined {
   return "name" in file && typeof file.name === "string"
     ? file.name
     : undefined;
@@ -119,12 +126,12 @@ function fileNameOf(file: Blob): string | undefined {
 
 type ProjectImportCommandSnapshot = {
   projectId: string;
-  file: Blob;
+  file: AssetImportFile;
   fileName: string;
-  appendFileName: boolean;
   kind: AssetKind;
   projectAssetId: string;
   duplicateContent?: "allow" | "reject";
+  onProgress?: AssetImportProgressListener;
 };
 
 function snapshotProjectImport(
@@ -132,18 +139,17 @@ function snapshotProjectImport(
 ): ProjectImportCommandSnapshot {
   const projectId = required(input.projectId, "project id");
   const file = input.file;
-  const sourceFileName = fileNameOf(file);
-  const fileName = required(input.fileName ?? sourceFileName, "file name");
+  const fileName = required(input.fileName ?? fileNameOf(file), "file name");
   return {
     projectId,
     file,
     fileName,
-    appendFileName: input.fileName !== undefined || sourceFileName !== fileName,
     kind: input.kind,
     projectAssetId: required(input.projectAssetId, "project asset id"),
     ...(input.duplicateContent
       ? { duplicateContent: input.duplicateContent }
       : {}),
+    ...(input.onProgress ? { onProgress: input.onProgress } : {}),
   };
 }
 
@@ -296,25 +302,21 @@ export function createProjectAssetHttpClient(
         snapshot.projectId,
         "/import-file",
       );
-      const form = new FormData();
-      if (!snapshot.appendFileName) {
-        form.append("file", snapshot.file);
-      } else {
-        form.append("file", snapshot.file, snapshot.fileName);
-      }
-      form.append("kind", snapshot.kind);
-      form.append("projectAssetId", snapshot.projectAssetId);
-      if (snapshot.duplicateContent) {
-        form.append("duplicateContent", snapshot.duplicateContent);
-      }
-      const response = await fetch(
+      const request = assetImportRequest({
         url,
-        requestInit({
-          method: "POST",
-          headers: headers(connected),
-          body: form,
-        }),
-      );
+        file: snapshot.file,
+        fileName: snapshot.fileName,
+        fields: {
+          kind: snapshot.kind,
+          projectAssetId: snapshot.projectAssetId,
+          ...(snapshot.duplicateContent
+            ? { duplicateContent: snapshot.duplicateContent }
+            : {}),
+        },
+        headers: headers(connected),
+        ...(snapshot.onProgress ? { onProgress: snapshot.onProgress } : {}),
+      });
+      const response = await fetch(request.url, requestInit(request.init));
       return ResolvedAssetSchema.parse(await responseBody(response));
     },
     async admit(input) {
