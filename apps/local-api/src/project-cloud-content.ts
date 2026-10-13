@@ -14,6 +14,7 @@ import { dirname } from "node:path";
 import {
   assertContentTransferSize,
   uploadCloudContent,
+  type CloudContentUploadSession,
   type ContentTransferLimits,
 } from "@clash/asset-sdk/delivery";
 
@@ -104,6 +105,7 @@ export async function uploadCloudContentFile(
     url: string;
     headers?: HeadersInit;
     fetch?: typeof globalThis.fetch;
+    session?: CloudContentUploadSession;
   },
 ): Promise<void> {
   assertContentTransferSize(input.byteLength, input.maxBytes);
@@ -117,6 +119,7 @@ export async function uploadCloudContentFile(
       headers: input.headers,
       fetch: input.fetch,
       maxBytes: input.maxBytes,
+      session: input.session,
       source: {
         byteLength: input.byteLength,
         async readPart(offset, length) {

@@ -52,10 +52,12 @@ export async function handleMultipartContent(
         "Multipart control requests have no body",
       );
     if (operation === "begin") {
-      await store.multipart.begin(session);
+      const begun = await store.multipart.begin(session);
+      // Only part numbers and content hashes leave staging; ETags stay private.
       return Response.json({
         uploadId,
         partSize: PROJECT_CLOUD_CONTENT_PART_BYTES,
+        parts: begun?.parts ?? [],
       });
     }
     if (operation === "complete")

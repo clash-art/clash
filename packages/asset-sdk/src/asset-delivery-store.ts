@@ -29,8 +29,18 @@ export interface AssetDeliveryMultipartSession {
   };
 }
 
+/** A part the staging session already holds; `sha256` is lowercase hex of its bytes. */
+export interface AssetDeliveryMultipartPart {
+  partNumber: number;
+  sha256: string;
+}
+
 export interface AssetDeliveryMultipartStore {
-  begin(session: AssetDeliveryMultipartSession): Promise<void>;
+  /** Idempotent. Re-beginning a live session reports the parts it already
+   * holds so an interrupted sender uploads only the remainder. */
+  begin(
+    session: AssetDeliveryMultipartSession,
+  ): Promise<{ parts: AssetDeliveryMultipartPart[] } | void>;
   part(
     session: AssetDeliveryMultipartSession,
     partNumber: number,

@@ -285,6 +285,86 @@ describe("production Project cloud coordinator adapter", () => {
       createHash("sha256").update(bytes).digest("hex"),
     );
   });
+  it("resumes an interrupted multipart upload after Host restart without resending accepted parts", async () => {
+    const f = await fixture(false);
+    const { source, bytes } = await f.addResource(
+      "resumed",
+      new Uint8Array(2 * PROJECT_CLOUD_CONTENT_PART_BYTES + 7).map(
+        (_, index) => index % 251,
+      ),
+    );
+    const { resourceLocator } = await import(
+      new URL("../../api-cf/src/services/project-content.ts", import.meta.url)
+        .href
+    );
+    const key = await resourceLocator("tenant", source.resource);
+    const originalFetch = f.options.fetch;
+    // Cloud staging outlives the Host process: parts stay held per upload ID.
+    const sessions = new Map<string, Map<number, Uint8Array>>();
+    const sent: { uploadId: string; partNumber: number }[] = [];
+    let killAtPart = 2;
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = new URL(String(input));
+      const action = url.searchParams.get("upload");
+      if (!action) return originalFetch(input, init);
+      const uploadId = url.searchParams.get("uploadId")!;
+      if (action === "begin") {
+        if (!sessions.has(uploadId)) sessions.set(uploadId, new Map());
+        return Response.json({
+          uploadId,
+          partSize: PROJECT_CLOUD_CONTENT_PART_BYTES,
+          parts: [...sessions.get(uploadId)!].map(([partNumber, part]) => ({
+            partNumber,
+            sha256: createHash("sha256").update(part).digest("hex"),
+          })),
+        });
+      }
+      const session = sessions.get(uploadId);
+      if (!session) return new Response(null, { status: 410 });
+      if (action === "part") {
+        const partNumber = Number(url.searchParams.get("partNumber"));
+        if (partNumber === killAtPart) throw new TypeError("fetch failed");
+        session.set(partNumber, init?.body as Uint8Array);
+        sent.push({ uploadId, partNumber });
+      } else if (action === "complete") {
+        f.objects.set(
+          key,
+          new Uint8Array(
+            Buffer.concat(
+              [...session].sort(([a], [b]) => a - b).map(([, part]) => part),
+            ),
+          ),
+        );
+      } else if (action === "abort") sessions.delete(uploadId);
+      return new Response(null, { status: 204 });
+    };
+    const killed = createLocalProjectCloudSync({
+      ...f.options,
+      fetch: fetcher,
+    });
+    await killed.schedule("project");
+    await killed.close();
+    expect((await f.admission())?.status).toBe("failed");
+    expect(sent.map((part) => part.partNumber)).toEqual([1]);
+    const uploadId = sent[0]!.uploadId;
+
+    killAtPart = 0;
+    sent.length = 0;
+    const restarted = createLocalProjectCloudSync({
+      ...f.options,
+      fetch: fetcher,
+    });
+    cleanup.push(() => restarted.close());
+    await restarted.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    expect(sent).toEqual([
+      { uploadId, partNumber: 2 },
+      { uploadId, partNumber: 3 },
+    ]);
+    expect(createHash("sha256").update(f.objects.get(key)!).digest("hex")).toBe(
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+  });
   it("reaches ready only after acknowledged Loro, metadata, media and Document bytes, and retries after restart", async () => {
     const f = await fixture();
     f.rejectUploads(true);
