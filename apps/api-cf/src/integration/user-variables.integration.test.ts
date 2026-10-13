@@ -25,9 +25,7 @@ it("upserts a variable when the same key is set twice against the migrated schem
 it("the unique-index migration keeps the most recently updated duplicate", async () => {
   const migration = (
     env.TEST_MIGRATIONS as Array<{ name: string; queries: string[] }>
-  ).find(
-    (candidate) => candidate.name === "0027_user_variable_unique.sql",
-  );
+  ).find((candidate) => candidate.name === "0027_user_variable_unique.sql");
   if (!migration) throw new Error("0027_user_variable_unique.sql not loaded");
 
   // Rebuild the pre-migration index from 0004 so duplicates can exist.
