@@ -272,6 +272,9 @@ class_name = "RenderContainer"
 image = "../render-server/Dockerfile.cf"
 image_build_context = "../.."
 max_instances = 1
+# The render image is ~2.2 GB, over the default instance type's 2 GB image
+# limit; standard-1 has a 4 GB disk.
+instance_type = "standard-1"
 
 # Staging's own Workflow, registered under a staging-only name.
 [[env.staging.workflows]]
