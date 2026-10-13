@@ -1,7 +1,8 @@
 // Opt-in browser smoke against a deployed hosted Web origin (e.g. staging).
 // It signs in with a dedicated test account, visits the authenticated
-// surfaces, records every same-origin /api response, and fails when the
-// gateway answers 5xx. It creates no data.
+// surfaces, records every same-origin document and /api response from CDP
+// Network events, and fails when the gateway answers 5xx or bounces a
+// signed-in route back to /login. It creates no data.
 //
 //   CLASH_HOSTED_WEB_URL=https://… CLASH_HOSTED_E2E_EMAIL=… \
 //   CLASH_HOSTED_E2E_PASSWORD=… node e2e/hosted-cloud-smoke.ts
@@ -25,7 +26,13 @@ import {
   waitForTarget,
 } from "../../../scripts/e2e/harness.ts";
 
-type ApiCall = { page: string; method: string; path: string; status: number };
+type RecordedResponse = {
+  page: string;
+  kind: "document" | "api";
+  method: string;
+  path: string;
+  status: number;
+};
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -42,54 +49,85 @@ const captureDir =
   path.join(os.tmpdir(), "clash-hosted-cloud-smoke");
 const chromeDataDir = path.join(os.tmpdir(), `clash-hosted-cloud-chrome-${process.pid}`);
 
-// Same-origin API responses are recorded in the page because the shared CDP
-// client is request/response only and does not surface Network events.
-const recordApiCalls = `(() => {
-  const calls = [];
-  globalThis.__hostedSmokeApiCalls = calls;
-  const original = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
-    const response = await original(input, init);
-    try {
-      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url, location.href);
-      if (url.origin === location.origin && url.pathname.startsWith("/api/")) {
-        calls.push({
-          method: (init?.method ?? (typeof input === "object" && "method" in input ? input.method : "GET")).toUpperCase(),
-          path: url.pathname,
-          status: response.status,
-        });
+// A cold hosted Worker has taken ~20s to answer the first sign-in.
+const SIGN_IN_TIMEOUT_MS = 90_000;
+const IDLE_QUIET_MS = 750;
+const IDLE_TIMEOUT_MS = 45_000;
+
+/** Tracks same-origin traffic from CDP Network events, including navigations. */
+function observeNetwork(cdp: CdpClient) {
+  const responses: RecordedResponse[] = [];
+  const inFlight = new Map<string, { method: string; url: string }>();
+  let currentPage = "startup";
+  let lastActivityAt = Date.now();
+
+  cdp.on<{ requestId: string; type?: string; request: { method: string; url: string } }>(
+    "Network.requestWillBeSent",
+    ({ requestId, type, request }) => {
+      lastActivityAt = Date.now();
+      // Long-lived streams never finish and must not hold the page "busy".
+      if (type === "WebSocket" || type === "EventSource") return;
+      inFlight.set(requestId, { method: request.method, url: request.url });
+    },
+  );
+  cdp.on<{ requestId: string; type?: string; response: { url: string; status: number } }>(
+    "Network.responseReceived",
+    ({ requestId, type, response }) => {
+      lastActivityAt = Date.now();
+      let url: URL;
+      try {
+        url = new URL(response.url);
+      } catch {
+        return;
       }
-    } catch {}
-    return response;
+      if (url.origin !== webOrigin) return;
+      const kind = type === "Document" ? "document" : url.pathname.startsWith("/api/") ? "api" : null;
+      if (!kind) return;
+      responses.push({
+        page: currentPage,
+        kind,
+        method: inFlight.get(requestId)?.method ?? "GET",
+        path: url.pathname,
+        status: response.status,
+      });
+    },
+  );
+  const settle = ({ requestId }: { requestId: string }) => {
+    lastActivityAt = Date.now();
+    inFlight.delete(requestId);
   };
-})()`;
+  cdp.on("Network.loadingFinished", settle);
+  cdp.on("Network.loadingFailed", settle);
+
+  return {
+    responses,
+    setPage(label: string) {
+      currentPage = label;
+      lastActivityAt = Date.now();
+    },
+    async idle(label: string) {
+      const deadline = Date.now() + IDLE_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (inFlight.size === 0 && Date.now() - lastActivityAt >= IDLE_QUIET_MS) return;
+        await sleep(100);
+      }
+      throw new Error(
+        `Timed out waiting for network idle on ${label}: ${JSON.stringify([...inFlight.values()].slice(0, 5))}`,
+      );
+    },
+  };
+}
 
 async function main() {
   await mkdir(captureDir, { recursive: true });
   const cdpPort = await findFreePort(49880);
   const screenshots: string[] = [];
-  const apiCalls: ApiCall[] = [];
+  const pages: Record<string, { expected: string; landed: string }> = {};
+  let responses: RecordedResponse[] = [];
+  let signInMs: number | null = null;
   let chrome: ChildProcess | null = null;
   let cdp: CdpClient | null = null;
-
-  const visit = async (label: string, pathname?: string) => {
-    assert(cdp, "CDP client is not connected");
-    if (pathname) {
-      await cdp.send("Page.navigate", { url: `${webOrigin}${pathname}` });
-    }
-    await waitFor(cdp, `document.readyState === "complete"`, `${label} load`, 30000);
-    // Client loaders fetch after the shell renders; give them time to settle.
-    await sleep(4000);
-    const target = path.join(captureDir, `${label}.png`);
-    await capture(cdp, target);
-    screenshots.push(target);
-    const calls = await evaluate<Array<Omit<ApiCall, "page">>>(
-      cdp,
-      `(globalThis.__hostedSmokeApiCalls ?? []).splice(0)`,
-    );
-    for (const call of calls) apiCalls.push({ page: label, ...call });
-    return evaluate<string>(cdp, "location.pathname");
-  };
+  let failure: unknown = null;
 
   try {
     chrome = spawn(chromeBinary(), [
@@ -103,61 +141,89 @@ async function main() {
       "about:blank",
     ], { stdio: "ignore" });
 
-    cdp = new CdpClient(await waitForTarget(cdpPort));
-    await cdp.ready();
-    await cdp.send("Runtime.enable");
-    await cdp.send("Page.enable");
-    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: recordApiCalls });
+    const client = new CdpClient(await waitForTarget(cdpPort));
+    cdp = client;
+    await client.ready();
+    await client.send("Runtime.enable");
+    await client.send("Page.enable");
+    const network = observeNetwork(client);
+    responses = network.responses;
+    await client.send("Network.enable");
+
+    const shoot = async (label: string) => {
+      const target = path.join(captureDir, `${label}.png`);
+      await capture(client, target);
+      screenshots.push(target);
+    };
+    const visit = async (label: string, pathname: string) => {
+      network.setPage(label);
+      await client.send("Page.navigate", { url: `${webOrigin}${pathname}` });
+      await waitFor(client, `document.readyState === "complete"`, `${label} load`, 30000);
+      await network.idle(label);
+      await shoot(label);
+      const landed = await evaluate<string>(client, "location.pathname");
+      pages[label] = { expected: pathname, landed };
+      return landed;
+    };
 
     await visit("01-login", "/login");
-    await waitFor(cdp, `!!document.querySelector('input[type="email"]')`, "email field", 20000);
+    await waitFor(client, `!!document.querySelector('input[type="email"]')`, "email field", 20000);
     // The default login mode is the emailed verification code.
-    await clickByText(cdp, "Use email and password");
-    await waitFor(cdp, `!!document.querySelector('input[type="password"]')`, "password field", 10000);
-    await typeText(cdp, 'input[type="email"]', email);
-    await typeText(cdp, 'input[type="password"]', password);
-    await capture(cdp, path.join(captureDir, "02-login-filled.png"));
-    screenshots.push(path.join(captureDir, "02-login-filled.png"));
-    await click(cdp, `document.querySelector('form button[type="submit"]')`, "login submit");
+    await clickByText(client, "Use email and password");
+    await waitFor(client, `!!document.querySelector('input[type="password"]')`, "password field", 10000);
+    await typeText(client, 'input[type="email"]', email);
+    await typeText(client, 'input[type="password"]', password);
+    await shoot("02-login-filled");
+
+    network.setPage("03-after-login");
     const signInStartedAt = Date.now();
+    await click(client, `document.querySelector('form button[type="submit"]')`, "login submit");
     try {
-      // A cold hosted Worker has taken ~20s to answer the first sign-in.
-      await waitFor(cdp, `location.pathname !== "/login"`, "post-login navigation", 90000);
+      await waitFor(client, `location.pathname !== "/login"`, "post-login navigation", SIGN_IN_TIMEOUT_MS);
     } catch (error) {
-      await visit("03-login-stuck");
-      console.error(JSON.stringify({ apiCalls }, null, 2));
+      await shoot("03-login-stuck");
       throw error;
     }
-    const signInMs = Date.now() - signInStartedAt;
-    const landed = await visit("03-after-login");
+    signInMs = Date.now() - signInStartedAt;
+    await network.idle("03-after-login");
+    await shoot("03-after-login");
 
-    const projectsPath = await visit("04-projects", "/projects");
-    const assetsPath = await visit("05-assets", "/assets");
-    const settingsPath = await visit("06-settings", "/settings");
-    const projectPath = projectId
-      ? await visit("07-project", `/project/${encodeURIComponent(projectId)}`)
-      : null;
+    await visit("04-projects", "/projects");
+    await visit("05-assets", "/assets");
+    await visit("06-settings", "/settings");
+    if (projectId) await visit("07-project", `/project/${encodeURIComponent(projectId)}`);
 
-    const serverErrors = apiCalls.filter((call) => call.status >= 500);
+    for (const [label, page] of Object.entries(pages)) {
+      if (label === "01-login") continue;
+      assert(
+        page.landed === page.expected,
+        `Signed-in route ${page.expected} was redirected to ${page.landed}`,
+        pages,
+      );
+    }
+    const serverErrors = responses.filter((response) => response.status >= 500);
+    assert(serverErrors.length === 0, "Hosted origin returned 5xx to the signed-in Web app", serverErrors);
+  } catch (error) {
+    failure = error;
+  } finally {
+    // The report is the evidence for a failed run too, including a failed sign-in.
     const report = {
       webOrigin,
-      landed,
+      ok: failure === null,
+      error: failure === null ? null : failure instanceof Error ? failure.message : String(failure),
       signInMs,
-      pages: { projectsPath, assetsPath, settingsPath, projectPath },
-      apiCalls,
-      serverErrors,
+      pages,
+      serverErrors: responses.filter((response) => response.status >= 500),
+      responses,
       screenshots,
     };
     await writeFile(path.join(captureDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
-    console.log(JSON.stringify(report, null, 2));
-
-    assert(projectsPath === "/projects", "Signed-in user was redirected away from /projects", report.pages);
-    assert(serverErrors.length === 0, "Hosted gateway returned 5xx to the signed-in Web app", serverErrors);
-  } finally {
+    console.log(JSON.stringify({ ...report, responses: undefined }, null, 2));
     cdp?.close();
     await stopProcess(chrome);
     await rm(chromeDataDir, { recursive: true, force: true });
   }
+  if (failure !== null) throw failure;
 }
 
 main().catch((error) => {

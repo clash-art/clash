@@ -121,12 +121,18 @@ export class CdpClient {
   private id: number;
   private pending: Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>;
   private ws: WebSocket;
+  private listeners: Map<string, Array<(params: unknown) => void>>;
   constructor(url: string) {
     this.id = 0;
     this.pending = new Map();
+    this.listeners = new Map();
     this.ws = new WebSocket(url);
     this.ws.addEventListener("message", (event) => {
-      const msg = JSON.parse(String(event.data)) as { id?: number; error?: unknown; result?: unknown };
+      const msg = JSON.parse(String(event.data)) as { id?: number; method?: string; params?: unknown; error?: unknown; result?: unknown };
+      if (!msg.id && msg.method) {
+        for (const listener of this.listeners.get(msg.method) ?? []) listener(msg.params);
+        return;
+      }
       if (!msg.id || !this.pending.has(msg.id)) return;
       const pending = this.pending.get(msg.id)!;
       this.pending.delete(msg.id);
@@ -148,6 +154,11 @@ export class CdpClient {
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     }) as Promise<T>;
+  }
+
+  /** Subscribe to a CDP event after enabling its domain, e.g. `Network.responseReceived`. */
+  on<T = unknown>(method: string, listener: (params: T) => void) {
+    this.listeners.set(method, [...(this.listeners.get(method) ?? []), listener as (params: unknown) => void]);
   }
 
   close() {
