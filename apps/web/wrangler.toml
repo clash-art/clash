@@ -85,10 +85,10 @@ port = 3001
 ip = "0.0.0.0"
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  [env.staging] — DO NOT COMMIT real resource IDs upstream.       ║
-# ║  This section binds the staging worker to PRODUCTION data        ║
-# ║  (clash-d1 D1 + clash-r2 R2). The OSS template keeps             ║
-# ║  template should keep placeholder IDs only.                      ║
+# ║  [env.staging] — isolated staging.                               ║
+# ║  Binds the staging-only `clash-staging` D1 (shared with          ║
+# ║  clash-api-staging). It must NEVER point at the production D1    ║
+# ║  or R2.                                                          ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
 # Deploy with:  wrangler deploy --env staging   (or `make deploy-web-staging`)
@@ -125,8 +125,8 @@ run_worker_first = [
 
 [[env.staging.d1_databases]]
 binding = "DB"
-database_name = "clash-d1"
-database_id = "aab16eeb-a375-490b-ad1e-cd092cd9f4bb"
+database_name = "clash-staging"
+database_id = "a04f1df0-7356-403c-8df0-0f7d5b5a1c6c"
 migrations_dir = "drizzle"
 
 [[env.staging.services]]

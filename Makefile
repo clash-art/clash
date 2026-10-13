@@ -253,16 +253,17 @@ deploy: predeploy-check ## Deploy api-cf then web (the standard production path)
 
 # ─── Staging ──────────────────────────────────────────────────────────
 # `[env.staging]` in each app's wrangler.toml binds staging workers to
-# PRODUCTION data (real D1 / R2). Worker names get a `-staging` suffix so
-# they don't collide with the prod workers. The wrangler.toml staging
-# sections must NOT be committed (they contain real resource IDs).
+# isolated staging data (`clash-staging` D1, `clash-staging-assets` R2) and
+# their own Durable Objects / Workflow. Worker names get a `-staging` suffix
+# so they don't collide with the prod workers. Staging must never point at
+# production data.
 
-deploy-api-staging: predeploy-check ## Deploy clash-api-staging (uses prod data)
+deploy-api-staging: predeploy-check ## Deploy clash-api-staging (isolated staging data)
 	@echo "$(BLUE)Deploying clash-api-staging → Cloudflare Workers...$(NC)"
 	@cd apps/api-cf && pnpm exec wrangler deploy --env staging
 	@echo "$(GREEN)✓ api-cf staging deployed$(NC)"
 
-deploy-web-staging: predeploy-check ## Build + deploy clash-web-staging (uses prod data)
+deploy-web-staging: predeploy-check ## Build + deploy clash-web-staging (isolated staging data)
 	@echo "$(BLUE)Deploying clash-web-staging → Cloudflare...$(NC)"
 	@pnpm build:package @clash/web
 	@pnpm --filter @clash/web exec wrangler deploy --env staging
