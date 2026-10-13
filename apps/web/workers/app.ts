@@ -47,6 +47,7 @@ export interface Env {
   ACTION_SECRET_KEY?: string;
   JWT_SECRET?: string;
   NODE_ENV?: string;
+  ENVIRONMENT?: string;
   SKIP_LOGIN?: string;
 }
 

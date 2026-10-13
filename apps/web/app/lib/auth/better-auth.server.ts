@@ -29,7 +29,24 @@ export type AuthBindings = {
   AUTH_GOOGLE_SECRET?: string;
   RESEND_API_KEY?: string;
   NODE_ENV?: string;
+  ENVIRONMENT?: string;
 };
+
+/**
+ * Resolve the session signing secret. The published dev fallback is only
+ * acceptable in local development; a deployed Worker without a secret must
+ * fail instead of signing cookies with a constant from this repository.
+ */
+export function resolveAuthSecret(env: AuthBindings): string {
+  const secret = env.BETTER_AUTH_SECRET ?? env.AUTH_SECRET;
+  if (secret) return secret;
+  if (env.ENVIRONMENT === "development" || env.NODE_ENV === "development") {
+    return "dev-secret-change-me";
+  }
+  throw new Error(
+    "BETTER_AUTH_SECRET / AUTH_SECRET is not configured — refusing to use a fallback secret in non-development environment",
+  );
+}
 
 async function sendOtpEmail(
   env: AuthBindings,
@@ -68,8 +85,7 @@ async function sendOtpEmail(
  * Called per request to avoid stale bindings.
  */
 export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
-  const secret =
-    env.BETTER_AUTH_SECRET ?? env.AUTH_SECRET ?? "dev-secret-change-me";
+  const secret = resolveAuthSecret(env);
   const baseURL = env.BETTER_AUTH_URL;
   const googleClientId = env.AUTH_GOOGLE_ID;
   const googleClientSecret = env.AUTH_GOOGLE_SECRET;

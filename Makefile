@@ -272,6 +272,9 @@ deploy-staging: predeploy-check ## Deploy api-cf + web staging (in order)
 	@$(MAKE) deploy-web-staging SKIP_CHECKS=1
 	@echo ""
 	@echo "$(GREEN)✓ Staging deploy complete$(NC)"
+	@echo "$(YELLOW)Reminder: both staging Workers need the same BETTER_AUTH_SECRET; api-cf also needs JWT_SECRET.$(NC)"
+	@echo "$(YELLOW)  → wrangler secret put BETTER_AUTH_SECRET --env staging  (apps/api-cf and apps/web)$(NC)"
+	@echo "$(YELLOW)  → wrangler secret put JWT_SECRET --env staging          (apps/api-cf)$(NC)"
 	@echo "$(YELLOW)Reminder: set MEDIA_GATEWAY_URL on api-cf-staging if rendering.$(NC)"
 	@echo "$(YELLOW)  → wrangler secret put MEDIA_GATEWAY_URL --env staging$(NC)"
 

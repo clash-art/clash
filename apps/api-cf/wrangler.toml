@@ -281,6 +281,10 @@ database_id = "aab16eeb-a375-490b-ad1e-cd092cd9f4bb"
 binding = "R2_BUCKET"
 bucket_name = "clash-r2"
 
+# Required secrets (`wrangler secret put <NAME> --env staging`):
+#   BETTER_AUTH_SECRET — same value as clash-web-staging; without it every
+#                        session-authenticated /api request is unauthenticated.
+#   JWT_SECRET         — signs Resource delivery capabilities for cloud sync.
 [env.staging.vars]
 ENVIRONMENT = "staging"
 BETTER_AUTH_BASE_PATH = "/api/better-auth"
