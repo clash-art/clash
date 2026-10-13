@@ -22,7 +22,10 @@ import { lazy } from "react";
 import { useTranslation } from "react-i18next";
 import { useDropzone, type Accept } from "react-dropzone";
 import { importProjectAssetFile } from "@clash/web-ui/lib/hooks/useAsset";
-import { runtimeApiUrl } from "@clash/web-ui/lib/runtimeConfig";
+import {
+  hasLocalHostRuntime,
+  runtimeApiUrl,
+} from "@clash/web-ui/lib/runtimeConfig";
 import { Button } from "../ui/button";
 import { ControlContextProvider } from "../ui/control-context";
 import { IconButton } from "../ui/icon-button";
@@ -482,6 +485,7 @@ function ChatInputInner(
   const getLocalAudioConfig = useCallback(() => loadLocalAudioConfig(), []);
 
   useEffect(() => {
+    if (!hasLocalHostRuntime()) return;
     void getLocalAudioConfig().catch(() => undefined);
   }, [getLocalAudioConfig]);
 

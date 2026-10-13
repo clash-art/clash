@@ -62,6 +62,16 @@ export function isDesktopRuntime(): boolean {
   );
 }
 
+/**
+ * Whether this surface is backed by a local Project Host. Hosted Web has no
+ * Host behind its origin, so Host-only contracts (Asset projections, plugin
+ * catalogs, Host commands, local audio) answer 404 there and must not be
+ * probed or polled.
+ */
+export function hasLocalHostRuntime(): boolean {
+  return getRuntimeConfig().mode !== "hosted";
+}
+
 export function getRuntimeCapabilities(): RuntimeCapabilities {
   return getRuntimeConfig().capabilities;
 }

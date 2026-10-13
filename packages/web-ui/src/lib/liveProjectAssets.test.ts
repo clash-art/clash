@@ -1,7 +1,12 @@
 import { LoroDoc, LoroMap } from "loro-crdt";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { subscribeProjectAssetProjection } from "./liveProjectAssets";
+import { setRuntimeConfigOverride } from "./runtimeConfig";
+
+// These suites model a local Host; hosted Web skips its Host-only reads (#94).
+beforeEach(() => setRuntimeConfigOverride({ mode: "local" }));
+afterEach(() => setRuntimeConfigOverride(undefined));
 
 describe("subscribeProjectAssetProjection", () => {
   it("does not serialize Project Asset membership on unrelated document commits", () => {

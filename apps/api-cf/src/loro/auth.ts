@@ -7,7 +7,9 @@ import {
   type ProjectAuthorizationStore,
   type SessionIdentity,
 } from "@clash/shared-runtime/project-authorization";
+import { createAuth, type AuthBindings } from "../auth";
 import type { Env } from "../config";
+import { serverLog } from "../logger";
 
 export type {
   AuthResult,
@@ -56,14 +58,15 @@ export function createD1ProjectAuthorizationStore(
   };
 }
 
-async function getBetterAuthSession(
+/** Explicit external session authority (`BETTER_AUTH_ORIGIN`), for a
+ * deployment whose Better Auth handler is not this Worker. */
+async function fetchBetterAuthSession(
   request: Request,
   env: Env,
-): Promise<SessionIdentity | null> {
+  origin: string,
+): Promise<unknown> {
   const cookie = request.headers.get("cookie"),
     authorization = request.headers.get("authorization");
-  if (!cookie && !authorization) return null;
-  const origin = env.BETTER_AUTH_ORIGIN ?? new URL(request.url).origin;
   const basePath = env.BETTER_AUTH_BASE_PATH ?? "/api/better-auth";
   const response = await fetch(new URL(`${basePath}/get-session`, origin), {
     headers: {
@@ -72,11 +75,60 @@ async function getBetterAuthSession(
       accept: "application/json",
     },
   });
-  if (!response.ok) return null;
-  const value = (await response.json()) as Partial<SessionIdentity> | null;
-  if (!value?.user?.id || !value.session?.id || !value.session.expiresAt)
+  return response.ok ? response.json() : null;
+}
+
+/** Never derive the session authority from the request URL. Behind the Web
+ * gateway's service binding that is the public Web origin, and a Worker cannot
+ * `fetch` another Worker of its own account there: the loopback is answered
+ * with an error, every browser cookie reads as "no session", and /sync returns
+ * 401. This Worker shares the D1 and BETTER_AUTH_SECRET that issued the
+ * cookie, so it validates in-process exactly as `/api/*` does. */
+async function getBetterAuthSession(
+  request: Request,
+  env: Env,
+): Promise<SessionIdentity | null> {
+  if (!request.headers.has("cookie") && !request.headers.has("authorization"))
     return null;
-  return value as SessionIdentity;
+  let value: unknown;
+  try {
+    value = env.BETTER_AUTH_ORIGIN
+      ? await fetchBetterAuthSession(request, env, env.BETTER_AUTH_ORIGIN)
+      : await createAuth(env as unknown as AuthBindings).api.getSession({
+          headers: new Headers(request.headers),
+        });
+  } catch (error) {
+    // A missing secret or unreachable authority is a deployment fault, not a
+    // signed-out browser; it must be visible in the Worker logs.
+    serverLog
+      .child("project-auth")
+      .error("project_auth.session_lookup_failed", { error });
+    return null;
+  }
+  const { session, user } = (value ?? {}) as {
+    session?: { id?: unknown; expiresAt?: unknown };
+    user?: { id?: unknown; name?: unknown; image?: unknown };
+  };
+  const expiresAt =
+    session?.expiresAt instanceof Date
+      ? session.expiresAt.getTime()
+      : session?.expiresAt;
+  if (
+    typeof user?.id !== "string" ||
+    !user.id ||
+    typeof session?.id !== "string" ||
+    !session.id ||
+    (typeof expiresAt !== "string" && typeof expiresAt !== "number")
+  )
+    return null;
+  return {
+    session: { id: session.id, expiresAt },
+    user: {
+      id: user.id,
+      ...(typeof user.name === "string" ? { name: user.name } : {}),
+      ...(typeof user.image === "string" ? { image: user.image } : {}),
+    },
+  };
 }
 
 function authenticator(env: Env) {

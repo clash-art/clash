@@ -132,7 +132,11 @@ bucket_name = "clash-r2"
 # KLING_API_URL (optional, defaults to Beijing endpoint)
 # R2_PUBLIC_URL
 # JWT_SECRET
-# BETTER_AUTH_ORIGIN
+# BETTER_AUTH_SECRET (same value as the Web Worker; /api and /sync both
+#   validate the browser session cookie in-process with it)
+# BETTER_AUTH_ORIGIN (optional; leave unset. Only for a deployment whose
+#   Better Auth handler lives outside this Worker. It must not name another
+#   Worker of the same account: that fetch is refused and /sync returns 401.)
 # WORKER_PUBLIC_URL
 
 # Watch only authored source trees. Workspace dependencies resolve to source
@@ -297,7 +301,8 @@ bucket_name = "clash-staging-assets"
 
 # Required secrets (`wrangler secret put <NAME> --env staging`):
 #   BETTER_AUTH_SECRET — same value as clash-web-staging; without it every
-#                        session-authenticated /api request is unauthenticated.
+#                        session-authenticated /api request and browser /sync
+#                        or /agents WebSocket is unauthenticated.
 #   JWT_SECRET         — signs Resource delivery capabilities for cloud sync.
 [env.staging.vars]
 ENVIRONMENT = "staging"

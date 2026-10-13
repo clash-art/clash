@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as jose from "jose";
 
-// We test the module's exported function by importing it.
-// Global fetch is mocked to prevent real BetterAuth calls.
+// Better Auth itself is exercised by the integration suite; here its
+// in-process session lookup is a stub and global fetch must stay unused.
+const getSession = vi.hoisted(() => vi.fn());
+const createAuth = vi.hoisted(() => vi.fn());
+vi.mock("../auth", () => ({ createAuth }));
+
 import { authenticateRequest, revalidateProjectConnection } from "./auth";
 import type { Env } from "../config";
 
@@ -54,7 +58,8 @@ describe("auth", () => {
   let fetchSpy: any;
 
   beforeEach(() => {
-    // Mock global fetch so BetterAuth session check returns null
+    getSession.mockReset().mockResolvedValue(null);
+    createAuth.mockReset().mockReturnValue({ api: { getSession } });
     fetchSpy = vi
       .spyOn(globalThis, "fetch" as any)
       .mockResolvedValue(new Response(JSON.stringify(null), { status: 200 }));
@@ -243,15 +248,13 @@ describe("auth", () => {
 
   describe("BetterAuth session", () => {
     it("valid session cookie → returns userId", async () => {
-      fetchSpy.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
-            user: { id: "ba-user-42" },
-          }),
-          { status: 200 },
-        ),
-      );
+      getSession.mockResolvedValueOnce({
+        session: {
+          id: "session-fixture",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        user: { id: "ba-user-42" },
+      });
 
       const request = new Request("http://localhost/sync/proj-1", {
         headers: { cookie: "session=abc123" },
@@ -261,17 +264,15 @@ describe("auth", () => {
         DB: {
           prepare: vi.fn().mockReturnValue({
             bind: vi.fn().mockReturnValue({
-              all: vi
-                .fn()
-                .mockResolvedValue({
-                  results: [
-                    {
-                      owner_id: "ba-user-42",
-                      user_id: "ba-user-42",
-                      expires_at: Date.now() + 60_000,
-                    },
-                  ],
-                }),
+              all: vi.fn().mockResolvedValue({
+                results: [
+                  {
+                    owner_id: "ba-user-42",
+                    user_id: "ba-user-42",
+                    expires_at: Date.now() + 60_000,
+                  },
+                ],
+              }),
             }),
           }),
         } as any,
@@ -283,15 +284,13 @@ describe("auth", () => {
     });
 
     it("session with mismatched project owner → throws Forbidden", async () => {
-      fetchSpy.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
-            user: { id: "ba-user-42" },
-          }),
-          { status: 200 },
-        ),
-      );
+      getSession.mockResolvedValueOnce({
+        session: {
+          id: "session-fixture",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        user: { id: "ba-user-42" },
+      });
 
       // DB says owner is "other-user"
       const env = makeEnv({
@@ -315,9 +314,7 @@ describe("auth", () => {
       );
     });
 
-    it("BetterAuth returns non-ok response → falls through to JWT", async () => {
-      fetchSpy.mockResolvedValueOnce(new Response("", { status: 401 }));
-
+    it("no BetterAuth session → falls through to JWT", async () => {
       const token = await signJWT(
         { sub: "user-1", projectId: "proj-1" },
         JWT_SECRET,
@@ -335,19 +332,88 @@ describe("auth", () => {
     });
   });
 
+  // ─── Session authority selection (#93) ───
+
+  describe("session authority", () => {
+    const session = () => ({
+      session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
+      user: { id: "ba-user-42" },
+    });
+    const ownerEnv = (overrides: Partial<Env> = {}) =>
+      makeEnv({
+        DB: {
+          prepare: vi.fn().mockReturnValue({
+            bind: vi.fn().mockReturnValue({
+              all: vi.fn().mockResolvedValue({
+                results: [
+                  {
+                    owner_id: "ba-user-42",
+                    user_id: "ba-user-42",
+                    expires_at: Date.now() + 60_000,
+                  },
+                ],
+              }),
+            }),
+          }),
+        } as any,
+        ...overrides,
+      });
+    // What the Web gateway's service binding delivers: the public Web origin.
+    const gatewayRequest = () =>
+      new Request("https://web.example/sync/proj-1", {
+        headers: { cookie: "session=abc123" },
+      });
+
+    it("validates the cookie in-process and never fetches the request origin", async () => {
+      getSession.mockResolvedValueOnce(session());
+      const env = ownerEnv();
+
+      const result = await authenticateRequest(gatewayRequest(), env, "proj-1");
+
+      expect(result.userId).toBe("ba-user-42");
+      expect(createAuth).toHaveBeenCalledWith(env);
+      expect(
+        new Headers(getSession.mock.calls[0][0].headers).get("cookie"),
+      ).toBe("session=abc123");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it("uses an explicitly configured BETTER_AUTH_ORIGIN instead", async () => {
+      fetchSpy.mockResolvedValueOnce(Response.json(session()));
+      const env = ownerEnv({ BETTER_AUTH_ORIGIN: "https://auth.example" });
+
+      const result = await authenticateRequest(gatewayRequest(), env, "proj-1");
+
+      expect(result.userId).toBe("ba-user-42");
+      expect(String(fetchSpy.mock.calls[0][0])).toBe(
+        "https://auth.example/api/better-auth/get-session",
+      );
+      expect(createAuth).not.toHaveBeenCalled();
+    });
+
+    it("a misconfigured session authority is Unauthorized, not a crash", async () => {
+      createAuth.mockImplementationOnce(() => {
+        throw new Error("BETTER_AUTH_SECRET is not configured");
+      });
+
+      await expect(
+        authenticateRequest(gatewayRequest(), ownerEnv(), "proj-1"),
+      ).rejects.toThrow("Unauthorized");
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── assertProjectOwner (in development mode, it's skipped) ───
 
   describe("assertProjectOwner", () => {
     it("skips ownership check in development", async () => {
-      fetchSpy.mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            session: { id: "session-fixture", expiresAt: Date.now() + 60_000 },
-            user: { id: "ba-user-42" },
-          }),
-          { status: 200 },
-        ),
-      );
+      getSession.mockResolvedValueOnce({
+        session: {
+          id: "session-fixture",
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+        user: { id: "ba-user-42" },
+      });
 
       const env = makeEnv({
         ENVIRONMENT: "development",
