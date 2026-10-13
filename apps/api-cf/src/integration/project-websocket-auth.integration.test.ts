@@ -217,38 +217,71 @@ function waitForClose(socket: WebSocket) {
   });
 }
 
-it.each(["deleted", "expired"])(
-  "rechecks a %s D1 session despite cached Better Auth responses",
-  async (state) => {
-    const f = await fixture(),
-      sessionId = crypto.randomUUID(),
-      expiresAt = Date.now() + 60_000;
-    await env.DB.prepare(
-      "INSERT INTO sessions (id, token, user_id, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+/** A cookie as the browser holds it: Better Auth's own HMAC-signed session
+ * token, issued for the secret this Worker is configured with. */
+async function sessionCookie(userId: string, expiresAt: number) {
+  const sessionId = crypto.randomUUID(),
+    token = crypto.randomUUID();
+  await env.DB.prepare(
+    "INSERT INTO users (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  )
+    .bind(
+      userId,
+      "Session fixture",
+      `${userId}@clash.test`,
+      1,
+      Date.now(),
+      Date.now(),
     )
-      .bind(
-        sessionId,
-        crypto.randomUUID(),
-        f.userId,
-        expiresAt,
-        Date.now(),
-        Date.now(),
-      )
-      .run();
-    vi.mocked(globalThis.fetch).mockImplementation(async (input) => {
-      if (!String(input).includes("/get-session"))
-        throw new Error("Unexpected external request");
-      return Response.json({
-        session: {
-          id: sessionId,
-          expiresAt: new Date(expiresAt).toISOString(),
-        },
-        user: { id: f.userId },
-      });
-    });
-    const connected = await connect(f, {
-      cookie: "better-auth.session_token=session-fixture",
-    });
+    .run();
+  await env.DB.prepare(
+    "INSERT INTO sessions (id, token, user_id, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  )
+    .bind(sessionId, token, userId, expiresAt, Date.now(), Date.now())
+    .run();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(
+      (env as unknown as { BETTER_AUTH_SECRET: string }).BETTER_AUTH_SECRET,
+    ),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = btoa(
+    String.fromCharCode(
+      ...new Uint8Array(
+        await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(token)),
+      ),
+    ),
+  );
+  return {
+    sessionId,
+    cookie: `better-auth.session_token=${encodeURIComponent(`${token}.${signature}`)}`,
+  };
+}
+
+// The Web gateway forwards the browser's /sync upgrade over a service binding,
+// so the request URL is the public Web origin. The cookie must be validated
+// without any outbound request: the beforeEach fetch spy throws on one.
+it("admits a browser session cookie on /sync without an outbound session lookup", async () => {
+  const f = await fixture();
+  const { cookie } = await sessionCookie(f.userId, Date.now() + 60_000);
+  // connect() asserts the 101 upgrade and a write-permission join.
+  await connect(f, { cookie });
+  expect(globalThis.fetch).not.toHaveBeenCalled();
+  expect((await f.request({ cookie: `${cookie}tampered` })).status).toBe(401);
+});
+
+it.each(["deleted", "expired"])(
+  "rechecks a %s D1 session on an admitted socket",
+  async (state) => {
+    const f = await fixture();
+    const { sessionId, cookie } = await sessionCookie(
+      f.userId,
+      Date.now() + 60_000,
+    );
+    const connected = await connect(f, { cookie });
     if (state === "deleted") {
       await env.DB.prepare("DELETE FROM sessions WHERE id = ?")
         .bind(sessionId)
@@ -261,10 +294,7 @@ it.each(["deleted", "expired"])(
     const closed = waitForClose(connected.socket);
     connected.socket.send("ping");
     expect((await closed).code).toBe(1008);
-    expect(
-      (await f.request({ cookie: "better-auth.session_token=session-fixture" }))
-        .status,
-    ).toBe(401);
+    expect((await f.request({ cookie })).status).toBe(401);
   },
 );
 

@@ -37,6 +37,7 @@ database_id = "00000000-0000-0000-0000-000000000000"
 [vars]
 ENVIRONMENT = "test"
 JWT_SECRET = "integration-project-auth-only"
+BETTER_AUTH_SECRET = "integration-better-auth-only"
 RENDER_SERVER_URL = "https://render.test"
 WORKER_PUBLIC_URL = "https://clash.test"
 
