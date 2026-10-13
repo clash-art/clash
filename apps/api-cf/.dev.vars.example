@@ -16,3 +16,7 @@ JWT_SECRET=
 BETTER_AUTH_URL=
 AUTH_GOOGLE_ID=
 AUTH_GOOGLE_SECRET=
+
+# Local development marker. Never upload this as a deployed var or secret:
+# it enables fallback secrets and dev-only trusted origins.
+ENVIRONMENT=development

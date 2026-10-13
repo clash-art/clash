@@ -17,3 +17,7 @@ ACTION_SECRET_KEY=
 # Dev auth bypass — set to "true" to skip login and act as DEV_USER_ID
 # SKIP_LOGIN=true
 NODE_ENV=development
+
+# Local development marker. Never upload this as a deployed var or secret:
+# it enables fallback secrets and dev-only trusted origins.
+ENVIRONMENT=development

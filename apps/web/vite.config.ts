@@ -8,6 +8,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { recordRendererInputs } from "../../scripts/project-renderer-freshness.ts";
+import { ensureDevVars } from "../../scripts/ensure-dev-vars.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../..");
@@ -150,11 +151,19 @@ export const DEV_WATCH_IGNORES = ["**/dist/**", "**/release/**", "**/.tmp/**"];
 // clash-hosted/apps/web-hosted) bundles workers/app.ts itself.
 export default defineConfig(async ({ command, isPreview }) => {
   const nodeProxy = nodeBackendProxy(process.env.CLASH_NODE_API_URL);
-  const cloudflarePlugins =
+  const runsWorkers =
     command === "serve" &&
     !isPreview &&
     !nodeProxy &&
-    process.env.CLASH_WEB_E2E_NO_CLOUDFLARE !== "1"
+    process.env.CLASH_WEB_E2E_NO_CLOUDFLARE !== "1";
+  // The committed wrangler configs describe deployed Workers; the development
+  // marker lives only in each Worker's git-ignored .dev.vars.
+  if (runsWorkers) {
+    ensureDevVars(__dirname);
+    ensureDevVars(resolve(repoRoot, "apps/api-cf"));
+  }
+  const cloudflarePlugins =
+    runsWorkers
       ? [
           (await import("@cloudflare/vite-plugin")).cloudflare({
             remoteBindings: false,

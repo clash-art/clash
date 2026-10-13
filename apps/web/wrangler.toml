@@ -69,10 +69,12 @@ binding = "API_CF"
 service = "clash-api"
 
 [vars]
-# Local development only: permits the Better Auth dev fallback secret. Vars
-# are not inherited by [env.*], so deployed environments must set
-# BETTER_AUTH_SECRET (`wrangler secret put`) or the gateway refuses to sign.
-ENVIRONMENT = "development"
+# This file is what `wrangler deploy` ships, so it must never say
+# "development": that value permits the published Better Auth dev fallback
+# secret. Local dev overrides it from the git-ignored `.dev.vars`, which
+# `vite dev` creates on first run (scripts/ensure-dev-vars.ts). A deployed
+# Worker needs BETTER_AUTH_SECRET (`wrangler secret put`) or it refuses to sign.
+ENVIRONMENT = "production"
 BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # Dev fallback when the service binding can't resolve api-cf (e.g. running
 # wrangler dev for one Worker but not the other).

@@ -222,6 +222,8 @@ wrangler-whoami: ## Confirm wrangler is logged in (warns, doesn't fail)
 		echo "$(YELLOW)Not logged in. Run: pnpm exec wrangler login$(NC)"
 
 predeploy-check: ## Run lint before any deploy (skip with SKIP_CHECKS=1)
+	@# Never skippable: a deploy config marked "development" ships fallback secrets.
+	@node --test scripts/deploy-config-environment.test.ts >/dev/null || { echo "$(RED)A wrangler deploy config sets ENVIRONMENT=development. Run: node --test scripts/deploy-config-environment.test.ts$(NC)"; exit 1; }
 	@if [ "$(SKIP_CHECKS)" = "1" ]; then \
 		echo "$(YELLOW)⚠ SKIP_CHECKS=1 — skipping pre-deploy lint$(NC)"; \
 	else \

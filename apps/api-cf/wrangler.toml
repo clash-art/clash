@@ -156,7 +156,11 @@ watch_dir = [
 enable_containers = false
 
 [vars]
-ENVIRONMENT = "development"
+# This file is what `wrangler deploy` ships, so it must never say
+# "development": that value enables fallback secrets, dev trusted origins and
+# the dev identity fallback. Local dev overrides it from the git-ignored
+# `.dev.vars`, created on first run by scripts/ensure-dev-vars.ts.
+ENVIRONMENT = "production"
 BETTER_AUTH_BASE_PATH = "/api/better-auth"
 RENDER_SERVER_URL = "http://localhost:8080"
 # Base origin for signed asset URLs handed to render-server so its ffmpeg

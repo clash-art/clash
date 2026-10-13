@@ -15,17 +15,20 @@ describe("resolveAuthSecret", () => {
     expect(resolveAuthSecret(bindings({ AUTH_SECRET: "legacy" }))).toBe("legacy");
   });
 
-  it.each([{}, { ENVIRONMENT: "staging" }, { NODE_ENV: "production" }])(
+  it.each([
+    {},
+    { ENVIRONMENT: "staging" },
+    { ENVIRONMENT: "production" },
+    // NODE_ENV is not an authority: it is commonly copied into uploaded vars.
+    { NODE_ENV: "development" },
+  ])(
     "refuses to sign without a secret outside development (%o)",
     (env) => {
       expect(() => resolveAuthSecret(bindings(env))).toThrow(/not configured/);
     },
   );
 
-  it.each([{ ENVIRONMENT: "development" }, { NODE_ENV: "development" }])(
-    "keeps zero-config local development working (%o)",
-    (env) => {
-      expect(resolveAuthSecret(bindings(env))).not.toBe("");
-    },
-  );
+  it("permits the fallback only for the explicit local development marker", () => {
+    expect(resolveAuthSecret(bindings({ ENVIRONMENT: "development" }))).not.toBe("");
+  });
 });

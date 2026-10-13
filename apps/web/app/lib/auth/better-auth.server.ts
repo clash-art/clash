@@ -40,9 +40,7 @@ export type AuthBindings = {
 export function resolveAuthSecret(env: AuthBindings): string {
   const secret = env.BETTER_AUTH_SECRET ?? env.AUTH_SECRET;
   if (secret) return secret;
-  if (env.ENVIRONMENT === "development" || env.NODE_ENV === "development") {
-    return "dev-secret-change-me";
-  }
+  if (env.ENVIRONMENT === "development") return "dev-secret-change-me";
   throw new Error(
     "BETTER_AUTH_SECRET / AUTH_SECRET is not configured — refusing to use a fallback secret in non-development environment",
   );
