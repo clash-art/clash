@@ -257,6 +257,48 @@ describe("local Resource CAS", () => {
     ).toEqual([]);
   });
 
+  it("releases a staging receipt and its file only once the bytes are sealed", async () => {
+    const { store, clashRoot } = await fixture();
+    const bytes = new TextEncoder().encode("downloaded replica bytes");
+    const staged = await store.stage({ bytes });
+
+    await store.releaseStaged(staged.resourceId);
+    expect((await store.resolveStaged(staged.resourceId))?.path).toBe(
+      staged.path,
+    );
+
+    const sealed = await store.seal({
+      receipt: staged.receipt,
+      kind: "image",
+      contentType: "image/png",
+    });
+    await store.releaseStaged(staged.resourceId);
+    await store.releaseStaged(staged.resourceId);
+
+    expect(await store.resolveStaged(staged.resourceId)).toBeUndefined();
+    expect(await regularFilesUnder(join(clashRoot, "assets", "blobs"))).toEqual(
+      [sealed.path],
+    );
+    expect(
+      new Uint8Array(
+        await readFile((await store.resolve(sealed.resource.id))!.path),
+      ),
+    ).toEqual(bytes);
+
+    // A later flow that stages the same bytes gets a fresh, sealable receipt.
+    const restaged = await store.stage({ bytes });
+    expect(restaged.receipt).toEqual(staged.receipt);
+    expect(
+      (
+        await store.seal({
+          receipt: restaged.receipt,
+          kind: "image",
+          contentType: "image/png",
+        })
+      ).path,
+    ).toBe(sealed.path);
+  });
+
   it("keeps staged bytes outside authoritative Resource resolution until they are sealed", async () => {
     const { store } = await fixture();
     const bytes = new TextEncoder().encode("unverified upload bytes");

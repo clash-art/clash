@@ -228,6 +228,7 @@ export function createLocalProjectCloudSync(
           resource,
           verifiedResourceId: inspected.source.resource.id,
         });
+        await resources.releaseStaged(staged.resourceId);
       },
     };
     const coordinator = createProjectCloudSyncCoordinator({
@@ -419,6 +420,8 @@ export function createLocalProjectCloudSync(
                 resource,
                 verifiedResourceId: inspected.source.resource.id,
               });
+              // The download is sealed; its staging copy is no longer needed.
+              await resources.releaseStaged(staged.resourceId);
             }
           }
           for (const body of refs.documents) {

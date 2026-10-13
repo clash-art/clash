@@ -155,6 +155,11 @@ export interface LocalResourceStore {
   resolveStaged(
     resourceId: string,
   ): Promise<LocalResourceStagingProjection | undefined>;
+  /**
+   * Drops a staging receipt and its staging file once the same digest is a
+   * verified sealed Resource. A receipt whose bytes are not sealed is kept.
+   */
+  releaseStaged(resourceId: string): Promise<void>;
   seal(
     input: (
       | { receipt: LocalResourceStagingReceipt; resourceId?: never }
@@ -995,6 +1000,38 @@ export function createLocalResourceStore(options: {
       if (!normalized) return undefined;
       const row = await stagingRowFor(normalized);
       return row ? stagingProjection(row) : undefined;
+    },
+
+    async releaseStaged(resourceId) {
+      const staged = await stagingRowFor(resourceId.trim());
+      if (!staged) return;
+      const sealed = await rowFor(staged.resourceId);
+      if (
+        !sealed ||
+        sealed.digest !== staged.digest ||
+        sealed.byteLength !== staged.byteLength ||
+        sealed.storageKey === staged.storageKey
+      ) {
+        return;
+      }
+      // The staging file may be the last intact copy; only a sealed projection
+      // that still verifies may replace it.
+      await projection(sealed);
+      // Receipt first: a crash in between leaves an unreferenced file that the
+      // next stage of the same digest re-adopts, never a receipt without bytes.
+      await withDatabase((database) => {
+        database
+          .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
+          .run(staged.resourceId);
+      });
+      const path = await assetPathForWrite(
+        options.dataDir,
+        staged.storageKey,
+        options.clashRoot,
+      );
+      await unlink(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
     },
 
     seal(input) {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { Hono } from "hono";
 import { LoroDoc } from "loro-crdt";
@@ -407,13 +407,7 @@ it("shutdown interrupts a hanging content request without waiting for the networ
   expect((await f.admission())?.status).not.toBe("ready");
 });
 
-it("a new Host retrieves cloud bytes after the source Host has stopped", async () => {
-  const source = await fixture();
-  const media = await source.addResource("offline-source");
-  await source.service.schedule("project");
-  expect((await source.admission())?.status).toBe("ready");
-  await source.service.close();
-  await source.rooms.close();
+async function receiverFor(source: Awaited<ReturnType<typeof fixture>>) {
   const dataDir = await mkdtemp(join(tmpdir(), "cloud-receiver-"));
   cleanup.push(() => rm(dataDir, { recursive: true, force: true }));
   const id = await getLocalReplicaId(dataDir),
@@ -446,12 +440,78 @@ it("a new Host retrieves cloud bytes after the source Host has stopped", async (
     },
   });
   cleanup.push(() => receiver.close());
+  return {
+    dataDir,
+    resources,
+    receiver,
+    admission: () => metadata.getProjectCloudAdmission("project", id),
+  };
+}
+
+async function filesUnder(root: string): Promise<string[]> {
+  const entries = await readdir(root, {
+    recursive: true,
+    withFileTypes: true,
+  }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  return entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name));
+}
+
+it("a new Host retrieves cloud bytes after the source Host has stopped", async () => {
+  const source = await fixture();
+  const media = await source.addResource("offline-source");
+  await source.service.schedule("project");
+  expect((await source.admission())?.status).toBe("ready");
+  await source.service.close();
+  await source.rooms.close();
+  const { resources, receiver, admission } = await receiverFor(source);
   await receiver.schedule("project");
-  expect((await metadata.getProjectCloudAdmission("project", id))?.status).toBe(
-    "ready",
-  );
+  expect((await admission())?.status).toBe("ready");
   const local = await resources.resolve(media.source.resource.id);
   expect(new Uint8Array(await readFile(local!.path))).toEqual(media.bytes);
+  // #95: the downloaded bytes are kept once, not as staging + sealed copies.
+  expect(await filesUnder(dirname(local!.path))).toEqual([local!.path]);
+  expect(
+    await resources.resolveStaged(
+      `sha256:${media.source.resource.digest.value}`,
+    ),
+  ).toBeUndefined();
+});
+
+it("a download that fails verification leaves no bytes behind and a retry stores one copy", async () => {
+  const source = await fixture();
+  const media = await source.addResource("corrupt-in-cloud");
+  await source.service.schedule("project");
+  expect((await source.admission())?.status).toBe("ready");
+  await source.service.close();
+  await source.rooms.close();
+  const intact = new Map(source.objects);
+  for (const [key, bytes] of intact) {
+    const corrupt = bytes.slice();
+    corrupt[0] ^= 0xff;
+    source.objects.set(key, corrupt);
+  }
+  const { resources, receiver, admission } = await receiverFor(source);
+  await receiver.schedule("project");
+  expect((await admission())?.status).toBe("failed");
+  expect(
+    await resources.resolve(media.source.resource.id).catch(() => undefined),
+  ).toBeUndefined();
+
+  for (const [key, bytes] of intact) source.objects.set(key, bytes);
+  await receiver.schedule("project");
+  expect((await admission())?.status).toBe("ready");
+  const local = await resources.resolve(media.source.resource.id);
+  expect(new Uint8Array(await readFile(local!.path))).toEqual(media.bytes);
+  // Only the sealed copy exists anywhere in the blob store: the failed
+  // attempt left no partial file and the retry left no staging file.
+  expect(await filesUnder(dirname(dirname(local!.path)))).toEqual([
+    local!.path,
+  ]);
 });
 
 it("a Resource committed during upload invalidates completion until its own bytes arrive", async () => {
