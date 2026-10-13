@@ -2,6 +2,7 @@ import type { ResolvedAsset } from "@clash/shared-types";
 import type { LoroDoc } from "loro-crdt";
 
 import { listProjectAssets } from "./hooks/useAsset";
+import { hasLocalHostRuntime } from "./runtimeConfig";
 
 type ProjectAssetProjectionSubscription = {
   doc: LoroDoc;
@@ -29,6 +30,9 @@ export function subscribeProjectAssetProjection({
   onError,
   retryDelayMs = 500,
 }: ProjectAssetProjectionSubscription): () => void {
+  // The projection is a Host read. Hosted Web has no Host, so the read would
+  // 404 and the retry below would never settle.
+  if (!hasLocalHostRuntime()) return () => {};
   let fingerprint = projectAssetMembershipFingerprint(doc);
   let latestRequest = 0;
   let disposed = false;

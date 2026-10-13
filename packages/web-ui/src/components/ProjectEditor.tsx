@@ -246,6 +246,7 @@ import {
 import { subscribeProjectAssetProjection } from "@clash/web-ui/lib/liveProjectAssets";
 import {
   getRuntimeConfig,
+  hasLocalHostRuntime,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
@@ -1654,6 +1655,7 @@ export default function ProjectEditor({
   }, [loroSync.doc, project.id]);
 
   useEffect(() => {
+    if (!hasLocalHostRuntime()) return;
     let cancelled = false;
     void listPersonalGlobalAssets()
       .then((assets) => {
@@ -2852,6 +2854,7 @@ export default function ProjectEditor({
     GeneratorDefinition[]
   >([]);
   useEffect(() => {
+    if (!hasLocalHostRuntime()) return;
     let active = true;
     const controller = new AbortController();
     void globalThis

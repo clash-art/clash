@@ -1,11 +1,17 @@
 // @vitest-environment jsdom
 import { act, renderHook, waitFor, cleanup } from "@testing-library/react";
 import { LoroDoc } from "loro-crdt";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectTimelineReadToken, type ProjectTimeline, type ProjectTimelineMutationResult } from "@clash/shared-types";
+import { setRuntimeConfigOverride } from "../lib/runtimeConfig";
 import { useHostTimelines } from "./useHostTimelines";
 
-afterEach(cleanup);
+// These suites model a local Host; hosted Web skips its Host-only reads (#94).
+beforeEach(() => setRuntimeConfigOverride({ mode: "local" }));
+afterEach(() => {
+  setRuntimeConfigOverride(undefined);
+  cleanup();
+});
 const timeline: ProjectTimeline = { id: "native-cut", name: "Native cut", owner: { kind: "project" }, revisionId: "host-original", state: { tracks: [] } };
 
 describe("Host Timeline state", () => {
