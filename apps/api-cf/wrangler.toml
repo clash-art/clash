@@ -170,7 +170,7 @@ MEDIA_GATEWAY_URL = "http://localhost:3000"
 # ║  [env.staging] — lane-style staging.                             ║
 # ║  Staging worker carries the new code but DELEGATES all stateful  ║
 # ║  bindings (DOs, Container, Workflow, D1, R2) to the existing     ║
-# ║  PRODUCTION worker `clash-api`. No new DO classes are            ║
+# ║  PRODUCTION worker `master-clash-api-hosted`. No new DO classes are            ║
 # ║  declared here, so there's no migration, no container build,     ║
 # ║  no schema churn — wrangler just uploads the new worker code.    ║
 # ║                                                                   ║
@@ -248,27 +248,28 @@ binding = "AI"
 [[env.staging.durable_objects.bindings]]
 name = "ROOM"
 class_name = "ProjectRoom"
-script_name = "clash-api"
+script_name = "master-clash-api-hosted"
 
 [[env.staging.durable_objects.bindings]]
 name = "SUPERVISOR"
 class_name = "SupervisorAgent"
-script_name = "clash-api"
+script_name = "master-clash-api-hosted"
 
 [[env.staging.durable_objects.bindings]]
 name = "RENDER_CONTAINER"
 class_name = "RenderContainer"
-script_name = "clash-api"
+script_name = "master-clash-api-hosted"
 
 # RUNTIME_ROOM is omitted because staging delegates only the long-lived
 # classes already exported by the production worker.
 
 # Workflow lives in the prod worker too — bind by reference, no new instance.
 [[env.staging.workflows]]
-name = "generation-workflow"
+# The hosted worker registers its workflow as "generation-workflow-hosted".
+name = "generation-workflow-hosted"
 binding = "GENERATION_WORKFLOW"
 class_name = "GenerationWorkflow"
-script_name = "clash-api"
+script_name = "master-clash-api-hosted"
 
 # Same prod data. (D1 + R2 are account-scoped; bind by id/name.)
 [[env.staging.d1_databases]]
