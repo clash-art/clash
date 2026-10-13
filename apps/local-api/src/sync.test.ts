@@ -48,6 +48,8 @@ import {
   markGeneratorAuthority,
   markActionAssetBindingAuthority,
   MODEL_CARDS,
+  CANVAS_NODE_LAYOUTS,
+  projectCanvasNodeLayout,
   purgeProjectAsset,
   readActionAssetBinding,
   readProjectAsset,
@@ -3334,7 +3336,18 @@ describe("LocalLoroRoom", () => {
     try {
       mirrored.import(appendUpdate.mock.calls[0][1]);
       expect(mirrored.getMap("nodes").toJSON()).toEqual(admitted.getMap("nodes").toJSON());
-      expect(mirrored.getMap("nodes").get("node-remote")).toMatchObject({
+      // Display geometry lives in canvasNodeLayouts, not the node record; the
+      // Host-assigned layout must reach the remote with the node it places.
+      expect(mirrored.getMap(CANVAS_NODE_LAYOUTS).toJSON()).toEqual(
+        admitted.getMap(CANVAS_NODE_LAYOUTS).toJSON(),
+      );
+      expect(
+        projectCanvasNodeLayout(
+          mirrored,
+          "node-remote",
+          mirrored.getMap("nodes").get("node-remote") as Record<string, unknown>,
+        ),
+      ).toMatchObject({
         data: { label: "Mirror" },
         position: { x: expect.any(Number), y: expect.any(Number) },
       });
