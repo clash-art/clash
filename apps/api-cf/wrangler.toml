@@ -22,8 +22,13 @@ type = "CompiledWasm"
 globs = ["**/*.wasm"]
 fallthrough = true
 
-# Workers Logs + Traces. Every request is sampled (head_sampling_rate = 1)
-# in staging and production. OTLP export targets are dashboard-managed
+# Workers Logs + Traces. Logs keep head_sampling_rate = 1 everywhere:
+# head sampling is decided before the request runs, so a lower rate would
+# drop the same share of error-request logs. Traces are sampled at 0.1 in
+# production only (cost/volume); staging keeps traces at 1. Tradeoff: ~90%
+# of production requests have no trace, but every request still has logs.
+# Override by editing head_sampling_rate (0..1) per env/signal below and
+# redeploying with wrangler. OTLP export targets are dashboard-managed
 # destinations (Workers & Pages → Observability → Destinations); list
 # their names under `destinations = [...]` once created. Workers metrics
 # are not exportable over OTLP. See apps/docs/guide/observability.md.
@@ -37,7 +42,7 @@ invocation_logs = true
 
 [observability.traces]
 enabled = true
-head_sampling_rate = 1
+head_sampling_rate = 0.1
 
 # Durable Objects
 [[durable_objects.bindings]]
@@ -177,6 +182,7 @@ MEDIA_GATEWAY_URL = "http://localhost:3000"
 [env.staging]
 name = "clash-api-staging"
 
+# Sampling override: see the top-level [observability] comment.
 [env.staging.observability]
 enabled = true
 
