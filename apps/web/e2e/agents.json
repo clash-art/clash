@@ -5,7 +5,9 @@
     "canvas-perf.ts",
     "gui-smoke.ts",
     "local-runtime-smoke.ts",
+    "hosted-cloud-smoke.ts",
     "host-artifacts.ts"
   ],
+  "hosted_boundary": "hosted-cloud-smoke signs a dedicated test account in to a deployed hosted origin named by CLASH_HOSTED_WEB_URL, visits the authenticated routes, records same-origin document and /api responses from CDP Network events with screenshots, waits on network idle, and fails on any 5xx or when a signed-in route lands on /login. report.json is written for failed runs too. It is not part of test:e2e, starts no local server, and creates no data because staging can share production storage.",
   "artifact_boundary": "host-artifacts loads prebuilt local-api artifacts by dynamic URL and checks required callable exports. Test-side consumer ports avoid stale generated declarations; full execution still requires a prepared Host build."
 }

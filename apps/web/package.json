@@ -16,6 +16,7 @@
     "test:e2e:host-mutation": "node e2e/local-runtime-smoke.ts",
     "test:e2e:gui": "node e2e/gui-smoke.ts",
     "test:e2e:acp-setup": "node e2e/acp-setup-smoke.ts",
+    "test:e2e:hosted-cloud": "node e2e/hosted-cloud-smoke.ts",
     "test:e2e:asset-persistence": "tsx e2e/asset-persistence-smoke.ts",
     "deploy": "wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply clash-d1 --local --persist-to ../../.wrangler/state",
