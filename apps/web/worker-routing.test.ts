@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 // workerd-only protocol module; Node has no `tracing`, so the gateway
@@ -87,4 +90,73 @@ describe("cloud browser login gateway", () => {
     );
     expect(response.status).toBe(401);
   });
+});
+
+/**
+ * `run_worker_first` decides which paths reach this Worker at all: anything
+ * outside the list is answered by the SPA assets layer (HTML shell for GET,
+ * 405 for writes) before `fetch` runs, so a prefix the gateway proxies but
+ * the list omits is silently dead on the deployed origin.
+ */
+function runWorkerFirstBySection(toml: string): Record<string, string[]> {
+  const lists: Record<string, string[]> = {};
+  let section = "";
+  let open: string[] | undefined;
+  for (const raw of toml.split("\n")) {
+    const line = raw.replace(/#.*$/, "").trim();
+    if (open) {
+      for (const match of line.matchAll(/"([^"]+)"/g)) open.push(match[1]);
+      if (line.includes("]")) open = undefined;
+      continue;
+    }
+    const header = /^\[+([^\]]+)\]+$/.exec(line);
+    if (header) section = header[1];
+    else if (/^run_worker_first\s*=\s*\[/.test(line)) {
+      open = lists[section] = [];
+      for (const match of line.matchAll(/"([^"]+)"/g)) open.push(match[1]);
+      if (line.includes("]")) open = undefined;
+    }
+  }
+  return lists;
+}
+
+describe("apps/web/wrangler.toml run_worker_first", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const lists = runWorkerFirstBySection(
+    readFileSync(resolve(here, "wrangler.toml"), "utf8"),
+  );
+  const source = readFileSync(resolve(here, "workers/app.ts"), "utf8");
+  const handler = source.slice(source.indexOf("export default {"));
+  const prefixes = [
+    ...handler.matchAll(/path\s*\.\s*startsWith\(\s*["'](\/[^"']*)["']/g),
+  ].map((match) => match[1]);
+  const exact = [...handler.matchAll(/path\s*===\s*["'](\/[^"']*)["']/g)].map(
+    (match) => match[1],
+  );
+
+  it("finds the gateway's routed paths in the Worker source", () => {
+    expect(prefixes).toContain("/loro/");
+    expect(exact).toContain("/health");
+  });
+
+  it.each(["assets", "env.staging.assets"])(
+    "[%s] sends every path the Worker handles to the Worker first",
+    (section) => {
+      const list = lists[section];
+      expect(list, `missing run_worker_first in [${section}]`).toBeDefined();
+      const globs = list
+        .filter((entry) => entry.endsWith("*"))
+        .map((entry) => entry.slice(0, -1));
+      const missing = [
+        ...prefixes.filter(
+          (prefix) => !globs.some((glob) => prefix.startsWith(glob)),
+        ),
+        ...exact.filter(
+          (path) =>
+            !list.includes(path) && !globs.some((glob) => path.startsWith(glob)),
+        ),
+      ];
+      expect(missing).toEqual([]);
+    },
+  );
 });

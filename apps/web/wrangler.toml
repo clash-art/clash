@@ -52,6 +52,7 @@ run_worker_first = [
   "/sync/*",
   "/agents/*",
   "/assets/*",
+  "/loro/*",
   "/health",
 ]
 
@@ -120,6 +121,7 @@ run_worker_first = [
   "/sync/*",
   "/agents/*",
   "/assets/*",
+  "/loro/*",
   "/health",
 ]
 
