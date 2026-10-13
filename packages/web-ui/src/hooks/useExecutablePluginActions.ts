@@ -3,7 +3,7 @@ import {
   CustomActionDefinitionSchema,
   type CustomActionDefinition,
 } from "@clash/shared-types";
-import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { hasLocalHostRuntime, runtimeApiUrl } from "../lib/runtimeConfig";
 
 export async function loadExecutablePluginActions(
   fetchImpl: typeof globalThis.fetch = globalThis.fetch,
@@ -44,6 +44,8 @@ export function useExecutablePluginActions(
   const snapshotRef = useRef("[]");
 
   useEffect(() => {
+    // Hosted Web has no plugin Host: polling its catalog only repeats a 404.
+    if (!hasLocalHostRuntime()) return;
     let active = true;
     let controller: AbortController | null = null;
     const refresh = async () => {

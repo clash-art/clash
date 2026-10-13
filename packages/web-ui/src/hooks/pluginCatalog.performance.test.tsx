@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setRuntimeConfigOverride } from "../lib/runtimeConfig";
 import { useExecutablePluginActions } from "./useExecutablePluginActions";
 import { useExecutablePluginViews } from "./useExecutablePluginViews";
 
+// These suites model a local Host; hosted Web skips its Host-only reads (#94).
+beforeEach(() => setRuntimeConfigOverride({ mode: "local" }));
 afterEach(() => {
+  setRuntimeConfigOverride(undefined);
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();

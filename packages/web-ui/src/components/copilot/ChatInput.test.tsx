@@ -9,11 +9,12 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, useLocation } from "react-router";
 import type { AgentAnnotationDraft } from "@clash/shared-types";
 
 import { sourceMatches } from "../../test-support/source-match";
+import { setRuntimeConfigOverride } from "../../lib/runtimeConfig";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 
 const milkdownFocus = vi.hoisted(() => vi.fn());
@@ -81,7 +82,10 @@ vi.mock("../MilkdownEditor", () => ({
 }));
 
 describe("ChatInput", () => {
+  // Voice readiness is a local Host read; hosted Web skips the prefetch (#94).
+  beforeEach(() => setRuntimeConfigOverride({ mode: "local" }));
   afterEach(() => {
+    setRuntimeConfigOverride(undefined);
     cleanup();
     milkdownFocus.mockClear();
     milkdownInsert.mockClear();
