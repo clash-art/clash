@@ -33,6 +33,8 @@ jobs:
         run: pnpm --dir packages/web-ui exec vitest run src/components/CloudConnection.test.tsx src/components/ChatbotCopilot.desktop.test.tsx src/components/visualLanguage.test.tsx src/features/assets/AssetWorkspace.test.tsx src/features/assets/relations.test.ts
       - name: Verify current Timeline render and cloud admission contracts
         run: pnpm --dir apps/local-api exec vitest run src/local-timeline-references.test.ts src/timeline-durable-workflow.test.ts src/local-timeline-generator-product.test.ts src/project-cloud-admission-route.test.ts
+      - name: Verify Project Loro sync, canvas layout admission, and cloud replication
+        run: pnpm --dir apps/local-api exec vitest run src/sync.test.ts src/canvas-layout.test.ts src/project-cloud-sync.test.ts src/project-cloud-admission.test.ts src/project-metadata-replication.test.ts src/sync-config.test.ts src/cloud-accounts.test.ts src/loro
       - name: Build benchmark host runtime
         run: pnpm build:package clash
       - name: Verify bundled plugin payloads are declared build dependencies
