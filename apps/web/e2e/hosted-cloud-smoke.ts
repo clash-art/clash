@@ -1,8 +1,9 @@
 // Opt-in browser smoke against a deployed hosted Web origin (e.g. staging).
 // It signs in with a dedicated test account, visits the authenticated
 // surfaces, records every same-origin document and /api response from CDP
-// Network events, and fails when the gateway answers 5xx or bounces a
-// signed-in route back to /login. It creates no data.
+// Network events, and fails when the gateway answers 5xx, bounces a
+// signed-in route back to /login, or renders the route error surface. It
+// creates no data.
 //
 //   CLASH_HOSTED_WEB_URL=https://… CLASH_HOSTED_E2E_EMAIL=… \
 //   CLASH_HOSTED_E2E_PASSWORD=… node e2e/hosted-cloud-smoke.ts
@@ -25,6 +26,7 @@ import {
   waitFor,
   waitForTarget,
 } from "../../../scripts/e2e/harness.ts";
+import { findRouteError, projectRoutePath } from "./hosted-cloud-routes.ts";
 
 type RecordedResponse = {
   page: string;
@@ -122,7 +124,7 @@ async function main() {
   await mkdir(captureDir, { recursive: true });
   const cdpPort = await findFreePort(49880);
   const screenshots: string[] = [];
-  const pages: Record<string, { expected: string; landed: string }> = {};
+  const pages: Record<string, { expected: string; landed: string; routeError: string | null }> = {};
   let responses: RecordedResponse[] = [];
   let signInMs: number | null = null;
   let chrome: ChildProcess | null = null;
@@ -162,7 +164,9 @@ async function main() {
       await network.idle(label);
       await shoot(label);
       const landed = await evaluate<string>(client, "location.pathname");
-      pages[label] = { expected: pathname, landed };
+      // An unmatched or crashed route still answers 200 with the SPA shell.
+      const routeError = findRouteError(await evaluate<string>(client, "document.body.innerText"));
+      pages[label] = { expected: pathname, landed, routeError };
       return landed;
     };
 
@@ -191,9 +195,14 @@ async function main() {
     await visit("04-projects", "/projects");
     await visit("05-assets", "/assets");
     await visit("06-settings", "/settings");
-    if (projectId) await visit("07-project", `/project/${encodeURIComponent(projectId)}`);
+    if (projectId) await visit("07-project", projectRoutePath(projectId));
 
     for (const [label, page] of Object.entries(pages)) {
+      assert(
+        page.routeError === null,
+        `Route ${page.expected} rendered the route error surface: ${page.routeError}`,
+        pages,
+      );
       if (label === "01-login") continue;
       assert(
         page.landed === page.expected,
