@@ -15,6 +15,13 @@ import {
 
 export const projectRoutes = new Hono<{ Bindings: Env }>();
 
+// Identity is derived by the /api/* middleware in app.ts. Its absence means
+// the caller is unauthenticated, not that the server failed.
+projectRoutes.use("*", async (c, next) => {
+  if (!c.req.header("x-user-id")) return c.json({ error: "unauthorized" }, 401);
+  await next();
+});
+
 /**
  * Extract user ID from x-user-id header (set by auth-gateway).
  */
