@@ -676,7 +676,12 @@ export default function TopNavigation({
             aria-label="Clash home"
             className="flex items-center gap-2 font-display text-sm font-medium"
           >
-            <BrandAsset name="mark" alt="" className="size-7" />
+            <BrandAsset name="mark" alt="" className="size-7 dark:hidden" />
+            <BrandAsset
+              name="markDark"
+              alt=""
+              className="hidden size-7 dark:block"
+            />
             Clash
           </Link>
           <DesktopSidebarCollapseButton

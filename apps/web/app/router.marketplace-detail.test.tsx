@@ -61,7 +61,9 @@ describe("Marketplace plugin detail route", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders a directly addressable plugin page with the shared breadcrumb and declarations", async () => {
+  // The first navigation imports the lazy route module graph cold, which
+  // alone takes most of the default 5s budget when the suite runs in parallel.
+  it("renders a directly addressable plugin page with the shared breadcrumb and declarations", { timeout: 30_000 }, async () => {
     await router.navigate("/marketplace/skill/clash.openai.workflow");
     const { container } = render(<RouterProvider router={router} />);
 

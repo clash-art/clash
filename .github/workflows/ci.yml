@@ -27,6 +27,8 @@ jobs:
       - run: make lint
       - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts
       - run: pnpm --filter @clash/desktop test
+      - name: Verify Web unit tests
+        run: pnpm --dir apps/web exec vitest run
       - name: Verify Storyboard references and chat drafts
         run: pnpm --dir packages/web-ui exec vitest run src/components/PluginStoryboardSurface.test.tsx src/components/copilot/useCopilotComposerDraft.test.tsx src/components/copilot/projectAssetReferences.test.ts src/components/copilot/ChatInput.test.tsx
       - name: Verify workspace controls and native Asset provenance

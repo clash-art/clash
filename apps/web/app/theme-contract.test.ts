@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { sourceContains } from "@clash/gui/test-support/source-match";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const readRepoFile = (path: string) =>
@@ -157,7 +158,8 @@ describe("application theme contract", () => {
     );
   });
 
-  it("keeps shared popup primitives on the centralized overlay contract", () => {
+  it("keeps shared popup primitives on centralized theme-aware surfaces", () => {
+    const css = readRepoFile("apps/web/app/globals.css");
     const primitivePaths = [
       "packages/gui/src/components/ui/dropdown-menu.tsx",
       "packages/gui/src/components/ui/popover.tsx",
@@ -166,14 +168,22 @@ describe("application theme contract", () => {
       "packages/gui/src/components/ui/select.tsx",
     ];
 
+    // Popups paint from one of the shared surfaces: the select surface class,
+    // the popover token, or the overlay token. None may carry its own chrome.
     for (const path of primitivePaths) {
       const source = readRepoFile(path);
-      expect(source, path).toContain("border-overlay-border");
-      expect(source, path).toContain("bg-overlay-surface");
-      expect(source, path).toContain("shadow-overlay");
+      expect(source, path).toMatch(
+        /\b(?:app-select-content|bg-popover|bg-overlay-surface)\b/,
+      );
       expect(source, path).not.toContain("rgba(35,31,25");
       expect(source, path).not.toContain("dark:shadow-");
     }
+
+    const selectSurface = css.match(/\.app-select-content\s*\{([\s\S]*?)\}/)?.[1];
+    expect(selectSurface).toMatch(/background:\s*var\(--/);
+    expect(selectSurface).toMatch(/border:[^;]*var\(--/);
+    expect(selectSurface).toMatch(/box-shadow:\s*var\(--/);
+    expect(css).toMatch(/\.dark\s*\{[\s\S]*?--popover:/);
   });
 
   it("keeps editor surfaces from falling back to literal light chrome", () => {
@@ -421,53 +431,70 @@ describe("application theme contract", () => {
     }
   });
 
-  it("uses neutral gray dark surfaces and a muted gray launcher mark", () => {
+  it("uses neutral gray dark surfaces and a theme-aware launcher mark", () => {
     const css = readRepoFile("apps/web/app/globals.css");
     const topNavigation = readRepoFile(
       "packages/web-ui/src/components/TopNavigation.tsx",
     );
+    const dark = css.match(/\n\.dark\s*\{([\s\S]*?)\n\}/)?.[1] ?? "";
 
-    expect(css).toContain("--clash-warm-page: #151515");
-    expect(css).toContain("--clash-warm-surface: #1c1c1c");
-    expect(css).toContain("--clash-warm-muted: #262626");
-    expect(css).toContain("--clash-warm-hover: #303030");
-    expect(css).toContain("--clash-warm-border: #3a3a3a");
+    for (const name of ["page", "surface", "muted", "hover", "border"]) {
+      const value = dark.match(
+        new RegExp(`--clash-warm-${name}:\\s*#([0-9a-f]{6})\\b`, "i"),
+      )?.[1];
+      expect(value, `--clash-warm-${name}`).toBeDefined();
+      const [red, green, blue] = value!.match(/../g)!;
+      expect(green, `--clash-warm-${name}`).toBe(red);
+      expect(blue, `--clash-warm-${name}`).toBe(red);
+    }
+    // The launcher avatar inherits its ink from the theme instead of a
+    // dark-only literal override.
     expect(css).toMatch(
-      /\.dark \.clash-copilot-launcher \.clash-agent-motion\s*\{[\s\S]*?color: #a3a3a3/,
+      /\.clash-agent-motion\s*\{[^}]*color:\s*var\(--clash-agent-avatar-ink\)/,
     );
-    expect(css).toMatch(
-      /\.dark \.clash-copilot-launcher \.clash-agent-motion__pen\s*\{[\s\S]*?fill: #ff6b50/,
-    );
-    expect(topNavigation).toContain("/brand/logo-mark-dark.svg");
+    expect(css).not.toMatch(/\.dark \.clash-copilot-launcher/);
+    expect(sourceContains(topNavigation, 'name="markDark"')).toBe(true);
     expect(topNavigation).not.toContain("dark:grayscale");
   });
 
-  it("keeps project preview placeholders dark when media thumbnails are unavailable", () => {
+  it("keeps project preview placeholders on theme-aware surfaces when media thumbnails are unavailable", () => {
     const css = readRepoFile("apps/web/app/globals.css");
     const card = readRepoFile("packages/web-ui/src/components/ProjectCard.tsx");
 
-    expect(css).toMatch(
-      /\.dark \.clash-project-card-frame\s*\{[\s\S]*?background:/,
-    );
-    expect(css).toMatch(
-      /\.dark \.clash-project-card-preview-cell\s*\{[\s\S]*?background:/,
-    );
-    expect(css).toMatch(
-      /\.dark \.clash-project-card-asset-fallback\s*\{[\s\S]*?background:/,
-    );
-    expect(card).toContain("clash-project-card-empty-mark");
-    expect(card).toContain("clash-project-card-asset-fallback-mark");
+    for (const className of [
+      "clash-project-card-frame",
+      "clash-project-card-empty",
+    ]) {
+      expect(card, className).toContain(className);
+      const rule = css.match(
+        new RegExp(`\\.${className}\\s*\\{([\\s\\S]*?)\\}`),
+      )?.[1];
+      expect(rule, className).toMatch(/background:\s*var\(--/);
+    }
     expect(css).not.toContain(".clash-project-card-asset-fallback::after");
     expect(css).not.toContain(".clash-project-card-empty::after");
   });
 
   it("keeps authentication copy and the brand mark readable in dark mode", () => {
     const login = readRepoFile("apps/web/app/routes/login.tsx");
+    const brandAsset = readRepoFile(
+      "packages/web-ui/src/components/BrandAsset.tsx",
+    );
 
-    expect(login).toContain("dark:text-neutral-50");
-    expect(login).toContain("dark:text-neutral-100");
-    expect(login).toContain("dark:placeholder:text-neutral-500");
-    expect(login).toContain("/brand/logo-mark-dark.svg");
+    // Copy follows semantic tokens, so no literal palette text colour may
+    // pin it to one appearance.
+    expect(login).toContain("text-foreground");
+    expect(login).not.toMatch(
+      /\btext-(?:slate|neutral|gray|zinc|stone|black|white)\b/,
+    );
+    expect(sourceContains(login, 'name="mark"')).toBe(true);
+    expect(sourceContains(login, 'name="markDark"')).toBe(true);
+    expect(brandAsset).toContain("/brand/logo-mark-dark.svg");
+    expect(
+      existsSync(
+        resolve(repoRoot, "apps/web/public/brand/logo-mark-dark.svg"),
+      ),
+    ).toBe(true);
   });
 
   it("exposes Appearance as a real persisted settings section", () => {
@@ -478,8 +505,8 @@ describe("application theme contract", () => {
       "packages/web-ui/src/components/SettingsClient.tsx",
     );
 
-    expect(surface).toContain("id: 'appearance'");
-    expect(client).toContain("| 'appearance'");
+    expect(sourceContains(surface, "id: 'appearance'")).toBe(true);
+    expect(sourceContains(client, "| 'appearance'")).toBe(true);
     expect(client).toContain("<AppearanceSection />");
   });
 

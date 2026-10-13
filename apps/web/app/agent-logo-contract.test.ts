@@ -22,12 +22,18 @@ describe("Clash agent logo contract", () => {
     const favicon = readRepoFile("apps/web/public/favicon.svg");
     const mark = readRepoFile("apps/web/public/brand/logo-mark.svg");
     const html = readRepoFile("apps/web/index.html");
-    const consumers = [
-      "apps/web/app/root.tsx",
+    const registry = readRepoFile(
+      "packages/web-ui/src/components/BrandAsset.tsx",
+    );
+    const markConsumers = [
       "apps/web/app/routes/login.tsx",
-      "packages/web-ui/src/components/ProjectsClient.tsx",
       "packages/web-ui/src/components/SettingsClient.tsx",
       "packages/web-ui/src/components/TopNavigation.tsx",
+    ];
+    const consumers = [
+      "apps/web/app/root.tsx",
+      "packages/web-ui/src/components/ProjectsClient.tsx",
+      ...markConsumers,
     ]
       .map(readRepoFile)
       .join("\n");
@@ -37,7 +43,15 @@ describe("Clash agent logo contract", () => {
     expect(mark).toContain("#FF6B50");
     expect(html).toContain('href="/favicon.svg"');
     expect(html).not.toContain('href="/favicon-c.svg"');
-    expect(consumers).toContain("/brand/logo-mark.svg");
+    // Product surfaces resolve the mark through the shared brand registry
+    // rather than spelling the asset path themselves.
+    expect(registry).toContain("/brand/logo-mark.svg");
+    for (const path of markConsumers) {
+      expect(readRepoFile(path), path).toMatch(
+        /\b(?:BrandAsset|CLASH_BRAND_ASSETS)\b/,
+      );
+    }
+    expect(registry).not.toContain("/brand/logo-c");
     expect(consumers).not.toContain("/brand/logo-c");
   });
 });
