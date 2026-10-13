@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as authModule from "./auth";
+import { loadConfig } from "../lib/config";
 
 type LoginResult = { accessToken: string; authorizationUrl: string };
 type AuthExports = {
@@ -159,4 +163,39 @@ test("CLI binds loopback before opening the browser, validates state, then excha
   );
   assert.equal(saved.length, 1);
   assert.equal(saved[0].apiKey, result.accessToken);
+});
+
+test("CLI login saves the credential on a fresh CLASH_HOME", async () => {
+  const originalClashHome = process.env.CLASH_HOME;
+  process.env.CLASH_HOME = join(
+    await mkdtemp(join(tmpdir(), "clash-cli-auth-")),
+    "fresh",
+  );
+  const accessToken = "clsh_0123456789abcdef0123456789abcdef01234567";
+  try {
+    const result = await authModule.runCliLogin({
+      serverUrl: "https://api.clash.art",
+      browserOrigin: "https://clash.art",
+      timeoutMs: 5_000,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({ access_token: accessToken, token_type: "Bearer" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        )) as typeof fetch,
+      log: () => {},
+      openBrowser: async (target) => {
+        const authorization = new URL(target);
+        const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+        callback.searchParams.set("code", "one_time_code");
+        callback.searchParams.set("state", authorization.searchParams.get("state")!);
+        assert.equal((await fetch(callback)).status, 200);
+      },
+    });
+
+    assert.equal(result.accessToken, accessToken);
+    assert.deepEqual(loadConfig(), { apiKey: accessToken });
+  } finally {
+    if (originalClashHome === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = originalClashHome;
+  }
 });

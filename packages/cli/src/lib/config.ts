@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { parseDocument } from "yaml";
+import { isMap, parseDocument } from "yaml";
 import { isLocalHostDiscoveryRecord } from "@clash/shared-runtime";
 import { resolveClashProfile } from "@clash/shared-runtime/local-paths";
 import { resolveClashRoot } from "./clash-home";
@@ -106,8 +106,9 @@ function updateYamlServerUrl(path: string, serverUrl: string | undefined): void 
   }
   document.set("version", 1);
   if (serverUrl) {
-    document.setIn(["server", "url"], serverUrl);
-  } else {
+    if (isMap(document.get("server", true))) document.setIn(["server", "url"], serverUrl);
+    else document.set("server", { url: serverUrl });
+  } else if (document.hasIn(["server", "url"])) {
     document.deleteIn(["server", "url"]);
   }
   atomicWrite(path, document.toString({ lineWidth: 0 }));
