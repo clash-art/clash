@@ -195,6 +195,50 @@ invocation_logs = true
 enabled = true
 head_sampling_rate = 1
 
+# Staging owns its own Durable Object namespaces, so its migration history
+# is its own and must match what is already applied to `clash-api-staging`
+# (append-only; see https://developers.cloudflare.com/durable-objects/reference/durable-objects-migrations/).
+# The live script is at v8 from the April deploy, where v7 created
+# ByoBridgeRoom and v8 created RuntimeRoom. The top-level list was later
+# renumbered (v7 = RuntimeRoom) when ByoBridgeRoom was removed, so staging
+# keeps its real history here and v9 deletes the class the code no longer
+# exports. Append new staging migrations after v9.
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["SupervisorAgent"]
+
+[[env.staging.migrations]]
+tag = "v2"
+new_sqlite_classes = ["GenerationAgent"]
+
+[[env.staging.migrations]]
+tag = "v3"
+renamed_classes = [{from = "SupervisorAgent", to = "ProjectRoom"}]
+
+[[env.staging.migrations]]
+tag = "v4"
+new_sqlite_classes = ["SupervisorAgent"]
+
+[[env.staging.migrations]]
+tag = "v5"
+deleted_classes = ["GenerationAgent"]
+
+[[env.staging.migrations]]
+tag = "v6"
+new_sqlite_classes = ["RenderContainer"]
+
+[[env.staging.migrations]]
+tag = "v7"
+new_sqlite_classes = ["ByoBridgeRoom"]
+
+[[env.staging.migrations]]
+tag = "v8"
+new_sqlite_classes = ["RuntimeRoom"]
+
+[[env.staging.migrations]]
+tag = "v9"
+deleted_classes = ["ByoBridgeRoom"]
+
 [env.staging.ai]
 binding = "AI"
 
