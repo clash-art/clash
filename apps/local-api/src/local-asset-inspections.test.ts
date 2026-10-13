@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createLocalFfprobeAssetInspector,
@@ -51,12 +51,99 @@ function waveBytes(options: {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(
     temporaryDirectories
       .splice(0)
       .map((directory) => rm(directory, { recursive: true, force: true })),
   );
 });
+
+const GLB_JSON_CHUNK_TYPE = 0x4e4f534a;
+const GLB_BIN_CHUNK_TYPE = 0x004e4942;
+
+function glbHeaderAndJson(options: {
+  json: string;
+  byteLength: number;
+  containerVersion?: number;
+}): Buffer {
+  const json = Buffer.from(options.json, "utf8");
+  const head = Buffer.alloc(20);
+  head.write("glTF", 0, "ascii");
+  head.writeUInt32LE(options.containerVersion ?? 2, 4);
+  // A length past uint32 cannot be declared; the header keeps its low 32 bits.
+  head.writeUInt32LE(options.byteLength >>> 0, 8);
+  head.writeUInt32LE(json.byteLength, 12);
+  head.writeUInt32LE(GLB_JSON_CHUNK_TYPE, 16);
+  return Buffer.concat([head, json]);
+}
+
+function modelResource(byteLength: number, contentType: string) {
+  return {
+    id: `sha256:${"f".repeat(64)}`,
+    kind: "model" as const,
+    digest: { algorithm: "sha256" as const, value: "f".repeat(64) },
+    byteLength,
+    contentType,
+  };
+}
+
+function modelInspector() {
+  return createLocalFfprobeAssetInspector({
+    ffprobePath: "/test/bin/ffprobe",
+    run: async () => {
+      throw new Error("glTF validation must not use ffprobe");
+    },
+  });
+}
+
+/**
+ * Writes `head` at offset 0 of a file extended to `byteLength` without
+ * writing the rest. Returns undefined when the filesystem materialized the
+ * hole, so callers can skip instead of filling the disk.
+ */
+async function sparseFile(
+  name: string,
+  head: Buffer,
+  byteLength: number,
+): Promise<string | undefined> {
+  const directory = await mkdtemp(join(tmpdir(), "clash-sparse-model-"));
+  temporaryDirectories.push(directory);
+  const sourcePath = join(directory, name);
+  const file = await open(sourcePath, "w");
+  try {
+    await file.write(head, 0, head.byteLength, 0);
+    await file.truncate(byteLength);
+    const stats = await file.stat();
+    if (stats.size !== byteLength || stats.blocks * 512 >= byteLength) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  } finally {
+    await file.close();
+  }
+  return sourcePath;
+}
+
+/** Counts what an inspection pulls through any FileHandle. */
+async function spyOnFileHandleReads(anyPath: string) {
+  const probe = await open(anyPath, "r");
+  const prototype = Object.getPrototypeOf(probe) as typeof probe;
+  await probe.close();
+  const read = vi.spyOn(prototype, "read");
+  const readWholeFile = vi.spyOn(prototype, "readFile");
+  return {
+    readWholeFile,
+    // The inspector uses the positional read(buffer, offset, length, position)
+    // overload, which the overloaded spy type does not select.
+    requestedBytes: () =>
+      (read.mock.calls as unknown as [unknown, number, number][]).reduce(
+        (total, [, , length]) => total + length,
+        0,
+      ),
+  };
+}
 
 describe("Local Asset inspection", () => {
   it("normalizes ffprobe output into Resource inspection facts", async () => {
@@ -844,6 +931,157 @@ describe("Local Asset inspection", () => {
       }),
     ).resolves.toEqual({ contentType: "model/gltf-binary" });
     expect(ffprobeCalls).toBe(0);
+  });
+
+  it("inspects a multi-gigabyte GLB from its header and JSON chunk without reading the BIN chunk", async (ctx) => {
+    const byteLength = 3 * 1024 ** 3 + 4;
+    const binByteLength = 3 * 1024 ** 3 - 64;
+    const json = JSON.stringify({
+      asset: { version: "2.0" },
+      extensionsUsed: ["KHR_draco_mesh_compression"],
+      extensionsRequired: ["KHR_draco_mesh_compression"],
+      buffers: [{ byteLength: binByteLength }],
+      bufferViews: [
+        { buffer: 0, byteLength: binByteLength - 1024 },
+        { buffer: 0, byteOffset: binByteLength - 1024, byteLength: 1024 },
+      ],
+      accessors: [
+        {
+          bufferView: 0,
+          componentType: 5126,
+          count: 250_000_000,
+          type: "VEC3",
+        },
+      ],
+      images: [{ bufferView: 1, mimeType: "image/png" }],
+      textures: [{ source: 0 }],
+      materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      nodes: [{ mesh: 0 }],
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+    });
+    const paddedJson = json.padEnd(byteLength - 20 - 8 - binByteLength, " ");
+    const binChunkHeader = Buffer.alloc(8);
+    binChunkHeader.writeUInt32LE(binByteLength, 0);
+    binChunkHeader.writeUInt32LE(GLB_BIN_CHUNK_TYPE, 4);
+    const head = Buffer.concat([
+      glbHeaderAndJson({ json: paddedJson, byteLength }),
+      binChunkHeader,
+    ]);
+    const sourcePath = await sparseFile("large.glb", head, byteLength);
+    if (!sourcePath) {
+      ctx.skip("filesystem does not support sparse files");
+      return;
+    }
+    const reads = await spyOnFileHandleReads(sourcePath);
+
+    await expect(
+      modelInspector()({
+        sourcePath,
+        resource: modelResource(byteLength, "model/gltf-binary"),
+      }),
+    ).resolves.toEqual({ contentType: "model/gltf-binary" });
+    expect(reads.readWholeFile).not.toHaveBeenCalled();
+    expect(reads.requestedBytes()).toBeGreaterThan(0);
+    expect(reads.requestedBytes()).toBeLessThanOrEqual(head.byteLength + 4);
+  });
+
+  it("rejects a file past the 4 GiB GLB container limit without reading it", async (ctx) => {
+    const byteLength = 4 * 1024 ** 3 + 4096;
+    const head = glbHeaderAndJson({
+      json: '{"asset":{"version":"2.0"}}',
+      byteLength,
+    });
+    const sourcePath = await sparseFile("oversized.glb", head, byteLength);
+    if (!sourcePath) {
+      ctx.skip("filesystem does not support sparse files");
+      return;
+    }
+    const reads = await spyOnFileHandleReads(sourcePath);
+
+    await expect(
+      modelInspector()({
+        sourcePath,
+        resource: modelResource(byteLength, "model/gltf-binary"),
+      }),
+    ).rejects.toThrow(/cannot exceed 4294967295 bytes \(4 GiB\)/);
+    expect(reads.readWholeFile).not.toHaveBeenCalled();
+    expect(reads.requestedBytes()).toBeLessThanOrEqual(head.byteLength);
+  });
+
+  it("rejects a GLB whose JSON chunk is not a readable glTF 2 document", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clash-model-probe-"));
+    temporaryDirectories.push(directory);
+    const inspect = async (options: {
+      json: string;
+      containerVersion?: number;
+    }) => {
+      const byteLength = 20 + Buffer.byteLength(options.json);
+      const sourcePath = join(directory, "model.glb");
+      await writeFile(sourcePath, glbHeaderAndJson({ ...options, byteLength }));
+      return modelInspector()({
+        sourcePath,
+        resource: modelResource(byteLength, "model/gltf-binary"),
+      });
+    };
+
+    await expect(
+      inspect({ json: '{"asset":{"version":"2.0"}' }),
+    ).rejects.toThrow("GLB Asset JSON chunk is invalid.");
+    await expect(
+      inspect({ json: '{"asset":{"version":"1.0"}}' }),
+    ).rejects.toThrow("GLB Asset JSON chunk is invalid.");
+    await expect(
+      inspect({ json: '{"asset":{"version":"2.0"}}', containerVersion: 1 }),
+    ).rejects.toThrow(
+      "GLB Asset bytes do not contain a valid glTF 2 JSON chunk.",
+    );
+    // Well-formed JSON with the right version that the glTF reader cannot build.
+    await expect(
+      inspect({ json: '{"asset":{"version":"2.0"},"nodes":"none"}' }),
+    ).rejects.toThrow("GLB Asset JSON chunk is invalid.");
+  });
+
+  it("validates glTF JSON without resolving its external buffers or images", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clash-model-probe-"));
+    temporaryDirectories.push(directory);
+    const inspect = async (document: unknown) => {
+      const bytes = Buffer.from(JSON.stringify(document), "utf8");
+      const sourcePath = join(directory, "model.gltf");
+      await writeFile(sourcePath, bytes);
+      return modelInspector()({
+        sourcePath,
+        resource: modelResource(bytes.byteLength, "model/gltf+json"),
+      });
+    };
+
+    await expect(
+      inspect({
+        asset: { version: "2.0" },
+        buffers: [{ uri: "missing.bin", byteLength: 36 }],
+        bufferViews: [{ buffer: 0, byteLength: 36 }],
+        accessors: [
+          { bufferView: 0, componentType: 5126, count: 3, type: "VEC3" },
+        ],
+        images: [{ uri: "missing.png" }],
+        textures: [{ source: 0 }],
+        materials: [
+          { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+        ],
+        meshes: [
+          { primitives: [{ attributes: { POSITION: 0 }, material: 0 }] },
+        ],
+        nodes: [{ mesh: 0 }],
+        scenes: [{ nodes: [0] }],
+      }),
+    ).resolves.toEqual({ contentType: "model/gltf+json" });
+    await expect(inspect({ asset: { version: "1.0" } })).rejects.toThrow(
+      "glTF JSON Asset bytes are invalid.",
+    );
+    await expect(
+      inspect({ asset: { version: "2.0" }, nodes: "none" }),
+    ).rejects.toThrow("glTF JSON Asset bytes are invalid.");
   });
 
   it("reads SVG display geometry from verified bytes without invoking ffprobe", async () => {

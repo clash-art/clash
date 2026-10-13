@@ -412,6 +412,9 @@ importers:
       '@ffprobe-installer/ffprobe':
         specifier: 2.1.2
         version: 2.1.2
+      '@gltf-transform/core':
+        specifier: ^4.4.2
+        version: 4.4.2
       '@hono/node-server':
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.27)
