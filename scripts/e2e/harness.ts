@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
@@ -340,10 +340,36 @@ export async function capture(cdp: CdpClient, targetPath: string) {
 
 export async function stopProcess(child: ChildProcess | null | undefined) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exit = new Promise<true>((resolve) => child.once("exit", () => resolve(true)));
   child.kill("SIGTERM");
-  const exited = await Promise.race([
-    new Promise((resolve) => child.once("exit", () => resolve(true))),
-    sleep(3000).then(() => false),
-  ]);
-  if (!exited) child.kill("SIGKILL");
+  if (await Promise.race([exit, sleep(3000).then(() => false)])) return;
+  child.kill("SIGKILL");
+  // Callers remove the process's working directories next, so wait for the kill to land.
+  await Promise.race([exit, sleep(3000)]);
+}
+
+// Chrome's helper processes can outlive the browser process and keep writing
+// into the profile, so a single recursive rm races them and fails ENOTEMPTY.
+// Cleanup is best effort: a leftover temp directory is reported, never thrown,
+// so it cannot replace the outcome of the run that owned it.
+export async function removeDirBestEffort(
+  dir: string,
+  {
+    attempts = 10,
+    delayMs = 200,
+    remove = (target: string) => rm(target, { recursive: true, force: true }),
+  }: { attempts?: number; delayMs?: number; remove?: (target: string) => Promise<void> } = {},
+) {
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) await sleep(delayMs);
+    try {
+      await remove(dir);
+      return true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  console.warn(`Could not remove ${dir}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+  return false;
 }
