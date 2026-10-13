@@ -47,6 +47,12 @@ export interface LocalMetadataProject {
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
+  /**
+   * Name/description are a placeholder from workspace marker registration,
+   * not something a user or a remote replica authored. Cleared by the first
+   * local metadata edit or applied remote metadata.
+   */
+  metadataProvisional?: boolean;
   assets: LocalMetadataProjectAsset[];
 }
 
@@ -242,7 +248,8 @@ function applySchema(db: SqliteDatabase): void {
       description TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      metadata_provisional INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS project_preview_asset (
@@ -508,6 +515,7 @@ function ensureLocalMetadataColumns(db: SqliteDatabase): void {
     "created_at TEXT NOT NULL DEFAULT ''",
     "updated_at TEXT NOT NULL DEFAULT ''",
     "deleted_at TEXT",
+    "metadata_provisional INTEGER NOT NULL DEFAULT 0",
   ]) {
     ensureSqliteColumn(db, "project", column);
   }
@@ -1056,7 +1064,8 @@ export function createLocalMetadataStore(dataDir: string) {
       const projects = db
         .prepare(
           `
-        SELECT id, owner_id, name, description, created_at, updated_at, deleted_at
+        SELECT id, owner_id, name, description, created_at, updated_at, deleted_at,
+               metadata_provisional
           FROM project
          ORDER BY updated_at DESC, created_at DESC
       `,
@@ -1070,6 +1079,9 @@ export function createLocalMetadataStore(dataDir: string) {
           createdAt: rowString(row, "created_at"),
           updatedAt: rowString(row, "updated_at"),
           deletedAt: rowOptionalString(row, "deleted_at") ?? null,
+          ...(rowBoolean(row, "metadata_provisional")
+            ? { metadataProvisional: true }
+            : {}),
           assets: previewsByProject.get(rowString(row, "id")) ?? [],
         }));
 
@@ -1274,8 +1286,8 @@ export function createLocalMetadataStore(dataDir: string) {
         db.prepare("DELETE FROM project").run();
 
         const insertProject = db.prepare(`
-          INSERT INTO project (id, owner_id, name, description, created_at, updated_at, deleted_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO project (id, owner_id, name, description, created_at, updated_at, deleted_at, metadata_provisional)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const insertPreview = db.prepare(`
           INSERT INTO project_preview_asset (project_id, asset_id, url, type, storage_key, created_at, position)
@@ -1290,6 +1302,7 @@ export function createLocalMetadataStore(dataDir: string) {
             project.createdAt,
             project.updatedAt,
             project.deletedAt ?? null,
+            project.metadataProvisional === true ? 1 : 0,
           );
           project.assets.forEach((asset, index) => {
             insertPreview.run(
@@ -2554,7 +2567,7 @@ export function createLocalMetadataStore(dataDir: string) {
     upsertProjectCloudAdmission,
     async applyProjectSyncMetadata(metadata: import("@clash/shared-types").ProjectMetadata) {
       await withDb(db => {
-        db.prepare("UPDATE project SET name = ?, description = ?, created_at = ?, updated_at = ?, deleted_at = ? WHERE id = ?")
+        db.prepare("UPDATE project SET name = ?, description = ?, created_at = ?, updated_at = ?, deleted_at = ?, metadata_provisional = 0 WHERE id = ?")
           .run(metadata.name, metadata.description, metadata.createdAt, metadata.updatedAt, metadata.deletedAt, metadata.projectId);
       });
     },

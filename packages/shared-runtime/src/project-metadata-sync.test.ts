@@ -155,4 +155,83 @@ describe("project metadata replicator", () => {
     });
     expect(remote.push).toHaveBeenCalledWith(local.value);
   });
+
+  it("adopts existing remote metadata instead of pushing a newer local placeholder", async () => {
+    // A second Host registers the Project under its directory name moments
+    // before joining, so the placeholder always carries the newest updatedAt.
+    const remoteMetadata = { ...metadata, name: "Cloud copy" };
+    const local = localStore({
+      ...metadata,
+      name: "wsB2",
+      description: null,
+      createdAt: "2026-09-05T00:00:00.000Z",
+      updatedAt: "2026-09-05T00:00:00.000Z",
+    });
+    const remote: ProjectMetadataSyncRemote = {
+      pull: vi.fn().mockResolvedValue(remoteMetadata),
+      push: vi.fn().mockResolvedValue(undefined),
+    };
+    const replicator = createProjectMetadataReplicator({
+      enabled: true,
+      local: { ...local, isProvisional: async () => true },
+      remote,
+    });
+
+    await expect(replicator.sync()).resolves.toEqual({
+      status: "pulled",
+      metadata: remoteMetadata,
+    });
+    expect(local.value).toEqual(remoteMetadata);
+    expect(remote.push).not.toHaveBeenCalled();
+  });
+
+  it("adopts a remote archive instead of resurrecting it from a newer local placeholder", async () => {
+    const remoteMetadata = {
+      ...metadata,
+      deletedAt: metadata.updatedAt,
+    };
+    const local = localStore({
+      ...metadata,
+      name: "wsB2",
+      description: null,
+      createdAt: "2026-09-05T00:00:00.000Z",
+      updatedAt: "2026-09-05T00:00:00.000Z",
+      deletedAt: null,
+    });
+    const remote: ProjectMetadataSyncRemote = {
+      pull: vi.fn().mockResolvedValue(remoteMetadata),
+      push: vi.fn().mockResolvedValue(undefined),
+    };
+    const replicator = createProjectMetadataReplicator({
+      enabled: true,
+      local: { ...local, isProvisional: async () => true },
+      remote,
+    });
+
+    await expect(replicator.sync()).resolves.toEqual({
+      status: "pulled",
+      metadata: remoteMetadata,
+    });
+    expect(local.value).toEqual(remoteMetadata);
+    expect(remote.push).not.toHaveBeenCalled();
+  });
+
+  it("still seeds an empty remote from a local placeholder", async () => {
+    const local = localStore(metadata);
+    const remote: ProjectMetadataSyncRemote = {
+      pull: vi.fn().mockResolvedValue(null),
+      push: vi.fn().mockResolvedValue(undefined),
+    };
+    const replicator = createProjectMetadataReplicator({
+      enabled: true,
+      local: { ...local, isProvisional: async () => true },
+      remote,
+    });
+
+    await expect(replicator.sync()).resolves.toEqual({
+      status: "pushed",
+      metadata,
+    });
+    expect(remote.push).toHaveBeenCalledWith(metadata);
+  });
 });

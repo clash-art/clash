@@ -2128,6 +2128,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         return project ? localProjectSyncMetadata(project) : null;
       },
       write: metadata => cloudSyncMetadata.applyProjectSyncMetadata(metadata),
+      isProvisional: async projectId => (await cloudSyncMetadata.load()).projects.some(project => project.id === projectId && project.metadataProvisional === true),
     },
     token: (baseUrl,userId) => cloudAccounts.resolveToken(baseUrl,{env:process.env,expectedUserId:userId}),
   });
