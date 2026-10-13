@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LoroDoc } from "loro-crdt";
 import { afterEach, expect, it, vi } from "vitest";
-import { Canvas, ensureProjectCanvas } from "@clash/shared-types";
+import { Canvas, ensureProjectCanvas, projectCanvasNodeLayout } from "@clash/shared-types";
 import { LocalLoroRoomHub } from "./sync.js";
 
 const roots: string[] = [];
@@ -48,7 +48,11 @@ function seedPendingLayout(doc: LoroDoc) {
 }
 
 function expectCompletedLayout(doc: LoroDoc) {
-  const nodes = doc.getMap("nodes");
+  // Display geometry lives in canvasNodeLayouts; read nodes through the shared projection.
+  const nodes = {
+    get: (id: string) =>
+      projectCanvasNodeLayout(doc, id, doc.getMap("nodes").get(id) as Record<string, unknown>),
+  };
   const draft = nodes.get("missing-position") as { position?: { x: number; y: number }; data: unknown };
   expect(draft.position).toEqual({ x: expect.any(Number), y: expect.any(Number) });
   expect(draft.position!.y).toBeGreaterThan(160);
