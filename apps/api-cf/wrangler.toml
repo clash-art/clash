@@ -171,15 +171,16 @@ RENDER_SERVER_URL = "http://localhost:8080"
 MEDIA_GATEWAY_URL = "http://localhost:3000"
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  [env.staging] — lane-style staging.                             ║
-# ║  Staging worker carries the new code but DELEGATES all stateful  ║
-# ║  bindings (DOs, Container, Workflow, D1, R2) to the existing     ║
-# ║  PRODUCTION worker `master-clash-api-hosted`. No new DO classes are            ║
-# ║  declared here, so there's no migration, no container build,     ║
-# ║  no schema churn — wrangler just uploads the new worker code.    ║
-# ║                                                                   ║
-# ║  DO NOT COMMIT this section upstream — it embeds prod resource   ║
-# ║  identifiers. The OSS template should keep placeholders only.    ║
+# ║  [env.staging] — isolated staging.                               ║
+# ║  Staging owns ALL of its state: the `clash-staging` D1, the      ║
+# ║  `clash-staging-assets` R2 bucket, and its own Durable Object    ║
+# ║  namespaces, render Container and Workflow, all hosted by        ║
+# ║  `clash-api-staging` itself.                                     ║
+# ║                                                                  ║
+# ║  It must NEVER bind `master-clash-api-hosted` (no `script_name`) ║
+# ║  or the production D1 / R2. ProjectRoom re-checks ownership and  ║
+# ║  credentials against the database of the Worker hosting it, so   ║
+# ║  rooms and the database have to live on the same side.           ║
 # ╚══════════════════════════════════════════════════════════════════╝
 #
 # Deploy with:  wrangler deploy --env staging   (or `make deploy-api-staging`)
@@ -246,44 +247,53 @@ deleted_classes = ["ByoBridgeRoom"]
 [env.staging.ai]
 binding = "AI"
 
-# Cross-script DO bindings — `script_name` points at the prod worker so all
-# DO state (sessions, presence, generated assets) lives in a single place
-# regardless of which worker version handled the request.
+# Durable Objects bind to the classes `clash-api-staging` exports itself (no
+# `script_name`); their namespaces were created by the staging migrations above.
 [[env.staging.durable_objects.bindings]]
 name = "ROOM"
 class_name = "ProjectRoom"
-script_name = "master-clash-api-hosted"
 
 [[env.staging.durable_objects.bindings]]
 name = "SUPERVISOR"
 class_name = "SupervisorAgent"
-script_name = "master-clash-api-hosted"
 
 [[env.staging.durable_objects.bindings]]
 name = "RENDER_CONTAINER"
 class_name = "RenderContainer"
-script_name = "master-clash-api-hosted"
 
-# RUNTIME_ROOM is omitted because staging delegates only the long-lived
-# classes already exported by the production worker.
+[[env.staging.durable_objects.bindings]]
+name = "RUNTIME_ROOM"
+class_name = "RuntimeRoom"
 
-# Workflow lives in the prod worker too — bind by reference, no new instance.
+# Staging runs its own render Container; see the top-level [[containers]]
+# comment for the image. One instance is enough for staging.
+[[env.staging.containers]]
+class_name = "RenderContainer"
+image = "../render-server/Dockerfile.cf"
+image_build_context = "../.."
+max_instances = 1
+# The render image is ~2.2 GB, over the default instance type's 2 GB image
+# limit; standard-1 has a 4 GB disk.
+instance_type = "standard-1"
+
+# Staging's own Workflow, registered under a staging-only name.
 [[env.staging.workflows]]
-# The hosted worker registers its workflow as "generation-workflow-hosted".
-name = "generation-workflow-hosted"
+name = "generation-workflow-staging"
 binding = "GENERATION_WORKFLOW"
 class_name = "GenerationWorkflow"
-script_name = "master-clash-api-hosted"
 
-# Same prod data. (D1 + R2 are account-scoped; bind by id/name.)
+# Staging-only data. Migrations are owned by apps/web (`apps/web/drizzle`).
 [[env.staging.d1_databases]]
 binding = "DB"
-database_name = "clash-d1"
-database_id = "aab16eeb-a375-490b-ad1e-cd092cd9f4bb"
+database_name = "clash-staging"
+database_id = "a04f1df0-7356-403c-8df0-0f7d5b5a1c6c"
+migrations_dir = "../web/drizzle"
 
 [[env.staging.r2_buckets]]
 binding = "R2_BUCKET"
-bucket_name = "clash-r2"
+bucket_name = "clash-staging-assets"
+
+# The top-level [triggers] cron is inherited by this environment.
 
 # Required secrets (`wrangler secret put <NAME> --env staging`):
 #   BETTER_AUTH_SECRET — same value as clash-web-staging; without it every
