@@ -8,7 +8,7 @@
 //   CLASH_HOSTED_WEB_URL=https://… CLASH_HOSTED_E2E_EMAIL=… \
 //   CLASH_HOSTED_E2E_PASSWORD=… node e2e/hosted-cloud-smoke.ts
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -20,6 +20,7 @@ import {
   clickByText,
   evaluate,
   findFreePort,
+  removeDirBestEffort,
   sleep,
   stopProcess,
   typeText,
@@ -228,9 +229,15 @@ async function main() {
     };
     await writeFile(path.join(captureDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
     console.log(JSON.stringify({ ...report, responses: undefined }, null, 2));
-    cdp?.close();
-    await stopProcess(chrome);
-    await rm(chromeDataDir, { recursive: true, force: true });
+    // Teardown must not replace the result: a passing run stays passing and a
+    // failed run keeps its own error.
+    try {
+      cdp?.close();
+      await stopProcess(chrome);
+    } catch (error) {
+      console.warn(`Hosted smoke teardown failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await removeDirBestEffort(chromeDataDir);
   }
   if (failure !== null) throw failure;
 }
