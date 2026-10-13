@@ -3,6 +3,13 @@ import type { Env } from "../../config";
 
 export const sessionRoutes = new Hono<{ Bindings: Env }>();
 
+// Identity is derived by the /api/* middleware in app.ts. Its absence means
+// the caller is unauthenticated, not that the server failed.
+sessionRoutes.use("*", async (c, next) => {
+  if (!c.req.header("x-user-id")) return c.json({ error: "unauthorized" }, 401);
+  await next();
+});
+
 function getUserId(c: {
   req: { header: (name: string) => string | undefined };
 }): string {
