@@ -149,6 +149,9 @@ async function fixture(autoSchedule = true) {
   cleanup.push(() => rooms.close());
   const remote = {
     async loadSnapshot() {
+      // The hosted snapshot route refuses a soft-deleted Project.
+      if (cloudMetadata?.deletedAt)
+        throw new Error("Remote Loro snapshot load failed with HTTP 401");
       return remoteDoc.export({ mode: "snapshot" });
     },
     async appendUpdate(_id: string, bytes: Uint8Array) {
@@ -226,6 +229,11 @@ async function fixture(autoSchedule = true) {
     putCount: () => putCount,
     admission: () =>
       metadataStore.getProjectCloudAdmission("project", replicaId),
+    localMetadata: () => metadata,
+    cloudMetadata: () => cloudMetadata,
+    setCloudMetadata: (value: ProjectMetadata) => {
+      cloudMetadata = value;
+    },
   };
 }
 
@@ -549,5 +557,55 @@ it("reports the remote transfer cap when the cloud deployment uses a smaller lim
   expect(await f.admission()).toMatchObject({
     status: "failed",
     lastError: expect.stringContaining(`maxBytes=${remoteMaxBytes}`),
+  });
+});
+
+// Issue #83: delete and restore must round-trip through the metadata mirror.
+describe("Project tombstone replication", () => {
+  it("pulls a delete made on another Host instead of failing on the snapshot", async () => {
+    const f = await fixture(false);
+    const tombstone = {
+      ...f.localMetadata(),
+      updatedAt: "2026-09-02T00:00:00.000Z",
+      deletedAt: "2026-09-02T00:00:00.000Z",
+    };
+    f.setCloudMetadata(tombstone);
+    await f.service.schedule("project");
+    expect(f.localMetadata()).toEqual(tombstone);
+    expect((await f.admission())?.lastError).not.toMatch(/HTTP 401/);
+  });
+
+  it("pushes a local restore over the cloud tombstone and resumes sync", async () => {
+    const f = await fixture(false);
+    f.setCloudMetadata({
+      ...f.localMetadata(),
+      updatedAt: "2026-09-02T00:00:00.000Z",
+      deletedAt: "2026-09-02T00:00:00.000Z",
+    });
+    const restored = {
+      ...f.localMetadata(),
+      updatedAt: "2026-09-03T00:00:00.000Z",
+    };
+    Object.assign(f.localMetadata(), restored);
+    await f.service.schedule("project");
+    expect(f.cloudMetadata()).toEqual(restored);
+    expect((await f.admission())?.status).toBe("ready");
+  });
+
+  it("pulls a restore made on another Host into a locally deleted Project", async () => {
+    const f = await fixture(false);
+    Object.assign(f.localMetadata(), {
+      updatedAt: "2026-09-02T00:00:00.000Z",
+      deletedAt: "2026-09-02T00:00:00.000Z",
+    });
+    const restored = {
+      ...f.localMetadata(),
+      updatedAt: "2026-09-03T00:00:00.000Z",
+      deletedAt: null,
+    };
+    f.setCloudMetadata(restored);
+    await f.service.schedule("project");
+    expect(f.localMetadata()).toEqual(restored);
+    expect((await f.admission())?.status).toBe("ready");
   });
 });
