@@ -215,7 +215,7 @@ export function getServerUrl(): string {
   );
 }
 
-function isLoopbackServerUrl(serverUrl: string): boolean {
+export function isLoopbackServerUrl(serverUrl: string): boolean {
   try {
     const hostname = new URL(serverUrl).hostname.toLowerCase();
     return hostname === "127.0.0.1" ||

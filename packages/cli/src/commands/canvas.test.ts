@@ -1,13 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   canvasCommand,
   downloadAssetById,
   resolveAssetDownloadUrl,
+  resolveAssetFile,
   resolveCanvasActor,
   resolveCanvasPresenceOptions,
   resolveCanvasProjectId,
@@ -220,6 +221,7 @@ test("asset downloader reads the project-scoped ResolvedAsset projection", async
         };
       },
     },
+    localFile: async () => null,
     fetch: async (input) => {
       downloads.push(String(input));
       return new Response("asset-bytes", { status: 200 });
@@ -235,12 +237,164 @@ test("asset downloader reads the project-scoped ResolvedAsset projection", async
   assert.equal(statSync(path!).mode & 0o777, 0o444);
 });
 
-test("asset downloader marks cached files read-only", () => {
-  const source = readFileSync(new URL("./canvas.ts", import.meta.url), "utf8");
+function readyAssetClient(assetId: string) {
+  return {
+    get: async () => ({
+      projectId: "project-1",
+      value: {
+        id: assetId,
+        kind: "video" as const,
+        name: "clip.mp4",
+        metadata: { contentType: "video/mp4" },
+        lifecycle: { state: "active" as const },
+        status: "ready" as const,
+        url: `http://127.0.0.1:49152/api/v1/projects/project-1/assets/${assetId}/media`,
+      },
+      receipt: "asset:receipt",
+    }),
+  };
+}
 
-  assert.match(source, /writeFileSync\(filePath,[\s\S]*mode: 0o444/);
-  assert.match(source, /chmodSync\(filePath, 0o444\)/);
-  assert.match(source, /chmodSync\(cachedPath, 0o444\)/);
+test("asset resolver uses a same-machine Host store file without downloading", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));
+  const storeFile = join(await mkdtemp(join(tmpdir(), "clash-store-")), "9f2c");
+  await writeFile(storeFile, "store-bytes");
+  await chmod(storeFile, 0o444);
+  const lookups: string[] = [];
+  let downloads = 0;
+
+  const file = await resolveAssetFile("asset-1", "project-1", {
+    cacheDir,
+    client: readyAssetClient("asset-1"),
+    localFile: async (assetId, projectId) => {
+      lookups.push(`${projectId}/${assetId}`);
+      return { path: storeFile, byteLength: 11 };
+    },
+    fetch: async () => {
+      downloads += 1;
+      return new Response("store-bytes");
+    },
+  });
+
+  assert.deepEqual(lookups, ["project-1/asset-1"]);
+  // The store file itself is the result, under the Asset's own name.
+  assert.deepEqual(file, { path: storeFile, name: "project-1--asset-1.mp4" });
+  assert.equal(downloads, 0);
+  assert.deepEqual(readdirSync(cacheDir), []);
+});
+
+for (const [reason, localFile] of [
+  ["is not on this machine", async () => ({ path: "/nonexistent/clash/store/9f2c", byteLength: 11 })],
+  ["has a different length", async (dir: string) => {
+    const path = join(dir, "9f2c");
+    await writeFile(path, "truncated");
+    return { path, byteLength: 11 };
+  }],
+  ["is a relative path", async () => ({ path: "store/9f2c", byteLength: 11 })],
+  ["cannot be looked up", async () => { throw new Error("connection refused"); }],
+] as const) {
+  test(`asset resolver downloads when the Host store file ${reason}`, async () => {
+    const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));
+    const scratch = await mkdtemp(join(tmpdir(), "clash-store-"));
+
+    const file = await resolveAssetFile("asset-1", "project-1", {
+      cacheDir,
+      client: readyAssetClient("asset-1"),
+      localFile: () => localFile(scratch),
+      fetch: async () => new Response("asset-bytes"),
+    });
+
+    assert.deepEqual(file, {
+      path: join(cacheDir, "project-1--asset-1.mp4"),
+      name: "project-1--asset-1.mp4",
+    });
+    assert.equal(readFileSync(file!.path, "utf8"), "asset-bytes");
+  });
+}
+
+test("asset downloader streams the body to disk instead of buffering it", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));
+  const chunk = new Uint8Array(64 * 1024).fill(7);
+  const chunkCount = 32;
+  let pulled = 0;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled === chunkCount) controller.close();
+        else {
+          pulled += 1;
+          controller.enqueue(chunk);
+        }
+      },
+    }),
+  );
+  // A buffering reader would be the only way to get the body out of this.
+  response.arrayBuffer = async () => {
+    throw new Error("asset download must not buffer the whole body");
+  };
+
+  const path = await downloadAssetById("asset-1", "project-1", {
+    cacheDir,
+    client: readyAssetClient("asset-1"),
+    localFile: async () => null,
+    fetch: async () => response,
+  });
+
+  assert.equal(path, join(cacheDir, "project-1--asset-1.mp4"));
+  assert.equal(statSync(path!).size, chunk.byteLength * chunkCount);
+  assert.equal(statSync(path!).mode & 0o777, 0o444);
+});
+
+test("an interrupted asset download leaves nothing the cache would serve", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));
+  let sent = false;
+  const interrupted = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) controller.error(new Error("connection reset"));
+          else {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode("partial"));
+          }
+        },
+      }),
+    );
+
+  const options = {
+    cacheDir,
+    client: readyAssetClient("asset-1"),
+    localFile: async () => null,
+  };
+  assert.equal(
+    await downloadAssetById("asset-1", "project-1", {
+      ...options,
+      fetch: async () => interrupted(),
+    }),
+    null,
+  );
+  assert.deepEqual(readdirSync(cacheDir), []);
+
+  const retried = await downloadAssetById("asset-1", "project-1", {
+    ...options,
+    fetch: async () => new Response("asset-bytes"),
+  });
+  assert.equal(readFileSync(retried!, "utf8"), "asset-bytes");
+});
+
+test("asset downloader re-marks a cached file read-only", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));
+  const cached = join(cacheDir, "project-1--asset-1.mp4");
+  await writeFile(cached, "cached-bytes", { mode: 0o644 });
+
+  const path = await downloadAssetById("asset-1", "project-1", {
+    cacheDir,
+    client: { get: async () => { throw new Error("cache hit must not ask the Host"); } },
+    localFile: async () => { throw new Error("cache hit must not ask the Host"); },
+  });
+
+  assert.equal(path, cached);
+  assert.equal(statSync(cached).mode & 0o777, 0o444);
 });
 
 test("resolves canvas project from clash init marker", async () => {

@@ -49,6 +49,7 @@ function storageFreeMediaRecord(
     previewUrl: _previewUrl,
     thumbnailUrl: _thumbnailUrl,
     waveformUrl: _waveformUrl,
+    proxyUrl: _proxyUrl,
     url: _url,
     localPath: _localPath,
     storageKey: _storageKey,

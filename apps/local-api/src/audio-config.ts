@@ -1,6 +1,9 @@
-import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createWriteStream, existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import { basename, delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -487,7 +490,11 @@ async function transcribeWithRuntime(
   const extension = extname(input.file.name || "") || ".webm";
   const audioPath = join(dir, basename(input.file.name || `input${extension}`));
   try {
-    await writeFile(audioPath, Buffer.from(await input.file.arrayBuffer()));
+    // Streamed: a file-backed source never materializes in Host memory.
+    await pipeline(
+      Readable.fromWeb(input.file.stream() as NodeReadableStream<Uint8Array>),
+      createWriteStream(audioPath),
+    );
     return await runtime.transcribe({
       model,
       audioPath,

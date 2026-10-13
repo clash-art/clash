@@ -2337,6 +2337,9 @@ describe("local API app", () => {
       async openThumbnail() {
         return undefined;
       },
+      async openProxy() {
+        return undefined;
+      },
       async start() {},
       async close() {},
     };
@@ -2468,6 +2471,9 @@ describe("local API app", () => {
               storageKey: "derived/resource-derived-green.webp",
             }
           : undefined;
+      },
+      async openProxy() {
+        return undefined;
       },
       async start() {},
       async close() {},

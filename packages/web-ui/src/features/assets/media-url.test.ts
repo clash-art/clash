@@ -4,6 +4,7 @@ import {
   assetPreviewMedia,
   assetThumbnailImageUrl,
   projectAssetPlaybackUrl,
+  projectAssetPreviewPlaybackUrl,
   resolveAssetMediaUrl,
 } from "./media-url";
 
@@ -30,6 +31,36 @@ describe("ResolvedAsset media projection", () => {
     expect(projectAssetPlaybackUrl(resolvedAsset())).toBe(
       "https://media.clash.test/assets/asset-1",
     );
+  });
+
+  it("prefers the Host proxy for preview playback and keeps the original for everything else", () => {
+    const asset = resolvedAsset({
+      proxyUrl: "https://media.clash.test/proxies/asset-1",
+    });
+
+    expect(projectAssetPreviewPlaybackUrl(asset)).toBe(
+      "https://media.clash.test/proxies/asset-1",
+    );
+    expect(projectAssetPlaybackUrl(asset)).toBe(
+      "https://media.clash.test/assets/asset-1",
+    );
+  });
+
+  it("previews the original when the Host has no proxy", () => {
+    expect(projectAssetPreviewPlaybackUrl(resolvedAsset())).toBe(
+      "https://media.clash.test/assets/asset-1",
+    );
+  });
+
+  it("ignores a proxy on anything but a video", () => {
+    expect(
+      projectAssetPreviewPlaybackUrl(
+        resolvedAsset({
+          kind: "audio",
+          proxyUrl: "https://media.clash.test/proxies/asset-1",
+        }),
+      ),
+    ).toBe("https://media.clash.test/assets/asset-1");
   });
 
   it("uses thumbnailUrl only for previews and falls back to video playback", () => {

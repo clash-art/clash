@@ -240,6 +240,11 @@ export const ResolvedAssetSchema = z
     thumbnailUrl: z.string().url().optional(),
     /** Host-authorized projection of a bounded waveform representation. */
     waveformUrl: z.string().url().optional(),
+    /**
+     * Host-authorized projection of a lighter video for preview and editing
+     * playback. Rendering and export always read `url`, the original.
+     */
+    proxyUrl: z.string().url().optional(),
     progress: z.number().min(0).max(1).optional(),
     error: z.string().trim().min(1).optional(),
   })

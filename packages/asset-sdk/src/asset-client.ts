@@ -139,6 +139,7 @@ export type ResourceProjectionResolution =
       url: string;
       thumbnailUrl?: string;
       waveformUrl?: string;
+      proxyUrl?: string;
     }
   | { status: "downloading"; progress?: number }
   | { status: "unavailable"; error?: string }
@@ -392,6 +393,9 @@ export async function resolveProjectAsset(
               ...(projection.waveformUrl === undefined
                 ? {}
                 : { waveformUrl: projection.waveformUrl }),
+              ...(projection.proxyUrl === undefined
+                ? {}
+                : { proxyUrl: projection.proxyUrl }),
             },
             "PROJECTION_CONTRACT_VIOLATION",
           );

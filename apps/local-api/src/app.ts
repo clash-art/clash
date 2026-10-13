@@ -16,10 +16,8 @@ import { HostInstallScopeSchema, type HostInstallScope } from "@clash/shared-typ
 import {
   mkdtemp,
   mkdir,
-  open,
   readFile,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -34,6 +32,7 @@ import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
 import { LocalResourceStreamMismatchError } from "./local-resource-store.js";
+import { serveImmutableFileProjection } from "./immutable-file-projection.js";
 import {
   handleProjectCommand,
   projectCommandMutates,
@@ -289,6 +288,10 @@ import {
   type LocalMetadataProject as LocalProject,
   type LocalMetadataSession as LocalSession,
 } from "./local-metadata-store.js";
+import {
+  isLoopbackRemoteAddress,
+  socketRemoteAddress,
+} from "./loopback-client.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { readThroughProjectCanvasPreviewEntry } from "./project-canvas-preview-cache.js";
 import {
@@ -1011,106 +1014,6 @@ function contentTypeForPath(path: string): string {
   if (ext === ".gltf") return "model/gltf+json";
   if (ext === ".txt") return "text/plain";
   return "application/octet-stream";
-}
-
-type AssetByteRange = { start: number; end: number } | null | "unsatisfiable";
-
-function parseAssetByteRange(
-  rangeHeader: string | undefined,
-  size: number,
-): AssetByteRange {
-  if (!rangeHeader) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
-  if (!match || size <= 0 || (!match[1] && !match[2])) {
-    return "unsatisfiable";
-  }
-
-  if (!match[1]) {
-    const suffixLength = Number(match[2]);
-    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
-      return "unsatisfiable";
-    }
-    return {
-      start: Math.max(0, size - suffixLength),
-      end: size - 1,
-    };
-  }
-
-  const start = Number(match[1]);
-  const requestedEnd = match[2] ? Number(match[2]) : size - 1;
-  if (
-    !Number.isSafeInteger(start) ||
-    !Number.isSafeInteger(requestedEnd) ||
-    start < 0 ||
-    requestedEnd < start ||
-    start >= size
-  ) {
-    return "unsatisfiable";
-  }
-
-  return {
-    start,
-    end: Math.min(requestedEnd, size - 1),
-  };
-}
-
-async function serveImmutableFileProjection(options: {
-  path: string;
-  contentType: string;
-  expectedByteLength?: number;
-  rangeHeader?: string;
-}): Promise<Response> {
-  const fileInfo = await stat(options.path);
-  if (
-    !fileInfo.isFile() ||
-    (options.expectedByteLength !== undefined &&
-      fileInfo.size !== options.expectedByteLength)
-  ) {
-    throw new Error(
-      "Immutable Asset projection no longer matches its Resource facts.",
-    );
-  }
-  const range = parseAssetByteRange(options.rangeHeader, fileInfo.size);
-  if (range === "unsatisfiable") {
-    return new Response(null, {
-      status: 416,
-      headers: {
-        "accept-ranges": "bytes",
-        "content-range": `bytes */${fileInfo.size}`,
-      },
-    });
-  }
-  if (range) {
-    const length = range.end - range.start + 1;
-    const handle = await open(options.path, "r");
-    try {
-      const bytes = new Uint8Array(length);
-      const { bytesRead } = await handle.read(bytes, 0, length, range.start);
-      return new Response(bytes.subarray(0, bytesRead), {
-        status: 206,
-        headers: {
-          "accept-ranges": "bytes",
-          "content-type": options.contentType,
-          "content-length": String(bytesRead),
-          "content-range": `bytes ${range.start}-${range.start + bytesRead - 1}/${fileInfo.size}`,
-          "cache-control": "public, max-age=31536000, immutable",
-          "x-content-type-options": "nosniff",
-        },
-      });
-    } finally {
-      await handle.close();
-    }
-  }
-  const bytes = await readFile(options.path);
-  return new Response(bytes, {
-    headers: {
-      "accept-ranges": "bytes",
-      "content-type": options.contentType,
-      "content-length": String(bytes.byteLength),
-      "cache-control": "public, max-age=31536000, immutable",
-      "x-content-type-options": "nosniff",
-    },
-  });
 }
 
 function nowIso(): string {
@@ -5132,6 +5035,36 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     },
   );
 
+  // Same-machine clients (the CLI) link this read-only store file into a
+  // working tree instead of downloading a second copy of the bytes. A store
+  // path is only meaningful, and only disclosed, to a loopback socket peer:
+  // a request with no socket or a forwarded one fails closed.
+  app.get(
+    "/api/v1/projects/:projectId/assets/:projectAssetId/local-file",
+    async (c) => {
+      if (!isLoopbackRemoteAddress(socketRemoteAddress(c.env))) {
+        return c.json(
+          { error: "local file access is limited to this machine" },
+          403,
+        );
+      }
+      try {
+        const projection = await projectAssetServiceAt(
+          requestOrigin(c),
+        ).openProjection(
+          c.req.param("projectId"),
+          c.req.param("projectAssetId"),
+        );
+        return c.json({
+          path: projection.path,
+          byteLength: projection.resource.byteLength,
+        });
+      } catch (error) {
+        return localProjectAssetErrorResponse(error);
+      }
+    },
+  );
+
   app.get(
     "/api/v1/projects/:projectId/assets/:projectAssetId/thumbnail",
     async (c) => {
@@ -5153,6 +5086,38 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           path: projection.path,
           contentType: projection.resource.contentType ?? "image/webp",
           expectedByteLength: projection.resource.byteLength,
+        });
+      } catch (error) {
+        return localProjectAssetErrorResponse(error);
+      }
+    },
+  );
+
+  // Preview playback only. A missing proxy is not an error: it is still
+  // encoding, was never needed, or ffmpeg is unavailable; clients use /media.
+  app.get(
+    "/api/v1/projects/:projectId/assets/:projectAssetId/proxy",
+    async (c) => {
+      try {
+        const source = await projectAssetServiceAt(
+          requestOrigin(c),
+        ).openProjection(
+          c.req.param("projectId"),
+          c.req.param("projectAssetId"),
+        );
+        const projection = await assetRepresentations.openProxy(
+          source.resource.id,
+        );
+        if (!projection) {
+          return c.json({ error: "Asset proxy is not available" }, 404);
+        }
+        return await serveImmutableFileProjection({
+          path: projection.path,
+          contentType: projection.resource.contentType ?? "video/mp4",
+          expectedByteLength: projection.resource.byteLength,
+          ...(c.req.header("range")
+            ? { rangeHeader: c.req.header("range") }
+            : {}),
         });
       } catch (error) {
         return localProjectAssetErrorResponse(error);

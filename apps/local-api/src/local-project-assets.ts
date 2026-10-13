@@ -372,6 +372,14 @@ function waveformUrl(
   return `${origin.replace(/\/+$/, "")}/api/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(projectAssetId)}/waveform`;
 }
 
+function proxyUrl(
+  origin: string,
+  projectId: string,
+  projectAssetId: string,
+): string {
+  return `${origin.replace(/\/+$/, "")}/api/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(projectAssetId)}/proxy`;
+}
+
 function mutationFailure(result: {
   ok: false;
   error: { code: string; message: string };
@@ -696,10 +704,20 @@ export function createLocalProjectAssetService(options: {
               representationRole,
             )
           : undefined;
+        const proxy =
+          entry.kind === "video"
+            ? await options.assetRepresentations?.read(
+                entry.source.resourceId,
+                "proxy",
+              )
+            : undefined;
         options.assetRepresentations?.schedule(entry.source.resourceId);
         return {
           status: "ready" as const,
           url,
+          ...(proxy?.role === "proxy"
+            ? { proxyUrl: proxyUrl(origin, projectId, entry.id) }
+            : {}),
           ...(representation?.role === "thumbnail"
             ? { thumbnailUrl: thumbnailUrl(origin, projectId, entry.id) }
             : entry.kind === "image"

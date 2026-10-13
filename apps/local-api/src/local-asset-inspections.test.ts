@@ -647,6 +647,64 @@ describe("Local Asset inspection", () => {
     ).resolves.toMatchObject({ contentType: "video/x-matroska" });
   });
 
+  it("reads only the EBML header of a multi-gigabyte Matroska file", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "clash-matroska-large-"));
+    temporaryDirectories.push(directory);
+    const header = Uint8Array.from([
+      0x1a,
+      0x45,
+      0xdf,
+      0xa3,
+      0x8b,
+      0x42,
+      0x82,
+      0x88,
+      ...new TextEncoder().encode("matroska"),
+    ]);
+    // Sparse: 3 GiB is more than one fs.readFile call can return, so the
+    // inspection only resolves if it stops at the header.
+    const byteLength = 3 * 1024 ** 3;
+    const sourcePath = join(directory, "source.mkv");
+    const handle = await open(sourcePath, "w");
+    try {
+      await handle.write(header, 0, header.byteLength, 0);
+      await handle.truncate(byteLength);
+    } finally {
+      await handle.close();
+    }
+    const inspector = createLocalFfprobeAssetInspector({
+      ffprobePath: "/test/bin/ffprobe",
+      run: async () => ({
+        stdout: JSON.stringify({
+          streams: [
+            {
+              codec_type: "video",
+              codec_name: "h264",
+              width: 1_920,
+              height: 1_080,
+              avg_frame_rate: "24/1",
+              side_data_list: [],
+            },
+          ],
+          format: { format_name: "matroska,webm", duration: "1.0" },
+        }),
+      }),
+    });
+
+    await expect(
+      inspector({
+        sourcePath,
+        resource: {
+          id: `sha256:${"6".repeat(64)}`,
+          kind: "video",
+          digest: { algorithm: "sha256", value: "6".repeat(64) },
+          byteLength,
+          contentType: "video/x-matroska",
+        },
+      }),
+    ).resolves.toMatchObject({ contentType: "video/x-matroska" });
+  });
+
   it("rejects a Matroska assertion when the EBML bytes declare WebM", async () => {
     const directory = await mkdtemp(join(tmpdir(), "clash-webm-probe-"));
     temporaryDirectories.push(directory);

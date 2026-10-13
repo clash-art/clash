@@ -28,6 +28,20 @@ export function projectAssetPlaybackUrl(asset: ResolvedAsset): string | null {
 }
 
 /**
+ * Source for preview and editing playback: the Host's lighter proxy when one
+ * exists, the original otherwise. It is a runtime projection only; anything
+ * rendered, exported, or sent to a provider resolves the Asset itself.
+ */
+export function projectAssetPreviewPlaybackUrl(
+  asset: ResolvedAsset,
+): string | null {
+  return firstAssetMediaUrl(
+    asset.kind === "video" ? asset.proxyUrl : undefined,
+    asset.url,
+  );
+}
+
+/**
  * Returns a still-image projection suitable for compact chips and mentions.
  * A video playback URL is deliberately not treated as an image thumbnail.
  */

@@ -619,6 +619,7 @@ type ResolvedAsset = Readonly<{
   url?: string;
   thumbnailUrl?: string;
   waveformUrl?: string;
+  proxyUrl?: string;
   progress?: number;
   error?: string;
 }>;
@@ -1091,8 +1092,10 @@ resolver backs Web, Desktop, CLI, MCP, renderers, and plugin capability
 adapters.
 
 An agent may request a read-only workspace projection such as
-`assets/links/hero.mp4`. The Host resolves or downloads the Resource and creates
-an OS symlink when supported, otherwise a read-only copy. The filesystem entry
+`assets/links/hero.mp4`. A CLI on the Host's machine links the Host's own
+read-only store file, so no bytes are copied; a CLI elsewhere streams the
+Resource into its cache first. The entry is an OS symlink when supported, then
+a same-volume hardlink, and a read-only copy only as the last resort. The filesystem entry
 is device-local, disposable, and never synchronized. Editing it does not edit
 the Asset; an edited file must be imported as a new Resource.
 
@@ -1619,6 +1622,14 @@ Assets, `thumbnailUrl` points at a current Host thumbnail/poster representation
 when ready. For audio Assets, `waveformUrl` points at a bounded JSON peak array
 when ready. Both are entry-authorized projections, never identities or raw
 storage locators.
+
+For video Assets, `proxyUrl` points at a 720p H.264/AAC MP4 playback proxy when
+the Host has one. The Host encodes it in the background with ffmpeg, one at a
+time, and only when the original is larger than 720p or is not a
+browser-playable container/codec pairing; without ffmpeg there is no proxy.
+Preview and editing playback prefer `proxyUrl` and fall back to `url`. Render,
+export, NLE handoff, and provider inputs always resolve the original: Timeline
+persistence strips runtime URLs and a render run binds frozen Asset identities.
 
 - Image thumbnails, video first-frame posters, and audio waveforms are
   Host-private derived representations keyed by immutable source Resource plus

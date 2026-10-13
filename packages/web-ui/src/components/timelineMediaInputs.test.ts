@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeTimelineItemScopeRefs,
   selectTimelineMediaInputs,
+  withOriginalMediaSources,
 } from "./timelineMediaInputs";
 
 describe("selectTimelineMediaInputs", () => {
@@ -366,5 +367,70 @@ describe("selectTimelineMediaInputs", () => {
         ],
       },
     ]);
+  });
+});
+
+describe("Timeline preview proxies", () => {
+  const original = "https://media.clash.test/assets/asset-video";
+  const proxy = "https://media.clash.test/proxies/asset-video";
+
+  function inputsFor(proxyUrl?: string) {
+    return selectTimelineMediaInputs({
+      timeline: {
+        id: "timeline-video",
+        name: "Video",
+        owner: { kind: "project" },
+        revisionId: "rev",
+        state: {
+          tracks: [
+            {
+              id: "video",
+              items: [
+                { id: "clip-video", assetId: "asset-video", type: "video" },
+              ],
+            },
+          ],
+        },
+      },
+      assets: [
+        {
+          id: "asset-video",
+          url: original,
+          ...(proxyUrl ? { proxyUrl } : {}),
+          kind: "video",
+          lifecycle: { state: "active" },
+          metadata: {},
+          status: "ready",
+        },
+      ],
+      nodes: [],
+      edges: [],
+    });
+  }
+
+  it("plays the Host proxy in the editor while keeping the original for handoff", () => {
+    expect(inputsFor(proxy)).toEqual([
+      expect.objectContaining({ src: proxy, originalSrc: original }),
+    ]);
+  });
+
+  it("plays the original while no proxy exists", () => {
+    expect(inputsFor()).toEqual([
+      expect.objectContaining({ src: original, originalSrc: original }),
+    ]);
+  });
+
+  it("rebinds editor assets to original media before they leave the preview", () => {
+    const untracked = { id: "local-sticker", src: "/sticker.png" };
+    const playing = {
+      id: "timeline-asset:asset-video",
+      projectAssetId: "asset-video",
+      name: "Talking head",
+      src: proxy,
+    };
+
+    expect(
+      withOriginalMediaSources([playing, untracked], inputsFor(proxy)),
+    ).toEqual([{ ...playing, src: original }, untracked]);
   });
 });
