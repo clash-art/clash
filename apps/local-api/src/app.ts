@@ -1735,6 +1735,7 @@ function deleteProjectFromState(
   const deletedAt = nowIso();
   project.deletedAt = deletedAt;
   project.updatedAt = deletedAt;
+  delete project.metadataProvisional;
   return project;
 }
 
@@ -1748,6 +1749,7 @@ function restoreProjectInState(
   if (!project) return null;
   project.deletedAt = null;
   project.updatedAt = nowIso();
+  delete project.metadataProvisional;
   return project;
 }
 
@@ -4060,6 +4062,13 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         );
         return project ? localProjectSyncMetadata(project) : null;
       },
+      async isProvisional(projectId) {
+        return (await db.load()).projects.some(
+          (candidate) =>
+            candidate.id === projectId &&
+            candidate.metadataProvisional === true,
+        );
+      },
       async write(metadata) {
         await db.update((state) => {
           const project = state.projects.find(
@@ -4075,6 +4084,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           project.createdAt = metadata.createdAt;
           project.updatedAt = metadata.updatedAt;
           project.deletedAt = metadata.deletedAt;
+          delete project.metadataProvisional;
         });
       },
     },
@@ -9570,6 +9580,9 @@ const ForkPointBodySchema = z.object({
       const project: LocalProject = {
         id, ownerId: userId, name, description: null,
         createdAt: timestamp, updatedAt: timestamp, assets: [],
+        // The directory name is a placeholder: it may seed an empty cloud
+        // Project but must not win a metadata merge against an existing one.
+        metadataProvisional: true,
       };
       state.projects.unshift(project);
       return { project, created: true } as const;
@@ -10022,6 +10035,7 @@ const ForkPointBodySchema = z.object({
       }
       project.name = name;
       project.updatedAt = nowIso();
+      delete project.metadataProvisional;
       const readToken = projectReceiptReadToken(project);
       return {
         status: 200 as const,

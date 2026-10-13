@@ -50,6 +50,7 @@ export interface LocalProjectCloudSyncOptions {
     list(): Promise<string[]>;
     read(projectId: string): Promise<ProjectMetadata | null>;
     write(metadata: ProjectMetadata): Promise<void>;
+    isProvisional?(projectId: string): Promise<boolean>;
   };
   token(baseUrl: string, userId: string): Promise<string | undefined>;
   inspection: Pick<LocalAssetInspectionService, "finalize">;
@@ -289,6 +290,8 @@ export function createLocalProjectCloudSync(
             local: {
               read: () => options.metadata.read(projectId),
               write: options.metadata.write,
+              isProvisional: async () =>
+                (await options.metadata.isProvisional?.(projectId)) === true,
             },
             remote: {
               pull: () => remote.loadProjectMetadata!(projectId, signal),
