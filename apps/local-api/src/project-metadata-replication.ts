@@ -13,6 +13,7 @@ import type { LocalSyncConfigStore } from "./sync-config.js";
 export interface LocalProjectMetadataStore {
   read(projectId: string): Promise<ProjectMetadata | null>;
   write(metadata: ProjectMetadata): Promise<void>;
+  isProvisional?(projectId: string): Promise<boolean>;
 }
 
 export type LocalProjectMetadataSyncResult =
@@ -65,6 +66,8 @@ export function createLocalProjectMetadataReplication(
       local: {
         read: () => options.local.read(projectId),
         write: (metadata) => options.local.write(metadata),
+        isProvisional: async () =>
+          (await options.local.isProvisional?.(projectId)) === true,
       },
       remote: {
         pull: () => remote.loadProjectMetadata!(projectId),

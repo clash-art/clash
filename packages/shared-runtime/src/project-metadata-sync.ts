@@ -6,6 +6,12 @@ import {
 export interface ProjectMetadataStore {
   read(): Promise<ProjectMetadata | null>;
   write(metadata: ProjectMetadata): Promise<void>;
+  /**
+   * True while the local copy is a placeholder nobody authored (for example a
+   * workspace marker registered under its directory name). A placeholder may
+   * seed an empty remote, but it never competes with existing remote metadata.
+   */
+  isProvisional?(): Promise<boolean>;
 }
 
 export interface ProjectMetadataSyncRemote {
@@ -91,6 +97,13 @@ export function createProjectMetadataReplicator(
 
       const winner = compareMetadata(local, remote);
       if (winner === "equal") return { status: "noop" };
+      // A placeholder's fresh updatedAt records when this replica joined, not
+      // an edit. Letting it enter last-writer-wins would rename the Project
+      // for every other replica.
+      if ((await options.local.isProvisional?.()) === true) {
+        await options.local.write(remote);
+        return { status: "pulled", metadata: remote };
+      }
       if (winner === "local" || winner === "conflict-local") {
         await options.remote.push(local);
         return {
