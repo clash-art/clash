@@ -57,11 +57,16 @@ The fixture is public, immutable input. Rubrics and trusted readback remain
 outside the agent workspace. A submission file names evidence; it never makes
 an Agent-authored claim authoritative.
 
-Each runnable Asset case owns a distinct `expectedProjectAssetId`. The task
-requires that ID to be preassigned at import, and trusted operation evidence
-must show the same ID for every required get, trash, and restore. Host byte
+Each runnable Asset case declares `projectAssetIdentity: "first-import"`. The
+task does not name an ID: the identity is the one returned by the Agent's first
+successful import of the submitted file, whether the Agent passed it or Clash
+minted it, and it is read from the runner-sealed MCP result or CLI output.
+Trusted operation evidence must show that same ID for every required get,
+trash, and restore, and any other import identity fails the case, so an extra
+import or a trash-and-reimport cannot stand in for the first Asset. Host byte
 readback is accepted only for that identity; a submission or review cannot
-select or rename the product Asset.
+select or rename the product Asset. A case may instead pin a benchmark-owned
+`expectedProjectAssetId` when the identity itself is the contract under test.
 
 The runnable v1 product paths need no live media provider. The headless Agent
 still needs its model connection, however, and this runner does not yet emit a

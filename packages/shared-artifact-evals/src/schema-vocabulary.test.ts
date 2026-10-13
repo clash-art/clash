@@ -430,7 +430,7 @@ describe("benchmark execution lanes", () => {
     ).toBe(false);
   });
 
-  it("binds agent-product Asset readback to one benchmark-owned identity", () => {
+  it("binds agent-product Asset readback to exactly one identity rule", () => {
     const execution = executionWithPreflight("agent-product", "ready");
     const assetReadback = {
       ...execution.productReadback,
@@ -456,6 +456,49 @@ describe("benchmark execution lanes", () => {
             productReadback: {
               ...assetReadback,
               expectedProjectAssetId: undefined,
+            },
+          },
+        }),
+      ).success,
+    ).toBe(false);
+    const firstImportReadback = {
+      ...assetReadback,
+      expectedProjectAssetId: undefined,
+      projectAssetIdentity: "first-import",
+    };
+    expect(
+      ArtifactBenchmarkCaseSchema.safeParse(
+        benchmarkCase({
+          execution: {
+            ...execution,
+            requiredProductOperations: ["asset.import", "asset.get"],
+            productReadback: firstImportReadback,
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    // The identity comes from an import, so a case must require one...
+    expect(
+      ArtifactBenchmarkCaseSchema.safeParse(
+        benchmarkCase({
+          execution: {
+            ...execution,
+            requiredProductOperations: ["asset.get"],
+            productReadback: firstImportReadback,
+          },
+        }),
+      ).success,
+    ).toBe(false);
+    // ...and cannot also pin a benchmark-owned one.
+    expect(
+      ArtifactBenchmarkCaseSchema.safeParse(
+        benchmarkCase({
+          execution: {
+            ...execution,
+            requiredProductOperations: ["asset.import", "asset.get"],
+            productReadback: {
+              ...firstImportReadback,
+              expectedProjectAssetId: "benchmark-asset-exact-import-v1",
             },
           },
         }),

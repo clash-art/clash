@@ -141,6 +141,7 @@ import {
 import {
   effectiveMcpToolName,
   formatCliInvocation,
+  importedProjectAssetIdFromCliOutput,
   matchForbiddenProductOperations,
   matchRequiredProductOperations,
   mcpToolForCliInvocation,
@@ -596,7 +597,9 @@ function parseSealedCliInvocations(traceText: string):
       !Number.isFinite(Date.parse(event.finishedAt)) ||
       (event.exitCode !== null && !Number.isSafeInteger(event.exitCode)) ||
       (event.signal !== null && typeof event.signal !== "string") ||
-      (event.error !== undefined && typeof event.error !== "string")
+      (event.error !== undefined && typeof event.error !== "string") ||
+      (event.importedProjectAssetId !== undefined &&
+        typeof event.importedProjectAssetId !== "string")
     ) {
       return undefined;
     }
@@ -1041,6 +1044,14 @@ async function startTrustedCliProxy(input: {
           });
         },
       });
+      // The import's own output is the only place a minted identity appears.
+      const importedProjectAssetId =
+        result.exitCode === 0 && result.signal === null && !result.error
+          ? importedProjectAssetIdFromCliOutput(
+              candidate.argv,
+              Buffer.from(result.stdoutBase64, "base64").toString("utf8"),
+            )
+          : undefined;
       events.push({
         type: "clash.cli.completed",
         invocationId,
@@ -1057,6 +1068,7 @@ async function startTrustedCliProxy(input: {
         signal: result.signal,
         ...(result.error ? { error: result.error } : {}),
         ...(candidate.traceOrigin ? { origin: candidate.traceOrigin } : {}),
+        ...(importedProjectAssetId ? { importedProjectAssetId } : {}),
       });
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify(result));

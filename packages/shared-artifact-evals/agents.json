@@ -10,6 +10,7 @@
     "Recheck every installed fixture file after the agent exits; fixture mutation is a hard product-execution failure.",
     "An agent-product case is runnable only when a real CLI or MCP surface and trusted Host readback both exist. Missing Generator or Document surfaces belong in blocked-contract cases, never raw internal HTTP instructions.",
     "Required rubric gates fail closed even when the weighted score exceeds the pass threshold.",
+    "Asset cases do not name a Project Asset id. productReadback.projectAssetIdentity 'first-import' takes the identity from the first trusted import of the submitted file (runner-sealed MCP result, or the CLI import output the runner's proxy records as importedProjectAssetId); every required get/trash/restore and the Host readback must target it, and any other import identity fails.",
     "ProductExecution negative gates use forbiddenProductOperations; any runner-sealed CLI or MCP invocation violates the gate even when the product call domain-fails, while discovery/help is excluded.",
     "Director v1 is structural unless real rendered media exists; MG character v1 is the geometric 2D profile, not a skeletal rig."
   ],

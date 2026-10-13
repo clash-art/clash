@@ -402,6 +402,7 @@ const ProductReadbackSchema = z
     mechanism: CapabilityIdSchema,
     artifactIds: z.array(SafeIdSchema).min(1),
     expectedProjectAssetId: SafeIdSchema.optional(),
+    projectAssetIdentity: z.literal("first-import").optional(),
     description: z.string().min(1),
   })
   .strict();
@@ -588,12 +589,25 @@ const BenchmarkExecutionSchema = z
       execution.lane === "agent-product" &&
       execution.productReadback?.mechanism === "asset-bytes-and-host-receipt"
     ) {
-      if (!execution.productReadback.expectedProjectAssetId) {
+      const { expectedProjectAssetId, projectAssetIdentity } =
+        execution.productReadback;
+      if (Boolean(expectedProjectAssetId) === Boolean(projectAssetIdentity)) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ["productReadback", "expectedProjectAssetId"],
+          path: ["productReadback", "projectAssetIdentity"],
           message:
-            "Agent-product Asset readback requires a benchmark-owned Project Asset identity",
+            "Agent-product Asset readback requires exactly one identity rule: a benchmark-owned expectedProjectAssetId or projectAssetIdentity 'first-import'",
+        });
+      }
+      if (
+        projectAssetIdentity === "first-import" &&
+        !execution.requiredProductOperations?.includes("asset.import")
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["productReadback", "projectAssetIdentity"],
+          message:
+            "A first-import Project Asset identity requires the asset.import product operation",
         });
       }
       if (execution.productReadback.artifactIds.length !== 1) {
