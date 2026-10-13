@@ -69,6 +69,12 @@ binding = "API_CF"
 service = "clash-api"
 
 [vars]
+# This file is what `wrangler deploy` ships, so it must never say
+# "development": that value permits the published Better Auth dev fallback
+# secret. Local dev overrides it from the git-ignored `.dev.vars`, which
+# `vite dev` creates on first run (scripts/ensure-dev-vars.ts). A deployed
+# Worker needs BETTER_AUTH_SECRET (`wrangler secret put`) or it refuses to sign.
+ENVIRONMENT = "production"
 BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # Dev fallback when the service binding can't resolve api-cf (e.g. running
 # wrangler dev for one Worker but not the other).
@@ -127,7 +133,10 @@ migrations_dir = "drizzle"
 binding = "API_CF"
 service = "clash-api-staging"
 
+# Required secret (`wrangler secret put BETTER_AUTH_SECRET --env staging`): must
+# equal the value on clash-api-staging, which validates the same session cookie.
 [env.staging.vars]
+ENVIRONMENT = "staging"
 BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # Wrangler refuses to inherit top-level vars; redeclare to silence the warning.
 # Empty = "service binding will resolve" — only used as a dev fallback.

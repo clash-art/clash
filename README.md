@@ -222,9 +222,11 @@ pnpm wrangler d1 migrations apply clash-d1 --remote
 
 ```bash
 cp apps/api-cf/.dev.vars.example apps/api-cf/.dev.vars
-# fill in real values, then for production:
+# fill in real values, then for production (drop the local-only
+# ENVIRONMENT=development line; deployed Workers must not carry it):
 cd apps/api-cf
-wrangler secret bulk .dev.vars
+grep -v '^ENVIRONMENT=' .dev.vars > .secrets.env
+wrangler secret bulk .secrets.env && rm .secrets.env
 ```
 
 | Secret                                                                                          | Notes                                    |

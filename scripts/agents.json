@@ -3,6 +3,8 @@
   "key_files": {
     "project-renderer-freshness.ts": "Build-only content fingerprints for the Host project renderer. Vite records consumed modules, authored workspace sources and output outside the shipped client directory; Host packaging refuses stale or missing receipts.",
     "runtime-dependency-identity.ts": "Shared npm/Desktop packaging helper. Hashes materialized dependency contents once, excluding npm command links and installer bookkeeping; writes the adjacent identity consumed by Host upgrade detection.",
+    "ensure-dev-vars.ts": "Creates or completes a Worker's git-ignored .dev.vars with ENVIRONMENT=development for vite dev and standalone api-cf dev. Committed wrangler configs describe deployed Workers and never carry that marker.",
+    "deploy-config-environment.test.ts": "CI and predeploy gate: no tracked wrangler config may set ENVIRONMENT=development, which would let a deployed Worker use published fallback secrets.",
     "source-check-config.ts": "Materializes runtime-specific source-check paths from root tsconfig.source.json plus sparse source-check-profiles.json. Default/check mode only reports drift; --write explicitly refreshes generated profiles.",
     "source-check-config.test.ts": "Tests preservation of browser/app-local aliases and non-mutating failure when shared mappings change.",
     "executable-scripts.test.ts": "Executes native imports and the agent bundler in isolated fixtures, preserving generated JavaScript package boundaries without a release build.",

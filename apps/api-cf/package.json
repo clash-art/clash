@@ -6,7 +6,7 @@
     "node": ">=24.18.0 <25"
   },
   "scripts": {
-    "dev": "wrangler dev --port 8789 --inspector-port 9333 --persist-to ../../.wrangler/state",
+    "dev": "node ../../scripts/ensure-dev-vars.ts . && wrangler dev --port 8789 --inspector-port 9333 --persist-to ../../.wrangler/state",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "test": "vitest run",

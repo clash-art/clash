@@ -213,9 +213,11 @@ pnpm wrangler d1 migrations apply clash-d1 --remote
 
 ```bash
 cp apps/api-cf/.dev.vars.example apps/api-cf/.dev.vars
-# 填好真实值，部署到生产前一次性推上去：
+# 填好真实值，部署到生产前一次性推上去（去掉仅限本地的
+# ENVIRONMENT=development，已部署的 Worker 不能带这个标记）：
 cd apps/api-cf
-wrangler secret bulk .dev.vars
+grep -v '^ENVIRONMENT=' .dev.vars > .secrets.env
+wrangler secret bulk .secrets.env && rm .secrets.env
 ```
 
 | Secret                                                                                          | 说明                              |
