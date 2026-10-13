@@ -32,12 +32,26 @@ export function createD1ProjectAuthorizationStore(
     },
     async readApiToken(tokenHash) {
       const { results } = await env.DB.prepare(
-        "SELECT user_id, name FROM api_token WHERE token_hash = ? LIMIT 1",
+        `SELECT t.user_id, t.name, u.name AS user_name, u.image AS user_image
+           FROM api_token t LEFT JOIN users u ON u.id = t.user_id
+          WHERE t.token_hash = ? LIMIT 1`,
       )
         .bind(tokenHash)
-        .all<{ user_id: string; name: string }>();
+        .all<{
+          user_id: string;
+          name: string;
+          user_name: string | null;
+          user_image: string | null;
+        }>();
       const row = results?.[0];
-      return row ? { userId: row.user_id, name: row.name } : null;
+      return row
+        ? {
+            userId: row.user_id,
+            name: row.name,
+            userName: row.user_name ?? undefined,
+            userAvatar: row.user_image ?? undefined,
+          }
+        : null;
     },
     async touchApiToken(tokenHash) {
       await env.DB.prepare(

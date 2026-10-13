@@ -273,6 +273,48 @@ it("admits a browser session cookie on /sync without an outbound session lookup"
   expect((await f.request({ cookie: `${cookie}tampered` })).status).toBe(401);
 });
 
+/** Presence is a JSON sideband frame; binary frames are CRDT protocol. */
+function nextPresence(socket: WebSocket) {
+  return new Promise<{
+    clients: Array<{ clientType: string; userId: string; name: string }>;
+  }>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("No presence frame")),
+      5000,
+    );
+    socket.addEventListener("message", (event) => {
+      if (typeof event.data !== "string") return;
+      const frame = JSON.parse(event.data);
+      if (frame.type !== "presence") return;
+      clearTimeout(timer);
+      resolve(frame);
+    });
+  });
+}
+
+// #102: an API token's label is not a person. The fixture token is named
+// "integration"; presence must carry the owning user's display name instead.
+it("labels token-authenticated presence with the user's name, not the token name", async () => {
+  const f = await fixture();
+  // Inserts the users row ("Session fixture") the token's user_id points at.
+  await sessionCookie(f.userId, Date.now() + 60_000);
+  const first = await connect(f);
+  const presence = nextPresence(first.socket);
+  await connect(f, {
+    Authorization: `Bearer ${f.token}`,
+    "x-client-type": "cli",
+  });
+  const { clients } = await presence;
+  expect(clients.map((client) => client.clientType).sort()).toEqual([
+    "browser",
+    "cli",
+  ]);
+  for (const client of clients) {
+    expect(client.userId).toBe(f.userId);
+    expect(client.name).toBe("Session fixture");
+  }
+});
+
 it.each(["deleted", "expired"])(
   "rechecks a %s D1 session on an admitted socket",
   async (state) => {

@@ -199,7 +199,9 @@ export class ProjectRoom extends DurableObject<Env> {
         const clientTypeHeader = request.headers.get("x-client-type");
         if (clientTypeHeader === "cli") {
           clientType = "cli";
-          userName = authResult.userName ?? "CLI Agent";
+          // A token label may stand in for a CLI client, never for a browser.
+          userName =
+            authResult.userName ?? authResult.credentialName ?? "CLI Agent";
         }
       } catch (error) {
         log.error("Auth failed:", error);

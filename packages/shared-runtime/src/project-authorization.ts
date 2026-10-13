@@ -4,9 +4,14 @@ export interface ProjectAuthorizationStore {
   readProject(
     projectId: string,
   ): Promise<{ ownerId: string; deletedAt: number | null } | null>;
-  readApiToken(
-    tokenHash: string,
-  ): Promise<{ userId: string; name?: string } | null>;
+  /** `name` labels the credential; `userName`/`userAvatar` are its owner's
+   * profile. The two are never interchangeable. */
+  readApiToken(tokenHash: string): Promise<{
+    userId: string;
+    name?: string;
+    userName?: string;
+    userAvatar?: string;
+  } | null>;
   touchApiToken(tokenHash: string): Promise<void>;
   readSession(
     sessionId: string,
@@ -33,6 +38,8 @@ export interface AuthResult {
   projectId: string;
   userName?: string;
   userAvatar?: string;
+  /** API token label ("Clash CLI"). Describes the client, never the person. */
+  credentialName?: string;
   /** Safe to retain across WebSocket hibernation; never a raw token or cookie. */
   authorization: ProjectConnectionAuthorization;
 }
@@ -114,7 +121,13 @@ export async function authenticateApiToken(
   const row = await store.readApiToken(tokenHash);
   if (!row?.userId) throw new Error("Unauthorized");
   void store.touchApiToken(tokenHash).catch(() => {});
-  return { userId: row.userId, name: row.name, tokenHash };
+  return {
+    userId: row.userId,
+    name: row.name,
+    userName: row.userName,
+    userAvatar: row.userAvatar,
+    tokenHash,
+  };
 }
 
 export type SessionIdentity = {
@@ -144,7 +157,9 @@ export async function authenticateRequest(
     return {
       userId: row.userId,
       projectId,
-      userName: row.name || "CLI",
+      ...(row.userName ? { userName: row.userName } : {}),
+      ...(row.userAvatar ? { userAvatar: row.userAvatar } : {}),
+      ...(row.name ? { credentialName: row.name } : {}),
       authorization: { kind: "api-token", tokenHash },
     };
   }

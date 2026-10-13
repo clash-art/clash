@@ -25,12 +25,26 @@ export function createPostgresProjectAuthorizationStore(
       return row ? { ownerId: row.owner_id, deletedAt: row.deleted_at } : null;
     },
     async readApiToken(tokenHash) {
-      const { rows } = await db.query<{ user_id: string; name: string | null }>(
-        "SELECT user_id, name FROM api_token WHERE token_hash = $1 LIMIT 1",
+      const { rows } = await db.query<{
+        user_id: string;
+        name: string | null;
+        user_name: string | null;
+        user_image: string | null;
+      }>(
+        `SELECT t.user_id, t.name, u.name AS user_name, u.image AS user_image
+           FROM api_token t LEFT JOIN auth_user u ON u.id = t.user_id
+          WHERE t.token_hash = $1 LIMIT 1`,
         [tokenHash],
       );
       const row = rows[0];
-      return row ? { userId: row.user_id, name: row.name ?? undefined } : null;
+      return row
+        ? {
+            userId: row.user_id,
+            name: row.name ?? undefined,
+            userName: row.user_name ?? undefined,
+            userAvatar: row.user_image ?? undefined,
+          }
+        : null;
     },
     async touchApiToken(tokenHash) {
       await db.query(
