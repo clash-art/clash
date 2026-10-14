@@ -12,8 +12,11 @@
  * an absolutely-positioned layer inside ReactFlow's coordinate system.
  */
 import { memo } from 'react';
+import { motion } from 'framer-motion';
+import { Cursor } from '@phosphor-icons/react';
 import { useViewport } from '@xyflow/react';
 import type { Peer } from '@clash/web-ui/hooks/usePresenceAwareness';
+import { PresenceAgentBadge, PresenceNameBadge } from './PresenceAvatar';
 
 interface CursorOverlayProps {
   peers: Peer[];
@@ -37,59 +40,37 @@ function CursorOverlayImpl({ peers }: CursorOverlayProps) {
         const screenX = peer.cursor.x * zoom + vx;
         const screenY = peer.cursor.y * zoom + vy;
         return (
-          <div
-            key={peer.userId}
-            className="absolute"
-            // CSS transition smooths the gap between throttled updates
-            // (server fans at 12Hz; without easing the cursor would step).
-            // `linear` matches mouse intuition better than the default
-            // `ease` curve, which lags noticeably during continuous motion.
-            style={{
-              left: 0,
-              top: 0,
-              transform: `translate3d(${screenX}px, ${screenY}px, 0)`,
-              transition: 'transform 80ms linear',
-              willChange: 'transform',
-            }}
+          <motion.div
+            key={peer.clientId}
+            data-peer-cursor={peer.clientId}
+            className="absolute left-0 top-0"
+            // Eases the gap between throttled updates (server fans at 12Hz;
+            // without it the cursor would step). `linear` matches mouse
+            // intuition better than an eased curve, which lags noticeably
+            // during continuous motion.
+            initial={false}
+            animate={{ x: screenX, y: screenY }}
+            transition={{ duration: 0.08, ease: 'linear' }}
           >
-            {/* SVG cursor arrow — outlined for legibility on busy backdrops. */}
-            <svg
-              width={20}
-              height={20}
-              viewBox="0 0 20 20"
-              style={{
-                display: 'block',
-                // Slight nudge so the arrow tip — not the bounding box top-left —
-                // sits exactly at the reported position.
-                marginLeft: -2,
-                marginTop: -2,
-                filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.25))',
-              }}
-            >
-              <path
-                d="M3 2 L17 9 L10 11 L8 17 Z"
-                fill={peer.color}
-                stroke="white"
-                strokeWidth={1.25}
-                strokeLinejoin="round"
+            {/* Nudged so the arrow tip — not the icon box — sits exactly at
+                the reported position. An agent keeps its user's cursor. */}
+            <span className="relative -ml-[3px] -mt-[3px] block size-5">
+              <Cursor
+                size={20}
+                weight="fill"
+                color={peer.color}
+                className="drop-shadow-sm"
               />
-            </svg>
+              {peer.kind === 'agent' && <PresenceAgentBadge color={peer.color} />}
+            </span>
 
-            {/* Name label */}
-            <div
-              className="absolute whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm"
-              style={{
-                left: 16,
-                top: 16,
-                background: peer.color,
-                // Keep contrast against any background. White text + a tiny
-                // dark outline reads cleanly on every palette entry above.
-                textShadow: '0 1px 0 rgba(0,0,0,0.15)',
-              }}
-            >
-              {peer.userName}
-            </div>
-          </div>
+            <PresenceNameBadge
+              name={peer.userName}
+              kind={peer.kind}
+              color={peer.color}
+              className="absolute left-4 top-5"
+            />
+          </motion.div>
         );
       })}
     </div>

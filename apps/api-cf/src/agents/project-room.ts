@@ -43,6 +43,7 @@ import {
 import type {
   ClientInfo,
   ClientType,
+  PresenceKind,
   PresenceMessage,
   ActivityMessage,
   ActivityAction,
@@ -89,6 +90,26 @@ type ProjectClientInfo = ClientInfo & {
   /** Only direct service-binding callers can supply the internal header. */
   internal?: true;
 };
+
+/**
+ * A person is behind a connection only when a browser session admitted it.
+ * API tokens, JWTs and internal service bindings are agents acting for the
+ * user. Development admits sockets without a credential, so only there the
+ * declared client type decides.
+ */
+function connectionKind(
+  info: Pick<
+    ProjectClientInfo,
+    "clientType" | "internal" | "projectAuthorization"
+  >,
+): PresenceKind {
+  const proof = info.projectAuthorization?.authorization.kind;
+  if (info.internal || !proof) return "agent";
+  if (proof === "session") return "human";
+  if (proof === "development")
+    return info.clientType === "browser" ? "human" : "agent";
+  return "agent";
+}
 
 export class ProjectRoom extends DurableObject<Env> {
   private doc: LoroDoc = new LoroDoc();
@@ -239,14 +260,18 @@ export class ProjectRoom extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server);
 
     // Register client for presence — persist via serializeAttachment so it survives hibernation
+    const admission = isInternal
+      ? { internal: true as const }
+      : { projectAuthorization };
     const clientInfo: ProjectClientInfo = {
       id: crypto.randomUUID(),
       userId,
       clientType,
+      kind: connectionKind({ clientType, ...admission }),
       name: userName,
       avatar: userAvatar,
       connectedAt: Date.now(),
-      ...(isInternal ? { internal: true as const } : { projectAuthorization }),
+      ...admission,
       ...(syncProtocol ? { syncProtocol } : {}),
     };
     server.serializeAttachment(clientInfo);
@@ -535,7 +560,9 @@ export class ProjectRoom extends DurableObject<Env> {
   }
 
   /**
-   * Broadcast current presence to all connected clients.
+   * Broadcast current presence to all connected clients. Every socket gets
+   * the full list plus its own client id: the same user's other devices and
+   * windows are peers, so a client can only hide itself by connection.
    */
   private broadcastPresence(): void {
     // Sync clients map with actual live WebSockets to avoid stale entries
@@ -544,6 +571,8 @@ export class ProjectRoom extends DurableObject<Env> {
     const clients = Array.from(this.clients.values()).map((c) => ({
       id: c.id,
       clientType: c.clientType,
+      // Sockets admitted before `kind` existed recover it from their proof.
+      kind: c.kind ?? connectionKind(c),
       userId: c.userId,
       name: c.name,
       avatar: c.avatar,
@@ -551,8 +580,19 @@ export class ProjectRoom extends DurableObject<Env> {
 
     log.debug(`Presence: ${clients.length} clients`);
 
-    const msg: PresenceMessage = { type: "presence", clients };
-    this.broadcastText(JSON.stringify(msg));
+    for (const ws of this.ctx.getWebSockets()) {
+      const selfClientId = this.clients.get(ws)?.id;
+      const msg: PresenceMessage = {
+        type: "presence",
+        clients,
+        ...(selfClientId ? { selfClientId } : {}),
+      };
+      try {
+        this.sendAuthorized(ws, JSON.stringify(msg));
+      } catch {
+        // Connection may have closed
+      }
+    }
   }
 
   /**
@@ -649,13 +689,14 @@ export class ProjectRoom extends DurableObject<Env> {
     for (const [ws, entry] of this.awareness.entries()) {
       const info = this.clients.get(ws);
       if (!info) continue;
-      // Skip non-browser clients — CLI/agent connections shouldn't appear
-      // as live cursors on the canvas.
-      if (info.clientType !== "browser") continue;
+      // Any connection that reports a cursor or selection is a peer: an
+      // agent acting for a user is drawn next to that user's own windows.
       const peer: AwarenessPeer = {
+        clientId: info.id,
         userId: info.userId,
         userName: info.name,
         userAvatar: info.avatar,
+        kind: info.kind ?? connectionKind(info),
         selectedNodeIds: entry.selectedNodeIds,
       };
       if (entry.cursor) peer.cursor = entry.cursor;
@@ -665,6 +706,7 @@ export class ProjectRoom extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets()) {
       const recipientInfo = this.clients.get(ws);
       if (!recipientInfo || recipientInfo.clientType !== "browser") continue;
+      // Only canvases render awareness, so only browser clients receive it.
       // Exclude self by WebSocket identity, not by userId — same user with
       // two tabs open should see their own other-tab cursor.
       const users: AwarenessPeer[] = [];
@@ -678,19 +720,6 @@ export class ProjectRoom extends DurableObject<Env> {
       };
       try {
         this.sendAuthorized(ws, JSON.stringify(msg));
-      } catch {
-        // Connection may have closed
-      }
-    }
-  }
-
-  /**
-   * Broadcast a JSON text message to all connected clients.
-   */
-  private broadcastText(text: string): void {
-    for (const ws of this.ctx.getWebSockets()) {
-      try {
-        this.sendAuthorized(ws, text);
       } catch {
         // Connection may have closed
       }

@@ -15,7 +15,9 @@ const EMPTY_PEERS: Peer[] = [];
 function samePeer(left: Peer, right: Peer): boolean {
   return (
     left === right ||
-    (left.userId === right.userId &&
+    (left.clientId === right.clientId &&
+      left.userId === right.userId &&
+      left.kind === right.kind &&
       left.userName === right.userName &&
       left.userAvatar === right.userAvatar &&
       left.color === right.color &&

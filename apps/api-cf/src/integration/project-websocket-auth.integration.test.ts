@@ -8,6 +8,10 @@ import {
   encode,
   decode,
 } from "loro-protocol";
+import type {
+  AwarenessBroadcastMessage,
+  PresenceMessage,
+} from "@clash/shared-types";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createApp } from "../app";
 import { contentHash } from "../services/project-content";
@@ -273,24 +277,32 @@ it("admits a browser session cookie on /sync without an outbound session lookup"
   expect((await f.request({ cookie: `${cookie}tampered` })).status).toBe(401);
 });
 
-/** Presence is a JSON sideband frame; binary frames are CRDT protocol. */
-function nextPresence(socket: WebSocket) {
-  return new Promise<{
-    clients: Array<{ clientType: string; userId: string; name: string }>;
-  }>((resolve, reject) => {
+/** Sideband frames are JSON text; binary frames are CRDT protocol. */
+function nextSideband<T extends { type: string }>(
+  socket: WebSocket,
+  type: T["type"],
+  accept: (frame: T) => boolean = () => true,
+) {
+  return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(
-      () => reject(new Error("No presence frame")),
+      () => reject(new Error(`No ${type} frame`)),
       5000,
     );
     socket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") return;
       const frame = JSON.parse(event.data);
-      if (frame.type !== "presence") return;
+      if (frame.type !== type || !accept(frame)) return;
       clearTimeout(timer);
       resolve(frame);
     });
   });
 }
+const nextPresence = (socket: WebSocket, clientCount = 1) =>
+  nextSideband<PresenceMessage>(
+    socket,
+    "presence",
+    (frame) => frame.clients.length >= clientCount,
+  );
 
 // #102: an API token's label is not a person. The fixture token is named
 // "integration"; presence must carry the owning user's display name instead.
@@ -299,7 +311,7 @@ it("labels token-authenticated presence with the user's name, not the token name
   // Inserts the users row ("Session fixture") the token's user_id points at.
   await sessionCookie(f.userId, Date.now() + 60_000);
   const first = await connect(f);
-  const presence = nextPresence(first.socket);
+  const presence = nextPresence(first.socket, 2);
   await connect(f, {
     Authorization: `Bearer ${f.token}`,
     "x-client-type": "cli",
@@ -313,6 +325,62 @@ it("labels token-authenticated presence with the user's name, not the token name
     expect(client.userId).toBe(f.userId);
     expect(client.name).toBe("Session fixture");
   }
+});
+
+// #102: a user's other windows and agents are peers. `kind` comes from the
+// credential that admitted the socket, and each socket learns its own id so it
+// hides only itself.
+it("stamps presence and awareness per connection with a server-derived kind", async () => {
+  const f = await fixture();
+  const { cookie } = await sessionCookie(f.userId, Date.now() + 60_000);
+  const browser = await connect(f, { cookie });
+  const agent = await connect(f, {
+    Authorization: `Bearer ${f.token}`,
+    "x-client-type": "cli",
+  });
+  const frames = [
+    nextPresence(browser.socket, 3),
+    nextPresence(agent.socket, 3),
+  ];
+  // A token that declares no client type is still not a person.
+  await connect(f);
+  const [toBrowser, toAgent] = await Promise.all(frames);
+
+  expect(toAgent.clients).toEqual(toBrowser.clients);
+  expect(new Set(toBrowser.clients.map((client) => client.id)).size).toBe(3);
+  expect(toBrowser.selfClientId).not.toBe(toAgent.selfClientId);
+  const self = (frame: PresenceMessage) =>
+    frame.clients.find((client) => client.id === frame.selfClientId);
+  expect(self(toBrowser)).toMatchObject({ clientType: "browser", kind: "human" });
+  expect(self(toAgent)).toMatchObject({ clientType: "cli", kind: "agent" });
+  const undeclared = toBrowser.clients.find(
+    (client) =>
+      client.id !== toBrowser.selfClientId &&
+      client.id !== toAgent.selfClientId,
+  );
+  expect(undeclared).toMatchObject({ clientType: "browser", kind: "agent" });
+  for (const client of toBrowser.clients) {
+    expect(client.userId).toBe(f.userId);
+    expect(client.name).toBe("Session fixture");
+  }
+
+  const awareness = nextSideband<AwarenessBroadcastMessage>(
+    browser.socket,
+    "awareness.broadcast",
+    (frame) => frame.users.length > 0,
+  );
+  const update = { cursor: { x: 120, y: 80 }, selectedNodeIds: ["node-1"] };
+  agent.socket.send(JSON.stringify({ type: "awareness.update", ...update }));
+  // The same user's agent is a peer of the browser; the browser is not its own.
+  expect((await awareness).users).toEqual([
+    {
+      clientId: toAgent.selfClientId,
+      userId: f.userId,
+      userName: "Session fixture",
+      kind: "agent",
+      ...update,
+    },
+  ]);
 });
 
 it.each(["deleted", "expired"])(

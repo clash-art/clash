@@ -105,7 +105,8 @@ interface LoroSyncOptions {
   onNodesChange?: (nodes: Node[]) => void;
   onEdgesChange?: (edges: Edge[]) => void;
   onTaskUpdate?: (taskId: string, taskData: any) => void;
-  onPresenceChange?: (clients: PresenceClient[]) => void;
+  /** `selfClientId` is this socket's own entry in `clients`. */
+  onPresenceChange?: (clients: PresenceClient[], selfClientId?: string) => void;
   onActivity?: (activity: ActivityMessage) => void;
   onMutation?: (mutation: HostMutationRecord) => void;
   /**
@@ -926,7 +927,10 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
               msg.type === "presence" &&
               callbacksRef.current.onPresenceChange
             ) {
-              callbacksRef.current.onPresenceChange(msg.clients);
+              callbacksRef.current.onPresenceChange(
+                msg.clients,
+                msg.selfClientId,
+              );
             } else if (
               msg.type === "activity" &&
               callbacksRef.current.onActivity

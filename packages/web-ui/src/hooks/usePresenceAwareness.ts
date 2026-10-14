@@ -14,12 +14,17 @@
  *     defence-in-depth (a server pause shouldn't strand cursors forever).
  *
  * Identity: the server stamps each WS with the authenticated user's
- * userId/userName/userAvatar — clients can NOT claim their own identity.
- * The broadcast we receive already excludes us, so `peers` here is
- * straightforwardly everyone-else.
+ * userId/userName/userAvatar and its `kind` — clients can NOT claim their
+ * own identity. The broadcast we receive already excludes this socket, so
+ * `peers` here is every other connection, including the same user's other
+ * devices, windows and agents.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AwarenessBroadcastMessage, AwarenessPeer } from '@clash/shared-types';
+import type {
+  AwarenessBroadcastMessage,
+  AwarenessPeer,
+  PresenceKind,
+} from '@clash/shared-types';
 
 /** Outbound throttle for local cursor/selection updates. */
 const SEND_THROTTLE_MS = 50;
@@ -59,7 +64,11 @@ export function colorForUserId(userId: string): string {
 }
 
 export interface Peer {
+  /** Per-connection id; the identity of a peer. */
+  clientId: string;
+  /** Shared by every session of one user, and the source of `color`. */
   userId: string;
+  kind: PresenceKind;
   userName: string;
   userAvatar?: string;
   color: string;
@@ -73,7 +82,7 @@ interface InternalPeer extends Peer {
 }
 
 export interface UsePresenceAwarenessReturn {
-  /** All other connected browser clients with live awareness state. */
+  /** All other connected clients with live awareness state. */
   peers: Peer[];
   /** Update the local cursor in flow coordinates. Pass null/undefined when leaving the canvas. */
   setLocalCursor: (cursor: { x: number; y: number } | null | undefined) => void;
@@ -102,9 +111,8 @@ export function usePresenceAwareness(
 ): UsePresenceAwarenessReturn {
   const { registerOnAwareness, sendSideband } = options;
 
-  // Peer map keyed by userId — same user with two tabs collapses to one peer
-  // (their LAST update wins). That matches user intuition: "where is Alice?"
-  // has one answer per logical user, not one per browser tab.
+  // Peers are keyed by client id — the same user's second window or agent is
+  // its own peer with its own cursor, sharing only the user's name and colour.
   const [peers, setPeers] = useState<Peer[]>([]);
 
   // Latest local state — kept in a ref so the throttle setTimeout can flush
@@ -202,7 +210,7 @@ export function usePresenceAwareness(
         // Merge with any local-only "still alive" entries we haven't yet
         // pruned via stale-sweep — but normally `next` is the whole truth.
         const surviving = current.filter(
-          (p) => !next.some((n) => n.userId === p.userId) &&
+          (p) => !next.some((n) => n.clientId === p.clientId) &&
             // Keep only entries fresh enough to display
             internalLastSeen(p) > now - PEER_STALE_MS,
         );
@@ -268,7 +276,9 @@ const LAST_SEEN_SYMBOL: unique symbol = Symbol('lastSeen');
 
 function peerFromBroadcast(u: AwarenessPeer, now: number): Peer {
   const peer: Peer & { [LAST_SEEN_SYMBOL]?: number } = {
+    clientId: u.clientId,
     userId: u.userId,
+    kind: u.kind,
     userName: u.userName,
     userAvatar: u.userAvatar,
     color: colorForUserId(u.userId),

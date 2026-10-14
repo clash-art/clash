@@ -2489,6 +2489,7 @@ describe("LocalLoroRoom", () => {
       presence: {
         id: "agent-peer",
         clientType: "agent",
+        kind: "agent",
         userId: "local-user",
         name: "Codex",
       },
@@ -2497,6 +2498,7 @@ describe("LocalLoroRoom", () => {
       presence: {
         id: "browser-peer",
         clientType: "browser",
+        kind: "human",
         userId: "local-user",
         name: "Local User",
       },
@@ -3917,17 +3919,24 @@ describe("attachLocalSync", () => {
         expect.arrayContaining([
           expect.objectContaining({
             clientType: "browser",
+            kind: "human",
             userId: "local-user",
             name: "Local User",
           }),
           expect.objectContaining({
             clientType: "agent",
+            kind: "agent",
             userId: "local-user",
             name: "Mock ACP",
           }),
         ]),
       );
     });
+    // The browser is told which entry is its own connection.
+    const latest = browserPresence.at(-1);
+    expect(
+      latest.clients.find((client: any) => client.id === latest.selfClientId),
+    ).toMatchObject({ clientType: "browser" });
 
     const agentDoc = new LoroDoc();
     agentDoc.getMap("nodes").set("ws-agent-shot", {

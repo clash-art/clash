@@ -9,10 +9,20 @@
 
 export type ClientType = "browser" | "cli" | "agent";
 
+/**
+ * Who is behind a connection. Stamped by the server from how the socket
+ * authenticated (browser session = human; API token, JWT, Host, or internal
+ * agent connection = agent). Never inferred from a display name, and never
+ * taken from `clientType`, which is the client's own declaration.
+ */
+export type PresenceKind = "human" | "agent";
+
 export interface ClientInfo {
   id: string;
   userId: string;
   clientType: ClientType;
+  kind: PresenceKind;
+  /** The user the connection acts for, also for an agent connection. */
   name: string;
   avatar?: string;
   connectedAt: number;
@@ -34,8 +44,10 @@ export interface ClientInfo {
 // ─── Sideband Message Types ───────────────────────────────────
 
 export interface PresenceClient {
+  /** Per-connection id: one user with two windows is two clients. */
   id: string;
   clientType: ClientType;
+  kind: PresenceKind;
   userId: string;
   name: string;
   avatar?: string;
@@ -56,6 +68,11 @@ export interface SetEditingNodeMessage {
 export interface PresenceMessage {
   type: "presence";
   clients: PresenceClient[];
+  /**
+   * The receiving socket's own entry in `clients`. A client hides exactly
+   * this id; the same user's other devices and windows remain peers.
+   */
+  selfClientId?: string;
 }
 
 export type ActivityAction = "added" | "updated" | "deleted";
@@ -83,7 +100,9 @@ export interface ActivityMessage {
 // These messages ride the same /sync/:projectId WS as the binary Loro CRDT
 // stream and the presence/activity sideband. They are pure ephemeral state:
 // the server never persists awareness into the Loro doc — it only fans the
-// latest map of (userId → cursor + selection) out to every connected peer.
+// latest map of (client id → cursor + selection) out to every connected peer.
+// The key is the connection, not the user: one user's second window, or an
+// agent acting for that user, is a separate peer.
 //
 // Throttling lives on both ends. The client coalesces local cursor/selection
 // to ~50ms (20Hz) before sending `awareness.update`; the server coalesces
@@ -105,17 +124,20 @@ export interface AwarenessUpdateMessage {
 }
 
 export interface AwarenessPeer {
+  /** Per-connection id, equal to the peer's `PresenceClient.id`. */
+  clientId: string;
   /** Identity stamped by the server from the WS auth — clients can't claim. */
   userId: string;
   userName: string;
   userAvatar?: string;
+  kind: PresenceKind;
   /** Cursor in flow coordinates; absent when the peer's cursor left the canvas. */
   cursor?: { x: number; y: number };
   /** Currently selected node IDs. */
   selectedNodeIds: string[];
 }
 
-/** Server → client: snapshot of every other connected peer's awareness state. */
+/** Server → client: snapshot of every other connected client's awareness state. */
 export interface AwarenessBroadcastMessage {
   type: "awareness.broadcast";
   users: AwarenessPeer[];
@@ -148,4 +170,17 @@ export function isSidebandMessage(msg: unknown): msg is SidebandMessage {
       && typeof error.message === "string" && (error.nodeId === undefined || typeof error.nodeId === "string");
   }
   return t === "presence" || t === "activity" || t === "awareness.broadcast";
+}
+
+/**
+ * Display label for a presence or awareness participant. An agent carries its
+ * user's name, so it is told apart by `kind` alone.
+ */
+export function presenceLabel(participant: {
+  name: string;
+  kind: PresenceKind;
+}): string {
+  return participant.kind === "agent"
+    ? `${participant.name} · Agent`
+    : participant.name;
 }
