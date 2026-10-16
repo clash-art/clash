@@ -1,7 +1,39 @@
-import type {
-  ProjectCloudAdmission,
-  ProjectCloudAdmissionStatus,
+import {
+  classifySyncError,
+  type ProjectCloudAdmission,
+  type ProjectCloudAdmissionStatus,
 } from "@clash/shared-types";
+
+/** Prefix of a failed admission's lastError that needs the user before retrying. */
+export const SYNC_ACTION_REQUIRED_PREFIX = "Action required: ";
+
+export function isActionRequiredSyncFailure(
+  admission: Pick<ProjectCloudAdmission, "status" | "lastError">,
+): boolean {
+  return (
+    admission.status === "failed" &&
+    !!admission.lastError?.startsWith(SYNC_ACTION_REQUIRED_PREFIX)
+  );
+}
+
+/** Map a sync step failure to the lastError shown next to "Retry sync". */
+export function projectCloudSyncFailureMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  const code = (error as { code?: unknown } | null)?.code;
+  const status = (error as { status?: unknown } | null)?.status;
+  const { severity, action } = classifySyncError({
+    code: typeof code === "string" ? code : undefined,
+    httpStatus: typeof status === "number" ? status : undefined,
+  });
+  if (severity !== "user_action_required") return raw;
+  if (action === "free_disk")
+    return `${SYNC_ACTION_REQUIRED_PREFIX}this computer is out of disk space. Free some space, then choose Retry sync. (${raw})`;
+  if (action === "reauthenticate")
+    return `${SYNC_ACTION_REQUIRED_PREFIX}cloud sign-in expired or access was revoked. Sign in again, then choose Retry sync. (${raw})`;
+  if (action === "reduce_size")
+    return `${SYNC_ACTION_REQUIRED_PREFIX}a file or project field is too large for cloud sync. Reduce it, then choose Retry sync. (${raw})`;
+  return `${SYNC_ACTION_REQUIRED_PREFIX}${raw}`;
+}
 
 export interface ProjectCloudSyncObservation {
   admission: ProjectCloudAdmission;
@@ -98,7 +130,7 @@ export function createProjectCloudSyncCoordinator(options: {
         changed: !!committed,
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = projectCloudSyncFailureMessage(error);
       const committed = await options.state.compareAndSet(
         syncing,
         withStatus(syncing.admission, "failed", now().toISOString(), message),

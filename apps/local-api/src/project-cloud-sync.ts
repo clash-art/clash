@@ -1,7 +1,10 @@
 import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
-import { createProjectCloudSyncCoordinator } from "@clash/shared-runtime/project-cloud-sync";
+import {
+  createProjectCloudSyncCoordinator,
+  isActionRequiredSyncFailure,
+} from "@clash/shared-runtime/project-cloud-sync";
 import {
   createProjectMetadataReplicator,
   metadataBodyBlobPath,
@@ -564,7 +567,13 @@ export function createLocalProjectCloudSync(
         projectId,
         replicaId,
       );
-      if (admission && admission.status !== "local-only")
+      // Auth/disk/size failures cannot fix themselves; the user's Retry sync
+      // (invalidate) resumes them. Retrying every 30 s would only loop.
+      if (
+        admission &&
+        admission.status !== "local-only" &&
+        !isActionRequiredSyncFailure(admission)
+      )
         void schedule(projectId);
     }
   }
