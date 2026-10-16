@@ -45,7 +45,6 @@ import type {
   ClientInfo,
   ClientType,
   PresenceKind,
-  PresenceMessage,
   ActivityMessage,
   ActivityAction,
   AwarenessBroadcastMessage,
@@ -135,6 +134,16 @@ export class ProjectRoom extends DurableObject<Env> {
   /** Connected client identity map for presence tracking. */
   private clients: Map<WebSocket, ProjectClientInfo> = new Map();
   private protocolSessions = new Map<WebSocket, LoroProtocolServerSession>();
+  /**
+   * Revalidation results shared by every socket presenting the same identity
+   * proof (one user's windows, Hosts and agents). Without this each socket
+   * queried D1 every TTL, so D1 load grew linearly with room size and became
+   * the first fan-out bottleneck (~130-150 sockets on staging).
+   */
+  private sharedAuthorization = new Map<
+    string,
+    { validUntil: number; result: Promise<boolean> }
+  >();
   private socketAuthorization = new WeakMap<
     WebSocket,
     {
@@ -474,17 +483,24 @@ export class ProjectRoom extends DurableObject<Env> {
       inFlight: undefined as Promise<boolean> | undefined,
     };
     this.socketAuthorization.set(ws, entry);
+    let validUntil = Date.now() + SOCKET_AUTHORIZATION_TTL_MS;
     entry.inFlight = (async () => {
       const authorized = !!(
         info?.projectAuthorization &&
         (!this.projectId ||
           info.projectAuthorization.projectId === this.projectId) &&
-        (await revalidateProjectConnection(this.env, info.projectAuthorization))
+        (await this.revalidateShared(info.projectAuthorization, (until) => {
+          validUntil = until;
+        }))
       );
       // A close/error during D1 must not restore authorization or send a frame.
       if (this.socketAuthorization.get(ws) !== entry) return false;
       if (authorized) {
-        entry.expiresAt = Date.now() + SOCKET_AUTHORIZATION_TTL_MS;
+        // Never trust a shared result longer than TTL after it was checked.
+        entry.expiresAt = Math.min(
+          validUntil,
+          Date.now() + SOCKET_AUTHORIZATION_TTL_MS,
+        );
         return true;
       }
       ws.close(1008, "Project authorization expired or revoked");
@@ -502,13 +518,44 @@ export class ProjectRoom extends DurableObject<Env> {
   }
 
   /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
+  private revalidateShared(
+    auth: AuthResult,
+    onValidUntil: (validUntil: number) => void,
+  ): Promise<boolean> {
+    const key = JSON.stringify(auth);
+    const now = Date.now();
+    let hit = this.sharedAuthorization.get(key);
+    if (!hit || now >= hit.validUntil) {
+      if (this.sharedAuthorization.size > 1024) {
+        for (const [k, v] of this.sharedAuthorization)
+          if (now >= v.validUntil) this.sharedAuthorization.delete(k);
+      }
+      const created = {
+        validUntil: now + SOCKET_AUTHORIZATION_TTL_MS,
+        result: revalidateProjectConnection(this.env, auth),
+      };
+      // A failed check is not cached: the next socket retries it.
+      created.result.catch(() => {
+        if (this.sharedAuthorization.get(key) === created)
+          this.sharedAuthorization.delete(key);
+      });
+      this.sharedAuthorization.set(key, created);
+      hit = created;
+    }
+    onValidUntil(hit.validUntil);
+    return hit.result;
+  }
+
   private sendAuthorized(ws: WebSocket, data: string | Uint8Array): void {
     const pending = (this.outbound.get(ws) ?? Promise.resolve())
       .then(async () => {
         const authorization = this.authorizeSocket(ws);
         if (
-          authorization === true ||
-          (authorization !== false && (await authorization))
+          (authorization === true ||
+            (authorization !== false && (await authorization))) &&
+          // A socket can close while authorization or earlier sends were in
+          // flight. That is a normal disconnect, not a delivery error.
+          !(ws.readyState >= 2) // 2 CLOSING, 3 CLOSED
         )
           ws.send(data);
       })
@@ -558,15 +605,18 @@ export class ProjectRoom extends DurableObject<Env> {
     updates: Uint8Array[],
     sender?: WebSocket,
   ): void {
+    // Encode once per batch, not once per recipient.
+    let frames: Uint8Array[] | undefined;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === sender) continue;
       try {
         if (this.isProtocolClient(ws)) {
-          for (const frame of encodeLoroProtocolUpdateFrames(
+          frames ??= encodeLoroProtocolUpdateFrames(
             this.projectId,
             batchId,
             updates,
-          )) {
+          );
+          for (const frame of frames) {
             this.sendAuthorized(ws, frame);
           }
         } else {
@@ -630,15 +680,16 @@ export class ProjectRoom extends DurableObject<Env> {
 
     log.debug(`Presence: ${clients.length} clients`);
 
+    // Serialize the shared list once; only selfClientId differs per socket.
+    // Same JSON as JSON.stringify({ type, clients, selfClientId? }).
+    const head = `{"type":"presence","clients":${JSON.stringify(clients)}`;
     for (const ws of this.ctx.getWebSockets()) {
       const selfClientId = this.clients.get(ws)?.id;
-      const msg: PresenceMessage = {
-        type: "presence",
-        clients,
-        ...(selfClientId ? { selfClientId } : {}),
-      };
+      const msg = selfClientId
+        ? `${head},"selfClientId":${JSON.stringify(selfClientId)}}`
+        : `${head}}`;
       try {
-        this.sendAuthorized(ws, JSON.stringify(msg));
+        this.sendAuthorized(ws, msg);
       } catch {
         // Connection may have closed
       }
