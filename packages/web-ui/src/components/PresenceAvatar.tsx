@@ -30,7 +30,7 @@ export function PresenceAgentBadge() {
     <span
       data-presence-agent-badge
       aria-hidden="true"
-      className="absolute -bottom-0.5 -right-0.5 inline-flex size-3.5 items-center justify-center rounded-full bg-warm-surface shadow-sm ring-2 ring-warm-surface"
+      className="absolute -bottom-0.5 -right-0.5 inline-flex size-3.5 items-center justify-center drop-shadow-[0_0_1px_rgba(0,0,0,0.45)]"
     >
       <AgentMotion
         decorative

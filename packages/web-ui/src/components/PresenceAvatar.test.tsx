@@ -41,6 +41,16 @@ describe("presence identity", () => {
     expect(agentCursor.textContent).toBe("Ann Lee · Agent");
     expect(agentBadges(humanCursor)).toHaveLength(0);
     expect(agentBadges(agentCursor)).toHaveLength(1);
+    const badge = agentBadges(agentCursor)[0];
+    expect(badge.classList.contains("rounded-full")).toBe(false);
+    expect(
+      Array.from(badge.classList).some((name) => name.startsWith("ring-")),
+    ).toBe(false);
+    expect(badge.classList.contains("bg-warm-surface")).toBe(false);
+    expect(badge.classList.contains("shadow-sm")).toBe(false);
+    expect(
+      badge.classList.contains("drop-shadow-[0_0_1px_rgba(0,0,0,0.45)]"),
+    ).toBe(true);
 
     const label = (cursor: Element) =>
       cursor.querySelector('[data-slot="badge"][data-presence-kind]');
