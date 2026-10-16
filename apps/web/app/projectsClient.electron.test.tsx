@@ -5,14 +5,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import ProjectsClient from "@clash/web-ui/components/ProjectsClient";
 import { createProject } from "@clash/web-ui/lib/clientActions";
 
-vi.mock("@phosphor-icons/react", () => ({
-  Plus: ({ className, ...props }: any) => (
-    <span data-testid="plus-icon" className={className} {...props} />
-  ),
-  X: ({ className, ...props }: any) => (
-    <span data-testid="close-icon" className={className} {...props} />
-  ),
-}));
+vi.mock("@phosphor-icons/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@phosphor-icons/react")>();
+  return {
+    ...actual,
+    Plus: ({ className, ...props }: any) => (
+      <span data-testid="plus-icon" className={className} {...props} />
+    ),
+    X: ({ className, ...props }: any) => (
+      <span data-testid="close-icon" className={className} {...props} />
+    ),
+  };
+});
 
 vi.mock("@clash/web-ui/lib/clientActions", () => ({
   createProject: vi.fn().mockResolvedValue(undefined),

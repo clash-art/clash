@@ -122,7 +122,7 @@ describe("home loader marketplace feed", () => {
           return Response.json([{ skillId: "clash.video.sd25-pe" }]);
         }
         if (path === "/api/v1/local/plugins") {
-          return Response.json([{ id: "clash.storyboard" }]);
+          return Response.json([{ id: "clash.storyboard", drifted: false }]);
         }
         throw new Error(`Unexpected request: ${path}`);
       }),

@@ -188,7 +188,12 @@ export default function LoginRoute() {
               aria-label="Clash home"
               className="login-brand items-center gap-2 font-display text-xl font-semibold"
             >
-              <BrandAsset name="mark" alt="" className="size-8" />
+              <BrandAsset name="mark" alt="" className="size-8 dark:hidden" />
+              <BrandAsset
+                name="markDark"
+                alt=""
+                className="hidden size-8 dark:block"
+              />
               Clash
             </Link>
             <motion.div
