@@ -1,3 +1,5 @@
+import { ProjectMetadataStaleError } from "@clash/shared-runtime";
+export { ProjectMetadataStaleError } from "@clash/shared-runtime";
 import { hasLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
 import { assertLocalPeerModelProjectionMutation } from "./local-model-peer-guard.js";
 import { LocalProjectUpgradeError, type LocalProjectUpgrade } from "./local-project-upgrade.js";
@@ -431,6 +433,17 @@ export function createHttpRemoteLoroPersistence(
           body: JSON.stringify({ schemaVersion: 1, metadata }),
         },
       );
+      if (response.status === 409) {
+        const { schemaVersion, metadata } = (await response.json()) as {
+          schemaVersion: unknown;
+          metadata: unknown;
+        };
+        const payload = ProjectMetadataEnvelopeSchema.parse({
+          schemaVersion,
+          metadata,
+        });
+        throw new ProjectMetadataStaleError(payload.metadata);
+      }
       await assertRemoteOk(response, "metadata save");
     },
     createLink({ projectId, doc, commit }) {

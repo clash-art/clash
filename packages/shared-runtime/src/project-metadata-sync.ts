@@ -3,6 +3,14 @@ import {
   type ProjectMetadata,
 } from "@clash/shared-types";
 
+/** The remote rejected a push because a newer metadata write already won. */
+export class ProjectMetadataStaleError extends Error {
+  constructor(readonly metadata: ProjectMetadata) {
+    super("Project metadata is stale");
+    this.name = "ProjectMetadataStaleError";
+  }
+}
+
 export interface ProjectMetadataStore {
   read(): Promise<ProjectMetadata | null>;
   write(metadata: ProjectMetadata): Promise<void>;
@@ -72,6 +80,20 @@ function compareMetadata(
 export function createProjectMetadataReplicator(
   options: ProjectMetadataReplicatorOptions,
 ) {
+  async function push(
+    metadata: ProjectMetadata,
+  ): Promise<ProjectMetadataSyncResult | null> {
+    try {
+      await options.remote.push(metadata);
+      return null;
+    } catch (error) {
+      if (!(error instanceof ProjectMetadataStaleError)) throw error;
+      const current = ProjectMetadataSchema.parse(error.metadata);
+      await options.local.write(current);
+      return { status: "pulled", metadata: current };
+    }
+  }
+
   return {
     async sync(): Promise<ProjectMetadataSyncResult> {
       if (options.enabled !== true) return { status: "disabled" };
@@ -87,7 +109,8 @@ export function createProjectMetadataReplicator(
         return { status: "pulled", metadata: remote };
       }
       if (local && !remote) {
-        await options.remote.push(local);
+        const stale = await push(local);
+        if (stale) return stale;
         return { status: "pushed", metadata: local };
       }
 
@@ -105,7 +128,8 @@ export function createProjectMetadataReplicator(
         return { status: "pulled", metadata: remote };
       }
       if (winner === "local" || winner === "conflict-local") {
-        await options.remote.push(local);
+        const stale = await push(local);
+        if (stale) return stale;
         return {
           ...(winner === "conflict-local"
             ? { status: "conflict" as const, winner: "local" as const }

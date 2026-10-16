@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createProjectMetadataReplicator,
+  ProjectMetadataStaleError,
   type ProjectMetadataStore,
   type ProjectMetadataSyncRemote,
 } from "./project-metadata-sync.js";
@@ -51,6 +52,33 @@ describe("project metadata replicator", () => {
     expect(remote.push).not.toHaveBeenCalled();
     expect(local.value).toEqual(metadata);
   });
+
+  it.each([null, { ...metadata, updatedAt: metadata.createdAt }])(
+    "adopts remote metadata when a concurrent write wins after pull (%s)",
+    async (pulled) => {
+      const local = localStore(metadata);
+      const current = {
+        ...metadata,
+        name: "Concurrent edit",
+        updatedAt: "2026-09-04T00:02:00.000Z",
+      };
+      const remote = {
+        pull: vi.fn().mockResolvedValue(pulled),
+        push: vi.fn().mockRejectedValue(new ProjectMetadataStaleError(current)),
+      };
+      const replicator = createProjectMetadataReplicator({
+        enabled: true,
+        local,
+        remote,
+      });
+      await expect(replicator.sync()).resolves.toEqual({
+        status: "pulled",
+        metadata: current,
+      });
+      expect(remote.push).toHaveBeenCalledWith(metadata);
+      expect(local.value).toEqual(current);
+    },
+  );
 
   it("pushes local metadata when the cloud has no copy", async () => {
     const local = localStore(metadata);

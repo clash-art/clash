@@ -128,6 +128,7 @@ export {
 
 export {
   createProjectMetadataReplicator,
+  ProjectMetadataStaleError,
   type ProjectMetadataReplicatorOptions,
   type ProjectMetadataStore,
   type ProjectMetadataSyncRemote,
