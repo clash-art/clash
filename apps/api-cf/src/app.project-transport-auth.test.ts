@@ -307,6 +307,28 @@ describe("public project transport authorization", () => {
       expect(read()).toEqual(current);
     });
 
+    it("rejects oversized metadata with 413 and leaves the row unchanged", async () => {
+      const { app, env, read } = deleted();
+      const before = read();
+      const authorization = `Bearer ${await token()}`;
+      for (const metadata of [
+        { ...before, description: "a".repeat(64 * 1024 + 1) },
+        { ...before, name: "n".repeat(513) },
+      ]) {
+        const pushed = await app.request(
+          "/loro/project/metadata",
+          {
+            method: "PUT",
+            headers: { authorization, "content-type": "application/json" },
+            body: JSON.stringify({ schemaVersion: 1, metadata }),
+          },
+          env,
+        );
+        expect(pushed.status).toBe(413);
+      }
+      expect(read()).toEqual(before);
+    });
+
     it("still denies another user", async () => {
       const { app, env } = deleted("someone-else");
       const response = await app.request(

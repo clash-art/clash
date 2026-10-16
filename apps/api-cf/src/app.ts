@@ -52,6 +52,10 @@ import {
   type CloudProjectAdmissionStore,
 } from "./services/cloud-project-admission";
 
+
+export const PROJECT_METADATA_NAME_MAX = 512;
+export const PROJECT_METADATA_DESCRIPTION_MAX = 64 * 1024;
+
 export interface CreateAppOptions {
   plugins?: Plugin[];
   /** Resolver supplied by the deployment's Resource Registry; storage locators stay private. */
@@ -244,6 +248,15 @@ export function createApp(
     );
     if (!parsed.success || parsed.data.metadata.projectId !== projectId) {
       return c.json({ error: "Invalid Project metadata envelope" }, 400);
+    }
+    // Issue #116: bound free-text fields before they reach D1, so one PUT
+    // cannot store megabytes in the project row that every Host then pulls.
+    if (
+      parsed.data.metadata.name.length > PROJECT_METADATA_NAME_MAX ||
+      (parsed.data.metadata.description?.length ?? 0) >
+        PROJECT_METADATA_DESCRIPTION_MAX
+    ) {
+      return c.json({ error: "Project metadata too large" }, 413);
     }
     const store =
       opts.projectMetadataStore?.(c.env) ??
