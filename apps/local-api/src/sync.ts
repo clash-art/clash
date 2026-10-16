@@ -1261,7 +1261,11 @@ export class LocalLoroRoom {
       .map((peer) => peer.presence)
       .filter((client): client is PresenceClient => !!client);
     for (const peer of this.peers.values()) {
-      peer.sendJson?.({ type: "presence", clients });
+      peer.sendJson?.({
+        type: "presence",
+        clients,
+        ...(peer.presence ? { selfClientId: peer.presence.id } : {}),
+      });
     }
   }
 }
@@ -1585,6 +1589,9 @@ function presenceFromHeaders(
   return {
     id: randomUUID(),
     clientType,
+    // The loopback Host has no session/token split; a local browser surface
+    // is the person and every other local client is an agent.
+    kind: clientType === "browser" ? "human" : "agent",
     userId,
     name,
   };

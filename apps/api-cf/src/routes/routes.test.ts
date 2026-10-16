@@ -90,7 +90,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
   env.DB = {
     ...routeDb,
     prepare: vi.fn((sql: string) => {
-      if (sql.includes("FROM api_token WHERE token_hash")) {
+      if (sql.includes("FROM api_token")) {
         return {
           bind: vi.fn(() => ({
             all: vi

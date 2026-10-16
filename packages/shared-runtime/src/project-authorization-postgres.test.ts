@@ -21,6 +21,7 @@ async function fixture() {
   const db = new PGlite(path);
   await db.exec(`CREATE TABLE project (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, deleted_at TIMESTAMPTZ);
     CREATE TABLE api_token (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT, last_used_at TIMESTAMPTZ);
+    CREATE TABLE auth_user (id TEXT PRIMARY KEY, name TEXT NOT NULL, image TEXT);
     CREATE TABLE auth_session (id TEXT PRIMARY KEY, "userId" TEXT NOT NULL, "expiresAt" TIMESTAMPTZ NOT NULL);
     INSERT INTO project VALUES ('project', 'owner', NULL);`);
   return { db, path };
@@ -124,6 +125,31 @@ describe("PostgreSQL project authorization", () => {
       ).rejects.toThrow();
       await db.exec("DELETE FROM auth_session");
       expect(await auth.revalidate(identity)).toBe(false);
+    } finally {
+      await db.close();
+    }
+  });
+  // #102: the token's label ("Clash CLI") was reported as the person's name.
+  it("names a token-authenticated identity after its user, keeping the token label separate", async () => {
+    const { db } = await fixture();
+    try {
+      await db.query(
+        "INSERT INTO api_token VALUES ($1, 'owner', 'Token label', NULL)",
+        [await hash("clsh_owner")],
+      );
+      const auth = authenticator(db);
+      // A token whose user row is absent has no display name to report.
+      expect(
+        (await auth.authenticate(request(), "project")).userName,
+      ).toBeUndefined();
+      await db.query(
+        "INSERT INTO auth_user VALUES ('owner', 'Owner Person', 'https://cdn.example/owner.png')",
+      );
+      expect(await auth.authenticate(request(), "project")).toMatchObject({
+        userName: "Owner Person",
+        userAvatar: "https://cdn.example/owner.png",
+        credentialName: "Token label",
+      });
     } finally {
       await db.close();
     }

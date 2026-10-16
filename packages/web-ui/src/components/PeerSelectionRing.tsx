@@ -13,6 +13,7 @@
  */
 import { memo } from 'react';
 import type { Peer } from '@clash/web-ui/hooks/usePresenceAwareness';
+import { PresenceNameBadge } from './PresenceAvatar';
 
 interface PeerSelectionRingProps {
   /** Peers (filtered to those selecting THIS node). */
@@ -35,7 +36,7 @@ function PeerSelectionRingImpl({ peers }: PeerSelectionRingProps) {
         const showOverflowOnThis = overflow > 0 && idx === visible.length - 1;
         return (
           <div
-            key={peer.userId}
+            key={peer.clientId}
             className="pointer-events-none absolute rounded-2xl"
             style={{
               top: inset,
@@ -49,18 +50,17 @@ function PeerSelectionRingImpl({ peers }: PeerSelectionRingProps) {
               zIndex: 0,
             }}
           >
-            <div
-              className="absolute -top-5 left-0 whitespace-nowrap rounded-md px-1.5 py-px text-[10px] font-semibold text-white shadow-sm"
-              style={{
-                background: peer.color,
-                textShadow: '0 1px 0 rgba(0,0,0,0.15)',
-              }}
+            <PresenceNameBadge
+              name={peer.userName}
+              kind={peer.kind}
+              color={peer.color}
+              agentIcon
+              className="absolute -top-6 left-0"
             >
-              {peer.userName}
               {showOverflowOnThis && (
-                <span className="ml-1 opacity-80">+{overflow}</span>
+                <span className="opacity-80">+{overflow}</span>
               )}
-            </div>
+            </PresenceNameBadge>
           </div>
         );
       })}

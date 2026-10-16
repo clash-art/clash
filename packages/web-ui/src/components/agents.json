@@ -31,6 +31,7 @@
     "copilot/AgentAnnotationBlock.tsx": "Special composer block for editable agent-addressable review notes from Canvas, Timeline, and Director Stage.",
     "copilot/AgentAnnotationContextMenu.tsx": "Shared context-menu action that sends an addressable workspace object into the composer.",
     "copilot/AgentSelectionAnnotationOverlay.tsx": "Captures native text selections inside creative surfaces, renders numbered anchored highlights, and queues an optional comment through the shared agent annotation contract.",
+    "PresenceAvatar.tsx": "Single collaborator identity (shared Avatar + Badge) for the peer list, cursors and selection rings. Sessions of one user share avatar, name and colour; a server-stamped agent kind adds the corner agent badge.",
     "PresenceAwarenessContext.tsx": "Stable external presence store; canvas cards subscribe to per-node peer arrays and attribution subscribes to a user name, so unrelated cursor broadcasts do not rerender the card tree.",
     "LoroSyncContext.tsx": "React Context provider for the Loro CRDT sync engine.",
     "CanvasViewContext.tsx": "Navigation context for generator-free Canvas View nodes that open their referenced draft Canvas.",

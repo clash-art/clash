@@ -8,6 +8,7 @@ function readSource(path: string): string {
 describe('PresenceBar tooltip primitives', () => {
   it('uses the shared tooltip primitive instead of local Ariakit tooltip plumbing', () => {
     const source = readSource('packages/web-ui/src/components/PresenceBar.tsx');
+    const avatarSource = readSource('packages/web-ui/src/components/PresenceAvatar.tsx');
     const tooltipSource = readSource('packages/gui/src/components/ui/tooltip.tsx');
 
     expect(tooltipSource).toContain('@ariakit/react');
@@ -15,10 +16,14 @@ describe('PresenceBar tooltip primitives', () => {
     expect(tooltipSource).toContain('TooltipAnchor');
     expect(source).toContain('./ui/tooltip');
     expect(source).toContain('./ui/avatar');
-    expect(source).toContain('<Tooltip label={client.name}>');
-    expect(source).toContain('<AvatarRoot');
-    expect(source).toContain('<AvatarImage');
-    expect(source).toContain('<AvatarFallback');
+    expect(source).toContain('<Tooltip label={presenceLabel(client)}>');
+    expect(source).toContain('<PresenceAvatar');
+    expect(avatarSource).toContain('./ui/avatar');
+    expect(avatarSource).toContain('./ui/badge');
+    expect(avatarSource).toContain('<AvatarRoot');
+    expect(avatarSource).toContain('<AvatarImage');
+    expect(avatarSource).toContain('<AvatarFallback');
+    expect(avatarSource).not.toContain('<svg');
     expect(source).not.toContain("Avatar as AvatarPrimitive");
     expect(source).not.toContain('AvatarPrimitive.');
     expect(source).not.toContain("from 'radix-ui'");

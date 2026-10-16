@@ -12,7 +12,9 @@ import {
 
 afterEach(cleanup);
 const peer: Peer = {
+  clientId: "alice-window",
   userId: "alice",
+  kind: "human",
   userName: "Alice",
   color: "red",
   selectedNodeIds: ["chosen"],
