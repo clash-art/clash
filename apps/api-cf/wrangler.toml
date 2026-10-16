@@ -14,6 +14,16 @@ compatibility_flags = ["nodejs_compat"]
 # instead of rewriting every source import.
 [alias]
 "loro-crdt" = "loro-crdt/bundler"
+# Bundle ONE copy of @clash/shared-types. api-cf imports it from source via
+# tsconfig paths, but other workspace packages resolve its package exports to
+# dist/, so without this the bundle carried two copies and ran its top-level
+# init (zod schemas, JSON-schema catalog, DSL fingerprint) twice at startup.
+"@clash/shared-types" = "../../packages/shared-types/src/index.ts"
+"@clash/shared-types/assets" = "../../packages/shared-types/src/assets.ts"
+"@clash/shared-types/executable-plugin" = "../../packages/shared-types/src/executable-plugin.ts"
+"@clash/shared-types/actions/asset-edit" = "../../packages/shared-types/src/actions/asset-edit.ts"
+"@clash/shared-types/project-sync-content" = "../../packages/shared-types/src/project-sync-content.ts"
+"@clash/shared-types/marketplace-installation" = "../../packages/shared-types/src/marketplace-installation.ts"
 
 # Static `.wasm` imports (loro-crdt/bundler) must be bundled as precompiled
 # WebAssembly modules rather than fetched or eval'd at runtime.

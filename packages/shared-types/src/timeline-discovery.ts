@@ -1,6 +1,4 @@
-import {
-  TIMELINE_DSL_FIELD_CATALOG,
-} from "./timeline-field-annotations.js";
+import { TIMELINE_DSL_FIELD_CATALOG } from "./timeline-field-annotations.js";
 import {
   TIMELINE_DSL_DEFINITION,
   TIMELINE_DSL_SEMANTIC_RULES,
@@ -35,8 +33,9 @@ function authoringFields(
 ): Record<string, AuthoringField> {
   return Object.fromEntries(
     Object.entries(fields)
-      .filter(([, field]) =>
-        field.authored !== false && field.persistence !== "discard"
+      .filter(
+        ([, field]) =>
+          field.authored !== false && field.persistence !== "discard",
       )
       .map(([name, field]) => [
         name,
@@ -122,79 +121,86 @@ const basicAuthoringState: ResolvedTimelineDsl = {
   ],
 };
 
-const authoringDiscovery = {
-  view: "authoring",
-  schemaVersion: TIMELINE_DSL_DEFINITION.schemaVersion,
-  contractFingerprint: TIMELINE_DSL_DEFINITION.contractFingerprint,
-  format: TIMELINE_DSL_DEFINITION.format,
-  fields: {
-    version: TIMELINE_DSL_FIELD_CATALOG.version,
-    root: authoringFields(TIMELINE_DSL_FIELD_CATALOG.root.fields),
-    track: authoringTrackFields,
-    itemBase: authoringFields(TIMELINE_DSL_FIELD_CATALOG.itemBase.fields),
-    itemTypes: Object.fromEntries(
-      Object.entries(TIMELINE_DSL_FIELD_CATALOG.itemTypes).map(
-        ([itemType, descriptor]) => [
-          itemType,
-          authoringFields(descriptor.fields),
-        ],
+// Built on first use: it reads the DSL contract fingerprint and renders YAML,
+// which is too much CPU to spend at module load (Worker startup budget).
+function buildAuthoringDiscovery() {
+  return {
+    view: "authoring",
+    schemaVersion: TIMELINE_DSL_DEFINITION.schemaVersion,
+    contractFingerprint: TIMELINE_DSL_DEFINITION.contractFingerprint,
+    format: TIMELINE_DSL_DEFINITION.format,
+    fields: {
+      version: TIMELINE_DSL_FIELD_CATALOG.version,
+      root: authoringFields(TIMELINE_DSL_FIELD_CATALOG.root.fields),
+      track: authoringTrackFields,
+      itemBase: authoringFields(TIMELINE_DSL_FIELD_CATALOG.itemBase.fields),
+      itemTypes: Object.fromEntries(
+        Object.entries(TIMELINE_DSL_FIELD_CATALOG.itemTypes).map(
+          ([itemType, descriptor]) => [
+            itemType,
+            authoringFields(descriptor.fields),
+          ],
+        ),
       ),
-    ),
-  },
-  taxonomy: {
-    itemTypes: TIMELINE_DSL_DEFINITION.taxonomy.itemTypes,
-    trackCategoryOrder: TIMELINE_DSL_DEFINITION.taxonomy.trackCategories,
-    trackRoles: TIMELINE_DSL_DEFINITION.taxonomy.trackRoles,
-    categoryAllowedItemTypes:
-      TIMELINE_DSL_DEFINITION.taxonomy.categoryAllowedItemTypes,
-    roleAllowedItemTypes:
-      TIMELINE_DSL_DEFINITION.taxonomy.roleAllowedItemTypes,
-    roleCategories: TIMELINE_DSL_DEFINITION.taxonomy.roleCategories,
-    mediaFits: TIMELINE_DSL_DEFINITION.taxonomy.mediaFits,
-    clipAnimationTypes:
-      TIMELINE_DSL_DEFINITION.taxonomy.clipAnimationTypes,
-    textAlignments: TIMELINE_DSL_DEFINITION.taxonomy.textAlignments,
-    captionPositions: TIMELINE_DSL_DEFINITION.taxonomy.captionPositions,
-    compositionKinds: TIMELINE_DSL_DEFINITION.taxonomy.compositionKinds,
-    compositionRuntimes:
-      TIMELINE_DSL_DEFINITION.taxonomy.compositionRuntimes,
-    derivedMediaTypes:
-      TIMELINE_DSL_DEFINITION.taxonomy.derivedMediaTypes,
-    derivationKinds: TIMELINE_DSL_DEFINITION.taxonomy.derivationKinds,
-    transitionTypes: TIMELINE_DSL_DEFINITION.taxonomy.transitionTypes,
-  },
-  semanticRules: TIMELINE_DSL_SEMANTIC_RULES,
-  references: {
-    assetId: {
-      target: "project-asset",
-      description:
-        "For a Stage capture, follow Stage revision -> capture receipt -> immutable Project Asset -> downstream Timeline item.assetId. The producer Stage or Action is not mutated.",
     },
-    sourceNodeId: {
-      target: "canvas-node",
-      description:
-        "Reference a Canvas-owned Remotion component through Timeline item.sourceNodeId; resolve it for rendering without copying component source into persisted Timeline state.",
+    taxonomy: {
+      itemTypes: TIMELINE_DSL_DEFINITION.taxonomy.itemTypes,
+      trackCategoryOrder: TIMELINE_DSL_DEFINITION.taxonomy.trackCategories,
+      trackRoles: TIMELINE_DSL_DEFINITION.taxonomy.trackRoles,
+      categoryAllowedItemTypes:
+        TIMELINE_DSL_DEFINITION.taxonomy.categoryAllowedItemTypes,
+      roleAllowedItemTypes:
+        TIMELINE_DSL_DEFINITION.taxonomy.roleAllowedItemTypes,
+      roleCategories: TIMELINE_DSL_DEFINITION.taxonomy.roleCategories,
+      mediaFits: TIMELINE_DSL_DEFINITION.taxonomy.mediaFits,
+      clipAnimationTypes: TIMELINE_DSL_DEFINITION.taxonomy.clipAnimationTypes,
+      textAlignments: TIMELINE_DSL_DEFINITION.taxonomy.textAlignments,
+      captionPositions: TIMELINE_DSL_DEFINITION.taxonomy.captionPositions,
+      compositionKinds: TIMELINE_DSL_DEFINITION.taxonomy.compositionKinds,
+      compositionRuntimes: TIMELINE_DSL_DEFINITION.taxonomy.compositionRuntimes,
+      derivedMediaTypes: TIMELINE_DSL_DEFINITION.taxonomy.derivedMediaTypes,
+      derivationKinds: TIMELINE_DSL_DEFINITION.taxonomy.derivationKinds,
+      transitionTypes: TIMELINE_DSL_DEFINITION.taxonomy.transitionTypes,
     },
-  },
-  examples: {
-    basic: {
-      description:
-        "Plain text, a Project Asset image, and a Canvas-owned Remotion component in canonical track order.",
-      state: basicAuthoringState,
-      yaml: timelineDslToYaml(basicAuthoringState),
+    semanticRules: TIMELINE_DSL_SEMANTIC_RULES,
+    references: {
+      assetId: {
+        target: "project-asset",
+        description:
+          "For a Stage capture, follow Stage revision -> capture receipt -> immutable Project Asset -> downstream Timeline item.assetId. The producer Stage or Action is not mutated.",
+      },
+      sourceNodeId: {
+        target: "canvas-node",
+        description:
+          "Reference a Canvas-owned Remotion component through Timeline item.sourceNodeId; resolve it for rendering without copying component source into persisted Timeline state.",
+      },
     },
-  },
-  submission: {
-    validation: "automatic",
-    operations: ["timeline.create", "timeline.save", "timeline.apply"],
-    diagnosticOperation: "timeline.validate",
-    diagnosticRequired: false,
-  },
-  nextView: "full",
-} as const;
+    examples: {
+      basic: {
+        description:
+          "Plain text, a Project Asset image, and a Canvas-owned Remotion component in canonical track order.",
+        state: basicAuthoringState,
+        yaml: timelineDslToYaml(basicAuthoringState),
+      },
+    },
+    submission: {
+      validation: "automatic",
+      operations: ["timeline.create", "timeline.save", "timeline.apply"],
+      diagnosticOperation: "timeline.validate",
+      diagnosticRequired: false,
+    },
+    nextView: "full",
+  } as const;
+}
 
-export type TimelineAuthoringDiscovery = typeof authoringDiscovery;
-export type TimelineDiscovery = TimelineAuthoringDiscovery | TimelineDslDefinition;
+let authoringDiscoveryCache:
+  ReturnType<typeof buildAuthoringDiscovery> | undefined;
+
+export type TimelineAuthoringDiscovery = ReturnType<
+  typeof buildAuthoringDiscovery
+>;
+export type TimelineDiscovery =
+  TimelineAuthoringDiscovery | TimelineDslDefinition;
 
 export function timelineDslDiscovery(
   view: TimelineDiscoveryView = "authoring",
@@ -205,5 +211,6 @@ export function timelineDslDiscovery(
   if (view !== "authoring") {
     throw new Error(`Unsupported Timeline discovery view: ${String(view)}`);
   }
-  return structuredClone(authoringDiscovery);
+  authoringDiscoveryCache ??= buildAuthoringDiscovery();
+  return structuredClone(authoringDiscoveryCache);
 }

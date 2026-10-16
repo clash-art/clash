@@ -576,11 +576,27 @@ const timelineDslSerializableDefinition = {
   },
 } as const;
 
-export const TIMELINE_DSL_DEFINITION = {
-  ...timelineDslSerializableDefinition,
-  contractFingerprint: timelineDslContractFingerprint(
-    timelineDslSerializableDefinition,
-  ),
-} as const;
+let timelineDslContractFingerprintCache: string | undefined;
+
+// The fingerprint canonicalizes the whole definition (incl. the operation
+// catalog's JSON Schemas); compute it on first read, not at module load.
+export const TIMELINE_DSL_DEFINITION: typeof timelineDslSerializableDefinition & {
+  readonly contractFingerprint: string;
+} = Object.defineProperty(
+  { ...timelineDslSerializableDefinition },
+  "contractFingerprint",
+  {
+    enumerable: true,
+    configurable: false,
+    get() {
+      timelineDslContractFingerprintCache ??= timelineDslContractFingerprint(
+        timelineDslSerializableDefinition,
+      );
+      return timelineDslContractFingerprintCache;
+    },
+  },
+) as typeof timelineDslSerializableDefinition & {
+  readonly contractFingerprint: string;
+};
 
 export type TimelineDslDefinition = typeof TIMELINE_DSL_DEFINITION;
