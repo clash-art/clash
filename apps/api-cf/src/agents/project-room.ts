@@ -485,14 +485,35 @@ export class ProjectRoom extends DurableObject<Env> {
     this.socketAuthorization.set(ws, entry);
     let validUntil = Date.now() + SOCKET_AUTHORIZATION_TTL_MS;
     entry.inFlight = (async () => {
-      const authorized = !!(
-        info?.projectAuthorization &&
-        (!this.projectId ||
-          info.projectAuthorization.projectId === this.projectId) &&
-        (await this.revalidateShared(info.projectAuthorization, (until) => {
-          validUntil = until;
-        }))
-      );
+      let authorized: boolean;
+      try {
+        authorized = !!(
+          info?.projectAuthorization &&
+          (!this.projectId ||
+            info.projectAuthorization.projectId === this.projectId) &&
+          (await this.revalidateShared(info.projectAuthorization, (until) => {
+            validUntil = until;
+          }))
+        );
+      } catch (error) {
+        // The check itself failed (D1 unavailable), so authorization is
+        // unknown. Dropping the frame silently would leave this peer missing
+        // CRDT updates with no signal. Close with 1013 (try again later)
+        // instead: the client treats it as transient, reconnects and
+        // re-syncs from its version vector, and resends unacked writes.
+        log.warn("Socket revalidation unavailable; closing for retry:", error);
+        if (this.socketAuthorization.get(ws) === entry) {
+          try {
+            ws.close(1013, "Authorization check unavailable; reconnect");
+          } catch {
+            // Already closed.
+          }
+          this.socketAuthorization.delete(ws);
+          this.clients.delete(ws);
+          this.protocolSessions.delete(ws);
+        }
+        return false;
+      }
       // A close/error during D1 must not restore authorization or send a frame.
       if (this.socketAuthorization.get(ws) !== entry) return false;
       if (authorized) {

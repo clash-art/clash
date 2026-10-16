@@ -371,6 +371,25 @@ describe("socket authorization cache", () => {
     }
   });
 
+  it("closes with 1013 instead of silently dropping frames when revalidation fails (D1 error)", async () => {
+    mocks.revalidate
+      .mockReset()
+      .mockRejectedValueOnce(new Error("D1_ERROR: network connection lost"))
+      .mockResolvedValue(true);
+    const { room, ws, flush } = fixture();
+    room.sendAuthorized(ws, "a");
+    await flush();
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(ws.close).toHaveBeenCalledWith(
+      1013,
+      "Authorization check unavailable; reconnect",
+    );
+    expect(room.socketAuthorization.has(ws)).toBe(false);
+    expect(room.clients.has(ws)).toBe(false);
+    // Not cached as a failure: the next check (D1 recovered) succeeds.
+    await expect(room.authorizeSocket(ws)).resolves.toBe(true);
+  });
+
   it("drops frames for a socket that closed while authorization was in flight", async () => {
     mocks.revalidate.mockReset().mockResolvedValue(true);
     const { room, ws, flush } = fixture();
