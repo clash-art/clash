@@ -144,11 +144,22 @@ describe("local data dir contract", () => {
 
     const forbiddenLocalConfigFilePatterns = forbiddenLocalConfigFiles.map((name) => ({
       name,
-      pattern: new RegExp(`(^|[^A-Za-z0-9._-])${escapeRegExp(name)}($|[^A-Za-z0-9._-])`),
+      // `audio.json()` reads a response held in a variable that shares the
+      // stem; it is a call, not a file name.
+      pattern: new RegExp(`(^|[^A-Za-z0-9._-])${escapeRegExp(name)}($|[^A-Za-z0-9._(-])`),
     }));
+    // The model-generation plugin's Generator definition shares a retired
+    // sidecar's file name but lives in the plugin package, not the data dir.
+    const pluginGeneratorDefinition = [
+      "plugins/model-generation/generators",
+      forbiddenLocalConfigFiles[1],
+    ].join("/");
 
     const matches = scannedFiles
-      .map((file) => ({ file, content: readFileSync(file, "utf8") }))
+      .map((file) => ({
+        file,
+        content: readFileSync(file, "utf8").replaceAll(pluginGeneratorDefinition, ""),
+      }))
       .flatMap(({ file, content }) =>
         forbiddenLocalConfigFilePatterns
           .filter(({ pattern }) => pattern.test(content))

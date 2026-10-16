@@ -7,6 +7,7 @@ import {
   buildGenerationPayload,
   ExecutablePluginJsonValueSchema,
   MEDIA_REFERENCE_FIELDS,
+  resolveAspectRatioParameter,
   readProjectAsset,
   readDocumentAssetRevision,
   MODEL_TEXT_DOCUMENT_KIND,
@@ -82,8 +83,18 @@ export function createLocalModelExecutionPlanner(options: {
       executionPrompt = compiled.cleanedPrompt;
       executionParams = compiled.pendingInput.modelParams ?? {};
     }
+    // Providers read the frame's ratio as its own input, not from modelParams. Resolve it from the
+    // Card the way a pending Canvas node did, or the chosen ratio never reaches the request.
+    const aspectRatio = card.kind === "image" || card.kind === "video"
+      ? resolveAspectRatioParameter(
+          card.parameters.find((parameter) => parameter.id === "aspect_ratio"),
+          (executionParams as Record<string, string | number | boolean>).aspect_ratio,
+          card.defaultAspectRatio,
+        )
+      : undefined;
     const plan = await options.aigc.planProviderPlugin?.({
       taskId: prepared.revision.id, projectId, model: modelId, prompt: executionPrompt, modelParams: executionParams,
+      ...(aspectRatio ? { aspectRatio } : {}),
       ...(providerAccountId ? { providerAccountId } : {}),
       references, ...(pinnedSelection ? { providerRoute: pinnedSelection.route } : {}),
     }, card.kind);

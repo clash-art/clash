@@ -12,6 +12,7 @@ import {
   parseAgentDiagnosticStatus,
   selectAcpPermissionOutcome,
 } from "./session-manager";
+import { registryShimName } from "../acp/registry";
 
 const require = createRequire(import.meta.url);
 
@@ -123,8 +124,10 @@ async function writeFakeAcpHarness(
     "codex-acp",
     "claude-agent-acp",
     "gemini",
-    "clash-acp-gemini",
-    "clash-acp-opencode",
+    // Registry-installed harnesses launch through the shim the pinned ACP
+    // registry names, so the fake must be published under that name.
+    registryShimName("gemini"),
+    registryShimName("opencode"),
     "opencode",
   ]) {
     const geminiHelp =
@@ -468,8 +471,8 @@ describe("SessionManager harness prompt contract", () => {
       const harnesses = [
         ["codex-acp", "codex-acp"],
         ["claude-acp", "claude-agent-acp"],
-        ["gemini", "clash-acp-gemini"],
-        ["opencode", "clash-acp-opencode"],
+        ["gemini", registryShimName("gemini")],
+        ["opencode", registryShimName("opencode")],
       ] as const;
 
       for (const [agentId, binaryName] of harnesses) {

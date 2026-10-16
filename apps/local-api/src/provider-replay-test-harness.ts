@@ -2,7 +2,6 @@ import {
   access,
   mkdir,
   mkdtemp,
-  readFile,
   rename,
   rm,
   writeFile,
@@ -14,7 +13,6 @@ import { fileURLToPath } from "node:url";
 
 import { Canvas } from "@clash/shared-types";
 
-import { createLocalMetadataStore } from "./local-metadata-store.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import type { PublicAssetStorageService } from "./public-asset-storage.js";
 import {
@@ -30,7 +28,6 @@ import {
   prepareDevelopmentBundledPlugins,
   startLocalApiServer,
 } from "./server.js";
-import { textRevisionContentBlobPath } from "./text-revision-content.js";
 
 type ProviderE2EMode = "replay" | "live";
 
@@ -604,8 +601,19 @@ async function waitForCompletedNode(options: {
     const data = requiredObject(node.data, `${options.nodeId} node data`);
     if (data.status === "completed") return node;
     if (data.status === "failed") {
+      // The node carries only the public failure summary; the Host keeps the
+      // cause on the Action Run, which is what a failing replay needs to show.
+      const diagnostics =
+        typeof data.actionRunId === "string"
+          ? await fetch(
+              `${options.origin}/api/v1/projects/${options.projectId}/generator-runs/${encodeURIComponent(data.actionRunId)}`,
+            )
+              .then((response) => response.json())
+              .then((run) => (run as JsonObject).diagnostics)
+              .catch(() => undefined)
+          : undefined;
       throw new Error(
-        `${options.caseId} (${options.nodeId}) failed: ${String(data.error ?? "unknown provider error")}`,
+        `${options.caseId} (${options.nodeId}) failed: ${String(data.error ?? "unknown provider error")}${diagnostics ? ` ${JSON.stringify(diagnostics)}` : ""}`,
       );
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 100));
@@ -613,6 +621,55 @@ async function waitForCompletedNode(options: {
   throw new Error(
     `Timed out waiting for provider replay case ${options.caseId} node ${options.nodeId}`,
   );
+}
+
+/**
+ * A Generator output is authoritative through the Output Commit of its Action
+ * Run. Node data is only a projection of that fact, so the grader resolves the
+ * commit through the same read routes a client uses.
+ */
+async function readCommittedOutput(options: {
+  origin: string;
+  projectId: string;
+  caseId: string;
+  data: JsonObject;
+}): Promise<{ actionRunId: string; asset: JsonObject }> {
+  const actionRunId = requiredString(
+    options.data.actionRunId,
+    `${options.caseId} Action Run id`,
+  );
+  const runUrl = `${options.origin}/api/v1/projects/${encodeURIComponent(options.projectId)}/generator-runs/${encodeURIComponent(actionRunId)}`;
+  const run = requiredObject(
+    (await jsonResponse(await fetch(runUrl))).run,
+    `${options.caseId} Action Run`,
+  );
+  if (run.status !== "succeeded") {
+    throw new Error(
+      `${options.caseId} Action Run is ${String(run.status)}, not succeeded`,
+    );
+  }
+  const outputs = Array.isArray(run.outputContract) ? run.outputContract : [];
+  if (outputs.length !== 1) {
+    throw new Error(
+      `${options.caseId} expected one Action Run output, got ${outputs.length}`,
+    );
+  }
+  const outputSlot = requiredString(
+    requiredObject(outputs[0], `${options.caseId} output contract`).slot,
+    `${options.caseId} output slot`,
+  );
+  const commit = requiredObject(
+    (
+      await jsonResponse(
+        await fetch(`${runUrl}/outputs/${encodeURIComponent(outputSlot)}`),
+      )
+    ).commit,
+    `${options.caseId} Output Commit`,
+  );
+  return {
+    actionRunId,
+    asset: requiredObject(commit.asset, `${options.caseId} committed Asset`),
+  };
 }
 
 async function gradeCompletedNode(options: {
@@ -627,14 +684,46 @@ async function gradeCompletedNode(options: {
     options.node.data,
     `${options.graderCase.id} completed node data`,
   );
+  const committed = await readCommittedOutput({
+    origin: options.origin,
+    projectId: options.projectId,
+    caseId: options.graderCase.id,
+    data,
+  });
   if (options.graderCase.expect.kind === "text") {
     if (options.node.type !== "text") {
       throw new Error(
         `${options.graderCase.id} expected a text node, got ${String(options.node.type)}`,
       );
     }
+    const projected = requiredObject(
+      data.documentRevision,
+      `${options.graderCase.id} node Document revision`,
+    );
+    if (
+      committed.asset.kind !== "document" ||
+      committed.asset.documentAssetId !== projected.documentAssetId ||
+      committed.asset.revisionId !== projected.revisionId
+    ) {
+      throw new Error(
+        `${options.graderCase.id} node does not project the Document revision its Action Run committed`,
+      );
+    }
+    const documentAssetId = requiredString(
+      projected.documentAssetId,
+      `${options.graderCase.id} Document Asset id`,
+    );
+    const revisionId = requiredString(
+      projected.revisionId,
+      `${options.graderCase.id} Document revision id`,
+    );
+    const document = await jsonResponse<JsonObject>(
+      await fetch(
+        `${options.origin}/api/v1/projects/${encodeURIComponent(options.projectId)}/documents/${encodeURIComponent(documentAssetId)}/revisions/${encodeURIComponent(revisionId)}`,
+      ),
+    );
     const text = requiredString(
-      data.content,
+      document.body,
       `${options.graderCase.id} canonical text content`,
     );
     if (
@@ -648,32 +737,26 @@ async function gradeCompletedNode(options: {
         `${options.graderCase.id} text did not match the recorded acceptance`,
       );
     }
-    const revisions = await createLocalMetadataStore(
-      options.dataDir,
-    ).listTextRevisions({
-      projectId: options.projectId,
-      nodeId: options.nodeId,
-    });
-    if (revisions.length !== 1) {
-      throw new Error(
-        `${options.graderCase.id} expected one text revision, got ${revisions.length}`,
-      );
-    }
-    const revision = revisions[0]!;
-    const revisionText = await readFile(
-      textRevisionContentBlobPath(options.dataDir, revision.contentHash),
-      "utf8",
+    const producer = requiredObject(
+      requiredObject(
+        document.revision,
+        `${options.graderCase.id} Document revision`,
+      ).producer,
+      `${options.graderCase.id} Document revision producer`,
     );
-    if (revisionText !== text) {
+    if (
+      producer.kind !== "action-run" ||
+      producer.actionRunId !== committed.actionRunId
+    ) {
       throw new Error(
-        `${options.graderCase.id} text revision does not contain canonical node content`,
+        `${options.graderCase.id} Document revision was not produced by its Action Run`,
       );
     }
     return {
       id: options.graderCase.id,
       kind: "text",
       text,
-      revisionId: revision.revisionId,
+      revisionId,
     };
   }
 
@@ -735,25 +818,12 @@ async function gradeCompletedNode(options: {
     );
   }
   assertProviderMediaFormat(mediaType, bytes);
-  const referenceResult = await jsonResponse<{
-    projectAssetId: string;
-    references: unknown[];
-  }>(
-    await fetch(
-      `${options.origin}/api/v1/projects/${encodeURIComponent(options.projectId)}/assets/${encodeURIComponent(assetId)}/references`,
-    ),
-  );
   if (
-    referenceResult.projectAssetId !== assetId ||
-    !referenceResult.references.some(
-      (reference) =>
-        isObject(reference) &&
-        reference.projectAssetId === assetId &&
-        reference.direction === "output",
-    )
+    committed.asset.kind !== "media" ||
+    committed.asset.projectAssetId !== assetId
   ) {
     throw new Error(
-      `${options.graderCase.id} asset has no output Action binding in the graded Project`,
+      `${options.graderCase.id} asset is not the output its Action Run committed in the graded Project`,
     );
   }
   return {

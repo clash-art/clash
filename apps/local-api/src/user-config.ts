@@ -569,17 +569,40 @@ export function watchClashUserConfig(
     lastAppliedConfig = value;
   };
 
+  // One reload at a time. An edit that lands while onChange is still running
+  // waits for it, then re-reads the file, so a slow older reconcile can never
+  // finish after (and overwrite) a newer one.
+  let reloading = false;
+  let reloadRequested = false;
+  const reload = async () => {
+    if (reloading) {
+      reloadRequested = true;
+      return;
+    }
+    reloading = true;
+    try {
+      do {
+        reloadRequested = false;
+        try {
+          await applyLatest();
+        } catch (error) {
+          options.onError?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        }
+      } while (reloadRequested && !closed);
+    } finally {
+      reloading = false;
+    }
+  };
+
   const watcher = watch(watchablePath(store.clashHome), (eventType, filename) => {
     if (closed || filename?.toString() !== "config.yaml") return;
     if (eventType !== "change" && eventType !== "rename") return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      void applyLatest().catch((error) => {
-        options.onError?.(
-          error instanceof Error ? error : new Error(String(error)),
-        );
-      });
+      void reload();
     }, options.debounceMs ?? 120);
   });
 
