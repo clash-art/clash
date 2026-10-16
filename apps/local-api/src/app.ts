@@ -3664,6 +3664,17 @@ function modelRoutesForProviderAccount(
   );
 }
 
+const backgroundWorkDrains = new WeakMap<Hono, () => Promise<void>>();
+
+/**
+ * Wait for work an app started after answering a request, such as the
+ * Project metadata mirror. A Host shutdown, or a test deleting the data dir,
+ * must not race a write that is still landing in it.
+ */
+export async function drainLocalApiAppBackgroundWork(app: Hono): Promise<void> {
+  await backgroundWorkDrains.get(app)?.();
+}
+
 export function createLocalApiApp(options: LocalApiOptions): Hono {
   const userId = options.userId ?? "local-user";
   const localReplicaId = () => getLocalReplicaId(options.dataDir);
@@ -4101,6 +4112,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     options.publicAssetStorage ??
     createPublicAssetStorageService({ dataDir: options.dataDir });
   const app = new Hono();
+  backgroundWorkDrains.set(app, () => projectMetadataReplication.idle());
   const generatorProduct =
     options.generatorProjectAuthority && options.resolveGeneratorDefinition
       ? createLocalGeneratorProductService({

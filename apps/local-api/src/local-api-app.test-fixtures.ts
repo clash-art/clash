@@ -1,4 +1,4 @@
-import { createLocalApiApp } from "./app.js";
+import { createLocalApiApp, drainLocalApiAppBackgroundWork } from "./app.js";
 import {
   createLocalAssetInspectionService,
   createLocalFfprobeAssetInspector,
@@ -10,12 +10,20 @@ import {
 import { localFfprobePath } from "./local-media-binaries.js";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
 
-/** Route tests must drain background poster/waveform jobs before deleting their store. */
+/**
+ * Route tests must drain background poster/waveform jobs and post-response
+ * work, such as the Project metadata mirror, before deleting their store.
+ */
 export function managedLocalApiApps() {
   const ownedRepresentations: LocalAssetRepresentationService[] = [];
+  const apps: ReturnType<typeof createLocalApiApp>[] = [];
+  const track = (app: ReturnType<typeof createLocalApiApp>) => {
+    apps.push(app);
+    return app;
+  };
   return {
     createApp(options: Parameters<typeof createLocalApiApp>[0]) {
-      if (options.assetRepresentations) return createLocalApiApp(options);
+      if (options.assetRepresentations) return track(createLocalApiApp(options));
       const clashRoot = clashHomeForLocalDataDir(
         options.dataDir,
         options.clashRoot,
@@ -38,13 +46,16 @@ export function managedLocalApiApps() {
         assetInspection,
       });
       ownedRepresentations.push(assetRepresentations);
-      return createLocalApiApp({
-        ...options,
-        assetInspection,
-        assetRepresentations,
-      });
+      return track(
+        createLocalApiApp({
+          ...options,
+          assetInspection,
+          assetRepresentations,
+        }),
+      );
     },
     async close() {
+      await Promise.all(apps.splice(0).map(drainLocalApiAppBackgroundWork));
       await Promise.all(
         ownedRepresentations.splice(0).map((service) => service.close()),
       );

@@ -44,7 +44,11 @@ import {
   type ExecutablePluginBinding,
   type ExecutablePluginModelBindingRegistration,
 } from "@clash/shared-types";
-import { createLocalApiApp, createLocalTtsGenerationHandler } from "./app.js";
+import {
+  createLocalApiApp,
+  createLocalTtsGenerationHandler,
+  drainLocalApiAppBackgroundWork,
+} from "./app.js";
 import { installHostTelemetry, type HostTelemetry } from "./telemetry/index.js";
 import {
   createHostDiscoveryRecord,
@@ -1390,9 +1394,14 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     createLocalAudioConfigStore({
       dataDir: options.dataDir,
     });
-  void audioConfig.getVoiceInputConfig?.().catch((error) => {
-    hostLog.warn("host.voice_probe_degraded", { error });
-  });
+  // Startup probes run unawaited so listen is not blocked, but they still read
+  // and create local SQLite state; close waits for them before reporting done.
+  const startupProbes: Promise<unknown>[] = [];
+  startupProbes.push(
+    Promise.resolve(audioConfig.getVoiceInputConfig?.()).catch((error) => {
+      hostLog.warn("host.voice_probe_degraded", { error });
+    }),
+  );
   let mediaAnalysisService: LocalMediaAnalysisService | undefined;
   let videoEnhanceService: LocalVideoEnhanceService | undefined;
   const pluginBroker = createLocalPluginBrokerServices({
@@ -2158,11 +2167,15 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         }),
       );
       hostLog.info("host.listening", { port: info.port, profile: discoveryProfile, hostId: pendingDiscoveryHostId });
-      void syncConfig.getPublicConfig().then((config) => {
-        if (config.remote_loro.enabled) {
-          hostLog.info("host.remote_sync_enabled", { source: config.remote_loro.source });
-        }
-      });
+      startupProbes.push(
+        syncConfig
+          .getPublicConfig()
+          .then((config) => {
+            if (config.remote_loro.enabled) {
+              hostLog.info("host.remote_sync_enabled", { source: config.remote_loro.source });
+            }
+          }),
+      );
       void (async () => {
         // Module-realm Providers use ordinary HTTP in this process. Install the same cassette
         // boundary used by child stdio plugins before exposing the listening Host to the harness.
@@ -2201,9 +2214,14 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     async () => {
       configWatcherClosed = true;
       stopConfigWatcher();
+      // Warmup and an already-queued harness reload read local config state;
+      // let them finish so nothing writes to the data dir after close.
+      await Promise.all([localAcpReady, configReloadQueue]);
       cloudLogin.close();
       await projectCloudSync?.close();
       await Promise.all([
+        Promise.allSettled(startupProbes),
+        drainLocalApiAppBackgroundWork(app),
         assetRepresentations.close(),
         localAcp?.disposeAll(),
         options.directorStageRenderer?.dispose(),

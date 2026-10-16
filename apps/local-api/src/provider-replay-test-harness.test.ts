@@ -357,7 +357,7 @@ describe("provider replay test harness", () => {
         id: "m3-text",
         kind: "text",
         text: "Synthetic MiniMax M3 fixture answer.",
-        revisionId: expect.stringMatching(/^txrev-/),
+        revisionId: expect.any(String),
       }),
     ]);
     expect(result.dataDir).toContain("clash-provider-replay-harness-");

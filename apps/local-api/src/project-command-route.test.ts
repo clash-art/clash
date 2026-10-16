@@ -705,7 +705,7 @@ describe("project host command route", () => {
         width: 1,
         height: 1,
         rotationDegrees: 0,
-        ...(resource.contentType ? { contentType: resource.contentType } : {}),
+        contentType: resource.contentType ?? "image/png",
       }),
     });
     const command = (body: unknown) =>

@@ -74,10 +74,21 @@ it("passes an explicit skill install scope through the real marketplace route", 
     const app = createLocalApiApp({
       dataDir: root,
       userId: "local-user",
-      marketplaceSkills: [{ id: "skill-test" }],
+      marketplaceSkills: [{ id: "skill-test", type: "skill" }],
       installMarketplaceSkill: install,
+      // The Host only offers skill installation when it can also report what
+      // is installed, and confirms the receipt after installing.
+      listInstalledMarketplaceSkills: async () =>
+        install.mock.calls.length > 0 ? [{ skillId: "skill-test" }] : [],
     });
-    const installation = { scope: "projects", projectIds: ["p"] };
+    const created = await app.request("/api/v1/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Skill scope project" }),
+    });
+    expect(created.status).toBe(201);
+    const { id: projectId } = (await created.json()) as { id: string };
+    const installation = { scope: "projects", projectIds: [projectId] };
     const response = await app.request(
       "/api/marketplace/skills/skill-test/install",
       {

@@ -41,5 +41,11 @@ jobs:
         run: pnpm build:package clash
       - name: Verify bundled plugin payloads are declared build dependencies
         run: pnpm --dir apps/local-api exec vitest run src/bundled-plugins-set.test.ts
+      # After the host runtime build: the full suite spawns the built plugin
+      # payloads (provider replays, asset-edit) and resolves the built
+      # plugins/clash runtime, and Turbo builds every workspace package those
+      # depend on (@clash/shared-types, @clash/shared-layout, ...) first.
+      - name: Run the full local-api suite
+        run: pnpm --filter @clash/local-api test
       - name: Verify benchmark catalog, runner, and evaluator contracts
         run: pnpm --dir packages/shared-artifact-evals exec vitest run

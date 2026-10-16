@@ -90,5 +90,11 @@ export function createLocalProjectMetadataReplication(
       inFlight.set(projectId, current);
       return current;
     },
+    /** Settles once every sync started so far has finished, whatever its outcome. */
+    async idle(): Promise<void> {
+      while (inFlight.size > 0) {
+        await Promise.allSettled([...inFlight.values()]);
+      }
+    },
   };
 }
