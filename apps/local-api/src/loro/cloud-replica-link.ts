@@ -4,6 +4,10 @@ import WebSocket, { type RawData } from "ws";
 import type { LoroDoc } from "loro-crdt";
 import type { ReplicaLinkPort } from "@clash/replica";
 import {
+  classifySyncError,
+  type SyncErrorClassification,
+} from "@clash/shared-types";
+import {
   LoroProtocolClientSession,
   type HexString,
 } from "@clash/replica/loro-protocol";
@@ -33,7 +37,23 @@ export interface LoroCloudReplicaLinkOptions {
   /** Paired with onJoined when that joined socket closes. */
   onDisconnected?(): void;
   onError?(error: Error): void;
+  /**
+   * The cloud refused this link in a way retrying cannot fix (token expired or
+   * revoked: close 1008, upgrade/discovery 401/403). The link stops
+   * reconnecting until start() is called again after the credentials change.
+   */
+  onActionRequired?(classification: SyncErrorClassification, error: Error): void;
 }
+
+/** Raised (via onError) when the link stops retrying and needs the user. */
+export class CloudReplicaLinkActionRequiredError extends Error {
+  constructor(readonly classification: SyncErrorClassification, message: string) {
+    super(message);
+    this.name = "CloudReplicaLinkActionRequiredError";
+  }
+}
+
+const UPGRADE_STATUS = /(?:Unexpected server response|Upgrade HTTP):? (\d{3})/u;
 
 function cloudRoomUrl(baseUrl: string, projectId: string): string {
   const url = new URL(baseUrl);
@@ -63,12 +83,19 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   private cursorLink: CursorCloudReplicaLink | undefined;
   private discovery: AbortController | undefined;
   private transport: "unknown" | "loro" | "cursor" = "unknown";
+  private blocked: SyncErrorClassification | undefined;
+
+  /** Set when the link stopped retrying because the user must act. */
+  get actionRequired(): SyncErrorClassification | undefined {
+    return this.blocked;
+  }
 
   constructor(private readonly options: LoroCloudReplicaLinkOptions) {}
 
   start(): void {
     if (!this.stopped) return;
     this.stopped = false;
+    this.blocked = undefined;
     this.connect();
   }
 
@@ -143,8 +170,13 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
         this.report(error instanceof Error ? error : new Error(String(error)));
       });
     });
-    socket.on("error", (error: Error) => this.report(error));
-    socket.on("close", () => {
+    let upgradeStatus: number | undefined;
+    socket.on("error", (error: Error) => {
+      const status = UPGRADE_STATUS.exec(error?.message ?? "")?.[1];
+      if (status) upgradeStatus = Number(status);
+      this.report(error);
+    });
+    socket.on("close", (code?: number) => {
       session.destroy();
       if (joined) {
         joined = false;
@@ -152,6 +184,20 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       }
       if (this.session === session) this.session = undefined;
       if (this.socket === socket) this.socket = undefined;
+      const classification = classifySyncError(
+        upgradeStatus !== undefined
+          ? { httpStatus: upgradeStatus }
+          : { wsCloseCode: typeof code === "number" ? code : 1006 },
+      );
+      if (classification.policy.retry === "none") {
+        this.block(
+          classification,
+          upgradeStatus !== undefined
+            ? `Cloud refused the sync connection (HTTP ${upgradeStatus})`
+            : `Cloud closed the sync connection (${code})`,
+        );
+        return;
+      }
       this.scheduleReconnect();
     });
   }
@@ -181,6 +227,13 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
         this.connect();
         return;
       }
+      if (response.status === 401 || response.status === 403) {
+        this.block(
+          classifySyncError({ httpStatus: response.status }),
+          `Cloud replica discovery ${response.status}`,
+        );
+        return;
+      }
       if (!response.ok)
         throw Error(`Cloud replica discovery ${response.status}`);
       const profile = (await response.json()) as { protocol?: string };
@@ -199,6 +252,18 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       clearTimeout(timeout);
       if (this.discovery === controller) this.discovery = undefined;
     }
+  }
+
+  private block(classification: SyncErrorClassification, message: string): void {
+    if (this.stopped || this.blocked) return;
+    this.blocked = classification;
+    // Stop like close(), but keep the reason so callers can surface it.
+    this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    const error = new CloudReplicaLinkActionRequiredError(classification, message);
+    this.report(error);
+    this.options.onActionRequired?.(classification, error);
   }
 
   private scheduleReconnect(): void {

@@ -198,4 +198,86 @@ describe("LoroCloudReplicaLink", () => {
     expect(onError).not.toHaveBeenCalled();
     await link.close();
   });
+
+  describe("retry classification", () => {
+    function linkWith(sockets: FakeSocket[]) {
+      const onError = vi.fn();
+      const onActionRequired = vi.fn();
+      const createSocket = vi.fn(() => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      });
+      const link = new LoroCloudReplicaLink({
+        baseUrl: "https://cloud.example/",
+        projectId: "project-1",
+        token: "t",
+        doc: () => new LoroDoc(),
+        createSocket,
+        commit: async () => {},
+        onError,
+        onActionRequired,
+      });
+      return { link, createSocket, onError, onActionRequired };
+    }
+
+    it("stops reconnecting when the room closes 1008 (token revoked/expired)", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const { link, createSocket, onActionRequired } = linkWith(sockets);
+        link.start();
+        sockets[0]!.emit("close", 1008);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(createSocket).toHaveBeenCalledTimes(1);
+        expect(onActionRequired).toHaveBeenCalledWith(
+          expect.objectContaining({ severity: "user_action_required", action: "reauthenticate" }),
+          expect.any(Error),
+        );
+        expect(link.actionRequired?.action).toBe("reauthenticate");
+        // start() after re-auth resumes.
+        link.start();
+        expect(createSocket).toHaveBeenCalledTimes(2);
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stops reconnecting on an upgrade 401", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const { link, createSocket, onActionRequired } = linkWith(sockets);
+        link.start();
+        sockets[0]!.emit("error", new Error("Unexpected server response: 401"));
+        sockets[0]!.emit("close", 1006);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(createSocket).toHaveBeenCalledTimes(1);
+        expect(onActionRequired).toHaveBeenCalledTimes(1);
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps backing off on transient closes (1006, 1011, 1012)", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const { link, createSocket, onActionRequired } = linkWith(sockets);
+        link.start();
+        for (const code of [1006, 1011, 1012]) {
+          sockets.at(-1)!.emit("close", code);
+          await vi.advanceTimersByTimeAsync(6_000);
+        }
+        expect(createSocket).toHaveBeenCalledTimes(4);
+        expect(onActionRequired).not.toHaveBeenCalled();
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
+
