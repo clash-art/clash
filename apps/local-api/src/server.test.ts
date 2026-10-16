@@ -1862,13 +1862,7 @@ describe("local API server configuration", () => {
         process.env.CLASH_DAEMON_SOURCE_WATCH = previousSourceWatch;
       }
       await rm(runDir, { recursive: true, force: true });
-      await rm(dataDir, { recursive: true, force: true }).catch(async (e) => {
-        const req = (await import("node:module")).createRequire(import.meta.url);
-        const db = new (req("node:sqlite").DatabaseSync)(join(dataDir, "local.sqlite"));
-        (await import("node:fs")).appendFileSync("/tmp/la75-srv.log", `TABLES ${JSON.stringify(db.prepare("select name from sqlite_master").all())}\n`);
-        db.close();
-        throw e;
-      });
+      await rm(dataDir, { recursive: true, force: true });
     }
   });
 
