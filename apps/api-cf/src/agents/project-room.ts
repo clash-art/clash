@@ -1,3 +1,4 @@
+import { presenceDevice } from "../loro/presence-device";
 import { GenerationPublicationConflict, assertHostedGenerationAccess, generationAdmissionUpdate, generationPublicationUpdate, type GenerationNodePublication } from "../generation/publication";
 /**
  * ProjectRoom — pure Loro CRDT sequencer Durable Object.
@@ -220,9 +221,6 @@ export class ProjectRoom extends DurableObject<Env> {
         const clientTypeHeader = request.headers.get("x-client-type");
         if (clientTypeHeader === "cli") {
           clientType = "cli";
-          // A token label may stand in for a CLI client, never for a browser.
-          userName =
-            authResult.userName ?? authResult.credentialName ?? "CLI Agent";
         }
       } catch (error) {
         log.error("Auth failed:", error);
@@ -270,6 +268,7 @@ export class ProjectRoom extends DurableObject<Env> {
       kind: connectionKind({ clientType, ...admission }),
       name: userName,
       avatar: userAvatar,
+      device: presenceDevice(request.headers, clientType),
       connectedAt: Date.now(),
       ...admission,
       ...(syncProtocol ? { syncProtocol } : {}),
@@ -576,6 +575,7 @@ export class ProjectRoom extends DurableObject<Env> {
       userId: c.userId,
       name: c.name,
       avatar: c.avatar,
+      device: c.device,
     }));
 
     log.debug(`Presence: ${clients.length} clients`);

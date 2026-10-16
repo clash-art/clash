@@ -11,6 +11,7 @@
     "copilot": "Components for the Chatbot/AI Assistant sidebar interface."
   },
   "key_files": {
+    "PresenceBar.tsx": "Project header avatar stack grouped by user, with agent overlay and per-session device tooltips; overflow counts users, not sockets.",
     "ParentCanvasButton.tsx": "Shared owning-Canvas navigation for Timeline and Storyboard headers; independent of Preview close actions.",
     "SyncRecoveryDialog.tsx": "Shared Radix recovery dialog mounted by ProjectEditor. Rejected edits use the local archive/reload workflow; a Host project-load failure shows the supplied cause and retries the existing sync connection without clearing local edits or changing plugin versions.",
     "CanvasCreateMenuItems.tsx": "Shared creation actions for the canvas plus menu and empty-pane double-click menu; uses shared Radix menu items and action submenu.",

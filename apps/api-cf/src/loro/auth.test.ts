@@ -219,6 +219,47 @@ describe("auth", () => {
     });
   });
 
+  it("looks up the current user name again for a reconnect with the same Host token", async () => {
+    let userName = "Original person";
+    const tokenRow = () => ({
+      user_id: "user-1",
+      name: "Clash CLI",
+      user_name: userName,
+      user_image: null,
+    });
+    const env = makeEnv({
+      DB: {
+        prepare: vi.fn((sql: string) => ({
+          bind: vi.fn(() => ({
+            all: vi.fn(async () => ({
+              results: sql.includes("FROM api_token")
+                ? [tokenRow()]
+                : [{ owner_id: "user-1", deleted_at: null }],
+            })),
+            run: vi.fn(async () => ({})),
+          })),
+        })),
+      } as unknown as Env["DB"],
+    });
+    const request = new Request("https://clash.test/sync/proj-1", {
+      headers: {
+        Authorization: `Bearer clsh_${"a".repeat(40)}`,
+        "x-client-type": "cli",
+      },
+    });
+    const first = await authenticateRequest(request, env, "proj-1");
+    expect(first).toMatchObject({
+      userName: "Original person",
+      credentialName: "Clash CLI",
+    });
+    userName = "Updated person";
+    const reconnected = await authenticateRequest(request, env, "proj-1");
+    expect(reconnected).toMatchObject({
+      userName: "Updated person",
+      credentialName: "Clash CLI",
+    });
+  });
+
   // ─── Development mode fallback ───
 
   describe("dev mode fallback", () => {

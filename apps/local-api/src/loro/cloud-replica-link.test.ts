@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { LoroDoc } from "loro-crdt";
 import {
   CrdtType,
@@ -69,7 +70,11 @@ describe("LoroCloudReplicaLink", () => {
 
     expect(createSocket).toHaveBeenCalledWith(
       "wss://cloud.example/sync/project%2Fone?protocol=loro-v1",
-      { authorization: "Bearer secret" },
+      {
+        authorization: "Bearer secret",
+        "x-client-type": "cli",
+        "x-device-name": `Clash Host · ${hostname()}`,
+      },
     );
     expect(decode(socket.sent[0]!)).toMatchObject({
       type: MessageType.JoinRequest,

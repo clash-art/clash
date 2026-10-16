@@ -65,7 +65,7 @@ describe("presence identity", () => {
     expect(background(labels[1])).toBe(background(labels[0]));
   });
 
-  it("stacks every session of a user with the same avatar, badging the agent", () => {
+  it("groups a user’s sessions into one avatar with the shared agent badge", () => {
     const clients: PresenceClient[] = [
       {
         id: "window",
@@ -83,23 +83,8 @@ describe("presence identity", () => {
       },
     ];
     const { container } = render(<PresenceBar clients={clients} />);
-    const [humanAvatar, agentAvatar] = Array.from(
-      container.querySelectorAll("[data-presence-kind]"),
-    );
-
-    expect(screen.getByLabelText("Ann Lee")).toBeTruthy();
-    expect(screen.getByLabelText("Ann Lee · Agent")).toBeTruthy();
-    expect(agentBadges(humanAvatar)).toHaveLength(0);
-    expect(agentBadges(agentAvatar)).toHaveLength(1);
-
-    const fallback = (avatar: Element) =>
-      avatar.querySelector('[data-slot="avatar-fallback"]');
-    expect(fallback(agentAvatar)?.textContent).toBe("AL");
-    expect(fallback(agentAvatar)?.textContent).toBe(
-      fallback(humanAvatar)?.textContent,
-    );
-    expect(background(fallback(agentAvatar))).toBe(
-      background(fallback(humanAvatar)),
-    );
+    expect(container.querySelectorAll("[data-presence-kind]")).toHaveLength(1);
+    expect(screen.getByLabelText("Ann Lee · 2 sessions")).toBeTruthy();
+    expect(agentBadges(container)).toHaveLength(1);
   });
 });
