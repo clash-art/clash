@@ -6,10 +6,13 @@ export function presenceDevice(
   clientType: ClientType,
 ): string {
   if (clientType !== "browser") {
-    const declared = headers
-      .get("x-device-name")
-      ?.replace(/[\u0000-\u001f\u007f]/gu, "")
-      .trim();
+    let declared = headers.get("x-device-name") ?? "";
+    try {
+      declared = decodeURIComponent(declared);
+    } catch {
+      // Older clients may send an unencoded label containing literal percent signs.
+    }
+    declared = declared.replace(/[\u0000-\u001f\u007f]/gu, "").trim();
     return (
       declared?.slice(0, 80) || (clientType === "cli" ? "Clash CLI" : "Agent")
     );

@@ -41,6 +41,8 @@ class FakeSocket implements ReplicaLinkSocket {
   }
 }
 
+vi.mock("node:os", () => ({ hostname: vi.fn(() => "工作室-mac") }));
+
 describe("LoroCloudReplicaLink", () => {
   it("connects local-api to the cloud room with offset-free VersionVector recovery", async () => {
     const doc = new LoroDoc();
@@ -50,7 +52,9 @@ describe("LoroCloudReplicaLink", () => {
     const commit = vi.fn(async (_batchId: string, updates: Uint8Array[]) => {
       doc.importBatch(updates);
     });
-    const createSocket = vi.fn(() => socket);
+    const createSocket = vi.fn(
+      (_url: string, _headers: Record<string, string>) => socket,
+    );
     const onJoined = vi.fn();
     const onDisconnected = vi.fn();
     const link = new LoroCloudReplicaLink({
@@ -73,9 +77,14 @@ describe("LoroCloudReplicaLink", () => {
       {
         authorization: "Bearer secret",
         "x-client-type": "cli",
-        "x-device-name": `Clash Host · ${hostname()}`,
+        "x-device-name": encodeURIComponent(`Clash Host · ${hostname()}`),
       },
     );
+    const deviceHeader = createSocket.mock.calls[0]?.[1]?.["x-device-name"];
+    expect(decodeURIComponent(deviceHeader!)).toBe(
+      `Clash Host · ${hostname()}`,
+    );
+    expect(deviceHeader).toMatch(/^[\x20-\x7e]+$/u);
     expect(decode(socket.sent[0]!)).toMatchObject({
       type: MessageType.JoinRequest,
       roomId: "project/one",

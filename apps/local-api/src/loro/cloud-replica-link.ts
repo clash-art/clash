@@ -103,7 +103,7 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       ? { authorization: `Bearer ${this.options.token}` }
       : {};
     headers["x-client-type"] = "cli";
-    headers["x-device-name"] = `Clash Host · ${hostname()}`;
+    headers["x-device-name"] = encodeURIComponent(`Clash Host · ${hostname()}`);
     const socket = (this.options.createSocket ?? defaultSocketFactory)(
       cloudRoomUrl(this.options.baseUrl, this.options.projectId),
       headers,
