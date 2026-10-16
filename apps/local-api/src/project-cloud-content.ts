@@ -5,12 +5,13 @@ import {
   link,
   mkdir,
   open,
+  readdir,
   rename,
   stat,
   unlink,
   type FileHandle,
 } from "node:fs/promises";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   assertContentTransferSize,
   uploadCloudContent,
@@ -146,6 +147,30 @@ export async function uploadCloudContentFile(
   }
 }
 
+/** A Host killed mid-download (SIGKILL, crash, power loss) never reaches the
+ * finally that unlinks its temporary file. Remove such orphans for this path
+ * once they are clearly abandoned (no write for 15 minutes). */
+const ABANDONED_PARTIAL_MS = 15 * 60_000;
+export async function sweepAbandonedPartials(
+  path: string,
+  now = Date.now(),
+): Promise<number> {
+  const prefix = `${basename(path)}.`;
+  let removed = 0;
+  const names = await readdir(dirname(path)).catch(() => [] as string[]);
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith(".partial")) continue;
+    const candidate = join(dirname(path), name);
+    const info = await stat(candidate).catch(() => undefined);
+    if (!info || now - info.mtimeMs < ABANDONED_PARTIAL_MS) continue;
+    await unlink(candidate).then(
+      () => removed++,
+      () => undefined,
+    );
+  }
+  return removed;
+}
+
 /** Replica transport preserves exact revision bytes, without parsing/reencoding
  * Document bodies or creating a second semantic revision authority. */
 export async function installCloudContentFile(
@@ -160,6 +185,7 @@ export async function installCloudContentFile(
     assertContentTransferSize(input.byteLength, input.maxBytes);
     input.signal?.throwIfAborted();
     await mkdir(dirname(input.path), { recursive: true });
+    await sweepAbandonedPartials(input.path);
     handle = await open(temporary, "wx", 0o600);
     const hash = createHash("sha256");
     let size = 0;

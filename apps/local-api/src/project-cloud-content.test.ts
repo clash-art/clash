@@ -3,8 +3,10 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { utimes } from "node:fs/promises";
 import {
   installCloudContentFile,
+  sweepAbandonedPartials,
   uploadCloudContentFile,
   verifyCloudContentFile,
 } from "./project-cloud-content";
@@ -102,4 +104,21 @@ it("verifies files before multipart upload and reads exact bounded portions", as
       },
     }),
   ).rejects.toThrow(/integrity/);
+});
+
+it("removes partials orphaned by a killed Host but keeps fresh in-flight ones", async () => {
+  const { root, path } = await fixture();
+  const stale = `${path}.11111111-1111-1111-1111-111111111111.partial`;
+  const fresh = `${path}.22222222-2222-2222-2222-222222222222.partial`;
+  const other = join(root, "other.33333333.partial");
+  await writeFile(stale, "x");
+  await writeFile(fresh, "y");
+  await writeFile(other, "z");
+  const old = new Date(Date.now() - 60 * 60_000);
+  await utimes(stale, old, old);
+  await utimes(other, old, old);
+  expect(await sweepAbandonedPartials(path)).toBe(1);
+  expect((await readdir(root)).sort()).toEqual(
+    ["body.22222222-2222-2222-2222-222222222222.partial", "other.33333333.partial"].sort(),
+  );
 });

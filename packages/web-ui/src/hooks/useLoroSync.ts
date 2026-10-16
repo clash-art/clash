@@ -18,6 +18,7 @@ import type {
   AwarenessBroadcastMessage,
   ProjectLoadErrorMessage,
 } from "@clash/shared-types";
+import { classifyLoroUpdateRejection, classifySyncError } from "@clash/shared-types";
 import {
   Canvas,
   projectCanvasNodeLayout,
@@ -883,7 +884,15 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         syncLog.error("sync.protocol_failed", { projectId, error });
       },
       onUpdateRejected: (batchId, status) => {
-        syncLog.error("sync.update_rejected", { projectId, batchId, status });
+        const severity = classifyLoroUpdateRejection(status).severity;
+        if (severity === "transient") {
+          // RateLimited / FragmentTimeout / Unknown: nothing was refused for
+          // good. Reconnect; the VersionVector join resends what the room lacks.
+          syncLog.warn("sync.update_deferred", { projectId, batchId, status });
+          ws.close();
+          return;
+        }
+        syncLog.error("sync.update_rejected", { projectId, batchId, status, severity });
         rejectedSyncRef.current = true;
         setSyncRejected(true);
         setConnected(false);
@@ -974,9 +983,20 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       });
       setConnected(false);
       disconnect();
-      if (!isUnmountingRef.current) {
-        scheduleReconnect();
+      if (isUnmountingRef.current) return;
+      if (classifySyncError({ wsCloseCode: event.code }).policy.retry === "none") {
+        // Authorization expired or was revoked (1008): retrying cannot succeed
+        // and would loop. Ask the user to sign in again; Retry reconnects.
+        projectLoadFailedRef.current = true;
+        setProjectLoadError({
+          type: "project.load-error",
+          projectId,
+          code: "SESSION_EXPIRED",
+          message: "Your sign-in expired or your access to this project was revoked. Sign in again, then retry. Your local edits are kept.",
+        });
+        return;
       }
+      scheduleReconnect();
     };
   }, [projectId, syncServerUrl, syncTransport, doc, scheduleReconnect, disconnect]);
 

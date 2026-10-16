@@ -32,8 +32,10 @@ export function SyncRecoveryDialog({ rejected, backup, loadError, onRetryLoad, o
     try { await onRecover(); onReload(); }
     catch (failure) { setError(failure instanceof Error ? failure.message : String(failure)); setBusy(false); }
   };
-  if (loadError) return <Dialog open title="Project could not open"
-    description="Opening stopped before the project could sync. Resolve the problem below, then retry. Your local draft is preserved."
+  if (loadError) return <Dialog open title={loadError.code === "SESSION_EXPIRED" ? "Sign in to keep syncing" : "Project could not open"}
+    description={loadError.code === "SESSION_EXPIRED"
+      ? "Sync stopped because the cloud no longer accepts this session. Your local draft is preserved."
+      : "Opening stopped before the project could sync. Resolve the problem below, then retry. Your local draft is preserved."}
     hideCloseButton disableBackdropClose onClose={() => {}}>
     <div className="flex flex-col gap-4 p-5">
       <p role="alert" className="whitespace-pre-wrap break-words text-sm text-red-600">{loadError.message}</p>

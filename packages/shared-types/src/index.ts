@@ -1275,6 +1275,18 @@ export {
 
 export { isViewAssetReferenceEdge } from "./canvas-view-references.js";
 
+// Sync error severity taxonomy
+export {
+  classifySyncError,
+  classifyLoroUpdateRejection,
+  SYNC_ERROR_SEVERITY_POLICY,
+  type SyncErrorSeverity,
+  type SyncErrorSeverityPolicy,
+  type SyncErrorClassification,
+  type SyncErrorSignal,
+  type SyncUserAction,
+} from "./sync-error-severity.js";
+
 // Loro sync client
 export { LoroSyncClient, loroSyncUpdateId } from "./loro-client.js";
 export type { LoroSyncClientOptions } from "./loro-client.js";
