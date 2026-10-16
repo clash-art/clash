@@ -60,6 +60,8 @@ import {
   reconcileProjectDirectorStageOwnership,
 } from "@clash/shared-types";
 
+const SOCKET_AUTHORIZATION_TTL_MS = 5_000;
+
 /** Alarm intervals in milliseconds */
 const TASK_POLL_INTERVAL_MS = 60_000; // 60 seconds
 const TASK_POLL_URGENT_MS = 2_000; // 2 seconds (after new task submission)
@@ -133,6 +135,13 @@ export class ProjectRoom extends DurableObject<Env> {
   /** Connected client identity map for presence tracking. */
   private clients: Map<WebSocket, ProjectClientInfo> = new Map();
   private protocolSessions = new Map<WebSocket, LoroProtocolServerSession>();
+  private socketAuthorization = new WeakMap<
+    WebSocket,
+    {
+      expiresAt: number;
+      inFlight?: Promise<boolean>;
+    }
+  >();
   private outbound = new Map<WebSocket, Promise<void>>();
 
   /** Throttle activity broadcasts: nodeId → last broadcast timestamp */
@@ -448,30 +457,70 @@ export class ProjectRoom extends DurableObject<Env> {
     }
   }
 
-  /** A hibernated connection carries identity evidence, never raw credentials. */
-  private async authorizeSocket(ws: WebSocket): Promise<boolean> {
+  /**
+   * A hibernated connection carries identity evidence, never raw credentials.
+   * This ephemeral cache is rebuilt on wake. Inbound commits share it, so
+   * revocation is enforced within SOCKET_AUTHORIZATION_TTL_MS.
+   */
+  private authorizeSocket(ws: WebSocket): boolean | Promise<boolean> {
+    const cached = this.socketAuthorization.get(ws);
+    if (cached?.inFlight) return cached.inFlight;
+    if (cached && Date.now() < cached.expiresAt) return true;
+
     const info = this.clientInfoFor(ws);
     if (info?.internal === true) return true;
-    if (
-      info?.projectAuthorization &&
-      (!this.projectId || info.projectAuthorization.projectId === this.projectId) &&
-      (await revalidateProjectConnection(this.env, info.projectAuthorization))
-    ) return true;
-    ws.close(1008, "Project authorization expired or revoked");
-    this.clients.delete(ws);
-    this.protocolSessions.delete(ws);
-    return false;
+    const entry = {
+      expiresAt: 0,
+      inFlight: undefined as Promise<boolean> | undefined,
+    };
+    this.socketAuthorization.set(ws, entry);
+    entry.inFlight = (async () => {
+      const authorized = !!(
+        info?.projectAuthorization &&
+        (!this.projectId ||
+          info.projectAuthorization.projectId === this.projectId) &&
+        (await revalidateProjectConnection(this.env, info.projectAuthorization))
+      );
+      // A close/error during D1 must not restore authorization or send a frame.
+      if (this.socketAuthorization.get(ws) !== entry) return false;
+      if (authorized) {
+        entry.expiresAt = Date.now() + SOCKET_AUTHORIZATION_TTL_MS;
+        return true;
+      }
+      ws.close(1008, "Project authorization expired or revoked");
+      this.socketAuthorization.delete(ws);
+      this.clients.delete(ws);
+      this.protocolSessions.delete(ws);
+      return false;
+    })().finally(() => {
+      entry.inFlight = undefined;
+      if (!entry.expiresAt && this.socketAuthorization.get(ws) === entry) {
+        this.socketAuthorization.delete(ws);
+      }
+    });
+    return entry.inFlight;
   }
 
   /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
   private sendAuthorized(ws: WebSocket, data: string | Uint8Array): void {
-    const pending = (this.outbound.get(ws) ?? Promise.resolve()).then(async () => {
-      if (await this.authorizeSocket(ws)) ws.send(data);
-    }).catch(error => { log.error("Authorized delivery failed:", error); });
+    const pending = (this.outbound.get(ws) ?? Promise.resolve())
+      .then(async () => {
+        const authorization = this.authorizeSocket(ws);
+        if (
+          authorization === true ||
+          (authorization !== false && (await authorization))
+        )
+          ws.send(data);
+      })
+      .catch((error) => {
+        log.error("Authorized delivery failed:", error);
+      });
     this.outbound.set(ws, pending);
-    this.ctx.waitUntil(pending.finally(() => {
-      if (this.outbound.get(ws) === pending) this.outbound.delete(ws);
-    }));
+    this.ctx.waitUntil(
+      pending.finally(() => {
+        if (this.outbound.get(ws) === pending) this.outbound.delete(ws);
+      }),
+    );
   }
 
   private isProtocolClient(ws: WebSocket): boolean {
@@ -553,6 +602,7 @@ export class ProjectRoom extends DurableObject<Env> {
     const liveSet = new Set(liveWs);
     for (const ws of this.clients.keys()) {
       if (!liveSet.has(ws)) {
+        this.socketAuthorization.delete(ws);
         this.clients.delete(ws);
       }
     }
@@ -884,6 +934,7 @@ export class ProjectRoom extends DurableObject<Env> {
     // swallows the details), so we couldn't tell what was failing. Catch +
     // log so the next occurrence names the failing line.
     try {
+      this.socketAuthorization.delete(ws);
       this.clients.delete(ws);
       this.awareness.delete(ws);
       this.protocolSessions.get(ws)?.destroy();
@@ -922,6 +973,7 @@ export class ProjectRoom extends DurableObject<Env> {
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     log.error("WebSocket error:", error);
     try {
+      this.socketAuthorization.delete(ws);
       this.clients.delete(ws);
       this.awareness.delete(ws);
       this.protocolSessions.get(ws)?.destroy();
