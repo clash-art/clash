@@ -130,14 +130,18 @@ export function summarizeProjectTimeline<T extends { state: unknown }>(
   };
 }
 
-const ProjectTimelineSummarySchema = ProjectTimelineEntitySchema.omit({ state: true }).extend({
-  trackCount: FrameSchema,
-  itemCount: FrameSchema,
-  fps: FiniteNumberSchema.optional(),
-  durationInFrames: FrameSchema.optional(),
-  compositionWidth: FiniteNumberSchema.optional(),
-  compositionHeight: FiniteNumberSchema.optional(),
-}).strict();
+const ProjectTimelineSummarySchema = ProjectTimelineEntitySchema.omit({
+  state: true,
+})
+  .extend({
+    trackCount: FrameSchema,
+    itemCount: FrameSchema,
+    fps: FiniteNumberSchema.optional(),
+    durationInFrames: FrameSchema.optional(),
+    compositionWidth: FiniteNumberSchema.optional(),
+    compositionHeight: FiniteNumberSchema.optional(),
+  })
+  .strict();
 
 const TimelineIssueSchema = z
   .object({
@@ -414,8 +418,15 @@ const agent = {
   "timeline.list": agentOperation({
     id: "timeline.list",
     kind: "entity",
-    inputSchema: z.object({ standalone: z.boolean().optional(), full: z.boolean().optional() }).strict(),
-    outputSchema: z.array(z.union([ProjectTimelineSummarySchema, ProjectTimelineEntitySchema])),
+    inputSchema: z
+      .object({
+        standalone: z.boolean().optional(),
+        full: z.boolean().optional(),
+      })
+      .strict(),
+    outputSchema: z.array(
+      z.union([ProjectTimelineSummarySchema, ProjectTimelineEntitySchema]),
+    ),
     access: "read",
     readOnly: true,
     cas: "none",
@@ -930,15 +941,19 @@ const editorActions = {
     "timeline.action.ROLL_EDIT",
     actionWithPayload(
       "ROLL_EDIT",
-      z.object({
-        trackId: IdentifierSchema,
-        leftItemId: IdentifierSchema,
-        rightItemId: IdentifierSchema,
-        boundaryFrame: FrameSchema,
-      }).strict(),
+      z
+        .object({
+          trackId: IdentifierSchema,
+          leftItemId: IdentifierSchema,
+          rightItemId: IdentifierSchema,
+          boundaryFrame: FrameSchema,
+        })
+        .strict(),
     ),
     "Move a shared clip boundary atomically, preserving the pair's total span and attached transition.",
-    ["Both clips are adjacent on the same track; the boundary is clamped to available source handles."],
+    [
+      "Both clips are adjacent on the same track; the boundary is clamped to available source handles.",
+    ],
   ),
   "timeline.action.SPLIT_ITEM": editorAction(
     "timeline.action.SPLIT_ITEM",
@@ -1113,10 +1128,36 @@ function catalogGroup(
   );
 }
 
-export const TIMELINE_OPERATION_CATALOG = Object.freeze({
-  agent: Object.freeze(catalogGroup(agent)),
-  editorCommands: Object.freeze(catalogGroup(editorCommands)),
-  editorActions: Object.freeze(catalogGroup(editorActions)),
+// Converting every operation's zod schemas to JSON Schema costs tens of ms of
+// CPU. Build each group on first read (memoized) so importing shared-types
+// does not pay for it at Worker startup. Enumerable getters keep
+// Object.keys / JSON.stringify / spread behavior unchanged.
+function lazyCatalog<T extends Record<string, () => unknown>>(
+  builders: T,
+): { readonly [K in keyof T]: ReturnType<T[K]> } {
+  const target = {} as Record<string, unknown>;
+  for (const [key, build] of Object.entries(builders)) {
+    let cached: unknown;
+    let built = false;
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: false,
+      get() {
+        if (!built) {
+          cached = build();
+          built = true;
+        }
+        return cached;
+      },
+    });
+  }
+  return Object.freeze(target) as { readonly [K in keyof T]: ReturnType<T[K]> };
+}
+
+export const TIMELINE_OPERATION_CATALOG = lazyCatalog({
+  agent: () => Object.freeze(catalogGroup(agent)),
+  editorCommands: () => Object.freeze(catalogGroup(editorCommands)),
+  editorActions: () => Object.freeze(catalogGroup(editorActions)),
 });
 
 export type TimelineAgentOperationId = keyof typeof agent;
