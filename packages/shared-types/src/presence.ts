@@ -151,7 +151,12 @@ export interface AwarenessBroadcastMessage {
 export interface ProjectLoadErrorMessage {
   type: "project.load-error";
   projectId: string;
-  code: "PROJECT_UPGRADE_FAILED";
+  /**
+   * PROJECT_UPGRADE_FAILED: sent by ProjectRoom. SESSION_EXPIRED: raised by the
+   * client when the room closes 1008 (authorization expired or revoked); it is
+   * user_action_required in the sync error severity taxonomy.
+   */
+  code: "PROJECT_UPGRADE_FAILED" | "SESSION_EXPIRED";
   message: string;
   nodeId?: string;
 }
@@ -170,7 +175,7 @@ export function isSidebandMessage(msg: unknown): msg is SidebandMessage {
   const t = (msg as any).type;
   if (t === "project.load-error") {
     const error = msg as Record<string, unknown>;
-    return typeof error.projectId === "string" && error.code === "PROJECT_UPGRADE_FAILED"
+    return typeof error.projectId === "string" && (error.code === "PROJECT_UPGRADE_FAILED" || error.code === "SESSION_EXPIRED")
       && typeof error.message === "string" && (error.nodeId === undefined || typeof error.nodeId === "string");
   }
   return t === "presence" || t === "activity" || t === "awareness.broadcast";

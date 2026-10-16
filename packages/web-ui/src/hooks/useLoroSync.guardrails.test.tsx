@@ -332,6 +332,38 @@ describe("useLoroSync guardrails", () => {
     } finally { version.free(); unmount(); vi.useRealTimers(); }
   });
 
+  it("stops reconnecting on close 1008 (revoked/expired session) and asks to sign in again", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "revoked" }));
+    try {
+      await waitFor(() => expect(result.current.connected).toBe(true));
+      const socket = FakeWebSocket.instances.at(-1)!;
+      vi.useFakeTimers();
+      await act(async () => { socket.close(1008, "Project authorization expired or revoked"); await vi.advanceTimersByTimeAsync(30000); });
+      expect(FakeWebSocket.instances).toEqual([socket]);
+      expect(result.current.projectLoadError?.code).toBe("SESSION_EXPIRED");
+      expect(result.current.syncRejected).toBe(false);
+      vi.useRealTimers();
+      await act(async () => { result.current.retryProjectLoad(); });
+      await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+      expect(result.current.projectLoadError).toBeUndefined();
+    } finally { vi.useRealTimers(); unmount(); }
+  });
+
+  it("still reconnects after a transient drop (1006)", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "transient" }));
+    try {
+      await waitFor(() => expect(result.current.connected).toBe(true));
+      const socket = FakeWebSocket.instances.at(-1)!;
+      vi.useFakeTimers();
+      await act(async () => { socket.drop(); await vi.advanceTimersByTimeAsync(2000); });
+      vi.useRealTimers();
+      await waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThan(1));
+      expect(result.current.projectLoadError).toBeUndefined();
+    } finally { vi.useRealTimers(); unmount(); }
+  });
+
   it("debounces snapshot serialization itself and flushes pending changes on unmount", async () => {
     const { result, unmount } = renderHook(() => useLoroSync({ projectId: "snapshot-batching" }));
     await waitFor(() => expect(result.current.isInitialized).toBe(true));
