@@ -346,6 +346,40 @@ describe("socket authorization cache", () => {
     }
   });
 
+  it("shares one revalidation across sockets presenting the same proof", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, flush } = fixture();
+      const others = Array.from({ length: 20 }, () => ({
+        send: vi.fn(),
+        close: vi.fn(),
+        deserializeAttachment: vi.fn(() => ({ projectAuthorization: { projectId: "project" } })),
+      }));
+      room.sendAuthorized(ws, "x");
+      for (const other of others) room.sendAuthorized(other, "x");
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      for (const other of others) expect(other.send).toHaveBeenCalledWith("x");
+      // Still bounded by the TTL: a later send revalidates again.
+      clock.mockReturnValue(15_001);
+      room.sendAuthorized(others[0], "y");
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("drops frames for a socket that closed while authorization was in flight", async () => {
+    mocks.revalidate.mockReset().mockResolvedValue(true);
+    const { room, ws, flush } = fixture();
+    (ws as any).readyState = 3;
+    room.sendAuthorized(ws, "late");
+    await flush();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   it("closes a revoked socket and clears its cached authorization", async () => {
     mocks.revalidate.mockReset().mockResolvedValue(false);
     const { room, ws, flush } = fixture();
