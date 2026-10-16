@@ -6,6 +6,7 @@
     "Full snapshots remain the default until an offline-replica-aware shallow-history GC frontier exists."
   ],
   "key_files": {
+    "presence-device.ts": "Short display-only presence device labels derived from browser User-Agent or bounded CLI/Host declarations; never an identity or kind authority.",
     "replica-ports.ts": "Durable Object event log, checkpoint, deduplication and scheduling ports.",
     "storage.ts": "Existing snapshot/update storage keys and migration-compatible helpers.",
     "NodeProcessor.ts": "Hosted caller glue to journal-first startGeneration; pending-task observation rechecked after awaits, journal-owned tasks excluded from legacy orphan recovery. Retired automatic description no-op is not scheduled.",

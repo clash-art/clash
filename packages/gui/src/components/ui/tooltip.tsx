@@ -3,6 +3,7 @@ import {
   useState,
   type MouseEventHandler,
   type ReactElement,
+  type ReactNode,
 } from 'react';
 import {
   Tooltip as AriakitTooltip,
@@ -12,7 +13,7 @@ import {
 } from '@ariakit/react';
 
 interface TooltipProps {
-  label: string;
+  label: ReactNode;
   children: ReactElement;
   placement?: TooltipStoreProps['placement'];
 }

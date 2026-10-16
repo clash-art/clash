@@ -25,6 +25,8 @@ export interface ClientInfo {
   /** The user the connection acts for, also for an agent connection. */
   name: string;
   avatar?: string;
+  /** Short server-derived device/window label; absent on older connections. */
+  device?: string;
   connectedAt: number;
   /**
    * If set, this client has the timeline editor open on the given node and
@@ -51,6 +53,8 @@ export interface PresenceClient {
   userId: string;
   name: string;
   avatar?: string;
+  /** Short server-derived device/window label; absent on older connections. */
+  device?: string;
   /** See ClientInfo.editingNodeId. Re-broadcast so all clients know who holds what. */
   editingNodeId?: string | null;
 }

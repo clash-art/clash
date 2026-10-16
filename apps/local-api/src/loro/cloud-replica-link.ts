@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { CursorCloudReplicaLink } from "./cursor-cloud-replica-link.js";
 import WebSocket, { type RawData } from "ws";
 import type { LoroDoc } from "loro-crdt";
@@ -101,6 +102,8 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     const headers: Record<string, string> = this.options.token
       ? { authorization: `Bearer ${this.options.token}` }
       : {};
+    headers["x-client-type"] = "cli";
+    headers["x-device-name"] = encodeURIComponent(`Clash Host · ${hostname()}`);
     const socket = (this.options.createSocket ?? defaultSocketFactory)(
       cloudRoomUrl(this.options.baseUrl, this.options.projectId),
       headers,

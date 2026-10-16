@@ -1,3 +1,6 @@
+import type { PresenceClient } from "@clash/shared-types";
+import PresenceBar from "./PresenceBar";
+import { visiblePresenceClients } from "../lib/presenceVisibility";
 import type { CopilotAssetReferenceRequest } from "./copilot/useCopilotComposerDraft";
 import { ProjectCloudButton } from "./CloudConnection";
 import { useNamePrompt } from "./NamePrompt";
@@ -1400,10 +1403,15 @@ export default function ProjectEditor({
     [],
   );
 
+  const [presenceClients, setPresenceClients] = useState<PresenceClient[]>([]);
+
   // Loro CRDT sync
   const loroSync = useLoroSync({
     projectId: project.id,
     syncTransport: project.syncTransport,
+    onPresenceChange: (clients, selfClientId) => {
+      setPresenceClients(visiblePresenceClients(clients, selfClientId));
+    },
     canvasId: activeCanvasId,
     onActivity: (activity: ActivityMessage) => {
       addToast(activity);
@@ -7352,6 +7360,7 @@ export default function ProjectEditor({
                                                     placeholder="Untitled"
                                                   />
                                                 </form>
+                                                <PresenceBar clients={presenceClients} />
                                                 <DesktopSidebarCollapseButton
                                                   collapsed={
                                                     isProjectNavigatorCollapsed

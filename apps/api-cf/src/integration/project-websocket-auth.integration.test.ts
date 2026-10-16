@@ -523,3 +523,49 @@ it("expires an established JWT connection before its next protocol command", asy
   connected.socket.send("ping");
   expect((await closed).code).toBe(1008);
 });
+
+it("re-derives a stale credential label from the user record on Host reconnect", async () => {
+  const f = await fixture();
+  const { cookie } = await sessionCookie(f.userId, Date.now() + 60_000);
+  const observer = await connect(f, { cookie });
+  const headers = {
+    Authorization: `Bearer ${f.token}`,
+    "x-client-type": "cli",
+    "x-device-name": "Clash Host · studio",
+  };
+  const old = await connect(f, headers);
+  // Reproduce a hibernated attachment admitted before user-name presence.
+  await runInDurableObject(f.room, async (_instance, state) => {
+    for (const socket of state.getWebSockets()) {
+      const info = socket.deserializeAttachment();
+      if (info.clientType === "cli")
+        socket.serializeAttachment({ ...info, name: "Clash CLI" });
+    }
+  });
+  await evictDurableObject(f.room);
+  const disconnected = nextSideband<PresenceMessage>(observer.socket, "presence",
+    (frame) => frame.clients.every((client) => client.clientType !== "cli"));
+  old.socket.close();
+  await disconnected;
+  await env.DB.prepare('UPDATE users SET name = ? WHERE id = ?')
+    .bind("Updated person", f.userId)
+    .run();
+  const presence = nextSideband<PresenceMessage>(
+    observer.socket,
+    "presence",
+    (frame) => frame.clients.some((client) => client.name === "Updated person"),
+  );
+  await connect(f, headers);
+  const frame = await presence;
+  const host = frame.clients.find((client) => client.name === "Updated person");
+  expect(host).toMatchObject({
+    userId: f.userId,
+    clientType: "cli",
+    kind: "agent",
+    name: "Updated person",
+    device: "Clash Host · studio",
+  });
+  expect(frame.clients.some((client) => client.name === "Clash CLI")).toBe(
+    false,
+  );
+});
