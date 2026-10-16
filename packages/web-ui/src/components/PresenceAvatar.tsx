@@ -4,32 +4,40 @@
  * avatar, name and colour; an agent session adds the corner agent badge.
  * `kind` is stamped by the server from how the connection authenticated.
  */
-import type { ReactNode } from 'react';
-import { Robot } from '@phosphor-icons/react';
-import { presenceLabel, type PresenceKind } from '@clash/shared-types';
-import { AvatarFallback, AvatarImage, AvatarRoot, type AvatarSize } from './ui/avatar';
-import { Badge } from './ui/badge';
+import type { ReactNode } from "react";
+import { AgentMotion } from "./copilot/AgentMotion";
+import { presenceLabel, type PresenceKind } from "@clash/shared-types";
+import {
+  AvatarFallback,
+  AvatarImage,
+  AvatarRoot,
+  type AvatarSize,
+} from "./ui/avatar";
+import { Badge } from "./ui/badge";
 
 function getInitials(name: string): string {
   return name
-    .split(' ')
+    .split(" ")
     .map((n) => n[0])
-    .join('')
+    .join("")
     .toUpperCase()
     .slice(0, 2);
 }
 
 /** Corner marker for an agent session; the parent must be `relative`. */
-export function PresenceAgentBadge({ color }: { color: string }) {
+export function PresenceAgentBadge() {
   return (
-    <Badge
+    <span
       data-presence-agent-badge
       aria-hidden="true"
-      className="absolute -bottom-1 -right-1 size-4 border-warm-surface p-0 text-white shadow-sm [&>svg]:size-2.5"
-      style={{ background: color }}
+      className="absolute -bottom-0.5 -right-0.5 inline-flex size-3.5 items-center justify-center drop-shadow-[0_0_1px_rgba(0,0,0,0.45)]"
     >
-      <Robot weight="fill" />
-    </Badge>
+      <AgentMotion
+        decorative
+        state="idle"
+        className="clash-agent-motion--compact clash-agent-motion--badge size-3.5"
+      />
+    </span>
   );
 }
 
@@ -62,7 +70,7 @@ export function PresenceAvatar({
           {getInitials(name)}
         </AvatarFallback>
       </AvatarRoot>
-      {kind === 'agent' && <PresenceAgentBadge color={color} />}
+      {kind === "agent" && <PresenceAgentBadge />}
     </span>
   );
 }
@@ -73,7 +81,7 @@ export function PresenceNameBadge({
   kind,
   color,
   agentIcon = false,
-  className = '',
+  className = "",
   children,
 }: PresenceIdentity & {
   /** Inline agent icon, for surfaces without a corner badge. */
@@ -87,7 +95,13 @@ export function PresenceNameBadge({
       className={`border-transparent text-white shadow-sm ${className}`}
       style={{ background: color }}
     >
-      {agentIcon && kind === 'agent' && <Robot weight="fill" aria-hidden="true" />}
+      {agentIcon && kind === "agent" && (
+        <AgentMotion
+          decorative
+          state="idle"
+          className="clash-agent-motion--compact clash-agent-motion--badge size-3.5"
+        />
+      )}
       {presenceLabel({ name, kind })}
       {children}
     </Badge>
