@@ -5,7 +5,8 @@ import type { PresenceClient } from "@clash/shared-types";
 import { colorForUserId, type Peer } from "../hooks/usePresenceAwareness";
 import CursorOverlay from "./CursorOverlay";
 import PeerSelectionRing from "./PeerSelectionRing";
-import PresenceBar from "./PresenceBar";
+import PresenceBar, { PresenceSessions } from "./PresenceBar";
+import { fireEvent } from "@testing-library/react";
 
 vi.mock("@xyflow/react", () => ({
   useViewport: () => ({ x: 0, y: 0, zoom: 1 }),
@@ -44,9 +45,16 @@ describe("presence identity", () => {
     const label = (cursor: Element) =>
       cursor.querySelector('[data-slot="badge"][data-presence-kind]');
     expect(background(label(agentCursor))).toBe(background(label(humanCursor)));
-    expect(background(agentBadges(agentCursor)[0])).toBe(
-      background(label(humanCursor)),
-    );
+    const mark = agentBadges(agentCursor)[0].querySelector(
+      '[data-slot="clash-agent-avatar"]',
+    )!;
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(mark.getAttribute("data-agent-motion-state")).toBe("idle");
+    fireEvent.pointerMove(agentBadges(agentCursor)[0], {
+      clientX: 100,
+      clientY: 100,
+    });
+    expect(mark.getAttribute("data-agent-motion-tracking")).toBe("false");
     expect(agentCursor.querySelector("svg")?.getAttribute("fill")).toBe(
       humanCursor.querySelector("svg")?.getAttribute("fill"),
     );
@@ -61,7 +69,9 @@ describe("presence identity", () => {
       "Ann Lee · Agent",
     ]);
     expect(labels[0].querySelector("svg")).toBeNull();
-    expect(labels[1].querySelector("svg")).not.toBeNull();
+    expect(
+      labels[1].querySelector('[data-slot="clash-agent-avatar"]'),
+    ).not.toBeNull();
     expect(background(labels[1])).toBe(background(labels[0]));
   });
 
@@ -86,5 +96,17 @@ describe("presence identity", () => {
     expect(container.querySelectorAll("[data-presence-kind]")).toHaveLength(1);
     expect(screen.getByLabelText("Ann Lee · 2 sessions")).toBeTruthy();
     expect(agentBadges(container)).toHaveLength(1);
+    expect(
+      agentBadges(container)[0].querySelector(
+        '[data-slot="clash-agent-avatar"]',
+      ),
+    ).not.toBeNull();
+
+    const rows = render(<PresenceSessions sessions={clients} />);
+    const mark = rows.container.querySelector(
+      '[data-slot="clash-agent-avatar"]',
+    );
+    expect(mark?.getAttribute("aria-hidden")).toBe("true");
+    expect(mark?.getAttribute("data-agent-motion-state")).toBe("idle");
   });
 });

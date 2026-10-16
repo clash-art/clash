@@ -1790,6 +1790,17 @@ html.dark .clash-is-scrolling::-webkit-scrollbar-thumb:hover {
   transform: rotate(26deg);
 }
 
+/* Tiny presence marks stay idle and never follow the pointer. */
+.clash-agent-motion--badge {
+  pointer-events: none;
+}
+
+.clash-agent-motion--badge.clash-agent-motion--idle .clash-agent-motion__gaze {
+  animation: none;
+  transform: none;
+  transition: none;
+}
+
 .clash-agent-motion__avatar {
   transform-box: fill-box;
   transform-origin: center;

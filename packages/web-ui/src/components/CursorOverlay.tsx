@@ -61,7 +61,7 @@ function CursorOverlayImpl({ peers }: CursorOverlayProps) {
                 color={peer.color}
                 className="drop-shadow-sm"
               />
-              {peer.kind === 'agent' && <PresenceAgentBadge color={peer.color} />}
+              {peer.kind === 'agent' && <PresenceAgentBadge />}
             </span>
 
             <PresenceNameBadge

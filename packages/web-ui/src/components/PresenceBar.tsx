@@ -1,9 +1,10 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { Browser, Robot } from "@phosphor-icons/react";
+import { Browser } from "@phosphor-icons/react";
 import type { PresenceClient } from "@clash/shared-types";
 import { colorForUserId } from "@clash/web-ui/hooks/usePresenceAwareness";
 import { AvatarFallback, AvatarRoot } from "./ui/avatar";
 import { PresenceAvatar } from "./PresenceAvatar";
+import { AgentMotion } from "./copilot/AgentMotion";
 import { Tooltip } from "./ui/tooltip";
 
 export function groupPresenceClients(clients: PresenceClient[]) {
@@ -22,13 +23,20 @@ export function PresenceSessions({ sessions }: { sessions: PresenceClient[] }) {
     <div className="space-y-1 text-left">
       <div className="font-semibold">{sessions[0].name}</div>
       {sessions.map((session) => {
-        const Icon = session.kind === "agent" ? Robot : Browser;
         return (
           <div
             key={session.id}
             className="flex items-center gap-1.5 font-normal"
           >
-            <Icon size={12} aria-hidden="true" />
+            {session.kind === "agent" ? (
+              <AgentMotion
+                decorative
+                state="idle"
+                className="clash-agent-motion--compact clash-agent-motion--badge size-3.5"
+              />
+            ) : (
+              <Browser size={12} aria-hidden="true" />
+            )}
             <span>
               {session.device ||
                 (session.kind === "human"
