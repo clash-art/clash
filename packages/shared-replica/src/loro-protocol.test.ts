@@ -437,3 +437,99 @@ it("reserves the session byte budget across unfinished batches", async () => {
     doc.free();
   }
 });
+
+describe("maxUpdateBytes", () => {
+  const make = (sent: Uint8Array[], commit = vi.fn().mockResolvedValue(undefined)) => {
+    const doc = new LoroDoc();
+    const session = new LoroProtocolServerSession({
+      roomId: "p",
+      doc: () => doc,
+      commit,
+      send: (frame) => {
+        sent.push(frame);
+      },
+      assumeJoined: true,
+      maxUpdateBytes: 1024,
+    });
+    return { doc, session, commit };
+  };
+
+  it("rejects a single update above the cap without committing it", async () => {
+    const sent: Uint8Array[] = [];
+    const { doc, session, commit } = make(sent);
+    const source = new LoroDoc();
+    source.getMap("m").set("big", "x".repeat(4096));
+    source.commit();
+    try {
+      await session.receive(
+        encode({
+          type: MessageType.DocUpdate,
+          crdt: CrdtType.Loro,
+          roomId: "p",
+          updates: [source.export({ mode: "update" })],
+          batchId: "0x0000000000000001",
+        }),
+      );
+      expect(commit).not.toHaveBeenCalled();
+      expect(decode(sent.at(-1)!)).toMatchObject({
+        type: MessageType.Ack,
+        refId: "0x0000000000000001",
+        status: UpdateStatusCode.PayloadTooLarge,
+      });
+    } finally {
+      session.destroy();
+      doc.free();
+      source.free();
+    }
+  });
+
+  it("still commits updates under the cap", async () => {
+    const sent: Uint8Array[] = [];
+    const { doc, session, commit } = make(sent);
+    const source = new LoroDoc();
+    source.getMap("m").set("small", "ok");
+    source.commit();
+    try {
+      await session.receive(
+        encode({
+          type: MessageType.DocUpdate,
+          crdt: CrdtType.Loro,
+          roomId: "p",
+          updates: [source.export({ mode: "update" })],
+          batchId: "0x0000000000000002",
+        }),
+      );
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(decode(sent.at(-1)!)).toMatchObject({ status: UpdateStatusCode.Ok });
+    } finally {
+      session.destroy();
+      doc.free();
+      source.free();
+    }
+  });
+
+  it("rejects a fragmented batch whose declared size exceeds the cap before buffering", async () => {
+    const sent: Uint8Array[] = [];
+    const { doc, session, commit } = make(sent);
+    try {
+      await session.receive(
+        encode({
+          type: MessageType.DocUpdateFragmentHeader,
+          crdt: CrdtType.Loro,
+          roomId: "p",
+          batchId: "0x0000000000000003",
+          fragmentCount: 2,
+          totalSizeBytes: 2048,
+        }),
+      );
+      expect(commit).not.toHaveBeenCalled();
+      expect(decode(sent.at(-1)!)).toMatchObject({
+        refId: "0x0000000000000003",
+        status: UpdateStatusCode.PayloadTooLarge,
+      });
+    } finally {
+      session.destroy();
+      doc.free();
+    }
+  });
+});

@@ -108,6 +108,12 @@ export interface LoroProtocolServerSessionOptions {
   permission?: "read" | "write";
   /** Used when a hibernated server revives an already-authenticated socket. */
   assumeJoined?: boolean;
+  /**
+   * Largest single update (or fragmented batch) accepted for commit. Larger
+   * ones are acked PayloadTooLarge before reassembly or commit. Defaults to
+   * the 64 MiB fragment reservation limit.
+   */
+  maxUpdateBytes?: number;
 }
 
 export interface LoroProtocolClientSessionOptions {
@@ -221,16 +227,20 @@ export class LoroProtocolServerSession {
     }
   }
 
+  private maxUpdateBytes(): number {
+    return Math.min(
+      this.options.maxUpdateBytes ?? MAX_FRAGMENT_BATCH_BYTES,
+      MAX_FRAGMENT_BATCH_BYTES,
+    );
+  }
+
   private async commit(message: DocUpdate): Promise<void> {
     if (!this.joined || (this.options.permission ?? "write") !== "write") {
       await this.ack(message.batchId, UpdateStatusCode.PermissionDenied);
       return;
     }
-    if (
-      message.updates.some(
-        (update) => update.byteLength > MAX_FRAGMENT_BATCH_BYTES,
-      )
-    ) {
+    const maxUpdateBytes = this.maxUpdateBytes();
+    if (message.updates.some((update) => update.byteLength > maxUpdateBytes)) {
       await this.ack(message.batchId, UpdateStatusCode.PayloadTooLarge);
       return;
     }
@@ -274,6 +284,7 @@ export class LoroProtocolServerSession {
       message.fragmentCount > message.totalSizeBytes ||
       this.fragments.size >= 64 ||
       message.totalSizeBytes <= 0 ||
+      message.totalSizeBytes > this.maxUpdateBytes() ||
       reservedBytes + message.totalSizeBytes > MAX_FRAGMENT_BATCH_BYTES
     ) {
       await this.ack(message.batchId, UpdateStatusCode.PayloadTooLarge);

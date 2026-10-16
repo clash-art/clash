@@ -60,6 +60,15 @@ import {
 } from "@clash/shared-types";
 
 const SOCKET_AUTHORIZATION_TTL_MS = 5_000;
+/**
+ * Largest single CRDT update a client may commit. Every accepted update stays
+ * in the doc history forever (deletes leave tombstones) and is re-exported in
+ * every snapshot, so one oversized write permanently slows joins, compaction
+ * and the upload content resolver for the whole project. Binary content
+ * belongs in R2 via the content upload path, not in the doc. Real project
+ * docs are far below this (largest staging/prod rooms are tens of KiB).
+ */
+export const PROJECT_ROOM_MAX_UPDATE_BYTES = 4 * 1024 * 1024;
 
 /** Alarm intervals in milliseconds */
 const TASK_POLL_INTERVAL_MS = 60_000; // 60 seconds
@@ -582,6 +591,7 @@ export class ProjectRoom extends DurableObject<Env> {
       roomId: this.projectId,
       doc: () => this.doc,
       assumeJoined,
+      maxUpdateBytes: PROJECT_ROOM_MAX_UPDATE_BYTES,
       send: (frame) => this.sendAuthorized(ws, frame),
       commit: async (batchId, updates) => {
         for (const [index, update] of updates.entries()) {
@@ -851,6 +861,14 @@ export class ProjectRoom extends DurableObject<Env> {
           this.protocolSessions.get(ws) ?? this.createProtocolSession(ws, true);
         this.protocolSessions.set(ws, session);
         await session.receive(updates);
+        return;
+      }
+      if (updates.byteLength > PROJECT_ROOM_MAX_UPDATE_BYTES) {
+        // Legacy raw clients have no ack channel: 1009 = message too big.
+        log.warn(
+          `[room proj=${this.projectId.slice(-6)}] rejected ${updates.byteLength} B update (cap ${PROJECT_ROOM_MAX_UPDATE_BYTES})`,
+        );
+        ws.close(1009, "Update exceeds project room size limit");
         return;
       }
       void this.enqueueLoroImport({
