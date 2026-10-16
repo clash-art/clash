@@ -11,6 +11,12 @@ import { Canvas } from "@clash/shared-types";
 
 const mocks = vi.hoisted(() => ({
   processPendingNodes: vi.fn(),
+  revalidate: vi.fn(),
+}));
+
+vi.mock("../loro/auth", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../loro/auth")>(),
+  revalidateProjectConnection: mocks.revalidate,
 }));
 
 vi.mock("cloudflare:workers", () => ({
@@ -309,5 +315,88 @@ describe("ProjectRoom Loro remote persistence", () => {
       status: UpdateStatusCode.Ok,
     });
     expect(data.get("loro:event-id:protocol%3A0x0000000000000042%3A0")).toBe(1);
+  });
+});
+
+describe("socket authorization cache", () => {
+  function fixture() {
+    const fixture = createRoom();
+    const room = fixture.room as any;
+    fixture.ws.deserializeAttachment.mockReturnValue({
+      projectAuthorization: { projectId: "project" },
+    } as any);
+    return { ...fixture, room };
+  }
+
+  it("reuses successful authorization for frames until the five-second TTL expires", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, flush } = fixture();
+      for (const frame of ["a", "b", "c"]) room.sendAuthorized(ws, frame);
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      expect(ws.send.mock.calls).toEqual([["a"], ["b"], ["c"]]);
+      clock.mockReturnValue(15_000);
+      room.sendAuthorized(ws, "d");
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("closes a revoked socket and clears its cached authorization", async () => {
+    mocks.revalidate.mockReset().mockResolvedValue(false);
+    const { room, ws, flush } = fixture();
+    room.sendAuthorized(ws, "revoked");
+    await flush();
+    expect(ws.close).toHaveBeenCalledWith(
+      1008,
+      "Project authorization expired or revoked",
+    );
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(room.socketAuthorization.has(ws)).toBe(false);
+    expect(room.clients.has(ws)).toBe(false);
+  });
+
+  it("shares an in-flight check across concurrent sends and inbound authorization", async () => {
+    let resolve!: (allowed: boolean) => void;
+    mocks.revalidate.mockReset().mockImplementation(
+      () =>
+        new Promise<boolean>((done) => {
+          resolve = done;
+        }),
+    );
+    const { room, ws, flush } = fixture();
+    room.sendAuthorized(ws, "a");
+    room.sendAuthorized(ws, "b");
+    await Promise.resolve();
+    const first = room.authorizeSocket(ws);
+    expect(room.authorizeSocket(ws)).toBe(first);
+    expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+    resolve(true);
+    await flush();
+    expect(ws.send.mock.calls).toEqual([["a"], ["b"]]);
+    expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["close", "error"] as const)("does not restore authorization after a socket %s during revalidation", async (event) => {
+    let resolve!: (allowed: boolean) => void;
+    mocks.revalidate.mockReset().mockImplementation(
+      () =>
+        new Promise<boolean>((done) => {
+          resolve = done;
+        }),
+    );
+    const { room, ws } = fixture();
+    const authorization = room.authorizeSocket(ws);
+    room.broadcastPresence = vi.fn();
+    room.flushAwarenessBroadcast = vi.fn();
+    if (event === "close") await room.webSocketClose(ws, 1000, "closed");
+    else await room.webSocketError(ws, new Error("socket failed"));
+    resolve(true);
+    expect(await authorization).toBe(false);
+    expect(room.socketAuthorization.has(ws)).toBe(false);
   });
 });
