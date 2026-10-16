@@ -248,10 +248,19 @@ export function createApp(
     const store =
       opts.projectMetadataStore?.(c.env) ??
       createD1ProjectMetadataStore(c.env.DB);
-    const written = await store.write(parsed.data.metadata);
-    return written
-      ? new Response(null, { status: 204 })
-      : c.json({ error: "Project metadata not found" }, 404);
+    const result = await store.write(parsed.data.metadata);
+    if (result.status === "written") return new Response(null, { status: 204 });
+    if (result.status === "stale") {
+      return c.json(
+        {
+          error: "Project metadata is stale",
+          schemaVersion: 1,
+          metadata: result.current,
+        },
+        409,
+      );
+    }
+    return c.json({ error: "Project metadata not found" }, 404);
   });
 
   // ─── AI Chat: /agents/supervisor/:room → SupervisorAgent DO ──

@@ -5,8 +5,13 @@ import {
 
 export interface CloudProjectMetadataStore {
   read(projectId: string): Promise<ProjectMetadata | null>;
-  /** Returns false when the hosted Project has not been admitted. */
-  write(metadata: ProjectMetadata): Promise<boolean>;
+  write(
+    metadata: ProjectMetadata,
+  ): Promise<
+    | { status: "written" }
+    | { status: "stale"; current: ProjectMetadata }
+    | { status: "not-found" }
+  >;
 }
 
 interface ProjectMetadataRow {
@@ -64,7 +69,7 @@ export function createD1ProjectMetadataStore(
         .prepare(
           `UPDATE project
               SET name = ?, description = ?, updated_at = ?, deleted_at = ?
-            WHERE id = ?`,
+            WHERE id = ? AND (updated_at IS NULL OR updated_at <= ?)`,
         )
         .bind(
           parsed.name,
@@ -74,9 +79,12 @@ export function createD1ProjectMetadataStore(
             ? null
             : isoToEpochSeconds(parsed.deletedAt),
           parsed.projectId,
+          isoToEpochSeconds(parsed.updatedAt),
         )
         .run();
-      return (result.meta.changes ?? 0) > 0;
+      if ((result.meta.changes ?? 0) > 0) return { status: "written" };
+      const current = await this.read(parsed.projectId);
+      return current ? { status: "stale", current } : { status: "not-found" };
     },
   };
 }

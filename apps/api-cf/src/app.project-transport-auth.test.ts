@@ -227,8 +227,11 @@ describe("public project transport authorization", () => {
         projectMetadataStore: () => ({
           read: async () => metadata,
           write: async (next) => {
+            if (Date.parse(next.updatedAt) < Date.parse(metadata.updatedAt)) {
+              return { status: "stale", current: metadata };
+            }
             metadata = next;
-            return true;
+            return { status: "written" };
           },
         }),
       });
@@ -247,7 +250,7 @@ describe("public project transport authorization", () => {
       return { app, env, read: () => metadata };
     }
 
-    it("lets the owner pull the tombstone and push a restore", async () => {
+    it("lets the owner pull the tombstone and push a restore at the same timestamp", async () => {
       const { app, env, read } = deleted();
       const authorization = `Bearer ${await token()}`;
       const pulled = await app.request(
@@ -271,6 +274,37 @@ describe("public project transport authorization", () => {
       );
       expect(pushed.status).toBe(204);
       expect(read()).toEqual(restored);
+    });
+
+    it("rejects a stale metadata push with the current envelope", async () => {
+      const { app, env, read } = deleted();
+      const current = read();
+      const response = await app.request(
+        "/loro/project/metadata",
+        {
+          method: "PUT",
+          headers: {
+            authorization: `Bearer ${await token()}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            schemaVersion: 1,
+            metadata: {
+              ...current,
+              name: "Stale",
+              updatedAt: current.createdAt,
+            },
+          }),
+        },
+        env,
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: "Project metadata is stale",
+        schemaVersion: 1,
+        metadata: current,
+      });
+      expect(read()).toEqual(current);
     });
 
     it("still denies another user", async () => {

@@ -1,3 +1,4 @@
+import { ProjectMetadataStaleError } from "./sync.js";
 import {
   mkdir,
   mkdtemp,
@@ -4066,6 +4067,33 @@ describe("createHttpRemoteLoroPersistence", () => {
     expect(postedBody).toBeInstanceOf(ArrayBuffer);
     const postedBuffer = postedBody as unknown as ArrayBuffer;
     expect(Array.from(new Uint8Array(postedBuffer))).toEqual([9, 8, 7]);
+  });
+
+  it("parses metadata conflicts into a typed stale error", async () => {
+    const metadata = {
+      projectId: "project",
+      name: "Concurrent edit",
+      description: null,
+      createdAt: "2026-09-04T00:00:00.000Z",
+      updatedAt: "2026-09-04T00:02:00.000Z",
+      deletedAt: null,
+    };
+    const persistence = createHttpRemoteLoroPersistence({
+      baseUrl: "https://remote.example",
+      fetch: vi.fn(async () =>
+        Response.json(
+          { error: "Project metadata is stale", schemaVersion: 1, metadata },
+          { status: 409 },
+        ),
+      ),
+    });
+    const saving = persistence.saveProjectMetadata!("project", {
+      ...metadata,
+      name: "Stale",
+      updatedAt: metadata.createdAt,
+    });
+    await expect(saving).rejects.toBeInstanceOf(ProjectMetadataStaleError);
+    await expect(saving).rejects.toMatchObject({ metadata });
   });
 
   it("round-trips versioned project metadata over the same host-neutral transport", async () => {
