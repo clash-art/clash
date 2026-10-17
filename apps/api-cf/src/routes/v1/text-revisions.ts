@@ -19,8 +19,10 @@ import {
 import type { Env } from "../../config";
 import { createD1ProjectAuthorizationStore } from "../../loro/auth";
 
-const blobKey = (projectId: string, hash: string) =>
-  `text-revisions/${encodeURIComponent(projectId)}/${hash}.md`;
+const blobKey = (projectId: string, hash: string) => {
+  if (!/^[a-f0-9]{16}$/.test(hash)) throw new Error("Invalid content hash");
+  return `text-revisions/${encodeURIComponent(projectId)}/${hash}.md`;
+};
 
 const parseRow = (row: { revision_json: string } | null) =>
   row ? TextAppliedRevisionSchema.parse(JSON.parse(row.revision_json)) : null;

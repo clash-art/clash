@@ -26,7 +26,7 @@ export interface TextRevisionListFilter {
 export interface TextRevisionStorePort {
   /** Keyed per Project, so one tenant's ids never collide with another's. */
   get(projectId: string, revisionId: string): Promise<TextAppliedRevision | null>;
-  /** Insert or replace (only called with identical or new metadata). */
+  /** Insert if absent; never overwrites an existing row. */
   put(revision: TextAppliedRevision): Promise<void>;
   /** Newest first: `createdAt` desc, then `revisionId` desc. */
   list(filter: TextRevisionListFilter): Promise<TextAppliedRevision[]>;
@@ -187,7 +187,18 @@ export async function indexTextRevision(
   // Blob before row: a listed revision never points at a missing body.
   if (content !== undefined)
     await ports.blobs.write(revision.projectId, revision.contentHash, content);
-  if (!stored) await ports.store.put(revision);
+  if (!stored) {
+    // Insert-if-absent: a concurrent writer may have won with other metadata.
+    await ports.store.put(revision);
+    const winner = await ports.store.get(revision.projectId, revision.revisionId);
+    if (!winner || !sameRevision(winner, revision))
+      return {
+        status: 409,
+        body: {
+          error: `Text revision ${revision.revisionId} already exists with different metadata`,
+        },
+      };
+  }
   return {
     status: 200,
     body: {

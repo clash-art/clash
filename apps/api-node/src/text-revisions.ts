@@ -31,7 +31,8 @@ export function createTextRevisionRoutes(options: {
   const app = new Hono<{ Variables: { userId: string } }>();
   const root = resolve(options.directory);
   const blobPath = (projectId: string, hash: string) => {
-    if (!SAFE_ID.test(projectId)) throw new Error("Unsafe project id");
+    if (!SAFE_ID.test(projectId) || !/^[a-f0-9]{16}$/.test(hash))
+      throw new Error("Unsafe text revision blob path");
     return join(root, projectId, `${hash}.md`);
   };
   const ports = (userId: string): TextRevisionPorts => ({

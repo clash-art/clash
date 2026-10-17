@@ -106,3 +106,26 @@ describe("text revisions (shared module)", () => {
     expect([textRevisionLimit(undefined), textRevisionLimit(0), textRevisionLimit(999), textRevisionLimit(7.9)]).toEqual([50, 1, 200, 7]);
   });
 });
+
+describe("text revisions: concurrent index", () => {
+  it("409s when a concurrent writer inserted different metadata first", async () => {
+    const { ports, rows } = memoryPorts();
+    const r1 = revision("a");
+    const racing: TextRevisionPorts = {
+      ...ports,
+      store: {
+        ...ports.store,
+        get: async (p, r) => {
+          const value = await ports.store.get(p, r);
+          return value;
+        },
+        put: async (rev) => {
+          // The other writer lands between our read and our insert-if-absent.
+          if (!rows.has(`${rev.projectId}/${rev.revisionId}`))
+            rows.set(`${rev.projectId}/${rev.revisionId}`, { ...rev, textId: "winner" });
+        },
+      },
+    };
+    expect((await indexTextRevision({ revision: r1 }, racing)).status).toBe(409);
+  });
+});
