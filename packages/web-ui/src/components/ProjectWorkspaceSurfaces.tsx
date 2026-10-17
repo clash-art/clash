@@ -59,7 +59,6 @@ import {
 } from "./timelineMediaInputs";
 import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
-import { Tooltip } from "./ui/tooltip";
 import { runtimeApiUrl } from "../lib/runtimeConfig";
 import { hydrateTimelineTracksForNle } from "../lib/nleHandoff";
 
@@ -517,6 +516,7 @@ export function ProjectTimelineEditorSurface({
   onSave,
   onExport,
   exportProgress,
+  onCancelExport,
   onOpenCanvas,
   onRequestAsset,
   insertAssetRequest,
@@ -543,6 +543,8 @@ export function ProjectTimelineEditorSurface({
   ) => ProjectTimeline | false | Promise<ProjectTimeline | false>;
   onExport?: (timelineId: string) => Promise<void> | void;
   exportProgress?: readonly TimelineExportProgress[];
+  /** Aborts the in-flight executor render; absent once it has fallen back. */
+  onCancelExport?: () => void;
   onOpenCanvas: (canvasId: string) => void;
   onRequestAsset?: () => void;
   insertAssetRequest?: TimelineAssetInsertRequest;
@@ -1039,6 +1041,7 @@ export function ProjectTimelineEditorSurface({
               onAdmitTimelineLibraryMedia={onAdmitTimelineLibraryMedia}
               onExport={onExport ? exportTimelineVideo : undefined}
               exportProgress={exportProgress}
+              onCancelExport={onCancelExport}
               onOpenInNle={
                 globalThis.__CLASH_DESKTOP__?.openInNle ? openInNle : undefined
               }

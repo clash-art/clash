@@ -386,8 +386,30 @@ export function describeProjectHostContract(
         [
           "submits a render of the observed revision",
           async () => {
-            const submitted = await timelines.render(await createTimeline());
+            const id = unique("contract-render-timeline");
+            const created = await timelines.create({
+              id,
+              name: `Render ${id}`,
+              state: {
+                tracks: [
+                  {
+                    id: "track",
+                    items: [
+                      {
+                        id: "title",
+                        type: "text",
+                        text: "Contract",
+                        from: 0,
+                        durationInFrames: 30,
+                      },
+                    ],
+                  },
+                ],
+              },
+            });
+            const submitted = await timelines.render(created);
             expect(submitted.actionRunId).toEqual(expect.any(String));
+            expect(submitted.renderNodeId).toEqual(expect.any(String));
           },
         ],
       ],

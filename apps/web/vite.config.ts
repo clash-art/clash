@@ -232,6 +232,16 @@ export default defineConfig(async ({ command, isPreview }) => {
       // hit by vite-plugin-top-level-await on the WASM init code.
       target: "esnext",
       rollupOptions: {
+        input: {
+          main: resolve(__dirname, "index.html"),
+          // Separate HTML entry so the renderer never enters the editor
+          // bundle. Only a frame on a different *site* (eTLD+1) is an
+          // out-of-process iframe: set VITE_RENDER_FRAME_ORIGIN to a separate
+          // site (e.g. a pages.dev project) serving this entry. Same-site
+          // frames, even with Origin-Agent-Cluster, stay in the editor's
+          // process (verified with CDP Target.getTargets).
+          renderFrame: resolve(__dirname, "render-frame.html"),
+        },
         output: {
           // Force @phosphor-icons/react into its own chunk. Default chunk
           // splitting picks the icon defs into whichever chunk first uses

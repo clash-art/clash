@@ -180,6 +180,7 @@ import {
   projectDirectorStageRevisionId,
   projectTimelineReadToken,
   listTimelineExportProgress,
+  type TimelineExportProgress,
   type AssetScopeTarget,
   type ActivityMessage,
   type AgentAnnotationDraft,
@@ -4780,13 +4781,30 @@ export default function ProjectEditor({
           (timeline) => timeline.id === workspaceSurface.timelineId,
         )
       : undefined;
-  const selectedTimelineExportProgress = useMemo(() => {
+  const selectedTimelineExportProgress = useMemo((): TimelineExportProgress[] => {
+    if (!selectedTimeline) return [];
     const doc = loroSync.doc;
-    if (!selectedTimeline || !doc) return [];
-    return listTimelineExportProgress(doc, selectedTimeline.id).filter(
+    const persisted = doc
+      ? listTimelineExportProgress(doc, selectedTimeline.id)
+      : [];
+    const active = persisted.filter(
       (entry) => entry.status === "queued" || entry.status === "rendering",
     );
-  }, [loroSync.doc, selectedTimeline]);
+    const job = loroSync.renderJob;
+    // An executor that reports progress before it publishes a render node is
+    // represented by the same progress entries the Host-backed path uses.
+    if (!job || job.timelineId !== selectedTimeline.id) return active;
+    return [
+      ...active,
+      {
+        renderNodeId: `active-render:${selectedTimeline.id}`,
+        timelineId: selectedTimeline.id,
+        timelineRevisionId: selectedTimeline.revisionId,
+        status: "rendering",
+        progress: job.progress,
+      },
+    ];
+  }, [loroSync.doc, loroSync.renderJob, selectedTimeline]);
   const selectedDirectorStage =
     workspaceSurface.kind === "director-stage"
       ? loroSync.directorStages.find(
@@ -6097,7 +6115,7 @@ export default function ProjectEditor({
       const result = await loroSync.requestTimelineRender(timelineId, {
         actorUserId: timelineExportActorUserId,
       });
-      if (!result.ok) throw new Error(result.error);
+      if (!result.ok && !("cancelled" in result)) throw new Error(result.error);
     },
     [loroSync.requestTimelineRender, timelineExportActorUserId],
   );
@@ -7821,6 +7839,11 @@ export default function ProjectEditor({
                                                 }
                                                 exportProgress={
                                                   selectedTimelineExportProgress
+                                                }
+                                                onCancelExport={
+                                                  loroSync.renderJob
+                                                    ? loroSync.cancelTimelineRender
+                                                    : undefined
                                                 }
                                                 onOpenCanvas={
                                                   selectCanvasFromNavigator

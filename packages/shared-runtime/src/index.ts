@@ -1,7 +1,13 @@
 export * from "./generator-client.js";
 export * from "./document-client.js";
 export * from "./generator-readback.js";
-export { createTimelineClient, type ObservedProjectTimeline } from "./timeline-client.js";
+export {
+  createTimelineClient,
+  type ObservedProjectTimeline,
+  type TimelineRenderExecution,
+  type TimelineRenderExecutor,
+  type TimelineRenderReceipt,
+} from "./timeline-client.js";
 
 export {
   createAssetEditPluginModule,

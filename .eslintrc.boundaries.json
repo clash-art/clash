@@ -115,6 +115,10 @@
             "message": "Runtime mode is only readable at composition roots (apps/web, apps/desktop)."
           },
           {
+            "selector": "Identifier[name='bindTimelineRenderExecutor']",
+            "message": "Render adapters are bound only at composition roots (apps/web)."
+          },
+          {
             "selector": "MemberExpression[property.name='mode'][object.type='CallExpression'][object.callee.name=/^(getRuntimeConfig|resolveRuntimeConfig)$/]",
             "message": "Backend-mode checks are forbidden in UI; read getRuntimeCapabilities() instead."
           },

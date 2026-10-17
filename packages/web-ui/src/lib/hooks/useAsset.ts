@@ -268,7 +268,7 @@ export function watchAssetProjection(input: {
 export async function importProjectAssetFile(
   projectId: string,
   file: File,
-  options: { kind: AssetKind; projectAssetId?: string },
+  options: { kind: AssetKind; projectAssetId?: string; chunked?: boolean },
 ): Promise<ResolvedAsset> {
   const projectAssetId =
     options.projectAssetId ?? `asset-${crypto.randomUUID()}`;
@@ -279,6 +279,7 @@ export async function importProjectAssetFile(
     kind: options.kind,
     projectAssetId,
     metadataHints,
+    ...(options.chunked ? { chunked: true } : {}),
   });
   if (asset.id !== projectAssetId) {
     throw new Error(

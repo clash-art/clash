@@ -1318,6 +1318,31 @@ export class ProjectRoom extends DurableObject<Env> {
    * Run processPendingNodes with a guard to prevent concurrent execution
    * (alarm + processMessageQueue can race).
    */
+  /** Port shared by the Host command and the render publication operation. */
+  private hostCommandPort(projectId: string) {
+    return {
+      projectId,
+      doc: () => this.doc,
+      readProject: () =>
+        createD1ProjectAuthorizationStore(this.env as never).readProject(
+          projectId,
+        ),
+      serialize: <T,>(work: () => Promise<T>) => {
+        let result: T;
+        return this.enqueueLoroImport({
+          data: new Uint8Array(),
+          runRealtimeEffects: false,
+          applyGeneration: async () => {
+            result = await work();
+          },
+        }).then(() => result!);
+      },
+      persist: (update: Uint8Array) => this.persistAndMaybeCompact(update),
+      broadcast: (update: Uint8Array) => this.broadcastBinary(update),
+      env: this.env as never,
+    };
+  }
+
   private async guardedProcessPendingNodes(): Promise<void> {
     if (this.isProcessingNodes) return;
     this.isProcessingNodes = true;
@@ -1550,6 +1575,29 @@ export class ProjectRoom extends DurableObject<Env> {
       }
     }
 
+    // Browser render adapter publication: the bytes were uploaded through the
+    // Project Asset import sessions, and this records the render node the same
+    // way the container pipeline's TaskPolling does. Adapter-only route.
+    if (operation === "timeline-render-complete" && request.method === "POST") {
+      try {
+        const { runProjectRoomTimelineRenderCompletion } = await import(
+          "./project-room-host-command"
+        );
+        const input = await request.json().catch(() => null);
+        const { status, body } = await runProjectRoomTimelineRenderCompletion(
+          this.hostCommandPort(projectId),
+          input,
+        );
+        return Response.json(body, { status });
+      } catch (error) {
+        log.error("timeline-render-complete error:", error);
+        return Response.json(
+          { code: "TIMELINE_RENDER_FAILED", error: "Render publication failed" },
+          { status: 503 },
+        );
+      }
+    }
+
     // Issue #180: Timeline Host commands (same contract as local-api/api-node).
     // The adapter loads on first use so Timeline code stays out of startup.
     if (operation === "host-command" && request.method === "POST") {
@@ -1558,30 +1606,22 @@ export class ProjectRoom extends DurableObject<Env> {
           "./project-room-host-command"
         );
         const input = await request.json().catch(() => null);
+        const roomCommandPort = this.hostCommandPort(projectId);
         const { status, body } = await runProjectRoomHostCommand(
-          {
-            projectId,
-            doc: () => this.doc,
-            readProject: () =>
-              createD1ProjectAuthorizationStore(this.env as never).readProject(
-                projectId,
-              ),
-            serialize: (work) => {
-              let result: Awaited<ReturnType<typeof work>>;
-              return this.enqueueLoroImport({
-                data: new Uint8Array(),
-                runRealtimeEffects: false,
-                applyGeneration: async () => {
-                  result = await work();
-                },
-              }).then(() => result!);
-            },
-            persist: (update) => this.persistAndMaybeCompact(update),
-            broadcast: (update) => this.broadcastBinary(update),
-            env: this.env as never,
-          },
+          roomCommandPort,
           input,
         );
+        // A submitted render is a pending node. The room normally runs
+        // processPendingNodes after a queued CRDT import, but host commands
+        // take the direct applyGeneration path; hand the node to the existing
+        // RENDER_CONTAINER pipeline here.
+        if (
+          status === 200 &&
+          body &&
+          typeof body === "object" &&
+          (body as { submitted?: unknown }).submitted === true
+        )
+          await this.guardedProcessPendingNodes();
         return Response.json(body, { status });
       } catch (error) {
         log.error("host-command error:", error);

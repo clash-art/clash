@@ -1,7 +1,13 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { LoroDoc } from "loro-crdt";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_CANVAS_ID, type ProjectHostCommand } from "@clash/shared-types";
+import {
+  Canvas,
+  DEFAULT_CANVAS_ID,
+  listTimelineExportProgress,
+  projectTimelineRenderActionRunId,
+  type ProjectHostCommand,
+} from "@clash/shared-types";
 import manifest from "../../../../plugins/remotion/manifest.json";
 import timeline from "../../../../plugins/remotion/generators/timeline.json";
 import { createCloudPluginCatalog } from "./plugin-catalog.js";
@@ -154,6 +160,78 @@ describe("executeTimelineHostCommand", () => {
           error: "This project command is not connected on this server.",
         },
       });
+  });
+
+  it("queues the pending render node for an adapter that executes renders", () => {
+    const withRender = { ...ports, timelineRender: { actorUserId: "user" } };
+    const created = body(
+      run({
+        action: "create_timeline",
+        timelineId: "tl",
+        name: "Cut",
+        state: {
+          tracks: [
+            {
+              id: "titles",
+              items: [
+                { id: "title", type: "text", text: "Hi", from: 0, durationInFrames: 30 },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    const render = (ifMatch: string) =>
+      run(
+        { action: "request_timeline_render", timelineId: "tl", ifMatch },
+        withRender,
+      );
+    expect(render(created.version)).toMatchObject({ status: 409, mutated: false });
+    expect(listTimelineExportProgress(doc, "tl")).toEqual([]);
+
+    const requested = render(created.readToken);
+    expect(requested).toMatchObject({ status: 200, mutated: true });
+    const { renderNodeId, actionRunId, submitted } = body(requested);
+    expect(submitted).toBe(true);
+    expect(actionRunId).toBe(projectTimelineRenderActionRunId(renderNodeId));
+    expect(listTimelineExportProgress(doc, "tl")).toEqual([
+      {
+        renderNodeId,
+        timelineId: "tl",
+        timelineRevisionId: created.timeline.revisionId,
+        status: "queued",
+      },
+    ]);
+    expect(doc.getMap("nodes").get(renderNodeId)).toMatchObject({
+      type: "video",
+      data: { actorType: "user", actorUserId: "user", timelineDsl: { durationInFrames: 30 } },
+    });
+
+    const attached = body(
+      run({
+        action: "attach_timeline",
+        timelineId: "tl",
+        canvasId: DEFAULT_CANVAS_ID,
+        actionNodeId: "timeline-action",
+        ifMatch: created.readToken,
+      }),
+    );
+    const onCanvas = body(render(attached.readToken));
+    expect(
+      new Canvas(doc, () => {}, DEFAULT_CANVAS_ID).readNode(onCanvas.renderNodeId),
+    ).toMatchObject({
+      type: "video",
+      upstream: [{ nodeId: "timeline-action" }],
+      data: {
+        status: "pending",
+        sourceTimelineActionId: "node:timeline-action",
+        renderTarget: {
+          kind: "canvas",
+          canvasId: DEFAULT_CANVAS_ID,
+          actionNodeId: "timeline-action",
+        },
+      },
+    });
   });
 
   it("fails closed when the Timeline projection surface is not installed", () => {

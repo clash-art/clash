@@ -151,7 +151,7 @@ describe("ProjectRoom host-command", () => {
     expect(await snapshotVersion(projectId)).toBe(before);
   });
 
-  it("answers 501 for render and 404 for a project the caller does not own or that was deleted", async () => {
+  it("queues a render for the RENDER_CONTAINER pipeline and 404s for a project the caller does not own", async () => {
     const projectId = crypto.randomUUID(),
       owner = crypto.randomUUID();
     await seedProject(projectId, owner);
@@ -159,7 +159,22 @@ describe("ProjectRoom host-command", () => {
       action: "create_timeline",
       timelineId: "tl-owner",
       name: "Owner",
-      state: { tracks: [] },
+      state: {
+        tracks: [
+          {
+            id: "track",
+            items: [
+              {
+                id: "title",
+                type: "text",
+                text: "Render me",
+                from: 0,
+                durationInFrames: 30,
+              },
+            ],
+          },
+        ],
+      },
     });
     const render = await hostCommand(projectId, owner, {
       action: "request_timeline_render",
@@ -167,7 +182,14 @@ describe("ProjectRoom host-command", () => {
       actorClientType: "browser",
       ifMatch: created.body.readToken,
     });
-    expect(render).toMatchObject({ status: 501, body: { code: "COMMAND_UNAVAILABLE" } });
+    expect(render).toMatchObject({
+      status: 200,
+      body: { submitted: true },
+    });
+    expect(render.body.renderNodeId).toEqual(expect.any(String));
+    expect(render.body.actionRunId).toEqual(
+      `timeline-render:${render.body.renderNodeId}`,
+    );
 
     const intruder = await hostCommand(projectId, crypto.randomUUID(), {
       action: "delete_timeline",
