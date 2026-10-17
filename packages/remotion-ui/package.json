@@ -50,11 +50,11 @@
     "@clash/remotion-core": "workspace:*",
     "@clash/remotion-effects": "workspace:*",
     "@use-gesture/react": "^10.3.1",
-    "mediabunny": "1.50.8",
+    "mediabunny": "1.61.3",
     "react-moveable": "^0.56.0"
   },
   "devDependencies": {
-    "@remotion/player": "4.0.507",
+    "@remotion/player": "4.0.536",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@typescript-eslint/eslint-plugin": "^8.49.0",
@@ -67,7 +67,7 @@
     "jsdom": "^29.0.2",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "remotion": "4.0.507",
+    "remotion": "4.0.536",
     "tsup": "^8.0.0",
     "typescript": "^5.9.3",
     "vitest": "^1.3.1"

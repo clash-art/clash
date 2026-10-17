@@ -86,7 +86,7 @@ describe("desktop Electron runtime", () => {
       "--linux AppImage --x64",
     );
     expect(manifest.dependencies ?? {}).not.toHaveProperty("@remotion/bundler");
-    expect(manifest.devDependencies?.["@remotion/bundler"]).toBe("4.0.507");
+    expect(manifest.devDependencies?.["@remotion/bundler"]).toBe("4.0.536");
     expect(manifest.devDependencies?.["@clash/render-server"]).toBe(
       "workspace:*",
     );

@@ -24,7 +24,7 @@
     "@clash/action-sdk": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
-    "@remotion/renderer": "4.0.507"
+    "@remotion/renderer": "4.0.536"
   },
   "devDependencies": {
     "@clash/render-server": "workspace:*",

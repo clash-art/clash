@@ -65,7 +65,7 @@
     "@opentelemetry/resources": "^2.12.0",
     "@opentelemetry/sdk-trace-web": "^2.12.0",
     "@phosphor-icons/react": "^2.1.10",
-    "@remotion/player": "4.0.507",
+    "@remotion/player": "4.0.536",
     "@uiw/react-md-editor": "^4.0.8",
     "@xyflow/react": "^12.10.2",
     "agents": "^0.8.6",
@@ -86,7 +86,7 @@
     "react-markdown": "^10.1.0",
     "react-moveable": "^0.56.0",
     "react-router": "^7.14.2",
-    "remotion": "4.0.507",
+    "remotion": "4.0.536",
     "zod": "^4.6.7"
   },
   "devDependencies": {
