@@ -79,6 +79,10 @@ ENVIRONMENT = "staging"
 # Staging Better Auth has no BETTER_AUTH_URL and sets the unprefixed
 # better-auth.session_token cookie (verified from a staging sign-in).
 BETTER_AUTH_SECURE_COOKIES = "false"
+# Issue #139: read GETs via the D1 Sessions API (nearest read replica;
+# auth/not-found answers are re-checked on the primary). Needs read
+# replication enabled on the database; remove to read the primary only.
+D1_READ_REPLICAS = "auto"
 
 # ── production (hosted) is PREPARED, NOT APPLIED ─────────────────────
 # Hosted overlay lives in clash-art/clash-hosted. Equivalent config for
