@@ -51,7 +51,7 @@
     "test:macos-update-e2e": "node scripts/macos-update-e2e.ts"
   },
   "dependencies": {
-    "@remotion/renderer": "4.0.507",
+    "@remotion/renderer": "4.0.536",
     "@clash/shared-runtime": "workspace:*",
     "electron-updater": "^6.6.2"
   },
@@ -63,7 +63,7 @@
     "@electron-forge/plugin-vite": "7.11.2",
     "@electron-forge/shared-types": "7.11.2",
     "clash": "workspace:*",
-    "@remotion/bundler": "4.0.507",
+    "@remotion/bundler": "4.0.536",
     "@types/node": "^24.0.0",
     "electron": "^42.3.2",
     "electron-builder": "^26.17.0",

@@ -46,7 +46,7 @@
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "1.1.0",
     "@ffprobe-installer/ffprobe": "2.1.2",
-    "@remotion/renderer": "4.0.507",
+    "@remotion/renderer": "4.0.536",
     "esbuild": "^0.25.0",
     "loro-crdt": "1.16.3",
     "react": "19.2.5",
