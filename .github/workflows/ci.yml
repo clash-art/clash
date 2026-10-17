@@ -54,5 +54,6 @@ jobs:
           pnpm --dir packages/metadata-service exec vitest run
           pnpm --dir apps/api-cf exec vitest run src/metadata-worker.parity.test.ts src/metadata-worker.replica.test.ts
           pnpm --dir apps/api-node exec vitest run src/metadata-service.test.ts
+          pnpm --dir packages/shared-runtime exec vitest run src/project-authorization-postgres.test.ts
       - name: Verify benchmark catalog, runner, and evaluator contracts
         run: pnpm --dir packages/shared-artifact-evals exec vitest run
