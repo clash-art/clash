@@ -9,11 +9,16 @@ import {
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedAsset } from "@clash/shared-types";
+import { setRuntimeConfigOverride } from "../lib/runtimeConfig";
 import { PROJECT_ASSET_DRAG_MIME } from "../lib/projectAssetDrag";
 import ProjectWorkspaceNavigator from "./ProjectWorkspaceNavigator";
 import { mediaContentResult } from "../features/assets/content.test-fixtures";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  setRuntimeConfigOverride(undefined);
+});
 
 function resolvedAsset(
   input: Pick<ResolvedAsset, "id" | "kind"> & Partial<ResolvedAsset>,
@@ -230,7 +235,7 @@ describe("ProjectWorkspaceNavigator", () => {
     }
 
     const canvasFolder = screen.getByRole("button", { name: "Canvases" });
-    expect(canvasFolder.className).toContain("hover:bg-warm-hover");
+    expect(canvasFolder.className).toContain("app-interactive-surface");
     expect(canvasFolder.className).not.toContain("hover:bg-black");
 
     const rowActions = screen.getByRole("button", {
@@ -606,7 +611,7 @@ describe("ProjectWorkspaceNavigator", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "Add Asset" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByRole("menuitem", { name: "Upload from Mac" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Upload from device" }));
     expect(onAddAsset).toHaveBeenCalledOnce();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: "Add Asset" }), {
@@ -639,6 +644,40 @@ describe("ProjectWorkspaceNavigator", () => {
       screen.getByRole("menuitem", { name: "Add to Global Assets" }),
     );
     expect(onAddAssetToLibrary).toHaveBeenCalledWith("project-asset");
+  });
+
+  it("omits the upload entry when the assets capability disables uploads", () => {
+    setRuntimeConfigOverride({
+      mode: "hosted",
+      capabilities: { assets: { upload: "disabled" } },
+    });
+    render(
+      <ProjectWorkspaceNavigator
+        canvases={[]}
+        timelines={[]}
+        assets={[]}
+        surface={{ kind: "canvas", canvasId: "main" }}
+        onSelectCanvas={vi.fn()}
+        onSelectTimeline={vi.fn()}
+        onSelectAsset={vi.fn()}
+        onCreateCanvas={vi.fn()}
+        onRenameCanvas={vi.fn()}
+        onDeleteCanvas={vi.fn()}
+        onCreateTimeline={vi.fn()}
+        onAttachTimeline={vi.fn()}
+        onAddAsset={vi.fn()}
+      />,
+    );
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Add Asset" }), {
+      button: 0,
+    });
+    expect(
+      screen.queryByRole("menuitem", { name: /^Upload from / }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("menuitem", { name: "Add from Global Assets" }),
+    ).toBeTruthy();
   });
 
   it("does not conflate equal Project and Global ids in add actions", async () => {
@@ -899,7 +938,7 @@ describe("ProjectWorkspaceNavigator", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "Add Asset" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByRole("menuitem", { name: "Upload from Mac" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Upload from device" }));
     expect(onCreateCanvas).toHaveBeenCalledOnce();
     expect(onCreateTimeline).toHaveBeenCalledOnce();
     expect(onAddAsset).toHaveBeenCalledOnce();

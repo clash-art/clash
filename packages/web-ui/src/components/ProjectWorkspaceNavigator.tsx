@@ -40,6 +40,8 @@ import type {
   ResolvedAsset,
 } from "@clash/shared-types";
 import { writeProjectAssetDrag } from "@clash/web-ui/lib/projectAssetDrag";
+import { assetUploadLabel } from "../lib/assetUploadLabel";
+import { getRuntimeCapabilities } from "../lib/runtimeConfig";
 import { Button } from "./ui/button";
 import {
   Combobox,
@@ -518,6 +520,7 @@ export default function ProjectWorkspaceNavigator({
   onRestoreAsset,
   onAnnotate,
 }: ProjectWorkspaceNavigatorProps) {
+  const uploadLabel = assetUploadLabel(getRuntimeCapabilities().assets.upload);
   const [searchOpen, setSearchOpen] = useState(false);
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1364,10 +1367,12 @@ export default function ProjectWorkspaceNavigator({
                   align="start"
                   className="min-w-52 rounded-xl p-1"
                 >
-                  <DropdownMenuItem onSelect={onAddAsset}>
-                    <UploadSimple className="h-4 w-4 text-stone-500" />
-                    Upload from Mac
-                  </DropdownMenuItem>
+                  {uploadLabel ? (
+                    <DropdownMenuItem onSelect={onAddAsset}>
+                      <UploadSimple className="h-4 w-4 text-stone-500" />
+                      {uploadLabel}
+                    </DropdownMenuItem>
+                  ) : null}
                   <DropdownMenuItem onSelect={() => setLibraryPickerOpen(true)}>
                     <Images className="h-4 w-4 text-stone-500" />
                     Add from Global Assets

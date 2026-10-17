@@ -28,7 +28,7 @@ project. It is not the global library and must not contain a second
 
 The `Assets` add menu has two sources:
 
-- `Upload from Mac`
+- `Upload from device` (hosted browser picker) or `Upload from computer` (local Host)
 - `Add from Global Assets`
 
 Adding from the global library creates a project reference to the existing

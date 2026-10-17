@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { AssetSourceScope } from "@clash/shared-types";
 import { AssetThumbnail } from "../features/assets/AssetThumbnail";
 import { assetAvailabilityLabel } from "../features/assets/availability";
+import { assetUploadLabel } from "../lib/assetUploadLabel";
+import { getRuntimeCapabilities } from "../lib/runtimeConfig";
 import { SearchFilterToolbar } from "./SearchFilterToolbar";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -32,6 +34,7 @@ export function ScopedAssetPicker({
   busy?: boolean;
   error?: string | null;
 }) {
+  const uploadLabel = assetUploadLabel(getRuntimeCapabilities().assets.upload);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [activeScopes, setActiveScopes] = useState<AssetSourceScope[]>([]);
@@ -68,8 +71,11 @@ export function ScopedAssetPicker({
   const showUpload = Boolean(
     externalSection?.allowLocalUpload &&
     activeScopes.every((scope) => scope === "external") &&
+    uploadLabel &&
     (!query ||
-      "upload from mac local file".includes(query.trim().toLocaleLowerCase())),
+      `${uploadLabel} local file`
+        .toLocaleLowerCase()
+        .includes(query.trim().toLocaleLowerCase())),
   );
   const selectableCount = assets.filter(
     ({ asset }) => !asset.disabledReason,
@@ -203,12 +209,12 @@ export function ScopedAssetPicker({
                 </Button>
               ))}
 
-              {showUpload ? (
+              {showUpload && uploadLabel ? (
                 <Button
                   variant={null}
                   size={null}
                   shape={null}
-                  aria-label="Upload from Mac"
+                  aria-label={uploadLabel}
                   disabled={busy}
                   onClick={() => fileInputRef.current?.click()}
                   className="group min-w-0 flex-col gap-0 whitespace-normal text-center focus-visible:outline-none disabled:cursor-wait disabled:opacity-55"
@@ -217,7 +223,7 @@ export function ScopedAssetPicker({
                     <UploadSimple className="h-8 w-8" weight="regular" />
                   </span>
                   <span className="mt-2.5 block text-sm font-semibold text-content-primary">
-                    Upload from Mac
+                    {uploadLabel}
                   </span>
                   <span className="mt-0.5 block text-xs text-content-secondary">
                     Local file
