@@ -11,7 +11,12 @@ export interface ProjectAuthorizationStore {
     name?: string;
     userName?: string;
     userAvatar?: string;
+    /** Epoch ms of the last recorded use, or null when never used. Lets
+     * callers skip the usage write (see TOKEN_TOUCH_INTERVAL_MS). */
+    lastUsedAt?: number | null;
   } | null>;
+  /** Record usage. Adapters must make this a no-op when the stored
+   * last_used_at is younger than TOKEN_TOUCH_INTERVAL_MS. */
   touchApiToken(tokenHash: string): Promise<void>;
   readSession(
     sessionId: string,
@@ -108,6 +113,22 @@ async function sha256(input: string): Promise<string> {
   ).join("");
 }
 
+/** API/runtime token usage is recorded at most once per this interval. Every
+ * write goes to the single D1 primary (~300 statements/s ceiling), so a
+ * per-request `last_used_at` UPDATE is the hottest avoidable write. */
+export const TOKEN_TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+export const TOKEN_TOUCH_INTERVAL_S = TOKEN_TOUCH_INTERVAL_MS / 1000;
+
+/** True when a token's usage timestamp is stale enough to be rewritten.
+ * `undefined` (adapter does not report it) keeps the old always-touch path. */
+export function shouldTouchToken(
+  lastUsedAtMs: number | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (lastUsedAtMs == null || !Number.isFinite(lastUsedAtMs)) return true;
+  return now - lastUsedAtMs >= TOKEN_TOUCH_INTERVAL_MS;
+}
+
 /** Identity-only authentication for admitting a not-yet-hosted Project. */
 export async function authenticateApiToken(
   request: Request,
@@ -120,7 +141,8 @@ export async function authenticateApiToken(
   const tokenHash = await sha256(rawToken);
   const row = await store.readApiToken(tokenHash);
   if (!row?.userId) throw new Error("Unauthorized");
-  void store.touchApiToken(tokenHash).catch(() => {});
+  if (shouldTouchToken(row.lastUsedAt))
+    void store.touchApiToken(tokenHash).catch(() => {});
   return {
     userId: row.userId,
     name: row.name,

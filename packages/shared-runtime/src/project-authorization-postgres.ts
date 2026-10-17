@@ -1,4 +1,7 @@
-import type { ProjectAuthorizationStore } from "./project-authorization.js";
+import {
+  TOKEN_TOUCH_INTERVAL_S,
+  type ProjectAuthorizationStore,
+} from "./project-authorization.js";
 
 /** Implemented by a PostgreSQL client/pool; connection lifetime belongs to the host. */
 export interface PostgresQueryPort {
@@ -30,8 +33,10 @@ export function createPostgresProjectAuthorizationStore(
         name: string | null;
         user_name: string | null;
         user_image: string | null;
+        last_used_ms: number | string | null;
       }>(
-        `SELECT t.user_id, t.name, u.name AS user_name, u.image AS user_image
+        `SELECT t.user_id, t.name, u.name AS user_name, u.image AS user_image,
+                (EXTRACT(EPOCH FROM t.last_used_at) * 1000)::double precision AS last_used_ms
            FROM api_token t LEFT JOIN auth_user u ON u.id = t.user_id
           WHERE t.token_hash = $1 LIMIT 1`,
         [tokenHash],
@@ -43,13 +48,18 @@ export function createPostgresProjectAuthorizationStore(
             name: row.name ?? undefined,
             userName: row.user_name ?? undefined,
             userAvatar: row.user_image ?? undefined,
+            lastUsedAt:
+              row.last_used_ms == null ? null : Number(row.last_used_ms),
           }
         : null;
     },
     async touchApiToken(tokenHash) {
+      // Guarded so concurrent first requests do not all write (#141).
       await db.query(
-        "UPDATE api_token SET last_used_at = CURRENT_TIMESTAMP WHERE token_hash = $1",
-        [tokenHash],
+        `UPDATE api_token SET last_used_at = CURRENT_TIMESTAMP
+          WHERE token_hash = $1
+            AND (last_used_at IS NULL OR last_used_at < CURRENT_TIMESTAMP - make_interval(secs => $2))`,
+        [tokenHash, TOKEN_TOUCH_INTERVAL_S],
       );
     },
     async readSession(sessionId) {

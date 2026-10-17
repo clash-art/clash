@@ -3,6 +3,10 @@
 import { Hono } from "hono";
 import type { Env } from "../../config";
 import { deriveRuntimeStatus } from "../../lib/runtime-status";
+import {
+  TOKEN_TOUCH_INTERVAL_S,
+  shouldTouchToken,
+} from "@clash/shared-runtime/project-authorization";
 
 /** Browser-facing routes — mounted under /api/v1/runtimes. */
 export const runtimesRoutes = new Hono<{ Bindings: Env }>();
@@ -191,13 +195,16 @@ export async function authenticateRuntimeToken(
   if (!token.startsWith("sk_machine_")) return null;
   const hash = await sha256(token);
   const row = await env.DB.prepare(
-    `SELECT t.runtime_id, r.owner_user_id AS user_id
+    `SELECT t.runtime_id, r.owner_user_id AS user_id, t.last_used_at
      FROM runtime_token t JOIN runtime r ON r.id = t.runtime_id
      WHERE t.token_hash = ? AND t.revoked_at IS NULL`,
-  ).bind(hash).first<{ runtime_id: string; user_id: string }>();
+  ).bind(hash).first<{ runtime_id: string; user_id: string; last_used_at: number | null }>();
   if (!row) return null;
-  // Best-effort last_used_at refresh; don't block on it.
-  env.DB.prepare("UPDATE runtime_token SET last_used_at = unixepoch() WHERE token_hash = ?")
-    .bind(hash).run().catch(() => {});
-  return row;
+  // Best-effort last_used_at refresh, at most every 5 min (#141); don't block on it.
+  if (shouldTouchToken(row.last_used_at == null ? null : row.last_used_at * 1000))
+    env.DB.prepare(
+      `UPDATE runtime_token SET last_used_at = unixepoch()
+        WHERE token_hash = ? AND (last_used_at IS NULL OR last_used_at < unixepoch() - ?)`,
+    ).bind(hash, TOKEN_TOUCH_INTERVAL_S).run().catch(() => {});
+  return { runtime_id: row.runtime_id, user_id: row.user_id };
 }

@@ -95,6 +95,31 @@ describe("D1 queries per authenticated request", () => {
     }
   });
 
+  it("records API token usage at most once per 5 minutes (#141)", async () => {
+    const raw = "clsh_count_touch_token";
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+    const hash = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+    const user = sqlite.prepare("SELECT id FROM users WHERE email = ?").get("count@example.com") as { id: string };
+    sqlite
+      .prepare("INSERT INTO api_token (id, user_id, name, token_hash, token_prefix, created_at) VALUES ('tok-touch', ?, 'touch', ?, 'clsh_cou', 1)")
+      .run(user.id, hash);
+    const updates = () => counter.sql.filter((s) => /^UPDATE api_token/i.test(s));
+    const call = async () => {
+      counter.reset();
+      const res = await app.request(`/api/v1/projects/${PROJECT}`, { headers: { authorization: `Bearer ${raw}` } }, env);
+      expect(res.status, await res.clone().text()).toBe(200);
+      await new Promise((r) => setTimeout(r, 0)); // flush the fire-and-forget touch
+      return updates().length;
+    };
+    expect(await call()).toBe(1); // never used -> recorded
+    const first = sqlite.prepare("SELECT last_used_at FROM api_token WHERE id = 'tok-touch'").get() as { last_used_at: number };
+    expect(first.last_used_at).toBeGreaterThan(0);
+    expect(await call()).toBe(0); // fresh -> no primary write
+    expect(await call()).toBe(0);
+    sqlite.prepare("UPDATE api_token SET last_used_at = unixepoch() - 301 WHERE id = 'tok-touch'").run();
+    expect(await call()).toBe(1); // stale -> recorded again
+  });
+
   it("reuses one Better Auth instance without tripping its rate limiter", async () => {
     // 150 > the 100/min global rule: server-side getSession bypasses it.
     for (let i = 0; i < 150; i++) {
