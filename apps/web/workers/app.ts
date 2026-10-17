@@ -18,6 +18,7 @@ import * as workers from "cloudflare:workers";
 import { installWorkersTracing } from "@clash/shared-telemetry/cloudflare";
 import { createServerLogger } from "@clash/shared-telemetry/log";
 import { createAuth } from "../app/lib/auth/better-auth.server";
+import { handleGetSession, isGetSessionRequest } from "../app/lib/auth/get-session.server";
 import { isMetadataServiceRequest } from "@clash/metadata-service/routes";
 
 installWorkersTracing(workers.tracing);
@@ -48,6 +49,10 @@ export interface Env {
   NODE_ENV?: string;
   ENVIRONMENT?: string;
   SKIP_LOGIN?: string;
+  /** Issue #154: "auto" sends get-session cache misses to D1 read replicas. */
+  D1_READ_REPLICAS?: string;
+  /** Issue #154: Better Auth cookie cache seconds (default 60, "0" = off). */
+  BETTER_AUTH_COOKIE_CACHE_SECONDS?: string;
 }
 
 export function isUploadServicePath(path: string): boolean {
@@ -105,6 +110,9 @@ export default {
     // cookie origin matches the browser-visible domain).
     if (path === "/api/better-auth/options" && request.method === "GET") {
       return json({password:true,emailOtp:true,google:!!(env.AUTH_GOOGLE_ID&&env.AUTH_GOOGLE_SECRET)});
+    }
+    if (isGetSessionRequest(request, path)) {
+      return handleGetSession(request, env);
     }
     if (path.startsWith("/api/better-auth/")) {
       return createAuth(env).handler(request);
