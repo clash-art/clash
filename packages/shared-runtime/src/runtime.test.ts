@@ -60,7 +60,12 @@ describe("runtime endpoint helpers", () => {
     expect(cfg.mode).toBe("hosted");
     expect(cfg.capabilities).toEqual(defaultRuntimeCapabilities("hosted"));
     expect(cfg.capabilities.assets.storage).toBe("cloud");
-    expect(cfg.capabilities.assets.upload).toBe("disabled");
+    expect(cfg.capabilities.assets.upload).toBe("cloud");
+    expect(cfg.capabilities.host).toEqual({
+      timelineRender: "unavailable",
+      textRevisions: "unavailable",
+      localAudio: "unavailable",
+    });
     expect(cfg.capabilities.workflows.runner).toBe("cloudflare");
     expect(cfg.capabilities.loro.persistence).toBe("remote");
   });

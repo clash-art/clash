@@ -23,7 +23,7 @@ import { useTranslation } from "react-i18next";
 import { useDropzone, type Accept } from "react-dropzone";
 import { importProjectAssetFile } from "@clash/web-ui/lib/hooks/useAsset";
 import {
-  hasLocalHostRuntime,
+  getRuntimeCapabilities,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
 import { Button } from "../ui/button";
@@ -485,7 +485,7 @@ function ChatInputInner(
   const getLocalAudioConfig = useCallback(() => loadLocalAudioConfig(), []);
 
   useEffect(() => {
-    if (!hasLocalHostRuntime()) return;
+    if (getRuntimeCapabilities().host.localAudio !== "available") return;
     void getLocalAudioConfig().catch(() => undefined);
   }, [getLocalAudioConfig]);
 

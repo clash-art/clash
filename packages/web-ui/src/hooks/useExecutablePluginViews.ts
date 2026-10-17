@@ -6,7 +6,7 @@ import {
   type StoryboardViewState,
 } from "@clash/shared-types";
 
-import { hasLocalHostRuntime, runtimeApiUrl } from "../lib/runtimeConfig";
+import { runtimeApiUrl } from "../lib/runtimeConfig";
 
 export interface ExecutablePluginViewDefinition extends ExecutablePluginViewReference {
   name: string;
@@ -67,8 +67,6 @@ export function useExecutablePluginViews(
   const [views, setViews] = useState<ExecutablePluginViewDefinition[]>([]);
   const snapshotRef = useRef("[]");
   useEffect(() => {
-    // Hosted Web has no plugin Host: polling its catalog only repeats a 404.
-    if (!hasLocalHostRuntime()) return;
     let active = true;
     let controller: AbortController | null = null;
     const refresh = async () => {

@@ -2,7 +2,6 @@ import type { ResolvedAsset } from "@clash/shared-types";
 import type { LoroDoc } from "loro-crdt";
 
 import { listProjectAssets } from "./hooks/useAsset";
-import { hasLocalHostRuntime } from "./runtimeConfig";
 
 type ProjectAssetProjectionSubscription = {
   doc: LoroDoc;
@@ -11,7 +10,18 @@ type ProjectAssetProjectionSubscription = {
   onProjection: (assets: ResolvedAsset[]) => void;
   onError?: (error: unknown) => void;
   retryDelayMs?: number;
+  /** Upper bound for the exponential retry delay after failed reads. */
+  maxRetryDelayMs?: number;
+  /**
+   * Resolved delivery URLs are short-lived projections (signed cloud read
+   * capabilities expire; a Host may finish replicating bytes later). Re-read
+   * the projection on this cadence even without a membership change.
+   */
+  refreshIntervalMs?: number;
 };
+
+/** Below the shortest delivery capability lifetime any adapter issues (15 min). */
+export const PROJECT_ASSET_PROJECTION_REFRESH_MS = 10 * 60_000;
 
 function projectAssetMembershipFingerprint(doc: LoroDoc): string {
   return JSON.stringify(doc.getMap("projectAssets").toJSON());
@@ -29,10 +39,9 @@ export function subscribeProjectAssetProjection({
   onProjection,
   onError,
   retryDelayMs = 500,
+  maxRetryDelayMs = 30_000,
+  refreshIntervalMs = PROJECT_ASSET_PROJECTION_REFRESH_MS,
 }: ProjectAssetProjectionSubscription): () => void {
-  // The projection is a Host read. Hosted Web has no Host, so the read would
-  // 404 and the retry below would never settle.
-  if (!hasLocalHostRuntime()) return () => {};
   let fingerprint = projectAssetMembershipFingerprint(doc);
   let latestRequest = 0;
   let disposed = false;
@@ -44,7 +53,7 @@ export function subscribeProjectAssetProjection({
     retryTimer = null;
   };
 
-  const refreshProjection = (request: number) => {
+  const refreshProjection = (request: number, attempt = 0) => {
     void readProjection(projectId)
       .then((assets) => {
         if (disposed || request !== latestRequest) return;
@@ -55,11 +64,14 @@ export function subscribeProjectAssetProjection({
         if (disposed || request !== latestRequest) return;
         onError?.(error);
         clearRetry();
-        retryTimer = setTimeout(() => {
-          retryTimer = null;
-          if (disposed || request !== latestRequest) return;
-          refreshProjection(request);
-        }, retryDelayMs);
+        retryTimer = setTimeout(
+          () => {
+            retryTimer = null;
+            if (disposed || request !== latestRequest) return;
+            refreshProjection(request, attempt + 1);
+          },
+          Math.min(maxRetryDelayMs, retryDelayMs * 2 ** attempt),
+        );
       });
   };
 
@@ -81,10 +93,21 @@ export function subscribeProjectAssetProjection({
   // current replica into device-local delivery URLs.
   refreshProjection(++latestRequest);
 
+  const refreshTimer =
+    refreshIntervalMs > 0
+      ? setInterval(() => {
+          if (disposed) return;
+          const request = ++latestRequest;
+          clearRetry();
+          refreshProjection(request);
+        }, refreshIntervalMs)
+      : null;
+
   return () => {
     disposed = true;
     latestRequest += 1;
     clearRetry();
+    if (refreshTimer !== null) clearInterval(refreshTimer);
     unsubscribe();
   };
 }

@@ -12,7 +12,7 @@ import {
 import { Link } from "react-router";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
 import { useBillingBalance } from "@clash/web-ui/hooks/useBillingBalance";
-import { getRuntimeConfig } from "@clash/web-ui/lib/runtimeConfig";
+import { isDesktopRuntime } from "@clash/web-ui/lib/runtimeConfig";
 import { Button } from "./ui/button";
 import {
   DropdownMenu,
@@ -266,7 +266,7 @@ function AccountUserControls({
 }
 
 export default function UserControls(props: UserControlsProps = {}) {
-  if (getRuntimeConfig().mode === "desktop") {
+  if (isDesktopRuntime()) {
     return <SettingsOnlyControl {...props} />;
   }
 

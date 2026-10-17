@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   getRuntimeConfig,
+  readRuntimeModeAtCompositionRoot,
   getRuntimeCapabilities,
   runtimeApiUrl,
   runtimeFetch,
@@ -19,11 +20,12 @@ describe("web-ui runtimeConfig", () => {
   });
 
   it("defaults to hosted same-origin HTTP paths", () => {
+    expect(readRuntimeModeAtCompositionRoot()).toBe("hosted");
     expect(getRuntimeConfig()).toMatchObject({
-      mode: "hosted",
       apiBaseUrl: "",
       wsBaseUrl: "",
     });
+    expect(getRuntimeConfig()).not.toHaveProperty("mode");
     expect(getRuntimeCapabilities().assets.storage).toBe("cloud");
     expect(runtimeApiUrl("/api/v1/projects")).toBe("/api/v1/projects");
   });

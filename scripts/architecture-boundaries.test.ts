@@ -62,6 +62,24 @@ test("UI packages cannot import backend adapters or platform runtimes", async ()
   );
 });
 
+test("UI packages cannot branch on the backend runtime", async () => {
+  for (const source of [
+    "if (hasLocalHostRuntime()) load();",
+    'if (getRuntimeConfig().mode === "hosted") skip();',
+    'const mode = readRuntimeModeAtCompositionRoot();',
+    "const config = globalThis.__CLASH_RUNTIME_CONFIG__;",
+  ]) {
+    assert.ok(
+      (await violations(UI_FILE, source)).includes("no-restricted-syntax"),
+      source,
+    );
+  }
+  assert.deepEqual(
+    await violations(UI_FILE, 'if (getRuntimeCapabilities().host.timelineRender === "available") render();'),
+    [],
+  );
+});
+
 test("shared Project Host modules cannot see the platform", async () => {
   for (const file of [SHARED_FILE, CONTRACT_FILE]) {
     for (const source of [
@@ -207,15 +225,16 @@ test("shared-runtime gains no platform runtime dependencies", () => {
 // read RuntimeCapabilities instead.
 const DESKTOP_SHELL_PROBES: Record<string, number> = {
   "packages/web-ui/src/components/BrowserSurface.tsx": 1,
-  "packages/web-ui/src/components/ChatbotCopilot.tsx": 1,
+  "packages/web-ui/src/components/ChatbotCopilot.tsx": 2,
   "packages/web-ui/src/components/CloudConnection.tsx": 3,
   "packages/web-ui/src/components/LayoutContent.tsx": 1,
   "packages/web-ui/src/components/MarketplacePluginDetail.tsx": 1,
   "packages/web-ui/src/components/ProjectCard.tsx": 2,
-  "packages/web-ui/src/components/ProjectEditor.tsx": 3,
+  "packages/web-ui/src/components/ProjectEditor.tsx": 4,
   "packages/web-ui/src/components/ProjectWorkspaceSurfaces.tsx": 4,
   "packages/web-ui/src/components/SettingsClient.tsx": 1,
   "packages/web-ui/src/components/TopNavigation.tsx": 2,
+  "packages/web-ui/src/components/UserControls.tsx": 1,
   "packages/web-ui/src/lib/runtimeConfig.ts": 4,
 };
 

@@ -17,6 +17,7 @@ import {
     type AssetPreviewMedia,
 } from '../../features/assets/media-url';
 import betterAuthClient from '../../lib/betterAuthClient';
+import { getRuntimeCapabilities } from '../../lib/runtimeConfig';
 
 const mediaLog = createLogger("timeline");
 
@@ -245,7 +246,8 @@ const VideoEditorNode = ({ data, id }: NodeProps<Node<Record<string, any>>>) => 
                     />
                 ) : null}
 
-                {/* Footer Actions */}
+                {/* Footer Actions: rendering needs a Timeline render executor. */}
+                {getRuntimeCapabilities().host.timelineRender === 'available' ? (
                 <div className="bg-warm-muted px-3 py-2 border-t border-warm-border flex items-center justify-end h-10">
                     <Button
                         size="sm"
@@ -257,6 +259,7 @@ const VideoEditorNode = ({ data, id }: NodeProps<Node<Record<string, any>>>) => 
                         {rendering ? 'Rendering...' : 'Render'}
                     </Button>
                 </div>
+                ) : null}
             </div>
 
             {/* Input Handle */}

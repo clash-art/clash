@@ -9,8 +9,10 @@ import { useExecutablePluginActions } from "./useExecutablePluginActions";
 import { useExecutablePluginViews } from "./useExecutablePluginViews";
 import { useHostTimelines } from "./useHostTimelines";
 
-// Issue #94: hosted Web answers every Host-only contract with 404. The project
-// page polled and retried them anyway, so it never reached network idle.
+// Issue #94 / #98: hosted Web used to be gated out of every Project Host read
+// with a UI-level runtime-mode check, which masked the missing cloud adapter.
+// The UI must issue the same Project Host reads on every runtime and leave
+// backend differences to the adapter; failures must back off, not flood.
 const notFound = () =>
   Promise.resolve(Response.json({ error: "not found" }, { status: 404 }));
 
@@ -39,7 +41,14 @@ async function mountProjectPageHostReaders(): Promise<() => void> {
   return stopAssets;
 }
 
-describe("Host-only project reads on hosted Web", () => {
+const PROJECT_HOST_READS = [
+  "/api/v1/projects/project-1/assets",
+  "/api/v1/plugin-actions",
+  "/api/v1/plugin-views",
+  "/api/v1/projects/project-1/host-command",
+];
+
+describe("Project Host reads are runtime-agnostic", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let stop: (() => void) | undefined;
 
@@ -59,19 +68,23 @@ describe("Host-only project reads on hosted Web", () => {
     vi.useRealTimers();
   });
 
-  it("issues and retries none of them without a local Host", async () => {
+  it.each(["hosted", "local", "desktop"] as const)(
+    "issues the same Project Host reads on the %s runtime",
+    async (mode) => {
+      setRuntimeConfigOverride({ mode });
+      stop = await mountProjectPageHostReaders();
+      const paths = new Set(requestedPaths(fetchMock));
+      for (const path of PROJECT_HOST_READS) expect(paths).toContain(path);
+    },
+  );
+
+  it("backs off failing Asset projection reads instead of flooding", async () => {
     setRuntimeConfigOverride({ mode: "hosted" });
     stop = await mountProjectPageHostReaders();
-    expect(requestedPaths(fetchMock)).toEqual([]);
-  });
-
-  it("still reads every one of them from a local Host", async () => {
-    setRuntimeConfigOverride({ mode: "local" });
-    stop = await mountProjectPageHostReaders();
-    const paths = new Set(requestedPaths(fetchMock));
-    expect(paths).toContain("/api/v1/projects/project-1/assets");
-    expect(paths).toContain("/api/v1/plugin-actions");
-    expect(paths).toContain("/api/v1/plugin-views");
-    expect(paths).toContain("/api/v1/projects/project-1/host-command");
+    const assetReads = requestedPaths(fetchMock).filter(
+      (path) => path === "/api/v1/projects/project-1/assets",
+    );
+    expect(assetReads.length).toBeGreaterThan(0);
+    expect(assetReads.length).toBeLessThanOrEqual(6);
   });
 });
