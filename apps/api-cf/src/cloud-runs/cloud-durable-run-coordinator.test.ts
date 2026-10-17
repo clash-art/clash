@@ -268,7 +268,7 @@ describe("cloud durable run coordinator", () => {
 
     expect(result.workflowStarted).toBe(false);
     expect(result.workflowId).toBe(
-      cloudDurableWorkflowId({
+      await cloudDurableWorkflowId({
         actionRunId: "cloud-run-1",
         outputSlot: "media",
       }),
@@ -300,8 +300,102 @@ describe("cloud durable run coordinator", () => {
       },
       now: 1,
     });
-    expect(result).toEqual({ scanned: 1, scheduled: 1 });
+    expect(result).toEqual({ scanned: 1, scheduled: 1, failed: 0 });
     expect(scheduled).toEqual(["cloud-run-recover/media"]);
+  });
+
+  it("derives a Cloudflare-valid, stable Workflow id from a content-addressed identity", async () => {
+    // Shape of an executable Action identity; ":" and its length were
+    // rejected by Workflows as instance.invalid_id on staging.
+    const identity = {
+      actionRunId: `project:6a08f319-fbf0-4d3d-b5ba-d5d4d0f478f1:node:n1:revision:${"a".repeat(64)}`,
+      outputSlot: "text",
+    };
+    const id = await cloudDurableWorkflowId(identity);
+    expect(id).toMatch(/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/);
+    expect(id.length).toBeLessThanOrEqual(64);
+    expect(await cloudDurableWorkflowId({ ...identity })).toBe(id);
+    expect(
+      await cloudDurableWorkflowId({ ...identity, outputSlot: "media" }),
+    ).not.toBe(id);
+  });
+
+  it("restarts a finished instance whose row is still due, leaves a running one alone", async () => {
+    const journal = new MemoryCloudJournal();
+    for (const actionRunId of ["cloud-run-errored", "cloud-run-running"]) {
+      await journal.create(
+        createDurableRunRecord({
+          actionRunId,
+          outputSlot: "media",
+          owner: { realm: "cloud", id: "cloud-worker-1" },
+          executorInput: { projectId: "project-1" },
+          createdAt: 1,
+          deadlineAt: 100,
+        }),
+      );
+    }
+    const erroredId = await cloudDurableWorkflowId({
+      actionRunId: "cloud-run-errored",
+      outputSlot: "media",
+    });
+    const restarted: string[] = [];
+    const result = await recoverCloudDurableRuns({
+      ownerId: "cloud-worker-1",
+      journal,
+      workflow: {
+        async create() {
+          throw new Error("instance already exists");
+        },
+        async get(id) {
+          return {
+            status: async () => ({
+              status: id === erroredId ? "errored" : "running",
+            }),
+            restart: async () => {
+              restarted.push(id);
+            },
+          };
+        },
+      },
+      now: 1,
+    });
+    expect(restarted).toEqual([erroredId]);
+    expect(result).toEqual({ scanned: 2, scheduled: 1, failed: 0 });
+  });
+
+  it("keeps recovering due rows after one row is rejected by the scheduler", async () => {
+    const journal = new MemoryCloudJournal();
+    for (const actionRunId of ["cloud-run-bad", "cloud-run-good"]) {
+      await journal.create(
+        createDurableRunRecord({
+          actionRunId,
+          outputSlot: "media",
+          owner: { realm: "cloud", id: "cloud-worker-1" },
+          executorInput: { projectId: "project-1" },
+          createdAt: 1,
+          deadlineAt: 100,
+        }),
+      );
+    }
+    const scheduled: string[] = [];
+    const result = await recoverCloudDurableRuns({
+      ownerId: "cloud-worker-1",
+      journal,
+      workflow: {
+        async create({ params }) {
+          if (params.actionRunId === "cloud-run-bad")
+            throw new Error("(instance.invalid_id) Instance has invalid id");
+          scheduled.push(params.actionRunId);
+        },
+      },
+      now: 1,
+    });
+    expect(result).toEqual({ scanned: 2, scheduled: 1, failed: 1 });
+    expect(scheduled).toEqual(["cloud-run-good"]);
+    expect(
+      (await journal.load({ actionRunId: "cloud-run-bad", outputSlot: "media" }))
+        ?.phase,
+    ).toBe("queued");
   });
 
   it("drives waiting and contended advances through named Workflow steps", async () => {

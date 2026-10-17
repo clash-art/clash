@@ -58,6 +58,8 @@ async function remoteReferences(
   userId: string,
   references: readonly ExecutablePluginReference[],
 ): Promise<RemotePluginReference[]> {
+  // A text-only Action has nothing to sign; it must not need a media origin.
+  if (references.length === 0) return [];
   const assetReferences = references.filter(
     (
       reference,

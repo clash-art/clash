@@ -1,3 +1,4 @@
+import type { DurableRunRecord } from "@clash/shared-runtime/durable-run-engine";
 import type { Env } from "../config";
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
 import { recoverCloudDurableRuns as recoverOwnerRuns } from "../cloud-runs/cloud-durable-dispatcher";
@@ -23,24 +24,39 @@ async function recoverHostedGenerationRuns(
       run.nextAttemptAt === undefined
     )
       continue;
-    const { workflowId } = frozenGeneration(run);
     try {
-      await env.GENERATION_WORKFLOW.create({
-        id: workflowId,
-        params: { actionRunId: run.actionRunId, outputSlot: run.outputSlot },
-      });
+      await scheduleHostedGeneration(env, run);
     } catch (error) {
-      if (
-        !/already exists|already started|duplicate/i.test(
-          error instanceof Error ? error.message : String(error),
-        )
-      )
-        throw error;
-      const instance = await env.GENERATION_WORKFLOW.get(workflowId);
-      const state = await instance.status();
-      if (["errored", "terminated", "complete"].includes(state.status))
-        await instance.restart();
+      // A row the scheduler rejects stays queued; it must not starve the rest.
+      console.warn("hosted-generation.recovery_schedule_failed", {
+        actionRunId: run.actionRunId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
+  }
+}
+
+async function scheduleHostedGeneration(
+  env: Env,
+  run: DurableRunRecord,
+): Promise<void> {
+  const { workflowId } = frozenGeneration(run);
+  try {
+    await env.GENERATION_WORKFLOW.create({
+      id: workflowId,
+      params: { actionRunId: run.actionRunId, outputSlot: run.outputSlot },
+    });
+  } catch (error) {
+    if (
+      !/already exists|already started|duplicate/i.test(
+        error instanceof Error ? error.message : String(error),
+      )
+    )
+      throw error;
+    const instance = await env.GENERATION_WORKFLOW.get(workflowId);
+    const state = await instance.status();
+    if (["errored", "terminated", "complete"].includes(state.status))
+      await instance.restart();
   }
 }
 
