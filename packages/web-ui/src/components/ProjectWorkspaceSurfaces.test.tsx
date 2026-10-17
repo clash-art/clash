@@ -962,7 +962,7 @@ describe("Project workspace surfaces", () => {
           headers: { "content-type": "video/mp4" },
         });
       }
-      if (url === "/api/v1/local/audio/transcriptions") {
+      if (url === "/api/v1/audio/transcriptions") {
         return Response.json({
           schemaVersion: 1,
           kind: "clash.asr.timed-transcript",
@@ -1040,7 +1040,7 @@ describe("Project workspace surfaces", () => {
       ]),
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/local/audio/transcriptions",
+      "/api/v1/audio/transcriptions",
       expect.objectContaining({ method: "POST", credentials: "include" }),
     );
   });

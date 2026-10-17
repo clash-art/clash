@@ -95,7 +95,10 @@ import {
   type PluginProviderInfo,
   type ModelProviderTestResult,
 } from "@clash/web-ui/lib/clientActions";
-import { runtimeApiUrl } from "@clash/web-ui/lib/runtimeConfig";
+import {
+  getRuntimeCapabilities,
+  runtimeApiUrl,
+} from "@clash/web-ui/lib/runtimeConfig";
 import {
   clearHarnessOperation,
   setHarnessOperation,
@@ -814,6 +817,10 @@ export default function SettingsClient({
 }: Props) {
   const showAll = activeSection == null;
   const showSection = (s: SettingsSection) => showAll || activeSection === s;
+  // Machine-local ASR install/status and builtin-rpc are local-only; the
+  // hosted adapter serves Provider-route voice input with no local setup UI.
+  const localAudioAvailable =
+    getRuntimeCapabilities().host.localAudio === "available";
   const [tokens, setTokens] = useState<ApiTokenInfo[]>(initialTokens);
   const [newTokenName, setNewTokenName] = useState("");
   const [revealedToken, setRevealedToken] = useState<string | null>(null);
@@ -1381,12 +1388,26 @@ export default function SettingsClient({
 
       {showAll && <hr className="border-warm-border" />}
 
-      {/* ── Audio ── */}
-      {showSection("audio") && (
+      {/* ── Audio (local ASR/TTS runtime only) ── */}
+      {localAudioAvailable && showSection("audio") && (
         <AudioSection
           voiceInputModels={voiceInputModelEntries}
           localSpeechModelStatuses={localSpeechModelStatuses}
         />
+      )}
+      {!localAudioAvailable && showSection("audio") && (
+        <SettingsSectionLayout>
+          <SettingsSectionHeader
+            title="Voice input"
+            icon={<Microphone className="size-4" weight="bold" />}
+            description="Dictation through an audio-capable model"
+          />
+          <p className="text-sm text-stone-600 dark:text-stone-300">
+            This adapter transcribes through an enabled audio-capable model from
+            Models. Local ASR model installation is available only in the
+            desktop/local Host.
+          </p>
+        </SettingsSectionLayout>
       )}
 
       {/* ── Media analysis ── */}
