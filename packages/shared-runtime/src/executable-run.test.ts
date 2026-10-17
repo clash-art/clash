@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { DurableRunRecord } from "./durable-run-engine.js";
 import { createDurableRunRecord } from "./durable-run-engine.js";
 import {
+  executableActionRequest,
+  executablePluginActionInvocation,
   executableProviderRequest,
   executableProviderResultStep,
   executableProviderStep,
@@ -295,5 +297,97 @@ describe("frozen run provider request", () => {
       pollState: { requestId: "req-1" },
       timeoutMs: 800,
     });
+  });
+});
+
+describe("plugin invocation expected output slots", () => {
+  function actionFreeze(
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      schemaVersion: 1,
+      targetKind: "action",
+      binding,
+      actionId: "action-1",
+      actor: { kind: "user" },
+      kind: "text",
+      projectId: "project-1",
+      nodeId: "node-1",
+      input: { values: { prompt: "hi" }, references: [] },
+      ...overrides,
+    };
+  }
+
+  function actionRecord(
+    frozenOverrides: Record<string, unknown> = {},
+    runOverrides: Partial<DurableRunRecord> = {},
+  ): DurableRunRecord {
+    return {
+      ...createDurableRunRecord({
+        actionRunId: "action-run-1",
+        outputSlot: "text",
+        owner: { realm: "local", id: "host-1" },
+        executorInput: actionFreeze(frozenOverrides) as never,
+        createdAt: 100,
+        deadlineAt: 10_000,
+      }),
+      activeAttempt: {
+        operation: "submit",
+        number: 1,
+        startedAt: 1000,
+        expiresAt: 5000,
+      },
+      ...runOverrides,
+    };
+  }
+
+  function expectedSlotNames(record: DurableRunRecord): string[] | undefined {
+    return executablePluginActionInvocation(
+      executableActionRequest(record, 1500),
+    ).expectedOutputSlots;
+  }
+
+  it("carries the result slot for a frozen text Action", () => {
+    expect(expectedSlotNames(actionRecord())).toEqual(["result"]);
+  });
+
+  it("carries the typed media slot and its generic alias", () => {
+    expect(
+      expectedSlotNames(
+        actionRecord({ kind: "image" }, { outputSlot: "media" }),
+      ),
+    ).toEqual(["image", "media"]);
+  });
+
+  it("carries the frozen plugin metadata slot when one is pinned", () => {
+    expect(
+      expectedSlotNames(
+        actionRecord(
+          { kind: "image", pluginOutputSlot: "render:output" },
+          { outputSlot: "render:output" },
+        ),
+      ),
+    ).toEqual(["render:output"]);
+  });
+
+  it("carries the generator output contract's port for a Generator Action", () => {
+    expect(
+      expectedSlotNames(
+        actionRecord(
+          {
+            targetKind: "generator-action",
+            kind: "image",
+            generatorOutputContract: [
+              {
+                slot: "still",
+                assetType: { kind: "media", mediaKind: "image" },
+                cardinality: { minItems: 1, maxItems: 1 },
+              },
+            ],
+          },
+          { outputSlot: "still" },
+        ),
+      ),
+    ).toEqual(["still"]);
   });
 });

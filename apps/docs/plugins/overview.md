@@ -66,6 +66,14 @@ Executable plugins implement one `PluginModule` invocation/result ABI:
 - input: `clash.plugin.invoke/v1`
 - output: `clash.plugin.result/v1`
 
+An Action invocation may include `expectedOutputSlots`, the host-accepted output
+slot names in preference order; answer with one of them. The field is optional
+and additive, and the host still validates the returned slot. A remote HTTPS
+plugin answer is capped at 1 MiB: an oversized `content-length` is rejected
+before reading, a streamed body is cancelled once the cap is crossed, and the
+failure is a non-retryable `contract_violation` so a possibly completed submit
+is never charged twice.
+
 The Local Host chooses one of two execution realms without changing that ABI:
 
 - trusted first-party packages in the closed `bundled-module` registry run as

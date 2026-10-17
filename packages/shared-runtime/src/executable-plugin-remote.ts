@@ -36,6 +36,8 @@ import { sha256Hex } from "./sha256-hex.js";
 export const REMOTE_PLUGIN_PROTOCOL = "clash.plugin.invoke/v1";
 /** One remote call never outlives this, even with a longer attempt lease. */
 export const REMOTE_PLUGIN_TIMEOUT_CAP_MS = 60_000;
+/** A remote response is untrusted input; never buffer an unbounded body. */
+export const REMOTE_PLUGIN_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 export class RemotePluginEndpointError extends Error {
   override name = "RemotePluginEndpointError";
@@ -174,6 +176,65 @@ function contractViolation(
   });
 }
 
+function oversizedResponse(
+  pluginId: string,
+  settled: "unknown" | "accepted",
+): ProviderExecutionError {
+  return contractViolation(
+    `Remote plugin ${pluginId} returned a response larger than ${REMOTE_PLUGIN_RESPONSE_MAX_BYTES} bytes.`,
+    // A response proves the endpoint received the request. For a submit it may
+    // already have done the work, so report `accepted` even though a 409 remains
+    // `unknown`: retrying an oversized answer could charge the user twice.
+    settled === "unknown" ? "accepted" : settled,
+  );
+}
+
+/**
+ * Read a remote response without buffering more than the protocol cap.
+ *
+ * A declared `content-length` above the cap is rejected before touching the
+ * body. Otherwise the body is streamed and the reader is cancelled as soon as
+ * one chunk would cross the cap, so the host retains at most cap + one chunk.
+ */
+async function readRemotePluginResponse(
+  response: Response,
+  pluginId: string,
+  settled: "unknown" | "accepted",
+): Promise<string> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    const declaredBytes = Number(declaredLength);
+    if (
+      Number.isFinite(declaredBytes) &&
+      declaredBytes > REMOTE_PLUGIN_RESPONSE_MAX_BYTES
+    ) {
+      throw oversizedResponse(pluginId, settled);
+    }
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = "";
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      received += next.value.byteLength;
+      if (received > REMOTE_PLUGIN_RESPONSE_MAX_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw oversizedResponse(pluginId, settled);
+      }
+      text += decoder.decode(next.value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export function createRemotePluginExecution(
   options: RemotePluginExecutionOptions,
 ): PluginExecutionPort {
@@ -221,8 +282,12 @@ export function createRemotePluginExecution(
         },
         body,
       });
-      const text = await response.text();
       const settled = operation === "submit" ? "unknown" : "accepted";
+      if (response.status === 409 || !response.ok) {
+        // Neither path reads the body; release it unread so an error page of
+        // any size costs nothing and keeps its retry classification.
+        await response.body?.cancel().catch(() => undefined);
+      }
       if (response.status === 409) {
         throw contractViolation(
           `Remote plugin ${invocation.target.pluginId} rejected Idempotency-Key ${idempotencyKey}: ` +
@@ -239,6 +304,11 @@ export function createRemotePluginExecution(
           }),
         );
       }
+      const text = await readRemotePluginResponse(
+        response,
+        invocation.target.pluginId,
+        settled,
+      );
       let parsed: ExecutablePluginResult;
       try {
         parsed = ExecutablePluginResultSchema.parse(JSON.parse(text));

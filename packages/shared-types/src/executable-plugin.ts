@@ -1211,6 +1211,17 @@ export const ExecutablePluginInvocationSchema = z
       .strict(),
     /** Delivery contract copied from the exact selected Provider binding. */
     assetInputs: z.array(ProviderAssetInputSchema).default([]),
+    /**
+     * Slot names the host will accept, in preference order; a plugin must answer with one of them.
+     *
+     * Additive and optional: older plugins ignore it, and the result validator remains the single
+     * enforcement point. It exists so a plugin never has to guess the host's output slot after it
+     * has already done (and possibly billed) the work.
+     */
+    expectedOutputSlots: z
+      .array(z.string().trim().min(1))
+      .min(1)
+      .optional(),
     actor: z
       .object({
         kind: z.enum(["user", "agent", "system"]),

@@ -5,6 +5,7 @@ import type { ExecutablePluginInvocation } from "@clash/shared-types/executable-
 import { durableRunIdempotencyKey } from "./durable-run-engine.js";
 import {
   createRemotePluginExecution,
+  REMOTE_PLUGIN_RESPONSE_MAX_BYTES,
   REMOTE_PLUGIN_TIMEOUT_CAP_MS,
   RemotePluginEndpointError,
   remotePluginSignature,
@@ -197,6 +198,149 @@ describe("remote PluginExecutionPort binding", () => {
         retryable: false,
         requestState: "unknown",
       },
+    });
+  });
+
+  it("sends expectedOutputSlots in the POST body", async () => {
+    const fetch = vi.fn(async () => completed(key));
+    const port = createRemotePluginExecution({
+      fetch,
+      target: async () => ({
+        endpoint: "https://plugins.example.com/invoke",
+        secret,
+        references: [],
+      }),
+    });
+    await port.invoke({
+      ...request(),
+      invocation: { ...invocation(), expectedOutputSlots: ["result"] },
+    });
+    const [, init] = fetch.mock.calls[0]!;
+    expect(JSON.parse(String(init?.body)).invocation.expectedOutputSlots).toEqual(
+      ["result"],
+    );
+  });
+
+  it("rejects an oversized declared response before reading its body", async () => {
+    let readers = 0;
+    const response = {
+      status: 200,
+      ok: true,
+      headers: new Headers({
+        "content-length": String(REMOTE_PLUGIN_RESPONSE_MAX_BYTES + 1),
+      }),
+      body: {
+        getReader() {
+          readers += 1;
+          throw new Error("the body must not be read");
+        },
+      },
+    } as unknown as Response;
+    const fetch = vi.fn(async () => response);
+    const port = createRemotePluginExecution({
+      fetch,
+      target: async () => ({
+        endpoint: "https://plugins.example.com/invoke",
+        secret,
+        references: [],
+      }),
+    });
+    await expect(port.invoke(request())).rejects.toMatchObject({
+      failure: {
+        code: "contract_violation",
+        retryable: false,
+        requestState: "accepted",
+      },
+    });
+    expect(readers).toBe(0);
+  });
+
+  it("keeps a retryable classification for a huge error page and never reads it", async () => {
+    let cancelled = 0;
+    const response = {
+      status: 503,
+      ok: false,
+      headers: new Headers({
+        "content-length": String(REMOTE_PLUGIN_RESPONSE_MAX_BYTES * 10),
+      }),
+      body: {
+        getReader() {
+          throw new Error("an error body must not be read");
+        },
+        async cancel() {
+          cancelled += 1;
+        },
+      },
+    } as unknown as Response;
+    const port = createRemotePluginExecution({
+      fetch: vi.fn(async () => response),
+      target: async () => ({
+        endpoint: "https://plugins.example.com/invoke",
+        secret,
+        references: [],
+      }),
+    });
+    const error = await port.invoke(request()).catch((caught) => caught);
+    expect(error.failure.code).not.toBe("contract_violation");
+    expect(cancelled).toBe(1);
+  });
+
+  it("cancels an oversized streamed response without a content-length", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(REMOTE_PLUGIN_RESPONSE_MAX_BYTES));
+        controller.enqueue(new TextEncoder().encode("x"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetch = vi.fn(async () => new Response(body));
+    const port = createRemotePluginExecution({
+      fetch,
+      target: async () => ({
+        endpoint: "https://plugins.example.com/invoke",
+        secret,
+        references: [],
+      }),
+    });
+    await expect(port.invoke(request())).rejects.toMatchObject({
+      failure: {
+        code: "contract_violation",
+        retryable: false,
+        requestState: "accepted",
+      },
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it("parses a body exactly at the response cap", async () => {
+    const prefix =
+      `{"protocol":"clash.plugin.result/v1","invocationId":"${key}","status":"completed",` +
+      `"outputs":[{"slot":"media","kind":"value","value":"`;
+    const suffix = `"}]}`;
+    const text =
+      prefix +
+      "a".repeat(
+        REMOTE_PLUGIN_RESPONSE_MAX_BYTES - prefix.length - suffix.length,
+      ) +
+      suffix;
+    expect(new TextEncoder().encode(text).byteLength).toBe(
+      REMOTE_PLUGIN_RESPONSE_MAX_BYTES,
+    );
+    const fetch = vi.fn(async () => new Response(text));
+    const port = createRemotePluginExecution({
+      fetch,
+      target: async () => ({
+        endpoint: "https://plugins.example.com/invoke",
+        secret,
+        references: [],
+      }),
+    });
+    await expect(port.invoke(request())).resolves.toMatchObject({
+      status: "completed",
+      invocationId: key,
     });
   });
 

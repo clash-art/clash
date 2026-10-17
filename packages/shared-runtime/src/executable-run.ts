@@ -784,7 +784,8 @@ function assertMediaOutputMatchesKind(
  *
  * v1 Action Cards declare one outputType but no output-port field. A media Action therefore owns
  * the typed port named by that outputType (`image`, `video`, or `audio`); `media` remains accepted
- * for Actions written against the original generic-port convention. Other executors freeze their
+ * for Actions written against the original generic-port convention. Other executors (including a
+ * native Generator Action, whose output contract port is keyed by the durable slot) freeze their
  * exact durable slot. The same rule validates both the returned envelope and its Host staging
  * receipt so normalization cannot make an otherwise valid receipt look foreign.
  */
@@ -946,6 +947,8 @@ export interface ExecutablePluginActionRequest {
   taskId: string;
   /** Durable output slot paired with `taskId` in the owner journal. */
   outputSlot?: string;
+  /** Plugin-side slot names this run accepts, in preference order. */
+  expectedOutputSlots?: string[];
   projectId: string;
   nodeId?: string;
   input: {
@@ -978,6 +981,9 @@ export function executablePluginActionInvocation(
     ...(request.nodeId ? { nodeId: request.nodeId } : {}),
     target: { ...binding, kind: "action" },
     input: request.input,
+    ...(request.expectedOutputSlots === undefined
+      ? {}
+      : { expectedOutputSlots: request.expectedOutputSlots }),
     actor: request.actor,
     ...(request.operation === undefined
       ? {}
@@ -1010,6 +1016,10 @@ export function executableActionRequest(
     invocationId: durableRunIdempotencyKey(run),
     taskId: run.actionRunId,
     outputSlot: run.outputSlot,
+    expectedOutputSlots: pluginOutputSlotsForDurableRun(
+      frozen,
+      run.outputSlot,
+    ),
     projectId: frozen.projectId,
     ...(frozen.nodeId ? { nodeId: frozen.nodeId } : {}),
     input: frozen.input,
