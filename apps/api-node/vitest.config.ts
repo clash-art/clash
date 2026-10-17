@@ -11,6 +11,13 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/asset-sdk\/(.+)$/,
+        replacement: resolve(
+          import.meta.dirname,
+          "../../packages/asset-sdk/src/$1.ts",
+        ),
+      },
+      {
         find: /^@clash\/asset-sdk$/,
         replacement: resolve(
           import.meta.dirname,
