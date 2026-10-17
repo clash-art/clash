@@ -81,14 +81,25 @@ describe("cloud browser login gateway", () => {
     "/api/v1/cloud/account",
     "/api/v1/cli-auth/authorize",
     "/api/v1/projects",
-  ])("still requires authentication for %s", async (path) => {
+  ])("asks api-cf to fail closed for %s and drops forged identity", async (path) => {
+    // Issue #136: api-cf validates the credential once and answers 401.
+    const env = gatewayEnv();
+    let received: Request | undefined;
+    env.API_CF = {
+      fetch: async (request) => {
+        received = request;
+        return new Response("api decides", { status: 401 });
+      },
+    };
     const response = await worker.fetch(
       new Request("https://clash.test" + path, {
         headers: { "x-user-id": "forged" },
       }),
-      gatewayEnv(),
+      env,
     );
     expect(response.status).toBe(401);
+    expect(received?.headers.has("x-user-id")).toBe(false);
+    expect(received?.headers.get("x-clash-require-identity")).toBe("1");
   });
 });
 
