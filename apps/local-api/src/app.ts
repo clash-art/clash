@@ -18,7 +18,6 @@ import {
   mkdir,
   readFile,
   rm,
-  writeFile,
 } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -100,6 +99,7 @@ import {
   type VoiceInputSelection,
 } from "@clash/shared-runtime/cloud-project-host/voice-input";
 import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
+import { executablePluginActionDefinitions } from "@clash/shared-runtime/canvas-executable-node";
 import { resolveProviderSecretKey } from "./local-provider-store.js";
 import {
   agentReadReceiptToken,
@@ -115,7 +115,6 @@ import {
   buildEffectiveModelCards,
   composeExecutablePluginModelCards,
   modelCardVisibleToConsumer,
-  CustomActionDefinitionSchema,
   hostMutationRejected,
   hostMutationSucceeded,
   invalidProviderModelFilters,
@@ -3496,58 +3495,6 @@ async function effectiveModelCards(
       ).filter((model) => modelCardVisibleToConsumer(model, undefined)),
     ),
   });
-}
-
-function executablePluginActionDefinitions(
-  registrations: readonly ExecutablePluginCardRegistration[],
-) {
-  const definitions = new Map<
-    string,
-    { pluginId: string; definition: unknown }
-  >();
-  for (const registration of registrations) {
-    if (registration.document.kind !== "action-card") continue;
-    const card = registration.document.spec;
-    const existing = definitions.get(card.id);
-    if (existing) {
-      throw new Error(
-        `Plugins ${existing.pluginId} and ${registration.pluginId} both export action Card ${card.id}.`,
-      );
-    }
-    const definition = CustomActionDefinitionSchema.parse({
-      id: card.id,
-      name: card.name,
-      ...(card.description ? { description: card.description } : {}),
-      parameters: card.parameters,
-      outputType: card.outputType,
-      input: card.input,
-      constraints: card.constraints ?? [],
-      presentation: card.presentation,
-      ...(card.generator ? { generator: card.generator } : {}),
-      ...(card.maxRuntimeMs ? { maxRuntimeMs: card.maxRuntimeMs } : {}),
-      runtime: registration.runtime.kind === "hosted" ? "worker" : "local",
-      version: registration.version,
-      ...(registration.runtime.kind === "hosted"
-        ? { workerUrl: registration.runtime.endpoint }
-        : {}),
-      pluginBinding: {
-        pluginId: registration.pluginId,
-        version: registration.version,
-        exportId: card.functionExportId,
-        schemaHash: registration.schemaHash,
-      },
-      promptModalities: card.input.promptModalities,
-      tags: ["executable-plugin", registration.pluginId],
-    });
-    definitions.set(card.id, { pluginId: registration.pluginId, definition });
-  }
-  return [...definitions.values()]
-    .map((entry) => entry.definition)
-    .sort((left, right) => {
-      const leftId = (left as { id: string }).id;
-      const rightId = (right as { id: string }).id;
-      return leftId.localeCompare(rightId);
-    });
 }
 
 function normalizeModelCardConfigInput(
@@ -9023,7 +8970,7 @@ const ForkPointBodySchema = z.object({
     } & ProjectWriteBody;
     const preconditions = requestProjectWritePreconditions(c, body);
     let agentTemplateId = body.agent_template_id?.trim() || undefined;
-    let agentMemberId = body.agent_member_id?.trim() || undefined;
+    const agentMemberId = body.agent_member_id?.trim() || undefined;
     const requestedAgentId = body.agent_id?.trim() || undefined;
     const permissionMode = body.permission_mode?.trim() || undefined;
     if (body.resume_session_id && body.fork_session_id) {

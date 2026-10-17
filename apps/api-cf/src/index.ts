@@ -42,7 +42,7 @@ export default {
   scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(
       Promise.all([
-        recoverHostedGenerations(env),
+        recoverCloudDurableRuns(env),
         import("./services/project-content-multipart").then((m) =>
           m.cleanupProjectContentUploads(env.R2_BUCKET),
         ),
@@ -52,12 +52,12 @@ export default {
 };
 
 /** Cron recovery; its generation runtime graph loads on first call (#161). */
-export async function recoverHostedGenerations(
+export async function recoverCloudDurableRuns(
   env: Env,
   now?: number,
 ): Promise<void> {
   const recovery = await import("./generation/recovery");
-  return recovery.recoverHostedGenerations(env, now);
+  return recovery.recoverCloudDurableRuns(env, now);
 }
 
 // Export Durable Object classes, Workflow, and Container

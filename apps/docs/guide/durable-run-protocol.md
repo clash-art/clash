@@ -390,12 +390,35 @@ plugin routes have no upstream deduplication, so the hosted pipeline
 `store.get("apiKey")` is resolved from the selected hosted provider account for
 the active invocation; credentials never enter the journal.
 
-The `remote` binding for third-party HTTPS endpoints remains a typed TODO in
-the port. It is a different trust class (signed, user-configured endpoint) and
-has no code path until its replay, signature, and timeout contract is
-implemented. The `container` binding for `clash.remotion` is likewise a
-separate adapter; neither changes the journal, step graph, or publication
-key.
+The `remote` binding
+(`packages/shared-runtime/src/executable-plugin-remote.ts`) is the third-party
+trust class: a user-configured HTTPS endpoint stored per user and plugin in
+D1 (`plugin_endpoint_settings`, no foreign keys) with a signing secret sealed
+by the existing `ACTION_SECRET_KEY` envelope. Endpoints are validated at save
+(https only, no credentials in the URL, no IP literals, localhost, single-label
+names or private/internal suffixes) and the settings routes
+(`/api/v1/plugin-settings`) never return the secret. A first-party plugin id
+never falls through to this path; upper layers see only `PluginExecutionPort`.
+
+Every remote request carries
+`Idempotency-Key = durableRunIdempotencyKey(run)` and
+`x-clash-signature = hex(HMAC-SHA256(secret, timestamp "\n" key "\n" sha256(body)))`.
+References are short-lived signed URLs, never credentials or R2 keys. The
+request is bounded by `AbortSignal.timeout(min(remainingLease, 60s))`; a 409
+for the same key with a different body is a `contract_violation`. The same
+at-most-once rule applies: an ambiguous submit is retried only when the plugin
+declares `idempotentSubmit: true`, otherwise it fails after exactly one
+invocation. The `container` binding for `clash.remotion` remains a separate
+adapter; none of these change the journal, step graph, or publication key.
+
+Cloudflare Action admission (`generation/executable-admission.ts`) freezes the
+Canvas node's exact `pluginBinding`, writes the D1 journal row under the
+`api-cf:executable` owner before scheduling the existing `GENERATION_WORKFLOW`,
+and reuses `claimHostedGenerationNode`. A binding this deployment cannot
+execute fails `plugin_unavailable` without a row. The Workflow selects the
+coordinator from the journal row's owner, so one Workflow binding serves both
+hosted generation and executable Actions. Cron recovery scans the exported
+owner list and re-schedules only identities from due rows.
 
 ## Executable step contract
 

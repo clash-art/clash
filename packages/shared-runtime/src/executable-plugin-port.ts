@@ -42,13 +42,12 @@ export type PluginExecutionBinding =
       instance: "render";
     }
   | {
+      /** Endpoint and secret are per-user plugin settings resolved per invocation, never bound here. */
       kind: "remote";
       pluginId: string;
       version: string;
       schemaHash: `sha256:${string}`;
       exportId: string;
-      endpoint: string;
-      secretId: string;
     };
 
 export interface PluginExecutionRegistry {
@@ -56,21 +55,4 @@ export interface PluginExecutionRegistry {
     pluginId: string,
     exportId: string,
   ): PluginExecutionBinding | undefined;
-}
-
-/**
- * TODO(third-party): the `remote` binding is deliberately type-only.
- *
- * A signed HTTPS endpoint is a different trust class from a first-party
- * module. It must not be admitted until the endpoint contract exists:
- * https-only URLs, per-user settings and secret envelope, timestamp +
- * HMAC signature, `Idempotency-Key` replay returning the previous poll state,
- * and the same timeout/requestState classification as this port. No code path
- * binds it today.
- */
-export interface RemotePluginExecutionOptions {
-  readonly pluginId: string;
-  readonly exportId: string;
-  readonly endpoint: string;
-  readonly secretId: string;
 }

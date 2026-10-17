@@ -17,6 +17,7 @@ import { agentRoutes } from "./agents";
 import { modelProviderRoutes } from "./model-providers";
 import { providerUsageRoutes } from "./provider-usage";
 import { pluginCatalogRoutes } from "./plugin-catalog";
+import { pluginSettingsRoutes } from "./plugin-settings";
 import { createProjectHostCommandRoutes } from "./project-host-command";
 import { createVoiceInputRoutes } from "./voice-input";
 
@@ -42,6 +43,8 @@ v1Routes.route("/", modelProviderRoutes);
 v1Routes.route("/", providerUsageRoutes);
 // Generator Definitions, plugin Views and Actions this deployment executes.
 v1Routes.route("/", pluginCatalogRoutes);
+// Third-party plugin endpoints and their sealed signing secrets.
+v1Routes.route("/plugin-settings", pluginSettingsRoutes);
 // Local-runtime session lifecycle (BYO local agent; distinct from cloud
 // /api/v1/sessions). Browser opens WS to /api/v1/local-sessions/:id/_stream
 // for the duplex event/prompt stream. Session creation lives next to it

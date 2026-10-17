@@ -152,6 +152,7 @@ it("runs a host-owned action Card through activation, hot discovery, and exact s
     const binding = await client.resolveBinding("test.caption-helper", "test.caption-helper", "action");
     const result = await createExecutablePluginActionInvoker({ client })({
       binding,
+      invocationId: "task-caption-e2e",
       taskId: "task-caption-e2e",
       projectId: "project-caption-e2e",
       nodeId: "node-caption-e2e",
@@ -169,6 +170,7 @@ it("runs a host-owned action Card through activation, hot discovery, and exact s
     expect(v2Binding.schemaHash).not.toBe(binding.schemaHash);
     const v2Result = await createExecutablePluginActionInvoker({ client })({
       binding: v2Binding,
+      invocationId: "task-caption-v2",
       taskId: "task-caption-v2",
       projectId: "project-caption-e2e",
       nodeId: "node-caption-e2e",
@@ -187,6 +189,7 @@ it("runs a host-owned action Card through activation, hot discovery, and exact s
     expect(restoredBinding.schemaHash).toBe(binding.schemaHash);
     const restoredResult = await createExecutablePluginActionInvoker({ client })({
       binding: restoredBinding,
+      invocationId: "task-caption-restored",
       taskId: "task-caption-restored",
       projectId: "project-caption-e2e",
       nodeId: "node-caption-e2e",

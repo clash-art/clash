@@ -839,6 +839,12 @@ export const ExecutablePluginFunctionExportSchema = z
       .array(PluginEntryOperationSchema)
       .nonempty()
       .default(["submit"]),
+    /**
+     * The upstream deduplicates a repeated submit carrying the same invocationId
+     * (`Idempotency-Key`) and answers with the first outcome. Only then may a Host
+     * retry a submit whose outcome is unknown; otherwise it fails at most once.
+     */
+    idempotentSubmit: z.literal(true).optional(),
   })
   .strict()
   .superRefine((entry, ctx) => {

@@ -14,6 +14,7 @@ import type { CloudDurableRunJournal } from "@clash/shared-runtime/cloud-run-coo
 import type { ExecutablePluginJsonValue } from "@clash/shared-types/executable-plugin";
 import type { ModelUpstreamRoute } from "@clash/shared-types";
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
+import { HOSTED_GENERATION_OWNER } from "../cloud-runs/owners";
 import type { Env } from "../config";
 import { getPlugins } from "../plugins/registry";
 import type { Plugin } from "../plugins/types";
@@ -30,10 +31,9 @@ import {
   publishHostedGeneration,
   type HostedGenerationPublication,
 } from "./publication";
-const OWNER = "api-cf:generation";
 export { HOSTED_GENERATION_OUTPUT_SLOT };
 export function frozenGeneration(run: DurableRunRecord) {
-  return readFrozenGeneration(run, OWNER);
+  return readFrozenGeneration(run, HOSTED_GENERATION_OWNER);
 }
 function json(value: unknown): ExecutablePluginJsonValue {
   return JSON.parse(JSON.stringify(value));
@@ -104,7 +104,7 @@ function cloudflarePorts(
     ((params, publication) =>
       publishHostedGeneration(env, params, publication));
   return {
-    ownerId: OWNER,
+    ownerId: HOSTED_GENERATION_OWNER,
     // Provider-executor plugin routes (fal, …) have no upstream deduplication of a repeated
     // submit, so an ambiguous submit fails terminally instead of risking a second charge.
     mayRetryAmbiguousSubmit: (params) =>
