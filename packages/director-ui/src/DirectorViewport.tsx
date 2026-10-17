@@ -8,7 +8,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Canvas, createPortal, useFrame, useThree } from "@react-three/fiber";
+import { Canvas, createPortal, useFrame, useThree, type RootState } from "@react-three/fiber";
 import {
   GizmoHelper,
   GizmoViewport,
@@ -79,11 +79,25 @@ import {
   type DirectorRenderedFrame,
 } from "./headless-render-boundary";
 
+/**
+ * Interactive renderer options. The drawing buffer is not preserved: on many
+ * GPUs that forces a copy instead of a swap on every frame. Interactive
+ * screenshots and recordings render synchronously right before reading pixels.
+ */
 export const DIRECTOR_RENDERER_OPTIONS = {
   antialias: true,
-  preserveDrawingBuffer: true,
+  preserveDrawingBuffer: false,
   alpha: false,
   powerPreference: "high-performance" as const,
+};
+
+/**
+ * Headless frame capture (`onFrameRendered`) publishes a frame that is read
+ * after the render task, so it keeps the drawing buffer.
+ */
+export const DIRECTOR_CAPTURE_RENDERER_OPTIONS = {
+  ...DIRECTOR_RENDERER_OPTIONS,
+  preserveDrawingBuffer: true,
 };
 
 const ANNY_CHARACTER_ASSETS = {
@@ -154,6 +168,13 @@ export interface DirectorViewportProps {
   calibrationCamera?: DirectorCameraPose;
   gridSnap?: boolean;
   timeSeconds?: number;
+  /**
+   * While true and `playbackTimeRef` is set, the scene follows
+   * `playbackTimeRef.current` on every rendered frame (read in the render
+   * loop) instead of re-rendering from the `timeSeconds` prop.
+   */
+  playing?: boolean;
+  playbackTimeRef?: { readonly current: number };
   environmentUrl?: string;
   showEnvironmentBackground?: boolean;
   showSelectedSkeleton?: boolean;
@@ -1507,6 +1528,46 @@ function EquirectangularPanorama({
   ) : null;
 }
 
+type DirectorClockedSceneProps = Omit<React.ComponentProps<typeof DirectorScene>, "state"> & {
+  state: DirectorStageState;
+  playing: boolean;
+  playbackTimeRef?: { readonly current: number };
+};
+
+/**
+ * Evaluates the stage at the current time. During playback the time comes from
+ * `playbackTimeRef`, read in the R3F render loop, so only the 3D scene
+ * re-renders per frame and the host surface can update its UI at a lower rate.
+ */
+function DirectorClockedScene({
+  state,
+  playing,
+  playbackTimeRef,
+  timeSeconds = 0,
+  ...sceneProps
+}: DirectorClockedSceneProps) {
+  const followClock = playing && playbackTimeRef !== undefined;
+  const [clockSeconds, setClockSeconds] = useState(timeSeconds);
+  useFrame(() => {
+    if (!followClock) return;
+    const next = playbackTimeRef.current;
+    setClockSeconds((current) => (current === next ? current : next));
+  });
+  const sceneSeconds = followClock ? clockSeconds : timeSeconds;
+  const evaluated = useMemo(
+    () => evaluateDirectorStage(state, sceneSeconds),
+    [state, sceneSeconds],
+  );
+  // With frameloop="demand", some scene updates (animation mixers posed in
+  // effects) do not change three.js props, so R3F would not schedule a frame.
+  // Parent effects run after child effects: request one frame per commit.
+  const invalidate = useThree((root) => root.invalidate);
+  useEffect(() => {
+    invalidate();
+  });
+  return <DirectorScene {...sceneProps} state={evaluated} timeSeconds={sceneSeconds} />;
+}
+
 function DirectorScene({
   state,
   selectedObjectId,
@@ -1769,6 +1830,8 @@ export async function recordCanvasVideo(
     longEdge?: number;
     videoBitsPerSecond?: number;
     onTimeUpdate?: (timeSeconds: number) => void;
+    /** Renders the source canvas synchronously right before each read. */
+    renderSource?: () => void;
   },
 ): Promise<Blob> {
   if (typeof MediaRecorder === "undefined") {
@@ -1791,6 +1854,7 @@ export async function recordCanvasVideo(
   const output = document.createElement("canvas");
   output.width = width;
   output.height = height;
+  options.renderSource?.();
   drawCroppedCanvas(source, output);
   const stream = output.captureStream(fps);
   const mimeType = preferredDirectorVideoMimeType();
@@ -1832,6 +1896,7 @@ export async function recordCanvasVideo(
     recorder.start(250);
     const drawFrame = (now: number) => {
       const elapsed = Math.min(durationSeconds, (now - startedAt) / 1000);
+      options.renderSource?.();
       drawCroppedCanvas(source, output);
       options.onTimeUpdate?.(startTimeSeconds + elapsed);
       if (elapsed >= durationSeconds) {
@@ -1855,6 +1920,8 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
     calibrationCamera,
     gridSnap = false,
     timeSeconds = 0,
+    playing = false,
+    playbackTimeRef,
     environmentUrl,
     showEnvironmentBackground = false,
     showSelectedSkeleton = true,
@@ -1880,10 +1947,14 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
     const setCameraAccessor = useCallback((accessor: () => DirectorCameraPose) => {
       cameraAccessorRef.current = accessor;
     }, []);
-    const evaluated = useMemo(
-      () => evaluateDirectorStage(state, timeSeconds),
-      [state, timeSeconds],
-    );
+    const rootStateRef = useRef<RootState | null>(null);
+    // Render the current scene graph synchronously so pixels can be read in
+    // the same task without a preserved drawing buffer.
+    const renderNow = useCallback(() => {
+      const root = rootStateRef.current?.get();
+      root?.gl.render(root.scene, root.camera);
+    }, []);
+    const headlessCapture = Boolean(onFrameRendered);
     const renderPalette = useMemo(
       () => ({ ...resolvedPalette, ...renderPaletteOverride }),
       [renderPaletteOverride, resolvedPalette],
@@ -1911,6 +1982,7 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
       capture: async (options) => {
         if (renderError.current) throw renderError.current;
         if (!canvas) throw new Error("Director Stage renderer is not ready");
+        renderNow();
         return captureCanvas(
           canvas,
           options.aspectRatio,
@@ -1921,9 +1993,9 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
       record: async (options) => {
         if (renderError.current) throw renderError.current;
         if (!canvas) throw new Error("Director Stage renderer is not ready");
-        return recordCanvasVideo(canvas, options);
+        return recordCanvasVideo(canvas, { ...options, renderSource: renderNow });
       },
-    }), [canvas]);
+    }), [canvas, renderNow]);
 
     const unavailable = fallback ?? (
       <div data-director-webgl-fallback="" role="alert">
@@ -1944,17 +2016,24 @@ export const DirectorViewport = forwardRef<DirectorViewportHandle, DirectorViewp
         <Canvas
           shadows={{ type: THREE.PCFShadowMap }}
           dpr={[1, 2]}
-          gl={DIRECTOR_RENDERER_OPTIONS}
+          gl={headlessCapture ? DIRECTOR_CAPTURE_RENDERER_OPTIONS : DIRECTOR_RENDERER_OPTIONS}
+          // Idle stages only render on change (props, controls, loaded
+          // assets); playback and headless capture need every frame.
+          frameloop={playing || headlessCapture ? "always" : "demand"}
           fallback={unavailable}
           onPointerMissed={() => onSelectionChange?.(undefined)}
-          onCreated={({ gl }) => {
+          onCreated={(root) => {
+            const { gl } = root;
+            rootStateRef.current = root;
             setCanvas(gl.domElement);
             onReady?.(gl.domElement);
           }}
         >
           <DirectorCodeSourcesContext.Provider value={codeSources ?? {}}>
-          <DirectorScene
-            state={evaluated}
+          <DirectorClockedScene
+            state={state}
+            playing={playing}
+            playbackTimeRef={playbackTimeRef}
             selectedObjectId={selectedObjectId}
             selectedCameraId={selectedCameraId}
             transformMode={transformMode}
