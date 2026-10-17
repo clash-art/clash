@@ -27,6 +27,7 @@ import {
   ProjectHostHttpError,
   projectHostCommandUrl,
 } from "../project-host-http.js";
+import { textRevisionContentHash } from "../cloud-project-host/text-revisions.js";
 import {
   createTimelineClient,
   type ObservedProjectTimeline,
@@ -720,6 +721,110 @@ export function describeProjectHostContract(
             `${harness.endpoint}${assetPath(`/${encodeURIComponent("asset:missing")}/restore`)}`,
             { method: "POST" },
           ),
+        );
+      },
+    });
+
+    // Version history for `clash text apply`: immutable revision metadata plus
+    // a content-addressed Markdown body, read back for diff/restore.
+    const textRevision = (content: string, revisionId: string, extra = {}) => {
+      const hash = textRevisionContentHash(content);
+      return {
+        schemaVersion: 1,
+        kind: "clash.text.revision",
+        textId: "contract-text",
+        revisionId,
+        projectId: harness.projectId,
+        nodeId: "contract-text-node",
+        createdAt: new Date(Date.UTC(2026, 0, 1) + sequence * 1000).toISOString(),
+        contentHash: hash,
+        hashAlgorithm: "sha256-64",
+        sourceFilePath: "texts/contract.md",
+        sourceFileHash: hash,
+        ...extra,
+      };
+    };
+    const indexRevision = (body: unknown) =>
+      harness.fetch(`${harness.endpoint}/api/v1/text-revisions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    const revisionsPath = () =>
+      `/api/v1/projects/${encodeURIComponent(harness.projectId)}/text-revisions`;
+    capability("text.revisions", {
+      supported: [
+        [
+          "indexes a revision, lists it with stored content and serves the verified body",
+          async () => {
+            const first = textRevision("# Draft\n", unique("rev"));
+            const second = textRevision("# Draft\n\nMore.\n", unique("rev"), {
+              parentRevisionId: first.revisionId,
+            });
+            for (const [revision, content] of [
+              [first, "# Draft\n"],
+              [second, "# Draft\n\nMore.\n"],
+            ] as const) {
+              const response = await indexRevision({ revision, content });
+              expect(response.status).toBe(200);
+              expect((await json(response))?.content).toMatchObject({
+                stored: true,
+                contentHash: revision.contentHash,
+              });
+            }
+            const listed = await get(
+              `${revisionsPath()}?nodeId=contract-text-node&limit=200`,
+            );
+            expect(listed.status).toBe(200);
+            const entries = (await json(listed))?.revisions as any[];
+            const ids = entries.map((entry) => entry.revisionId);
+            expect(ids).toContain(first.revisionId);
+            expect(ids.indexOf(second.revisionId)).toBeLessThan(
+              ids.indexOf(first.revisionId),
+            );
+            const entry = entries.find((e) => e.revisionId === second.revisionId);
+            expect(entry.content).toMatchObject({ stored: true });
+            const body = await harness.fetch(
+              /^[a-z]+:/i.test(entry.content.url)
+                ? entry.content.url
+                : `${harness.endpoint}${entry.content.url}`,
+            );
+            expect(body.status).toBe(200);
+            expect(body.headers.get("x-clash-content-hash")).toBe(
+              second.contentHash,
+            );
+            expect(await body.text()).toBe("# Draft\n\nMore.\n");
+          },
+        ],
+        [
+          "is idempotent for the same revision and 409s on conflicting metadata",
+          async () => {
+            const revision = textRevision("same\n", unique("rev"));
+            expect((await indexRevision({ revision, content: "same\n" })).status).toBe(200);
+            expect((await indexRevision({ revision, content: "same\n" })).status).toBe(200);
+            expect(
+              (await indexRevision({ revision: { ...revision, textId: "other" } }))
+                .status,
+            ).toBe(409);
+          },
+        ],
+        [
+          "rejects a content hash mismatch and answers 404 for unknown revisions",
+          async () => {
+            const revision = textRevision("a\n", unique("rev"));
+            expect(
+              (await indexRevision({ revision, content: "not a\n" })).status,
+            ).toBe(400);
+            expect(
+              (await get(`${revisionsPath()}/${unique("missing")}/content`)).status,
+            ).toBe(404);
+          },
+        ],
+      ],
+      async unavailable() {
+        await expectUnavailable(await get(revisionsPath()));
+        await expectUnavailable(
+          await indexRevision({ revision: textRevision("x", unique("rev")) }),
         );
       },
     });

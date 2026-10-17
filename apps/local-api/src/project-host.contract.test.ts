@@ -118,6 +118,7 @@ describeProjectHostContract("local-api (desktop Host)", async () => {
       "assets.trash": "supported",
       "assets.restore": "supported",
       "assets.media": "supported",
+      "text.revisions": "supported",
     },
     // A stale Timeline write is rejected, but as HTTP 200 with
     // `{ code: "STALE_READ", error }` rather than 409 (host-command returns

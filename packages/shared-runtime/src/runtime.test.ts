@@ -63,7 +63,7 @@ describe("runtime endpoint helpers", () => {
     expect(cfg.capabilities.assets.upload).toBe("cloud");
     expect(cfg.capabilities.host).toEqual({
       timelineRender: "unavailable",
-      textRevisions: "unavailable",
+      textRevisions: "available",
       localAudio: "unavailable",
     });
     expect(cfg.capabilities.workflows.runner).toBe("cloudflare");

@@ -24,6 +24,7 @@ export async function loadMigrations(): Promise<Migration[]> {
       "0011_personal_assets.sql",
       "0012_project_resources.sql",
       "0013_project_content_ref.sql",
+      "0014_text_revisions.sql",
     ].map(async (id) => ({
       id,
       sql: await readFile(

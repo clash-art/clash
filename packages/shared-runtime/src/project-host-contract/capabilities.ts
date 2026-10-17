@@ -24,13 +24,14 @@ export const PROJECT_HOST_CAPABILITIES = [
   "assets.trash",
   "assets.restore",
   "assets.media",
+  "text.revisions",
 ] as const;
 
 export type CapabilityId = (typeof PROJECT_HOST_CAPABILITIES)[number];
 
 /**
  * What the editor needs to open a Timeline, play imported media and manage
- * its Assets. Trash/restore are soft deletes of document state, so every
+ * its Assets, and keep text version history. Trash/restore are soft deletes of document state, so every
  * Host must offer them; only work that needs the user's own machine (local
  * render) may be `unavailable`.
  */
@@ -51,6 +52,7 @@ export const EDITOR_REQUIRED_CAPABILITIES = [
   "assets.trash",
   "assets.restore",
   "assets.media",
+  "text.revisions",
 ] as const satisfies readonly CapabilityId[];
 
 /**

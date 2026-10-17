@@ -7,6 +7,7 @@
     "0004_replica_checkpoint.sql": "Full Loro binary snapshot plus covered durable cursor. Independent of notification queue lifecycle; retention remains deferred.",
     "0005_replica_batch.sql": "Project/batch payload fingerprint for atomic protocol retries; retained with event history.",
     "0012_project_resources.sql": "Project-scoped immutable Resource registry; admitted with Loro Asset facts in one PG transaction, no foreign keys or duplicate Asset lifecycle.",
-    "0013_project_content_ref.sql": "Content-reference index (rebuildable cache of projectSyncContent) read by the upload service for admission without loading the Loro doc (#130)."
+    "0013_project_content_ref.sql": "Content-reference index (rebuildable cache of projectSyncContent) read by the upload service for admission without loading the Loro doc (#130).",
+    "0014_text_revisions.sql": "Immutable text revision metadata per Project for the shared text-revisions module (Node adapter); Markdown bodies are content-addressed files on disk."
   }
 }
