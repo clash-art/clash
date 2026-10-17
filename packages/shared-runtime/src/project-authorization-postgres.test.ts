@@ -3,7 +3,12 @@ import { PGlite } from "@electric-sql/pglite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createProjectAuthenticator } from "./project-authorization";
+import {
+  authenticateApiToken,
+  createProjectAuthenticator,
+  shouldTouchToken,
+  TOKEN_TOUCH_INTERVAL_MS,
+} from "./project-authorization";
 import { createPostgresProjectAuthorizationStore } from "./project-authorization-postgres";
 
 const roots: string[] = [];
@@ -172,5 +177,67 @@ describe("PostgreSQL project authorization", () => {
     } finally {
       await db.close();
     }
+  });
+  it("records token usage at most once per touch interval (#141)", async () => {
+    const { db } = await fixture();
+    try {
+      const tokenHash = await hash("clsh_owner");
+      await db.query(
+        "INSERT INTO api_token VALUES ($1, 'owner', 'CLI', NULL)",
+        [tokenHash],
+      );
+      const store = createPostgresProjectAuthorizationStore(db);
+      expect((await store.readApiToken(tokenHash))?.lastUsedAt).toBeNull();
+      await authenticateApiToken(request(), store);
+      await new Promise((r) => setTimeout(r, 20));
+      const first = (await store.readApiToken(tokenHash))?.lastUsedAt;
+      expect(first).toBeGreaterThan(Date.now() - 60_000);
+      // A recent timestamp: the guarded UPDATE leaves it alone even when
+      // called directly (concurrent first requests write once).
+      await db.query(
+        "UPDATE api_token SET last_used_at = CURRENT_TIMESTAMP - INTERVAL '1 minute'",
+      );
+      const pinned = (await store.readApiToken(tokenHash))?.lastUsedAt;
+      await store.touchApiToken(tokenHash);
+      expect((await store.readApiToken(tokenHash))?.lastUsedAt).toBe(pinned);
+      // Stale (> 5 min): recorded again.
+      await db.query(
+        "UPDATE api_token SET last_used_at = CURRENT_TIMESTAMP - INTERVAL '6 minutes'",
+      );
+      await store.touchApiToken(tokenHash);
+      expect((await store.readApiToken(tokenHash))?.lastUsedAt).toBeGreaterThan(
+        Date.now() - 60_000,
+      );
+    } finally {
+      await db.close();
+    }
+  });
+});
+
+describe("token touch interval", () => {
+  it("touches unknown/never-used tokens and skips fresh ones", () => {
+    const now = 1_000_000_000_000;
+    expect(shouldTouchToken(undefined, now)).toBe(true);
+    expect(shouldTouchToken(null, now)).toBe(true);
+    expect(shouldTouchToken(now - 1000, now)).toBe(false);
+    expect(shouldTouchToken(now - TOKEN_TOUCH_INTERVAL_MS + 1, now)).toBe(false);
+    expect(shouldTouchToken(now - TOKEN_TOUCH_INTERVAL_MS, now)).toBe(true);
+  });
+
+  it("authenticateApiToken skips the usage write when the token was just used", async () => {
+    let touches = 0;
+    const store = {
+      readProject: async () => null,
+      readSession: async () => null,
+      readApiToken: async () => ({ userId: "owner", lastUsedAt: Date.now() - 1000 }),
+      touchApiToken: async () => {
+        touches++;
+      },
+    };
+    await authenticateApiToken(request(), store);
+    expect(touches).toBe(0);
+    store.readApiToken = async () => ({ userId: "owner", lastUsedAt: Date.now() - TOKEN_TOUCH_INTERVAL_MS - 1 });
+    await authenticateApiToken(request(), store);
+    expect(touches).toBe(1);
   });
 });
