@@ -96,7 +96,7 @@ export const isCanvasTransformableItem = (item: {
   type: Item["type"];
 }): boolean => CANVAS_TRANSFORMABLE_ITEM_TYPES.has(item.type);
 
-export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
+const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   tracks,
   allNodesMap,
   selectedItemId,
@@ -119,6 +119,12 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
   onTransformEnd,
 }) => {
   const playerRef = useRef<PlayerRef>(null);
+  // Parents pass fresh callbacks; read them through refs so the Player
+  // listeners and the sync effect are not torn down on every frame.
+  const onFrameUpdateRef = useRef(onFrameUpdate);
+  onFrameUpdateRef.current = onFrameUpdate;
+  const onPlayingChangeRef = useRef(onPlayingChange);
+  onPlayingChangeRef.current = onPlayingChange;
   const containerRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const selectionBoxRef = useRef<HTMLDivElement>(null);
@@ -339,6 +345,28 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
     [tracks, allNodesMap, selectedItemId],
   );
 
+  // The Player drives its own clock. Keep its element identity stable so the
+  // per-frame re-render of this component (currentFrame prop) does not
+  // re-render the whole Remotion tree from the outside as well.
+  const playerElement = React.useMemo(
+    () => (
+      <Player
+        ref={playerRef}
+        component={VideoComposition}
+        compositionWidth={compositionWidth}
+        compositionHeight={compositionHeight}
+        durationInFrames={durationInFrames}
+        fps={fps}
+        inputProps={inputProps}
+        style={styles.player}
+        controls={false}
+        loop={false}
+        numberOfSharedAudioTags={0}
+      />
+    ),
+    [compositionWidth, compositionHeight, durationInFrames, fps, inputProps],
+  );
+
   // 同步播放状态和当前帧
   // 关键修复：避免在暂停时强制 seek 导致的帧重置问题
   const lastPlayingStateRef = useRef<boolean>(playing);
@@ -372,7 +400,7 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
       lastSyncedFrameRef.current = startFrame;
       lastEmittedFrameRef.current = startFrame;
       if (action.notifyFrame !== null) {
-        onFrameUpdate?.(action.notifyFrame);
+        onFrameUpdateRef.current?.(action.notifyFrame);
       }
     } else if (action.kind === "seek" && action.seekTo !== null) {
       playerRef.current.seekTo(action.seekTo);
@@ -380,7 +408,7 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
     }
 
     lastPlayingStateRef.current = playing;
-  }, [playing, currentFrame, durationInFrames, onFrameUpdate]);
+  }, [playing, currentFrame, durationInFrames]);
 
   // 监听 Player 事件
   useEffect(() => {
@@ -393,32 +421,22 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
         return;
       }
       lastEmittedFrameRef.current = frame;
-      if (onFrameUpdate) {
-        onFrameUpdate(frame);
-      }
+      onFrameUpdateRef.current?.(frame);
     };
 
     const handlePlay = () => {
-      if (onPlayingChange) {
-        onPlayingChange(true);
-      }
+      onPlayingChangeRef.current?.(true);
     };
 
     const handlePause = () => {
-      if (onPlayingChange) {
-        onPlayingChange(false);
-      }
+      onPlayingChangeRef.current?.(false);
     };
 
     const handleEnded = () => {
       const endFrame = getTimelineEndDisplayFrame(durationInFrames);
       lastEmittedFrameRef.current = endFrame;
-      if (onFrameUpdate) {
-        onFrameUpdate(endFrame);
-      }
-      if (onPlayingChange) {
-        onPlayingChange(false);
-      }
+      onFrameUpdateRef.current?.(endFrame);
+      onPlayingChangeRef.current?.(false);
     };
 
     player.addEventListener("frameupdate", handleFrame);
@@ -432,7 +450,7 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
       player.removeEventListener("pause", handlePause);
       player.removeEventListener("ended", handleEnded);
     };
-  }, [durationInFrames, onFrameUpdate, onPlayingChange]);
+  }, [durationInFrames]);
 
   const lastViewportCommandIdRef = useRef(0);
   useEffect(() => {
@@ -1366,19 +1384,7 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
               transformOrigin: "center center",
             }}
           >
-            <Player
-              ref={playerRef}
-              component={VideoComposition}
-              compositionWidth={compositionWidth}
-              compositionHeight={compositionHeight}
-              durationInFrames={durationInFrames}
-              fps={fps}
-              inputProps={inputProps}
-              style={styles.player}
-              controls={false}
-              loop={false}
-              numberOfSharedAudioTags={0}
-            />
+            {playerElement}
           </div>
         </div>
 
@@ -1716,6 +1722,8 @@ export const InteractiveCanvas: React.FC<InteractiveCanvasProps> = ({
     </div>
   );
 };
+
+export const InteractiveCanvas = React.memo(InteractiveCanvasInner);
 
 const styles: Record<string, React.CSSProperties> = {
   container: {

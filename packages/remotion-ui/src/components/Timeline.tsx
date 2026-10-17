@@ -170,25 +170,70 @@ type TimelineHeaderControlsProps = {
   zoomLimits: { min: number; max: number };
 };
 
+const MemoTimelineHeader = React.memo(TimelineHeader);
+
+const canEditSelectedAtFrame = (
+  selectedItem: TimelineHeaderControlsProps["selectedItem"],
+  frame: number,
+) =>
+  Boolean(
+    selectedItem &&
+    selectedItem.type !== "transition" &&
+    frame > selectedItem.from &&
+    frame < selectedItem.from + selectedItem.durationInFrames,
+  );
+
 const TimelineHeaderControls: React.FC<TimelineHeaderControlsProps> =
   React.memo((props) => {
+    // Only the derived `canEditSelected` flag depends on the playhead. The
+    // header itself is memoized with stable handlers that read the latest
+    // props and frame through refs, so it re-renders when that flag flips
+    // rather than on every playback frame.
     const { currentFrame } = useEditorPlayback();
-    const canEditSelected = Boolean(
-      props.selectedItem &&
-      props.selectedItem.type !== "transition" &&
-      currentFrame > props.selectedItem.from &&
-      currentFrame <
-        props.selectedItem.from + props.selectedItem.durationInFrames,
+    const { currentFrameRef } = useEditorPlaybackRefs();
+    const canEditSelected = canEditSelectedAtFrame(
+      props.selectedItem,
+      currentFrame,
     );
-    const invokeSelected = (
-      callback: (trackId: string, item: Item, frame: number) => void,
-    ) => {
-      if (!props.selectedTrackId || !props.selectedItem || !canEditSelected)
-        return;
-      callback(props.selectedTrackId, props.selectedItem, currentFrame);
-    };
+    const propsRef = React.useRef(props);
+    propsRef.current = props;
+    const invokeSelected = React.useCallback(
+      (
+        pick: (
+          current: TimelineHeaderControlsProps,
+        ) => (trackId: string, item: Item, frame: number) => void,
+      ) => {
+        const current = propsRef.current;
+        const frame = currentFrameRef.current;
+        if (
+          !current.selectedTrackId ||
+          !current.selectedItem ||
+          !canEditSelectedAtFrame(current.selectedItem, frame)
+        )
+          return;
+        pick(current)(current.selectedTrackId, current.selectedItem, frame);
+      },
+      [currentFrameRef],
+    );
+    const onSplitSelected = React.useCallback(
+      () => invokeSelected((current) => current.onSplitSelected),
+      [invokeSelected],
+    );
+    const onTrimLeftSelected = React.useCallback(
+      () => invokeSelected((current) => current.onTrimLeftSelected),
+      [invokeSelected],
+    );
+    const onTrimRightSelected = React.useCallback(
+      () => invokeSelected((current) => current.onTrimRightSelected),
+      [invokeSelected],
+    );
+    const onDeleteSelected = React.useCallback(() => {
+      const current = propsRef.current;
+      if (!current.selectedTrackId || !current.selectedItem) return;
+      current.onDeleteSelected(current.selectedTrackId, current.selectedItem.id);
+    }, []);
     return (
-      <TimelineHeader
+      <MemoTimelineHeader
         zoom={props.zoom}
         snapEnabled={props.snapEnabled}
         canUndo={props.canUndo}
@@ -197,13 +242,10 @@ const TimelineHeaderControls: React.FC<TimelineHeaderControlsProps> =
         hasSelectedItem={Boolean(props.selectedItem && props.selectedTrackId)}
         onUndo={props.onUndo}
         onRedo={props.onRedo}
-        onSplitSelected={() => invokeSelected(props.onSplitSelected)}
-        onTrimLeftSelected={() => invokeSelected(props.onTrimLeftSelected)}
-        onTrimRightSelected={() => invokeSelected(props.onTrimRightSelected)}
-        onDeleteSelected={() => {
-          if (!props.selectedTrackId || !props.selectedItem) return;
-          props.onDeleteSelected(props.selectedTrackId, props.selectedItem.id);
-        }}
+        onSplitSelected={onSplitSelected}
+        onTrimLeftSelected={onTrimLeftSelected}
+        onTrimRightSelected={onTrimRightSelected}
+        onDeleteSelected={onDeleteSelected}
         onAddVideoTrack={props.onAddVideoTrack}
         onZoomIn={props.onZoomIn}
         onZoomOut={props.onZoomOut}

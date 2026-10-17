@@ -14,6 +14,7 @@ import {
   useEditorPlaybackRefs,
   useEditorStaticState,
 } from "@clash/remotion-core";
+import type { Item } from "@clash/remotion-core";
 import {
   InteractiveCanvas,
   type CanvasViewportCommand,
@@ -182,6 +183,47 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
     } = useEditorStaticState();
     const { currentFrame, playing } = useEditorPlayback();
     const { currentFrameRef, playingRef } = useEditorPlaybackRefs();
+    // Stable handlers so the memoized InteractiveCanvas only re-renders for
+    // props that actually changed.
+    const handleUpdateItem = useCallback(
+      (trackId: string, itemId: string, updates: Partial<Item>) => {
+        dispatch({
+          type: "UPDATE_ITEM",
+          payload: { trackId, itemId, updates },
+        });
+      },
+      [dispatch],
+    );
+    const handleSelectItem = useCallback(
+      (itemId: string | null) =>
+        dispatch({ type: "SELECT_ITEM", payload: itemId }),
+      [dispatch],
+    );
+    const handlePlayingChange = useCallback(
+      (nextPlaying: boolean) => {
+        if (playingRef.current !== nextPlaying) {
+          dispatch({ type: "SET_PLAYING", payload: nextPlaying });
+        }
+      },
+      [dispatch, playingRef],
+    );
+    const handleFrameUpdate = useCallback(
+      (frame: number) => {
+        const roundedFrame = Math.round(frame);
+        if (roundedFrame !== currentFrameRef.current) {
+          dispatch({ type: "SET_CURRENT_FRAME", payload: roundedFrame });
+        }
+      },
+      [dispatch, currentFrameRef],
+    );
+    const handleSeek = useCallback(
+      (frame: number) => {
+        if (frame !== currentFrameRef.current) {
+          dispatch({ type: "SET_CURRENT_FRAME", payload: frame });
+        }
+      },
+      [dispatch, currentFrameRef],
+    );
     const rootRef = useRef<HTMLDivElement>(null);
     const stageRef = useRef<HTMLDivElement>(null);
     const canvasKeyboardActiveRef = useRef(false);
@@ -376,32 +418,12 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
             onAudioLevelsChange={audioMeterStore?.setLevels}
             onTransformStart={beginHistoryGroup}
             onTransformEnd={endHistoryGroup}
-            onUpdateItem={(trackId, itemId, updates) => {
-              dispatch({
-                type: "UPDATE_ITEM",
-                payload: { trackId, itemId, updates },
-              });
-            }}
-            onSelectItem={(itemId) =>
-              dispatch({ type: "SELECT_ITEM", payload: itemId })
-            }
+            onUpdateItem={handleUpdateItem}
+            onSelectItem={handleSelectItem}
             playing={playing}
-            onPlayingChange={(nextPlaying) => {
-              if (playingRef.current !== nextPlaying) {
-                dispatch({ type: "SET_PLAYING", payload: nextPlaying });
-              }
-            }}
-            onFrameUpdate={(frame) => {
-              const roundedFrame = Math.round(frame);
-              if (roundedFrame !== currentFrameRef.current) {
-                dispatch({ type: "SET_CURRENT_FRAME", payload: roundedFrame });
-              }
-            }}
-            onSeek={(frame) => {
-              if (frame !== currentFrameRef.current) {
-                dispatch({ type: "SET_CURRENT_FRAME", payload: frame });
-              }
-            }}
+            onPlayingChange={handlePlayingChange}
+            onFrameUpdate={handleFrameUpdate}
+            onSeek={handleSeek}
           />
         </div>
 
