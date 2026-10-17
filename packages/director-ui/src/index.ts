@@ -1,4 +1,5 @@
 export {
+  DIRECTOR_CAPTURE_RENDERER_OPTIONS,
   DIRECTOR_RENDERER_OPTIONS,
   DirectorViewport,
   preferredDirectorVideoMimeType,

@@ -164,6 +164,8 @@ export interface DirectorViewportProps {
   calibrationCamera?: DirectorCameraPose;
   gridSnap?: boolean;
   timeSeconds?: number;
+  playing?: boolean;
+  playbackTimeRef?: { readonly current: number };
   environmentUrl?: string;
   showEnvironmentBackground?: boolean;
   showSelectedSkeleton?: boolean;
@@ -196,6 +198,7 @@ export function recordCanvasVideo(
     longEdge?: number;
     videoBitsPerSecond?: number;
     onTimeUpdate?: (timeSeconds: number) => void;
+    renderSource?: () => void;
   },
 ): Promise<Blob>;
 
@@ -301,6 +304,13 @@ export function editDirectorSequenceShotTiming(options: {
 export function DirectorKeyframeTimeline(
   props: DirectorKeyframeTimelineProps,
 ): React.ReactElement;
+
+export const DIRECTOR_CAPTURE_RENDERER_OPTIONS: {
+  antialias: boolean;
+  preserveDrawingBuffer: boolean;
+  alpha: boolean;
+  powerPreference: "high-performance";
+};
 
 export const DIRECTOR_RENDERER_OPTIONS: {
   antialias: boolean;

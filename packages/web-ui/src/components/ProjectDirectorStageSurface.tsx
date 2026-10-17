@@ -96,6 +96,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { useDirectorPlaybackClock } from "./useDirectorPlaybackClock";
 
 type DirectorAspectRatio = DirectorStageState["shots"][number]["aspectRatio"];
 type DirectorAnimation = NonNullable<DirectorStageState["animation"]>;
@@ -2334,19 +2335,14 @@ export function ProjectDirectorStageSurface({
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    if (!playing || !state.animation) return;
-    let request = 0;
-    let previous = performance.now();
-    const tick = (now: number) => {
-      const delta = (now - previous) / 1000;
-      previous = now;
-      setPlayheadSeconds((current) => (current + delta) % state.animation!.durationSeconds);
-      request = requestAnimationFrame(tick);
-    };
-    request = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(request);
-  }, [playing, state.animation]);
+  // Playback advances a ref every animation frame; the viewport reads it in
+  // its own render loop, and React UI follows at a lower rate.
+  const playheadRef = useDirectorPlaybackClock({
+    playing,
+    durationSeconds: state.animation?.durationSeconds,
+    playheadSeconds,
+    setPlayheadSeconds,
+  });
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4949,6 +4945,8 @@ export function ProjectDirectorStageSurface({
               calibrationCamera={panoramaCalibrationCamera}
               gridSnap={state.scene.grid.snap}
               timeSeconds={playheadSeconds}
+              playing={playing}
+              playbackTimeRef={playheadRef}
               environmentUrl={environmentUrl}
               showEnvironmentBackground={showPanoramaBackground}
               showSelectedSkeleton={showSkeleton}

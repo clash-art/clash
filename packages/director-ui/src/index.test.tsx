@@ -10,6 +10,7 @@ import * as directorUI from "./index";
 import * as directorViewport from "./DirectorViewport";
 import {
   DIRECTOR_MANNEQUIN_POSE_PRESETS,
+  DIRECTOR_CAPTURE_RENDERER_OPTIONS,
   DIRECTOR_RENDERER_OPTIONS,
   DirectorKeyframeTimeline,
   applyDirectorMannequinPose,
@@ -1758,11 +1759,15 @@ Frame Time: 0.0333333
     expect(directorShortcut({ key: "z", metaKey: true })).toEqual({ type: "undo" });
   });
 
-  it("keeps the drawing buffer available for real screenshot capture", () => {
+  it("preserves the drawing buffer only for headless frame capture", () => {
     expect(DIRECTOR_RENDERER_OPTIONS).toMatchObject({
       antialias: true,
-      preserveDrawingBuffer: true,
+      preserveDrawingBuffer: false,
       alpha: false,
+    });
+    expect(DIRECTOR_CAPTURE_RENDERER_OPTIONS).toEqual({
+      ...DIRECTOR_RENDERER_OPTIONS,
+      preserveDrawingBuffer: true,
     });
   });
 
