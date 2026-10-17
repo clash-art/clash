@@ -90,6 +90,9 @@ importers:
       '@ai-sdk/openai':
         specifier: ^3.0.48
         version: 3.0.80(zod@4.6.7)
+      '@clash-plugin/fal':
+        specifier: workspace:*
+        version: link:../../plugins/fal
       '@clash/action-sdk':
         specifier: workspace:*
         version: link:../../packages/action-sdk
@@ -2092,6 +2095,9 @@ importers:
       '@clash/action-sdk':
         specifier: workspace:*
         version: link:../../packages/action-sdk
+      '@clash/shared-runtime':
+        specifier: workspace:*
+        version: link:../../packages/shared-runtime
       '@clash/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

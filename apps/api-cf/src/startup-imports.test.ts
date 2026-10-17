@@ -115,6 +115,8 @@ function lazyOnlyOffenders(graph: ReturnType<typeof eagerGraph>): string[] {
             "packages/shared-runtime/src/cloud-project-host/project-assets.ts" ||
           file.startsWith("apps/api-cf/src/generated/") ||
           file.startsWith("apps/api-cf/src/services/cloud-plugin-") ||
+          file.startsWith("apps/api-cf/src/generation/plugin-execution/") ||
+          file.startsWith("plugins/fal/src/") ||
           file.startsWith("packages/shared-runtime/src/cloud-project-host/") ||
           file === "apps/api-cf/src/agents/project-room-host-command.ts" ||
           file.startsWith("apps/api-cf/src/services/project-asset-room") ||
@@ -144,6 +146,32 @@ describe("Worker startup import graph", () => {
     const startup = eagerGraph(join(SRC, "index.ts"));
     expect(startup.files.has(join(SRC, "app.ts"))).toBe(true);
     expect(lazyOnlyOffenders(startup)).toEqual([]);
+  });
+
+  it("keeps first-party plugin modules out of Worker startup", () => {
+    const startup = eagerGraph(join(SRC, "index.ts"));
+    const files = [...startup.files].map((file) => relative(REPO, file));
+    expect(files.filter((file) => file.startsWith("plugins/fal/src/"))).toEqual(
+      [],
+    );
+    expect(
+      files.filter((file) =>
+        file.startsWith("apps/api-cf/src/generation/plugin-execution/"),
+      ),
+    ).toEqual([]);
+    // The only path to the plugin composition root is a dynamic import from
+    // the provider adapter, never a startup value import.
+    const adapter = eagerGraph(
+      join(SRC, "generation/plugin-provider-adapter.ts"),
+    );
+    expect(
+      [...adapter.files]
+        .map((file) => relative(REPO, file))
+        .filter((file) =>
+          file.startsWith("apps/api-cf/src/generation/plugin-execution/"),
+        ),
+    ).toEqual([]);
+    expect(lazyOnlyOffenders(eagerGraph(join(SRC, "index.ts")))).toEqual([]);
   });
 
   it("keeps the Timeline Host command adapter out of ProjectRoom's cold start", () => {

@@ -8,14 +8,22 @@
   },
   "exports": {
     "./manifest.json": "./manifest.json",
-    "./stdio": "./dist/stdio.mjs"
+    "./stdio": "./dist/stdio.mjs",
+    "./module": {
+      "types": "./src/module.ts",
+      "workerd": "./src/module.ts",
+      "worker": "./src/module.ts",
+      "import": "./dist/module.mjs",
+      "default": "./dist/module.mjs"
+    }
   },
   "files": [
     "manifest.json",
     "providers",
     "bindings",
     "contract-tests",
-    "dist"
+    "dist",
+    "src"
   ],
   "scripts": {
     "build": "tsup",
@@ -24,7 +32,8 @@
   },
   "dependencies": {
     "@clash/shared-types": "workspace:*",
-    "@clash/action-sdk": "workspace:*"
+    "@clash/action-sdk": "workspace:*",
+    "@clash/shared-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

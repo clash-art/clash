@@ -1,6 +1,9 @@
 import { ProviderExecutionError } from "@clash/action-sdk/executable-failure";
 import { Buffer } from "node:buffer";
-import type { DurableProviderStep } from "@clash/shared-runtime/durable-run-engine";
+import type {
+  DurableProviderStep,
+  DurableRunRecord,
+} from "@clash/shared-runtime/durable-run-engine";
 import type {
   ExecutablePluginAssetHandle,
   ExecutablePluginJsonValue,
@@ -10,12 +13,29 @@ import type { GenerationParams } from "./params";
 import type { GenerationOutputBroker } from "./output";
 
 /** Invocation-scoped IO. No journal, Workflow retries, D1 publication or Loro mutation. */
+/**
+ * The provider already accepted (and may have charged) the work when its output fails to persist:
+ * retry the same operation, never a fresh submit.
+ */
+export function outputPersistenceFailure(error: unknown): ProviderExecutionError {
+  return error instanceof ProviderExecutionError
+    ? error
+    : new ProviderExecutionError({
+        code: "output_persistence_failed",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: true,
+        requestState: "accepted",
+      });
+}
+
 export class GenerationContext {
   constructor(
     public readonly params: GenerationParams,
     public readonly env: Env,
     private readonly broker: GenerationOutputBroker,
     private readonly coverBroker?: GenerationOutputBroker,
+    public readonly run?: DurableRunRecord,
+    public readonly idempotencyKey?: string,
   ) {}
   get tag() {
     return { taskId: this.params.taskId, nodeId: this.params.nodeId };
@@ -58,12 +78,7 @@ export class GenerationContext {
         kind,
       );
     } catch (error) {
-      throw new ProviderExecutionError({
-        code: "output_persistence_failed",
-        message: error instanceof Error ? error.message : String(error),
-        retryable: true,
-        requestState: "accepted",
-      });
+      throw outputPersistenceFailure(error);
     }
   }
   async uploadFromUrl(
@@ -78,12 +93,7 @@ export class GenerationContext {
         );
       return await this.uploadBytes(await response.arrayBuffer(), mimeType);
     } catch (error) {
-      throw new ProviderExecutionError({
-        code: "output_persistence_failed",
-        message: error instanceof Error ? error.message : String(error),
-        retryable: true,
-        requestState: "accepted",
-      });
+      throw outputPersistenceFailure(error);
     }
   }
   async completedVideo(

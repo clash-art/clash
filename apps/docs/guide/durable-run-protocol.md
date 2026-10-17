@@ -65,10 +65,12 @@ The retired ClashAgent path is not a Cloud adapter. `/api/v1/actions` no
 longer distributes Python handlers, `/api/custom-action/upload` returns `410`,
 and Local/hosted ProjectRoom sideband rejects
 `register_custom_actions`, `unregister_custom_actions`, and
-`complete_custom_task`. Cloud executable-plugin execution remains unavailable
-until it can provide the same journal, staging, ownership, and publisher ports
-defined below. `api-cf` therefore has no `custom_action` generation adapter;
-pending hosted Action nodes fail closed instead of calling or retrying a Worker.
+`complete_custom_task`. Cloud custom Action execution remains unavailable until
+its admission path can provide the same journal, staging, ownership, and
+publisher ports defined below; provider-executor plugins are now invoked
+through the shared port described in the extension contract. `api-cf` therefore
+has no `custom_action` generation adapter, and pending hosted Action nodes fail
+closed instead of calling or retrying a Worker.
 
 This delivery covers durable generation Tasks and native Generator Action Runs,
 not every request that may call a Provider. The voice-input endpoint
@@ -303,6 +305,33 @@ journal/staging/publication lifecycle, but does not claim these native outputs.
 
 The Cloud adapter must bind one `actionRunId` to one Workflow owner and provide
 the same atomic journal operations used by the Local engine:
+
+### Plugin execution port
+
+Executable plugin code is invoked through one shared
+`PluginExecutionPort` (`packages/shared-runtime/src/executable-plugin-port.ts`).
+The port takes the frozen run identity, one `clash.plugin.invoke/v1` invocation,
+and the remaining attempt lease; it returns one plugin result. It does not own
+journal, retry, staging, or publication.
+
+The Cloudflare adapter binds first-party plugins **in-process** at its
+composition root (`generation/plugin-execution/`, dynamically imported so
+Worker startup does not evaluate plugin modules). The current explicit allowlist
+is the Worker-safe executor bodies whose modules import no `node:fs` or
+`child_process` at module scope; `clash.fal/fal-execute` is the first entry.
+This is the same plugin code the Node adapter runs through its Host, not a
+second execution model. `invocationId` is always
+`durableRunIdempotencyKey(run)`, so an ambiguous submit retry reuses the exact
+same key and a checkpointed `pollState` can only be polled. Plugin
+`store.get("apiKey")` is resolved from the selected hosted provider account for
+the active invocation; credentials never enter the journal.
+
+The `remote` binding for third-party HTTPS endpoints remains a typed TODO in
+the port. It is a different trust class (signed, user-configured endpoint) and
+has no code path until its replay, signature, and timeout contract is
+implemented. The `container` binding for `clash.remotion` is likewise a
+separate adapter; neither changes the journal, step graph, or publication
+key.
 
 - `WorkflowRunJournal` stores the frozen Action revision, input and output
   slots, cloud owner, selected hosted account grant, absolute deadlines,
