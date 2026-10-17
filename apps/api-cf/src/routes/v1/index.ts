@@ -1,4 +1,5 @@
 import { cloudRoutes } from "./cloud";
+import { createUnavailableHostRoutes } from "./host-unavailable";
 import { Hono } from "hono";
 import type { Env } from "../../config";
 import { createProjectContentRoutes } from "./project-content";
@@ -27,6 +28,7 @@ v1Routes.route("/projects", createProjectContentRoutes());
 v1Routes.route("/projects", createProjectHostCommandRoutes());
 v1Routes.route("/projects", createProjectAssetRoutes());
 v1Routes.route("/projects", projectRoutes);
+v1Routes.route("/", createUnavailableHostRoutes());
 v1Routes.route("/libraries", createPersonalAssetLibraryRoutes());
 v1Routes.route("/vars", varsRoutes);
 v1Routes.route("/sessions", sessionRoutes);

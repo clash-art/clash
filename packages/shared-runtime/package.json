@@ -188,6 +188,11 @@
       "import": "./src/cloud-project-host/project-assets.ts",
       "default": "./dist/cloud-project-host/project-assets.js"
     },
+    "./cloud-project-host/unavailable": {
+      "types": "./src/cloud-project-host/unavailable.ts",
+      "import": "./src/cloud-project-host/unavailable.ts",
+      "default": "./dist/cloud-project-host/unavailable.js"
+    },
     "./cloud-project-host/plugin-catalog": {
       "types": "./src/cloud-project-host/plugin-catalog.ts",
       "import": "./src/cloud-project-host/plugin-catalog.ts",

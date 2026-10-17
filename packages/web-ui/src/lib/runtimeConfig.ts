@@ -58,7 +58,7 @@ export function getRuntimeConfig(): UiRuntimeConfig {
 /**
  * Composition roots only (`apps/web`, `apps/desktop`): the one place that may
  * know the deployment. Packages under `packages/` are barred from calling it
- * by `.eslintrc.ui-boundary.json`.
+ * by `.eslintrc.boundaries.json` (`pnpm run lint:boundaries`).
  */
 export function readRuntimeModeAtCompositionRoot(): RuntimeMode {
   return resolvedRuntimeConfig().mode;
