@@ -69,3 +69,30 @@ jobs:
           pnpm --dir packages/shared-runtime exec vitest run src/project-authorization-postgres.test.ts
       - name: Verify benchmark catalog, runner, and evaluator contracts
         run: pnpm --dir packages/shared-artifact-evals exec vitest run
+
+  remotion-parity:
+    name: Remotion server/browser parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          linux-apt-packages: ffmpeg
+
+      # The parity script calls @remotion/renderer's ensureBrowser(), which
+      # downloads the Chromium 157.0.8080.0 build pinned by Remotion 4.0.536.
+      # The render-server image installs distro chromium instead; keeping this
+      # on Remotion's pinned build makes browser and server renders comparable.
+      - name: Cache Remotion browser
+        uses: actions/cache@v6
+        with:
+          path: node_modules/.remotion
+          key: remotion-browser-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            remotion-browser-${{ runner.os }}-
+
+      - name: Render fixture frames through both renderers and compare SSIM
+        run: pnpm test:remotion-parity

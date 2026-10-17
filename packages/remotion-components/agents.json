@@ -3,7 +3,10 @@
   "context_hints": [
     "Media src values must already be current-Host projections resolved from frozen Project Asset bindings.",
     "Use resolveProjectedMediaUrl at renderer boundaries; never infer, sign, or prepend a route to an object-store key.",
-    "A missing or storage-shaped media projection renders no media element rather than an empty src or a guessed URL."
+    "A missing or storage-shaped media projection renders no media element rather than an empty src or a guessed URL.",
+    "Video and audio use @remotion/media so the same composition runs in @remotion/web-renderer; map startFrom/endAt to trimBefore/trimAfter and do not reintroduce OffthreadVideo/Audio from remotion.",
+    "Track stacking is DOM paint order only: track 0 is last in the DOM. Do not reintroduce z-index or top-first mapping.",
+    "Masks use CSS clip-path for unfeathered shapes and a canvas-generated PNG alpha mask for feathering/inversion; do not reintroduce SVG data-URI masks."
   ],
   "key_files": {
     "src/VideoComposition.tsx": "Timeline preview/export renderer consuming projected media URLs.",
