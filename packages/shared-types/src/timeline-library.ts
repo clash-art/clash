@@ -221,7 +221,7 @@ const EffectRefSchema = z.object({
   kind: z.literal('effect-ref'),
   effectId: StableCatalogIdSchema,
   effectVersion: VersionSchema,
-  params: z.record(z.unknown()).optional(),
+  params: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
 const CaptionStyleSchema = z.object({
@@ -323,7 +323,7 @@ const AudioEffectLibraryItemSchema = z.object({
     kind: z.literal('audio-processor-ref'),
     processorId: StableCatalogIdSchema,
     processorVersion: VersionSchema,
-    params: z.record(z.unknown()).optional(),
+    params: z.record(z.string(), z.unknown()).optional(),
   }).strict(),
   apply: z.object({
     kind: z.literal('attach-audio-effect'),

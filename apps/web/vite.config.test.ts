@@ -260,10 +260,10 @@ describe("Vite workspace source routing", () => {
       isSsrBuild: false,
     });
 
-    // Source aliases pull shared-types (zod v3 + zod-to-json-schema) into the
-    // same module graph as apps/web + api-cf (zod v4). Prebundling would merge
-    // the two majors into one optimized copy, breaking the Timeline DSL JSON
-    // Schema conversion ("missing nested items").
+    // Source aliases pull shared-types into the same module graph as apps/web
+    // + api-cf. These exclusions date from when shared-types ran zod v3 and
+    // prebundling merged the two majors ("missing nested items"); the repo is
+    // now on a single zod 4, but the dev graph keeps them until re-verified.
     expect(resolved.optimizeDeps?.exclude).toEqual(
       expect.arrayContaining([
         "@clash/web-ui",

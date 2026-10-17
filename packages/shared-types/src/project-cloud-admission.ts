@@ -43,7 +43,7 @@ export const ProjectCloudAdmissionSchema = z
   .superRefine((value, context) => {
     if (value.status === "failed" && !value.lastError) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["lastError"],
         message: "failed admission must include lastError",
       });

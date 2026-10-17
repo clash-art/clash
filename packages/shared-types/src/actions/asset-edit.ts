@@ -54,7 +54,7 @@ export const VideoClipParamsSchema = z
   .superRefine((value, context) => {
     if (value.mode === "crop" && value.endSec <= value.startSec) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "endSec must be greater than startSec",
         path: ["endSec"],
       });

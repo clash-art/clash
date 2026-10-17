@@ -94,7 +94,7 @@ test("publishes the complete annotation-generated Timeline state schema without 
   }
 });
 
-test("adapts shared Zod v3 validation into stable MCP rule ids", async () => {
+test("adapts shared Zod validation into stable MCP rule ids", async () => {
   const module = await adapterModule();
   const valid = module.validateTimelineState({ tracks: [] });
   assert.deepEqual(valid, { ok: true, issues: [] });

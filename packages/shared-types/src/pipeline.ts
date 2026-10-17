@@ -42,7 +42,7 @@ export const PipelineTaskDefSchema = z.object({
   taskType: z.string(),       // Python API task_type
   // params 从 node data 和 previous task results 构建
   // 用 {{xxx}} 模板语法引用
-  paramsTemplate: z.record(z.string()).optional(),
+  paramsTemplate: z.record(z.string(), z.string()).optional(),
 });
 export type PipelineTaskDef = z.infer<typeof PipelineTaskDefSchema>;
 
@@ -77,7 +77,7 @@ export const TaskRuntimeStateSchema = z.object({
   id: z.string(),
   state: TaskStateSchema,
   externalTaskId: z.string().optional(),
-  result: z.record(z.any()).optional(),
+  result: z.record(z.string(), z.any()).optional(),
   error: z.string().optional(),
   submittedAt: z.number().optional(),
   completedAt: z.number().optional(),
@@ -87,7 +87,7 @@ export type TaskRuntimeState = z.infer<typeof TaskRuntimeStateSchema>;
 export const PipelineRuntimeStateSchema = z.object({
   pipelineId: z.string(),
   currentSuperstep: z.number(),
-  tasks: z.record(TaskRuntimeStateSchema), // taskId → state
+  tasks: z.record(z.string(), TaskRuntimeStateSchema), // taskId → state
   startedAt: z.number(),
   completedAt: z.number().optional(),
 });

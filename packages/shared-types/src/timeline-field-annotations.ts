@@ -71,7 +71,7 @@ export type TimelineDslFieldRequiredness = "authored" | "runtime" | "partial";
 export function timelineDslAnnotatedObjectShape(
   fields: Record<string, TimelineDslFieldAnnotation>,
   options: {
-    overrides?: z.ZodRawShape;
+    overrides?: Record<string, z.ZodTypeAny>;
     requiredness?: TimelineDslFieldRequiredness;
   } = {},
 ): z.ZodRawShape {
@@ -286,7 +286,7 @@ export const TimelineEffectParamValueSchema = z.union([
 export const TimelineEffectInstanceRefSchema = z.object({
   effectId: z.string().regex(/^[a-z0-9]+(?:[._/-][a-z0-9]+)+$/),
   effectVersion: z.number().int().positive(),
-  params: z.record(TimelineEffectParamValueSchema).optional(),
+  params: z.record(z.string(), TimelineEffectParamValueSchema).optional(),
 });
 
 export const TimelineMediaFitSchema = z.enum(TIMELINE_MEDIA_FITS);
@@ -370,7 +370,7 @@ export const TimelineSequenceSchema = z.object({
 export const TimelineDerivedAssetSchema = z.object({
   kind: z.enum(TIMELINE_DERIVATION_KINDS),
   description: z.string().optional(),
-  parameters: z.record(z.unknown()).optional(),
+  parameters: z.record(z.string(), z.unknown()).optional(),
 });
 
 const noControl = { surface: "none" } as const;
@@ -418,7 +418,7 @@ const rootFields = {
     runtimeConsumers: ["editor", "preview", "render", "export", "yaml"],
     relation: "tracks",
   }),
-  assetTranscripts: derived(z.record(TimelineEditorAssetTranscriptSchema), "Persisted word-level transcripts keyed by asset id; agents must preserve entries they do not edit.", {
+  assetTranscripts: derived(z.record(z.string(), TimelineEditorAssetTranscriptSchema), "Persisted word-level transcripts keyed by asset id; agents must preserve entries they do not edit.", {
     required: false,
     editor: noControl,
     runtimeConsumers: ["editor", "transcript", "caption-generation", "persistence"],
@@ -863,7 +863,7 @@ const itemTypeFields = {
       editor: noControl,
       runtimeConsumers: ["preview", "render", "export"],
     }),
-    spec: authored(z.record(z.unknown()), "Optional runtime configuration for legacy custom compositions; motion graphics use Canvas Remotion component source instead.", {
+    spec: authored(z.record(z.string(), z.unknown()), "Optional runtime configuration for legacy custom compositions; motion graphics use Canvas Remotion component source instead.", {
       required: false,
       editor: propertiesControl,
       runtimeConsumers: ["composition-runtime", "preview", "render"],

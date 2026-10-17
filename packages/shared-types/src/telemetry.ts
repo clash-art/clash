@@ -93,6 +93,6 @@ export type PublicTelemetryConfig = z.infer<typeof PublicTelemetryConfigSchema>;
  * Unlisted keys are unchanged.
  */
 export const TelemetryConfigPatchSchema = z.object({
-  settings: z.record(TelemetryKeySchema, z.string().nullable()),
+  settings: z.partialRecord(TelemetryKeySchema, z.string().nullable()),
 });
 export type TelemetryConfigPatch = z.infer<typeof TelemetryConfigPatchSchema>;

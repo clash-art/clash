@@ -26,14 +26,14 @@ export const TimelineTranscriptWordSchema = z.object({
 }).superRefine((word, context) => {
   if (word.sourceEndFrame <= word.sourceStartFrame) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       message: "timeline transcript sourceEndFrame must be greater than sourceStartFrame",
       path: ["sourceEndFrame"],
     });
   }
   if (word.timelineEndFrame <= word.timelineStartFrame) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       message: "timeline transcript timelineEndFrame must be greater than timelineStartFrame",
       path: ["timelineEndFrame"],
     });
@@ -56,7 +56,7 @@ export const TimelineTranscriptProjectionSchema = z.object({
   projection.sources.forEach((source, index) => {
     if (sourceIds.has(source.assetId)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `duplicate timeline transcript source asset: ${source.assetId}`,
         path: ["sources", index, "assetId"],
       });
@@ -69,7 +69,7 @@ export const TimelineTranscriptProjectionSchema = z.object({
   projection.words.forEach((word, index) => {
     if (wordIds.has(word.id)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `duplicate timeline transcript word id: ${word.id}`,
         path: ["words", index, "id"],
       });
@@ -77,21 +77,21 @@ export const TimelineTranscriptProjectionSchema = z.object({
     wordIds.add(word.id);
     if (!sourceAssetIds.has(word.assetId)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `timeline transcript word references unknown asset: ${word.assetId}`,
         path: ["words", index, "assetId"],
       });
     }
     if (word.timelineStartFrame < previousTimelineStart) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "timeline transcript words must be ordered by timelineStartFrame",
         path: ["words", index, "timelineStartFrame"],
       });
     }
     if (word.timelineEndFrame > projection.durationFrames) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "timeline transcript word exceeds durationFrames",
         path: ["words", index, "timelineEndFrame"],
       });

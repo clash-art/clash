@@ -189,14 +189,14 @@ export const NodeDataSchema = z.object({
   duration: z.number().optional(),
   model: z.string().optional(),
   modelId: z.string().optional(),
-  modelParams: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  modelParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   referenceImageUrls: z.array(z.string()).optional(),
   error: z.string().optional(),
   sourceNodeId: z.string().optional(),
   /** Custom action ID (e.g. "style-transfer") for custom:* action types */
   customActionId: z.string().optional(),
   /** User-configured parameters for custom actions */
-  customActionParams: z.record(z.unknown()).optional(),
+  customActionParams: z.record(z.string(), z.unknown()).optional(),
   /** Immutable plugin export/version/schema used by this node. */
   pluginBinding: ExecutablePluginBindingSchema.optional(),
   // ─── Actor attribution (Phase 0 multi-actor billing) ────────
@@ -1110,7 +1110,7 @@ const CustomActionDefinitionBaseSchema = z.object({
   outputType: z.enum(['image', 'video', 'audio', 'text']),
   input: ModelInputRuleSchema.optional(),
   constraints: z.array(ModelConstraintRuleSchema).default([]),
-  presentation: ExecutableActionPresentationSchema.default({ type: 'form' }),
+  presentation: ExecutableActionPresentationSchema.prefault({ type: 'form' }),
   maxRuntimeMs: z.number().int().positive().optional(),
   icon: z.string().optional(),
   color: z.string().optional(),
@@ -1208,7 +1208,7 @@ export const NodeInfoSchema = z.object({
   id: z.string(),
   type: z.string(),
   position: z.object({ x: z.number(), y: z.number() }),
-  data: z.record(z.unknown()),
+  data: z.record(z.string(), z.unknown()),
   parent_id: z.string().nullish(),
 });
 
@@ -1225,7 +1225,7 @@ export const ProjectContextSchema = z.object({
   nodes: z.array(z.object({
     id: z.string(),
     type: z.string(),
-    data: z.record(z.unknown()),
+    data: z.record(z.string(), z.unknown()),
     position: z.object({ x: z.number().default(0), y: z.number().default(0) }),
     parentId: z.string().nullish(),
   })),

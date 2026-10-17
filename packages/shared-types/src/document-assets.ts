@@ -75,7 +75,7 @@ export const DocumentAssetRevisionSchema = z
   .superRefine(({ documentAssetId, forkedFrom }, context) => {
     if (forkedFrom?.documentAssetId === documentAssetId) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["forkedFrom", "documentAssetId"],
         message:
           "Same-Document ancestry belongs in parentRevisionId, not forkedFrom.",

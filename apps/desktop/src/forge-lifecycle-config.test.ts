@@ -86,7 +86,7 @@ describe("Desktop shell lifecycle ownership", () => {
     expect(builderConfig).not.toContain("from: ../web/dist/client");
   });
 
-  it("keeps the shared-types Zod 3 graph inside the main bundle", () => {
+  it("keeps the shared-types Zod graph inside the main bundle", () => {
     const mainConfig = readFileSync(
       new URL("vite.main.config.ts", desktopRoot),
       "utf8",

@@ -30,7 +30,7 @@ export const pluginIdSchema = z.string().trim().superRefine((value, ctx) => {
   const segments = value.split(".");
   if (segments.length !== 2) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       message: segments.length < 2
         // A bare name says nothing about who ships it, and the first third party to publish one
         // would silently take over routes bound to ours.
@@ -43,7 +43,7 @@ export const pluginIdSchema = z.string().trim().superRefine((value, ctx) => {
   for (const segment of segments) {
     if (!SEGMENT.test(segment)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `Plugin id segment ${JSON.stringify(segment)} must be lowercase letters, digits `
           + `and hyphens, starting with a letter or digit.`,
       });

@@ -48,16 +48,14 @@ function kindCandidates(value: unknown): string[] {
 }
 
 export const ProjectContentKindSchema = z.enum(projectContentKinds, {
-  errorMap: (_issue, context) => {
-    const candidates = kindCandidates(context.data);
+  error: (issue) => {
+    const candidates = kindCandidates(issue.input);
     const suggestion = candidates.map((kind) => `"${kind}"`).join(" or ");
     const received =
-      typeof context.data === "string"
-        ? ` ${JSON.stringify(context.data.slice(0, 60))}`
+      typeof issue.input === "string"
+        ? ` ${JSON.stringify(issue.input.slice(0, 60))}`
         : "";
-    return {
-      message: `Invalid content kind${received}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Valid kinds: ${projectContentKinds.join(", ")}.`,
-    };
+    return `Invalid content kind${received}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Valid kinds: ${projectContentKinds.join(", ")}.`;
   },
 });
 export const ProjectContentQuerySchema = z

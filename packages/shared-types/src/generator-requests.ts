@@ -1,4 +1,4 @@
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import { z } from "zod";
 import { ExecutablePluginJsonValueSchema } from "./plugin-json-value.js";
 import {
@@ -14,7 +14,7 @@ export const CreateProjectGeneratorRequestSchema = z
     generatorRevisionId: z.string().trim().min(1),
     pluginId: z.string().trim().min(1),
     definitionId: z.string().trim().min(1),
-    state: z.record(ExecutablePluginJsonValueSchema),
+    state: z.record(z.string(), ExecutablePluginJsonValueSchema),
     persistentInputRefs: z.array(GeneratorInputRefSchema).default([]),
     forkedFrom: GeneratorRevisionRefSchema.optional(),
     /** Optional Canvas placement, committed atomically with the draft. */
@@ -56,7 +56,7 @@ export const SubmitGeneratorActionRequestSchema = z
     generatorRevisionId: z.string().trim().min(1),
     /** Host-local routing preference; never part of the Project Run or Revision. */
     providerAccountId: z.string().trim().min(1).optional(),
-    parameters: z.record(ExecutablePluginJsonValueSchema).default({}),
+    parameters: z.record(z.string(), ExecutablePluginJsonValueSchema).default({}),
     invocationInputRefs: z.array(GeneratorInputRefSchema).default([]),
     canvasPlacement: GeneratorRunCanvasPlacementSchema.optional(),
   })
@@ -69,7 +69,7 @@ export const AdvanceProjectGeneratorRequestSchema = z
   .object({
     expectedHeadRevisionId: z.string().trim().min(1),
     generatorRevisionId: z.string().trim().min(1),
-    state: z.record(ExecutablePluginJsonValueSchema),
+    state: z.record(z.string(), ExecutablePluginJsonValueSchema),
     persistentInputRefs: z.array(GeneratorInputRefSchema).default([]),
     /** Optional Canvas projections committed with the new native inputs. */
     canvasInputConnections: z
@@ -97,17 +97,17 @@ export function projectGeneratorRequestContract(operation: string) {
     case "create":
       return {
         operation,
-        inputSchema: zodToJsonSchema(CreateProjectGeneratorRequestSchema),
+        inputSchema: zodToDraft7JsonSchema(CreateProjectGeneratorRequestSchema),
       };
     case "advance":
       return {
         operation,
-        inputSchema: zodToJsonSchema(AdvanceProjectGeneratorRequestSchema),
+        inputSchema: zodToDraft7JsonSchema(AdvanceProjectGeneratorRequestSchema),
       };
     case "submit":
       return {
         operation,
-        inputSchema: zodToJsonSchema(SubmitGeneratorActionRequestSchema),
+        inputSchema: zodToDraft7JsonSchema(SubmitGeneratorActionRequestSchema),
       };
     default:
       throw new Error(

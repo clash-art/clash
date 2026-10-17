@@ -28,7 +28,7 @@
   "dependencies": {
     "@clash/shared-runtime": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.1.13"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

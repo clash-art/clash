@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import {
   createGeneratorClient,
@@ -28,9 +28,9 @@ export function registerGeneratorTools(
     title: string,
     useWhen: string,
     readOnly: boolean,
-    // Schemas come from the shared contract's Zod installation. The SDK accepts
-    // both versions at runtime; avoid structural comparison of recursive JSON
-    // validators across separate Zod installations at this registration boundary.
+    // Schemas come from the shared contract; keep the shape loosely typed to
+    // avoid structural comparison of recursive JSON validators at this
+    // registration boundary.
     inputSchema: Record<string, unknown>,
     call: (args: Record<string, unknown>) => Promise<unknown>,
     effect = "calls the native generic Generator HTTP authority exactly once",

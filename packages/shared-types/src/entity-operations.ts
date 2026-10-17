@@ -46,14 +46,14 @@ export const ExecutablePluginEntityExportSchema = z.object({
 }).strict().superRefine((entity, ctx) => {
   if (entity.operations.includes('attach') && !entity.canvasNodeType) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ['canvasNodeType'],
       message: 'An entity that can be attached must declare the canvas node type it appears as.',
     });
   }
   if (!entity.operations.includes('attach') && entity.canvasNodeType) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ['canvasNodeType'],
       message: 'canvasNodeType applies to an entity that declares the attach operation.',
     });

@@ -25,7 +25,7 @@ export type AtomicTaskType = z.infer<typeof AtomicTaskTypeSchema>;
 export const ImageGenParamsSchema = z.object({
   prompt: z.string(),
   model: z.string().default('nano-banana-pro'),
-  model_params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  model_params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   reference_images: z.array(z.string()).optional(),
   aspect_ratio: z.string().optional(),
 });
@@ -37,7 +37,7 @@ export const VideoGenParamsSchema = z.object({
   image_r2_key: z.string().optional(),
   duration: z.union([z.number(), z.string()]).default(5),
   model: z.string().default('kling-image2video'),
-  model_params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  model_params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   reference_images: z.array(z.string()).optional(),
   reference_mode: z.string().optional(),
   aspect_ratio: z.string().optional(),
@@ -51,7 +51,7 @@ export type VideoGenParams = z.infer<typeof VideoGenParamsSchema>;
 export const AudioGenParamsSchema = z.object({
   prompt: z.string(),
   model: z.string().default('gemini-3.1-flash-tts'),
-  model_params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  model_params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 export type AudioGenParams = z.infer<typeof AudioGenParamsSchema>;
 
@@ -59,7 +59,7 @@ export type AudioGenParams = z.infer<typeof AudioGenParamsSchema>;
 export const TextGenParamsSchema = z.object({
   prompt: z.string(),
   model: z.string().default('gpt-5.4'),
-  model_params: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+  model_params: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 export type TextGenParams = z.infer<typeof TextGenParamsSchema>;
 
@@ -94,7 +94,7 @@ export const AtomicTaskResultSchema = z.object({
   success: z.boolean(),
   r2_key: z.string().optional(),
   external_task_id: z.string().optional(),
-  data: z.record(z.any()).optional(),
+  data: z.record(z.string(), z.any()).optional(),
   error: z.string().optional(),
 });
 export type AtomicTaskResult = z.infer<typeof AtomicTaskResultSchema>;
@@ -119,7 +119,7 @@ export const DOStateSchema = z.object({
   step_status: DOStepStatusSchema,
   retry_count: z.number().default(0),
   max_retries: z.number().default(3),
-  results: z.record(z.any()).default({}),
+  results: z.record(z.string(), z.any()).default({}),
   error: z.string().optional(),
   created_at: z.number(),
   updated_at: z.number(),

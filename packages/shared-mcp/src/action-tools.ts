@@ -1,4 +1,4 @@
-import { z } from "zod/v3";
+import { z } from "zod";
 import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import {
   createActionClient,
@@ -87,9 +87,9 @@ export function registerActionTools(
     {
       action: z.string().min(1),
       assetId: z.string().min(1).optional(),
-      inputs: z.record(z.unknown()).optional(),
-      parameters: z.record(z.unknown()).optional(),
-      state: z.record(z.unknown()).optional(),
+      inputs: z.record(z.string(), z.unknown()).optional(),
+      parameters: z.record(z.string(), z.unknown()).optional(),
+      state: z.record(z.string(), z.unknown()).optional(),
       requestId: z.string().min(1).optional(),
       canvasId: z.string().min(1).optional(),
       label: z.string().optional(),

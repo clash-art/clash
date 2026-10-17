@@ -145,7 +145,7 @@ export const PluginAuthFlowSchema = z.object({
    */
   clientSecret: z.string().trim().min(1).optional(),
   /** Vendor-specific: scope, access_type, prompt, audience. */
-  params: z.record(z.string()).optional(),
+  params: z.record(z.string(), z.string()).optional(),
   callback: z.discriminatedUnion("type", [
     /** Binds 127.0.0.1 on a random port. Google requires this for desktop clients; the
      * out-of-band flow was withdrawn in 2022. */
@@ -165,14 +165,14 @@ export const PluginAuthFlowSchema = z.object({
   // opens a browser, collects a code, and stops.
   if (flow.clientId && !flow.tokenUrl) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       message: "A flow declaring a clientId must declare the tokenUrl that exchanges the code.",
     });
   }
   for (const key of Object.keys(flow.params ?? {})) {
     if (HOST_OWNED_PARAMS.includes(key)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `${key} is set by the host and must not be declared.`,
         path: ["params", key],
       });
@@ -264,7 +264,7 @@ export const PluginAuthDeclarationSchema = z.object({
     // The account records which method it uses by id, so a duplicate makes that record ambiguous.
     if (seen.has(method.id)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["methods"],
         message: `Two auth methods share the id ${method.id}.`,
       });

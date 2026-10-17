@@ -28,7 +28,7 @@
     "@clash/shared-types": "workspace:*",
     "@openma/common": "github:openma-ai/openma-common#v0.8.0",
     "yaml": "^2.6.0",
-    "zod": "^3.23.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@clash/gui": "workspace:*",
