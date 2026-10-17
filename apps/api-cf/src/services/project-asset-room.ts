@@ -146,6 +146,24 @@ async function lifecycle(
     : Response.json(outcome.body, { status: outcome.status });
 }
 
+/**
+ * Import a sealed Resource as a Project Asset on `fork` (a room-queue fork).
+ * The one Cloudflare commit path: Asset uploads and Timeline render
+ * publication (`generation/timeline-render-publication.ts`) both use it.
+ */
+export async function importProjectAsset(
+  env: Env,
+  projectId: string,
+  fork: LoroDoc,
+  command: ProjectAssetImportCommand,
+): Promise<ProjectAssetImportResult> {
+  const tenantId = await effectiveTenant(env, projectId);
+  const registry = createR2ResourceRegistry(env.R2_BUCKET as never);
+  return commitProjectAssetImport(fork, command, {
+    readResource: (resourceId) => registry(tenantId, resourceId),
+  });
+}
+
 async function commit(
   input: ProjectAssetRoomInput,
   command: ProjectAssetImportCommand,
@@ -156,11 +174,12 @@ async function commit(
     input,
     userId,
     async (fork) => {
-      const tenantId = await effectiveTenant(input.env, input.projectId);
-      const registry = createR2ResourceRegistry(input.env.R2_BUCKET as never);
-      const result = await commitProjectAssetImport(fork, command, {
-        readResource: (resourceId) => registry(tenantId, resourceId),
-      });
+      const result = await importProjectAsset(
+        input.env,
+        input.projectId,
+        fork,
+        command,
+      );
       // A refused import leaves the live document untouched.
       return { value: result, changed: result.ok };
     },

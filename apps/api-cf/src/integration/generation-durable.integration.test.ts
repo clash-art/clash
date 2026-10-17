@@ -1,8 +1,12 @@
 import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, expect, it, vi } from "vitest";
-import { Canvas } from "@clash/shared-types";
+import { Canvas, readProjectAsset } from "@clash/shared-types";
 import { LoroDoc } from "loro-crdt";
 import type { Env } from "../config";
+import {
+  createR2ResourceRegistry,
+  resourceLocator,
+} from "../services/project-content-cloud";
 import { startGeneration } from "../generation/start";
 import { hostedGenerationStatus } from "../generation/status";
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
@@ -12,6 +16,12 @@ import type { ProjectRoom } from "../agents/project-room";
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/** A `video_render` publishes onto a Timeline render node (`completeTimelineRenderNode`). */
+const timelineRenderProvenance = {
+  sourceTimelineId: "cut",
+  sourceTimelineRevisionId: "cut-revision",
+};
 
 it("runs the default dispatcher, registry, receipt broker and publisher against D1/R2/ProjectRoom", async () => {
   const bindings = env as unknown as Env;
@@ -27,6 +37,7 @@ it("runs the default dispatcher, registry, receipt broker and publisher against 
   const doc = new LoroDoc();
   new Canvas(doc, () => undefined).createNode("result", "video", {
     label: "Render result",
+    ...timelineRenderProvenance,
   });
   const room = bindings.ROOM.get(bindings.ROOM.idFromName(projectId));
   const headers = { "x-internal-loro": "true", "x-loro-project-id": projectId };
@@ -92,14 +103,33 @@ it("runs the default dispatcher, registry, receipt broker and publisher against 
     kind: "asset",
     asset: { uri: expect.stringMatching(/^clash-asset:\/\//) },
   });
-  const asset = await bindings.DB.prepare(
-    "SELECT src_r2_key FROM assets WHERE id = ?",
-  )
-    .bind(taskId)
-    .first<{ src_r2_key: string }>();
+  // The render is a Project Asset whose Resource holds the rendered bytes.
+  const tenantId = `personal:${userId}`;
+  const persistedBeforeEviction = new LoroDoc();
+  persistedBeforeEviction.import(
+    new Uint8Array(
+      await (
+        await room.fetch(
+          new Request(`http://internal/loro/${projectId}/snapshot`, {
+            headers,
+          }),
+        )
+      ).arrayBuffer(),
+    ),
+  );
+  const entry = readProjectAsset(persistedBeforeEviction, taskId, {
+    projectId,
+  })!;
+  persistedBeforeEviction.free();
+  const resource = (await createR2ResourceRegistry(bindings.R2_BUCKET as never)(
+    tenantId,
+    entry.source.resourceId,
+  ))!;
   expect(
     new Uint8Array(
-      await (await bindings.R2_BUCKET.get(asset!.src_r2_key))!.arrayBuffer(),
+      await (await bindings.R2_BUCKET.get(
+        await resourceLocator(tenantId, resource),
+      ))!.arrayBuffer(),
     ),
   ).toEqual(bytes);
   const workflow = await bindings.GENERATION_WORKFLOW.get(taskId);
@@ -145,6 +175,7 @@ it("recovers a pending render during room initialization without deadlocking on 
     actorUserId: userId,
     actorType: "user",
     timelineDsl: { tracks: [] },
+    ...timelineRenderProvenance,
   });
   const room = bindings.ROOM.get(bindings.ROOM.idFromName(projectId));
   const headers = { "x-internal-loro": "true", "x-loro-project-id": projectId };
@@ -199,14 +230,14 @@ it("recovers a pending render during room initialization without deadlocking on 
       break;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  // A render's Project Asset is keyed by its run.
   expect(data).toMatchObject({
     status: Status.Completed,
-    generationRunId: expect.any(String),
     assetId: expect.any(String),
   });
   expect(render).toHaveBeenCalledTimes(1);
   expect(
-    await hostedGenerationStatus(bindings, data.generationRunId as string),
+    await hostedGenerationStatus(bindings, data.assetId as string),
   ).toMatchObject({ status: Status.Completed });
 });
 

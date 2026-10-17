@@ -2,11 +2,12 @@
   "summary": "Hosted generation adapts the shared DurableRunEngine to Cloudflare persistence and existing product projections. Provider protocol stays in adapters/portable provider modules; this directory does not define another Run domain.",
   "key_files": {
     "start.ts": "Live HTTP/agent/NodeProcessor admission entrypoint; dispatches through runtime, never calls a blocking adapter.",
-    "runtime.ts": "CF adapter binding shared hosted generation policy to D1 journal, Workflow scheduling, R2 broker, provider registry, lifecycle plugins and ProjectRoom publication.",
+    "runtime.ts": "CF adapter binding shared hosted generation policy to D1 journal, Workflow scheduling, R2 broker, provider registry, lifecycle plugins and ProjectRoom publication. video_render staging seals the rendered bytes as the tenant's Project Resource; it never prepares a D1 library Asset.",
     "adapter.ts": "One submit or one status poll per invocation. Tokens are private JSON; completed media contains receipt-backed handles.",
     "context.ts": "Invocation-only reference reads and output broker IO. No Workflow steps, journal mutations, D1 Assets or Canvas publication.",
     "output.ts": "R2 immutable byte/receipt CAS scoped by Project and shared run/slot identity. Primary media and optional provider covers have separate verified receipts.",
-    "publication.ts": "Owner and task/output checks, immutable legacy D1 Asset preparation, detached shared Canvas operation; ProjectRoom acknowledges durable append before asset_ref visibility.",
+    "publication.ts": "Owner and task/output checks, immutable legacy D1 Asset preparation, detached shared Canvas operation; ProjectRoom acknowledges durable append before asset_ref visibility. video_render runs go to the room's timeline-render-publication operation instead.",
+    "timeline-render-publication.ts": "DO-side (lazily imported) publication of a video_render run onto the raw render node the shared request_timeline_render command creates: imports the stage-sealed Resource as Project Asset taskId (provenance render) and completes it with shared completeTimelineRenderNode in one fork; republish is a no-op; failure is projected only while the run still holds pendingTask. Never reads through Canvas, whose scope excludes Project-Asset renders.",
     "status.ts": "Journal-backed public task status overrides legacy Asset-row hints, including text success and obsolete-target failure.",
     "recovery.ts": "Cron recovery across the exported owner list; due rows are re-scheduled by frozen identity only.",
     "registry.ts": "Supported hosted wire adapters; native switches stay first, then an explicit Worker-safe plugin allowlist routes provider-executor plugins through the shared PluginExecutionPort.",
@@ -21,7 +22,7 @@
     "project-owner.ts": "Accountable Project owner lookup used by remote settings and Asset publication."
   },
   "compatibility": [
-    "Live GenerationWorkflow uses shared graph and D1/R2 ports while retaining legacy task IDs and D1 Asset/node publication; this is not native Generator Output Commit migration.",
+    "Live GenerationWorkflow uses shared graph and D1/R2 ports while retaining legacy task IDs and D1 Asset/node publication; this is not native Generator Output Commit migration. Timeline renders are the exception: they publish a Project Asset like the browser render path and api-node. A render node without Timeline provenance (sourceTimelineId/sourceTimelineRevisionId) fails publication and is projected failed.",
     "Pre-migration Workflow payloads without a durable identity require owner reconciliation; they are never blindly resubmitted.",
     "Hook completion markers prevent ordinary replay, not exactly-once external billing. Billing integrations must deduplicate by taskId.",
     "Provider failure values use the portable action-sdk/executable-failure subpath. Unit-test aliases resolve both SDK root and subpaths to one source implementation, preserving instanceof across adapters and runtime.",
