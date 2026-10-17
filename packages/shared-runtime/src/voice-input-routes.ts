@@ -27,14 +27,16 @@ export interface VoiceInputRouteOptions<E extends Env> {
 
 function errorResponse<E extends Env>(c: Context<E>, error: unknown) {
   if (error instanceof VoiceInputError) {
-    return c.json({ error: error.message }, error.status);
+    return c.json({ error: error.message, code: error.code }, error.status);
   }
+  // A Provider/network failure keeps its original message; it is never masked.
   return c.json(
     {
       error:
-        error instanceof Error
+        error instanceof Error && error.message
           ? error.message
           : "Voice input transcription failed.",
+      code: "VOICE_INPUT_PROVIDER_FAILED",
     },
     502,
   );
@@ -95,20 +97,20 @@ export function createVoiceInputRoutes<E extends Env = Env>(
       declaredLength >
       VOICE_INPUT_MAX_AUDIO_BYTES + MULTIPART_OVERHEAD_BYTES
     ) {
-      return c.json({ error: AUDIO_TOO_LARGE }, 413);
+      return c.json({ error: AUDIO_TOO_LARGE, code: "VOICE_INPUT_AUDIO_TOO_LARGE" }, 413);
     }
     let form: FormData;
     try {
       form = await c.req.formData();
     } catch {
-      return c.json({ error: "Missing file" }, 400);
+      return c.json({ error: "Missing file", code: "VOICE_INPUT_MISSING_FILE" }, 400);
     }
     const file = form.get("file");
     if (!file || typeof file === "string") {
-      return c.json({ error: "Missing file" }, 400);
+      return c.json({ error: "Missing file", code: "VOICE_INPUT_MISSING_FILE" }, 400);
     }
     if (file.size > VOICE_INPUT_MAX_AUDIO_BYTES) {
-      return c.json({ error: AUDIO_TOO_LARGE }, 413);
+      return c.json({ error: AUDIO_TOO_LARGE, code: "VOICE_INPUT_AUDIO_TOO_LARGE" }, 413);
     }
     const language = form.get("language");
     try {

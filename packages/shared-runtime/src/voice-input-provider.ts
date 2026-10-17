@@ -13,14 +13,12 @@ import {
   type TextGenerationMessage,
 } from "./text-generation.js";
 import type { VoiceInputAudio } from "./cloud-project-host/voice-input.js";
-import { getVertexAccessTokenForCredentials } from "./google-service-account-auth.js";
-
-export interface GoogleServiceAccount {
-  clientEmail: string;
-  privateKey: string;
-  project: string;
-  location?: string;
-}
+import { VoiceInputError } from "./cloud-project-host/voice-input-error.js";
+import {
+  getVertexAccessTokenForCredentials,
+  googleAgentPlatformModelUrl,
+  googleServiceAccountFromCredentials,
+} from "./google-service-account-auth.js";
 
 export interface ProviderCredentialsPort {
   resolve(input: {
@@ -31,9 +29,9 @@ export interface ProviderCredentialsPort {
 
 export interface ProviderUsageAuditPort {
   /**
-   * Persist one audit event. The id is stable for a transcript task id, so an
-   * adapter store may write `ON CONFLICT DO NOTHING` and retries cannot
-   * duplicate the charge record.
+   * Persist one audit event. Stores write `ON CONFLICT DO NOTHING` on the event
+   * id, so re-appending the same event is a no-op. A throw fails the request
+   * with VOICE_INPUT_USAGE_AUDIT_FAILED; it is never swallowed.
    */
   append(event: ProviderUsageAuditEvent): Promise<void>;
 }
@@ -50,7 +48,7 @@ export interface ProviderTranscriptionInput {
   audio: VoiceInputAudio;
   prompt: string;
   language?: string;
-  /** Stable invocation identity; the audit row id derives from it. */
+  /** Invocation identity for the audit row; a fresh id per transcription when omitted. */
   taskId?: string;
   ports: ProviderTranscriptionPorts;
 }
@@ -63,53 +61,6 @@ export interface ProviderTranscriptionResult {
 
 export function providerIdForRoute(route: ModelUpstreamRoute): string {
   return route.providerId ?? route.upstreamId ?? "provider";
-}
-
-function serviceAccountFromCredentials(
-  credentials: Record<string, string>,
-): GoogleServiceAccount {
-  const raw = credentials.serviceAccountKey?.trim();
-  if (!raw) {
-    throw new Error(
-      "Google Cloud Agent Platform provider account is missing service account credentials.",
-    );
-  }
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    throw new Error(
-      "Google Cloud Agent Platform credentials must be a service account JSON object.",
-    );
-  }
-  const clientEmail =
-    typeof parsed.clientEmail === "string"
-      ? parsed.clientEmail
-      : typeof parsed.client_email === "string"
-        ? parsed.client_email
-        : "";
-  const privateKey =
-    typeof parsed.privateKey === "string"
-      ? parsed.privateKey
-      : typeof parsed.private_key === "string"
-        ? parsed.private_key
-        : "";
-  const project =
-    typeof parsed.project === "string"
-      ? parsed.project
-      : typeof parsed.project_id === "string"
-        ? parsed.project_id
-        : "";
-  const location =
-    typeof parsed.location === "string" && parsed.location.trim()
-      ? parsed.location.trim()
-      : "global";
-  if (!clientEmail || !privateKey || !project) {
-    throw new Error(
-      "Google Cloud Agent Platform credentials must include clientEmail/privateKey/project.",
-    );
-  }
-  return { clientEmail, privateKey, project, location };
 }
 
 function geminiResponseText(response: unknown): string {
@@ -218,15 +169,14 @@ async function googleAgentPlatformText(input: {
   audio: VoiceInputAudio;
   fetchImpl: typeof fetch;
 }): Promise<{ text: string; model: string }> {
-  const account = serviceAccountFromCredentials(input.credentials);
-  const location = account.location ?? "global";
-  const host =
-    location === "global"
-      ? "aiplatform.googleapis.com"
-      : `${location}-aiplatform.googleapis.com`;
+  const account = googleServiceAccountFromCredentials(input.credentials);
   const token = await getVertexAccessTokenForCredentials(account);
   return geminiGenerateContent({
-    url: `https://${host}/v1/projects/${account.project}/locations/${location}/publishers/google/models/${encodeURIComponent(input.model)}:generateContent`,
+    url: googleAgentPlatformModelUrl(
+      account,
+      encodeURIComponent(input.model),
+      "generateContent",
+    ),
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
@@ -241,75 +191,30 @@ async function googleAgentPlatformText(input: {
 /**
  * One Provider invocation through the hosted text-generation path. The caller
  * owns selection/readiness; this function resolves credentials, performs the
- * provider request, maps failures, and appends exactly one usage-audit event.
+ * provider request, and records `submitted` then `completed` or `failed` usage events; an audit failure is an explicit VOICE_INPUT_USAGE_AUDIT_FAILED error.
  */
 export async function transcribeWithProviderTextGeneration(
   input: ProviderTranscriptionInput,
 ): Promise<ProviderTranscriptionResult> {
   const { route } = input;
-  const fetchImpl = input.ports.fetch ?? fetch;
+  if (route.apiShape === "pika-chat") {
+    throw new VoiceInputError(
+      "Pika chat does not accept inline audio transcription.",
+      409,
+      "VOICE_INPUT_NOT_CONFIGURED",
+    );
+  }
   const credentials = await input.ports.credentials.resolve({
     userId: input.userId,
     route,
   });
   const provider = providerIdForRoute(route);
-
-  let result: { text: string; model: string };
-  if (
-    route.upstreamId === "google-agent-platform" ||
-    (route.upstreamId === "google-ai-studio" && !credentials.apiKey?.trim())
-  ) {
-    result = await googleAgentPlatformText({
-      credentials,
-      model: route.upstreamModel,
-      prompt: input.prompt,
-      audio: input.audio,
-      fetchImpl,
-    });
-  } else if (route.upstreamId === "google-ai-studio") {
-    result = await googleAiStudioText({
-      apiKey: credentials.apiKey ?? "",
-      baseUrl: credentials.baseUrl,
-      model: route.upstreamModel,
-      prompt: input.prompt,
-      audio: input.audio,
-      ...(credentials.cfAigToken ? { cfAigToken: credentials.cfAigToken } : {}),
-      fetchImpl,
-    });
-  } else if (route.apiShape === "pika-chat") {
-    throw new Error("Pika chat does not accept inline audio transcription.");
-  } else {
-    const textProvider =
-      route.apiShape === "anthropic-compatible"
-        ? "anthropic-compatible"
-        : "openai-compatible";
-    const messages: TextGenerationMessage[] = [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: input.prompt },
-          {
-            type: "audio",
-            data: input.audio.bytes,
-            mediaType: input.audio.mediaType,
-          },
-        ],
-      },
-    ];
-    const completion = await generateTextCompletion({
-      provider: textProvider,
-      apiKey: credentials.apiKey ?? "",
-      baseUrl: credentials.baseUrl,
-      model: route.upstreamModel,
-      messages,
-      fetch: fetchImpl,
-    });
-    result = { text: completion.text, model: completion.model };
-  }
-
   const taskId = input.taskId?.trim() || crypto.randomUUID();
-  await input.ports.usage.append({
-    id: `voice-input:${taskId}`,
+  const event = (
+    status: ProviderUsageAuditEvent["status"],
+    error?: string,
+  ): ProviderUsageAuditEvent => ({
+    id: `voice-input:${taskId}:${status}`,
     userId: input.userId,
     providerId: provider,
     ...(route.accountId ? { providerAccountId: route.accountId } : {}),
@@ -319,13 +224,117 @@ export async function transcribeWithProviderTextGeneration(
     actorType: "user",
     actorUserId: input.userId,
     idempotencyKey: `voice-input:${taskId}`,
-    status: "completed",
+    status,
     estimateComplete: false,
     currency: "USD",
     pricingSource: "unavailable",
     billingBasis: {},
+    ...(error ? { errorMessage: error.slice(0, 500) } : {}),
     occurredAt: new Date().toISOString(),
   });
 
+  // Recorded before the Provider is called: if the audit store is down the
+  // request fails here, before anything is charged.
+  try {
+    await input.ports.usage.append(event("submitted"));
+  } catch (error) {
+    throw usageAuditError(
+      "Voice input did not run: its Provider usage could not be recorded",
+      error,
+    );
+  }
+
+  let result: { text: string; model: string };
+  try {
+    result = await callProvider(input, credentials);
+  } catch (providerError) {
+    const message =
+      providerError instanceof Error ? providerError.message : String(providerError);
+    try {
+      await input.ports.usage.append(event("failed", message));
+    } catch (auditError) {
+      // Keep the Provider's failure first; add the audit failure, never replace it.
+      throw usageAuditError(
+        `${message} (the failed Provider call could not be recorded either)`,
+        auditError,
+      );
+    }
+    throw providerError;
+  }
+
+  try {
+    await input.ports.usage.append(event("completed"));
+  } catch (error) {
+    throw usageAuditError(
+      "The Provider transcribed the audio but its completed usage could not be recorded, so the transcript was not returned; the submitted usage record exists",
+      error,
+    );
+  }
   return { text: result.text, provider, model: result.model };
+}
+
+function usageAuditError(message: string, cause: unknown): VoiceInputError {
+  const detail = cause instanceof Error && cause.message ? `: ${cause.message}` : "";
+  return new VoiceInputError(
+    `${message}${detail}`,
+    502,
+    "VOICE_INPUT_USAGE_AUDIT_FAILED",
+  );
+}
+
+async function callProvider(
+  input: ProviderTranscriptionInput,
+  credentials: Record<string, string>,
+): Promise<{ text: string; model: string }> {
+  const { route } = input;
+  const fetchImpl = input.ports.fetch ?? fetch;
+  if (
+    route.upstreamId === "google-agent-platform" ||
+    (route.upstreamId === "google-ai-studio" && !credentials.apiKey?.trim())
+  ) {
+    return googleAgentPlatformText({
+      credentials,
+      model: route.upstreamModel,
+      prompt: input.prompt,
+      audio: input.audio,
+      fetchImpl,
+    });
+  }
+  if (route.upstreamId === "google-ai-studio") {
+    return googleAiStudioText({
+      apiKey: credentials.apiKey ?? "",
+      baseUrl: credentials.baseUrl,
+      model: route.upstreamModel,
+      prompt: input.prompt,
+      audio: input.audio,
+      ...(credentials.cfAigToken ? { cfAigToken: credentials.cfAigToken } : {}),
+      fetchImpl,
+    });
+  }
+  const textProvider =
+    route.apiShape === "anthropic-compatible"
+      ? "anthropic-compatible"
+      : "openai-compatible";
+  const messages: TextGenerationMessage[] = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: input.prompt },
+        {
+          type: "audio",
+          data: input.audio.bytes,
+          mediaType: input.audio.mediaType,
+        },
+      ],
+    },
+  ];
+  const completion = await generateTextCompletion({
+    provider: textProvider,
+    apiKey: credentials.apiKey ?? "",
+    baseUrl: credentials.baseUrl,
+    model: route.upstreamModel,
+    messages,
+    fetch: fetchImpl,
+  });
+  return { text: completion.text, model: completion.model };
 }

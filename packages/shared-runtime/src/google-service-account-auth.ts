@@ -25,6 +25,78 @@ export interface ServiceAccountAuthCredentials {
   privateKey: string;
 }
 
+export interface GoogleServiceAccount extends ServiceAccountAuthCredentials {
+  project: string;
+  location?: string;
+}
+
+/** Parse the `serviceAccountKey` JSON a Google Cloud Agent Platform provider account stores. */
+export function googleServiceAccountFromCredentials(
+  credentials: Record<string, string>,
+): GoogleServiceAccount {
+  const raw = credentials.serviceAccountKey?.trim();
+  if (!raw) {
+    throw new Error(
+      "Google Cloud Agent Platform provider account is missing service account credentials.",
+    );
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error(
+      "Google Cloud Agent Platform credentials must be a service account JSON object.",
+    );
+  }
+  const clientEmail =
+    typeof parsed.clientEmail === "string"
+      ? parsed.clientEmail
+      : typeof parsed.client_email === "string"
+        ? parsed.client_email
+        : "";
+  const privateKey =
+    typeof parsed.privateKey === "string"
+      ? parsed.privateKey
+      : typeof parsed.private_key === "string"
+        ? parsed.private_key
+        : "";
+  const project =
+    typeof parsed.project === "string"
+      ? parsed.project
+      : typeof parsed.project_id === "string"
+        ? parsed.project_id
+        : "";
+  const location =
+    typeof parsed.location === "string" && parsed.location.trim()
+      ? parsed.location.trim()
+      : "global";
+  if (!clientEmail || !privateKey || !project) {
+    throw new Error(
+      "Google Cloud Agent Platform credentials must include clientEmail/privateKey/project.",
+    );
+  }
+  return { clientEmail, privateKey, project, location };
+}
+
+/** Vertex REST address for one publisher model action (`generateContent`, `predictLongRunning`, ...). */
+export function googleAgentPlatformModelUrl(
+  account: GoogleServiceAccount,
+  modelId: string,
+  action: string,
+): string {
+  const location = account.location ?? "global";
+  if (!account.project) {
+    throw new Error(
+      "Google Cloud Agent Platform provider account is missing project.",
+    );
+  }
+  const host =
+    location === "global"
+      ? "aiplatform.googleapis.com"
+      : `${location}-aiplatform.googleapis.com`;
+  return `https://${host}/v1/projects/${account.project}/locations/${location}/publishers/google/models/${modelId}:${action}`;
+}
+
 const tokenCache = new Map<string, CachedToken>();
 const inflight = new Map<string, Promise<CachedToken>>();
 

@@ -16,6 +16,7 @@ import type {
   AsrTimedTranscript,
   ModelUpstreamRoute,
 } from "@clash/shared-types";
+import { VoiceInputError } from "./voice-input-error.js";
 import {
   transcribeWithProviderTextGeneration,
   type ProviderCredentialsPort,
@@ -129,15 +130,7 @@ export interface VoiceInputReadinessResponse {
 
 export type VoiceInputReadinessStatus = "disabled" | "ready" | "not-configured";
 
-export class VoiceInputError extends Error {
-  constructor(
-    message: string,
-    readonly status: 400 | 409 | 502,
-  ) {
-    super(message);
-    this.name = "VoiceInputError";
-  }
-}
+export { VoiceInputError, type VoiceInputErrorCode } from "./voice-input-error.js";
 
 function setup(
   provider: string,
@@ -277,7 +270,11 @@ export function buildVoiceInputTimedTranscript(input: {
 }): AsrTimedTranscript {
   const text = input.text.trim();
   if (!text) {
-    throw new VoiceInputError(VOICE_INPUT_EMPTY_TRANSCRIPT_MESSAGE, 502);
+    throw new VoiceInputError(
+      VOICE_INPUT_EMPTY_TRANSCRIPT_MESSAGE,
+      502,
+      "VOICE_INPUT_EMPTY_TRANSCRIPT",
+    );
   }
   const language = input.language?.trim();
   return {
@@ -318,7 +315,11 @@ export async function transcribeVoiceInputWithProvider(input: {
     input.selection ??
     (await input.ports.resolveVoiceInputSelection(input.userId));
   if (!selection.enabled) {
-    throw new VoiceInputError(VOICE_INPUT_DISABLED_MESSAGE, 409);
+    throw new VoiceInputError(
+      VOICE_INPUT_DISABLED_MESSAGE,
+      409,
+      "VOICE_INPUT_DISABLED",
+    );
   }
   const entry = await input.ports.resolveModelEntry(
     input.userId,

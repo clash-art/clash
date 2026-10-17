@@ -13,7 +13,6 @@ import {
   buildEffectiveModelCards,
   listModelCatalogEntries,
   modelCardVisibleToConsumer,
-  normalizeModelId,
   type ModelCatalogEntry,
   type ModelUpstreamApiShape,
   type ModelUpstreamId,
@@ -25,9 +24,9 @@ import {
 } from "@clash/shared-types";
 import type { PostgresQueryPort } from "@clash/shared-runtime/project-authorization-postgres";
 import {
-  decryptProviderCredentials,
   parseConfiguredCredentials,
   requireProviderCredentialSecret,
+  selectProviderCredentials,
 } from "@clash/shared-runtime/provider-credentials";
 
 export interface PublicNodeProviderAccount extends Omit<
@@ -277,26 +276,6 @@ export async function loadNodeVoiceInputCatalog(
   return listModelCatalogEntries({ models, configuredProviders: providers });
 }
 
-function modelCodeForQuery(value: string | undefined): string | undefined {
-  const raw = value?.trim();
-  if (!raw) return undefined;
-  return normalizeModelId(raw) ?? raw;
-}
-
-function priorityForModel(
-  priorities: Record<string, number> | undefined,
-  modelCode: string,
-): number | undefined {
-  if (!priorities) return undefined;
-  return (
-    priorities[modelCode] ??
-    Object.entries(priorities).find(
-      ([candidate]) =>
-        (normalizeModelId(candidate) ?? candidate.trim()) === modelCode,
-    )?.[1]
-  );
-}
-
 export async function getNodeProviderCredentials(
   db: PostgresQueryPort,
   secretKey: string | undefined,
@@ -317,62 +296,14 @@ export async function getNodeProviderCredentials(
       query.upstreamId ?? null,
     ],
   );
-  const required = query.requiredCredentials ?? [];
-  const modelCode = modelCodeForQuery(query.modelCode);
-  const rows = result.rows
-    .filter(
-      (row) => !query.region || !row.region || row.region === query.region,
-    )
-    .filter((row) => {
-      if (!modelCode) return true;
-      const supported = parseStringArray(row.supported_model_ids);
-      return (
-        !supported?.length ||
-        supported
-          .map((id) => normalizeModelId(id) ?? id.trim())
-          .includes(modelCode)
-      );
-    })
-    .sort((a, b) => {
-      if (modelCode) {
-        const aPriority = priorityForModel(
-          parseNumberRecord(a.model_priorities),
-          modelCode,
-        );
-        const bPriority = priorityForModel(
-          parseNumberRecord(b.model_priorities),
-          modelCode,
-        );
-        if (aPriority !== undefined || bPriority !== undefined) {
-          const priority =
-            (aPriority ?? Number.POSITIVE_INFINITY) -
-            (bPriority ?? Number.POSITIVE_INFINITY);
-          if (priority !== 0) return priority;
-        }
-      }
-      const priority = (a.priority ?? 1000) - (b.priority ?? 1000);
-      if (priority !== 0) return priority;
-      return Number(b.updated_at ?? 0) - Number(a.updated_at ?? 0);
-    });
-
-  const secret = requireProviderCredentialSecret(secretKey);
-  for (const row of rows) {
-    const credentials = await decryptProviderCredentials(
-      row.encrypted_credentials,
-      secret,
-    );
-    if (required.every((key) => credentials[key]?.trim())) {
-      return credentials;
-    }
-  }
-
-  const missing = required.length ? ` Missing: ${required.join(", ")}.` : "";
-  throw new Error(
-    `Provider credentials not configured for ${query.providerId}${query.upstreamId ? `/${query.upstreamId}` : ""}.${missing}`,
+  return selectProviderCredentials(
+    result.rows,
+    requireProviderCredentialSecret(secretKey),
+    query,
   );
 }
 
-/** Append-only usage audit; the shared event id makes provider retries idempotent. */
+/** Append-only usage audit; re-appending the same event id is a no-op (ON CONFLICT DO NOTHING). */
 export async function appendNodeProviderUsageEvent(
   db: PostgresQueryPort,
   input: ProviderUsageAuditEvent,

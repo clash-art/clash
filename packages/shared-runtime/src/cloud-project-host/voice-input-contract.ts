@@ -250,9 +250,12 @@ export function describeVoiceInputContract(
           },
         ],
       });
-      expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({
-        id: expect.stringMatching(/^voice-input:/),
+      expect(events.map((event) => event.status)).toEqual([
+        "submitted",
+        "completed",
+      ]);
+      expect(events[1]).toMatchObject({
+        id: expect.stringMatching(/^voice-input:.+:completed$/),
         userId: "user-1",
         providerId: "official",
         modelId: "gemini-3-flash",
@@ -260,6 +263,120 @@ export function describeVoiceInputContract(
         status: "completed",
         idempotencyKey: expect.stringMatching(/^voice-input:/),
       });
+    });
+
+    const transcriptForm = () => {
+      const form = new FormData();
+      form.append(
+        "file",
+        new File(["voice-bytes"], "voice.webm", { type: "audio/webm" }),
+      );
+      return form;
+    };
+    const okProvider = (calls: { count: number }) => async () => {
+      calls.count += 1;
+      return new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: "kept transcript" }] } }],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    };
+
+    it("fails before calling the Provider when usage cannot be recorded", async () => {
+      const calls = { count: 0 };
+      const ports = hostedPorts({
+        entries: [voiceInputContractEntry()],
+        fetch: okProvider(calls),
+        events: [],
+      });
+      const app = harness.mount(
+        createHostedVoiceInputPorts("user-1", {
+          ...ports,
+          usage: {
+            append: async () => {
+              throw new Error("audit store unavailable");
+            },
+          },
+        }),
+      );
+
+      const response = await call(app, "/audio/transcriptions", {
+        method: "POST",
+        body: transcriptForm(),
+      });
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        code: "VOICE_INPUT_USAGE_AUDIT_FAILED",
+        error:
+          "Voice input did not run: its Provider usage could not be recorded: audit store unavailable",
+      });
+      expect(calls.count).toBe(0);
+    });
+
+    it("fails explicitly when the completed usage cannot be recorded", async () => {
+      const calls = { count: 0 };
+      const events: ProviderUsageAuditEvent[] = [];
+      const ports = hostedPorts({
+        entries: [voiceInputContractEntry()],
+        fetch: okProvider(calls),
+        events,
+      });
+      const app = harness.mount(
+        createHostedVoiceInputPorts("user-1", {
+          ...ports,
+          usage: {
+            append: async (event) => {
+              if (event.status === "completed") throw new Error("disk full");
+              events.push(event);
+            },
+          },
+        }),
+      );
+
+      const response = await call(app, "/audio/transcriptions", {
+        method: "POST",
+        body: transcriptForm(),
+      });
+
+      expect(response.status).toBe(502);
+      const body = (await response.json()) as { code: string; error: string };
+      expect(body.code).toBe("VOICE_INPUT_USAGE_AUDIT_FAILED");
+      expect(body.error).toContain("disk full");
+      expect(calls.count).toBe(1);
+      expect(events.map((event) => event.status)).toEqual(["submitted"]);
+    });
+
+    it("surfaces the Provider's own failure and records it", async () => {
+      const events: ProviderUsageAuditEvent[] = [];
+      const app = harness.mount(
+        createHostedVoiceInputPorts(
+          "user-1",
+          hostedPorts({
+            entries: [voiceInputContractEntry()],
+            fetch: async () =>
+              new Response(JSON.stringify({ error: { message: "quota exceeded" } }), {
+                status: 429,
+                headers: { "content-type": "application/json" },
+              }),
+            events,
+          }),
+        ),
+      );
+
+      const response = await call(app, "/audio/transcriptions", {
+        method: "POST",
+        body: transcriptForm(),
+      });
+
+      expect(response.status).toBe(502);
+      expect(await response.json()).toEqual({
+        code: "VOICE_INPUT_PROVIDER_FAILED",
+        error: "Gemini text request failed: quota exceeded",
+      });
+      expect(events.map((event) => event.status)).toEqual(["submitted", "failed"]);
+      expect(events[1]?.errorMessage).toBe("Gemini text request failed: quota exceeded");
     });
 
     it("rejects an upload above the shared 20 MB limit with 413", async () => {
@@ -285,6 +402,7 @@ export function describeVoiceInputContract(
       expect(response.status).toBe(413);
       expect(await response.json()).toEqual({
         error: "Audio upload exceeds the 20 MB limit.",
+        code: "VOICE_INPUT_AUDIO_TOO_LARGE",
       });
     });
 

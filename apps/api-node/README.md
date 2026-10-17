@@ -79,9 +79,11 @@ Migration `0015_provider_settings.sql` adds `provider_account`,
 `model_card_config`, `model_card_provider_binding` and `provider_usage_audit`,
 mirroring the D1 tables the Cloudflare adapter reads. Provider credentials are
 AES-GCM envelopes keyed by `ACTION_SECRET_KEY` (the same secret-envelope scheme
-as Cloudflare); plaintext credentials are never stored or returned. One usage
-event is written per successful transcription, keyed by the transcript task id
-so a retried event cannot append twice.
+as Cloudflare); plaintext credentials are never stored or returned. Each transcription
+records a `submitted` usage event before the Provider is called and a
+`completed` or `failed` event after (`ON CONFLICT (id) DO NOTHING`). An audit
+write failure fails the request with `VOICE_INPUT_USAGE_AUDIT_FAILED`; it is never
+swallowed.
 
 Node has no provider-settings UI or account-creation route yet. Until rows are
 provisioned administratively, voice input answers the shared `not-configured`

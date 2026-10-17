@@ -229,8 +229,12 @@ async function transcribeLocalAudio(blob: Blob): Promise<string> {
   const json = (await res.json().catch(() => null)) as {
     text?: string;
     error?: string;
+    code?: string;
   } | null;
-  if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+  if (!res.ok) {
+    const message = json?.error ?? `Voice input failed (HTTP ${res.status})`;
+    throw new Error(json?.code ? `${message} [${json.code}]` : message);
+  }
   if (!json?.text) throw new Error("Voice input returned no transcript");
   return json.text;
 }
@@ -243,7 +247,16 @@ async function warmupLocalVoiceInput(): Promise<void> {
       credentials: "include",
     },
   );
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    const json = (await res.json().catch(() => null)) as {
+      error?: string;
+      code?: string;
+      status?: string;
+    } | null;
+    const message =
+      json?.error ?? `Voice input warmup failed (HTTP ${res.status})`;
+    throw new Error(json?.code ? `${message} [${json.code}]` : message);
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────
@@ -540,7 +553,11 @@ function ChatInputInner(
             return;
           }
           if (audioConfig.asr.setup?.runtime === "builtin-rpc") {
-            void warmupLocalVoiceInput().catch(() => undefined);
+            // A failed warmup is shown now, not discovered at transcription.
+            void warmupLocalVoiceInput().catch((err: unknown) => {
+              if (voiceAttemptRef.current !== attempt) return;
+              setVoiceNotice(voiceTranscriptionNotice(err));
+            });
           }
         },
         () => {

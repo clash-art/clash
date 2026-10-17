@@ -9,16 +9,15 @@ import { providerHttpError } from "@clash/action-sdk/executable-failure";
 import { generateImage, generateText } from "ai";
 import { createVertex } from "@ai-sdk/google-vertex/edge";
 import { normalizeModelId } from "@clash/shared-types";
-import { getVertexAccessTokenForCredentials } from "@clash/shared-runtime/google-service-account-auth";
+import {
+  getVertexAccessTokenForCredentials,
+  googleAgentPlatformModelUrl,
+} from "@clash/shared-runtime/google-service-account-auth";
 
 // ─── Shared ─────────────────────────────────────────────
 
-export interface GoogleServiceAccount {
-  clientEmail: string;
-  privateKey: string;
-  project: string;
-  location?: string;
-}
+export type { GoogleServiceAccount } from "@clash/shared-runtime/google-service-account-auth";
+import type { GoogleServiceAccount } from "@clash/shared-runtime/google-service-account-auth";
 
 function makeVertex(creds: GoogleServiceAccount) {
   return createVertex({
@@ -500,16 +499,6 @@ export interface SubmitVeoOperationResult {
   modelId: string;
 }
 
-function agentPlatformBaseHost(location: string): string {
-  return location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`;
-}
-
-function agentPlatformModelUrl(creds: GoogleServiceAccount, modelId: string, action: string): string {
-  const project = creds.project ?? "";
-  const location = creds.location ?? "global";
-  if (!project) throw new Error("Google Cloud Agent Platform provider account is missing project.");
-  return `https://${agentPlatformBaseHost(location)}/v1/projects/${project}/locations/${location}/publishers/google/models/${modelId}:${action}`;
-}
 
 /**
  * Submit a Veo generation as a Vertex Long-Running Operation.
@@ -526,7 +515,7 @@ export async function submitVeoOperation(
     GOOGLE_VIDEO_MODEL_MAP[input.modelName ?? "veo-3.1"] ??
     input.modelName ??
     "veo-3.1-generate-001";
-  const url = agentPlatformModelUrl(creds, modelId, "predictLongRunning");
+  const url = googleAgentPlatformModelUrl(creds, modelId, "predictLongRunning");
   const token = await getVertexAccessTokenForCredentials(creds);
 
   const instance: Record<string, unknown> = { prompt: input.prompt };
@@ -574,7 +563,7 @@ export async function fetchVeoOperationOnce(
   modelId: string,
   operationName: string,
 ): Promise<{ done?: boolean; response?: any; error?: any; name?: string }> {
-  const url = agentPlatformModelUrl(creds, modelId, "fetchPredictOperation");
+  const url = googleAgentPlatformModelUrl(creds, modelId, "fetchPredictOperation");
   const token = await getVertexAccessTokenForCredentials(creds);
   const resp = await fetch(url, {
     method: "POST",

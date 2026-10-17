@@ -187,6 +187,7 @@ describe("Cloudflare adapter voice input", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({
       error: "Audio upload exceeds the 20 MB limit.",
+      code: "VOICE_INPUT_AUDIO_TOO_LARGE",
     });
   });
 

@@ -28,7 +28,6 @@ import {
   type PostgresTransactionPort,
 } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import { createNodeVoiceInputRoutes } from "./voice-input.ts";
-import { nodeRuntimeCapabilities } from "./runtime-capabilities.ts";
 
 export function createNodeCloudApp(options: {
   db: PostgresTransactionPort;
@@ -49,15 +48,7 @@ export function createNodeCloudApp(options: {
   const authority = createPostgresProjectAuthorizationStore(options.db);
   const admissions = createPostgresCloudProjectAdmissionStore(options.db);
   const syncBaseUrl = new URL(options.syncBaseUrl).href.replace(/\/+$/u, "");
-  app.get("/health", (c) =>
-    c.json({
-      status: "ok",
-      runtime: {
-        mode: "hosted",
-        capabilities: nodeRuntimeCapabilities(),
-      },
-    }),
-  );
+  app.get("/health", (c) => c.json({ status: "ok" }));
   app.get("/ready", async (c) => {
     try {
       await options.db.query("SELECT id FROM api_token LIMIT 0");

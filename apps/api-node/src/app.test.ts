@@ -122,15 +122,6 @@ it("serves provider-route voice input with shared readiness instead of 501", asy
     });
     const headers = { authorization: `Bearer ${token}` };
 
-    const health = await app.request("/health");
-    expect(await health.json()).toMatchObject({
-      runtime: {
-        mode: "hosted",
-        capabilities: {
-          host: { voiceInput: "available", localAudio: "unavailable" },
-        },
-      },
-    });
 
     const readiness = await app.request("/api/v1/audio/voice-input", {
       headers,
@@ -159,7 +150,10 @@ it("serves provider-route voice input with shared readiness instead of 501", asy
       headers,
     });
     expect(missing.status).toBe(400);
-    expect(await missing.json()).toEqual({ error: "Missing file" });
+    expect(await missing.json()).toEqual({
+      error: "Missing file",
+      code: "VOICE_INPUT_MISSING_FILE",
+    });
 
     const form = new FormData();
     form.append(
@@ -174,13 +168,14 @@ it("serves provider-route voice input with shared readiness instead of 501", asy
     expect(unconfigured.status).toBe(409);
     expect(await unconfigured.json()).toEqual({
       error: VOICE_INPUT_NOT_CONFIGURED_MESSAGE,
+      code: "VOICE_INPUT_NOT_CONFIGURED",
     });
   } finally {
     await db.close();
   }
 });
 
-it("transcribes through PostgreSQL provider settings with one usage event", async () => {
+it("transcribes through PostgreSQL provider settings and records submitted + completed usage", async () => {
   const db = new PGlite();
   const secret = "node-voice-secret";
   try {
@@ -284,9 +279,16 @@ it("transcribes through PostgreSQL provider settings with one usage event", asyn
       );
       return Number((result.rows[0] as { count: number | string }).count);
     };
-    expect(await usageCount()).toBe(1);
+    // submitted (before the Provider call) + completed.
+    const statuses = await db.query(
+      "SELECT status FROM provider_usage_audit WHERE user_id='owner' ORDER BY occurred_at, status DESC",
+    );
+    expect(statuses.rows.map((row) => (row as { status: string }).status).sort()).toEqual([
+      "completed",
+      "submitted",
+    ]);
 
-    // Retrying the same audit event id must not append a second charge row.
+    // Re-appending the same audit event id must not add a row.
     const event = {
       id: "voice-input:retry",
       userId: "owner",
@@ -306,7 +308,7 @@ it("transcribes through PostgreSQL provider settings with one usage event", asyn
     };
     await appendNodeProviderUsageEvent(db, event);
     await appendNodeProviderUsageEvent(db, event);
-    expect(await usageCount()).toBe(2);
+    expect(await usageCount()).toBe(3);
   } finally {
     vi.unstubAllGlobals();
     await db.close();
