@@ -12,7 +12,7 @@ import {
   within,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import SettingsClient from "./SettingsClient";
 import { AppFeedbackProvider } from "./AppFeedback";
@@ -1294,6 +1294,10 @@ describe("SettingsClient media analysis section", () => {
 });
 
 describe("SettingsClient audio section", () => {
+  beforeEach(() => {
+    // Machine-local ASR/TTS setup UI is gated on host.localAudio.
+    globalThis.__CLASH_RUNTIME_CONFIG__ = { mode: "local" };
+  });
   afterEach(() => {
     vi.useRealTimers();
     cleanup();
@@ -1303,6 +1307,7 @@ describe("SettingsClient audio section", () => {
     runtimeMock.promptQueueEnabled = true;
     runtimeMock.setPromptQueueEnabled = vi.fn();
     window.localStorage.clear();
+    globalThis.__CLASH_RUNTIME_CONFIG__ = undefined;
   });
 
   it("shows an audio skeleton while local audio configuration is loading", async () => {

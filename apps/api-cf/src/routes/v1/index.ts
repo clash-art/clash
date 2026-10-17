@@ -18,6 +18,7 @@ import { modelProviderRoutes } from "./model-providers";
 import { providerUsageRoutes } from "./provider-usage";
 import { pluginCatalogRoutes } from "./plugin-catalog";
 import { createProjectHostCommandRoutes } from "./project-host-command";
+import { createVoiceInputRoutes } from "./voice-input";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
 
@@ -29,6 +30,8 @@ v1Routes.route("/projects", createProjectHostCommandRoutes());
 v1Routes.route("/projects", createProjectAssetRoutes());
 v1Routes.route("/projects", projectRoutes);
 v1Routes.route("/", createTextRevisionRoutes());
+// Provider-route voice input. Neutral paths; local ASR stays in local-api.
+v1Routes.route("/", createVoiceInputRoutes());
 v1Routes.route("/libraries", createPersonalAssetLibraryRoutes());
 v1Routes.route("/vars", varsRoutes);
 v1Routes.route("/sessions", sessionRoutes);

@@ -15,6 +15,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createPersonalAssetRoutes } from "./personal-assets.ts";
 import type { NodeAuth } from "./auth.ts";
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ProjectCloudAdmissionRequestSchema } from "@clash/shared-types";
 import { authenticateApiToken } from "@clash/shared-runtime/project-authorization";
@@ -147,6 +148,23 @@ export function createNodeCloudApp(options: {
     }
     return next();
   });
+  // Provider-route voice input belongs to the hosted text-generation runtime.
+  // The Node adapter has no such runtime wired into its outbox CLI, so it
+  // answers the neutral route with 501 instead of pretending to transcribe.
+  // Machine-local ASR install/models and builtin-rpc stay local-only in
+  // apps/local-api.
+  const voiceInputUnavailable = (c: Context) =>
+    c.json(
+      {
+        code: "VOICE_INPUT_UNAVAILABLE",
+        error:
+          "Voice input via a Provider route is unavailable on the Node adapter: it has no hosted text-generation runtime. Local ASR requires the user's machine and is served only by the local Host.",
+      },
+      501,
+    );
+  app.get("/api/v1/audio/voice-input", voiceInputUnavailable);
+  app.post("/api/v1/audio/voice-input/warmup", voiceInputUnavailable);
+  app.post("/api/v1/audio/transcriptions", voiceInputUnavailable);
   app.use("/api/*", async (c, next) => {
     if (
       c.req.path === "/api/v1/libraries/personal/assets/import-file" ||

@@ -99,6 +99,7 @@ export {
   type TextGenerationMessage,
   type TextGenerationResult,
   type TextProviderKind,
+  bytesToBase64,
 } from "./text-generation.js";
 
 export { visibleUserPromptText } from "./prompt-content.js";

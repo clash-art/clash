@@ -21,6 +21,24 @@ import {
 } from "@clash/shared-types";
 
 import {
+  providerPluginExecutorRequest,
+  type ProviderPluginExecutor,
+  type ProviderPluginExecutorRequest,
+  type ProviderPluginExecutorTextOutput,
+  type ProviderPluginFailure,
+} from "@clash/shared-runtime/executable-run";
+
+export type {
+  ProviderPluginExecutor,
+  ProviderPluginExecutorKind,
+  ProviderPluginExecutorMedia,
+  ProviderPluginExecutorRequest,
+  ProviderPluginExecutorResponse,
+  ProviderPluginExecutorTextOutput,
+  ProviderPluginFailure,
+} from "@clash/shared-runtime/executable-run";
+
+import {
   createMockFalQueueService,
   type FalAudioResult,
   type FalImageResult,
@@ -93,36 +111,6 @@ export interface MockMediaGenerationInput {
   pluginBinding?: ExecutablePluginBinding;
 }
 
-function promptForRoute(
-  input: MockMediaGenerationInput,
-  route: ModelUpstreamRoute,
-): string {
-  const binding = route.referenceBinding;
-  const content = (input.references ?? [])
-    .filter((reference) => reference.slot === "content")
-    .sort((left, right) => left.index - right.index);
-  if (binding?.type !== "positional-tokens" || !content.some((part) => "asset" in part)) {
-    return input.prompt;
-  }
-  // Token numbers follow occurrences, not Asset identity. The same immutable Asset can be placed
-  // more than once in mixed content and every placement still has its own Provider position.
-  const occurrence = { image: 0, video: 0, audio: 0 };
-  return content
-    .map((part) => {
-      if ("text" in part) return part.text.value;
-      if ("document" in part) return "";
-      const modality = part.asset.kind;
-      if (modality !== "image" && modality !== "video" && modality !== "audio") {
-        return "";
-      }
-      const template = binding.tokens?.[modality];
-      if (!template) return "";
-      occurrence[modality] += 1;
-      return template.split("{n}").join(String(occurrence[modality]));
-    })
-    .join("");
-}
-
 /** Provider-neutral MIME normalization performed before route selection. */
 const REFERENCE_MIME_ALIASES: Readonly<Record<string, string>> = {
   "image/jpg": "image/jpeg",
@@ -167,11 +155,6 @@ export interface MockMediaGenerationCompleted {
   remoteUrl?: string;
   pluginBinding?: ExecutablePluginBinding;
 }
-
-export type ProviderPluginFailure = Extract<
-  ExecutablePluginResult,
-  { status: "failed" }
->["error"];
 
 export interface MediaGenerationFailed {
   status: "failed";
@@ -289,87 +272,6 @@ export interface ProviderPluginProjectorResponse {
 export type ProviderPluginProjector = (
   request: ProviderPluginProjectorRequest,
 ) => Promise<ProviderPluginProjectorResponse>;
-
-/** Provider outputs include 3D Project Assets even though the generic AIGC card catalog does not. */
-export type ProviderPluginExecutorKind = ModelKind | Extract<AssetKind, "model">;
-
-export interface ProviderPluginExecutorRequest {
-  pluginId: string;
-  exportId: string;
-  kind: ProviderPluginExecutorKind;
-  taskId: string;
-  projectId: string;
-  nodeId?: string;
-  binding?: ExecutablePluginBinding;
-  /** Delivery declaration copied from the exact selected Provider route. */
-  assetInputs?: ProviderAssetInput[];
-  input: {
-    values: Record<string, unknown>;
-    references: ExecutablePluginReference[];
-  };
-  /**
-   * Set when asking about work already accepted, carrying exactly what the plugin returned.
-   *
-   * Opaque on purpose: an id, a status URL, a job name with its region, or anything else a provider
-   * needs. The host persists it and hands it back without reading it, so a provider that has no
-   * task id is not forced to invent one.
-   */
-  pollState?: unknown;
-  /** The account this work is charged to; credentials stay in its Host-scoped plugin store. */
-  accountId?: string;
-  /**
-   * Host-owned remaining attempt budget. It is transport metadata for the plugin process and is
-   * never exposed as a model value or reset by an individual submit/poll call.
-   */
-  timeoutMs?: number;
-}
-
-/** Media crosses the Provider boundary only as the Host-issued canonical Asset handle. */
-export type ProviderPluginExecutorMedia = ExecutablePluginAssetHandle;
-
-/** The protocol's canonical synchronous text envelope. */
-export interface ProviderPluginExecutorTextOutput {
-  slot: "text";
-  kind: "value";
-  value: string;
-}
-
-/**
- * The provider either finished, took the work and told us how to ask again, or reported failure.
- *
- * Typed as a union rather than as media-with-exceptions, because an acceptance thrown as an error
- * cannot be told apart from a failure by the code that catches it -- and the difference is that one
- * of them has already been paid for.
- */
-export type ProviderPluginExecutorResponse =
-  | {
-      status: "completed";
-      binding: ExecutablePluginBinding;
-      media: ProviderPluginExecutorMedia;
-    }
-  | {
-      status: "completed";
-      binding: ExecutablePluginBinding;
-      output: ProviderPluginExecutorTextOutput;
-    }
-  | {
-      status: "accepted";
-      binding: ExecutablePluginBinding;
-      /**
-       * Opaque; stored in the owner-private durable journal and handed back on the next poll.
-       */
-      pollState: unknown;
-      retryAfterMs?: number;
-    }
-  | {
-      status: "failed";
-      binding: ExecutablePluginBinding;
-      error: ProviderPluginFailure;
-    };
-
-export type ProviderPluginExecutor = (
-  request: ProviderPluginExecutorRequest,
-) => Promise<ProviderPluginExecutorResponse>;
 
 /** The selected executable Provider cannot be resolved or invoked by the plugin Host. */
 export class ProviderPluginHostUnavailableError extends Error {
@@ -522,90 +424,6 @@ function stringParam(
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function providerVisibleModelParams(
-  params: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  const visible = { ...(params ?? {}) };
-  delete visible.provider_id;
-  delete visible.accountId;
-  delete visible.credentials;
-  delete visible.require_real_provider;
-  return visible;
-}
-
-function providerPluginExecutorRequest(
-  input: MockMediaGenerationInput,
-  kind: ModelKind,
-  route: ModelUpstreamRoute,
-): ProviderPluginExecutorRequest {
-  if (!route.executorPluginId || !route.executorExportId) {
-    throw new Error(
-      `Route ${route.modelCode} has no executable provider executor.`,
-    );
-  }
-  if (
-    input.pluginBinding &&
-    (input.pluginBinding.pluginId !== route.executorPluginId ||
-      input.pluginBinding.exportId !== route.executorExportId)
-  ) {
-    throw new Error(
-      `Pinned plugin ${input.pluginBinding.pluginId}/${input.pluginBinding.exportId} does not match ` +
-        `route executor ${route.executorPluginId}/${route.executorExportId}.`,
-    );
-  }
-  // These execution controls already belong to Google's video-understanding
-  // adapter. Keep them out of Model Card validation and fail closed for another
-  // executor, rather than silently ignoring the user's sampling/window settings.
-  const video = input.mediaAnalysisVideo;
-  if (video && (kind !== "text" || route.executorPluginId !== "clash.google"
-    || route.executorExportId !== "google-execute")) {
-    throw new Error(`Provider executor ${route.executorPluginId}/${route.executorExportId} does not support media-analysis video controls.`);
-  }
-  const remainingMs = input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
-  if (remainingMs !== undefined && (!Number.isFinite(remainingMs) || remainingMs <= 0)) {
-    throw new Error("Media generation Host deadline has elapsed before Provider dispatch.");
-  }
-  return {
-    pluginId: route.executorPluginId,
-    exportId: route.executorExportId,
-    ...(route.accountId ? { accountId: route.accountId } : {}),
-    kind,
-    ...(remainingMs === undefined ? {} : { timeoutMs: Math.max(1, Math.ceil(remainingMs)) }),
-    taskId: input.taskId,
-    projectId: input.projectId ?? "local",
-    ...(input.nodeId ? { nodeId: input.nodeId } : {}),
-    ...(input.pluginBinding ? { binding: input.pluginBinding } : {}),
-    assetInputs: route.assetInputs ?? [],
-    // Carried through untouched. Dropping it here silently turns every resume into a fresh
-    // submission: the node keeps its record, the plugin never sees it, and the same generation is
-    // bought again on every restart.
-    ...(input.pollState === undefined ? {} : { pollState: input.pollState }),
-    input: {
-      values: {
-        modelId: route.modelCode,
-        upstreamModel: route.upstreamModel,
-        apiShape: route.apiShape,
-        prompt: promptForRoute(input, route),
-        ...(input.aspectRatio !== undefined
-          ? { aspectRatio: input.aspectRatio }
-          : {}),
-        ...(input.duration !== undefined ? { duration: input.duration } : {}),
-        modelParams: {
-          ...providerVisibleModelParams(input.modelParams),
-          ...(video ? {
-            video_processing: video.processing,
-            video_fps: video.fps,
-            video_media_resolution: video.mediaResolution,
-            ...(video.startSeconds === undefined ? {} : { video_start_seconds: video.startSeconds }),
-            ...(video.endSeconds === undefined ? {} : { video_end_seconds: video.endSeconds }),
-          } : {}),
-        },
-      },
-      references: [...(input.references ?? [])],
-    },
-  };
-}
-
 /** Fail closed when a compatibility caller has no durable state in which to resume acceptance. */
 export function requireCompletedGeneration(
   first: MockMediaGenerationResult,
@@ -626,7 +444,24 @@ async function materializedProviderPluginExecutorRequest(
   kind: ModelKind,
   route: ModelUpstreamRoute,
 ): Promise<ProviderPluginExecutorRequest> {
-  return providerPluginExecutorRequest(input, kind, route);
+  return providerPluginExecutorRequest({
+    route,
+    kind,
+    taskId: input.taskId,
+    projectId: input.projectId ?? "local",
+    ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+    prompt: input.prompt,
+    ...(input.aspectRatio !== undefined
+      ? { aspectRatio: input.aspectRatio }
+      : {}),
+    ...(input.duration !== undefined ? { duration: input.duration } : {}),
+    ...(input.modelParams ? { modelParams: input.modelParams } : {}),
+    ...(input.mediaAnalysisVideo ? { video: input.mediaAnalysisVideo } : {}),
+    references: input.references,
+    ...(input.pluginBinding ? { pluginBinding: input.pluginBinding } : {}),
+    ...(input.pollState === undefined ? {} : { pollState: input.pollState }),
+    ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
+  });
 }
 
 async function generatePluginProviderMedia(

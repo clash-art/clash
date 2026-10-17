@@ -76,7 +76,7 @@ describe("generation provider registry", () => {
     })).name).toBe("google-image");
   });
 
-  it("keeps plugin-owned Fal routes out of the hosted adapter registry", () => {
+  it("routes allowlisted plugin-owned Fal routes to the plugin provider adapter", () => {
     const falRoute: ModelUpstreamRoute = {
       modelCode: "gpt-image-2",
       kind: "image",
@@ -98,9 +98,11 @@ describe("generation provider registry", () => {
       priority: 10,
     };
 
-    expect(() =>
-      resolveAdapter(params("image_gen", "gpt-image-2", falRoute)),
-    ).toThrow("Hosted provider adapter is not implemented for fal");
+    falRoute.executorPluginId = "clash.fal";
+    falRoute.executorExportId = "fal-execute";
+    expect(
+      resolveAdapter(params("image_gen", "gpt-image-2", falRoute)).name,
+    ).toBe("plugin-provider:clash.fal");
     expect(
       resolveAdapter(params("image_gen", "gpt-image-2", officialRoute)).name,
     ).toBe("openai-image");
@@ -124,8 +126,8 @@ describe("generation provider registry", () => {
     })).name).toBe("minimax-audio");
   });
 
-  it("does not retain a second Fal audio execution path", () => {
-    expect(() =>
+  it("routes allowlisted Fal audio routes to the plugin provider adapter", () => {
+    expect(
       resolveAdapter(
         params("audio_gen", "minimax-music-3", {
           modelCode: "minimax-music-3",
@@ -134,10 +136,29 @@ describe("generation provider registry", () => {
           upstreamId: "fal",
           upstreamModel: "fal-ai/minimax-music/v3",
           apiShape: "fal",
+          executorPluginId: "clash.fal",
+          executorExportId: "fal-execute",
           priority: 9,
         }),
-      ),
-    ).toThrow("Hosted provider adapter is not implemented for fal");
+      ).name,
+    ).toBe("plugin-provider:clash.fal");
+  });
+
+  it("keeps unregistered plugin executors fail-closed", () => {
+    const route: ModelUpstreamRoute = {
+      modelCode: "some-model",
+      kind: "image",
+      providerId: "example",
+      upstreamId: "example",
+      upstreamModel: "example/model",
+      apiShape: "fal",
+      executorPluginId: "example.plugin",
+      executorExportId: "execute",
+      priority: 9,
+    };
+    expect(() =>
+      resolveAdapter(params("image_gen", "some-model", route)),
+    ).toThrow("Hosted provider adapter is not implemented for example");
   });
 
   it("routes MiniMax H3 to the hosted MiniMax video provider", () => {

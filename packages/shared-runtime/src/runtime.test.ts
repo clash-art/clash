@@ -64,6 +64,7 @@ describe("runtime endpoint helpers", () => {
     expect(cfg.capabilities.host).toEqual({
       timelineRender: "available",
       textRevisions: "available",
+      voiceInput: "available",
       localAudio: "unavailable",
     });
     expect(cfg.capabilities.workflows.runner).toBe("cloudflare");

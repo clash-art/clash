@@ -254,6 +254,7 @@ describe("local API app", () => {
           host: {
             timelineRender: "available",
             textRevisions: "available",
+            voiceInput: "available",
             localAudio: "available",
           },
         },

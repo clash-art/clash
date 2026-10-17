@@ -94,5 +94,10 @@ jobs:
           restore-keys: |
             remotion-browser-${{ runner.os }}-
 
+      # The browser bundle resolves workspace packages through their built
+      # entries (e.g. @clash/shared-types dist), so build remotion-ui's deps.
+      - name: Build workspace packages the fixture imports
+        run: pnpm exec turbo run build --filter=@clash/remotion-ui^...
+
       - name: Render fixture frames through both renderers and compare SSIM
         run: pnpm test:remotion-parity

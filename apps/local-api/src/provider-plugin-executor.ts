@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import {
   type ExecutablePluginFunctionExport,
   ExecutablePluginBindingSchema,
@@ -196,7 +194,9 @@ export function createProviderPluginExecutor(options: {
     } = request.input.values;
     const invocation = ExecutablePluginInvocationSchema.parse({
       protocol: "clash.plugin.invoke/v1",
-      invocationId: randomUUID(),
+      // The durable run's idempotency key, not a fresh id per process call:
+      // an ambiguous submit retry must look like the same invocation.
+      invocationId: request.taskId,
       taskId: request.taskId,
       projectId: request.projectId,
       ...(request.nodeId ? { nodeId: request.nodeId } : {}),

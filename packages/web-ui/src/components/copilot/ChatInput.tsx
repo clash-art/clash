@@ -116,7 +116,7 @@ interface LocalAudioConfig {
     setup?: {
       provider: string;
       runtime?: "builtin-rpc" | "provider-route";
-      status: "disabled" | "needs-install" | "ready";
+      status: "disabled" | "needs-install" | "needs-config" | "ready";
     };
   };
 }
@@ -149,8 +149,13 @@ function voiceConfigNotice(config?: LocalAudioConfig): VoiceInputNotice {
 
 function voiceTranscriptionNotice(error: unknown): VoiceInputNotice {
   const message = error instanceof Error ? error.message : String(error);
-  if (/Local ASR is not enabled/i.test(message)) return voiceConfigNotice();
-  if (/Selected ASR model is not deployed/i.test(message))
+  if (/Voice input is not enabled|Local ASR is not enabled/i.test(message))
+    return voiceConfigNotice();
+  if (
+    /selected voice input model is not configured|Selected ASR model is not deployed/i.test(
+      message,
+    )
+  )
     return voiceConfigNotice({
       asr: {
         enabled: true,
@@ -165,7 +170,7 @@ function voiceTranscriptionNotice(error: unknown): VoiceInputNotice {
 
 async function loadLocalAudioConfig(): Promise<LocalAudioConfig> {
   const fetchImpl = globalThis.fetch;
-  const url = runtimeApiUrl("/api/v1/local/audio/voice-input");
+  const url = runtimeApiUrl("/api/v1/audio/voice-input");
   let cache = voiceConfigCacheByFetch.get(fetchImpl);
   if (!cache) {
     cache = new Map();
@@ -206,7 +211,7 @@ async function loadLocalAudioConfig(): Promise<LocalAudioConfig> {
 
 function peekLocalAudioConfig(): LocalAudioConfig | undefined {
   const fetchImpl = globalThis.fetch;
-  const url = runtimeApiUrl("/api/v1/local/audio/voice-input");
+  const url = runtimeApiUrl("/api/v1/audio/voice-input");
   const cached = voiceConfigCacheByFetch.get(fetchImpl)?.get(url);
   if (!cached || cached.expiresAt <= Date.now()) return undefined;
   return cached.value;
@@ -216,7 +221,7 @@ async function transcribeLocalAudio(blob: Blob): Promise<string> {
   const type = blob.type || "audio/webm";
   const form = new FormData();
   form.append("file", new File([blob], `voice-${Date.now()}.webm`, { type }));
-  const res = await fetch(runtimeApiUrl("/api/v1/local/audio/transcriptions"), {
+  const res = await fetch(runtimeApiUrl("/api/v1/audio/transcriptions"), {
     method: "POST",
     credentials: "include",
     body: form,
@@ -226,13 +231,13 @@ async function transcribeLocalAudio(blob: Blob): Promise<string> {
     error?: string;
   } | null;
   if (!res.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
-  if (!json?.text) throw new Error("Local ASR returned no transcript");
+  if (!json?.text) throw new Error("Voice input returned no transcript");
   return json.text;
 }
 
 async function warmupLocalVoiceInput(): Promise<void> {
   const res = await fetch(
-    runtimeApiUrl("/api/v1/local/audio/voice-input/warmup"),
+    runtimeApiUrl("/api/v1/audio/voice-input/warmup"),
     {
       method: "POST",
       credentials: "include",
@@ -483,14 +488,16 @@ function ChatInputInner(
     useState<SpeechInputCompletionIntent | null>(null);
   const voiceAttemptRef = useRef(0);
   const getLocalAudioConfig = useCallback(() => loadLocalAudioConfig(), []);
+  const voiceInputAvailable =
+    getRuntimeCapabilities().host.voiceInput === "available";
 
   useEffect(() => {
-    if (getRuntimeCapabilities().host.localAudio !== "available") return;
+    if (!voiceInputAvailable) return;
     void getLocalAudioConfig().catch(() => undefined);
-  }, [getLocalAudioConfig]);
+  }, [getLocalAudioConfig, voiceInputAvailable]);
 
   const startListening = useCallback(() => {
-    if (isCheckingVoice || isListening) return;
+    if (!voiceInputAvailable || isCheckingVoice || isListening) return;
     setVoiceNotice(null);
     const cachedConfig = peekLocalAudioConfig();
     if (
@@ -836,37 +843,39 @@ function ChatInputInner(
                       {rightToolbarAccessory}
                     </div>
                   ) : null}
-                  <VoiceInputSetupPopover
-                    open={Boolean(voiceNotice)}
-                    onOpenChange={(open) => {
-                      if (open) {
-                        void startListening();
-                      } else {
-                        setVoiceNotice(null);
-                      }
-                    }}
-                    notice={voiceNotice}
-                    trigger={
-                      <IconButton
-                        disabled={actionLocked || isCheckingVoice}
-                        aria-busy={isCheckingVoice}
-                        label={t("copilot.chatInput.voice")}
-                        shape="rounded"
-                        size="sm"
-                        className="clash-chat-input-icon-control"
-                        icon={
-                          isCheckingVoice ? (
-                            <CircleNotch
-                              className="w-4 h-4 animate-spin motion-reduce:animate-none"
-                              weight="bold"
-                            />
-                          ) : (
-                            <Microphone className="w-4 h-4" weight="bold" />
-                          )
+                  {voiceInputAvailable ? (
+                    <VoiceInputSetupPopover
+                      open={Boolean(voiceNotice)}
+                      onOpenChange={(open) => {
+                        if (open) {
+                          void startListening();
+                        } else {
+                          setVoiceNotice(null);
                         }
-                      />
-                    }
-                  />
+                      }}
+                      notice={voiceNotice}
+                      trigger={
+                        <IconButton
+                          disabled={actionLocked || isCheckingVoice}
+                          aria-busy={isCheckingVoice}
+                          label={t("copilot.chatInput.voice")}
+                          shape="rounded"
+                          size="sm"
+                          className="clash-chat-input-icon-control"
+                          icon={
+                            isCheckingVoice ? (
+                              <CircleNotch
+                                className="w-4 h-4 animate-spin motion-reduce:animate-none"
+                                weight="bold"
+                              />
+                            ) : (
+                              <Microphone className="w-4 h-4" weight="bold" />
+                            )
+                          }
+                        />
+                      }
+                    />
+                  ) : null}
                   {showQueuedSend ? (
                     <IconButton
                       onClick={handleFormSubmit}

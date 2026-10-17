@@ -2,7 +2,8 @@ export type TextProviderKind = "openai-compatible" | "anthropic-compatible";
 
 export type TextContentPart =
   | { type: "text"; text: string }
-  | { type: "image"; data: Uint8Array | ArrayBuffer | string; mediaType: string };
+  | { type: "image"; data: Uint8Array | ArrayBuffer | string; mediaType: string }
+  | { type: "audio"; data: Uint8Array | ArrayBuffer | string; mediaType: string };
 
 export interface TextGenerationMessage {
   role: "user" | "assistant";
@@ -29,7 +30,7 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function bytesToBase64(value: Uint8Array | ArrayBuffer | string): string {
+export function bytesToBase64(value: Uint8Array | ArrayBuffer | string): string {
   if (typeof value === "string") return value;
   const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
   let binary = "";
@@ -49,6 +50,17 @@ function openAiContent(content: TextGenerationMessage["content"]): unknown {
   if (typeof content === "string") return content;
   return content.map((part) => {
     if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "audio") {
+      return {
+        type: "input_audio",
+        input_audio: {
+          data: bytesToBase64(part.data),
+          format:
+            part.mediaType.split("/")[1]?.split(";")[0]?.toLowerCase() ??
+            "wav",
+        },
+      };
+    }
     return {
       type: "image_url",
       image_url: {
@@ -62,6 +74,11 @@ function anthropicContent(content: TextGenerationMessage["content"]): unknown {
   if (typeof content === "string") return content;
   return content.map((part) => {
     if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "audio") {
+      throw new Error(
+        "Anthropic-compatible text generation does not accept inline audio.",
+      );
+    }
     return {
       type: "image",
       source: {

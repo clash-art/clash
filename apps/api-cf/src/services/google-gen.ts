@@ -1,4 +1,5 @@
 import { providerHttpError } from "@clash/action-sdk/executable-failure";
+import { bytesToBase64 } from "@clash/shared-runtime";
 /**
  * Image & video generation via Google Vertex AI (Vercel AI SDK).
  *
@@ -189,6 +190,97 @@ export async function generateGoogleAudio(
 }
 
 // ─── Text Generation (Gemini multimodal) ────────────────
+
+export interface GoogleAiStudioTextParams {
+  apiKey: string;
+  baseUrl?: string;
+  model: string;
+  prompt: string;
+  /** Inline audio for transcription/understanding requests. */
+  audio: { bytes: Uint8Array; mediaType: string };
+  cfAigToken?: string;
+}
+
+export interface GoogleAiStudioTextResult {
+  text: string;
+  model: string;
+}
+
+function geminiResponseText(response: unknown): string {
+  const candidates = (response as any)?.candidates;
+  if (!Array.isArray(candidates)) return "";
+  return candidates
+    .flatMap((candidate: any) =>
+      Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [],
+    )
+    .filter((part: any) => typeof part?.text === "string")
+    .map((part: any) => part.text as string)
+    .join("");
+}
+
+/**
+ * One Gemini `generateContent` call with an inline audio part. Used by the
+ * hosted voice-input route for Google AI Studio Provider routes; voice input
+ * never publishes a media output, so this returns text only.
+ */
+export async function generateGoogleAiStudioText(
+  params: GoogleAiStudioTextParams,
+): Promise<GoogleAiStudioTextResult> {
+  if (!params.apiKey.trim())
+    throw new Error("Google AI Studio provider account is missing apiKey.");
+  let baseUrl = (
+    params.baseUrl || "https://generativelanguage.googleapis.com/v1beta"
+  ).replace(/\/$/, "");
+  if (!/\/v1(beta|alpha)?$/.test(baseUrl)) baseUrl = `${baseUrl}/v1beta`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "x-goog-api-key": params.apiKey,
+  };
+  if (params.cfAigToken && /gateway\.ai\.cloudflare\.com/.test(baseUrl)) {
+    headers["cf-aig-authorization"] = `Bearer ${params.cfAigToken}`;
+  }
+  const response = await fetch(
+    `${baseUrl}/models/${encodeURIComponent(params.model)}:generateContent`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: params.prompt },
+              {
+                inlineData: {
+                  mimeType: params.audio.mediaType,
+                  data: bytesToBase64(params.audio.bytes),
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: { temperature: 0 },
+      }),
+    },
+  );
+  const raw = await response.text();
+  let json: unknown;
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = { error: { message: raw } };
+  }
+  if (!response.ok) {
+    const message =
+      (json as any)?.error?.message ?? `${response.status} ${response.statusText}`;
+    throw new Error(`Gemini text request failed: ${message}`);
+  }
+  const text = geminiResponseText(json);
+  if (!text.trim()) {
+    throw new Error(`Gemini text returned no content for ${params.model}.`);
+  }
+  return { text, model: params.model };
+}
 
 export interface GoogleTextParams {
   /** Pre-built Vercel AI SDK messages array. Caller assembles multimodal parts. */
