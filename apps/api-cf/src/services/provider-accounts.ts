@@ -11,10 +11,13 @@ import {
   ProviderAccountIdSchema,
 } from "@clash/shared-types";
 import {
-  decryptSecretJson,
-  encryptSecretJson,
-  requireSecretEnvelopeKey,
-} from "./secret-envelope";
+  cleanProviderCredentials,
+  decryptProviderCredentials,
+  encryptProviderCredentials,
+  parseConfiguredCredentials,
+  providerCredentialKeys,
+  requireProviderCredentialSecret,
+} from "@clash/shared-runtime/provider-credentials";
 
 export interface ProviderAccountInput {
   id?: string;
@@ -66,8 +69,6 @@ type ProviderAccountRow = {
   updated_at: number | null;
 };
 
-const PROVIDER_ACCOUNT_SALT = "clash-provider-account-credentials";
-
 function trimString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -79,14 +80,6 @@ function numberValue(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
-}
-
-function cleanCredentials(value: unknown): Record<string, string> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const entries = Object.entries(value as Record<string, unknown>)
-    .map(([key, raw]) => [key.trim(), trimString(raw)] as const)
-    .filter((entry): entry is readonly [string, string] => !!entry[0] && !!entry[1]);
-  return entries.length ? Object.fromEntries(entries) : undefined;
 }
 
 function cleanStringArray(value: unknown): string[] | undefined {
@@ -114,13 +107,6 @@ function cleanNumberRecord(value: unknown): Record<string, number> | undefined {
   return Object.fromEntries(entries);
 }
 
-function configuredCredentialKeys(credentials: Record<string, string> | undefined): string[] {
-  return Object.entries(credentials ?? {})
-    .filter(([, value]) => value.trim().length > 0)
-    .map(([key]) => key)
-    .sort();
-}
-
 function defaultUpstream(providerId: ProviderAccountId): ModelUpstreamId | undefined {
   if (
     providerId === "fal" ||
@@ -137,18 +123,6 @@ function defaultUpstream(providerId: ProviderAccountId): ModelUpstreamId | undef
     return providerId;
   }
   return undefined;
-}
-
-function parseConfiguredCredentials(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0).sort()
-      : [];
-  } catch {
-    return [];
-  }
 }
 
 function parseSupportedModelIds(value: string | null): string[] | undefined {
@@ -169,22 +143,6 @@ function parseModelPriorities(value: string | null): Record<string, number> | un
   } catch {
     return undefined;
   }
-}
-
-function encryptCredentials(credentials: Record<string, string>, secret: string): Promise<string> {
-  return encryptSecretJson(credentials, secret, PROVIDER_ACCOUNT_SALT);
-}
-
-async function decryptCredentials(encrypted: string | null, secret: string): Promise<Record<string, string>> {
-  const parsed = await decryptSecretJson(encrypted, secret, PROVIDER_ACCOUNT_SALT);
-  return cleanCredentials(parsed) ?? {};
-}
-
-function requireCredentialSecret(secretKey: string | undefined): string {
-  return requireSecretEnvelopeKey(
-    secretKey,
-    "Provider credential encryption key is not configured.",
-  );
 }
 
 export function normalizeProviderAccountInput(value: unknown): ProviderAccountInput | null {
@@ -214,7 +172,7 @@ export function normalizeProviderAccountInput(value: unknown): ProviderAccountIn
   const weight = numberValue(raw.weight);
   const supportedModelIds = cleanStringArray(raw.supportedModelIds);
   const modelPriorities = cleanNumberRecord(raw.modelPriorities);
-  const credentials = cleanCredentials(raw.credentials);
+  const credentials = cleanProviderCredentials(raw.credentials);
   return {
     providerId: providerId.data,
     ...(id ? { id } : {}),
@@ -321,7 +279,7 @@ export async function upsertProviderAccount(
   const now = Math.floor(Date.now() / 1000);
   const existingId = await findExistingAccountId(env.DB, userId, input);
   const existing = existingId ? await getAccountRow(env.DB, userId, existingId) : null;
-  const secret = input.credentials ? requireCredentialSecret(env.ACTION_SECRET_KEY) : undefined;
+  const secret = input.credentials ? requireProviderCredentialSecret(env.ACTION_SECRET_KEY) : undefined;
   let encryptedCredentials = existing?.encrypted_credentials ?? null;
   let configuredCredentials = existing?.configured_credentials ?? null;
   const supportedModelIds = input.supportedModelIds !== undefined
@@ -331,10 +289,10 @@ export async function upsertProviderAccount(
     ? Object.keys(input.modelPriorities).length ? JSON.stringify(input.modelPriorities) : null
     : existing?.model_priorities ?? null;
   if (input.credentials && secret) {
-    const previous = await decryptCredentials(existing?.encrypted_credentials ?? null, secret);
+    const previous = await decryptProviderCredentials(existing?.encrypted_credentials ?? null, secret);
     const merged = { ...previous, ...input.credentials };
-    encryptedCredentials = await encryptCredentials(merged, secret);
-    configuredCredentials = JSON.stringify(configuredCredentialKeys(merged));
+    encryptedCredentials = await encryptProviderCredentials(merged, secret);
+    configuredCredentials = JSON.stringify(providerCredentialKeys(merged));
   }
 
   if (existing) {
@@ -417,7 +375,7 @@ export async function getProviderCredentials(
   query: ProviderCredentialQuery,
 ): Promise<Record<string, string>> {
   if (!userId) throw new Error("Provider credentials require an authenticated actor user.");
-  const secret = requireCredentialSecret(env.ACTION_SECRET_KEY);
+  const secret = requireProviderCredentialSecret(env.ACTION_SECRET_KEY);
   const result = await env.DB
     .prepare(
       `SELECT id, user_id, provider_id, upstream_id, api_shape, region, label, enabled, priority, weight,
@@ -466,7 +424,7 @@ export async function getProviderCredentials(
       return (b.updated_at ?? 0) - (a.updated_at ?? 0);
     });
   for (const row of rows) {
-    const credentials = await decryptCredentials(row.encrypted_credentials, secret);
+    const credentials = await decryptProviderCredentials(row.encrypted_credentials, secret);
     if (required.every((key) => credentials[key]?.trim())) return credentials;
   }
 
@@ -482,7 +440,7 @@ export async function getProviderAccountCredentialsById(
   userId: string,
   accountId: string,
 ): Promise<{ providerId: ProviderAccountId; accountId: string; credentials: Record<string, string> }> {
-  const secret = requireCredentialSecret(env.ACTION_SECRET_KEY);
+  const secret = requireProviderCredentialSecret(env.ACTION_SECRET_KEY);
   const row = await getAccountRow(env.DB, userId, accountId);
   if (!row || row.enabled !== 1) {
     throw new Error(`Provider account ${accountId} is not configured or enabled.`);
@@ -491,6 +449,6 @@ export async function getProviderAccountCredentialsById(
   return {
     providerId,
     accountId: row.id,
-    credentials: await decryptCredentials(row.encrypted_credentials, secret),
+    credentials: await decryptProviderCredentials(row.encrypted_credentials, secret),
   };
 }

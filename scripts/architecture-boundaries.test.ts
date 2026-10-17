@@ -182,6 +182,9 @@ const SHARED_RUNTIME_DEPENDENCIES = [
   "@clash/shared-types",
   "@noble/hashes",
   "ajv",
+  // The shared voice-input Hono route factory keeps one HTTP contract for both
+  // hosted adapters; the pure voice-input providers module stays Hono-free.
+  "hono",
   "loro-crdt",
 ];
 

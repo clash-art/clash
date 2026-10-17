@@ -1,7 +1,7 @@
 {
   "summary": "Node/PostgreSQL admission, opaque relay, outbox handoff and BullMQ checkpoint workers; injected generation execution adapter, wired for Timeline renders through render-server when RENDER_SERVER_URL is set.",
   "key_files": {
-    "src/app.ts": "Bearer-token admission plus optional Better Auth browser sessions, owned Project listing and session-only token management. Public auth-method discovery lets the shared Web hide unavailable login methods; session writes enforce the configured public origin.",
+    "src/app.ts": "Bearer-token admission plus optional Better Auth browser sessions, owned Project listing and session-only token management. Serves /health runtime capabilities and mounts the shared voice-input routes; session writes enforce the configured public origin.",
     "src/postgres.ts": "pg pool lifecycle and pinned transaction adapter. Rollback on failure, release in finally, destroy on rollback failure.",
     "src/migrations.ts": "Explicit versioned migration runner; transaction advisory lock and checksum guard. App startup never auto-migrates.",
     "src/server.ts": "HTTP listener and bounded graceful shutdown. Requires DATABASE_URL and CLOUD_PUBLIC_URL; HOST defaults to loopback.",
@@ -45,6 +45,10 @@
     "src/telemetry-outbox.ts": "Same bootstrap for the outbox worker process (default service.name clash-api-node-outbox).",
     "src/log.ts": "Structured JSON-line logger (shared-telemetry) and errorFacts: logs error class/code only, never messages that may contain connection strings.",
     "src/metrics.ts": "Business metrics on the OTel Metrics API: generation terminal duration, outbox dispatch outcomes, outbox backlog gauge. Bounded enum attributes only.",
-    "src/project-host.contract.test.ts": "Shared Project Host contract on PGlite + temporary disk; declares catalog and asset trash/restore as known gaps."
+    "src/project-host.contract.test.ts": "Shared Project Host contract on PGlite + temporary disk; declares catalog and asset trash/restore as known gaps.",
+    "src/provider-settings.ts": "PostgreSQL read models for provider accounts, model-card configs and usage audit; credentials are decrypted only through the shared secret envelope. Mirrors the D1 tables without foreign keys.",
+    "src/voice-input.ts": "Node wiring for the shared voice-input route factory and hosted ports; catalog/credentials/audit come from Postgres, no Provider transcription logic lives here.",
+    "src/runtime-capabilities.ts": "Node RuntimeCapabilities declaration through the shared hosted defaults + overrides; upper layers read capabilities, never the adapter identity.",
+    "src/config.ts": "Requires DATABASE_URL and CLOUD_PUBLIC_URL, validates listener/port and reads ACTION_SECRET_KEY for provider credential envelopes."
   }
 }

@@ -30,9 +30,10 @@ Dictation can also run through an enabled audio-capable model. The shared
 verbatim prompt, empty-result validation and the `clash.asr.timed-transcript`
 envelope. Web clients call the neutral `/api/v1/audio/voice-input` and
 `/api/v1/audio/transcriptions` routes. The Cloudflare adapter serves them from
-the user's hosted Provider accounts and model catalog; the Node adapter answers
-them with 501 because it has no hosted text-generation runtime. The local Host
-also keeps its historical `/api/v1/local/audio/*` aliases.
+the user's hosted Provider accounts and model catalog; the Node adapter serves
+the same routes over its PostgreSQL provider settings. Both hosted adapters use
+the shared Hono route factory, catalog selection and transcription path. The
+local Host also keeps its historical `/api/v1/local/audio/*` aliases.
 
 Local ASR install/models and the builtin RPC runtime still run only on the user's
 machine. `host.localAudio` remains the capability for that setup UI, while

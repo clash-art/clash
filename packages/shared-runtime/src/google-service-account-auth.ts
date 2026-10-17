@@ -71,7 +71,10 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
 
 // ─── JWT sign + token exchange ────────────────────────────────
 
-async function mintJwt(clientEmail: string, privateKey: CryptoKey): Promise<string> {
+async function mintJwt(
+  clientEmail: string,
+  privateKey: CryptoKey,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
   const claim = {
@@ -106,9 +109,14 @@ async function exchangeJwtForToken(jwt: string): Promise<CachedToken> {
       `Vertex token exchange failed (${resp.status} ${resp.statusText}): ${text.slice(0, 300)}`,
     );
   }
-  const data = (await resp.json()) as { access_token?: string; expires_in?: number };
+  const data = (await resp.json()) as {
+    access_token?: string;
+    expires_in?: number;
+  };
   if (!data.access_token || !data.expires_in) {
-    throw new Error("Vertex token exchange returned no access_token/expires_in");
+    throw new Error(
+      "Vertex token exchange returned no access_token/expires_in",
+    );
   }
   return {
     accessToken: data.access_token,
@@ -118,7 +126,10 @@ async function exchangeJwtForToken(jwt: string): Promise<CachedToken> {
 
 // ─── Public: getAccessToken(env) ──────────────────────────────
 
-async function getVertexAccessTokenForRawCredentials(clientEmail: string, privateKey: string): Promise<string> {
+async function getVertexAccessTokenForRawCredentials(
+  clientEmail: string,
+  privateKey: string,
+): Promise<string> {
   if (!clientEmail || !privateKey) {
     throw new Error(
       "Agent Platform auth requires clientEmail and privateKey provider credentials",
@@ -154,8 +165,13 @@ async function getVertexAccessTokenForRawCredentials(clientEmail: string, privat
   return token.accessToken;
 }
 
-export async function getVertexAccessTokenForCredentials(credentials: ServiceAccountAuthCredentials): Promise<string> {
-  return getVertexAccessTokenForRawCredentials(credentials.clientEmail, credentials.privateKey);
+export async function getVertexAccessTokenForCredentials(
+  credentials: ServiceAccountAuthCredentials,
+): Promise<string> {
+  return getVertexAccessTokenForRawCredentials(
+    credentials.clientEmail,
+    credentials.privateKey,
+  );
 }
 
 /** Clear the cached token for a given client email. For tests / manual revoke. */

@@ -55,11 +55,15 @@ export function readConfig(env: Record<string, string | undefined>) {
   const port = Number(env.PORT ?? 8080);
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw Error("PORT must be an integer between 1 and 65535");
+  const providerSecretKey = env.ACTION_SECRET_KEY?.trim();
+  if (env.ACTION_SECRET_KEY !== undefined && !providerSecretKey)
+    throw Error("ACTION_SECRET_KEY must not be empty");
   return {
     connectionString,
     publicUrl: origin,
     port,
     hostname: env.HOST ?? "127.0.0.1",
     renderServerUrl: renderServerUrl(env),
+    providerSecretKey,
   };
 }

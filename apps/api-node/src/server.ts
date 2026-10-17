@@ -31,6 +31,7 @@ export function startServer(
     assetDirectory: env.CLOUD_ASSET_DIR,
     syncBaseUrl: config.publicUrl,
     auth,
+    providerSecretKey: config.providerSecretKey,
     // Issue #130: monolith mode serves uploads in-process; set
     // CLOUD_CONTENT_DIR. For microservice mode run src/upload-server.ts instead.
     contentUpload: env.CLOUD_CONTENT_DIR
