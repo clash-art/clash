@@ -20,7 +20,7 @@ vi.mock("./containers/render", () => ({
 }));
 
 import { createApp } from "./app";
-import { createSqliteD1 } from "./test-support/sqlite-d1";
+import { createSqliteD1 } from "../../web/app/test-support/sqlite-d1";
 
 const ORIGIN = "http://localhost:8789";
 const PROJECT = "proj-count-1";

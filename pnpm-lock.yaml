@@ -761,9 +761,6 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
     devDependencies:
-      '@clash/api-cf':
-        specifier: workspace:*
-        version: link:../api-cf
       '@clash/local-api':
         specifier: workspace:*
         version: link:../local-api

@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createSqliteD1 } from "../../../../api-cf/src/test-support/sqlite-d1";
+import { createSqliteD1 } from "../../test-support/sqlite-d1";
 import {
   createAuth,
   DEFAULT_COOKIE_CACHE_SECONDS,
