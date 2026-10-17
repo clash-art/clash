@@ -35,10 +35,6 @@ export interface Env {
   BETTER_AUTH_ORIGIN?: string;
   BETTER_AUTH_BASE_PATH?: string;
   WORKER_PUBLIC_URL?: string;
-  /** Separate site that serves the cross-origin render frame, if configured. */
-  RENDER_FRAME_ORIGIN?: string;
-  /** Browser origin that consumes signed Assets (defaults to WORKER_PUBLIC_URL). */
-  WEB_PUBLIC_ORIGIN?: string;
   /** AES-GCM key for encrypting/decrypting user variables (action secrets) */
   ACTION_SECRET_KEY?: string;
   /** HMAC key for short-lived hosted executable-plugin broker capabilities. */

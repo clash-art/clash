@@ -8,23 +8,11 @@
 
 import { Hono } from "hono";
 import type { Env } from "../config";
-import { assetCorsOrigin } from "../services/asset-cors";
 import { getSigningKey, verifySignature } from "../services/asset-signing";
 
 // ─── Routes ──────────────────────────────────────────────────
 
 const assetDeliveryRoutes = new Hono<{ Bindings: Env }>();
-
-assetDeliveryRoutes.use("/*", async (c, next) => {
-  await next();
-  const origin = assetCorsOrigin(c.req.header("origin"), c.env);
-  if (origin) {
-    c.res.headers.set("Access-Control-Allow-Origin", origin);
-    c.res.headers.set("Vary", "Origin");
-  } else {
-    c.res.headers.delete("Access-Control-Allow-Origin");
-  }
-});
 
 /**
  * GET /* — Serve file from R2 (requires valid signature)

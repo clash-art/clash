@@ -19,7 +19,6 @@ import {
 } from "@clash/asset-sdk/delivery";
 
 import type { Env } from "../config";
-import { assetCorsOrigin } from "../services/asset-cors";
 import { verifyCloudAssetDeliveryCapability } from "../services/cloud-asset-delivery";
 
 export interface AssetCapabilityResource {
@@ -128,6 +127,7 @@ export function createR2AssetDeliveryStore(
 
 function corsHeaders(): Headers {
   return new Headers({
+    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, PUT, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Content-Length, Range",
     "Access-Control-Expose-Headers":
@@ -141,14 +141,6 @@ export function createAssetCapabilityRoutes(
 ): Hono<{ Bindings: Env }> {
   const routes = new Hono<{ Bindings: Env }>();
   const now = options.now ?? Date.now;
-  routes.use("/*", async (c, next) => {
-    await next();
-    const origin = assetCorsOrigin(c.req.header("origin"), c.env);
-    if (origin) {
-      c.res.headers.set("Access-Control-Allow-Origin", origin);
-      c.res.headers.set("Vary", "Origin");
-    }
-  });
   routes.onError((error, c) =>
     error instanceof ContentTransferLimitError
       ? c.json(
@@ -162,7 +154,7 @@ export function createAssetCapabilityRoutes(
 
   routes.options(
     "/:token",
-    (_c) => new Response(null, { status: 204, headers: corsHeaders() }),
+    (c) => new Response(null, { status: 204, headers: corsHeaders() }),
   );
 
   routes.all("/:token", async (c) => {
