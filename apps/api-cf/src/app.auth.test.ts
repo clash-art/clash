@@ -115,4 +115,31 @@ it('exposes cloud compatibility without auth and rejects a forged account identi
  expect(CloudServiceSchema.safeParse(await info.json()).success).toBe(true);
  const account=await app.request('/api/v1/cloud/account',{headers:{'x-user-id':'forged'}},env);
  expect(account.status).toBe(401);
+
+});
+
+describe("gateway require-identity header (#136)", () => {
+  beforeEach(() => {
+    tokenIdentity.mockReset().mockResolvedValue(null);
+    sessionIdentity.mockReset().mockResolvedValue(null);
+  });
+  it("fails closed with 401 when the gateway requires identity and none validates (#136)", async () => {
+    const response = await createApp().request(
+      "/api/v1/cloud/account",
+      { headers: { "x-clash-require-identity": "1", "x-user-id": "attacker" } },
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("passes a validated identity through when the gateway requires one (#136)", async () => {
+    sessionIdentity.mockResolvedValue("session-owner");
+    const response = await createApp().request(
+      "/api/v1/me",
+      { headers: { "x-clash-require-identity": "1", cookie: "better-auth.session_token=signed" } },
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ id: "session-owner" });
+  });
 });

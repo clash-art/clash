@@ -7,7 +7,9 @@ import {
   type ProjectAuthorizationStore,
   type SessionIdentity,
 } from "@clash/shared-runtime/project-authorization";
+import type { D1Database } from "@cloudflare/workers-types";
 import { createAuth, type AuthBindings } from "../auth";
+import { verifySessionFast } from "../services/session-fast";
 import type { Env } from "../config";
 import { serverLog } from "../logger";
 
@@ -104,6 +106,29 @@ async function getBetterAuthSession(
 ): Promise<SessionIdentity | null> {
   if (!request.headers.has("cookie") && !request.headers.has("authorization"))
     return null;
+  if (!env.BETTER_AUTH_ORIGIN) {
+    // Issue #135: one JOIN instead of getSession's two queries. The row was
+    // just read from the session authority, so the caller can skip its
+    // separate session recheck.
+    try {
+      const fast = await verifySessionFast(request, env as unknown as AuthBindings & { DB: D1Database });
+      if (fast === null) return null;
+      if (fast !== "fallback")
+        return {
+          session: { id: fast.sessionId, expiresAt: fast.expiresAt },
+          user: {
+            id: fast.userId,
+            ...(fast.userName ? { name: fast.userName } : {}),
+            ...(fast.userImage ? { image: fast.userImage } : {}),
+          },
+          authorityChecked: true,
+        };
+    } catch (error) {
+      serverLog
+        .child("project-auth")
+        .warn("project_auth.fast_session_failed", { error });
+    }
+  }
   let value: unknown;
   try {
     value = env.BETTER_AUTH_ORIGIN

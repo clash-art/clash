@@ -54,6 +54,9 @@ import {
 } from "./services/cloud-project-admission";
 
 
+/** Set by the web gateway on /api/v1/*: answer 401 when no credential validates. */
+export const REQUIRE_IDENTITY_HEADER = "x-clash-require-identity";
+
 export const PROJECT_METADATA_NAME_MAX = 512;
 export const PROJECT_METADATA_DESCRIPTION_MAX = 64 * 1024;
 
@@ -191,7 +194,12 @@ export function createApp(
       await next();
       return;
     }
-    await applyValidatedPublicIdentity(c);
+    const required = c.req.raw.headers.get(REQUIRE_IDENTITY_HEADER) === "1";
+    const userId = await applyValidatedPublicIdentity(c);
+    c.req.raw.headers.delete(REQUIRE_IDENTITY_HEADER);
+    // Issue #136: the web gateway no longer pre-authenticates /api/v1/*; it
+    // asks this Worker to fail closed instead (one identity check, not two).
+    if (required && !userId) return c.json({ error: "Unauthorized" }, 401);
     await next();
   });
 

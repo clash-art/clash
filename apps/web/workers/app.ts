@@ -22,12 +22,6 @@ import { createAuth } from "../app/lib/auth/better-auth.server";
 installWorkersTracing(workers.tracing);
 const gatewayLog = createServerLogger({ component: "web-gateway", module: "proxy" });
 
-type AuthSession = {
-  user?: {
-    id?: string | null;
-  } | null;
-} | null;
-
 type CloudflareFetcher = {
   fetch: (request: Request) => Promise<Response>;
 };
@@ -72,62 +66,9 @@ async function proxyToApiCf(request: Request, env: Env): Promise<Response> {
   }
 }
 
-async function sha256Hex(input: string): Promise<string> {
-  const data = new TextEncoder().encode(input);
-  const buf = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function getUserIdFromApiToken(
-  request: Request,
-  env: Env,
-): Promise<string | null> {
-  const auth = request.headers.get("authorization") ?? "";
-  let token: string | null = null;
-  if (auth.startsWith("Bearer clsh_")) {
-    token = auth.slice(7);
-  } else {
-    const url = new URL(request.url);
-    const q = url.searchParams.get("token");
-    if (q?.startsWith("clsh_")) token = q;
-  }
-  if (!token) return null;
-  const hash = await sha256Hex(token);
-  const { results } = await env.DB.prepare(
-    "SELECT user_id FROM api_token WHERE token_hash = ? LIMIT 1",
-  )
-    .bind(hash)
-    .all();
-  if (!results?.[0]) return null;
-  // Fire-and-forget last_used_at
-  env.DB.prepare(
-    "UPDATE api_token SET last_used_at = unixepoch() WHERE token_hash = ?",
-  )
-    .bind(hash)
-    .run()
-    .catch(() => {});
-  return (results[0] as { user_id: string }).user_id ?? null;
-}
-
-async function getUserIdFromBetterAuth(
-  request: Request,
-  env: Env,
-): Promise<string | null> {
-  const cookie = request.headers.get("cookie") ?? "";
-  const authorization = request.headers.get("authorization") ?? "";
-  if (!cookie && !authorization) return null;
-  try {
-    const auth = createAuth(env);
-    const session = (await auth.api.getSession({
-      headers: new Headers(request.headers),
-    })) as AuthSession;
-    return session?.user?.id ?? null;
-  } catch {
-    return null;
-  }
-}
+/** Issue #136: api-cf answers 401 itself when this is set and no credential
+ * validates. Setting it can only make a request stricter, never looser. */
+export const REQUIRE_IDENTITY_HEADER = "x-clash-require-identity";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -192,13 +133,15 @@ export default {
     }
 
     // Auth-gated public REST API v1 — inject x-user-id then proxy.
+    // Issue #136: api-cf's /api/* middleware already validates the clsh_
+    // token or Better Auth session (and discards any x-user-id). Checking it
+    // here too cost 1-2 extra D1 round trips per request (and a duplicate
+    // api_token last_used_at write). The gateway now only asks api-cf to fail
+    // closed when no credential validates.
     if (path.startsWith("/api/v1/")) {
-      const userId =
-        (await getUserIdFromApiToken(request, env)) ??
-        (await getUserIdFromBetterAuth(request, env));
-      if (!userId) return json({ error: "Unauthorized" }, 401);
       const proxied = new Request(request);
-      proxied.headers.set("x-user-id", userId);
+      proxied.headers.delete("x-user-id");
+      proxied.headers.set(REQUIRE_IDENTITY_HEADER, "1");
       return proxyToApiCf(proxied, env);
     }
 
