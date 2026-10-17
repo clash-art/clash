@@ -10,6 +10,7 @@ import type { Env } from "../config";
 import { listModelCardConfigs } from "../services/model-card-configs";
 import { listProviderAccounts } from "../services/provider-accounts";
 import { applyProviderOAuth, listProviderOAuthRecords } from "../services/provider-oauth";
+import { hostedBaseModelCards } from "./hosted-model-cards";
 import type { GenerationParams } from "./params";
 
 function generationKind(type: GenerationParams["type"]): ModelKind | null {
@@ -38,7 +39,11 @@ export async function resolveGenerationModelProviderRoute(
   ]);
   const configuredProviders: ProviderAccountAvailability[] = applyProviderOAuth(accounts, oauthRecords)
     .map(({ createdAt: _createdAt, updatedAt: _updatedAt, ...account }) => account);
-  const models = buildEffectiveModelCards({ configs, providers: configuredProviders });
+  const models = buildEffectiveModelCards({
+    configs,
+    providers: configuredProviders,
+    baseModels: await hostedBaseModelCards(),
+  });
   const route = resolveModelUpstreamRoute({
     modelCode,
     kind,

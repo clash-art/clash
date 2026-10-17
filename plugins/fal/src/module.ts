@@ -103,3 +103,6 @@ export const schemaHash = executablePluginSchemaHash(
 );
 
 export const manifestDocument = validated.manifest;
+
+/** Validated model-provider bindings, keyed by manifest path, for host catalog composition. */
+export const modelBindingDocuments = validated.modelBindings;

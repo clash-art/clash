@@ -37,6 +37,7 @@ import {
   listProviderOAuthRecords,
   publicProviderOAuth,
 } from "../../services/provider-oauth";
+import { hostedBaseModelCards } from "../../generation/hosted-model-cards";
 
 export const modelProviderRoutes = new Hono<{ Bindings: Env }>();
 
@@ -244,6 +245,7 @@ modelProviderRoutes.post("/model-providers/test", async (c) => {
   const effectiveModels = buildEffectiveModelCards({
     configs,
     providers: accounts.map(providerAccountAvailability),
+    baseModels: await hostedBaseModelCards(),
   });
   const stored = accounts.find((account) => sameProviderAccount(provider, account));
   const enabled = rawProvider.enabled === false ? false : stored?.enabled ?? provider.enabled;
@@ -372,6 +374,7 @@ modelProviderRoutes.get("/models/catalog", async (c) => {
       models: buildEffectiveModelCards({
         configs,
         providers: configuredProviders,
+        baseModels: await hostedBaseModelCards(),
       }),
       configuredProviders,
     }),
