@@ -7,12 +7,12 @@ import {
   removeProject,
   renameProject,
 } from "../services/projects-d1";
-import { getUserIdFromRequest, requireUserId } from "../services/session";
+import { requireSessionUserId, sessionUserId } from "../services/request-identity";
 
 export const projectsD1Routes = new Hono<{ Bindings: Env }>();
 
 projectsD1Routes.get("/", async (c) => {
-  const userId = await getUserIdFromRequest(c.req.raw, c.env as any, c.req.raw.cf as any);
+  const userId = await sessionUserId(c);
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   return c.json(await listProjectsWithAssets(c.env, userId, 100));
 });
@@ -20,7 +20,7 @@ projectsD1Routes.get("/", async (c) => {
 projectsD1Routes.post("/", async (c) => {
   let userId: string;
   try {
-    userId = await requireUserId(c.req.raw, c.env as any, c.req.raw.cf as any);
+    userId = await requireSessionUserId(c);
   } catch (err) {
     if (err instanceof Response) return err.clone();
     throw err;
@@ -34,7 +34,7 @@ projectsD1Routes.post("/", async (c) => {
 projectsD1Routes.get("/:id", async (c) => {
   let userId: string;
   try {
-    userId = await requireUserId(c.req.raw, c.env as any, c.req.raw.cf as any);
+    userId = await requireSessionUserId(c);
   } catch (err) {
     if (err instanceof Response) return err.clone();
     throw err;
@@ -48,7 +48,7 @@ projectsD1Routes.get("/:id", async (c) => {
 projectsD1Routes.patch("/:id", async (c) => {
   let userId: string;
   try {
-    userId = await requireUserId(c.req.raw, c.env as any, c.req.raw.cf as any);
+    userId = await requireSessionUserId(c);
   } catch (err) {
     if (err instanceof Response) return err.clone();
     throw err;
@@ -63,7 +63,7 @@ projectsD1Routes.patch("/:id", async (c) => {
 projectsD1Routes.delete("/:id", async (c) => {
   let userId: string;
   try {
-    userId = await requireUserId(c.req.raw, c.env as any, c.req.raw.cf as any);
+    userId = await requireSessionUserId(c);
   } catch (err) {
     if (err instanceof Response) return err.clone();
     throw err;

@@ -3,12 +3,12 @@ import { eq } from "drizzle-orm";
 import type { Env } from "../config";
 import { getDb } from "../db";
 import { projects } from "../db/app.schema";
-import { getUserIdFromRequest } from "../services/session";
+import { sessionUserId } from "../services/request-identity";
 
 export const internalProjectsContextRoutes = new Hono<{ Bindings: Env }>();
 
 internalProjectsContextRoutes.get("/:projectId/context", async (c) => {
-  const userId = await getUserIdFromRequest(c.req.raw, c.env as any, c.req.raw.cf as any);
+  const userId = await sessionUserId(c);
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   const projectId = c.req.param("projectId");
   const db = getDb(c.env.DB);

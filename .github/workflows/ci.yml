@@ -47,5 +47,7 @@ jobs:
       # depend on (@clash/shared-types, @clash/shared-layout, ...) first.
       - name: Run the full local-api suite
         run: pnpm --filter @clash/local-api test
+      - name: Verify api-cf identity and D1 query budgets
+        run: pnpm --dir apps/api-cf exec vitest run src/app.d1-query-count.test.ts src/app.auth.test.ts src/app.project-transport-auth.test.ts
       - name: Verify benchmark catalog, runner, and evaluator contracts
         run: pnpm --dir packages/shared-artifact-evals exec vitest run
