@@ -306,33 +306,6 @@ journal/staging/publication lifecycle, but does not claim these native outputs.
 The Cloud adapter must bind one `actionRunId` to one Workflow owner and provide
 the same atomic journal operations used by the Local engine:
 
-### Plugin execution port
-
-Executable plugin code is invoked through one shared
-`PluginExecutionPort` (`packages/shared-runtime/src/executable-plugin-port.ts`).
-The port takes the frozen run identity, one `clash.plugin.invoke/v1` invocation,
-and the remaining attempt lease; it returns one plugin result. It does not own
-journal, retry, staging, or publication.
-
-The Cloudflare adapter binds first-party plugins **in-process** at its
-composition root (`generation/plugin-execution/`, dynamically imported so
-Worker startup does not evaluate plugin modules). The current explicit allowlist
-is the Worker-safe executor bodies whose modules import no `node:fs` or
-`child_process` at module scope; `clash.fal/fal-execute` is the first entry.
-This is the same plugin code the Node adapter runs through its Host, not a
-second execution model. `invocationId` is always
-`durableRunIdempotencyKey(run)`, so an ambiguous submit retry reuses the exact
-same key and a checkpointed `pollState` can only be polled. Plugin
-`store.get("apiKey")` is resolved from the selected hosted provider account for
-the active invocation; credentials never enter the journal.
-
-The `remote` binding for third-party HTTPS endpoints remains a typed TODO in
-the port. It is a different trust class (signed, user-configured endpoint) and
-has no code path until its replay, signature, and timeout contract is
-implemented. The `container` binding for `clash.remotion` is likewise a
-separate adapter; neither changes the journal, step graph, or publication
-key.
-
 - `WorkflowRunJournal` stores the frozen Action revision, input and output
   slots, cloud owner, selected hosted account grant, absolute deadlines,
   private phase, attempt generation, retry schedule, opaque `pollState`, result
@@ -391,6 +364,37 @@ or object key. A permission failure is a structured non-retryable failure; a
 transient Workflow, OSS, Registry, or room failure follows the existing
 stage/publish retry rules and never re-enters Provider work after a result
 checkpoint.
+
+
+### Plugin execution port
+
+Executable plugin code is invoked through one shared
+`PluginExecutionPort` (`packages/shared-runtime/src/executable-plugin-port.ts`).
+The port takes the frozen run identity, one `clash.plugin.invoke/v1` invocation,
+and the remaining attempt lease; it returns one plugin result. It does not own
+journal, retry, staging, or publication.
+
+The Cloudflare adapter binds first-party plugins **in-process** at its
+composition root (`generation/plugin-execution/`, dynamically imported so
+Worker startup does not evaluate plugin modules). The current explicit allowlist
+is the Worker-safe executor bodies whose modules import no `node:fs` or
+`child_process` at module scope; `clash.fal/fal-execute` is the first entry.
+This is the same plugin code local-api (the desktop Host) runs, not a second
+execution model. `invocationId` is always
+`durableRunIdempotencyKey(run)`, so an ambiguous submit retry reuses the exact
+same key and a checkpointed `pollState` can only be polled. Provider-executor
+plugin routes have no upstream deduplication, so the hosted pipeline
+(`mayRetryAmbiguousSubmit`) fails an ambiguous submit (`requestState:
+"unknown"`) terminally instead of resubmitting: at most one upstream charge. Plugin
+`store.get("apiKey")` is resolved from the selected hosted provider account for
+the active invocation; credentials never enter the journal.
+
+The `remote` binding for third-party HTTPS endpoints remains a typed TODO in
+the port. It is a different trust class (signed, user-configured endpoint) and
+has no code path until its replay, signature, and timeout contract is
+implemented. The `container` binding for `clash.remotion` is likewise a
+separate adapter; neither changes the journal, step graph, or publication
+key.
 
 ## Executable step contract
 
