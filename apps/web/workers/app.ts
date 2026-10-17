@@ -37,6 +37,8 @@ export interface Env {
   DB: D1Database;
   KV?: KVNamespace;
   API_CF?: CloudflareFetcher;
+  /** Issue #130: stateless upload Worker (optional; falls back to API_CF). */
+  API_UPLOAD?: CloudflareFetcher;
   API_CF_URL?: string;
   BETTER_AUTH_BASE_PATH?: string;
   BETTER_AUTH_ORIGIN?: string;
@@ -49,6 +51,13 @@ export interface Env {
   NODE_ENV?: string;
   ENVIRONMENT?: string;
   SKIP_LOGIN?: string;
+}
+
+export function isUploadServicePath(path: string): boolean {
+  return (
+    /^\/api\/v1\/projects\/[^/]+\/document-bodies\/[^/]+$/.test(path) ||
+    path.startsWith("/assets/capability/")
+  );
 }
 
 async function proxyToApiCf(request: Request, env: Env): Promise<Response> {
@@ -167,6 +176,19 @@ export default {
       const publicRequest = new Request(request);
       publicRequest.headers.delete("x-user-id");
       return proxyToApiCf(publicRequest, env);
+    }
+
+    // Issue #130: uploads go straight to the stateless upload Worker, which
+    // authenticates the request itself (no DO, no api-cf hop).
+    if (env.API_UPLOAD && isUploadServicePath(path)) {
+      const forwarded = new Request(request);
+      forwarded.headers.delete("x-user-id");
+      try {
+        return await env.API_UPLOAD.fetch(forwarded);
+      } catch (err) {
+        gatewayLog.error("gateway.api_upload_proxy_failed", { error: err });
+        return new Response("upload service unavailable", { status: 502 });
+      }
     }
 
     // Auth-gated public REST API v1 — inject x-user-id then proxy.

@@ -4,6 +4,7 @@ import { getRequestListener } from "@hono/node-server";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { createNodeCloudApp } from "./app.ts";
+import { createNodeUploadPorts } from "./content-upload.ts";
 import { readConfig } from "./config.ts";
 import { openPostgres } from "./postgres.ts";
 import { createReplicaHttpGateway } from "./relay-http.ts";
@@ -30,6 +31,14 @@ export function startServer(
     assetDirectory: env.CLOUD_ASSET_DIR,
     syncBaseUrl: config.publicUrl,
     auth,
+    // Issue #130: monolith mode serves uploads in-process; set
+    // CLOUD_CONTENT_DIR. For microservice mode run src/upload-server.ts instead.
+    contentUpload: env.CLOUD_CONTENT_DIR
+      ? createNodeUploadPorts({
+          db: database.db,
+          contentDirectory: env.CLOUD_CONTENT_DIR,
+        })
+      : undefined,
     timeline: env.BETTER_AUTH_SECRET
       ? {
           definition: loadTimelineDefinition(),

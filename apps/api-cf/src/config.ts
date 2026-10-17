@@ -19,6 +19,8 @@ export interface Env {
   MEDIA_GATEWAY_URL?: string;
   ENVIRONMENT: string;
   ROOM: DurableObjectNamespace;
+  /** Issue #130: stateless upload Worker; when bound, upload paths are forwarded to it. */
+  API_UPLOAD?: { fetch(request: Request): Promise<Response> };
   SUPERVISOR: DurableObjectNamespace;
   GENERATION_WORKFLOW: Workflow;
   RENDER_CONTAINER: DurableObjectNamespace<import("./containers/render").RenderContainer>;

@@ -4,6 +4,8 @@ import {
   type TimelineHostOptions,
 } from "./timeline-host.ts";
 import { createProjectRoutes } from "./projects.ts";
+import { mountContentUpload } from "./content-upload.ts";
+import type { UploadServicePorts } from "@clash/asset-sdk/upload-service";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createPersonalAssetRoutes } from "./personal-assets.ts";
 import type { NodeAuth } from "./auth.ts";
@@ -23,6 +25,8 @@ export function createNodeCloudApp(options: {
   auth?: NodeAuth;
   assetDirectory?: string;
   timeline?: TimelineHostOptions;
+  /** Issue #130: serve Document-body uploads in this process (monolith mode). */
+  contentUpload?: UploadServicePorts;
 }) {
   const app = new Hono<{ Variables: { userId: string } }>();
   const authority = createPostgresProjectAuthorizationStore(options.db);
@@ -101,6 +105,9 @@ export function createNodeCloudApp(options: {
         : c.json({ error: "Token not found" }, 404);
     });
   }
+  // Mounted before the generic /api auth + 8 MiB body limit: the upload
+  // service authenticates itself and bounds bodies per part (8 MiB + control).
+  if (options.contentUpload) mountContentUpload(app, options.contentUpload);
   app.use("/api/*", async (c, next) => {
     try {
       const session =

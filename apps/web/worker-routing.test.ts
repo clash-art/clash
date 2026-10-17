@@ -160,3 +160,42 @@ describe("apps/web/wrangler.toml run_worker_first", () => {
     },
   );
 });
+
+describe("upload service routing (#130)", () => {
+  const paths = [
+    "/api/v1/projects/p1/document-bodies/sha256%3Aabc?upload=part&uploadId=x&partNumber=1",
+    "/assets/capability/token.sig",
+  ];
+  it.each(paths)("forwards %s to API_UPLOAD without caller identity", async (path) => {
+    const env = gatewayEnv();
+    let received: Request | undefined;
+    env.API_UPLOAD = {
+      fetch: async (request) => {
+        received = request;
+        return new Response("upload", { status: 207 });
+      },
+    };
+    const response = await worker.fetch(
+      new Request("https://clash.test" + path, { method: "PUT", headers: { "x-user-id": "forged" } }),
+      env,
+    );
+    expect(response.status).toBe(207);
+    expect(received?.headers.get("x-user-id")).toBeNull();
+  });
+  it("falls back to api-cf when API_UPLOAD is not bound", async () => {
+    const response = await worker.fetch(
+      new Request("https://clash.test/assets/capability/token.sig"),
+      gatewayEnv(),
+    );
+    expect(response.status).toBe(418);
+  });
+  it("keeps other project routes on api-cf", async () => {
+    const env = gatewayEnv();
+    env.API_UPLOAD = { fetch: async () => new Response("upload", { status: 207 }) };
+    const response = await worker.fetch(
+      new Request("https://clash.test/assets/other"),
+      env,
+    );
+    expect(response.status).toBe(418);
+  });
+});

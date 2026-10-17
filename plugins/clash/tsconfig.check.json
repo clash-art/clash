@@ -27,6 +27,9 @@
       "@clash/asset-sdk/delivery": [
         "packages/asset-sdk/src/delivery.ts"
       ],
+      "@clash/asset-sdk/upload-service": [
+        "packages/asset-sdk/src/upload-service.ts"
+      ],
       "@clash/sdk": [
         "packages/clash-sdk/js/src/index.ts"
       ],

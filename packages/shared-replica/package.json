@@ -37,6 +37,11 @@
       "types": "./src/loro-stream-session.ts",
       "import": "./src/loro-stream-session.ts",
       "default": "./dist/loro-stream-session.js"
+    },
+    "./content-index": {
+      "types": "./src/content-index.ts",
+      "import": "./src/content-index.ts",
+      "default": "./dist/content-index.js"
     }
   },
   "engines": {

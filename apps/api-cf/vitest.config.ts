@@ -69,6 +69,13 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/asset-sdk\/upload-service$/,
+        replacement: resolve(
+          __dirname,
+          "../../packages/asset-sdk/src/upload-service.ts",
+        ),
+      },
+      {
         find: /^@clash\/asset-sdk\/delivery$/,
         replacement: resolve(
           __dirname,

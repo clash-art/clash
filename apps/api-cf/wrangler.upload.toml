@@ -1,0 +1,92 @@
+#:schema node_modules/wrangler/config-schema.json
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  clash-upload — stateless Project content upload Worker (#130)   ║
+# ║  Entry: src/upload-worker.ts. Exports NO Durable Object class,   ║
+# ║  so this script has no [[migrations]]; ROOM binds api-cf's       ║
+# ║  ProjectRoom via script_name (notify + index-miss fallback only).║
+# ║  D1/R2/secrets MUST be the same as the api-cf it pairs with.     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+# Deploy:  wrangler deploy -c wrangler.upload.toml --env staging
+# Secrets: JWT_SECRET and BETTER_AUTH_SECRET, identical to api-cf's
+#   (wrangler secret put JWT_SECRET -c wrangler.upload.toml --env staging).
+# Traffic: api-cf and web forward the upload paths here when their
+#   API_UPLOAD service binding exists; remove the binding to roll back.
+name = "clash-upload"
+main = "src/upload-worker.ts"
+compatibility_date = "2025-03-14"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[alias]
+"@clash/shared-types" = "../../packages/shared-types/src/index.ts"
+"@clash/shared-types/assets" = "../../packages/shared-types/src/assets.ts"
+"@clash/shared-types/project-sync-content" = "../../packages/shared-types/src/project-sync-content.ts"
+"@clash/shared-types/sync-error-severity" = "../../packages/shared-types/src/sync-error-severity.ts"
+
+[observability]
+enabled = true
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+# OSS / self-host default: pairs with the `clash-api` script.
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "ProjectRoom"
+script_name = "clash-api"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clash-d1"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "clash-r2"
+
+[vars]
+ENVIRONMENT = "production"
+BETTER_AUTH_BASE_PATH = "/api/better-auth"
+
+# ── staging: pairs with clash-api-staging (never production) ──────────
+[env.staging]
+name = "clash-upload-staging"
+workers_dev = false
+
+[env.staging.observability]
+enabled = true
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[[env.staging.durable_objects.bindings]]
+name = "ROOM"
+class_name = "ProjectRoom"
+script_name = "clash-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "clash-staging"
+database_id = "a04f1df0-7356-403c-8df0-0f7d5b5a1c6c"
+
+[[env.staging.r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "clash-staging-assets"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+BETTER_AUTH_BASE_PATH = "/api/better-auth"
+
+# ── production (hosted) is PREPARED, NOT APPLIED ─────────────────────
+# The hosted overlay lives in clash-art/clash-hosted. Equivalent config for
+# `master-clash-upload-hosted` (see the PR / issue #130 rollout notes):
+#   name = "master-clash-upload-hosted"
+#   ROOM:      class_name = "ProjectRoom", script_name = "master-clash-api-hosted"
+#   DB:        master-clash-frontend (aab16eeb-a375-490b-ad1e-cd092cd9f4bb)
+#   R2_BUCKET: master-clash-assets
+#   secrets:   JWT_SECRET, BETTER_AUTH_SECRET = values on master-clash-api-hosted
+#   then add `[[services]] binding = "API_UPLOAD", service = "master-clash-upload-hosted"`
+#   to master-clash-api-hosted and the hosted web Worker. Order: prod D1
+#   migration 0028 → api-cf (room writes index) → upload Worker → bindings.
