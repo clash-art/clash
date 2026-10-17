@@ -35,7 +35,7 @@ jobs:
           pnpm --dir apps/local-api exec vitest run src/project-host.contract.test.ts
           pnpm --dir apps/api-node exec vitest run src/project-host.contract.test.ts src/timeline-host.test.ts src/timeline-definition.test.ts src/personal-assets.test.ts
           pnpm --dir apps/api-cf exec vitest run src/startup-imports.test.ts src/generated/cloud-plugin-validators.test.ts
-          pnpm --dir apps/api-cf exec vitest run --config vitest.integration.config.mts src/integration/project-host.contract.integration.test.ts
+          pnpm --dir apps/api-cf exec vitest run --config vitest.integration.config.mts src/integration/project-host.contract.integration.test.ts src/integration/project-room-host-command.integration.test.ts
       - name: Verify Storyboard references and chat drafts
         run: pnpm --dir packages/web-ui exec vitest run src/components/PluginStoryboardSurface.test.tsx src/components/copilot/useCopilotComposerDraft.test.tsx src/components/copilot/projectAssetReferences.test.ts src/components/copilot/ChatInput.test.tsx
       - name: Verify workspace controls and native Asset provenance

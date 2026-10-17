@@ -12,12 +12,15 @@ import { agentRoutes } from "./agents";
 import { modelProviderRoutes } from "./model-providers";
 import { providerUsageRoutes } from "./provider-usage";
 import { pluginCatalogRoutes } from "./plugin-catalog";
+import { createProjectHostCommandRoutes } from "./project-host-command";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
 
 v1Routes.route("/cloud", cloudRoutes);
 
 v1Routes.route("/projects", createProjectContentRoutes());
+// Timeline Host commands, executed in the project's ProjectRoom (#180).
+v1Routes.route("/projects", createProjectHostCommandRoutes());
 v1Routes.route("/projects", projectRoutes);
 v1Routes.route("/vars", varsRoutes);
 v1Routes.route("/sessions", sessionRoutes);

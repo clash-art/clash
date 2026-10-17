@@ -25,6 +25,7 @@ import {
 } from "@clash/replica/content-index";
 import { projectSyncContent } from "@clash/shared-types/project-sync-content";
 import { createD1ContentReferenceIndex } from "../services/project-content-cloud";
+import { createD1ProjectAuthorizationStore } from "../loro/authorization-store";
 import { LoroStateAdapter } from "@clash/replica/loro";
 import {
   LoroProtocolServerSession,
@@ -1515,6 +1516,48 @@ export class ProjectRoom extends DurableObject<Env> {
         return Response.json({ ok: true });
       } catch (error) {
         return Response.json({ error: error instanceof GenerationPublicationConflict ? error.message : "Generation publication failed" }, { status: error instanceof GenerationPublicationConflict ? 409 : 503 });
+      }
+    }
+
+    // Issue #180: Timeline Host commands (same contract as local-api/api-node).
+    // The adapter loads on first use so Timeline code stays out of startup.
+    if (operation === "host-command" && request.method === "POST") {
+      try {
+        const { runProjectRoomHostCommand } = await import(
+          "./project-room-host-command"
+        );
+        const input = await request.json().catch(() => null);
+        const { status, body } = await runProjectRoomHostCommand(
+          {
+            projectId,
+            doc: () => this.doc,
+            readProject: () =>
+              createD1ProjectAuthorizationStore(this.env as never).readProject(
+                projectId,
+              ),
+            serialize: (work) => {
+              let result: Awaited<ReturnType<typeof work>>;
+              return this.enqueueLoroImport({
+                data: new Uint8Array(),
+                runRealtimeEffects: false,
+                applyGeneration: async () => {
+                  result = await work();
+                },
+              }).then(() => result!);
+            },
+            persist: (update) => this.persistAndMaybeCompact(update),
+            broadcast: (update) => this.broadcastBinary(update),
+            env: this.env as never,
+          },
+          input,
+        );
+        return Response.json(body, { status });
+      } catch (error) {
+        log.error("host-command error:", error);
+        return Response.json(
+          { code: "HOST_COMMAND_FAILED", error: "Project command failed" },
+          { status: 503 },
+        );
       }
     }
 

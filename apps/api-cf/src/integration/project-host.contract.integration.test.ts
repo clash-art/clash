@@ -3,9 +3,9 @@
  * (D1, R2 and ProjectRoom from cloudflare:test), authenticated with a D1 API
  * token like every other public client.
  *
- * Today api-cf serves only the plugin catalog. Timeline host-command and the
- * Project Asset routes are declared, as the editor requires, and listed as
- * known gaps: they must keep failing until the remote adapter implements them.
+ * api-cf serves the plugin catalog and Timeline host-command (ProjectRoom,
+ * #180). The Project Asset routes are declared, as the editor requires, and
+ * listed as known gaps: they must keep failing until the asset adapter lands.
  */
 import { env } from "cloudflare:test";
 import { LoroDoc } from "loro-crdt";
@@ -90,13 +90,6 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
       "assets.media": "supported",
     },
     knownGaps: [
-      "timeline.list",
-      "timeline.create",
-      "timeline.update",
-      "timeline.attach",
-      "timeline.detach",
-      "timeline.delete",
-      "timeline.render",
       "assets.list",
       "assets.batch",
       "assets.get",
