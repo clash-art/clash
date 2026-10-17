@@ -11,6 +11,7 @@ packages:
   - 'packages/shared-*'
   - 'packages/action-sdk'
   - 'packages/asset-sdk'
+  - 'packages/metadata-service'
   - 'packages/clash-sdk/js'
   - 'packages/gui'
   - 'packages/web-ui'

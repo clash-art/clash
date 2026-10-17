@@ -18,6 +18,7 @@ import * as workers from "cloudflare:workers";
 import { installWorkersTracing } from "@clash/shared-telemetry/cloudflare";
 import { createServerLogger } from "@clash/shared-telemetry/log";
 import { createAuth } from "../app/lib/auth/better-auth.server";
+import { isMetadataServiceRequest } from "@clash/metadata-service/routes";
 
 installWorkersTracing(workers.tracing);
 const gatewayLog = createServerLogger({ component: "web-gateway", module: "proxy" });
@@ -31,6 +32,8 @@ export interface Env {
   DB: D1Database;
   KV?: KVNamespace;
   API_CF?: CloudflareFetcher;
+  /** Issue #138: lean metadata Worker (optional; falls back to API_CF). */
+  API_META?: CloudflareFetcher;
   /** Issue #130: stateless upload Worker (optional; falls back to API_CF). */
   API_UPLOAD?: CloudflareFetcher;
   API_CF_URL?: string;
@@ -133,6 +136,22 @@ export default {
     }
 
     // Auth-gated public REST API v1 — inject x-user-id then proxy.
+    // Issue #138: project cards, token list and Project metadata replication
+    // go straight to the lean metadata Worker, which authenticates itself
+    // (one D1 JOIN for a session, no better-auth). Without the binding they
+    // fall through to api-cf, which serves the same routes in-process.
+    if (env.API_META && isMetadataServiceRequest(request.method, path)) {
+      const forwarded = new Request(request);
+      forwarded.headers.delete("x-user-id");
+      if (path.startsWith("/api/v1/")) forwarded.headers.set(REQUIRE_IDENTITY_HEADER, "1");
+      try {
+        return await env.API_META.fetch(forwarded);
+      } catch (err) {
+        gatewayLog.error("gateway.api_meta_proxy_failed", { error: err });
+        return proxyToApiCf(forwarded, env);
+      }
+    }
+
     // Issue #136: api-cf's /api/* middleware already validates the clsh_
     // token or Better Auth session (and discards any x-user-id). Checking it
     // here too cost 1-2 extra D1 round trips per request (and a duplicate

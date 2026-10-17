@@ -49,6 +49,10 @@ export const DEV_SOURCE_ALIASES = [
     replacement: resolve(repoRoot, "packages/asset-sdk/src/index.ts"),
   },
   {
+    find: /^@clash\/metadata-service\/(routes)$/,
+    replacement: resolve(repoRoot, "packages/metadata-service/src/$1.ts"),
+  },
+  {
     find: /^@clash\/web-ui\/(.+)$/,
     replacement: resolve(repoRoot, "packages/web-ui/src/$1"),
   },

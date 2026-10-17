@@ -6,7 +6,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { createAuth, createAuthForHandler } from "../auth";
 import { createSqliteD1 } from "../test-support/sqlite-d1";
-import { verifySessionFast } from "./session-fast";
+import { betterAuthSessionCookieParams, verifySessionFast } from "./session-fast";
+import { leanSessionCookieParams } from "./session-cookie";
 
 for (const origin of ["http://localhost:8789", "https://staging.example.test"]) {
   describe(`fast session check vs Better Auth (${origin})`, () => {
@@ -44,6 +45,27 @@ for (const origin of ["http://localhost:8789", "https://staging.example.test"]) 
       cookie = res.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
       token = (sqlite.prepare("SELECT token FROM sessions").get() as { token: string }).token;
       if (origin.startsWith("https")) expect(cookie).toContain("__Secure-better-auth.session_token=");
+    });
+
+    it("lean Worker params (no better-auth) equal the live Better Auth context (#138)", async () => {
+      const lean = await leanSessionCookieParams(env as never)!;
+      const official = await betterAuthSessionCookieParams(env);
+      const pick = (p: typeof lean) => ({
+        cookieName: p.cookieName,
+        dontRememberCookieName: p.dontRememberCookieName,
+        expiresInMs: p.expiresInMs,
+        updateAgeMs: p.updateAgeMs,
+      });
+      expect(pick(lean)).toEqual(pick(official));
+    });
+
+    it("lean params with no baseURL need an explicit secure-cookie pin", async () => {
+      const unpinned = { BETTER_AUTH_SECRET: "s" };
+      expect(leanSessionCookieParams(unpinned)).toBeNull();
+      const noBase = { DB: d1, ENVIRONMENT: "test", BETTER_AUTH_SECRET: "contract-secret-no-base-0123456789" } as never;
+      const official = await betterAuthSessionCookieParams(noBase);
+      const lean = await leanSessionCookieParams({ BETTER_AUTH_SECRET: "x", BETTER_AUTH_SECURE_COOKIES: "false" })!;
+      expect(lean.cookieName).toBe(official.cookieName);
     });
 
     it("valid cookie: same user and session, one D1 query", async () => {

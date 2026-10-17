@@ -1,0 +1,95 @@
+#:schema node_modules/wrangler/config-schema.json
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  clash-meta — lean Project metadata Worker (#138)                ║
+# ║  Entry: src/metadata-worker.ts. No better-auth, no ORM, no       ║
+# ║  shared-types barrel, no Loro; exports NO Durable Object class.  ║
+# ║  ROOM binds api-cf's ProjectRoom via script_name (card previews).║
+# ║  API_CF: deferred requests (Better Auth session refresh).        ║
+# ║  D1/secrets MUST be the same as the api-cf it pairs with.        ║
+# ╚══════════════════════════════════════════════════════════════════╝
+# Deploy:  wrangler deploy -c wrangler.meta.toml --env staging
+# Secrets: BETTER_AUTH_SECRET and JWT_SECRET, identical to api-cf's.
+# Traffic: web and api-cf forward the metadata routes here when their
+#   API_META service binding exists; remove the binding to roll back.
+# BETTER_AUTH_SECURE_COOKIES must match the cookie name the session issuer
+#   (web/api-cf Better Auth) sets: "false" -> better-auth.session_token,
+#   "true" -> __Secure-better-auth.session_token. Unset with no
+#   BETTER_AUTH_URL = every session check defers to api-cf (safe, slow).
+name = "clash-meta"
+main = "src/metadata-worker.ts"
+compatibility_date = "2025-03-14"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[alias]
+"@clash/shared-types/project-metadata" = "../../packages/shared-types/src/project-metadata.ts"
+
+[observability]
+enabled = true
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "ProjectRoom"
+script_name = "clash-api"
+
+[[services]]
+binding = "API_CF"
+service = "clash-api"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clash-d1"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+ENVIRONMENT = "production"
+
+# ── staging: pairs with clash-api-staging (never production) ──────────
+[env.staging]
+name = "clash-meta-staging"
+workers_dev = false
+
+[env.staging.observability]
+enabled = true
+[env.staging.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+
+[[env.staging.durable_objects.bindings]]
+name = "ROOM"
+class_name = "ProjectRoom"
+script_name = "clash-api-staging"
+
+[[env.staging.services]]
+binding = "API_CF"
+service = "clash-api-staging"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "clash-staging"
+database_id = "a04f1df0-7356-403c-8df0-0f7d5b5a1c6c"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+# Staging Better Auth has no BETTER_AUTH_URL and sets the unprefixed
+# better-auth.session_token cookie (verified from a staging sign-in).
+BETTER_AUTH_SECURE_COOKIES = "false"
+# Issue #139: read GETs via the D1 Sessions API (nearest read replica;
+# auth/not-found answers are re-checked on the primary). Needs read
+# replication enabled on the database; remove to read the primary only.
+D1_READ_REPLICAS = "auto"
+
+# ── production (hosted) is PREPARED, NOT APPLIED ─────────────────────
+# Hosted overlay lives in clash-art/clash-hosted. Equivalent config for
+# `master-clash-meta-hosted`: ROOM script_name = "master-clash-api-hosted",
+# API_CF service = "master-clash-api-hosted", DB = master-clash-frontend,
+# secrets BETTER_AUTH_SECRET + JWT_SECRET = values on master-clash-api-hosted,
+# BETTER_AUTH_SECURE_COOKIES = the prefix production cookies actually use
+# (check one prod Set-Cookie name first). Then add
+# `[[services]] binding = "API_META", service = "master-clash-meta-hosted"`
+# to the hosted web Worker (and optionally api-cf).

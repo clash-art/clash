@@ -1,7 +1,7 @@
 import {
   ProjectMetadataSchema,
   type ProjectMetadata,
-} from "@clash/shared-types";
+} from "@clash/shared-types/project-metadata";
 
 export interface CloudProjectMetadataStore {
   read(projectId: string): Promise<ProjectMetadata | null>;

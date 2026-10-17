@@ -1,0 +1,43 @@
+{
+  "name": "@clash/metadata-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Platform-agnostic Project metadata HTTP service (project directory, metadata replication, token listing) over injected ports",
+  "type": "module",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
+    },
+    "./routes": {
+      "types": "./dist/routes.d.ts",
+      "import": "./dist/routes.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit --project tsconfig.check.json"
+  },
+  "dependencies": {
+    "@clash/shared-types": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "vitest": "^4.1.2"
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
+}

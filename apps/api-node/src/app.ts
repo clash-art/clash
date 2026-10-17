@@ -6,6 +6,8 @@ import {
 import { createProjectRoutes } from "./projects.ts";
 import { mountContentUpload } from "./content-upload.ts";
 import type { UploadServicePorts } from "@clash/asset-sdk/upload-service";
+import type { MetadataServicePorts } from "@clash/metadata-service";
+import { mountMetadataService } from "./metadata-service.ts";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createPersonalAssetRoutes } from "./personal-assets.ts";
 import type { NodeAuth } from "./auth.ts";
@@ -27,6 +29,10 @@ export function createNodeCloudApp(options: {
   timeline?: TimelineHostOptions;
   /** Issue #130: serve Document-body uploads in this process (monolith mode). */
   contentUpload?: UploadServicePorts;
+  /** Issue #138: serve the metadata routes (/api/projects, /loro/:id/metadata …)
+   * in this process (monolith mode). Opt-in: Node keeps its own /api/v1 and
+   * /api/settings routes otherwise. */
+  metadataService?: MetadataServicePorts;
 }) {
   const app = new Hono<{ Variables: { userId: string } }>();
   const authority = createPostgresProjectAuthorizationStore(options.db);
@@ -108,6 +114,12 @@ export function createNodeCloudApp(options: {
   // Mounted before the generic /api auth + 8 MiB body limit: the upload
   // service authenticates itself and bounds bodies per part (8 MiB + control).
   if (options.contentUpload) mountContentUpload(app, options.contentUpload);
+  // Node already serves /api/v1/projects/:id and /api/settings/tokens with its
+  // own contract; the monolith adds only the routes it lacks.
+  if (options.metadataService)
+    mountMetadataService(app, options.metadataService, {
+      routes: ["projects-list", "project-get", "metadata-get", "metadata-put"],
+    });
   app.use("/api/*", async (c, next) => {
     try {
       const session =
