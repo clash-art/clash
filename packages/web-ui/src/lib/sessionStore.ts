@@ -22,6 +22,7 @@ import {
   getRuntimeCapabilities,
   setApiUnauthorizedListener,
 } from "./runtimeConfig";
+import { clearSessionSnapshot, takeServedSnapshotAt } from "./sessionSnapshot";
 
 /** A focus refetch happens only this long after the previous session fetch. */
 export const SESSION_FOCUS_REFETCH_MS = 5 * 60 * 1000;
@@ -56,6 +57,11 @@ function startSessionSource(): SessionAtom | null {
     if (state.isRefetching && !wasRefetching) {
       lastFetchAt = Date.now();
       mutationPending = false;
+    }
+    if (wasRefetching && !state.isRefetching) {
+      // Answered from another tab's snapshot: throttle from its age.
+      const servedAt = takeServedSnapshotAt();
+      if (servedAt !== null) lastFetchAt = servedAt;
     }
     wasRefetching = state.isRefetching;
   });
@@ -145,6 +151,7 @@ export function sessionFailureStatus(snapshot: SessionSnapshot): number | null {
 
 /** An API answered 401: show the app signed out, without a get-session. */
 export function markSignedOut(): void {
+  clearSessionSnapshot();
   if (!source) return;
   const current = source.get();
   if (current.data === null && !current.isPending && !current.isRefetching) {
