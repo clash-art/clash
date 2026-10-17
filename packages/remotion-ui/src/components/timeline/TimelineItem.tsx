@@ -571,10 +571,17 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
 
     attemptedFilmstripKeyRef.current = filmstripCacheKey;
     let cancelled = false;
+    let settled = false;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
     let idleId: number | null = null;
 
     const run = async () => {
+      const cached = thumbnailCache.get(filmstripCacheKey);
+      if (cached) {
+        settled = true;
+        setFilmstripThumbnail(cached);
+        return;
+      }
       setIsGeneratingThumbnail(true);
       setHasProgressiveFilmstripFrame(false);
       const generationId = filmstripGenerationRef.current + 1;
@@ -629,12 +636,19 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
           )
       );
 
+      // The strip is keyed by source + sample count, not by layout, so keep it
+      // even if this run was superseded (e.g. waveform or selection changed
+      // the item height mid-build).
+      if (generated) {
+        thumbnailCache.set(filmstripCacheKey, generated);
+      }
+
       if (cancelled || filmstripGenerationRef.current !== generationId) {
         return;
       }
+      settled = true;
 
       if (generated) {
-        thumbnailCache.set(filmstripCacheKey, generated);
         setFilmstripThumbnail(generated);
       }
 
@@ -649,6 +663,11 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
 
     return () => {
       cancelled = true;
+      // An unfinished run must not block the re-run for the same key; the
+      // re-run joins the in-flight build through pendingFilmstripBuilds.
+      if (!settled && attemptedFilmstripKeyRef.current === filmstripCacheKey) {
+        attemptedFilmstripKeyRef.current = null;
+      }
       if (idleId !== null && 'cancelIdleCallback' in window) {
         window.cancelIdleCallback(idleId);
       }
