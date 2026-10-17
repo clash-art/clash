@@ -333,18 +333,6 @@ export function validateTimelineDsl(
   };
 }
 
-const timelineDslJsonSchema = zodToDraft7JsonSchema(TimelineDslSchema, {
-  name: "TimelineDsl",
-});
-const timelineItemMaskJsonSchema = zodToDraft7JsonSchema(
-  TimelineItemMaskSchema,
-  { name: "TimelineItemMask" },
-);
-const timelineItemKeyframesJsonSchema = zodToDraft7JsonSchema(
-  TimelineItemKeyframesSchema,
-  { name: "TimelineItemKeyframes" },
-);
-
 type JsonSchemaObject = Record<string, unknown>;
 
 function jsonSchemaObject(value: unknown, label: string): JsonSchemaObject {
@@ -365,60 +353,79 @@ function jsonSchemaObjectAtPath(
   return jsonSchemaObject(current, path.join("."));
 }
 
-const timelineDslJsonSchemaDefinitions = jsonSchemaObjectAtPath(
-  timelineDslJsonSchema,
-  ["definitions"],
-);
-timelineDslJsonSchemaDefinitions.TimelineItemMask = jsonSchemaObjectAtPath(
-  timelineItemMaskJsonSchema,
-  ["definitions", "TimelineItemMask"],
-);
-timelineDslJsonSchemaDefinitions.TimelineItemKeyframes = jsonSchemaObjectAtPath(
-  timelineItemKeyframesJsonSchema,
-  ["definitions", "TimelineItemKeyframes"],
-);
+// Converting the Timeline DSL zod schemas to JSON Schema is the most
+// expensive part of importing this module. TIMELINE_DSL_DEFINITION.jsonSchema
+// is an enumerable getter that builds it on first read (memoized).
+function buildTimelineDslJsonSchemaParts() {
+  const timelineDslJsonSchema = zodToDraft7JsonSchema(TimelineDslSchema, {
+    name: "TimelineDsl",
+  });
+  const timelineItemMaskJsonSchema = zodToDraft7JsonSchema(
+    TimelineItemMaskSchema,
+    { name: "TimelineItemMask" },
+  );
+  const timelineItemKeyframesJsonSchema = zodToDraft7JsonSchema(
+    TimelineItemKeyframesSchema,
+    { name: "TimelineItemKeyframes" },
+  );
 
-const timelineDslItemJsonSchema = jsonSchemaObjectAtPath(
-  timelineDslJsonSchema,
-  [
-    "definitions",
-    "TimelineDsl",
-    "properties",
-    "tracks",
-    "items",
-    "properties",
-    "items",
-    "items",
-  ],
-);
-timelineDslItemJsonSchema.allOf = [
-  ...itemBaseFieldApplicabilityRules.map((rule) => ({
-    if: { required: [rule.field] },
-    then: {
-      properties: {
-        type: { enum: [...rule.allowedItemTypes] },
-      },
-    },
-  })),
-  {
-    if: {
-      required: [clipMaskRequiresMaskRule.channelContainer],
-      properties: {
-        [clipMaskRequiresMaskRule.channelContainer]: {
-          anyOf: clipMaskRequiresMaskRule.channels.map((channel) => ({
-            required: [channel],
-          })),
+  const timelineDslJsonSchemaDefinitions = jsonSchemaObjectAtPath(
+    timelineDslJsonSchema,
+    ["definitions"],
+  );
+  timelineDslJsonSchemaDefinitions.TimelineItemMask = jsonSchemaObjectAtPath(
+    timelineItemMaskJsonSchema,
+    ["definitions", "TimelineItemMask"],
+  );
+  timelineDslJsonSchemaDefinitions.TimelineItemKeyframes = jsonSchemaObjectAtPath(
+    timelineItemKeyframesJsonSchema,
+    ["definitions", "TimelineItemKeyframes"],
+  );
+
+  const timelineDslItemJsonSchema = jsonSchemaObjectAtPath(
+    timelineDslJsonSchema,
+    [
+      "definitions",
+      "TimelineDsl",
+      "properties",
+      "tracks",
+      "items",
+      "properties",
+      "items",
+      "items",
+    ],
+  );
+  timelineDslItemJsonSchema.allOf = [
+    ...itemBaseFieldApplicabilityRules.map((rule) => ({
+      if: { required: [rule.field] },
+      then: {
+        properties: {
+          type: { enum: [...rule.allowedItemTypes] },
         },
       },
+    })),
+    {
+      if: {
+        required: [clipMaskRequiresMaskRule.channelContainer],
+        properties: {
+          [clipMaskRequiresMaskRule.channelContainer]: {
+            anyOf: clipMaskRequiresMaskRule.channels.map((channel) => ({
+              required: [channel],
+            })),
+          },
+        },
+      },
+      then: { required: [clipMaskRequiresMaskRule.requiredField] },
     },
-    then: { required: [clipMaskRequiresMaskRule.requiredField] },
-  },
-];
+  ];
 
-const timelineDslJsonSchemaFragments = {
-  TimelineItemMask: timelineItemMaskJsonSchema,
-  TimelineItemKeyframes: timelineItemKeyframesJsonSchema,
-} as const;
+  const timelineDslJsonSchemaFragments = {
+    TimelineItemMask: timelineItemMaskJsonSchema,
+    TimelineItemKeyframes: timelineItemKeyframesJsonSchema,
+  } as const;
+
+  return { timelineDslJsonSchema, timelineDslJsonSchemaFragments };
+}
 
 const timelineMaskExample = Object.fromEntries(
   Object.entries(TIMELINE_MASK_FIELD_ANNOTATIONS).map(([field, annotation]) => [
@@ -524,6 +531,29 @@ function timelineDslContractFingerprint(value: unknown): string {
   return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
+function buildTimelineDslDefinitionJsonSchema() {
+  const { timelineDslJsonSchema, timelineDslJsonSchemaFragments } =
+    buildTimelineDslJsonSchemaParts();
+  return {
+    ...timelineDslJsonSchema,
+    "x-clash-fragments": timelineDslJsonSchemaFragments,
+    "x-clash-features": {
+      clipMask: timelineMaskDslFeature,
+      itemTransform: TIMELINE_ITEM_TRANSFORM_SEMANTICS,
+    },
+    "x-clash-semantic-rules": TIMELINE_DSL_SEMANTIC_RULES,
+  };
+}
+
+let timelineDslDefinitionJsonSchemaCache:
+  | ReturnType<typeof buildTimelineDslDefinitionJsonSchema>
+  | undefined;
+
+function timelineDslDefinitionJsonSchema() {
+  return (timelineDslDefinitionJsonSchemaCache ??=
+    buildTimelineDslDefinitionJsonSchema());
+}
+
 const timelineDslSerializableDefinition = {
   schemaVersion: 14,
   format: "clash.timeline.yaml",
@@ -556,14 +586,8 @@ const timelineDslSerializableDefinition = {
     cliCommand: "clash timeline validate --file <path> --json",
     mcpTool: "clash_timeline_validate",
   },
-  jsonSchema: {
-    ...timelineDslJsonSchema,
-    "x-clash-fragments": timelineDslJsonSchemaFragments,
-    "x-clash-features": {
-      clipMask: timelineMaskDslFeature,
-      itemTransform: TIMELINE_ITEM_TRANSFORM_SEMANTICS,
-    },
-    "x-clash-semantic-rules": TIMELINE_DSL_SEMANTIC_RULES,
+  get jsonSchema() {
+    return timelineDslDefinitionJsonSchema();
   },
   features: {
     clipMask: timelineMaskDslFeature,
@@ -578,10 +602,14 @@ let timelineDslContractFingerprintCache: string | undefined;
 
 // The fingerprint canonicalizes the whole definition (incl. the operation
 // catalog's JSON Schemas); compute it on first read, not at module load.
+// Copy descriptors rather than spreading so the jsonSchema getter stays lazy.
 export const TIMELINE_DSL_DEFINITION: typeof timelineDslSerializableDefinition & {
   readonly contractFingerprint: string;
 } = Object.defineProperty(
-  { ...timelineDslSerializableDefinition },
+  Object.defineProperties(
+    {},
+    Object.getOwnPropertyDescriptors(timelineDslSerializableDefinition),
+  ),
   "contractFingerprint",
   {
     enumerable: true,

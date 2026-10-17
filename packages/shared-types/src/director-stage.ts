@@ -530,12 +530,23 @@ const directorStageContractSchemas = {
   camera: { schema: DirectorStageCameraSchema, name: "DirectorStageCamera" },
 } as const;
 
-const directorStageJsonSchemas = Object.fromEntries(
-  Object.entries(directorStageContractSchemas).map(([contract, definition]) => [
-    contract,
-    zodToDraft7JsonSchema(definition.schema, { name: definition.name }),
-  ]),
-) as Record<DirectorStageSchemaContract, Record<string, unknown>>;
+// Generated on first use (memoized): JSON Schema conversion is expensive and
+// most importers of this module never ask for it.
+let directorStageJsonSchemas:
+  | Record<DirectorStageSchemaContract, Record<string, unknown>>
+  | undefined;
+
+function directorStageJsonSchemaCatalog(): Record<
+  DirectorStageSchemaContract,
+  Record<string, unknown>
+> {
+  return (directorStageJsonSchemas ??= Object.fromEntries(
+    Object.entries(directorStageContractSchemas).map(([contract, definition]) => [
+      contract,
+      zodToDraft7JsonSchema(definition.schema, { name: definition.name }),
+    ]),
+  ) as Record<DirectorStageSchemaContract, Record<string, unknown>>);
+}
 
 /**
  * Return the machine-readable projection generated beside the authoritative
@@ -545,7 +556,7 @@ const directorStageJsonSchemas = Object.fromEntries(
 export function directorStageJsonSchema(
   contract: DirectorStageSchemaContract,
 ): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(directorStageJsonSchemas[contract])) as Record<string, unknown>;
+  return JSON.parse(JSON.stringify(directorStageJsonSchemaCatalog()[contract])) as Record<string, unknown>;
 }
 
 export type DirectorStageVector3 = z.infer<typeof DirectorStageVector3Schema>;
