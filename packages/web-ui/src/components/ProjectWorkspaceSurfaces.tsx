@@ -889,7 +889,7 @@ export function ProjectTimelineEditorSurface({
         }),
       );
       const response = await fetch(
-        runtimeApiUrl("/api/v1/local/audio/transcriptions"),
+        runtimeApiUrl("/api/v1/audio/transcriptions"),
         {
           method: "POST",
           credentials: "include",

@@ -95,6 +95,7 @@ function runtime() {
       host: {
         timelineRender: "available" as const,
         textRevisions: "available" as const,
+        voiceInput: "available" as const,
         localAudio: "available" as const,
       },
       auth: { mode: "local-user" as const },

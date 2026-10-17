@@ -94,3 +94,43 @@ it("admits through real HTTP using database tokens and rejects forged identity/r
     await db.close();
   }
 });
+
+it("answers provider-route voice input with 501 on the Node adapter", async () => {
+  const db = new PGlite();
+  try {
+    await migrateDatabase(db);
+    const token = "clsh_" + "b".repeat(40);
+    await db.query(
+      "INSERT INTO api_token (id,user_id,name,token_hash,token_prefix) VALUES ($1,$2,$3,$4,$5)",
+      [
+        "voice-token",
+        "owner",
+        "voice",
+        createHash("sha256").update(token).digest("hex"),
+        "clsh_bbbb",
+      ],
+    );
+    const app = createNodeCloudApp({
+      db,
+      syncBaseUrl: "https://node.example.com",
+    });
+    const headers = { authorization: `Bearer ${token}` };
+
+    for (const [method, path] of [
+      ["GET", "/api/v1/audio/voice-input"],
+      ["POST", "/api/v1/audio/transcriptions"],
+      ["POST", "/api/v1/audio/voice-input/warmup"],
+    ] as const) {
+      const response = await app.request(path, { method, headers });
+      expect(response.status).toBe(501);
+      expect(await response.json()).toMatchObject({
+        code: "VOICE_INPUT_UNAVAILABLE",
+        error: expect.stringContaining(
+          "no hosted text-generation runtime",
+        ),
+      });
+    }
+  } finally {
+    await db.close();
+  }
+});

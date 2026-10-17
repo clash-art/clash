@@ -88,6 +88,17 @@ import {
   handleProjectAssetImportSessionContent,
   type ProjectAssetImportSessionPorts,
 } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
+import {
+  VOICE_INPUT_DISABLED_MESSAGE,
+  VoiceInputError,
+  isVoiceInputProviderReady,
+  resolveVoiceInputReadiness,
+  transcribeVoiceInputWithProvider,
+  voiceInputLocalReadiness,
+  voiceInputUsesProviderRoute,
+  type VoiceInputPorts,
+  type VoiceInputSelection,
+} from "@clash/shared-runtime/cloud-project-host/voice-input";
 import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
 import { resolveProviderSecretKey } from "./local-provider-store.js";
 import {
@@ -7727,121 +7738,119 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     });
     return c.json({ metadata: rows });
   });
-  const resolveVoiceInputRoute = async () => {
-    const resolvedSelection = audioConfig.getVoiceInputSelection
+  const resolveVoiceInputSelection = async (): Promise<VoiceInputSelection> =>
+    audioConfig.getVoiceInputSelection
       ? await audioConfig.getVoiceInputSelection()
       : await audioConfig.getPublicConfig().then(({ asr }) => ({
           enabled: asr.enabled,
           model: asr.model,
         }));
-    if (!resolvedSelection.enabled) return { resolvedSelection };
+  const resolveVoiceInputCatalogEntry = async (modelId: string) => {
     const state = await db.load();
     const configuredProviders = publicProviderAccounts(
       state.providerAccounts,
       userId,
       state.providerOAuth,
     );
-    const entry = listModelCatalogEntries({
-      models: await effectiveModelCards(
-        state,
-        userId,
-        options.listPluginCards,
-        options.listPluginModelBindings,
-      ),
-      configuredProviders,
-    }).find((candidate) => candidate.model.id === resolvedSelection.model);
-    const route =
-      entry?.selectedRoute ??
-      entry?.routes.find((candidate) => candidate.apiShape === "local-asr");
-    const isCloudReady =
-      !!entry &&
-      entry.model.kind === "text" &&
-      (entry.model.input.promptModalities.includes("audio") ||
-        !!entry.model.input.inputMode.audios) &&
-      !!entry.selectedRoute &&
-      entry.missingCredentials.length === 0 &&
-      entry.tier === "available";
-    return { resolvedSelection, entry, route, isCloudReady };
+    return (
+      listModelCatalogEntries({
+        models: await effectiveModelCards(
+          state,
+          userId,
+          options.listPluginCards,
+          options.listPluginModelBindings,
+        ),
+        configuredProviders,
+      }).find((candidate) => candidate.model.id === modelId) ?? null
+    );
   };
-  app.get("/api/v1/local/audio/voice-input", async (c) => {
-    const { resolvedSelection, route, isCloudReady } =
-      await resolveVoiceInputRoute();
-    if (!resolvedSelection.enabled) {
-      return c.json({
-        asr: {
-          enabled: false,
-          provider: "global-model",
-          model: resolvedSelection.model,
-          ready: false,
-          setup: {
-            provider: "global-model",
-            runtime: "provider-route",
-            status: "disabled",
-            available: false,
-            default_base_url: null,
-            commands: [],
-          },
-        },
+  const voiceInputPorts: VoiceInputPorts = {
+    resolveVoiceInputSelection: async () => resolveVoiceInputSelection(),
+    resolveModelEntry: async (_userId, modelId) =>
+      resolveVoiceInputCatalogEntry(modelId),
+    transcribeWithModel: async ({ modelId, audio, prompt }) => {
+      const taskId = randomUUID();
+      const projectId = "local";
+      const mediaType = normalizeProviderReferenceMediaType(
+        audio.mediaType || "application/octet-stream",
+      );
+      const stagedReference = await providerReferenceAssets.stage({
+        projectId,
+        taskId,
+        slot: "input:audio:0",
+        pluginId: "clash.host",
+        pluginVersion: "1.0.0",
+        invocationId: taskId,
+        kind: "audio",
+        mediaType,
+        bytes: audio.bytes,
       });
-    }
-    if (isCloudReady) {
-      return c.json({
-        asr: {
-          enabled: true,
-          provider: route?.upstreamId ?? "global-model",
-          model: resolvedSelection.model,
-          ready: true,
-          setup: {
-            provider: route?.upstreamId ?? "global-model",
-            runtime: "provider-route",
-            status: "ready",
-            available: true,
-            default_base_url: null,
-            commands: [],
+      const generated = await voiceInputAigc.generateText({
+        taskId,
+        projectId,
+        prompt,
+        model: modelId,
+        modelParams: { require_real_provider: true },
+        references: [
+          {
+            slot: "audio",
+            index: 0,
+            asset: {
+              assetId: stagedReference.projectAssetId,
+              uri: `clash-asset://${stagedReference.projectAssetId}`,
+              kind: "audio",
+              ...(stagedReference.mediaType
+                ? { mediaType: stagedReference.mediaType }
+                : {}),
+            },
           },
-        },
+        ],
       });
+      return {
+        text: generated.text,
+        ...(generated.provider ? { provider: generated.provider } : {}),
+      };
+    },
+  };
+  const voiceInputReadiness = async (c: Context) => {
+    const selection = await resolveVoiceInputSelection();
+    const entry = selection.enabled
+      ? await resolveVoiceInputCatalogEntry(selection.model)
+      : null;
+    const readiness = resolveVoiceInputReadiness(selection, entry);
+    if (readiness.status !== "not-configured") {
+      return c.json(readiness.response);
     }
+    // Local ASR needs this machine. Only the local Host probes/returns its
+    // builtin install state; hosted adapters keep localAudio unavailable.
     if (c.req.query("probe") === "false") {
-      return c.json({
-        asr: {
-          enabled: true,
-          provider: "local",
-          model: resolvedSelection.model,
-          ready: false,
-          setup: {
-            provider: "local",
-            runtime: "builtin-rpc",
-            status: "needs-install",
-            available: false,
-            default_base_url: null,
-            commands: [],
-          },
-        },
-      });
+      return c.json(voiceInputLocalReadiness(selection));
     }
     if (audioConfig.getVoiceInputConfig) {
       return c.json(await audioConfig.getVoiceInputConfig());
     }
     const { asr } = await audioConfig.getPublicConfig();
     return c.json({ asr });
-  });
-  app.post("/api/v1/local/audio/voice-input/warmup", async (c) => {
-    const { resolvedSelection, route, isCloudReady } =
-      await resolveVoiceInputRoute();
-    if (!resolvedSelection.enabled) {
+  };
+  const voiceInputWarmup = async (c: Context) => {
+    const selection = await resolveVoiceInputSelection();
+    if (!selection.enabled) {
       return c.json({ status: "disabled", runtime: "provider-route" }, 409);
     }
-    if (isCloudReady) {
+    const entry = await resolveVoiceInputCatalogEntry(selection.model);
+    if (isVoiceInputProviderReady(entry)) {
       return c.json({ status: "not-needed", runtime: "provider-route" });
     }
     if (!audioConfig.warmupVoiceInput) {
       return c.json({ status: "unsupported", runtime: "builtin-rpc" }, 501);
     }
+    const route =
+      entry?.selectedRoute ??
+      entry?.routes.find((candidate) => candidate.apiShape === "local-asr");
     const model =
       route?.apiShape === "local-asr" && route.upstreamModel
         ? route.upstreamModel
-        : resolvedSelection.model;
+        : selection.model;
     void audioConfig.warmupVoiceInput({ model }).catch((error) => {
       console.warn(
         "[local-api] Voice input warmup degraded:",
@@ -7849,7 +7858,19 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       );
     });
     return c.json({ status: "warming", runtime: "builtin-rpc", model }, 202);
-  });
+  };
+  for (const path of [
+    "/api/v1/local/audio/voice-input",
+    "/api/v1/audio/voice-input",
+  ]) {
+    app.get(path, voiceInputReadiness);
+  }
+  for (const path of [
+    "/api/v1/local/audio/voice-input/warmup",
+    "/api/v1/audio/voice-input/warmup",
+  ]) {
+    app.post(path, voiceInputWarmup);
+  }
   app.get("/api/v1/local/audio/models/status", async (c) => {
     try {
       const status = await audioConfig.getModelStatus({
@@ -8078,7 +8099,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       throw error;
     }
   });
-  app.post("/api/v1/local/audio/transcriptions", async (c) => {
+  const voiceInputTranscriptions = async (c: Context) => {
     const envelope = localMutationEnvelope(
       "local_audio_transcription",
       "local-action",
@@ -8097,133 +8118,32 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
     const language = form.get("language");
     try {
-      const selection = audioConfig.getVoiceInputSelection
-        ? await audioConfig.getVoiceInputSelection()
-        : await audioConfig.getPublicConfig().then(({ asr }) => ({
-            enabled: asr.enabled,
-            model: asr.model,
-          }));
+      const selection = await resolveVoiceInputSelection();
       if (!selection.enabled) {
-        throw new LocalAudioConfigError(
-          "Voice input is not enabled. Open Settings > Voice input and enable it.",
-          409,
-        );
+        throw new LocalAudioConfigError(VOICE_INPUT_DISABLED_MESSAGE, 409);
       }
-      const state = await db.load();
-      const catalog = listModelCatalogEntries({
-        models: await effectiveModelCards(
-          state,
-          userId,
-          options.listPluginCards,
-          options.listPluginModelBindings,
-        ),
-        configuredProviders: publicProviderAccounts(
-          state.providerAccounts,
-          userId,
-          state.providerOAuth,
-        ),
-      });
-      const entry = catalog.find(
-        (candidate) => candidate.model.id === selection.model,
-      );
+      const entry = await resolveVoiceInputCatalogEntry(selection.model);
       const localRoute = entry?.routes.find(
         (route) => route.apiShape === "local-asr",
       );
-      const acceptsAudio =
-        !!entry &&
-        (entry.model.input.promptModalities.includes("audio") ||
-          !!entry.model.input.inputMode.audios);
-
-      const result =
-        entry?.model.kind === "text" && acceptsAudio
-          ? await (async () => {
-              if (
-                !entry.selectedRoute ||
-                entry.missingCredentials.length > 0 ||
-                entry.tier !== "available"
-              ) {
-                throw new LocalAudioConfigError(
-                  "The selected voice input model is not configured. Open Settings > Models and configure a provider.",
-                  409,
-                );
-              }
-              const taskId = randomUUID();
-              const projectId = "local";
-              const mediaType = normalizeProviderReferenceMediaType(
-                file.type || "application/octet-stream",
-              );
-              const stagedReference = await providerReferenceAssets.stage({
-                projectId,
-                taskId,
-                slot: "input:audio:0",
-                pluginId: "clash.host",
-                pluginVersion: "1.0.0",
-                invocationId: taskId,
-                kind: "audio",
-                mediaType,
-                bytes: new Uint8Array(await file.arrayBuffer()),
-              });
-              const generated = await voiceInputAigc.generateText({
-                taskId,
-                projectId,
-                prompt:
-                  typeof language === "string" && language.trim()
-                    ? `Transcribe the attached audio verbatim in ${language.trim()}. Return only the transcript.`
-                    : "Transcribe the attached audio verbatim. Return only the transcript.",
-                model: entry.model.id,
-                modelParams: { require_real_provider: true },
-                references: [
-                  {
-                    slot: "audio",
-                    index: 0,
-                    asset: {
-                      assetId: stagedReference.projectAssetId,
-                      uri: `clash-asset://${stagedReference.projectAssetId}`,
-                      kind: "audio",
-                      ...(stagedReference.mediaType
-                        ? { mediaType: stagedReference.mediaType }
-                        : {}),
-                    },
-                  },
-                ],
-              });
-              const text = generated.text.trim();
-              if (!text)
-                throw new LocalAudioConfigError(
-                  "The selected voice input model returned an empty transcript.",
-                  502,
-                );
-              return {
-                schemaVersion: 1 as const,
-                kind: "clash.asr.timed-transcript" as const,
-                timebase: "milliseconds" as const,
-                alignment: "word" as const,
-                text,
-                backendId: generated.provider ?? entry.selectedRoute.upstreamId,
-                modelId: entry.model.id,
-                ...(typeof language === "string" && language.trim()
-                  ? { language: language.trim() }
-                  : {}),
-                durationMs: 1,
-                words: [{ id: "word-000001", text, startMs: 0, endMs: 1 }],
-                segments: [
-                  {
-                    id: "segment-000001",
-                    text,
-                    startMs: 0,
-                    endMs: 1,
-                    wordIds: ["word-000001"],
-                  },
-                ],
-              };
-            })()
-          : await audioConfig.transcribe({
-              file,
-              language: typeof language === "string" ? language : null,
-              ...(localRoute?.upstreamModel
-                ? { model: localRoute.upstreamModel }
-                : {}),
-            });
+      const result = voiceInputUsesProviderRoute(entry)
+        ? await transcribeVoiceInputWithProvider({
+            userId,
+            ports: voiceInputPorts,
+            selection,
+            audio: {
+              bytes: new Uint8Array(await file.arrayBuffer()),
+              mediaType: file.type || "application/octet-stream",
+            },
+            language: typeof language === "string" ? language : null,
+          })
+        : await audioConfig.transcribe({
+            file,
+            language: typeof language === "string" ? language : null,
+            ...(localRoute?.upstreamModel
+              ? { model: localRoute.upstreamModel }
+              : {}),
+          });
       const mutation = hostMutationSucceeded(envelope, {
         resultEntityId: "audio-transcription",
       });
@@ -8238,7 +8158,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         mutation,
       });
     } catch (error) {
-      if (error instanceof LocalAudioConfigError) {
+      if (
+        error instanceof LocalAudioConfigError ||
+        error instanceof VoiceInputError
+      ) {
         return c.json(
           {
             error: error.message,
@@ -8249,7 +8172,13 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       }
       throw error;
     }
-  });
+  };
+  for (const path of [
+    "/api/v1/local/audio/transcriptions",
+    "/api/v1/audio/transcriptions",
+  ]) {
+    app.post(path, voiceInputTranscriptions);
+  }
   app.post("/api/v1/local/audio/speech", async (c) => {
     const envelope = localMutationEnvelope(
       "local_audio_synthesis",

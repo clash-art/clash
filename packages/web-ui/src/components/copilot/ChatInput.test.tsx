@@ -82,7 +82,8 @@ vi.mock("../MilkdownEditor", () => ({
 }));
 
 describe("ChatInput", () => {
-  // Voice readiness is a local Host read; hosted Web skips the prefetch (#94).
+  // Voice readiness is a capability read, so local and Cloudflare adapters use
+  // the same neutral route; adapters that do not serve it hide the button.
   beforeEach(() => setRuntimeConfigOverride({ mode: "local" }));
   afterEach(() => {
     setRuntimeConfigOverride(undefined);
@@ -107,6 +108,28 @@ describe("ChatInput", () => {
       "data-placeholder",
       "Ask anything…",
     );
+  });
+
+  it("hides the voice button when the adapter does not serve voice input", async () => {
+    setRuntimeConfigOverride({
+      mode: "local",
+      capabilities: { host: { voiceInput: "unavailable" } },
+    });
+
+    render(
+      <Suspense fallback={<div>Loading</div>}>
+        <ChatInput
+          input=""
+          onInputChange={() => undefined}
+          onSubmit={() => undefined}
+        />
+      </Suspense>,
+    );
+
+    await screen.findByTestId("milkdown-editor");
+    expect(
+      screen.queryByRole("button", { name: "copilot.chatInput.voice" }),
+    ).toBeNull();
   });
 
   it("renders structured references inside the shared composer surface", async () => {
@@ -1692,7 +1715,7 @@ describe("ChatInput", () => {
       value: { getUserMedia },
     });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes("/api/v1/local/audio")) {
+      if (String(input).includes("/api/v1/audio")) {
         return new Response(
           JSON.stringify({
             asr: {
@@ -1738,7 +1761,7 @@ describe("ChatInput", () => {
 
     await waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/api/v1/local/audio"),
+        expect.stringContaining("/api/v1/audio"),
         expect.objectContaining({ credentials: "include" }),
       ),
     );
@@ -1868,7 +1891,7 @@ describe("ChatInput", () => {
     await screen.findByTestId("milkdown-editor");
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
-      "/api/v1/local/audio/voice-input",
+      "/api/v1/audio/voice-input",
     );
     const voiceButton = screen.getByRole("button", {
       name: "copilot.chatInput.voice",
@@ -2200,18 +2223,18 @@ describe("ChatInput", () => {
     const onSubmit = vi.fn();
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
-        if (String(input).includes("/api/v1/local/audio/voice-input/warmup")) {
+        if (String(input).includes("/api/v1/audio/voice-input/warmup")) {
           expect(init?.method).toBe("POST");
           return Response.json({ warmed: true, runtime: "builtin-rpc" });
         }
-        if (String(input).includes("/api/v1/local/audio/transcriptions")) {
+        if (String(input).includes("/api/v1/audio/transcriptions")) {
           expect(init?.method).toBe("POST");
           expect(init?.body).toBeInstanceOf(FormData);
           return new Response(JSON.stringify({ text: "hello from ASR" }), {
             headers: { "content-type": "application/json" },
           });
         }
-        if (String(input).includes("/api/v1/local/audio")) {
+        if (String(input).includes("/api/v1/audio")) {
           return new Response(
             JSON.stringify({
               asr: {
@@ -2268,7 +2291,7 @@ describe("ChatInput", () => {
       expect(recording.querySelector(".animate-spin")).toBeNull();
       await waitFor(() =>
         expect(fetchMock).toHaveBeenCalledWith(
-          expect.stringContaining("/api/v1/local/audio/voice-input/warmup"),
+          expect.stringContaining("/api/v1/audio/voice-input/warmup"),
           expect.objectContaining({ method: "POST" }),
         ),
       );
@@ -2285,7 +2308,7 @@ describe("ChatInput", () => {
       expect(onSubmit).not.toHaveBeenCalled();
       expect(stopTracks).toHaveBeenCalledTimes(1);
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/api/v1/local/audio/transcriptions"),
+        expect.stringContaining("/api/v1/audio/transcriptions"),
         expect.objectContaining({ method: "POST" }),
       );
 

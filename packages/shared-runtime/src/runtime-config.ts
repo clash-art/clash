@@ -28,7 +28,15 @@ export interface RuntimeCapabilities {
     timelineRender: "available" | "unavailable";
     /** Text node revision history (`/projects/:id/text-revisions`). */
     textRevisions: "available" | "unavailable";
-    /** Voice input backed by the local Host audio runtime. */
+    /**
+     * Dictation through a Provider route (`/api/v1/audio/voice-input`),
+     * available whenever the adapter serves the shared voice-input routes.
+     */
+    voiceInput: "available" | "unavailable";
+    /**
+     * Machine-local ASR install/status and the builtin RPC runtime
+     * (`/api/v1/local/audio/*`). Local-only: hosted adapters answer 501.
+     */
     localAudio: "available" | "unavailable";
   };
 }
@@ -113,6 +121,9 @@ export function defaultRuntimeCapabilities(
         // Served by the shared text-revisions module (Cloudflare adapter:
         // D1 + R2; Node adapter: Postgres + disk).
         textRevisions: "available",
+        // The Cloudflare adapter serves Voice input through the user's
+        // Provider accounts; Node answers the route with 501.
+        voiceInput: "available",
         localAudio: "unavailable",
       },
     };
@@ -126,6 +137,7 @@ export function defaultRuntimeCapabilities(
     host: {
       timelineRender: "available",
       textRevisions: "available",
+      voiceInput: "available",
       localAudio: "available",
     },
   };

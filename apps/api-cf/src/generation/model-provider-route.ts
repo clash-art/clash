@@ -20,6 +20,26 @@ function generationKind(type: GenerationParams["type"]): ModelKind | null {
   return null;
 }
 
+/**
+ * The user's effective hosted model cards and configured provider accounts.
+ * One loader for every hosted consumer (generation routing, voice input).
+ */
+export async function loadHostedModelCards(
+  env: Pick<Env, "DB">,
+  userId: string,
+  options: { excludeProviderIds?: readonly string[] } = {},
+): Promise<{ models: ReturnType<typeof buildEffectiveModelCards>; configuredProviders: ProviderAccountAvailability[] }> {
+  const [accounts, oauthRecords, configs] = await Promise.all([
+    listProviderAccounts(env.DB, userId),
+    listProviderOAuthRecords(env.DB, userId),
+    listModelCardConfigs(env.DB, userId),
+  ]);
+  const configuredProviders: ProviderAccountAvailability[] = applyProviderOAuth(accounts, oauthRecords)
+    .filter((account) => !options.excludeProviderIds?.includes(account.providerId))
+    .map(({ createdAt: _createdAt, updatedAt: _updatedAt, ...account }) => account);
+  return { models: buildEffectiveModelCards({ configs, providers: configuredProviders }), configuredProviders };
+}
+
 export async function resolveGenerationModelProviderRoute(
   env: Pick<Env, "DB">,
   params: GenerationParams,
@@ -31,14 +51,7 @@ export async function resolveGenerationModelProviderRoute(
     throw new Error(`No model code was supplied for ${params.type}`);
   }
 
-  const [accounts, oauthRecords, configs] = await Promise.all([
-    listProviderAccounts(env.DB, params.actorUserId),
-    listProviderOAuthRecords(env.DB, params.actorUserId),
-    listModelCardConfigs(env.DB, params.actorUserId),
-  ]);
-  const configuredProviders: ProviderAccountAvailability[] = applyProviderOAuth(accounts, oauthRecords)
-    .map(({ createdAt: _createdAt, updatedAt: _updatedAt, ...account }) => account);
-  const models = buildEffectiveModelCards({ configs, providers: configuredProviders });
+  const { models, configuredProviders } = await loadHostedModelCards(env, params.actorUserId);
   const route = resolveModelUpstreamRoute({
     modelCode,
     kind,

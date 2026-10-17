@@ -137,7 +137,7 @@ describe("desktop runtime", () => {
         assets: { storage: "local", signing: "unsigned", upload: "local" },
         workflows: { runner: "local-node", mediaPostprocess: "disabled" },
         loro: { persistence: "local", sync: "local-websocket" },
-        host: { timelineRender: "available", textRevisions: "available", localAudio: "available" },
+        host: { timelineRender: "available", textRevisions: "available", voiceInput: "available", localAudio: "available" },
         auth: { mode: "local-user" },
       },
     });
@@ -160,7 +160,7 @@ describe("desktop runtime", () => {
         assets: { storage: "local", signing: "unsigned", upload: "local" },
         workflows: { runner: "local-node", mediaPostprocess: "disabled" },
         loro: { persistence: "local", sync: "local-websocket" },
-        host: { timelineRender: "available", textRevisions: "available", localAudio: "available" },
+        host: { timelineRender: "available", textRevisions: "available", voiceInput: "available", localAudio: "available" },
         auth: { mode: "local-user" },
       },
     });

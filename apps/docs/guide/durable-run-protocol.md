@@ -71,8 +71,9 @@ defined below. `api-cf` therefore has no `custom_action` generation adapter;
 pending hosted Action nodes fail closed instead of calling or retrying a Worker.
 
 This delivery covers durable generation Tasks and native Generator Action Runs,
-not every request that may call a Provider. The voice-input endpoint
-`/api/v1/local/audio/transcriptions` is currently a non-Action synchronous
+not every request that may call a Provider. The neutral voice-input endpoint
+`/api/v1/audio/transcriptions` (historical local alias
+`/api/v1/local/audio/transcriptions`) is currently a non-Action synchronous
 utility boundary: it performs one Provider executor invocation, accepts only a
 completed text result, and has no internal retry or poll loop. It does not
 create a Project output. If voice input later accepts asynchronous work, needs
