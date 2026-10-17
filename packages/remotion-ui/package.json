@@ -50,6 +50,7 @@
     "@clash/remotion-core": "workspace:*",
     "@clash/remotion-effects": "workspace:*",
     "@use-gesture/react": "^10.3.1",
+    "mediabunny": "1.50.8",
     "react-moveable": "^0.56.0"
   },
   "devDependencies": {
