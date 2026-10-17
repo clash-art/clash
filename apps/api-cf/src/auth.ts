@@ -79,8 +79,38 @@ async function sendOtpEmail(
   }
 }
 
-/** Build a Better Auth instance bound to the current request's env. */
-export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
+type AuthInstance = ReturnType<typeof buildAuth>;
+const authByEnv = new WeakMap<object, AuthInstance>();
+
+/**
+ * Better Auth instance for this env, built once per isolate. Constructing it
+ * (plugin init, drizzle adapter, schema merge) used to run on every request.
+ * The instance holds no per-request state: `cf` only feeds the
+ * `/cloudflare/geolocation` endpoint and session-create geolocation, and both
+ * geolocation tracking and IP detection are off below, so it is not part of
+ * the key. A different env object (tests, another binding set) gets its own
+ * instance.
+ */
+export function createAuth(env: AuthBindings, _cf?: IncomingRequestCfProperties): AuthInstance {
+  const cached = authByEnv.get(env);
+  if (cached) return cached;
+  const auth = buildAuth(env);
+  authByEnv.set(env, auth);
+  return auth;
+}
+
+/**
+ * Fresh instance for the `/api/better-auth/*` handler. Kept per request on
+ * purpose: with no KV bound, the rate limiter's "memory" storage lives on the
+ * instance, so a per-request instance never enforces it. Sharing it per
+ * isolate would start enforcing 100 req/min per client IP as seen through the
+ * web service binding, which is a behavior change that needs its own decision.
+ */
+export function createAuthForHandler(env: AuthBindings, cf?: IncomingRequestCfProperties) {
+  return buildAuth(env, cf);
+}
+
+function buildAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
   const secret = requireSecret(
     env,
     "BETTER_AUTH_SECRET / AUTH_SECRET",

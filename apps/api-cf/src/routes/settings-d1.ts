@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../config";
 import {
   createApiToken,
@@ -14,16 +14,13 @@ import {
   uninstallAction,
   uninstallSkill,
 } from "../services/settings-d1";
-import { requireUserId } from "../services/session";
+import { requireSessionUserId } from "../services/request-identity";
 
 export const settingsD1Routes = new Hono<{ Bindings: Env }>();
 
-async function auth(c: {
-  req: { raw: Request };
-  env: Env;
-}): Promise<string | Response> {
+async function auth(c: Context<{ Bindings: Env }>): Promise<string | Response> {
   try {
-    return await requireUserId(c.req.raw, c.env as any, c.req.raw.cf as any);
+    return await requireSessionUserId(c);
   } catch (err) {
     if (err instanceof Response) return err.clone();
     throw err;

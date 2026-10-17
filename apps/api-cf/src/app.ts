@@ -43,6 +43,7 @@ import {
   getUserIdFromRequest,
 } from "./services/session";
 import { authenticateRequest } from "./loro/auth";
+import { setResolvedIdentity } from "./services/request-identity";
 import {
   createD1ProjectMetadataStore,
   type CloudProjectMetadataStore,
@@ -126,6 +127,7 @@ async function applyValidatedPublicIdentity(
 
   const token = clshBearerToken(request.headers.get("authorization") ?? "");
   let userId: string | null = null;
+  let via: "session" | "api-token" | "none" = "none";
   if (token) {
     request.headers.set("authorization", `Bearer ${token}`);
     try {
@@ -133,6 +135,7 @@ async function applyValidatedPublicIdentity(
     } catch {
       userId = null;
     }
+    if (userId) via = "api-token";
   }
   if (!userId) {
     try {
@@ -144,10 +147,16 @@ async function applyValidatedPublicIdentity(
     } catch {
       userId = null;
     }
+    if (userId) via = "session";
   }
 
   if (userId) request.headers.set("x-user-id", userId);
   c.req.raw = request;
+  // Routes read this instead of re-running getSession (2 D1 queries).
+  setResolvedIdentity(
+    c,
+    userId && via !== "none" ? { via, userId } : { via: "none", userId: null },
+  );
   return userId;
 }
 

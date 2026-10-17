@@ -189,11 +189,20 @@ export async function authenticateRequest(
           expiresAt,
         },
       };
-      if (
-        !development &&
-        !(await revalidateProjectConnection(options, identity, policy))
-      )
-        throw new Error("Unauthorized");
+      // Ownership was asserted just above; only the session's current
+      // authority record still needs checking. (Calling
+      // revalidateProjectConnection here re-read the project row: one extra
+      // D1 round trip per /loro and /sync request.)
+      if (!development) {
+        let current: { userId: string; expiresAt: number } | null;
+        try {
+          current = await options.store.readSession(session.session.id);
+        } catch {
+          current = null;
+        }
+        if (current?.userId !== identity.userId || !(current.expiresAt > Date.now()))
+          throw new Error("Unauthorized");
+      }
       return identity;
     }
   }
