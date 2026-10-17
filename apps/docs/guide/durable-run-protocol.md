@@ -403,9 +403,23 @@ never falls through to this path; upper layers see only `PluginExecutionPort`.
 Every remote request carries
 `Idempotency-Key = durableRunIdempotencyKey(run)` and
 `x-clash-signature = hex(HMAC-SHA256(secret, timestamp "\n" key "\n" sha256(body)))`.
+The invocation may also carry `expectedOutputSlots`, the plugin-side slot names
+the host accepts for this frozen run in preference order (for example
+`["result"]` for a text Action, `[kind, "media"]` for a media Action, or the
+frozen `pluginOutputSlot` when one is pinned). It is additive and optional;
+older plugins ignore it, and the existing result-slot validation remains the
+single enforcement point. A plugin should answer with one of the listed slots
+instead of guessing.
+
 References are short-lived signed URLs, never credentials or R2 keys. The
 request is bounded by `AbortSignal.timeout(min(remainingLease, 60s))`; a 409
-for the same key with a different body is a `contract_violation`. The same
+for the same key with a different body is a `contract_violation`. A remote
+response is capped at 1 MiB (`REMOTE_PLUGIN_RESPONSE_MAX_BYTES`): a
+`content-length` above the cap is rejected before the body is read, and an
+undeclared body is streamed and cancelled as soon as the cap is crossed. An
+oversized answer is a non-retryable `contract_violation` with `requestState:
+"accepted"` for a submit, because the endpoint already received the request and
+may have done the work -- it must never be retried and double-charged. The same
 at-most-once rule applies: an ambiguous submit is retried only when the plugin
 declares `idempotentSubmit: true`, otherwise it fails after exactly one
 invocation. The `container` binding for `clash.remotion` remains a separate
