@@ -1,6 +1,6 @@
 import { LoroMap, type LoroDoc } from "loro-crdt";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import { ExecutablePluginJsonValueSchema } from "./plugin-json-value.js";
 import { directorCodeRegistryError, DirectorCodeComponentRegistrySchema } from "./director-code.js";
 import { agentReadToken } from "./agent-read-proof.js";
@@ -38,7 +38,7 @@ export const DirectorStageTransformSchema = z.object({
 
 export const DirectorStagePoseSchema = z.object({
   preset: z.string().min(1),
-  joints: z.record(DirectorStageVector3Schema),
+  joints: z.record(z.string(), DirectorStageVector3Schema),
 });
 
 export const DirectorStageAttachmentSocketSchema = z.enum([
@@ -101,7 +101,7 @@ export const DirectorStageObjectSchema = z.discriminatedUnion("kind", [
     kind: z.literal("code"),
     code: z.object({
       componentId: z.string().trim().min(1),
-      parameters: z.record(ExecutablePluginJsonValueSchema),
+      parameters: z.record(z.string(), ExecutablePluginJsonValueSchema),
     }).strict(),
   }),
   DirectorStageObjectBaseSchema.extend({
@@ -279,13 +279,13 @@ export const DirectorStageCameraRigSchema = z.object({
 }).superRefine((rig, context) => {
   if (rig.kind === "orbit" && !rig.orbit) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["orbit"],
       message: "Orbit camera rigs require physical orbit parameters",
     });
   } else if (rig.kind !== "orbit" && !rig.path) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["path"],
       message: "Non-orbit camera rigs require a camera path",
     });
@@ -533,10 +533,7 @@ const directorStageContractSchemas = {
 const directorStageJsonSchemas = Object.fromEntries(
   Object.entries(directorStageContractSchemas).map(([contract, definition]) => [
     contract,
-    zodToJsonSchema(definition.schema, {
-      name: definition.name,
-      target: "jsonSchema7",
-    }),
+    zodToDraft7JsonSchema(definition.schema, { name: definition.name }),
   ]),
 ) as Record<DirectorStageSchemaContract, Record<string, unknown>>;
 

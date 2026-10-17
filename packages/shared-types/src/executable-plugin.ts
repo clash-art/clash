@@ -252,13 +252,13 @@ export const ExecutableActionCardSchema = z
     description: z.string().optional(),
     parameters: z.array(ModelParameterSchema).default([]),
     outputType: z.enum(["image", "video", "audio", "text"]),
-    input: ModelInputRuleSchema.default({
+    input: ModelInputRuleSchema.prefault({
       requiresPrompt: true,
       inputMode: {},
       promptModalities: ["text"],
     }),
     constraints: z.array(ModelConstraintRuleSchema).optional(),
-    presentation: ExecutableActionPresentationSchema.default({ type: "form" }),
+    presentation: ExecutableActionPresentationSchema.prefault({ type: "form" }),
     functionExportId: z.string().trim().regex(PLUGIN_ID_PATTERN),
     /** Legacy form fields edit top-level Generator state; media references use these explicit persistent slots. */
     generator: ExecutableActionCardGeneratorSchema.optional(),
@@ -270,7 +270,7 @@ export const ExecutableActionCardSchema = z
     for (const [index, parameter] of action.parameters.entries()) {
       if (parameterIds.has(parameter.id)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["parameters", index, "id"],
           message: "Action parameter ids must be unique.",
         });
@@ -282,7 +282,7 @@ export const ExecutableActionCardSchema = z
           parameter.options?.map((option) => option.value) ?? [];
         if (candidates.length === 0) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["parameters", index, "options"],
             message: "Select parameters require at least one candidate.",
           });
@@ -292,7 +292,7 @@ export const ExecutableActionCardSchema = z
             .size !== candidates.length
         ) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["parameters", index, "options"],
             message: "Select parameter candidate values must be unique.",
           });
@@ -302,7 +302,7 @@ export const ExecutableActionCardSchema = z
           !candidates.some((value) => value === parameter.defaultValue)
         ) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["parameters", index, "defaultValue"],
             message: `${parameter.label} defaultValue must be one of its configured candidates.`,
           });
@@ -310,7 +310,7 @@ export const ExecutableActionCardSchema = z
       }
       if (parameter.readOnly && parameter.defaultValue === undefined) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["parameters", index, "defaultValue"],
           message: `${parameter.label} is read-only and requires a fixed default.`,
         });
@@ -324,7 +324,7 @@ export const ExecutableActionCardSchema = z
           !Number.isFinite(parameter.defaultValue)
         ) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["parameters", index, "defaultValue"],
             message: `${parameter.label} default must be a finite number.`,
           });
@@ -335,7 +335,7 @@ export const ExecutableActionCardSchema = z
             parameter.defaultValue > parameter.max)
         ) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["parameters", index, "defaultValue"],
             message: `${parameter.label} default must stay within its configured range.`,
           });
@@ -347,7 +347,7 @@ export const ExecutableActionCardSchema = z
         typeof parameter.defaultValue !== "boolean"
       ) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["parameters", index, "defaultValue"],
           message: `${parameter.label} default must be a boolean.`,
         });
@@ -361,7 +361,7 @@ export const ExecutableActionCardSchema = z
       if (!field.startsWith("modelParams.")) return;
       if (parameterIds.has(field.slice("modelParams.".length))) return;
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path,
         message: `Action constraint ${field} must reference a declared parameter.`,
       });
@@ -415,7 +415,7 @@ export const ExecutablePluginCardDocumentSchema = z
     document.spec.providerImplementations?.forEach((implementation, index) => {
       if (implementation.accountId === undefined) return;
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["spec", "providerImplementations", index, "accountId"],
         message:
           "Plugin model Cards cannot select a Provider account; the Host selects it at runtime.",
@@ -512,7 +512,7 @@ export const StoryboardViewMaterialSchema = z
       )
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["selectedCandidateId"],
         message: "A selected candidate must belong to the same material slot.",
       });
@@ -521,7 +521,7 @@ export const StoryboardViewMaterialSchema = z
     material.candidates.forEach((candidate, index) => {
       if (candidateIds.has(candidate.id)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["candidates", index, "id"],
           message: "Candidate ids must be unique within a material slot.",
         });
@@ -529,7 +529,7 @@ export const StoryboardViewMaterialSchema = z
       candidateIds.add(candidate.id);
       if (candidate.mediaKind !== material.mediaKind) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["candidates", index, "mediaKind"],
           message: "A candidate must match its material slot media kind.",
         });
@@ -700,7 +700,7 @@ export const ExecutablePluginModelBindingSpecSchema = z
   .superRefine((binding, ctx) => {
     if (binding.accountId === undefined) return;
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["accountId"],
       message:
         "Plugin model bindings cannot select a Provider account; the Host selects it at runtime.",
@@ -738,7 +738,7 @@ export const ExecutablePluginModelBindingInputSchema = z
   .superRefine((binding, ctx) => {
     if (binding.accountId === undefined) return;
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["accountId"],
       message:
         "Plugin model bindings cannot select a Provider account; the Host selects it at runtime.",
@@ -844,7 +844,7 @@ export const ExecutablePluginFunctionExportSchema = z
   .superRefine((entry, ctx) => {
     if (entry.kind !== "action" && entry.assetInputs !== undefined) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["assetInputs"],
         message:
           "Only Action exports declare Asset delivery; Provider delivery belongs to the selected binding.",
@@ -852,7 +852,7 @@ export const ExecutablePluginFunctionExportSchema = z
     }
     if (!entry.operations.includes("submit")) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["operations"],
         message:
           "An entry must handle submit; nothing can be polled that was never started.",
@@ -863,7 +863,7 @@ export const ExecutablePluginFunctionExportSchema = z
       !entry.operations.includes("poll")
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["operations"],
         message:
           "An entry handling callbacks must also handle poll. A callback that never arrives is an " +
@@ -1199,7 +1199,7 @@ export const ExecutablePluginInvocationSchema = z
     }),
     input: z
       .object({
-        values: z.record(ExecutablePluginJsonValueSchema).default({}),
+        values: z.record(z.string(), ExecutablePluginJsonValueSchema).default({}),
         references: z.array(ExecutablePluginReferenceSchema).default([]),
       })
       .strict(),
@@ -1258,13 +1258,13 @@ export const ExecutablePluginInvocationSchema = z
      * Provider run; polling remains the recovery path. That channel-level rejection semantics is not
      * implemented by the current Host.
      */
-    callbackHeaders: z.record(z.string()).optional(),
+    callbackHeaders: z.record(z.string(), z.string()).optional(),
   })
   .strict()
   .superRefine((invocation, ctx) => {
     if (invocation.operation === "poll" && invocation.pollState === undefined) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["pollState"],
         message:
           "A poll must carry the state the plugin returned when it accepted the work.",
@@ -1275,7 +1275,7 @@ export const ExecutablePluginInvocationSchema = z
       invocation.pollState !== undefined
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["pollState"],
         message: "A submit starts new work and cannot carry poll state.",
       });
@@ -1285,7 +1285,7 @@ export const ExecutablePluginInvocationSchema = z
       invocation.callbackPayload === undefined
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["callbackPayload"],
         message: "A callback must carry the body the provider sent.",
       });
@@ -1295,7 +1295,7 @@ export const ExecutablePluginInvocationSchema = z
       invocation.callbackHeaders !== undefined
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["callbackHeaders"],
         message: "callbackHeaders belongs to a callback.",
       });
@@ -1305,7 +1305,7 @@ export const ExecutablePluginInvocationSchema = z
       invocation.callbackPayload !== undefined
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["callbackPayload"],
         message: "callbackPayload belongs to a callback.",
       });
@@ -1315,7 +1315,7 @@ export const ExecutablePluginInvocationSchema = z
       invocation.callbackUrl !== undefined
     ) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["callbackUrl"],
         message:
           "A future callback address may be supplied only when work is submitted.",
@@ -1576,7 +1576,7 @@ export const ExecutableDirectorStageCaptureOperationSchema = z
   .object({
     kind: z.literal("director.stage.capture-frame"),
     /** Exact source Document bodies resolved from the frozen Director inputs. */
-    codeSources: z.record(z.string().min(1)).optional(),
+    codeSources: z.record(z.string(), z.string().min(1)).optional(),
     stage: z
       .object({
         name: z.string(),
@@ -1777,7 +1777,7 @@ export const ExecutablePluginBrokerOperationSchema = z.union([
       ].filter((source) => source !== undefined).length;
       if (sources !== 1) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           message:
             "asset.write requires exactly one of url, dataBase64 or assetId.",
         });
@@ -1887,10 +1887,10 @@ export const ExecutablePluginContractTestDocumentSchema = z
         nodeId: z.string().trim().min(1).optional(),
       })
       .strict()
-      .default({ projectId: "contract-test-project" }),
+      .prefault({ projectId: "contract-test-project" }),
     input: z
       .object({
-        values: z.record(ExecutablePluginJsonValueSchema).default({}),
+        values: z.record(z.string(), ExecutablePluginJsonValueSchema).default({}),
         references: z.array(ExecutablePluginReferenceSchema).default([]),
       })
       .strict(),
@@ -2011,7 +2011,7 @@ export const ExecutablePluginManifestSchema = z
       for (const value of values) {
         if (ids.has(value.id)) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["contributes", key],
             message: `Plugin ${key} contribution ids must be unique.`,
           });
@@ -2023,7 +2023,7 @@ export const ExecutablePluginManifestSchema = z
     for (const card of manifest.contributes.cards) {
       if (cardPaths.has(card.path)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["contributes", "cards"],
           message: "Plugin Card contribution paths must be unique.",
         });
@@ -2039,7 +2039,7 @@ export const ExecutablePluginManifestSchema = z
     ]) {
       if (artifactPaths.has(artifact.path)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["contributes"],
           message: "Plugin declarative artifact paths must be unique.",
         });
@@ -2050,7 +2050,7 @@ export const ExecutablePluginManifestSchema = z
     for (const path of manifest.contractTests) {
       if (contractTestPaths.has(path)) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["contractTests"],
           message: "Plugin contract test paths must be unique.",
         });

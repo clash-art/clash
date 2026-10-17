@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import {
   TIMELINE_DSL_FIELD_ANNOTATIONS,
   TIMELINE_DSL_ITEM_TYPES,
@@ -263,8 +263,8 @@ const timelineEditorItemVariantSchemas = TIMELINE_DSL_ITEM_TYPES.map((type) =>
 const TimelineItemEnvelopeSchema = z.discriminatedUnion(
   "type",
   timelineEditorItemVariantSchemas as unknown as [
-    z.ZodDiscriminatedUnionOption<"type">,
-    ...z.ZodDiscriminatedUnionOption<"type">[],
+    z.core.$ZodTypeDiscriminable,
+    ...z.core.$ZodTypeDiscriminable[],
   ],
 );
 
@@ -1116,12 +1116,8 @@ function catalogGroup(
         id,
         {
           ...metadata,
-          inputJsonSchema: zodToJsonSchema(value.inputSchema, {
-            target: "jsonSchema7",
-          }) as Record<string, unknown>,
-          outputJsonSchema: zodToJsonSchema(value.outputSchema, {
-            target: "jsonSchema7",
-          }) as Record<string, unknown>,
+          inputJsonSchema: zodToDraft7JsonSchema(value.inputSchema),
+          outputJsonSchema: zodToDraft7JsonSchema(value.outputSchema),
         },
       ];
     }),

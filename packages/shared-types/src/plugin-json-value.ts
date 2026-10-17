@@ -17,6 +17,6 @@ export const ExecutablePluginJsonValueSchema: z.ZodType<ExecutablePluginJsonValu
       z.number().finite(),
       z.string(),
       z.array(ExecutablePluginJsonValueSchema),
-      z.record(ExecutablePluginJsonValueSchema),
+      z.record(z.string(), ExecutablePluginJsonValueSchema),
     ]),
   );

@@ -27,7 +27,7 @@ export const AccountSettingSchema = z.object({
   if (setting.options && setting.defaultValue
     && !setting.options.some((option) => option.value === setting.defaultValue)) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ['defaultValue'],
       message:
         `Default "${setting.defaultValue}" is not one of the options. A default outside the set `

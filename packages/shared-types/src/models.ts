@@ -625,7 +625,7 @@ export const ProviderAssetInputSchema = z.object({
   }).strict().superRefine((match, ctx) => {
     if (!match.kinds?.length && !match.slots?.length) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: 'Asset input match must declare at least one kind or slot.',
       });
     }
@@ -691,7 +691,7 @@ export const ModelProviderImplementationSchema = z
      * Parameters absent from this list are reused from the base model card. */
     parameterOverrides: z.array(ModelParameterSchema).optional(),
     /** Provider-specific defaults paired with parameterOverrides. */
-    defaultParamOverrides: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+    defaultParamOverrides: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
     /** Parameters implemented only by other providers. They are removed from
      * the effective Card instead of being rendered and silently discarded. */
     excludedParameterIds: z.array(z.string().min(1)).optional(),
@@ -702,14 +702,14 @@ export const ModelProviderImplementationSchema = z
     // plugin id, however, is meaningless without its export id.
     if (implementation.projectorPluginId && !implementation.projectorExportId) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ['projectorExportId'],
         message: 'projectorExportId is required when projectorPluginId is configured.',
       });
     }
     if (implementation.executorPluginId && !implementation.executorExportId) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ['executorExportId'],
         message: 'executorExportId is required when executorPluginId is configured.',
       });
@@ -732,14 +732,14 @@ export const ModelCardSchema = z
     description: z.string().optional(),
     promptGuidance: z.string().optional(),
     parameters: z.array(ModelParameterSchema),
-    defaultParams: z.record(z.union([z.string(), z.number(), z.boolean()])).default({}),
+    defaultParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
     /**
      * Canonical default aspect ratio in our format ("4:3", "16:9", etc.).
      * Required for image and video models. Audio models use "1:1" as placeholder.
      * This is OUR representation — provider-specific values live in parameters/defaultParams.
      */
     defaultAspectRatio: z.string().default('16:9'),
-    input: ModelInputRuleSchema.default({
+    input: ModelInputRuleSchema.prefault({
       requiresPrompt: true,
       inputMode: {},
       promptModalities: ['text'],

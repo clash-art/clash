@@ -125,7 +125,7 @@ export const DEV_SOURCE_ALIASES = [
   },
 ];
 
-// Prebundling these breaks the mixed zod v3/v4 graph (see optimizeDeps note
+// Prebundling these broke the former mixed zod v3/v4 graph (see optimizeDeps note
 // below). Shared by the client graph and the auxiliary api-cf worker
 // environment, which does not inherit the top-level exclusion.
 export const NO_PREBUNDLE_DEPS = [
@@ -303,13 +303,12 @@ export default defineConfig(async ({ command, isPreview }) => {
       ],
       // loro-crdt ships a .wasm alongside JS — exclude from esbuild prebundle so
       // vite-plugin-wasm handles it at request time.
-      // zod / zod-to-json-schema: the dev source aliases put shared-types
-      // (zod v3 + zod-to-json-schema 3.24.x) in the same graph as apps/web and
-      // the auxiliary api-cf worker (zod v4). esbuild prebundling collapses the
-      // two majors into one optimized copy, and the v4 runtime then loses v3
-      // internals zod-to-json-schema walks -> "Timeline DSL JSON Schema missing
-      // nested items". Excluding them keeps each importer on its own resolved
-      // copy.
+      // zod / zod-to-json-schema: excluded since shared-types used to bring
+      // zod v3 + zod-to-json-schema into the same graph as apps/web and the
+      // auxiliary api-cf worker (zod v4), and prebundling merged the two
+      // majors ("Timeline DSL JSON Schema missing nested items"). The monorepo
+      // now pins a single zod 4 (root pnpm override) and shared-types uses
+      // z.toJSONSchema; the exclusion stays until dev prebundling is re-verified.
       exclude: NO_PREBUNDLE_DEPS,
       include: [
         "react-dom/client",

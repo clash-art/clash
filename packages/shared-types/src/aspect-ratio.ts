@@ -26,7 +26,7 @@ export const AspectRatioStringSchema = z.string().trim().transform((value, ctx) 
   const ratio = parseAspectRatio(value);
   if (!ratio) {
     ctx.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       message: 'Aspect ratio must be two positive integers separated by a colon.',
     });
     return z.NEVER;

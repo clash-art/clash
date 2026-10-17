@@ -8,7 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import { zodToDraft7JsonSchema } from '../src/zod-json-schema';
 import {
   CanvasNodeSchema,
   CanvasEdgeSchema,
@@ -28,7 +28,7 @@ if (!fs.existsSync(OUTPUT_DIR)) {
 
 // Generate JSON Schema for each Zod schema
 for (const [name, schema] of Object.entries(schemas)) {
-  const jsonSchema = zodToJsonSchema(schema, { name });
+  const jsonSchema = zodToDraft7JsonSchema(schema, { name });
   const outputPath = path.join(OUTPUT_DIR, `${name}.json`);
 
   fs.writeFileSync(outputPath, JSON.stringify(jsonSchema, null, 2));

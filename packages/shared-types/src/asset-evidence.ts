@@ -26,7 +26,7 @@ const observation = z
       (value.startMs !== undefined && value.endMs! <= value.startMs)
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["endMs"],
         message:
           "An observation range requires both source times and endMs greater than startMs.",

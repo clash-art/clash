@@ -8,7 +8,7 @@ import { ProviderAssetInputSchema } from "./models.js";
 
 const nonEmptyIdSchema = z.string().trim().min(1);
 const prefixedSha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const jsonObjectSchema = z.record(ExecutablePluginJsonValueSchema);
+const jsonObjectSchema = z.record(z.string(), ExecutablePluginJsonValueSchema);
 const GeneratorMediaKindSchema = AssetKindSchema;
 
 export const GeneratorEditPolicySchema = z.enum([
@@ -128,7 +128,7 @@ export const GeneratorInputCardinalitySchema = z
   .superRefine(({ minItems, maxItems }, context) => {
     if (maxItems !== null && maxItems < minItems) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["maxItems"],
         message: "maxItems must be greater than or equal to minItems.",
       });
@@ -202,7 +202,7 @@ export const GeneratorActionOutputContractSchema = z
     outputs.forEach((output, index) => {
       if (slots.has(output.slot)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: [index, "slot"],
           message: `Duplicate Generator Action output slot: ${output.slot}`,
         });
@@ -214,7 +214,7 @@ export const GeneratorActionOutputContractSchema = z
           output.cardinality.minItems !== 1)
       ) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: [index, "cardinality"],
           message:
             "The current Generator Action profile requires singular 0..1 or 1..1 output slots.",
@@ -248,18 +248,18 @@ export const GeneratorActionDefinitionSchema = z
   .strict()
   .superRefine(({ invocationInputs, modelConsumer, modelExecution, executorExportId, outputs }, context) => {
     if (Boolean(executorExportId) === Boolean(modelExecution)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["executorExportId"],
+      context.addIssue({ code: "custom", path: ["executorExportId"],
         message: "An Action requires exactly one plugin executor or Host model execution declaration." });
     }
     if (modelExecution && (modelConsumer || outputs.length !== 1 || !outputs[0] || !isModelGenerationOutputType(outputs[0].assetType))) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["modelExecution"],
+      context.addIssue({ code: "custom", path: ["modelExecution"],
         message: "Host model execution requires one media or plain-text Document output and cannot also delegate to a model-consumer Action plugin." });
     }
     const seen = new Set<string>();
     invocationInputs.forEach((input, index) => {
       if (seen.has(input.slot)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["invocationInputs", index, "slot"],
           message: `Duplicate Generator Action input slot: ${input.slot}`,
         });
@@ -271,7 +271,7 @@ export const GeneratorActionDefinitionSchema = z
       !invocationInputs.some((input) => input.slot === modelConsumer.sourceInputSlot)
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["modelConsumer", "sourceInputSlot"],
         message: `Model consumer source slot ${modelConsumer.sourceInputSlot} is not declared.`,
       });
@@ -339,7 +339,7 @@ function validateGeneratorDefinitionSpec(
   input.persistentInputs.forEach((persistentInput, index) => {
     if (persistentSlots.has(persistentInput.slot)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["persistentInputs", index, "slot"],
         message: `Duplicate Generator persistent input slot: ${persistentInput.slot}`,
       });
@@ -351,7 +351,7 @@ function validateGeneratorDefinitionSpec(
   input.actions.forEach((action, index) => {
     if (actionIds.has(action.id)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["actions", index, "id"],
         message: `Duplicate Generator action id: ${action.id}`,
       });
@@ -363,14 +363,14 @@ function validateGeneratorDefinitionSpec(
   if (!surface) return;
   if (!actionIds.has(surface.primaryActionId)) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["projectionSurface", "primaryActionId"],
       message: `Projection surface ${surface.id} names undefined Action ${surface.primaryActionId}.`,
     });
   }
   if (surface.mediaInputSlot && !persistentSlots.has(surface.mediaInputSlot)) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["projectionSurface", "mediaInputSlot"],
       message: `Projection surface ${surface.id} names undeclared persistent input slot ${surface.mediaInputSlot}.`,
     });
@@ -465,7 +465,7 @@ export const GeneratorRevisionSchema = z
   .superRefine(({ generatorId, forkedFrom }, context) => {
     if (forkedFrom?.generatorId === generatorId) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["forkedFrom", "generatorId"],
         message:
           "Same-Generator ancestry belongs in parentRevisionId, not forkedFrom.",
@@ -521,14 +521,14 @@ export const ActionRunModelRouteSchema = z
     if (!route.executorBinding) return;
     if (route.executorPluginId && route.executorBinding.pluginId !== route.executorPluginId) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `executorBinding.pluginId (${route.executorBinding.pluginId}) does not match executorPluginId (${route.executorPluginId}).`,
         path: ["executorBinding", "pluginId"],
       });
     }
     if (route.executorExportId && route.executorBinding.exportId !== route.executorExportId) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: `executorBinding.exportId (${route.executorBinding.exportId}) does not match executorExportId (${route.executorExportId}).`,
         path: ["executorBinding", "exportId"],
       });

@@ -245,7 +245,7 @@ export function timelineOperationInputJsonSchema(
 }
 
 /**
- * Zod 4 envelope for MCP, backed by the executable shared Zod 3 annotation.
+ * Zod 4 envelope for MCP, backed by the executable shared Zod annotation.
  * JSON Schema metadata and runtime validation therefore originate together.
  */
 export function timelineOperationInputSchema(

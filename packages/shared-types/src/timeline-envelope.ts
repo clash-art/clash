@@ -19,7 +19,7 @@ export const ProjectTimelineEnvelopeSchema = z
         })
         .strict(),
     ]),
-    state: z.record(z.unknown()),
+    state: z.record(z.string(), z.unknown()),
   })
   .strict();
 

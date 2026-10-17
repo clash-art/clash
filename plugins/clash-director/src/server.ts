@@ -40,14 +40,8 @@ const scope = {
 const stageScope = { ...scope, stageId: z.string().min(1) };
 const record = z.record(z.string(), z.unknown());
 
-type AuthoritativeObjectSchema = {
-  safeParse(value: unknown):
-    | { success: true; data: unknown }
-    | { success: false; error: { issues: Array<{ path?: Array<string | number>; message: string }> } };
-};
-
 function compactAuthoritativeSchema(
-  schema: AuthoritativeObjectSchema,
+  schema: z.ZodType,
   contract: "state" | "object" | "camera",
 ): z.ZodType<Record<string, unknown>> {
   const label = `Director Stage ${contract}`;

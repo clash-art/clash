@@ -185,7 +185,7 @@ export const AsrTimedTranscriptSchema = z
     transcript.words.forEach((word, index) => {
       if (wordIds.has(word.id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           message: `duplicate ASR word id: ${word.id}`,
           path: ["words", index, "id"],
         });
@@ -193,7 +193,7 @@ export const AsrTimedTranscriptSchema = z
       wordIds.add(word.id);
       if (word.startMs < previousStartMs) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           message: "ASR words must be ordered by startMs",
           path: ["words", index, "startMs"],
         });
@@ -203,7 +203,7 @@ export const AsrTimedTranscriptSchema = z
     });
     if (transcript.durationMs < maxEndMs) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "ASR durationMs must cover every word",
         path: ["durationMs"],
       });
@@ -212,7 +212,7 @@ export const AsrTimedTranscriptSchema = z
       segment.wordIds.forEach((wordId, wordIndex) => {
         if (!wordIds.has(wordId)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             message: `ASR segment references unknown word id: ${wordId}`,
             path: ["segments", segmentIndex, "wordIds", wordIndex],
           });
@@ -700,7 +700,7 @@ export const ImageComfyuiRunnerMetadataSchema = z.object({
   customNodes: z.array(ImageComfyuiCustomNodeSchema).default([]),
   inputs: z.array(ImageComfyuiInputSlotSchema).default([]),
   outputs: z.array(ImageComfyuiOutputSchema).min(1),
-  execution: ImageComfyuiExecutionSchema.default({ mode: "planned" }),
+  execution: ImageComfyuiExecutionSchema.prefault({ mode: "planned" }),
   decisionLog: z.array(z.string().min(1)).default([]),
 });
 
@@ -974,7 +974,7 @@ export const ProductionMetadataSchema =
       !hasReferenceDownloadFinalExportRights(metadata)
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "final export requires derivative and redistribution rights",
         path: ["finalExportAllowed"],
       });

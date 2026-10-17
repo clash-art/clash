@@ -49,7 +49,7 @@ export const ArtifactSubmissionSchema = z
       const id = submission.artifacts[index]?.id;
       if (id && ids.has(id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["artifacts", index, "id"],
           message: `Duplicate artifact id: ${id}`,
         });
@@ -113,7 +113,7 @@ export const QualityReviewRequestSchema = z
         const id = values[index]?.id;
         if (id && ids.has(id)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: [field, index, "id"],
             message: `Duplicate quality review ${field} id: ${id}`,
           });
@@ -148,7 +148,7 @@ export const QualityJudgeResponseSchema = z
       const id = response.criteria[index]?.id;
       if (id && ids.has(id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["criteria", index, "id"],
           message: `Duplicate judged criterion id: ${id}`,
         });
@@ -225,7 +225,7 @@ export const BenchmarkOutcomeSchema = z
       const id = outcome.deliverables[index]?.artifactId;
       if (id && ids.has(id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["deliverables", index, "artifactId"],
           message: `Duplicate outcome deliverable id: ${id}`,
         });
@@ -557,7 +557,7 @@ const BenchmarkExecutionSchema = z
       !execution.environment.initialState?.workspace
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["environment", "initialState", "workspace"],
         message:
           "A ready benchmark Environment requires one exact input Workspace bundle",
@@ -568,7 +568,7 @@ const BenchmarkExecutionSchema = z
       execution.preflight?.status !== "blocked"
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["preflight"],
         message:
           "A blocked-contract execution lane requires a blocked preflight",
@@ -579,7 +579,7 @@ const BenchmarkExecutionSchema = z
       execution.preflight?.status === "blocked"
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["preflight", "status"],
         message:
           "An agent-product execution lane cannot declare a blocked preflight",
@@ -593,7 +593,7 @@ const BenchmarkExecutionSchema = z
         execution.productReadback;
       if (Boolean(expectedProjectAssetId) === Boolean(projectAssetIdentity)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["productReadback", "projectAssetIdentity"],
           message:
             "Agent-product Asset readback requires exactly one identity rule: a benchmark-owned expectedProjectAssetId or projectAssetIdentity 'first-import'",
@@ -604,7 +604,7 @@ const BenchmarkExecutionSchema = z
         !execution.requiredProductOperations?.includes("asset.import")
       ) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["productReadback", "projectAssetIdentity"],
           message:
             "A first-import Project Asset identity requires the asset.import product operation",
@@ -612,7 +612,7 @@ const BenchmarkExecutionSchema = z
       }
       if (execution.productReadback.artifactIds.length !== 1) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["productReadback", "artifactIds"],
           message:
             "Agent-product Asset readback requires exactly one submitted artifact",
@@ -626,7 +626,7 @@ const BenchmarkExecutionSchema = z
       !execution.requiredCliCommands
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message:
           "At least one product operation or legacy transport-specific execution requirement must be declared",
       });
@@ -637,7 +637,7 @@ const BenchmarkExecutionSchema = z
         execution.requiredProductOperations.length
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["requiredProductOperations"],
         message: "requiredProductOperations must be unique",
       });
@@ -648,7 +648,7 @@ const BenchmarkExecutionSchema = z
         execution.forbiddenProductOperations.length
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["forbiddenProductOperations"],
         message: "forbiddenProductOperations must be unique",
       });
@@ -661,7 +661,7 @@ const BenchmarkExecutionSchema = z
     );
     if (overlap.length > 0) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["forbiddenProductOperations"],
         message: `Product operations cannot be both required and forbidden: ${overlap.join(", ")}`,
       });
@@ -677,7 +677,7 @@ const BenchmarkExecutionSchema = z
       contractFields.some((field) => field === undefined)
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message:
           "requiredCapabilities, preflight, evidence, and productReadback must be declared together",
       });
@@ -688,7 +688,7 @@ const BenchmarkExecutionSchema = z
     const requiredCapabilities = new Set(execution.requiredCapabilities);
     if (requiredCapabilities.size !== execution.requiredCapabilities.length) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["requiredCapabilities"],
         message: "requiredCapabilities must be unique",
       });
@@ -699,7 +699,7 @@ const BenchmarkExecutionSchema = z
       if (!capability) continue;
       if (checkedCapabilities.has(capability)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["preflight", "checks", index, "capability"],
           message: `Duplicate preflight capability: ${capability}`,
         });
@@ -707,7 +707,7 @@ const BenchmarkExecutionSchema = z
       checkedCapabilities.add(capability);
       if (!requiredCapabilities.has(capability)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["preflight", "checks", index, "capability"],
           message: `Preflight capability is not required: ${capability}`,
         });
@@ -716,7 +716,7 @@ const BenchmarkExecutionSchema = z
     for (const capability of requiredCapabilities) {
       if (!checkedCapabilities.has(capability)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["preflight", "checks"],
           message: `Missing preflight check for required capability: ${capability}`,
         });
@@ -727,14 +727,14 @@ const BenchmarkExecutionSchema = z
     );
     if (execution.preflight.status === "ready" && hasMissingCapability) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["preflight", "status"],
         message: "A ready preflight cannot contain missing capabilities",
       });
     }
     if (execution.preflight.status === "blocked" && !hasMissingCapability) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["preflight", "status"],
         message:
           "A blocked preflight must identify at least one missing capability",
@@ -783,7 +783,7 @@ export const ArtifactBenchmarkCaseSchema = z
         Boolean(benchmark.tags?.includes("content-effect"))
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["execution", "environment", "track"],
         message:
           "Environment track must match the benchmark content-effect tag",
@@ -794,7 +794,7 @@ export const ArtifactBenchmarkCaseSchema = z
       !benchmark.qualityCriteria?.length
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["qualityCriteria"],
         message:
           "A content-effect benchmark requires explicit semantic quality criteria",
@@ -802,7 +802,7 @@ export const ArtifactBenchmarkCaseSchema = z
     }
     if (environmentTrack !== "content-effect" && benchmark.qualityCriteria) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["qualityCriteria"],
         message:
           "Quality criteria are only valid for a content-effect benchmark",
@@ -823,7 +823,7 @@ export const ArtifactBenchmarkCaseSchema = z
       const criterion = benchmark.qualityCriteria![index]!;
       if (qualityCriterionIds.has(criterion.id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["qualityCriteria", index, "id"],
           message: `Duplicate quality criterion id: ${criterion.id}`,
         });
@@ -832,7 +832,7 @@ export const ArtifactBenchmarkCaseSchema = z
       for (const artifactId of criterion.evidenceArtifactIds ?? []) {
         if (!deliverablesById.has(artifactId)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["qualityCriteria", index, "evidenceArtifactIds"],
             message: `Quality criterion evidence is not an outcome deliverable: ${artifactId}`,
           });
@@ -845,7 +845,7 @@ export const ArtifactBenchmarkCaseSchema = z
           )
         ) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["qualityCriteria", index, "evidenceKinds"],
             message: `Quality criterion has no outcome deliverable of kind: ${kind}`,
           });
@@ -857,7 +857,7 @@ export const ArtifactBenchmarkCaseSchema = z
       const id = benchmark.rubric[index]?.id;
       if (id && ids.has(id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["rubric", index, "id"],
           message: `Duplicate rubric id: ${id}`,
         });
@@ -872,7 +872,7 @@ export const ArtifactBenchmarkCaseSchema = z
         ).length;
         if (declaredCount < rubric.minCount) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["rubric", index, "minCount"],
             message: `Outcome declares ${declaredCount} ${rubric.kind ?? "matching"} deliverables but artifact set requires ${rubric.minCount}`,
           });
@@ -885,7 +885,7 @@ export const ArtifactBenchmarkCaseSchema = z
         rubric.minDurationSeconds > rubric.maxDurationSeconds
       ) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["rubric", index, "minDurationSeconds"],
           message:
             "minDurationSeconds must be less than or equal to maxDurationSeconds",
@@ -895,7 +895,7 @@ export const ArtifactBenchmarkCaseSchema = z
         const uniqueFrameIds = new Set(rubric.artifactIds);
         if (uniqueFrameIds.size !== rubric.artifactIds.length) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["rubric", index, "artifactIds"],
             message: "visual-frames artifactIds must be unique",
           });
@@ -904,7 +904,7 @@ export const ArtifactBenchmarkCaseSchema = z
           (rubric.artifactIds.length * (rubric.artifactIds.length - 1)) / 2;
         if (rubric.minDistinctPairs > pairCount) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["rubric", index, "minDistinctPairs"],
             message: `minDistinctPairs cannot exceed ${pairCount}`,
           });
@@ -917,7 +917,7 @@ export const ArtifactBenchmarkCaseSchema = z
         for (const artifactId of rubric.artifactIds) {
           if (!imageDeliverables.has(artifactId)) {
             context.addIssue({
-              code: z.ZodIssueCode.custom,
+              code: "custom",
               path: ["rubric", index, "artifactIds"],
               message: `Visual frame '${artifactId}' must be declared as an image outcome deliverable`,
             });
@@ -942,7 +942,7 @@ export const ArtifactBenchmarkCaseSchema = z
         if (!artifactId) continue;
         if (readbackIds.has(artifactId)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["execution", "productReadback", "artifactIds", index],
             message: `Duplicate product readback artifact id: ${artifactId}`,
           });
@@ -950,7 +950,7 @@ export const ArtifactBenchmarkCaseSchema = z
         readbackIds.add(artifactId);
         if (!deliverableIds.has(artifactId)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["execution", "productReadback", "artifactIds", index],
             message: `Product readback artifact is not an outcome deliverable: ${artifactId}`,
           });
@@ -973,7 +973,7 @@ export const ArtifactBenchmarkSuiteSchema = z
       const id = suite.cases[index]?.id;
       if (id && ids.has(id)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["cases", index, "id"],
           message: `Duplicate benchmark case id: ${id}`,
         });

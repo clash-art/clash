@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import {
   TIMELINE_KEYFRAME_CHANNELS,
   TimelineItemKeyframesSchema,
@@ -67,8 +67,8 @@ const itemVariantSchemas = TIMELINE_DSL_ITEM_TYPES.map((type) => {
 const TimelineDslItemVariantSchema = z.discriminatedUnion(
   "type",
   itemVariantSchemas as unknown as [
-    z.ZodDiscriminatedUnionOption<"type">,
-    ...z.ZodDiscriminatedUnionOption<"type">[],
+    z.core.$ZodTypeDiscriminable,
+    ...z.core.$ZodTypeDiscriminable[],
   ],
 );
 
@@ -230,7 +230,7 @@ export const TimelineDslItemSchema = TimelineDslItemVariantSchema.superRefine(
     };
     if (Object.prototype.hasOwnProperty.call(typedItem, "backingAssetId")) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["backingAssetId"],
         message: "backingAssetId was removed; use the item's Project Asset id",
         params: { ruleId: timelineRetiredAssetFieldRule.id },
@@ -242,7 +242,7 @@ export const TimelineDslItemSchema = TimelineDslItemVariantSchema.superRefine(
         !owners.has(typedItem.type)
       ) {
         ctx.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: [fieldName],
           message: `${fieldName} is not valid on ${typedItem.type} items`,
           params: { ruleId: timelineItemFieldApplicabilityRule.id },
@@ -251,7 +251,7 @@ export const TimelineDslItemSchema = TimelineDslItemVariantSchema.superRefine(
     }
     for (const issue of timelineMaskKeyframeSemanticIssues(typedItem)) {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: issue.path,
         message: issue.message,
         params: { ruleId: issue.ruleId },
@@ -281,7 +281,7 @@ export const TimelineDslSchema = TimelineDslSchemaBase.superRefine(
   (timeline, context) => {
     if (Object.prototype.hasOwnProperty.call(timeline, "mediaAssetRefs")) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["mediaAssetRefs"],
         message:
           "mediaAssetRefs was removed; Timeline items bind Project Assets directly",
@@ -290,7 +290,7 @@ export const TimelineDslSchema = TimelineDslSchemaBase.superRefine(
     }
     for (const semanticIssue of timelineDslSemanticIssues(timeline)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: semanticIssue.path,
         message: semanticIssue.message,
         params: { ruleId: semanticIssue.ruleId },
@@ -301,7 +301,7 @@ export const TimelineDslSchema = TimelineDslSchemaBase.superRefine(
 
 export type TimelineDslValidationIssue = {
   ruleId: string;
-  code: z.ZodIssueCode;
+  code: z.core.$ZodIssue["code"];
   path: (string | number)[];
   message: string;
 };
@@ -320,31 +320,29 @@ export function validateTimelineDsl(
     ok: false,
     issues: parsed.error.issues.map((issue) => ({
       ruleId:
-        issue.code === z.ZodIssueCode.custom &&
+        issue.code === "custom" &&
         typeof issue.params?.ruleId === "string"
           ? issue.params.ruleId
           : "timeline.dsl.structure",
       code: issue.code,
-      path: [...issue.path],
+      path: issue.path.map((segment) =>
+        typeof segment === "symbol" ? segment.toString() : segment,
+      ),
       message: issue.message,
     })),
   };
 }
 
-const timelineDslJsonSchema = zodToJsonSchema(TimelineDslSchema, {
+const timelineDslJsonSchema = zodToDraft7JsonSchema(TimelineDslSchema, {
   name: "TimelineDsl",
-  target: "jsonSchema7",
 });
-const timelineItemMaskJsonSchema = zodToJsonSchema(TimelineItemMaskSchema, {
-  name: "TimelineItemMask",
-  target: "jsonSchema7",
-});
-const timelineItemKeyframesJsonSchema = zodToJsonSchema(
+const timelineItemMaskJsonSchema = zodToDraft7JsonSchema(
+  TimelineItemMaskSchema,
+  { name: "TimelineItemMask" },
+);
+const timelineItemKeyframesJsonSchema = zodToDraft7JsonSchema(
   TimelineItemKeyframesSchema,
-  {
-    name: "TimelineItemKeyframes",
-    target: "jsonSchema7",
-  },
+  { name: "TimelineItemKeyframes" },
 );
 
 type JsonSchemaObject = Record<string, unknown>;

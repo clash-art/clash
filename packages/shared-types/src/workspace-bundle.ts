@@ -28,7 +28,7 @@ export const WorkspaceBundleRelativePathSchema = z
         .some((segment) => !segment || segment === "." || segment === "..")
     ) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "Workspace bundle paths must be safe POSIX-relative paths",
       });
     }
@@ -62,7 +62,7 @@ export const WorkspacePortableSourcePathSchema =
   WorkspaceBundleRelativePathSchema.superRefine((value, context) => {
     if (workspacePortablePathLooksSecret(value)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         message: "Workspace source paths must not identify secret-like files",
       });
     }
@@ -110,7 +110,7 @@ function workspaceAbsoluteMachinePath(value: string, key: string): boolean {
  * applies this additional portability boundary before publishing project.bin.
  */
 export const WorkspacePortableJsonObjectSchema = z
-  .record(z.unknown())
+  .record(z.string(), z.unknown())
   .superRefine((root, context) => {
     const seen = new WeakSet<object>();
     const visit = (value: unknown, path: Array<string | number>): void => {
@@ -125,7 +125,7 @@ export const WorkspacePortableJsonObjectSchema = z
           workspaceAbsoluteMachinePath(value, key)
         ) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path,
             message: "Workspace JSON must not contain absolute machine paths",
           });
@@ -135,7 +135,7 @@ export const WorkspacePortableJsonObjectSchema = z
       if (typeof value === "number") {
         if (!Number.isFinite(value)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path,
             message: "Workspace JSON numbers must be finite",
           });
@@ -144,7 +144,7 @@ export const WorkspacePortableJsonObjectSchema = z
       }
       if (typeof value !== "object") {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path,
           message: "Workspace JSON must contain only JSON values",
         });
@@ -152,7 +152,7 @@ export const WorkspacePortableJsonObjectSchema = z
       }
       if (seen.has(value)) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path,
           message: "Workspace JSON must not be cyclic",
         });
@@ -165,7 +165,7 @@ export const WorkspacePortableJsonObjectSchema = z
       }
       if (Object.getPrototypeOf(value) !== Object.prototype) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path,
           message: "Workspace JSON objects must be plain records",
         });
@@ -174,7 +174,7 @@ export const WorkspacePortableJsonObjectSchema = z
       for (const [key, entry] of Object.entries(value)) {
         if (workspacePrivateJsonKey(key)) {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: [...path, key],
             message: `Workspace JSON contains machine-private field ${key}`,
           });
@@ -308,7 +308,7 @@ export const WorkspaceBundleManifestSchema = z
       manifest.files.map((file) => [file.path, file] as const),
     );
     const issue = (path: Array<string | number>, message: string) =>
-      context.addIssue({ code: z.ZodIssueCode.custom, path, message });
+      context.addIssue({ code: "custom", path, message });
     const requireCanonicalOrder = <T>(
       values: readonly T[],
       key: (value: T) => string,
@@ -517,7 +517,7 @@ function validateWorkspaceImportIdempotency(
 ): void {
   if (value.idempotencyKey !== `workspace-import:${value.bundleDigest}`) {
     context.addIssue({
-      code: z.ZodIssueCode.custom,
+      code: "custom",
       path: ["idempotencyKey"],
       message: "Workspace import idempotency key must bind the bundle digest",
     });
@@ -541,21 +541,21 @@ function validateTransferFileIdentities(
   files.forEach((file, index) => {
     if (fileIds.has(file.fileId)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["files", index, "fileId"],
         message: "Duplicate Workspace transfer file capability",
       });
     }
     if (paths.has(file.path)) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["files", index, "path"],
         message: "Duplicate Workspace transfer logical path",
       });
     }
     if (index > 0 && files[index - 1]!.path >= file.path) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["files", index, "path"],
         message: "Workspace transfer files must be sorted by logical path",
       });
@@ -608,7 +608,7 @@ export const WorkspaceExportPlanSchema = z
     if (!closure.success) {
       closure.error.issues.forEach((issue) =>
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: issue.path,
           message: issue.message,
         }),
@@ -629,7 +629,7 @@ export const WorkspaceImportStartSchema = z
     validateWorkspaceImportIdempotency(start, context);
     if (start.bundleDigest !== start.manifest.integrity.bundleDigest) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["bundleDigest"],
         message: "Import bundle digest must match the manifest identity",
       });
@@ -674,7 +674,7 @@ export const WorkspaceImportSessionSchema = z
     session.files.forEach((file, index) => {
       if (file.role === "workspace") {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["files", index, "role"],
           message:
             "Workspace worktree files are materialized by the CLI, not uploaded to the Host",
@@ -684,7 +684,7 @@ export const WorkspaceImportSessionSchema = z
     if (session.status === "committed") {
       if (session.committedAt === undefined) {
         context.addIssue({
-          code: z.ZodIssueCode.custom,
+          code: "custom",
           path: ["committedAt"],
           message: "Committed imports require a commit timestamp",
         });
@@ -692,7 +692,7 @@ export const WorkspaceImportSessionSchema = z
       session.files.forEach((file, index) => {
         if (file.state === "missing") {
           context.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: "custom",
             path: ["files", index, "state"],
             message: "Committed imports cannot contain missing file slots",
           });
@@ -700,7 +700,7 @@ export const WorkspaceImportSessionSchema = z
       });
     } else if (session.committedAt !== undefined) {
       context.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: "custom",
         path: ["committedAt"],
         message: "Staging imports cannot claim a commit timestamp",
       });
