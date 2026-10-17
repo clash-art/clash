@@ -18,6 +18,10 @@ import { understandAdapter } from "./adapters/understand";
 import { describeAdapter } from "./adapters/describe";
 import { pikaMediaAdapter } from "./adapters/pika-media";
 import { bflVideoAdapter } from "./adapters/bfl-video";
+import {
+  isExecutablePluginProviderRoute,
+  pluginProviderAdapterFor,
+} from "./plugin-provider-adapter";
 
 function selectedRoute(params: GenerationParams) {
   if (!params.selectedRoute) {
@@ -65,6 +69,8 @@ export function resolveAdapter(params: GenerationParams): GenerationAdapter {
       if (route?.upstreamId === "kling") return klingVideoAdapter;
       if (route?.upstreamId === "volcengine") return volcengineVideoAdapter;
       if (route?.upstreamId === "minimax") return minimaxVideoAdapter;
+      if (isExecutablePluginProviderRoute(route))
+        return pluginProviderAdapterFor(route);
       return unsupportedRoute(params);
     }
     case "image_gen": {
@@ -73,6 +79,8 @@ export function resolveAdapter(params: GenerationParams): GenerationAdapter {
       if (route?.upstreamId === "openai") return openaiImageAdapter;
       if (route?.upstreamId === "google-agent-platform")
         return googleAgentPlatformImageAdapter;
+      if (isExecutablePluginProviderRoute(route))
+        return pluginProviderAdapterFor(route);
       return unsupportedRoute(params);
     }
     case "audio_gen": {
@@ -83,14 +91,20 @@ export function resolveAdapter(params: GenerationParams): GenerationAdapter {
       if (route?.upstreamId === "minimax") return minimaxAudioAdapter;
       if (route?.upstreamId === "elevenlabs") return elevenlabsAudioAdapter;
       if (route?.upstreamId === "suno") return sunoAudioAdapter;
+      if (isExecutablePluginProviderRoute(route))
+        return pluginProviderAdapterFor(route);
       return unsupportedRoute(params);
     }
     case "video_render":
       return videoRenderAdapter;
-    case "text_gen":
-      return selectedRoute(params).upstreamId === "google-agent-platform"
-        ? googleAgentPlatformTextAdapter
-        : textGenAdapter;
+    case "text_gen": {
+      const route = selectedRoute(params);
+      if (route.upstreamId === "google-agent-platform")
+        return googleAgentPlatformTextAdapter;
+      if (isExecutablePluginProviderRoute(route))
+        return pluginProviderAdapterFor(route);
+      return textGenAdapter;
+    }
     case "understand":
       return understandAdapter;
     case "image_desc":

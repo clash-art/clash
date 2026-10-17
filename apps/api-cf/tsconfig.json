@@ -23,6 +23,7 @@
       "@clash/shared-types/*": ["../../packages/shared-types/src/*.ts"],
       "@clash/shared-runtime": ["../../packages/shared-runtime/src/index.ts"],
       "@clash/shared-runtime/*": ["../../packages/shared-runtime/src/*.ts"],
+      "@clash-plugin/fal/module": ["../../plugins/fal/src/module.ts"],
       "@clash/replica": ["../../packages/shared-replica/src/index.ts"],
       "@clash/replica/*": ["../../packages/shared-replica/src/*.ts"],
       "@clash/remotion-core": ["../../packages/remotion-core/src/index.ts"]

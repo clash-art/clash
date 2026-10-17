@@ -9,6 +9,10 @@ export default defineConfig({
         replacement: resolve(__dirname, "../../packages/action-sdk/src/$1.ts"),
       },
       {
+        find: /^@clash-plugin\/fal\/module$/,
+        replacement: resolve(__dirname, "../../plugins/fal/src/module.ts"),
+      },
+      {
         find: /^@clash\/action-sdk$/,
         replacement: resolve(__dirname, "../../packages/action-sdk/src/index.ts"),
       },

@@ -1,3 +1,4 @@
+import { isExecutablePluginProviderRoute } from "./plugin-provider-adapter";
 import {
   durableRunIdempotencyKey,
   type DurableRunRecord,
@@ -95,6 +96,8 @@ function cloudflarePorts(
         { ...run, outputSlot: `${run.outputSlot}:cover` },
         frozenGeneration(run).params.projectId,
       ),
+      run,
+      durableRunIdempotencyKey(run),
     );
   const publish =
     options.publish ??
@@ -102,6 +105,10 @@ function cloudflarePorts(
       publishHostedGeneration(env, params, publication));
   return {
     ownerId: OWNER,
+    // Provider-executor plugin routes (fal, …) have no upstream deduplication of a repeated
+    // submit, so an ambiguous submit fails terminally instead of risking a second charge.
+    mayRetryAmbiguousSubmit: (params) =>
+      !isExecutablePluginProviderRoute(params.selectedRoute),
     journal: options.journal ?? createD1CloudDurableRunJournal(env.DB),
     clock: options.clock,
     resolveRoute: (params) =>

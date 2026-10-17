@@ -277,6 +277,8 @@ const SHARED_ENTRIES = [
   "packages/shared-runtime/src/cloud-project-host/plugin-catalog.ts",
   "packages/shared-runtime/src/cloud-project-host/text-revisions.ts",
   "packages/shared-runtime/src/project-host-contract/index.ts",
+  "packages/shared-runtime/src/executable-run.ts",
+  "packages/shared-runtime/src/executable-plugin-port.ts",
 ];
 
 test("shared Project Host modules reach no platform transitively", async () => {

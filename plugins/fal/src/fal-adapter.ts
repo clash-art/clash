@@ -4,11 +4,11 @@ import {
   resolveGptImageSize,
 } from "@clash/shared-types/gpt-image-size";
 import type { ExecutablePluginReference } from "@clash/shared-types/executable-plugin";
-import {
-  ProviderExecutionError,
-  type ExecutorContext,
-  type ExecutorStep,
-  type Executor as ProviderExecutor,
+import { ProviderExecutionError } from "@clash/action-sdk/executable-failure";
+import type {
+  ExecutorContext,
+  ExecutorStep,
+  Executor as ProviderExecutor,
 } from "@clash/action-sdk";
 
 import {
@@ -841,7 +841,9 @@ export const falAdapter: ProviderExecutor = {
       return {
         status: "accepted",
         pollState: durablePollState(result.pollState),
-        ...(result.retryAfterMs === undefined
+        // A completed status is an instruction to fetch the result now. Zero
+        // is not a valid positive retry delay, so omit it instead.
+        ...(result.retryAfterMs === undefined || result.retryAfterMs <= 0
           ? {}
           : { retryAfterMs: result.retryAfterMs }),
       };
