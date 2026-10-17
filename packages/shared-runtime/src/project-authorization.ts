@@ -133,6 +133,9 @@ export async function authenticateApiToken(
 export type SessionIdentity = {
   session: { id: string; expiresAt: string | number };
   user: { id: string; name?: string; image?: string };
+  /** True when the resolver just read this session from the same store's
+   * authority record, so a second `readSession` would be a duplicate. */
+  authorityChecked?: boolean;
 };
 export async function authenticateRequest(
   request: Request,
@@ -193,7 +196,7 @@ export async function authenticateRequest(
       // authority record still needs checking. (Calling
       // revalidateProjectConnection here re-read the project row: one extra
       // D1 round trip per /loro and /sync request.)
-      if (!development) {
+      if (!development && session.authorityChecked !== true) {
         let current: { userId: string; expiresAt: number } | null;
         try {
           current = await options.store.readSession(session.session.id);

@@ -25,13 +25,14 @@ import { createSqliteD1 } from "./test-support/sqlite-d1";
 const ORIGIN = "http://localhost:8789";
 const PROJECT = "proj-count-1";
 
-/** Budgets: [route, D1 queries]. Session auth costs 2 (session + user) today. */
+/** Budgets: [route, D1 queries]. Session auth is one JOIN (#135); route
+ * data follows. Before #133/#135 these were 6, 6, 4, 5, 6, 2. */
 export const D1_QUERY_BUDGET: [string, number][] = [
-  ["/api/projects", 4],
-  [`/api/projects/${PROJECT}`, 4],
-  [`/api/v1/projects/${PROJECT}`, 4],
-  ["/api/settings/tokens", 3],
-  [`/loro/${PROJECT}/metadata`, 5],
+  ["/api/projects", 3],
+  [`/api/projects/${PROJECT}`, 3],
+  [`/api/v1/projects/${PROJECT}`, 3],
+  ["/api/settings/tokens", 2],
+  [`/loro/${PROJECT}/metadata`, 3],
   ["/api/better-auth/get-session", 2],
 ];
 

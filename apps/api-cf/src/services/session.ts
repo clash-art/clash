@@ -1,5 +1,6 @@
 import type { D1Database, IncomingRequestCfProperties } from "@cloudflare/workers-types";
 import { createAuth, type AuthBindings } from "../auth";
+import { verifySessionFast } from "./session-fast";
 
 export const DEV_USER_ID = "dev-user";
 
@@ -17,6 +18,12 @@ export async function getUserIdFromRequest(
   cf?: IncomingRequestCfProperties,
 ): Promise<string | null> {
   if (env.SKIP_LOGIN === "true") return DEV_USER_ID;
+  try {
+    const fast = await verifySessionFast(request, env);
+    if (fast !== "fallback") return fast?.userId ?? null;
+  } catch {
+    // fall through to the full Better Auth path
+  }
   const auth = createAuth(env, cf);
   try {
     const session: unknown = await auth.api.getSession({
