@@ -62,7 +62,7 @@ describe("runtime endpoint helpers", () => {
     expect(cfg.capabilities.assets.storage).toBe("cloud");
     expect(cfg.capabilities.assets.upload).toBe("cloud");
     expect(cfg.capabilities.host).toEqual({
-      timelineRender: "unavailable",
+      timelineRender: "available",
       textRevisions: "available",
       voiceInput: "available",
       localAudio: "unavailable",

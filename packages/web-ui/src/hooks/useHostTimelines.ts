@@ -7,11 +7,15 @@ import {
   type ProjectTimeline, type ProjectTimelineMutationResult, type HostMutationRecord,
   type CreateTimelineOnCanvasInput,
 } from "@clash/shared-types";
-import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { boundTimelineRenderExecutor, runtimeApiUrl } from "../lib/runtimeConfig";
 
 // Mutations are never automatically retried after an ambiguous network failure.
 const runtimeRequest: ProjectHostHttpRequest = (path, init) => fetch(runtimeApiUrl(path), { credentials: "include", ...init });
 type WriteOptions = { ifMatch?: string; actorClientType?: string };
+export interface HostTimelineRenderJob {
+  timelineId: string;
+  progress: number;
+}
 
 export function useHostTimelines(options: {
   projectId: string; doc: LoroDoc | null; canvasId?: string; connected?: boolean;
@@ -21,12 +25,14 @@ export function useHostTimelines(options: {
   const onMutation = useRef(options.onMutation);
   onMutation.current = options.onMutation;
   const state = useMemo(() => ({
-    client: createTimelineClient({ projectId, request }), active: true, serial: 0,
+    client: createTimelineClient({ projectId, request, renderExecutor: boundTimelineRenderExecutor() }), active: true, serial: 0,
     observations: [] as ObservedProjectTimeline[],
   }), [projectId, request]);
   const current = useRef(state);
   current.current = state;
   const [snapshot, setSnapshot] = useState({ owner: state, timelines: [] as ProjectTimeline[], error: null as string | null });
+  const [renderJob, setRenderJob] = useState<HostTimelineRenderJob | null>(null);
+  const renderAbort = useRef<AbortController | null>(null);
   const publish = useCallback((observations: ObservedProjectTimeline[]) => {
     if (!state.active || current.current !== state) return;
     state.serial++;
@@ -104,14 +110,45 @@ export function useHostTimelines(options: {
     return result;
   }, [state, mutate, observe]);
   const requestTimelineRender = useCallback(async (id: string, actor: { actorUserId: string; actorAgentId?: string }) => {
-    try { return { ok: true as const, ...await state.client.render(observe(id), actor.actorAgentId) }; }
-    catch (error) { return { ok: false as const, error: report(error) }; }
+    if (!boundTimelineRenderExecutor()) {
+      try { return { ok: true as const, ...await state.client.render(observe(id), actor.actorAgentId) }; }
+      catch (error) { return { ok: false as const, error: report(error) }; }
+    }
+    const controller = new AbortController();
+    renderAbort.current = controller;
+    setRenderJob({ timelineId: id, progress: 0 });
+    let reported = -1;
+    try {
+      const receipt = await state.client.render(observe(id), actor.actorAgentId, {
+        signal: controller.signal,
+        onProgress(progress) {
+          const percent = Math.floor(progress * 100);
+          if (percent <= reported) return;
+          reported = percent;
+          if (state.active && current.current === state)
+            setRenderJob({ timelineId: id, progress: Math.min(1, Math.max(0, progress)) });
+        },
+      });
+      return { ok: true as const, ...receipt };
+    } catch (error) {
+      if (controller.signal.aborted) return { ok: false as const, cancelled: true, error: "Render cancelled." };
+      return { ok: false as const, error: report(error) };
+    } finally {
+      if (renderAbort.current === controller) renderAbort.current = null;
+      if (current.current === state) setRenderJob(null);
+    }
   }, [state, observe, report]);
+  const cancelTimelineRender = useCallback(() => {
+    const controller = renderAbort.current;
+    if (!controller || controller.signal.aborted) return;
+    controller.abort();
+  }, []);
 
   return {
     timelines: snapshot.owner === state ? snapshot.timelines : [],
     timelineError: snapshot.owner === state ? snapshot.error : null,
     refresh, createTimeline, createTimelineOnCanvas, attachTimeline, detachTimeline,
     deleteTimeline, applyTimelineState, requestTimelineRender,
+    renderJob, cancelTimelineRender,
   };
 }

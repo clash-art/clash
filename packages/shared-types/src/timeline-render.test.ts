@@ -300,3 +300,56 @@ describe("Timeline render requests", () => {
     ).toMatchObject({ ok: false, error: { code: "ASSET_IN_USE" } });
   });
 });
+
+describe("completeTimelineRenderNode", () => {
+  it("projects an uploaded Asset into the same completed node the container writes", () => {
+    const doc = authoritativeTimelineDoc();
+    (workspace as any).createProjectTimeline(doc, {
+      id: "timeline-browser",
+      name: "Browser Cut",
+      state: timelineState,
+    });
+    const requested = (timelineRender as any).requestTimelineRender(doc, {
+      timelineId: "timeline-browser",
+      actorUserId: "user-1",
+      generateId: () => "render-browser-1",
+    });
+    const completed = (timelineRender as any).completeTimelineRenderNode(doc, {
+      renderNodeId: requested.renderNodeId,
+      assetId: "asset-browser-1",
+    });
+    expect(completed).toEqual({
+      ok: true,
+      renderNodeId: "render-browser-1",
+      assetId: "asset-browser-1",
+    });
+    expect(doc.getMap("nodes").get("render-browser-1")).toMatchObject({
+      type: "video",
+      data: {
+        status: "completed",
+        assetId: "asset-browser-1",
+        progress: 1,
+      },
+    });
+    expect(
+      (timelineRender as any).listTimelineExportProgress(doc, "timeline-browser"),
+    ).toEqual([
+      {
+        renderNodeId: "render-browser-1",
+        timelineId: "timeline-browser",
+        timelineRevisionId: requested.renderNodeId
+          ? (doc.getMap("nodes").get("render-browser-1") as any).data
+              .sourceTimelineRevisionId
+          : "",
+        status: "completed",
+        progress: 1,
+      },
+    ]);
+    expect(
+      (timelineRender as any).completeTimelineRenderNode(doc, {
+        renderNodeId: "missing",
+        assetId: "asset-browser-1",
+      }),
+    ).toMatchObject({ ok: false });
+  });
+});

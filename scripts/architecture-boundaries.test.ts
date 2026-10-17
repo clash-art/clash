@@ -67,6 +67,7 @@ test("UI packages cannot branch on the backend runtime", async () => {
     "if (hasLocalHostRuntime()) load();",
     'if (getRuntimeConfig().mode === "hosted") skip();',
     'const mode = readRuntimeModeAtCompositionRoot();',
+    "bindTimelineRenderExecutor(executor);",
     "const config = globalThis.__CLASH_RUNTIME_CONFIG__;",
   ]) {
     assert.ok(

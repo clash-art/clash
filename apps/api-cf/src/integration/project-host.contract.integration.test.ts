@@ -79,7 +79,7 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
       "timeline.detach": "supported",
       "timeline.delete": "supported",
       // No cloud render executor; host-command must answer 501 for it.
-      "timeline.render": "unavailable",
+      "timeline.render": "supported",
       "assets.list": "supported",
       "assets.batch": "supported",
       "assets.get": "supported",

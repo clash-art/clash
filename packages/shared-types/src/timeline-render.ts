@@ -5,9 +5,11 @@ import { PROJECT_ASSET_RENDER_CANVAS_ID } from "./timeline-contract.js";
 import { ProjectTimelineEnvelopeSchema } from "./timeline-envelope.js";
 import {
   freezeProjectTimelineRunAssetInputs,
+  projectTimelineActionId,
   projectTimelineRenderActionRunId,
   readProjectTimeline,
   resolveTimelineRenderTarget,
+  type ProjectTimeline,
   type TimelineRenderTarget,
 } from "./project-workspace.js";
 
@@ -159,6 +161,51 @@ export function canonicalTimelineRenderDsl(
   };
 }
 
+/** Data of a pending render node, whichever request path created it. */
+function pendingTimelineRenderNodeData(input: {
+  timeline: ProjectTimeline;
+  timelineDsl: RenderableTimelineDsl;
+  sourceTimelineActionId: string;
+  actionRunId: string;
+  actorUserId: string;
+  actorAgentId?: string;
+  target: TimelineRenderTarget;
+}): Record<string, unknown> {
+  const { timeline, timelineDsl } = input;
+  const naturalWidth =
+    typeof timelineDsl.compositionWidth === "number" &&
+    timelineDsl.compositionWidth > 0
+      ? timelineDsl.compositionWidth
+      : 1920;
+  const naturalHeight =
+    typeof timelineDsl.compositionHeight === "number" &&
+    timelineDsl.compositionHeight > 0
+      ? timelineDsl.compositionHeight
+      : 1080;
+  return {
+    label: "Rendered Video",
+    status: "pending",
+    timeline: ProjectTimelineEnvelopeSchema.parse({
+      name: timeline.name,
+      owner: timeline.owner,
+      state: timelineDsl,
+    }),
+    timelineDsl,
+    sourceTimelineId: timeline.id,
+    sourceTimelineActionId: input.sourceTimelineActionId,
+    sourceTimelineRevisionId: timeline.revisionId,
+    sourceTimelineActionRunId: input.actionRunId,
+    pendingTask: null,
+    naturalWidth,
+    naturalHeight,
+    aspectRatio: `${naturalWidth}:${naturalHeight}`,
+    actorType: input.actorAgentId ? "agent" : "user",
+    actorUserId: input.actorUserId,
+    ...(input.actorAgentId ? { actorAgentId: input.actorAgentId } : {}),
+    renderTarget: input.target,
+  };
+}
+
 /**
  * Creates the durable backend work item used by both Timeline Export and the
  * Canvas Timeline Action Render button. Canvas-owned outputs are linked into
@@ -232,42 +279,19 @@ export function requestTimelineRender(
   if (!frozenPreflight.ok) {
     return { ok: false, error: frozenPreflight.error };
   }
-  const naturalWidth =
-    typeof timelineDsl.compositionWidth === "number" &&
-    timelineDsl.compositionWidth > 0
-      ? timelineDsl.compositionWidth
-      : 1920;
-  const naturalHeight =
-    typeof timelineDsl.compositionHeight === "number" &&
-    timelineDsl.compositionHeight > 0
-      ? timelineDsl.compositionHeight
-      : 1080;
   nodes.set(renderNodeId, {
     canvasId: PROJECT_ASSET_RENDER_CANVAS_ID,
     type: "video",
     position: { x: 0, y: 0 },
-    data: {
-      label: "Rendered Video",
-      status: "pending",
-      timeline: ProjectTimelineEnvelopeSchema.parse({
-        name: timeline.name,
-        owner: timeline.owner,
-        state: timelineDsl,
-      }),
+    data: pendingTimelineRenderNodeData({
+      timeline,
       timelineDsl,
-      sourceTimelineId: timeline.id,
       sourceTimelineActionId: frozenPreflight.owner.actionId,
-      sourceTimelineRevisionId: timeline.revisionId,
-      sourceTimelineActionRunId: actionRunId,
-      pendingTask: null,
-      naturalWidth,
-      naturalHeight,
-      aspectRatio: `${naturalWidth}:${naturalHeight}`,
-      actorType: input.actorAgentId ? "agent" : "user",
+      actionRunId,
       actorUserId: input.actorUserId,
-      ...(input.actorAgentId ? { actorAgentId: input.actorAgentId } : {}),
-      renderTarget: target,
-    },
+      actorAgentId: input.actorAgentId,
+      target,
+    }),
   });
   const frozen = freezeProjectTimelineRunAssetInputs(
     doc,
@@ -285,4 +309,125 @@ export function requestTimelineRender(
     target,
     position: { x: 0, y: 0 },
   };
+}
+
+/**
+ * The same pending render node for a Timeline revision the caller has already
+ * read, e.g. a Generator-backed Timeline on a cloud adapter. Generator
+ * revisions are immutable and pin their own inputs, so there are no draft
+ * bindings to freeze here.
+ */
+export function requestTimelineRevisionRender(
+  doc: LoroDoc,
+  input: Omit<TimelineRenderRequestInput, "timelineId"> & {
+    timeline: ProjectTimeline;
+  },
+): TimelineRenderRequestResult {
+  const { timeline } = input;
+  const timelineDsl = canonicalTimelineRenderDsl(timeline.state);
+  if (!timelineDsl)
+    return {
+      ok: false,
+      error: `Timeline ${timeline.id} has no items — nothing to render.`,
+    };
+  const renderNodeId = input.generateId();
+  if (doc.getMap("nodes").get(renderNodeId) !== undefined)
+    return { ok: false, error: `Node ${renderNodeId} already exists` };
+  const target: TimelineRenderTarget =
+    timeline.owner.kind === "canvas-action"
+      ? {
+          kind: "canvas",
+          canvasId: timeline.owner.canvasId,
+          actionNodeId: timeline.owner.actionNodeId,
+        }
+      : { kind: "project-assets" };
+  const data = pendingTimelineRenderNodeData({
+    timeline,
+    timelineDsl,
+    sourceTimelineActionId: projectTimelineActionId(timeline.id, timeline.owner),
+    actionRunId: projectTimelineRenderActionRunId(renderNodeId),
+    actorUserId: input.actorUserId,
+    actorAgentId: input.actorAgentId,
+    target,
+  });
+  if (target.kind === "project-assets") {
+    doc.getMap("nodes").set(renderNodeId, {
+      canvasId: PROJECT_ASSET_RENDER_CANVAS_ID,
+      type: "video",
+      position: { x: 0, y: 0 },
+      data,
+    });
+    return { ok: true, renderNodeId, target, position: { x: 0, y: 0 } };
+  }
+  const canvas = new Canvas(doc, () => {}, target.canvasId);
+  const action = canvas.readNode(target.actionNodeId);
+  if (!action)
+    return {
+      ok: false,
+      error: `Timeline Action ${target.actionNodeId} not found`,
+    };
+  const linked = canvas.createLinkedNode({
+    nodeId: renderNodeId,
+    nodeType: "video",
+    data,
+    parentId: action.parent_id,
+    sourceNodeId: target.actionNodeId,
+  });
+  return { ok: true, renderNodeId, target, position: linked.position };
+}
+
+export type TimelineRenderCompletion =
+  | { ok: true; renderNodeId: string; assetId: string }
+  | { ok: false; error: string };
+
+/**
+ * Projects finished bytes that a render adapter produced itself into the
+ * same node shape the container pipeline's TaskPolling writes when a task
+ * completes (`status: "completed"`, `assetId`, no pending task). Both paths
+ * therefore surface through `listTimelineExportProgress` and the renders
+ * list; the adapter that uploaded the bytes must not invent a second
+ * publication model.
+ */
+export function completeTimelineRenderNode(
+  doc: LoroDoc,
+  input: { renderNodeId: string; assetId: string },
+): TimelineRenderCompletion {
+  const renderNodeId = input.renderNodeId.trim();
+  const assetId = input.assetId.trim();
+  if (!renderNodeId || !assetId)
+    return { ok: false, error: "A render node and Asset are required" };
+  const nodes = doc.getMap("nodes");
+  const raw = nodes.get(renderNodeId) as Record<string, unknown> | undefined;
+  if (!raw || raw.type !== "video")
+    return { ok: false, error: `Render node ${renderNodeId} was not found` };
+  const data = raw.data;
+  if (!data || typeof data !== "object" || Array.isArray(data))
+    return { ok: false, error: `Render node ${renderNodeId} has no data` };
+  const renderData = data as Record<string, unknown>;
+  if (
+    typeof renderData.sourceTimelineId !== "string" ||
+    typeof renderData.sourceTimelineRevisionId !== "string"
+  )
+    return {
+      ok: false,
+      error: `Render node ${renderNodeId} is not a Timeline render`,
+    };
+  if (renderData.status === "completed" && renderData.assetId !== assetId)
+    return {
+      ok: false,
+      error: `Render node ${renderNodeId} already published another Asset`,
+    };
+  nodes.set(renderNodeId, {
+    ...raw,
+    data: {
+      ...renderData,
+      status: "completed",
+      assetId,
+      progress: 1,
+      pendingTask: undefined,
+      pendingTaskAt: undefined,
+      error: undefined,
+    },
+  });
+  return { ok: true, renderNodeId, assetId };
 }

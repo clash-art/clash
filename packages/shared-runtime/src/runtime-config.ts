@@ -117,7 +117,9 @@ export function defaultRuntimeCapabilities(
       loro: { persistence: "remote", sync: "durable-object" },
       auth: { mode: "better-auth" },
       host: {
-        timelineRender: "unavailable",
+        // The hosted web composition root binds the browser render adapter,
+        // which falls back to the Cloudflare adapter's RENDER_CONTAINER path.
+        timelineRender: "available",
         // Served by the shared text-revisions module (Cloudflare adapter:
         // D1 + R2; Node adapter: Postgres + disk).
         textRevisions: "available",
