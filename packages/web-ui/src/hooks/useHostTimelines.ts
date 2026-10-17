@@ -7,7 +7,7 @@ import {
   type ProjectTimeline, type ProjectTimelineMutationResult, type HostMutationRecord,
   type CreateTimelineOnCanvasInput,
 } from "@clash/shared-types";
-import { hasLocalHostRuntime, runtimeApiUrl } from "../lib/runtimeConfig";
+import { runtimeApiUrl } from "../lib/runtimeConfig";
 
 // Mutations are never automatically retried after an ambiguous network failure.
 const runtimeRequest: ProjectHostHttpRequest = (path, init) => fetch(runtimeApiUrl(path), { credentials: "include", ...init });
@@ -48,8 +48,6 @@ export function useHostTimelines(options: {
 
   useEffect(() => {
     state.active = true;
-    // Timelines are read through the Host command contract, absent on hosted Web.
-    if (!hasLocalHostRuntime()) return () => { state.active = false; };
     void refresh();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const unsubscribe = doc?.getMap(PROJECT_GENERATORS_CONTAINER).subscribe(() => {

@@ -145,7 +145,7 @@ import {
   type CustomEvent,
 } from "@clash/web-ui/hooks/useAgentCopilot";
 import {
-  getRuntimeConfig,
+  isDesktopRuntime,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
 import { type AgentAnnotationDraft } from "@clash/shared-types";
@@ -864,7 +864,7 @@ function ChatbotCopilot({
     return query.toLowerCase();
   }, [chatMode, dismissedSlashCommand, input]);
   const isDesktopLocalMode = useMemo(
-    () => getRuntimeConfig().mode === "desktop",
+    () => isDesktopRuntime(),
     [],
   );
   const desktopLocalRuntime = useMemo(

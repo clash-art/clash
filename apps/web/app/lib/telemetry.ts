@@ -9,7 +9,7 @@ import {
 } from "@opentelemetry/sdk-trace-web";
 import { LOCAL_OTLP_TRACES_PATH } from "@clash/shared-types";
 import {
-  getRuntimeConfig,
+  readRuntimeModeAtCompositionRoot,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
 import { UI_TRACER_NAME } from "@clash/web-ui/lib/uiTrace";
@@ -158,7 +158,7 @@ export function installWebTelemetry(options: {
   serviceVersion?: string;
 }): WebTelemetry | undefined {
   // Hosted Web has no local Host to receive spans.
-  if (getRuntimeConfig().mode === "hosted") return undefined;
+  if (readRuntimeModeAtCompositionRoot() === "hosted") return undefined;
 
   const provider = new WebTracerProvider({
     resource: resourceFromAttributes({

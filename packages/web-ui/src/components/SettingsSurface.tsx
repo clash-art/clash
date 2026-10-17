@@ -21,7 +21,7 @@ import {
   Pulse,
 } from "@phosphor-icons/react";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
-import { getRuntimeConfig } from "@clash/web-ui/lib/runtimeConfig";
+import { getRuntimeCapabilities } from "@clash/web-ui/lib/runtimeConfig";
 import SettingsClient, { type SettingsSection } from "./SettingsClient";
 import { Tooltip } from "./ui/tooltip";
 import { IconButton } from "./ui/icon-button";
@@ -137,11 +137,11 @@ export function writeLastSettingsSection(section: SettingsSection): void {
 }
 
 function supportsRemoteWorkerVariables(): boolean {
-  return getRuntimeConfig().mode === "hosted";
+  return getRuntimeCapabilities().workflows.runner === "cloudflare";
 }
 
 function supportsHostedSettings(): boolean {
-  return getRuntimeConfig().mode === "hosted";
+  return getRuntimeCapabilities().auth.mode === "better-auth";
 }
 
 function availableSettingsNavItems(

@@ -91,6 +91,46 @@
     },
     {
       "files": [
+        "packages/web-ui/src/**/*.{ts,tsx}",
+        "packages/remotion-ui/src/**/*.{ts,tsx}",
+        "packages/director-ui/src/**/*.{ts,tsx}",
+        "packages/gui/src/**/*.{ts,tsx}",
+        "packages/remotion-components/src/**/*.{ts,tsx}"
+      ],
+      "excludedFiles": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/test-support/**",
+        "packages/web-ui/src/lib/runtimeConfig.ts"
+      ],
+      "rules": {
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "Identifier[name='hasLocalHostRuntime']",
+            "message": "Backend-mode checks are forbidden in UI; read getRuntimeCapabilities() instead."
+          },
+          {
+            "selector": "Identifier[name='readRuntimeModeAtCompositionRoot']",
+            "message": "Runtime mode is only readable at composition roots (apps/web, apps/desktop)."
+          },
+          {
+            "selector": "MemberExpression[property.name='mode'][object.type='CallExpression'][object.callee.name=/^(getRuntimeConfig|resolveRuntimeConfig)$/]",
+            "message": "Backend-mode checks are forbidden in UI; read getRuntimeCapabilities() instead."
+          },
+          {
+            "selector": "MemberExpression[property.name='__CLASH_RUNTIME_CONFIG__']",
+            "message": "Runtime config is injected by the composition root and read through lib/runtimeConfig.ts only."
+          },
+          {
+            "selector": "Identifier[name='__CLASH_RUNTIME_CONFIG__']",
+            "message": "Runtime config is injected by the composition root and read through lib/runtimeConfig.ts only."
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "packages/web-ui/src/lib/betterAuthClient.ts",
         "packages/web-ui/src/hooks/useAgentCopilot.ts",
         "packages/web-ui/src/lib/runtimeConfig.ts"

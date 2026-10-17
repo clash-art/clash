@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { getRuntimeCapabilities, runtimeApiUrl } from "../lib/runtimeConfig";
 
 export interface RevisionHistoryContentDescriptor {
   kind?: string;
@@ -57,7 +57,15 @@ export function useRevisionHistory({
   const normalizedLimit = normalizeLimit(limit);
 
   const refetch = useCallback(async () => {
-    if (!enabled || !projectId || !nodeId) return;
+    // Revision history is a Host capability; an adapter without it answers
+    // 501, so do not ask for it at all.
+    if (
+      !enabled ||
+      !projectId ||
+      !nodeId ||
+      getRuntimeCapabilities().host.textRevisions !== "available"
+    )
+      return;
     setLoading(true);
     setError(null);
     try {

@@ -248,8 +248,8 @@ import {
 } from "@clash/web-ui/lib/hooks/useAsset";
 import { subscribeProjectAssetProjection } from "@clash/web-ui/lib/liveProjectAssets";
 import {
-  getRuntimeConfig,
-  hasLocalHostRuntime,
+  getRuntimeCapabilities,
+  isDesktopRuntime,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
@@ -1663,7 +1663,6 @@ export default function ProjectEditor({
   }, [loroSync.doc, project.id]);
 
   useEffect(() => {
-    if (!hasLocalHostRuntime()) return;
     let cancelled = false;
     void listPersonalGlobalAssets()
       .then((assets) => {
@@ -2862,7 +2861,6 @@ export default function ProjectEditor({
     GeneratorDefinition[]
   >([]);
   useEffect(() => {
-    if (!hasLocalHostRuntime()) return;
     let active = true;
     const controller = new AbortController();
     void globalThis
@@ -6090,6 +6088,10 @@ export default function ProjectEditor({
     [loroSync.applyTimelineState],
   );
 
+  // Export needs a render executor; an adapter without one declares it
+  // unavailable (and answers 501), so the editor offers no Export entry.
+  const timelineRenderAvailable =
+    getRuntimeCapabilities().host.timelineRender === "available";
   const exportTimelineFromNavigator = useCallback(
     async (timelineId: string) => {
       const result = await loroSync.requestTimelineRender(timelineId, {
@@ -7393,8 +7395,7 @@ export default function ProjectEditor({
                                                 </button>
                                                 <ProjectCloudButton projectId={project.id} />
                                                 {!nativeAgent &&
-                                                  getRuntimeConfig().mode !==
-                                                    "desktop" && (
+                                                  !isDesktopRuntime() && (
                                                     <UserControls compact />
                                                   )}
                                               </div>
@@ -7814,7 +7815,9 @@ export default function ProjectEditor({
                                                   saveTimelineFromNavigator
                                                 }
                                                 onExport={
-                                                  exportTimelineFromNavigator
+                                                  timelineRenderAvailable
+                                                    ? exportTimelineFromNavigator
+                                                    : undefined
                                                 }
                                                 exportProgress={
                                                   selectedTimelineExportProgress

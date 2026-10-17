@@ -3,9 +3,18 @@ import {
   resolveRuntimeConfig,
   webSocketUrl,
   type RuntimeCapabilities,
+  type RuntimeMode,
   type ResolvedRuntimeEndpointConfig,
   type RuntimeEndpointConfig,
 } from "@clash/shared-runtime";
+
+/**
+ * The runtime view UI code may read: endpoints and declared capabilities.
+ * The deployment mode is deliberately absent. UI asks for a capability
+ * (`getRuntimeCapabilities()`), never which backend it runs on; the server
+ * adapters behind the shared contracts own every difference.
+ */
+export type UiRuntimeConfig = Omit<ResolvedRuntimeEndpointConfig, "mode">;
 
 declare global {
   var __CLASH_RUNTIME_CONFIG__: RuntimeEndpointConfig | undefined;
@@ -22,7 +31,7 @@ interface DesktopRuntimeBridge {
 }
 
 let runtimeOverride: RuntimeEndpointConfig | undefined;
-let runtimeRefresh: Promise<ResolvedRuntimeEndpointConfig> | undefined;
+let runtimeRefresh: Promise<UiRuntimeConfig> | undefined;
 
 function browserLocation(): LocationLike | undefined {
   if (typeof window === "undefined") return undefined;
@@ -35,10 +44,24 @@ function wsBaseFromLocation(location: LocationLike | undefined): string {
   return `${proto}//${location.host}`;
 }
 
-export function getRuntimeConfig(): ResolvedRuntimeEndpointConfig {
+function resolvedRuntimeConfig(): ResolvedRuntimeEndpointConfig {
   return resolveRuntimeConfig(
     runtimeOverride ?? globalThis.__CLASH_RUNTIME_CONFIG__ ?? {},
   );
+}
+
+export function getRuntimeConfig(): UiRuntimeConfig {
+  const { mode: _mode, ...config } = resolvedRuntimeConfig();
+  return config;
+}
+
+/**
+ * Composition roots only (`apps/web`, `apps/desktop`): the one place that may
+ * know the deployment. Packages under `packages/` are barred from calling it
+ * by `.eslintrc.boundaries.json` (`pnpm run lint:boundaries`).
+ */
+export function readRuntimeModeAtCompositionRoot(): RuntimeMode {
+  return resolvedRuntimeConfig().mode;
 }
 
 export function setRuntimeConfigOverride(
@@ -58,29 +81,20 @@ function desktopRuntimeBridge(): DesktopRuntimeBridge | undefined {
 export function isDesktopRuntime(): boolean {
   const desktopBridge = desktopRuntimeBridge();
   return (
-    desktopBridge?.isDesktop === true || getRuntimeConfig().mode === "desktop"
+    desktopBridge?.isDesktop === true ||
+    resolvedRuntimeConfig().mode === "desktop"
   );
 }
 
-/**
- * Whether this surface is backed by a local Project Host. Hosted Web has no
- * Host behind its origin, so Host-only contracts (Asset projections, plugin
- * catalogs, Host commands, local audio) answer 404 there and must not be
- * probed or polled.
- */
-export function hasLocalHostRuntime(): boolean {
-  return getRuntimeConfig().mode !== "hosted";
-}
-
 export function getRuntimeCapabilities(): RuntimeCapabilities {
-  return getRuntimeConfig().capabilities;
+  return resolvedRuntimeConfig().capabilities;
 }
 
 export function runtimeApiUrl(path: string): string {
-  return apiUrl(path, getRuntimeConfig());
+  return apiUrl(path, resolvedRuntimeConfig());
 }
 
-export async function refreshRuntimeConfig(): Promise<ResolvedRuntimeEndpointConfig> {
+export async function refreshRuntimeConfig(): Promise<UiRuntimeConfig> {
   if (runtimeRefresh) return runtimeRefresh;
   const refresh = desktopRuntimeBridge()?.refreshRuntime;
   if (!refresh) return getRuntimeConfig();
@@ -150,7 +164,7 @@ export function runtimeWebSocketUrl(
   path: string,
   location: LocationLike | undefined = browserLocation(),
 ): string {
-  const cfg = getRuntimeConfig();
+  const cfg = resolvedRuntimeConfig();
   if (cfg.wsBaseUrl) return webSocketUrl(path, cfg);
   return webSocketUrl(path, {
     ...cfg,

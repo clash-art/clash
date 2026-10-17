@@ -92,6 +92,11 @@ function runtime() {
         mediaPostprocess: "disabled" as const,
       },
       loro: { persistence: "local" as const, sync: "local-websocket" as const },
+      host: {
+        timelineRender: "available" as const,
+        textRevisions: "available" as const,
+        localAudio: "available" as const,
+      },
       auth: { mode: "local-user" as const },
     },
   };

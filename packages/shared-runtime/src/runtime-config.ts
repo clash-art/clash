@@ -4,7 +4,8 @@ export interface RuntimeCapabilities {
   assets: {
     storage: "cloud" | "local";
     signing: "signed" | "unsigned";
-    upload: "local" | "disabled";
+    /** Where `import-file` lands: the local Host, the cloud adapter, or nowhere. */
+    upload: "local" | "cloud" | "disabled";
   };
   workflows: {
     runner: "cloudflare" | "local-node" | "disabled";
@@ -16,6 +17,19 @@ export interface RuntimeCapabilities {
   };
   auth: {
     mode: "better-auth" | "local-user";
+  };
+  /**
+   * Project Host capabilities whose availability differs between server
+   * adapters. UI code reads these instead of branching on the runtime mode;
+   * every adapter answers an unavailable one with 501, never 404.
+   */
+  host: {
+    /** Timeline export through a render executor (`request_timeline_render`). */
+    timelineRender: "available" | "unavailable";
+    /** Text node revision history (`/projects/:id/text-revisions`). */
+    textRevisions: "available" | "unavailable";
+    /** Voice input backed by the local Host audio runtime. */
+    localAudio: "available" | "unavailable";
   };
 }
 
@@ -90,10 +104,15 @@ export function defaultRuntimeCapabilities(
 ): RuntimeCapabilities {
   if (mode === "hosted") {
     return {
-      assets: { storage: "cloud", signing: "signed", upload: "disabled" },
+      assets: { storage: "cloud", signing: "signed", upload: "cloud" },
       workflows: { runner: "cloudflare", mediaPostprocess: "cloud" },
       loro: { persistence: "remote", sync: "durable-object" },
       auth: { mode: "better-auth" },
+      host: {
+        timelineRender: "unavailable",
+        textRevisions: "unavailable",
+        localAudio: "unavailable",
+      },
     };
   }
 
@@ -102,6 +121,11 @@ export function defaultRuntimeCapabilities(
     workflows: { runner: "local-node", mediaPostprocess: "disabled" },
     loro: { persistence: "local", sync: "local-websocket" },
     auth: { mode: "local-user" },
+    host: {
+      timelineRender: "available",
+      textRevisions: "available",
+      localAudio: "available",
+    },
   };
 }
 
@@ -115,6 +139,7 @@ function mergeRuntimeCapabilities(
     workflows: { ...base.workflows, ...overrides.workflows },
     loro: { ...base.loro, ...overrides.loro },
     auth: { ...base.auth, ...overrides.auth },
+    host: { ...base.host, ...overrides.host },
   };
 }
 
