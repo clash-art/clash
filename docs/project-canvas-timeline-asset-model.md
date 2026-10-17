@@ -197,8 +197,10 @@ Canvas-owned Timeline destination:  Project -> Canvas -> Timeline
 The picker exposes only valid ancestors of that path. A Canvas can select from
 Project assets or the external source tier. A standalone Timeline has the same
 choices. A Canvas-owned Timeline additionally exposes placements on its current
-Canvas. `Global Library` and `Upload from Mac` are two acquisition methods in
-one external source tier; the Global Library is not a parent of a Project.
+Canvas. `Global Library` and the capability-labelled upload entry (`Upload from
+device` in the browser, `Upload from computer` on the local Host) are two
+acquisition methods in one external source tier; the Global Library is not a
+parent of a Project.
 
 Selection extends the reference chain from the source to the destination:
 

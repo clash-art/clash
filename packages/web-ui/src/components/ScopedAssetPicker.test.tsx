@@ -9,10 +9,15 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScopedAssetPicker } from "./ScopedAssetPicker";
+import { setRuntimeConfigOverride } from "../lib/runtimeConfig";
 import { mediaContentResult } from "../features/assets/content.test-fixtures";
 
 describe("ScopedAssetPicker", () => {
-  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    setRuntimeConfigOverride(undefined);
+  });
 
   it("finds media by Host analysis evidence even when its filename does not match", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ...mediaContentResult("video-3377", [{
@@ -92,7 +97,7 @@ describe("ScopedAssetPicker", () => {
       expect.objectContaining({ assetId: "asset-1", sourceNodeId: "node-1" }),
     );
     expect(
-      screen.getByRole("button", { name: "Upload from Mac" }),
+      screen.getByRole("button", { name: "Upload from device" }),
     ).toBeTruthy();
   });
 
@@ -419,5 +424,32 @@ describe("ScopedAssetPicker", () => {
     expect(
       screen.getByRole("button", { name: "Add Global master" }),
     ).toBeTruthy();
+  });
+
+  it("omits the upload entry when the assets capability disables uploads", () => {
+    setRuntimeConfigOverride({
+      mode: "hosted",
+      capabilities: { assets: { upload: "disabled" } },
+    });
+    render(
+      <ScopedAssetPicker
+        open
+        onClose={vi.fn()}
+        onSelect={vi.fn()}
+        onUpload={vi.fn()}
+        sections={[
+          {
+            scope: "external",
+            label: "More sources",
+            description: "Global or local.",
+            assets: [],
+            allowLocalUpload: true,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "Add media" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Upload from / })).toBeNull();
   });
 });

@@ -1392,7 +1392,7 @@ async function main() {
           !!dialog.querySelector('[role="searchbox"][aria-label="Search media"]') &&
           tabs.includes('Project') && tabs.includes('More sources') &&
           !tabs.includes('Current Canvas') &&
-          !![...(dialog?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('Upload from Mac'));
+          !![...(dialog?.querySelectorAll('button') ?? [])].find((button) => button.textContent?.includes('Upload from computer'));
       })()`,
       "standalone Timeline scope-aware asset picker",
       10000,

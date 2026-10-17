@@ -35,8 +35,8 @@ account. You can import your own media while configuring generation.
 ## Make a first video
 
 1. Choose **New Project** and give the local project a name.
-2. In **Assets**, choose **Upload from Mac** and import a short video or image.
-   Confirm its preview opens before editing.
+2. In **Assets**, choose **Upload from computer** and import a short video or
+   image. Confirm its preview opens before editing.
 3. To generate media, open an installed generator's composer, enter a prompt,
    choose its supported settings, and select **Generate**. Wait for the pending
    output to become a playable or viewable Asset. Failures appear with that run.
