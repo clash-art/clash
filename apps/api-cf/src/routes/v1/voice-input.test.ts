@@ -198,6 +198,30 @@ describe("Cloudflare adapter voice input", () => {
     });
   });
 
+  it("rejects a declared body above the limit without parsing the form", async () => {
+    const app = makeApp();
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array(8)], "small.webm", { type: "audio/webm" }));
+    const request = new Request("http://local/api/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { "x-user-id": "user-1" },
+      body: form,
+    });
+    const headers = new Headers(request.headers);
+    headers.set("content-length", String(VOICE_INPUT_MAX_AUDIO_BYTES * 2));
+    const formData = vi.spyOn(Request.prototype, "formData");
+
+    const response = await app.request(
+      "/api/v1/audio/transcriptions",
+      { method: "POST", headers, body: await request.arrayBuffer() },
+      env(),
+    );
+
+    expect(response.status).toBe(413);
+    expect(formData).not.toHaveBeenCalled();
+    formData.mockRestore();
+  });
+
   it("requires the v1 identity header", async () => {
     const app = makeApp();
     const response = await app.request("/api/v1/audio/voice-input", {}, env());

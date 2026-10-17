@@ -34,6 +34,9 @@ export interface VoiceInputRouteOptions {
 
 type VoiceInputContext = Context<{ Bindings: Env }>;
 
+/** Room for multipart boundaries and the language field around the audio part. */
+const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
+
 function userIdOf(c: VoiceInputContext): string | null {
   return c.req.header("x-user-id") ?? null;
 }
@@ -137,6 +140,11 @@ export function createVoiceInputRoutes(
   routes.post("/audio/transcriptions", async (c) => {
     const userId = userIdOf(c);
     if (!userId) return c.json({ error: "Unauthorized" }, 401);
+    // Reject oversized bodies before buffering the multipart form in memory.
+    const declaredLength = Number(c.req.header("content-length") ?? "0");
+    if (declaredLength > VOICE_INPUT_MAX_AUDIO_BYTES + MULTIPART_OVERHEAD_BYTES) {
+      return c.json({ error: "Audio upload exceeds the 20 MB limit." }, 413);
+    }
     const form = await c.req.formData();
     const file = form.get("file");
     if (!file || typeof file === "string") {
