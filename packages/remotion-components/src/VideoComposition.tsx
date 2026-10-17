@@ -1,9 +1,8 @@
 import React from "react";
+import { Video, Audio } from "@remotion/media";
 import {
   AbsoluteFill,
   Sequence,
-  OffthreadVideo,
-  Audio,
   Img,
   useCurrentFrame,
   useVideoConfig,
@@ -514,15 +513,8 @@ export function computeTimelineItemTransformStyle(input: {
   itemLocalFrame: number;
   compositionWidth: number;
   compositionHeight: number;
-  trackZIndex: number;
 }): React.CSSProperties {
-  const {
-    item,
-    itemLocalFrame,
-    compositionWidth,
-    compositionHeight,
-    trackZIndex,
-  } = input;
+  const { item, itemLocalFrame, compositionWidth, compositionHeight } = input;
   const properties =
     item.properties ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties;
   const sampled = sampleTimelineKeyframes(item.keyframes, itemLocalFrame, {
@@ -545,8 +537,201 @@ export function computeTimelineItemTransformStyle(input: {
     height: `${compactMotionNumber((renderedSize.height / compositionHeight) * 100)}%`,
     transform: `translate(-50%, -50%) rotate(${compactMotionNumber(sampled.rotation)}deg) scale(${compactMotionNumber(sampled.scale[0])}, ${compactMotionNumber(sampled.scale[1])})`,
     opacity: sampled.opacity,
-    zIndex: trackZIndex,
   };
+}
+
+/** Sampled geometry shared by the CSS clip-path and raster mask paths. */
+export type TimelineItemMaskGeometry = {
+  primitive: TimelineMaskRenderPrimitive;
+  center: readonly [number, number];
+  size: readonly [number, number];
+  rotation: number;
+  featherPixels: number;
+  inverted: boolean;
+};
+
+export function computeTimelineItemMaskGeometry(input: {
+  item: Item;
+  itemLocalFrame: number;
+  renderedWidth: number;
+  renderedHeight: number;
+}): TimelineItemMaskGeometry | null {
+  if (!input.item.mask) return null;
+  const sampled = sampleTimelineMaskKeyframes(
+    input.item.keyframes,
+    input.itemLocalFrame,
+    input.item.mask,
+  );
+  const width = Math.max(0, sampled.size[0]);
+  const height = Math.max(0, sampled.size[1]);
+  const renderedWidth = Math.max(Number.EPSILON, Math.abs(input.renderedWidth));
+  const renderedHeight = Math.max(
+    Number.EPSILON,
+    Math.abs(input.renderedHeight),
+  );
+  return {
+    primitive:
+      TIMELINE_MASK_SHAPE_ANNOTATIONS[input.item.mask.shape].renderPrimitive,
+    center: [sampled.position[0], sampled.position[1]],
+    size: [width, height],
+    rotation: sampled.rotation,
+    featherPixels:
+      (Math.min((width / 100) * renderedWidth, (height / 100) * renderedHeight) *
+        Math.max(0, sampled.feather)) /
+      TIMELINE_MASK_FEATHER_BLUR_DIVISOR,
+    inverted: input.item.mask.inverted,
+  };
+}
+
+// Rotates a point expressed in percent-of-item-bounds coordinates. The
+// aspect-ratio correction reproduces the physical-space rotation of the old
+// SVG mask matrix, so the same angle means the same shape on every renderer.
+function rotateMaskPoint(
+  geometry: TimelineItemMaskGeometry,
+  offsetX: number,
+  offsetY: number,
+  renderedWidth: number,
+  renderedHeight: number,
+): [number, number] {
+  const radians = geometry.rotation * (Math.PI / 180);
+  const cosine = Math.cos(radians);
+  const sine = Math.sin(radians);
+  const widthToHeight = renderedWidth / renderedHeight;
+  return [
+    geometry.center[0] +
+      cosine * offsetX -
+      (sine / widthToHeight) * offsetY,
+    geometry.center[1] +
+      widthToHeight * sine * offsetX +
+      cosine * offsetY,
+  ];
+}
+
+export function computeTimelineItemMaskClipPath(
+  geometry: TimelineItemMaskGeometry,
+  renderedWidth: number,
+  renderedHeight: number,
+): string {
+  const [centerX, centerY] = geometry.center;
+  const [width, height] = geometry.size;
+  const radiusX = width / 2;
+  const radiusY = height / 2;
+  const normalizedRotation = ((geometry.rotation % 360) + 360) % 360;
+  if (geometry.primitive === "ellipse" && normalizedRotation === 0) {
+    return `ellipse(${compactMotionNumber(radiusX)}% ${compactMotionNumber(radiusY)}% at ${compactMotionNumber(centerX)}% ${compactMotionNumber(centerY)}%)`;
+  }
+
+  // clip-path has no rotate() primitive for basic shapes, so use a polygon.
+  // 96 segments keep the approximation sub-pixel at 1080p while still being
+  // a plain polygon the browser renderer understands.
+  const points: string[] = [];
+  if (geometry.primitive === "ellipse") {
+    const segments = 96;
+    for (let index = 0; index < segments; index += 1) {
+      const angle = (index / segments) * Math.PI * 2;
+      const [x, y] = rotateMaskPoint(
+        geometry,
+        radiusX * Math.cos(angle),
+        radiusY * Math.sin(angle),
+        renderedWidth,
+        renderedHeight,
+      );
+      points.push(`${compactMotionNumber(x)}% ${compactMotionNumber(y)}%`);
+    }
+  } else {
+    for (const [offsetX, offsetY] of [
+      [-radiusX, -radiusY],
+      [radiusX, -radiusY],
+      [radiusX, radiusY],
+      [-radiusX, radiusY],
+    ] as const) {
+      const [x, y] = rotateMaskPoint(
+        geometry,
+        offsetX,
+        offsetY,
+        renderedWidth,
+        renderedHeight,
+      );
+      points.push(`${compactMotionNumber(x)}% ${compactMotionNumber(y)}%`);
+    }
+  }
+  return `polygon(${points.join(", ")})`;
+}
+
+const RASTER_MASK_MAX_EDGE = 1024;
+const rasterMaskDataUrlCache = new Map<string, string>();
+
+// 1x1 opaque PNG used only when there is no canvas (Node/SSR unit tests).
+// Both Remotion renderers execute the composition in Chromium, so production
+// masks always take the canvas path below.
+const OPAQUE_MASK_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lL7qWQAAAABJRU5ErkJggg==";
+
+function createRasterMaskDataUrl(
+  geometry: TimelineItemMaskGeometry,
+  renderedWidth: number,
+  renderedHeight: number,
+): string {
+  const scale = Math.min(
+    1,
+    RASTER_MASK_MAX_EDGE / Math.max(renderedWidth, renderedHeight),
+  );
+  const canvasWidth = Math.max(1, Math.round(renderedWidth * scale));
+  const canvasHeight = Math.max(1, Math.round(renderedHeight * scale));
+  const cacheKey = [
+    geometry.primitive,
+    geometry.center[0],
+    geometry.center[1],
+    geometry.size[0],
+    geometry.size[1],
+    geometry.rotation,
+    geometry.featherPixels,
+    geometry.inverted,
+    canvasWidth,
+    canvasHeight,
+  ].join("|");
+  const cached = rasterMaskDataUrlCache.get(cacheKey);
+  if (cached) return cached;
+  if (typeof document === "undefined") return `url("${OPAQUE_MASK_PNG}")`;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasWidth;
+  canvas.height = canvasHeight;
+  const context = canvas.getContext("2d");
+  if (!context) return `url("${OPAQUE_MASK_PNG}")`;
+
+  const centerX = (geometry.center[0] / 100) * canvasWidth;
+  const centerY = (geometry.center[1] / 100) * canvasHeight;
+  const radiusX = (geometry.size[0] / 100) * canvasWidth * 0.5;
+  const radiusY = (geometry.size[1] / 100) * canvasHeight * 0.5;
+  const blurPixels = geometry.featherPixels * scale;
+
+  context.clearRect(0, 0, canvasWidth, canvasHeight);
+  if (geometry.inverted) {
+    context.fillStyle = "#fff";
+    context.fillRect(0, 0, canvasWidth, canvasHeight);
+    context.globalCompositeOperation = "destination-out";
+  }
+  context.filter =
+    blurPixels > 0.01 ? `blur(${compactMotionNumber(blurPixels)}px)` : "none";
+  context.fillStyle = "#fff";
+  context.translate(centerX, centerY);
+  context.rotate(geometry.rotation * (Math.PI / 180));
+  context.beginPath();
+  if (geometry.primitive === "ellipse") {
+    context.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
+  } else {
+    context.rect(-radiusX, -radiusY, radiusX * 2, radiusY * 2);
+  }
+  context.fill();
+  context.setTransform(1, 0, 0, 1, 0, 0);
+
+  const maskImage = `url("${canvas.toDataURL("image/png")}")`;
+  if (rasterMaskDataUrlCache.size >= 32) {
+    rasterMaskDataUrlCache.clear();
+  }
+  rasterMaskDataUrlCache.set(cacheKey, maskImage);
+  return maskImage;
 }
 
 export function computeTimelineItemMaskStyle(input: {
@@ -555,93 +740,43 @@ export function computeTimelineItemMaskStyle(input: {
   renderedWidth: number;
   renderedHeight: number;
 }): React.CSSProperties {
-  const { item, itemLocalFrame } = input;
-  if (!item.mask) return {};
-
-  const sampled = sampleTimelineMaskKeyframes(
-    item.keyframes,
-    itemLocalFrame,
-    item.mask,
-  );
-  const centerX = compactMotionNumber(sampled.position[0]);
-  const centerY = compactMotionNumber(sampled.position[1]);
-  const width = Math.max(0, sampled.size[0]);
-  const height = Math.max(0, sampled.size[1]);
-  const widthText = compactMotionNumber(width);
-  const heightText = compactMotionNumber(height);
+  const geometry = computeTimelineItemMaskGeometry(input);
+  if (!geometry) return {};
   const renderedWidth = Math.max(Number.EPSILON, Math.abs(input.renderedWidth));
   const renderedHeight = Math.max(
     Number.EPSILON,
     Math.abs(input.renderedHeight),
   );
-  const radians = sampled.rotation * (Math.PI / 180);
-  const cosine = Math.cos(radians);
-  const sine = Math.sin(radians);
-  const widthToHeight = renderedWidth / renderedHeight;
-  const matrixA = cosine;
-  const matrixB = widthToHeight * sine;
-  const matrixC = -(sine / widthToHeight);
-  const matrixD = cosine;
-  const matrixE =
-    sampled.position[0] -
-    matrixA * sampled.position[0] -
-    matrixC * sampled.position[1];
-  const matrixF =
-    sampled.position[1] -
-    matrixB * sampled.position[0] -
-    matrixD * sampled.position[1];
-  const rotationMatrix = [matrixA, matrixB, matrixC, matrixD, matrixE, matrixF]
-    .map(compactMotionNumber)
-    .join(" ");
-  const featherPixels =
-    (Math.min((width / 100) * renderedWidth, (height / 100) * renderedHeight) *
-      Math.max(0, sampled.feather)) /
-    TIMELINE_MASK_FEATHER_BLUR_DIVISOR;
-  const featherDeviationX = (featherPixels / renderedWidth) * 100;
-  const featherDeviationY = (featherPixels / renderedHeight) * 100;
-  const filter =
-    featherPixels > 0
-      ? `<filter id="feather" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="${compactMotionNumber(featherDeviationX)} ${compactMotionNumber(featherDeviationY)}"/></filter>`
-      : "";
-  const filterAttribute = featherPixels > 0 ? ' filter="url(#feather)"' : "";
-  const renderShape = (primitive: TimelineMaskRenderPrimitive): string => {
-    const fill = item.mask!.inverted ? "black" : "white";
-    switch (primitive) {
-      case "ellipse":
-        return `<ellipse cx="${centerX}" cy="${centerY}" rx="${compactMotionNumber(width / 2)}" ry="${compactMotionNumber(height / 2)}" fill="${fill}"${filterAttribute}/>`;
-      case "rectangle":
-        return `<rect x="${compactMotionNumber(sampled.position[0] - width / 2)}" y="${compactMotionNumber(sampled.position[1] - height / 2)}" width="${widthText}" height="${heightText}" fill="${fill}"${filterAttribute}/>`;
-      default: {
-        const unsupported: never = primitive;
-        throw new Error(
-          `Unsupported Timeline mask render primitive: ${String(unsupported)}`,
-        );
-      }
-    }
-  };
-  const shapeAnnotation = TIMELINE_MASK_SHAPE_ANNOTATIONS[item.mask.shape];
-  const shape = renderShape(shapeAnnotation.renderPrimitive);
-  const svg = [
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" preserveAspectRatio="none">',
-    "<defs>",
-    filter,
-    '<mask id="clip-mask" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="100" height="100" style="mask-type:luminance">',
-    `<rect x="0" y="0" width="100" height="100" fill="${item.mask.inverted ? "white" : "black"}"/>`,
-    `<g transform="matrix(${rotationMatrix})">${shape}</g>`,
-    "</mask>",
-    "</defs>",
-    '<rect x="0" y="0" width="100" height="100" fill="white" mask="url(#clip-mask)"/>',
-    "</svg>",
-  ].join("");
-  const maskImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 
+  // Plain ellipse / rectangle masks are exact as clip-path, which both
+  // renderers support. Feathering and inversion need per-pixel alpha, so
+  // they use a raster mask generated on a canvas.
+  if (geometry.featherPixels <= 0 && !geometry.inverted) {
+    const clipPath = computeTimelineItemMaskClipPath(
+      geometry,
+      renderedWidth,
+      renderedHeight,
+    );
+    return {
+      clipPath,
+      WebkitClipPath: clipPath,
+    };
+  }
+
+  const maskImage = createRasterMaskDataUrl(
+    geometry,
+    renderedWidth,
+    renderedHeight,
+  );
   return {
+    // The web renderer only supports a raster mask that fills the box from
+    // the top-left corner; `center` is ignored by its mask loader.
     maskImage,
-    maskPosition: "center",
+    maskPosition: "0% 0%",
     maskRepeat: "no-repeat",
     maskSize: "100% 100%",
     WebkitMaskImage: maskImage,
-    WebkitMaskPosition: "center",
+    WebkitMaskPosition: "0% 0%",
     WebkitMaskRepeat: "no-repeat",
     WebkitMaskSize: "100% 100%",
   };
@@ -661,7 +796,6 @@ const ItemComponent: React.FC<{
   visibleFrom?: number;
   endFrame?: number;
   isGlobalEndItem?: boolean;
-  trackZIndex: number;
   itemsDomMapRef?: React.RefObject<Map<string, HTMLElement>>;
   /** Sequence-relative offset — needed to convert frame to composition-absolute. */
   seqFrom?: number;
@@ -679,7 +813,6 @@ const ItemComponent: React.FC<{
   visibleFrom,
   endFrame,
   isGlobalEndItem,
-  trackZIndex,
   itemsDomMapRef,
   seqFrom = 0,
   obscuredWindows,
@@ -716,9 +849,8 @@ const ItemComponent: React.FC<{
         itemLocalFrame,
         compositionWidth: compWidth,
         compositionHeight: compHeight,
-        trackZIndex,
       }),
-    [compHeight, compWidth, itemLocalFrame, resolvedItem, trackZIndex],
+    [compHeight, compWidth, itemLocalFrame, resolvedItem],
   );
   const maskStyle = React.useMemo(() => {
     const renderedSize = computeTimelineItemRenderedSize({
@@ -971,11 +1103,9 @@ const ItemComponent: React.FC<{
           data-composition-runtime={compositionItem.runtime}
           style={applyTransform({ opacity: isObscured ? 0 : 1 })}
         >
-          <OffthreadVideo
+          <Video
             src={renderedAssetUrl}
             style={{ width: "100%", height: "100%", objectFit: "fill" }}
-            pauseWhenBuffering
-            acceptableTimeShiftInSeconds={0.25}
             muted
             volume={0}
           />
@@ -1034,7 +1164,7 @@ const ItemComponent: React.FC<{
           data-derived-kind={overlayItem.derivation?.kind}
           style={applyTransform({ opacity: isObscured ? 0 : 1 })}
         >
-          <OffthreadVideo
+          <Video
             src={src}
             style={{
               width: "100%",
@@ -1043,8 +1173,6 @@ const ItemComponent: React.FC<{
                 overlayItem.mediaFit ??
                 TIMELINE_SHARED_DEFAULTS["derived-overlay"].mediaFit,
             }}
-            pauseWhenBuffering
-            acceptableTimeShiftInSeconds={0.25}
             muted
             volume={0}
           />
@@ -1137,7 +1265,7 @@ const ItemComponent: React.FC<{
             height: "100%",
           }}
         >
-          <OffthreadVideo
+          <Video
             src={resolvedSrc}
             style={{
               width: "100%",
@@ -1146,9 +1274,7 @@ const ItemComponent: React.FC<{
                 resolvedItem.mediaFit ??
                 TIMELINE_SHARED_DEFAULTS.video.mediaFit,
             }}
-            startFrom={sourceStart}
-            pauseWhenBuffering
-            acceptableTimeShiftInSeconds={0.25}
+            trimBefore={sourceStart}
             muted={hidden}
             volume={(f: number) =>
               audioVolumeBase *
@@ -1181,10 +1307,9 @@ const ItemComponent: React.FC<{
     const ef = (resolvedItem.durationInFrames ?? 0) - 1;
     return (
       <Audio
-        crossOrigin="anonymous"
         data-timeline-audio=""
         src={resolvedSrc}
-        startFrom={sourceStart}
+        trimBefore={sourceStart}
         volume={(f: number) =>
           baseVolume *
           computeFadeMultiplier(f, 0, ef, audioFadeIn, audioFadeOut) *
@@ -1340,7 +1465,7 @@ const ItemComponent: React.FC<{
       : {};
 
     return (
-      <AbsoluteFill style={{ zIndex: trackZIndex }}>
+      <AbsoluteFill>
         {/* Source is the bed; target paints above it so reveal masks stay visible. */}
         {transitionFrom && (
           <AbsoluteFill
@@ -1392,12 +1517,10 @@ const TransitionContent: React.FC<{
       item.resolvedSrcUrl || resolveAssetUrl((item as { src?: string }).src);
     if (!src) return null;
     return (
-      <OffthreadVideo
+      <Video
         src={src}
         style={{ width: "100%", height: "100%", objectFit: "fill" }}
-        startFrom={sourceStart}
-        pauseWhenBuffering
-        acceptableTimeShiftInSeconds={0.25}
+        trimBefore={sourceStart}
         muted
         volume={0}
       />
@@ -1452,10 +1575,9 @@ const TransitionContent: React.FC<{
 // Component to render a single track
 const TrackComponent: React.FC<{
   track: PreparedTrack;
-  trackZIndex: number;
   itemsDomMapRef?: React.RefObject<Map<string, HTMLElement>>;
   duckingWindows: ReturnType<typeof buildAudioDuckingWindows>;
-}> = React.memo(({ track, trackZIndex, itemsDomMapRef, duckingWindows }) => {
+}> = React.memo(({ track, itemsDomMapRef, duckingWindows }) => {
   if (track.hidden) {
     return null;
   }
@@ -1488,7 +1610,6 @@ const TrackComponent: React.FC<{
               visibleFrom={visibleFromRel}
               endFrame={endFrameRel}
               isGlobalEndItem={isGlobalEndItem}
-              trackZIndex={trackZIndex}
               itemsDomMapRef={itemsDomMapRef}
               seqFrom={seqFrom}
               obscuredWindows={obscuredWindows}
@@ -1666,12 +1787,10 @@ export const VideoComposition: React.FC<{
       itemLocalFrame: compositionFrame - selectedItemResolved.from,
       compositionWidth: compWidth,
       compositionHeight: compHeight,
-      trackZIndex: 0,
     });
     return {
       ...transformStyle,
       opacity: 1,
-      zIndex: undefined,
       boxSizing: "border-box" as const,
     };
   }, [selectedItemResolved, compositionFrame, compWidth, compHeight]);
@@ -1680,24 +1799,26 @@ export const VideoComposition: React.FC<{
     <AbsoluteFill
       style={{ backgroundColor: "black", top: 0, left: 0, right: 0, bottom: 0 }}
     >
-      {preparedTracks.map((track, trackIndex) => {
-        // Track 0 (first/top) should have highest z-index
-        // Higher index = lower in timeline = lower z-index
-        const trackZIndex = preparedTracks.length - trackIndex;
-        return (
+      {/* Paint tracks bottom-up: track 0 is the top of the timeline UI, so it
+          must be last in the DOM. The browser renderer ignores z-index and
+          only follows DOM paint order; this keeps preview and both renderers
+          visually identical. */}
+      {preparedTracks
+        .map((track, trackIndex) => ({ track, trackIndex }))
+        .reverse()
+        .map(({ track, trackIndex }) => (
           <TrackComponent
             key={`${track.id}-${trackIndex}`}
             track={track}
-            trackZIndex={trackZIndex}
             itemsDomMapRef={itemsDomMapRef}
             duckingWindows={duckingWindows}
           />
-        );
-      })}
+        ))}
 
-      {/* 选择框 - 透明的，只用于提供 ref（不包含旋转） */}
+      {/* 选择框 - 透明的，只用于提供 ref（不包含旋转）。It is last in DOM,
+          which already puts the editor-only overlay above every track. */}
       {selectedItemResolved && selectionBoxStyle && (
-        <AbsoluteFill style={{ pointerEvents: "none", zIndex: 9999 }}>
+        <AbsoluteFill style={{ pointerEvents: "none" }}>
           <div ref={selectionBoxRef} style={selectionBoxStyle} />
         </AbsoluteFill>
       )}

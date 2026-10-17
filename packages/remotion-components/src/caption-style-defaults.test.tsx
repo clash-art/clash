@@ -9,8 +9,6 @@ vi.mock('remotion', () => ({
     <div style={style} {...props}>{children}</div>
   ),
   Sequence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  OffthreadVideo: (props: React.VideoHTMLAttributes<HTMLVideoElement>) => <video {...props} />,
-  Audio: (props: React.AudioHTMLAttributes<HTMLAudioElement>) => <audio {...props} />,
   Img: (props: React.ImgHTMLAttributes<HTMLImageElement>) => <img {...props} />,
   useCurrentFrame: () => 0,
   useVideoConfig: () => ({ width: 1080, height: 1920, fps: 30, durationInFrames: 30 }),
@@ -22,6 +20,11 @@ vi.mock('remotion', () => ({
     const progress = inputEnd === inputStart ? 1 : (input - inputStart) / (inputEnd - inputStart);
     return outputStart + ((outputEnd - outputStart) * Math.min(1, Math.max(0, progress)));
   },
+}));
+
+vi.mock('@remotion/media', () => ({
+  Video: (props: React.VideoHTMLAttributes<HTMLVideoElement>) => <video {...props} />,
+  Audio: (props: React.AudioHTMLAttributes<HTMLAudioElement>) => <audio {...props} />,
 }));
 
 describe('caption renderer defaults', () => {

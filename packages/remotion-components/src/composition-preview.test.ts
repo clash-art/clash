@@ -22,44 +22,6 @@ vi.mock("remotion", () => ({
   ),
   Sequence: ({ children }: { children: React.ReactNode }) =>
     React.createElement(React.Fragment, null, children),
-  OffthreadVideo: ({
-    src,
-    style,
-    pauseWhenBuffering,
-    volume,
-  }: {
-    src: string;
-    style?: React.CSSProperties;
-    pauseWhenBuffering?: boolean;
-    volume?: number | ((frame: number) => number);
-  }) =>
-    React.createElement("video", {
-      "data-remotion": "offthread-video",
-      "data-pause-when-buffering": String(pauseWhenBuffering),
-      "data-effective-volume":
-        typeof volume === "function" ? volume(mockedFrame) : volume,
-      src,
-      style,
-    }),
-  Audio: ({
-    src,
-    crossOrigin,
-    "data-timeline-audio": timelineAudio,
-    volume,
-  }: {
-    src: string;
-    crossOrigin?: string;
-    "data-timeline-audio"?: string;
-    volume?: number | ((frame: number) => number);
-  }) =>
-    React.createElement("audio", {
-      "data-remotion": "audio",
-      "data-timeline-audio": timelineAudio,
-      "data-effective-volume":
-        typeof volume === "function" ? volume(mockedFrame) : volume,
-      crossOrigin,
-      src,
-    }),
   Img: ({ src, style }: { src: string; style?: React.CSSProperties }) =>
     React.createElement("img", { "data-remotion": "img", src, style }),
   useCurrentFrame: () => mockedFrame,
@@ -82,6 +44,47 @@ vi.mock("remotion", () => ({
         : Math.min(1, Math.max(0, (input - inMin) / (inMax - inMin)));
     return outMin + (outMax - outMin) * t;
   },
+}));
+
+vi.mock("@remotion/media", () => ({
+  Video: ({
+    src,
+    style,
+    trimBefore,
+    volume,
+  }: {
+    src: string;
+    style?: React.CSSProperties;
+    trimBefore?: number;
+    volume?: number | ((frame: number) => number);
+  }) =>
+    React.createElement("video", {
+      "data-remotion": "media-video",
+      "data-trim-before": String(trimBefore),
+      "data-effective-volume":
+        typeof volume === "function" ? volume(mockedFrame) : volume,
+      src,
+      style,
+    }),
+  Audio: ({
+    src,
+    trimBefore,
+    "data-timeline-audio": timelineAudio,
+    volume,
+  }: {
+    src: string;
+    trimBefore?: number;
+    "data-timeline-audio"?: string;
+    volume?: number | ((frame: number) => number);
+  }) =>
+    React.createElement("audio", {
+      "data-remotion": "media-audio",
+      "data-timeline-audio": timelineAudio,
+      "data-effective-volume":
+        typeof volume === "function" ? volume(mockedFrame) : volume,
+      "data-trim-before": String(trimBefore),
+      src,
+    }),
 }));
 
 describe("composition preview helpers", () => {
@@ -176,8 +179,8 @@ describe("composition preview helpers", () => {
     expect(markup).not.toContain("/api/assets/view/");
     expect(markup).not.toContain("projects/project-1/private.wav");
     expect(markup).not.toContain("/projects/project-1/private.png");
-    expect(markup).not.toContain('data-remotion="audio"');
-    expect(markup).not.toContain('data-remotion="offthread-video"');
+    expect(markup).not.toContain('data-remotion="media-audio"');
+    expect(markup).not.toContain('data-remotion="media-video"');
     expect(markup).not.toContain('data-remotion="img"');
   });
 
@@ -270,8 +273,7 @@ export default function LiveCard() {
       }),
     );
 
-    expect(markup).toContain("mask-image:url(");
-    expect(markup).toContain("matrix(0.7071%200.3977%20-1.2571%200.7071");
+    expect(markup).toContain("clip-path:polygon(");
   });
 
   it("applies keyframed opacity to visual item types that provide their own visibility opacity", () => {
@@ -375,7 +377,7 @@ export default function LiveCard() {
     ).toContain("translateX(-8%)");
   });
 
-  it("marks timeline audio as CORS-safe for live level capture", () => {
+  it("marks timeline audio for live level capture", () => {
     const markup = renderToStaticMarkup(
       React.createElement(VideoComposition, {
         tracks: [
@@ -397,7 +399,7 @@ export default function LiveCard() {
     );
 
     expect(markup).toContain('data-timeline-audio=""');
-    expect(markup).toContain('crossorigin="anonymous"');
+    expect(markup).toContain('data-remotion="media-audio"');
   });
 
   it("uses audioGainDb as the canonical renderer gain ahead of legacy volume", () => {
@@ -533,7 +535,7 @@ export default function LiveCard() {
     expect(markup).toContain('data-effective-volume="0"');
   });
 
-  it("holds playback while a video frame is buffering instead of flashing through it", () => {
+  it("maps sourceStartInFrames to the @remotion/media trimBefore prop", () => {
     const markup = renderToStaticMarkup(
       React.createElement(VideoComposition, {
         tracks: [
@@ -548,6 +550,7 @@ export default function LiveCard() {
                 src: "http://127.0.0.1:49321/assets/clip.mp4",
                 from: 0,
                 durationInFrames: 90,
+                sourceStartInFrames: 15,
               },
             ],
           },
@@ -555,7 +558,8 @@ export default function LiveCard() {
       }),
     );
 
-    expect(markup).toContain('data-pause-when-buffering="true"');
+    expect(markup).toContain('data-remotion="media-video"');
+    expect(markup).toContain('data-trim-before="15"');
   });
 
   it("renders explicit mediaFit and plain-text layout fields from the Timeline DSL", () => {
@@ -787,6 +791,47 @@ export default function LiveCard() {
     expect(markup).toContain("scale(");
     expect(markup).toContain('data-sticker-item-id="spark-sticker"');
     expect(markup).toContain('src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E"');
+  });
+
+  it("paints the top timeline track last in DOM order instead of using z-index", () => {
+    const markup = renderToStaticMarkup(
+      React.createElement(VideoComposition, {
+        tracks: [
+          {
+            id: "top-track",
+            name: "Top track",
+            items: [
+              {
+                id: "top-sticker",
+                type: "sticker",
+                src: "/assets/top.png",
+                from: 0,
+                durationInFrames: 30,
+              },
+            ],
+          },
+          {
+            id: "bottom-track",
+            name: "Bottom track",
+            items: [
+              {
+                id: "bottom-sticker",
+                type: "sticker",
+                src: "/assets/bottom.png",
+                from: 0,
+                durationInFrames: 30,
+              },
+            ],
+          },
+        ] as any,
+      }),
+    );
+
+    const topIndex = markup.indexOf('data-sticker-item-id="top-sticker"');
+    const bottomIndex = markup.indexOf('data-sticker-item-id="bottom-sticker"');
+    expect(bottomIndex).toBeGreaterThan(-1);
+    expect(topIndex).toBeGreaterThan(bottomIndex);
+    expect(markup).not.toContain("z-index");
   });
 
   it("paints the transition target above its source so reveal masks are visible", () => {

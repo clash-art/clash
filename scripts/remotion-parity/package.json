@@ -1,0 +1,10 @@
+{
+  "name": "@clash/remotion-parity",
+  "private": true,
+  "type": "module",
+  "description": "Server-vs-browser Remotion composition parity check (SSIM per sample frame)",
+  "scripts": {
+    "start": "node run.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}
