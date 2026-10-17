@@ -97,8 +97,17 @@ describe("get-session cookie cache (#154)", () => {
   beforeEach(() => vi.useFakeTimers({ toFake: ["Date"], now: Date.now() }));
   afterEach(() => vi.useRealTimers());
 
-  it("sign-in sets the signed cache cookie; a browser hit costs no D1 query", async () => {
+  it("sign-in sets the signed cache cookie (Max-Age 3600); a browser hit costs no D1 query", async () => {
     const { env, primary } = makeEnv();
+    const res = await createAuth(env as never).handler(
+      new Request(`${ORIGIN}/api/better-auth/sign-up/email`, {
+        method: "POST",
+        headers: { origin: ORIGIN, "content-type": "application/json", "x-forwarded-for": nextIp() },
+        body: JSON.stringify({ email: "maxage@example.com", password: "get-session-pass-123", name: "M" }),
+      }),
+    );
+    const dataCookie = res.headers.getSetCookie().find((c) => c.startsWith("better-auth.session_data="));
+    expect(dataCookie).toMatch(/Max-Age=3600\b/i);
     const jar = await signUp(env, "hit@example.com");
     expect([...jar.keys()]).toEqual(
       expect.arrayContaining(["better-auth.session_token", "better-auth.session_data"]),
@@ -192,11 +201,14 @@ describe("get-session cookie cache (#154)", () => {
 
   it("cache lifetime is bounded", () => {
     const at = (v?: string) => resolveCookieCacheSeconds({ DB: {} as D1Database, BETTER_AUTH_COOKIE_CACHE_SECONDS: v });
-    expect(at(undefined)).toBe(60);
+    expect(DEFAULT_COOKIE_CACHE_SECONDS).toBe(3600);
+    expect(at(undefined)).toBe(3600);
     expect(at("0")).toBe(0);
-    expect(at("30")).toBe(30);
-    expect(at("3600")).toBe(60);
-    expect(at("abc")).toBe(60);
+    expect(at("300")).toBe(300);
+    expect(at("3600")).toBe(3600);
+    expect(at("3601")).toBe(3600);
+    expect(at("-1")).toBe(3600);
+    expect(at("abc")).toBe(3600);
   });
 
   it("one Better Auth instance per env (isolate)", () => {

@@ -1,7 +1,7 @@
 {
   "summary": "Hosted browser authentication and safe post-login continuation.",
   "files": {
-    "better-auth.server.ts": "Better Auth server configuration: one instance per isolate, signed session cookie cache (BETTER_AUTH_COOKIE_CACHE_SECONDS, default 60 s), D1 handle routed per request.",
+    "better-auth.server.ts": "Better Auth server configuration: one instance per isolate, signed session cookie cache (BETTER_AUTH_COOKIE_CACHE_SECONDS, default 3600 s, max 3600), D1 handle routed per request.",
     "login-return.ts": "Validates same-origin browser paths for returning from sign-in to PKCE authorization; external destinations and login loops fall back to home.",
     "login-return.test.ts": "Behavior checks for preserved authorization query parameters and rejected unsafe destinations.",
     "continue-with-email.ts": "Unified password entry through Better Auth: sign in first, register only on invalid credentials, preserve existing-account and service errors; reports newly created accounts for name completion.",
