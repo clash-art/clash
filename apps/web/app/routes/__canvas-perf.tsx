@@ -71,7 +71,9 @@ declare global {
 }
 
 function numberParam(params: URLSearchParams, key: keyof PerfConfig, fallback: number): number {
-  const value = Number(params.get(key));
+  const raw = params.get(key);
+  if (raw === null || raw.trim() === "") return fallback;
+  const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   return Math.max(0, Math.min(5000, Math.floor(value)));
 }

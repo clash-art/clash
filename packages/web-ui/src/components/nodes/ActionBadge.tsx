@@ -5154,19 +5154,23 @@ const PromptActionNode = ({
           outputKind={outputKind}
         />
       </div>
-      <NodeToolbar
-        nodeId={id}
-        isVisible={showPanel}
-        position={Position.Bottom}
-        align="center"
-        offset={12}
-        className="nodrag nopan nowheel pointer-events-auto z-[9998]"
-        style={{ zIndex: 9998 }}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={(event) => event.stopPropagation()}
-      >
-        {configPanel}
-      </NodeToolbar>
+      {/* Mount only while open: a hidden NodeToolbar still subscribes to the
+          viewport and scans every node on each pan/zoom tick. */}
+      {showPanel ? (
+        <NodeToolbar
+          nodeId={id}
+          isVisible
+          position={Position.Bottom}
+          align="center"
+          offset={12}
+          className="nodrag nopan nowheel pointer-events-auto z-[9998]"
+          style={{ zIndex: 9998 }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          {configPanel}
+        </NodeToolbar>
+      ) : null}
 
       {modalContent}
       {keyframeTimelineDialog}
