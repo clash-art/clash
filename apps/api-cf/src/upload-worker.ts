@@ -48,8 +48,11 @@ export function createCloudflareIdentity(
 ): UploadIdentityVerifier {
   return {
     async verify(request) {
-      const clean = new Request(request);
-      clean.headers.delete("x-user-id");
+      // Headers-only copy: `new Request(request)` would take over (lock) the
+      // request body in workerd, and the upload service still has to read it.
+      const headers = new Headers(request.headers);
+      headers.delete("x-user-id");
+      const clean = new Request(request.url, { method: "GET", headers });
       const auth = clean.headers.get("authorization") ?? "";
       if (/^Bearer[\t ]+clsh_\S+$/i.test(auth.trim())) {
         const userId = await getUserIdFromApiToken(clean, env as never).catch(

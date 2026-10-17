@@ -56,6 +56,16 @@ describe("upload Worker (#130)", () => {
     expect(await identity.verify(new Request("https://u/", { headers: { authorization: `Bearer ${token}` } }))).toEqual({ userId: "u1" });
   });
 
+  it("identity leaves the request body unread for the upload service (staging 503 regression)", async () => {
+    const token = "clsh_test";
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))), (b) => b.toString(16).padStart(2, "0")).join("");
+    const identity = createCloudflareIdentity({ DB: fakeD1({ [hash]: "u1" }) } as never);
+    const req = new Request("https://u/", { method: "PUT", body: "part-bytes", headers: { authorization: `Bearer ${token}` } });
+    expect(await identity.verify(req)).toEqual({ userId: "u1" });
+    expect(req.bodyUsed).toBe(false);
+    expect(await req.text()).toBe("part-bytes");
+  });
+
   it("document-body route rejects unauthenticated callers without touching ROOM", async () => {
     const room = { idFromName: vi.fn(), get: vi.fn() };
     const app = createUploadWorkerApp();
