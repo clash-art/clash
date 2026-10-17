@@ -110,7 +110,9 @@ export function defaultRuntimeCapabilities(
       auth: { mode: "better-auth" },
       host: {
         timelineRender: "unavailable",
-        textRevisions: "unavailable",
+        // Served by the shared text-revisions module (Cloudflare adapter:
+        // D1 + R2; Node adapter: Postgres + disk).
+        textRevisions: "available",
         localAudio: "unavailable",
       },
     };

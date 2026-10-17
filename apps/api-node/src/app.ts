@@ -1,4 +1,5 @@
-import { projectHostCapabilityUnavailable } from "@clash/shared-runtime/cloud-project-host/unavailable";
+import { join } from "node:path";
+import { createTextRevisionRoutes } from "./text-revisions.ts";
 import { createProjectAssetRoutes } from "./project-assets.ts";
 import { loadCloudPluginCatalog } from "./timeline-definition.ts";
 import {
@@ -172,16 +173,13 @@ export function createNodeCloudApp(options: {
         options.timeline?.receiptSecret ?? randomBytes(32).toString("hex"),
     }),
   );
-  // Text revision history has no Postgres/blob port yet: say so, never 404.
-  for (const path of [
-    "/api/v1/text-revisions",
-    "/api/v1/projects/:projectId/text-revisions",
-    "/api/v1/projects/:projectId/text-revisions/:revisionId/content",
-  ])
-    app.on(["GET", "POST"], path, (c) => {
-      const { status, body } = projectHostCapabilityUnavailable("text-revisions");
-      return c.json(body, status);
-    });
+  app.route(
+    "/",
+    createTextRevisionRoutes({
+      db: options.db,
+      directory: join(options.assetDirectory ?? "data/assets", "text-revisions"),
+    }),
+  );
   app.get("/api/v1/projects", async (c) => {
     const archived = c.req.query("archived") ?? "active";
     if (!["active", "only", "include"].includes(archived))

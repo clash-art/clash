@@ -89,6 +89,7 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
       "assets.trash": "supported",
       "assets.restore": "supported",
       "assets.media": "supported",
+      "text.revisions": "supported",
     },
     knownGaps: [],
     sampleVideo: {
