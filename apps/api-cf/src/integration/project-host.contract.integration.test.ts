@@ -5,7 +5,8 @@
  *
  * api-cf serves the plugin catalog, Timeline host-command (ProjectRoom,
  * #180) and Project Assets (R2 + ProjectRoom, #181, incl. trash/restore).
- * Timeline render needs a render Host and is declared unavailable (501).
+ * Timeline render creates the shared pending render node, which the
+ * RENDER_CONTAINER pipeline (NodeProcessor -> GenerationWorkflow) executes.
  */
 import { env } from "cloudflare:test";
 import { LoroDoc } from "loro-crdt";
@@ -68,6 +69,7 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
         env,
       );
     },
+    timelineRenderRunId: "derived-from-render-node",
     capabilities: {
       "catalog.generators": "supported",
       "catalog.views": "supported",
@@ -78,7 +80,7 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
       "timeline.attach": "supported",
       "timeline.detach": "supported",
       "timeline.delete": "supported",
-      // No cloud render executor; host-command must answer 501 for it.
+      // NodeProcessor hands the pending render node to GenerationWorkflow.
       "timeline.render": "supported",
       "assets.list": "supported",
       "assets.batch": "supported",

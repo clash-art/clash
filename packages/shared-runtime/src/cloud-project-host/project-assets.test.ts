@@ -89,6 +89,18 @@ describe("cloud Project Asset document logic", () => {
     expect(readProjectAsset(doc, "asset:a")?.source.resourceId).toBe("r1");
   });
 
+  it("records an upload as an import unless the caller names the provenance", async () => {
+    await importAsset("asset:upload", resource("r1", "upload"));
+    const provenance = { kind: "render" as const, actionRunId: "run" };
+    await importAsset("asset:render", resource("r2", "render"), { provenance });
+    expect(readProjectAsset(doc, "asset:upload")?.provenance).toEqual({
+      kind: "import",
+    });
+    expect(readProjectAsset(doc, "asset:render")?.provenance).toEqual(
+      provenance,
+    );
+  });
+
   it("rejects duplicate content only when the client asks to", async () => {
     await importAsset("asset:a", resource("r1", "bytes"));
     const rejected = await importAsset("asset:b", resource("r2", "bytes"), {

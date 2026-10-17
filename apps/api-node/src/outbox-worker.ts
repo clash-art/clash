@@ -1,7 +1,9 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { createNodeTaskRuntime } from "./task-runtime.ts";
-import { databaseUrl } from "./config.ts";
+import { databaseUrl, publicUrl, renderServerUrl } from "./config.ts";
+import { createHttpRenderServerPort } from "@clash/shared-runtime/render-server";
+import { createNodeTimelineRenderService } from "./timeline-render.ts";
 import { openPostgres } from "./postgres.ts";
 import {
   createPostgresNotificationPublisher,
@@ -67,9 +69,23 @@ if (
       connectionString: databaseUrl(process.env),
     });
     observeOutboxBacklog(database.pool);
+    // Timeline renders run here when RENDER_SERVER_URL is set; otherwise the
+    // API answers request_timeline_render with 501 and no runs are queued.
+    const renderOrigin = renderServerUrl(process.env);
+    const render = renderOrigin
+      ? createNodeTimelineRenderService(database.db, {
+          renderServer: createHttpRenderServerPort(renderOrigin),
+          mediaSecret: process.env.BETTER_AUTH_SECRET!,
+          publicUrl: publicUrl(process.env),
+          assetDirectory: process.env.CLOUD_ASSET_DIR ?? "data/assets",
+        })
+      : undefined;
     const tasks = createNodeTaskRuntime({
       connectionString: databaseUrl(process.env),
       db: database.db,
+      ...(render
+        ? { coordinator: render.coordinator, journal: render.journal }
+        : {}),
     });
     try {
       await tasks.start();

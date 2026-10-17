@@ -203,6 +203,16 @@
       "import": "./src/executable-plugin-remote.ts",
       "default": "./dist/executable-plugin-remote.js"
     },
+    "./render-server": {
+      "types": "./src/render-server.ts",
+      "import": "./src/render-server.ts",
+      "default": "./dist/render-server.js"
+    },
+    "./signed-capability": {
+      "types": "./src/signed-capability.ts",
+      "import": "./src/signed-capability.ts",
+      "default": "./dist/signed-capability.js"
+    },
     "./cloud-project-host/timeline-commands": {
       "types": "./src/cloud-project-host/timeline-commands.ts",
       "import": "./src/cloud-project-host/timeline-commands.ts",

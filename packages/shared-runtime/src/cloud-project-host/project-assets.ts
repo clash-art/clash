@@ -31,6 +31,7 @@ import {
   type ActionAssetBinding,
   type AssetKind,
   type ProjectAssetEntry,
+  type ProjectAssetProvenance,
   type ResolvedAsset,
   type Resource,
 } from "@clash/shared-types";
@@ -169,6 +170,8 @@ export interface ProjectAssetImportCommand {
   createdAt: number;
   /** `reject` refuses content already imported under another active Asset id. */
   duplicateContent?: "allow" | "reject";
+  /** Defaults to an upload (`import`); a backend render records its run. */
+  provenance?: ProjectAssetProvenance;
 }
 
 export interface ProjectAssetImportPorts {
@@ -248,7 +251,7 @@ export async function commitProjectAssetImport(
     createdAt: command.createdAt,
     name: command.name,
     metadata: command.metadata,
-    provenance: { kind: "import" },
+    provenance: command.provenance ?? { kind: "import" },
     lifecycle: { state: "active" },
   });
   if (!created.ok) return conflict({ error: created.error.message });

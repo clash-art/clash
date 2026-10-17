@@ -98,6 +98,8 @@ describeProjectHostContract("local-api (desktop Host)", async () => {
     projectId: "contract-project",
     fetch: async (input, init) =>
       app.request(String(input instanceof Request ? input.url : input), init),
+    // The Generator Action plan names its render node after the run.
+    timelineRenderRunId: "names-render-node",
     capabilities: {
       "catalog.generators": "supported",
       "catalog.views": "supported",

@@ -20,6 +20,7 @@ import {
 } from "@clash/asset-sdk";
 import {
   DEFAULT_CANVAS_ID,
+  projectTimelineRenderActionRunId,
   type ProjectHostCommand,
   type ResolvedAsset,
 } from "@clash/shared-types";
@@ -57,6 +58,13 @@ export interface ProjectHostContractHarness {
   /** An existing Project the authenticated user owns. */
   projectId: string;
   capabilities: ContractCapabilities;
+  /**
+   * How a `request_timeline_render` answer names its run. Cloud adapters
+   * journal the shared pending render node under
+   * `projectTimelineRenderActionRunId(renderNodeId)`; the local Host plans a
+   * Generator Action run and names the render node after it.
+   */
+  timelineRenderRunId: "derived-from-render-node" | "names-render-node";
   /** Declared capabilities that do not meet the contract yet; their cases must fail. */
   knownGaps?: CapabilityId[];
   sampleVideo: { bytes: Uint8Array; fileName: string; contentType: string };
@@ -408,8 +416,12 @@ export function describeProjectHostContract(
               },
             });
             const submitted = await timelines.render(created);
-            expect(submitted.actionRunId).toEqual(expect.any(String));
             expect(submitted.renderNodeId).toEqual(expect.any(String));
+            expect(submitted.actionRunId).toBe(
+              harness.timelineRenderRunId === "derived-from-render-node"
+                ? projectTimelineRenderActionRunId(submitted.renderNodeId)
+                : submitted.renderNodeId,
+            );
           },
         ],
       ],

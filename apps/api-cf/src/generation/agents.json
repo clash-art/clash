@@ -10,7 +10,7 @@
     "status.ts": "Journal-backed public task status overrides legacy Asset-row hints, including text success and obsolete-target failure.",
     "recovery.ts": "Cron recovery across the exported owner list; due rows are re-scheduled by frozen identity only.",
     "registry.ts": "Supported hosted wire adapters; native switches stay first, then an explicit Worker-safe plugin allowlist routes provider-executor plugins through the shared PluginExecutionPort.",
-    "adapters": "Provider translation only. Async services return opaque tokens and never own scheduling.",
+    "adapters": "Provider translation only. Async services return opaque tokens and never own scheduling. adapters/render.ts calls the shared shared-runtime/render-server protocol (renderTimelineVideo) over renderServerFetch; Node uses the same protocol through its own port.",
     "params.ts": "Compatibility type re-export of shared-runtime generation-params.",
     "plugin-provider-adapter.ts": "Plugin-owned provider routes: builds the same frozen provider values as the Node adapter, binds credentials from the selected hosted account, and calls the in-process PluginExecutionPort.",
     "plugin-execution": "Dynamically imported Cloudflare composition root for first-party in-process plugin modules, their ExecutorContext, and durable invocation replay. Never in Worker startup.",

@@ -8,17 +8,15 @@
  * public route that signs a caller-supplied storage key.
  */
 
+import {
+  importCapabilityKey,
+  signCapability,
+  verifyCapability,
+} from "@clash/shared-runtime/signed-capability";
 import type { Env } from "../config";
 import { requireSecret } from "./require-secret";
 
 export const SIGNED_URL_TTL = 3600; // 1 hour
-
-function toBase64Url(bytes: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
 
 export async function getSigningKey(env: Env): Promise<CryptoKey> {
   const secret = requireSecret(
@@ -27,33 +25,26 @@ export async function getSigningKey(env: Env): Promise<CryptoKey> {
     env.JWT_SECRET,
     "dev-asset-signing-key",
   );
-  return crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign", "verify"],
-  );
+  return importCapabilityKey(secret);
 }
 
-export async function computeSignature(
+// No domain prefix: the shared helper then signs exactly `<key>:<exp>`, so
+// every URL issued before the move keeps verifying.
+export function computeSignature(
   key: CryptoKey,
   storageKey: string,
   exp: number,
 ): Promise<string> {
-  const data = new TextEncoder().encode(`${storageKey}:${exp}`);
-  const sig = await crypto.subtle.sign("HMAC", key, data);
-  return toBase64Url(sig);
+  return signCapability(key, storageKey, exp);
 }
 
-export async function verifySignature(
+export function verifySignature(
   key: CryptoKey,
   storageKey: string,
   exp: number,
   sig: string,
 ): Promise<boolean> {
-  const expected = await computeSignature(key, storageKey, exp);
-  return expected === sig;
+  return verifyCapability(key, storageKey, exp, sig);
 }
 
 /**

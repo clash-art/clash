@@ -17,6 +17,7 @@ pnpm --filter @clash/api-node start
 pnpm --filter @clash/api-node worker:outbox
 ```
 
+Optional: `RENDER_SERVER_URL` enables Timeline render (see Timeline render).
 `PORT` defaults to 8080; containers can set `HOST=0.0.0.0`. Startup never applies
 migrations. The migration runner uses checksums and a transaction advisory lock.
 Application migrations add no foreign keys. BullMQ owns its separate queue schema
@@ -169,11 +170,12 @@ business journal for product status. Infrastructure failures exhaust into retain
 failed queue jobs and need operational intervention.
 
 `start()` starts consumers and the dispatch loop; `close()` stops acquisition and
-worker threads. The shipped `worker:outbox` CLI currently supplies only checkpoint
-ports. Actual Node generation admission routes, credential resolution, durable
-object-storage staging and Project publication are **not wired into that CLI**.
-The generation adapter is validated with fixture ports and real PostgreSQL,
-including a killed worker process. It is not a complete Node generation product.
+worker threads. The shipped `worker:outbox` CLI supplies checkpoint ports and,
+when `RENDER_SERVER_URL` is set, the Timeline render ports (see Timeline render).
+Model generation admission routes, credential resolution and their Project
+publication are **not wired into that CLI**. The generation adapter is validated
+with fixture ports and real PostgreSQL, including a killed worker process. It is
+not a complete Node generation product.
 
 BullMQ is pinned to 6.3.6 and uses its PostgreSQL backend without Redis or DBOS.
 Queue migrations run only through the explicit migrate command, never startup.
@@ -249,10 +251,41 @@ commands roll back without partial Generator or Canvas changes. This is an
 on-demand replica, not a second Project storage model. It currently replays the
 captured tail on each request, so large uncheckpointed projects cost more.
 
-The projection definition does not start the Remotion executor: Timeline render
-submission, Project Asset publication, Director Stage commands and hosted agent
-runtime endpoints still need their actual adapters. Unsupported commands return
-an explicit error; they are not acknowledged as successful work.
+The projection definition does not start the Remotion executor. Timeline render
+runs through render-server when it is configured (next section). Director Stage
+commands and hosted agent runtime endpoints still need their actual adapters.
+Unsupported commands return an explicit error; they are not acknowledged as
+successful work.
+
+## Timeline render
+
+Set `RENDER_SERVER_URL` to the apps/render-server origin (http(s) only, no
+credentials, path, query or fragment) on **both** the API server and
+`worker:outbox`, together with the same `BETTER_AUTH_SECRET`, `CLOUD_PUBLIC_URL`
+and `CLOUD_ASSET_DIR`. Unset, `request_timeline_render` answers 501 and nothing
+is created. render-server remains the only renderer.
+
+`request_timeline_render` creates the shared pending render node. In the same
+PostgreSQL transaction the node is claimed (`generating`, `pendingTask`) and run
+`timeline-render:<renderNodeId>` is journaled with its dispatch intent, so a
+synced Local Host never renders it a second time and a failed admission leaves
+nothing behind. The worker gives each media item's Project Asset a signed URL,
+posts the Timeline to `/render` and stores the bytes in the content-addressed
+media store. Publication imports the Project Asset under the run ID (render
+provenance), adds its Resource row and completes the node in one transaction.
+BullMQ job IDs, the journal CAS and run-keyed publication make redelivery and
+reruns a no-op: one render node yields one Asset. A failed run marks the node
+failed only while this run still holds it. A retried host-command (a new HTTP
+request) still creates a second render node, as on Cloudflare and Local Host.
+
+Media URLs live at `CLOUD_PUBLIC_URL/assets/project-media/<project>/<asset>`,
+outside `/api` and its session/token middleware. The signature is HMAC-SHA256
+with `BETTER_AUTH_SECRET` over a fixed `clash-node-media-v1:` domain, the
+Project, the Asset and a one-hour expiry (the shared helper Cloudflare uses for
+`/assets/<key>`, without that domain). Verification is constant-time; expired or
+tampered URLs get 403. A URL serves only that active Asset's stored bytes,
+with byte ranges. The route is mounted only when render is configured. The
+local-development Web proxy already forwards `/assets/` to Node.
 
 ## Project media
 
