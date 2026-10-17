@@ -23,6 +23,7 @@ describe("local executable plugin action invoker", () => {
 
     const result = await invoker({
       binding,
+      invocationId: "task-action-1",
       taskId: "task-action-1",
       projectId: "project-action-1",
       nodeId: "node-action-1",
@@ -86,6 +87,7 @@ describe("local executable plugin action invoker", () => {
     await expect(
       invoker({
         binding,
+        invocationId: "run-1",
         taskId: "run-1",
         projectId: "project-1",
         input: { values: {}, references: [] },

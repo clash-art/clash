@@ -193,6 +193,16 @@
       "import": "./src/executable-run.ts",
       "default": "./dist/executable-run.js"
     },
+    "./canvas-executable-node": {
+      "types": "./src/canvas-executable-node.ts",
+      "import": "./src/canvas-executable-node.ts",
+      "default": "./dist/canvas-executable-node.js"
+    },
+    "./executable-plugin-remote": {
+      "types": "./src/executable-plugin-remote.ts",
+      "import": "./src/executable-plugin-remote.ts",
+      "default": "./dist/executable-plugin-remote.js"
+    },
     "./cloud-project-host/timeline-commands": {
       "types": "./src/cloud-project-host/timeline-commands.ts",
       "import": "./src/cloud-project-host/timeline-commands.ts",

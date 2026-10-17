@@ -333,6 +333,36 @@ export const installedActions = sqliteTable(
 );
 
 /**
+ * Third-party executable plugin settings — one user-configured HTTPS endpoint
+ * and sealed signing secret per installed plugin. First-party plugins are
+ * bound in code and never appear here. No foreign keys.
+ */
+export const pluginEndpointSettings = sqliteTable(
+  "plugin_endpoint_settings",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id").notNull(),
+    pluginId: text("plugin_id").notNull(),
+    endpoint: text("endpoint").notNull(),
+    encryptedSecret: text("encrypted_secret").notNull(),
+    /** Optional exact package provenance; when set, admission requires it to match the node. */
+    version: text("version"),
+    schemaHash: text("schema_hash"),
+    exportIds: text("export_ids"),
+    idempotentSubmit: integer("idempotent_submit").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
+  },
+  (table) => ({
+    pluginEndpointSettingsUniqueIdx: uniqueIndex(
+      "plugin_endpoint_settings_user_plugin_idx",
+    ).on(table.userId, table.pluginId),
+  }),
+);
+
+/**
  * Assets — generated/uploaded media metadata.
  * Single source of truth per asset. Immutable to user APIs (only system writes).
  *

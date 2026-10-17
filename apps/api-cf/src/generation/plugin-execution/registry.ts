@@ -19,16 +19,18 @@ export interface CloudInProcessPluginRegistration {
   exports: readonly string[];
   /** Model-provider bindings this plugin contributes to the hosted model catalog. */
   modelBindings: readonly ExecutablePluginModelBindingRegistration[];
+  /** Exports that declare upstream deduplication of a repeated submit. */
+  idempotentSubmitExports: readonly string[];
 }
 
 let modules:
-  | Promise<ReadonlyMap<string, CloudInProcessPluginRegistration>>
-  | undefined;
+  Promise<ReadonlyMap<string, CloudInProcessPluginRegistration>> | undefined;
 
 async function loadModules(): Promise<
   ReadonlyMap<string, CloudInProcessPluginRegistration>
 > {
   const fal = await import("@clash-plugin/fal/module");
+  const functions = fal.manifestDocument.contributes.functions;
   return new Map([
     [
       "clash.fal",
@@ -37,9 +39,10 @@ async function loadModules(): Promise<
         version: fal.manifestDocument.version,
         schemaHash: fal.schemaHash,
         module: fal.plugin,
-        exports: fal.manifestDocument.contributes.functions.map(
-          (entry) => entry.id,
-        ),
+        exports: functions.map((entry) => entry.id),
+        idempotentSubmitExports: functions
+          .filter((entry) => entry.idempotentSubmit === true)
+          .map((entry) => entry.id),
         modelBindings: Object.values(fal.modelBindingDocuments).map(
           (document) => ({
             pluginId: "clash.fal",
@@ -60,12 +63,17 @@ export function loadCloudInProcessPluginModules() {
   return (modules ??= loadModules());
 }
 
+async function resolveCloudInProcessPlugin(
+  pluginId: string,
+): Promise<CloudInProcessPluginRegistration | undefined> {
+  return (await loadCloudInProcessPluginModules()).get(pluginId);
+}
+
 export async function resolveCloudInProcessBinding(
   pluginId: string,
   exportId: string,
 ): Promise<ExecutablePluginBinding | undefined> {
-  const registry = await loadCloudInProcessPluginModules();
-  const registration = registry.get(pluginId);
+  const registration = await resolveCloudInProcessPlugin(pluginId);
   if (!registration || !registration.exports.includes(exportId)) {
     return undefined;
   }
@@ -83,4 +91,12 @@ export async function listCloudInProcessModelBindings(): Promise<
 > {
   const registry = await loadCloudInProcessPluginModules();
   return [...registry.values()].flatMap((entry) => [...entry.modelBindings]);
+}
+
+export async function cloudInProcessExportIdempotentSubmit(
+  pluginId: string,
+  exportId: string,
+): Promise<boolean> {
+  const registration = await resolveCloudInProcessPlugin(pluginId);
+  return registration?.idempotentSubmitExports.includes(exportId) ?? false;
 }

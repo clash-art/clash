@@ -1,13 +1,15 @@
 {
-  "summary": "Cloudflare adapter composition root for first-party executable plugins. Modules are registered in code, loaded dynamically, and invoked in-process through the shared PluginExecutionPort; this directory owns no journal, retry loop, staging or publication.",
+  "summary": "Cloudflare adapter composition root for executable plugins. First-party modules are registered in code and invoked in-process; third-party plugins use the signed remote binding. Both go through the shared PluginExecutionPort; this directory owns no journal, retry loop, staging or publication.",
   "key_files": {
     "index.ts": "Lazy composition root: resolve an in-code plugin binding and construct the in-process execution port with hosted ExecutorContext services.",
     "in-process.ts": "One module invocation with a timeout and per-isolate submit replay keyed by durable invocationId. Returns the protocol result; never publishes.",
-    "registry.ts": "Closed allowlist of Worker-safe first-party executor modules plus their manifest version/schema hash. Dynamic import keeps plugin JSON out of startup.",
-    "context.ts": "Invocation-scoped store/upload/asset/document/reference ports. Credentials come from the selected provider account and never enter the journal."
+    "registry.ts": "Closed allowlist of Worker-safe first-party executor modules plus their manifest version/schema hash and declared idempotent exports. Dynamic import keeps plugin JSON out of startup.",
+    "context.ts": "Invocation-scoped store/upload/asset/document/reference ports. Credentials come from the selected provider account and never enter the journal.",
+    "action-context.ts": "Invocation-scoped bytes-only context for executable Actions: pinned Asset references resolve to verified bytes, and plugin outputs go through the same R2 broker the Durable Run stages from.",
+    "action-invoker.ts": "Action-port binding: resolve code first, fall back to the user's sealed remote endpoint, then invoke the shared port with durableRunIdempotencyKey(run). First-party ids never fall through to remote."
   },
   "compatibility": [
-    "Only the in-process binding exists today. The shared port keeps container and remote bindings typed but unbound.",
-    "A provider route is admitted only when its executor plugin id is explicitly allowlisted and its module imports no node:fs or child_process at module scope."
+    "Only first-party in-process and third-party remote bindings are implemented; the container binding stays typed for the render adapter.",
+    "A provider route or Action is admitted only when its plugin id is explicitly allowlisted or the user has a validated remote endpoint; modules import no node:fs or child_process at module scope."
   ]
 }

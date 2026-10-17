@@ -53,6 +53,11 @@ rejected.
 - Declare the lifecycle arms the entrypoint implements in `operations`.
   `submit` is the default. `callback` is reserved for a future Host adapter and
   also requires `poll`; current Hosts never issue `callbackUrl`.
+- Set `idempotentSubmit: true` on a function only when the upstream
+  deduplicates a repeated submit with the same `invocationId`
+  (`Idempotency-Key`) and answers with the first outcome. Without it, a Host
+  never resubmits after an ambiguous submit (`requestState: "unknown"`): the
+  run fails instead of risking a second charge.
 - `hostTools` is for named Host functionality such as `codex.imagegen`. It is
   an explicit product contribution.
 

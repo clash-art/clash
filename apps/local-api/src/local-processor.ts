@@ -58,7 +58,6 @@ import type {
   DocumentAssetRevision,
   MediaReferenceModality,
 } from "@clash/shared-types";
-import type { AssetKind } from "@clash/shared-types/assets";
 import {
   createMockExternalAigcService,
   ProviderPluginHostUnavailableError,
@@ -84,10 +83,26 @@ import { createLocalGeneratorRunBridge } from "./local-generator-run-bridge.js";
 import type { LocalAssetInspectionService } from "./local-asset-inspections.js";
 import type { LocalAssetRepresentationService } from "./local-asset-representations.js";
 import { storeTextRevisionContentBlob } from "./text-revision-content.js";
-import type {
-  ExecutablePluginActionInvoker,
-  ExecutablePluginActionRequest,
-} from "./plugin-action-runtime.js";
+import {
+  canonicalRevisionJson,
+  durableExecutorIdentity,
+  executableRevisionId,
+} from "@clash/shared-runtime/executable-run";
+import {
+  aspectRatioFromData,
+  authoredPromptFromData,
+  canvasMentionResolver,
+  canvasNodeProjectionRevisionId,
+  customActionPromptFromData,
+  freezeCanvasCustomAction,
+  modelFromData,
+  nodeModelParams,
+  pendingCustomActionNode,
+  stringList,
+  type CanvasProcessableKind as ProcessableKind,
+  type CanvasProcessableNodeKind as ProcessableNodeKind,
+} from "@clash/shared-runtime/canvas-executable-node";
+import type { ExecutablePluginActionInvoker } from "./plugin-action-runtime.js";
 
 export interface LocalWorkflowProcessorInput {
   doc: LoroDoc;
@@ -198,26 +213,6 @@ function jsonSnapshot(value: unknown): ExecutablePluginJsonValue {
   );
 }
 
-function canonicalJson(value: unknown): string {
-  const serialized = JSON.stringify(value, (_key, entry: unknown) => {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      return entry;
-    }
-    const record = entry as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .map((key) => [key, record[key]]),
-    );
-  });
-  if (serialized === undefined) {
-    throw new TypeError("Action revision input must be JSON-serializable.");
-  }
-  return serialized;
-}
-
-type ProcessableKind = Extract<AssetKind, "image" | "video" | "audio" | "model">;
-type ProcessableNodeKind = ProcessableKind | "text";
 
 function sanitizeStorageSegment(value: string): string {
   return (
@@ -225,33 +220,11 @@ function sanitizeStorageSegment(value: string): string {
   );
 }
 
-function modelParams(
-  data: Record<string, unknown>,
-): Record<string, string | number | boolean | undefined> {
-  const params = data.modelParams;
-  if (!params || typeof params !== "object" || Array.isArray(params)) return {};
-  const projectVisibleParams = {
-    ...(params as Record<string, string | number | boolean | undefined>),
-  };
-  // Concrete provider/account routing is owner-private execution state. A legacy replica may still
-  // contain this field, but it must never regain authority over a new run.
-  delete projectVisibleParams.provider_id;
-  return projectVisibleParams;
-}
-
-function stringParam(
-  data: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = data[key] ?? modelParams(data)[key];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
 function numberParam(
   data: Record<string, unknown>,
   key: string,
 ): number | undefined {
-  const value = data[key] ?? modelParams(data)[key];
+  const value = data[key] ?? nodeModelParams(data)[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
     const parsed = Number.parseFloat(value.replace(/s$/i, ""));
@@ -260,43 +233,6 @@ function numberParam(
   return undefined;
 }
 
-function authoredPromptFromData(
-  data: Record<string, unknown>,
-  fallback: string,
-): string {
-  return typeof data.prompt === "string" && data.prompt.trim()
-    ? data.prompt
-    : typeof data.label === "string" && data.label.trim()
-      ? data.label
-      : fallback;
-}
-
-/** Flat local adapters consume plain text plus separate reference arrays. Keep
- * authored @-mentions on the node and collapse them only at this boundary. */
-function providerPromptFromData(
-  data: Record<string, unknown>,
-  fallback: string,
-): string {
-  const authoredPrompt = authoredPromptFromData(data, fallback);
-  return extractPromptText(parsePromptParts(authoredPrompt));
-}
-
-function modelFromData(
-  data: Record<string, unknown>,
-  fallback: string,
-): string {
-  return typeof data.modelId === "string" && data.modelId.trim()
-    ? data.modelId
-    : typeof data.model === "string" && data.model.trim()
-      ? data.model
-      : fallback;
-}
-
-function aspectRatioFromData(
-  data: Record<string, unknown>,
-): string | undefined {
-  return stringParam(data, "aspectRatio") ?? stringParam(data, "aspect_ratio");
-}
 
 /**
  * The duration to use when nothing asked for one.
@@ -360,170 +296,6 @@ function durableProviderNodeData(
     delete next.failureCode;
   }
   return next;
-}
-
-function canvasNodeProjectionRevisionId(input: {
-  projectId: string;
-  nodeId: string;
-  kind: ProcessableNodeKind;
-  nodeData: Record<string, unknown>;
-  targetKind?: "generation" | "action";
-  executionPrompt?: string;
-  resolveMention: (
-    nodeId: string,
-  ) => { assetId: string; kind: ProcessableKind } | undefined;
-}): string {
-  if (input.nodeData.generatorRevision !== undefined) {
-    // Native requests are identified by their pinned revision. View-only fields
-    // cannot change execution; rewiring the revision must invalidate publication.
-    // Validate inside per-node admission so a malformed reference fails that node only.
-    const generatorRevision = input.nodeData.generatorRevision;
-    return `sha256:${createHash("sha256").update(canonicalJson({
-      projectId: input.projectId, nodeId: input.nodeId, kind: input.kind, generatorRevision,
-      ...(input.nodeData.generatorActionId === undefined ? {} : { generatorActionId: input.nodeData.generatorActionId }),
-    })).digest("hex")}`;
-  }
-  const targetKind = input.targetKind ?? (
-    typeof input.nodeData.actionType === "string" && input.nodeData.actionType.startsWith("custom:")
-      ? "action" : "generation"
-  );
-  const prompt = input.executionPrompt ?? (targetKind === "action"
-    ? customActionPromptFromData(input.nodeData)
-    : authoredPromptFromData(input.nodeData, `Mock ${input.kind}`));
-  const mentions: Array<
-    | {
-        index: number;
-        nodeId: string;
-        assetId: string;
-        kind: ProcessableKind;
-      }
-    | { index: number; nodeId: string; missing: true }
-  > = [];
-  for (const [index, part] of parsePromptParts(prompt).entries()) {
-    if (part.type !== "asset_ref" || !part.nodeId) continue;
-    const resolved = input.resolveMention(part.nodeId);
-    mentions.push(
-      resolved
-        ? { index, nodeId: part.nodeId, ...resolved }
-        : { index, nodeId: part.nodeId, missing: true },
-    );
-  }
-  const parsedBinding = ExecutablePluginBindingSchema.safeParse(
-    input.nodeData.pluginBinding,
-  );
-  const commonProjection = {
-    schemaVersion: 1,
-    projectId: input.projectId,
-    nodeId: input.nodeId,
-    kind: input.kind,
-    actionType: input.nodeData.actionType,
-    prompt,
-    // One projected field per `MEDIA_REFERENCE_FIELDS` registry entry
-    // (image / video / audio / model today) so a new reference modality
-    // only needs a registry entry, not a new field here.
-    ...Object.fromEntries(
-      MEDIA_REFERENCE_FIELDS.map((field) => [
-        field.pendingField,
-        stringList(input.nodeData[field.pendingField]),
-      ]),
-    ),
-    mentions,
-    ...(parsedBinding.success ? { pluginBinding: parsedBinding.data } : {}),
-  };
-  const semanticProjection =
-    targetKind === "action"
-      ? {
-          ...commonProjection,
-          customActionId: input.nodeData.customActionId,
-          customActionParams: input.nodeData.customActionParams,
-          outputType: input.nodeData.outputType,
-        }
-      : {
-          ...commonProjection,
-          model: modelFromData(input.nodeData, `mock-${input.kind}`),
-          modelParams: modelParams(input.nodeData),
-          aspectRatio: aspectRatioFromData(input.nodeData),
-          duration:
-            input.nodeData.duration ?? modelParams(input.nodeData).duration,
-          referenceMode: input.nodeData.referenceMode,
-        };
-  const digest = createHash("sha256")
-    .update(canonicalJson(semanticProjection))
-    .digest("hex");
-  return `sha256:${digest}`;
-}
-
-function canvasExecutorActionRevisionId(
-  executor: Omit<FrozenLocalProviderExecutorInput, "schemaVersion">,
-): string {
-  let semanticInput = executor.input;
-  if (
-    executor.targetKind === "local-executor" &&
-    executor.input.values.localExecutor === "generation"
-  ) {
-    const generationInput = executor.input.values.generationInput;
-    if (
-      generationInput &&
-      typeof generationInput === "object" &&
-      !Array.isArray(generationInput)
-    ) {
-      const {
-        taskId: _taskId,
-        projectId: _projectId,
-        nodeId: _nodeId,
-        actorType: _actorType,
-        actorUserId: _actorUserId,
-        actorAgentId: _actorAgentId,
-        providerAccountId: _providerAccountId,
-        ...semanticGenerationInput
-      } = generationInput;
-      semanticInput = {
-        ...executor.input,
-        values: {
-          ...executor.input.values,
-          generationInput: semanticGenerationInput,
-        },
-      };
-    }
-  }
-  const digest = createHash("sha256")
-    .update(
-      canonicalJson({
-        schemaVersion: 1,
-        targetKind: executor.targetKind ?? "provider-executor",
-        binding: executor.binding,
-        ...(executor.actionId ? { actionId: executor.actionId } : {}),
-        kind: executor.kind,
-        projectId: executor.projectId,
-        ...(executor.nodeId ? { nodeId: executor.nodeId } : {}),
-        assetInputs: executor.assetInputs ?? [],
-        ...(executor.delivery ? { delivery: executor.delivery } : {}),
-        ...(executor.provider ? { provider: executor.provider } : {}),
-        ...(executor.modelEndpoint
-          ? { modelEndpoint: executor.modelEndpoint }
-          : {}),
-        ...(executor.nodeProjectionRevisionId
-          ? { nodeProjectionRevisionId: executor.nodeProjectionRevisionId }
-          : {}),
-        input: semanticInput,
-      }),
-    )
-    .digest("hex");
-  return `sha256:${digest}`;
-}
-
-function durableProviderIdentity(input: {
-  projectId: string;
-  nodeId: string;
-  kind: ProcessableNodeKind;
-  actionRevisionId: string;
-}): { actionRunId: string; outputSlot: string } {
-  return {
-    actionRunId:
-      `project:${input.projectId}:node:${input.nodeId}:revision:` +
-      input.actionRevisionId.slice("sha256:".length),
-    outputSlot: input.kind === "text" ? "text" : "media",
-  };
 }
 
 function durableActionOwner(
@@ -649,14 +421,6 @@ export function durationFromData(
   const requested = numberParam(data, "duration");
   if (requested !== undefined) return Math.max(1, Math.min(30, requested));
   return card ? cardDurationFallback(card) : undefined;
-}
-
-function stringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter(
-        (item): item is string => typeof item === "string" && item.length > 0,
-      )
-    : [];
 }
 
 function assetReference(
@@ -855,44 +619,6 @@ async function recordGeneratedTextRevision(options: {
     mutation,
   });
   return revision;
-}
-
-function pendingCustomNode(node: Record<string, any>): {
-  actionId: string;
-  outputType: ProcessableKind | "text";
-} | null {
-  const data = node.data;
-  if (!data || typeof data !== "object") return null;
-  if (
-    typeof data.actionType !== "string" ||
-    !data.actionType.startsWith("custom:")
-  )
-    return null;
-  if (data.status !== "pending" && data.status !== "generating") return null;
-  if (data.pendingTask) return null;
-  const actionId =
-    typeof data.customActionId === "string" && data.customActionId
-      ? data.customActionId
-      : data.actionType.slice("custom:".length);
-  const outputType =
-    data.outputType === "video" ||
-    data.outputType === "audio" ||
-    data.outputType === "text"
-      ? data.outputType
-      : "image";
-  return { actionId, outputType };
-}
-
-function customActionPromptFromData(data: Record<string, unknown>): string {
-  return extractPromptText(
-    parsePromptParts(
-      typeof data.prompt === "string"
-        ? data.prompt
-        : typeof data.content === "string"
-          ? data.content
-          : "",
-    ),
-  );
 }
 
 function pendingKindForNode(
@@ -1139,6 +865,7 @@ export function createLocalWorkflowProcessor(
         ? await options.modelCards()
         : MODEL_CARDS;
       let changed = await projectAssets.materializeDoc(projectId, doc);
+      const resolveCanvasMention = canvasMentionResolver(nodes);
       const nodeProjectionRevisionId = (
         nodeId: string,
         kind: ProcessableNodeKind,
@@ -1153,21 +880,7 @@ export function createLocalWorkflowProcessor(
           nodeData,
           ...(targetKind === undefined ? {} : { targetKind }),
           ...(executionPrompt === undefined ? {} : { executionPrompt }),
-          resolveMention(mentionedNodeId) {
-            const referencedNode = nodes.get(mentionedNodeId) as
-              Record<string, any> | undefined;
-            const assetId =
-              typeof referencedNode?.data?.assetId === "string"
-                ? referencedNode.data.assetId
-                : undefined;
-            const modality = referencedNode?.type;
-            return assetId &&
-              (modality === "image" ||
-                modality === "video" ||
-                modality === "audio")
-              ? { assetId, kind: modality }
-              : undefined;
-          },
+          resolveMention: resolveCanvasMention,
         });
       // Terminal tasks no longer invoke publication when replayed. Restore the
       // Canvas view from the public Run/Commit, guarded by the frozen request,
@@ -1225,7 +938,7 @@ export function createLocalWorkflowProcessor(
         }).some((binding) => binding.direction === "input");
         const retired = replaceDraftActionAssetInputBindings(doc, `node:${frozen.nodeId}`, []);
         if (!retired.ok) throw new Error(retired.error);
-        const dataChanged = canonicalJson(data) !== canonicalJson(target.data);
+        const dataChanged = canonicalRevisionJson(data) !== canonicalRevisionJson(target.data);
         if (!dataChanged && !hadLegacyInputs) return;
         if (dataChanged) nodes.set(frozen.nodeId, { ...target, data });
         changed = true;
@@ -2219,7 +1932,7 @@ export function createLocalWorkflowProcessor(
           typeof node.data?.actionRunId === "string" &&
           typeof node.data?.generatorOutputSlot === "string"
         ) continue;
-        const custom = pendingCustomNode(node);
+        const custom = pendingCustomActionNode(node);
         if (custom) {
           const data = node.data as Record<string, unknown>;
           const parsedBinding = ExecutablePluginBindingSchema.safeParse(
@@ -2232,76 +1945,20 @@ export function createLocalWorkflowProcessor(
             durableJournal
           ) {
             try {
-              // One reference slot per `MEDIA_REFERENCE_FIELDS` registry
-              // entry (image / video / audio / model today) so a new
-              // modality only needs a registry entry, not a new branch here.
-              const references = MEDIA_REFERENCE_FIELDS.flatMap((field) =>
-                stringList(data[field.pendingField]).map((assetId, index) => ({
-                  slot: field.modality,
-                  index,
-                  asset: {
-                    assetId,
-                    uri: `clash-asset://${assetId}`,
-                    kind: field.modality,
-                  },
-                })),
-              );
-              const prompt = customActionPromptFromData(data);
-              const params =
-                data.customActionParams &&
-                typeof data.customActionParams === "object" &&
-                !Array.isArray(data.customActionParams)
-                  ? (data.customActionParams as Record<string, any>)
-                  : {};
-              const outputSlot =
-                custom.outputType === "text" ? "text" : "media";
-              const actor =
-                data.actorType === "agent"
-                  ? {
-                      kind: "agent" as const,
-                      ...(typeof data.actorAgentId === "string"
-                        ? { id: data.actorAgentId }
-                        : {}),
-                    }
-                  : {
-                      kind: "user" as const,
-                      ...(typeof data.actorUserId === "string"
-                        ? { id: data.actorUserId }
-                        : {}),
-                    };
-              const projectionRevisionId = nodeProjectionRevisionId(
-                nodeId,
-                custom.outputType,
-                data,
+              const {
                 prompt,
-                "action",
-              );
-              const executorCandidate = {
-                targetKind: "action" as const,
-                binding: parsedBinding.data,
-                actionId: custom.actionId,
+                params,
                 actor,
-                kind: custom.outputType,
+                projectionRevisionId,
+                identity,
+                executor,
+              } = freezeCanvasCustomAction({
                 projectId,
                 nodeId,
-                provider: `plugin:${parsedBinding.data.pluginId}`,
-                modelEndpoint: custom.actionId,
-                nodeProjectionRevisionId: projectionRevisionId,
-                input: {
-                  values: { prompt, ...params },
-                  references,
-                },
-              } satisfies Omit<
-                FrozenLocalProviderExecutorInput,
-                "schemaVersion"
-              >;
-              const actionRevisionId =
-                canvasExecutorActionRevisionId(executorCandidate);
-              const identity = durableProviderIdentity({
-                projectId,
-                nodeId,
-                kind: custom.outputType,
-                actionRevisionId,
+                data,
+                binding: parsedBinding.data,
+                custom,
+                resolveMention: resolveCanvasMention,
               });
               if (
                 await resumeCanvasDurableRun({
@@ -2370,7 +2027,7 @@ export function createLocalWorkflowProcessor(
                   const sources = [...new Set(canvas.listEdges().filter((edge) => edge.target === nodeId)
                     .map((edge) => edge.source).filter((sourceId) => canvas.readNode(sourceId)?.type === "action-badge"))];
                   if (sources.length > 1) throw new Error("Canvas output has multiple source Actions; its Generator owner is ambiguous.");
-                  const revisionDigest = createHash("sha256").update(canonicalJson({
+                  const revisionDigest = createHash("sha256").update(canonicalRevisionJson({
                     definitionRef: { pluginId: definition.pluginId, definitionId: definition.definitionId,
                       version: definition.version, schemaHash: definition.schemaHash }, ...revisionInput,
                   })).digest("hex");
@@ -2412,13 +2069,7 @@ export function createLocalWorkflowProcessor(
                 type: "create",
                 ...identity,
                 deadlineAt: createdAt + generationDeadlineMs,
-                executor: {
-                  ...executorCandidate,
-                  publicOwner: {
-                    actionId: custom.actionId,
-                    actionRevisionId,
-                  },
-                },
+                executor,
               });
               await ensureDurableInputBindings(identity);
               nodes.set(nodeId, {
@@ -2689,7 +2340,7 @@ export function createLocalWorkflowProcessor(
           const modelCard = modelCards.find(
             (card) => card.id === normalizedModel,
           );
-          const effectiveModelParams = modelParams(data);
+          const effectiveModelParams = nodeModelParams(data);
           const isStartEnd = !!modelCard?.input.inputMode.startEnd;
           // One asset-id bucket per `MEDIA_REFERENCE_FIELDS` registry entry
           // (image / video / audio / model today) so a new reference
@@ -2926,7 +2577,7 @@ export function createLocalWorkflowProcessor(
                 .map((edge) => edge.source).filter((sourceId) => canvas.readNode(sourceId)?.type === "action-badge"))];
               if (sources.length > 1) throw new Error("Canvas Model output has multiple source Actions; its Generator owner is ambiguous.");
               const sourceId = sources[0] ?? nodeId;
-              const revisionDigest = createHash("sha256").update(canonicalJson({
+              const revisionDigest = createHash("sha256").update(canonicalRevisionJson({
                 definitionRef: { pluginId: definition.pluginId, definitionId: definition.definitionId,
                   version: definition.version, schemaHash: definition.schemaHash },
                 ...revisionInput,
@@ -3006,12 +2657,12 @@ export function createLocalWorkflowProcessor(
                 assetInputs: plan.assetInputs,
                 input: plan.input as FrozenLocalProviderExecutorInput["input"],
               };
-              const actionRevisionId = canvasExecutorActionRevisionId(executor);
+              const actionRevisionId = executableRevisionId(executor);
               executor.publicOwner = {
                 actionId: `node:${nodeId}`,
                 actionRevisionId,
               };
-              const durableIdentity = durableProviderIdentity({
+              const durableIdentity = durableExecutorIdentity({
                 projectId,
                 nodeId,
                 kind,
@@ -3082,14 +2733,14 @@ export function createLocalWorkflowProcessor(
               references,
             },
           };
-          const actionRevisionId = canvasExecutorActionRevisionId(
+          const actionRevisionId = executableRevisionId(
             localExecutorCandidate,
           );
           localExecutorCandidate.publicOwner = {
             actionId: `node:${nodeId}`,
             actionRevisionId,
           };
-          const durableIdentity = durableProviderIdentity({
+          const durableIdentity = durableExecutorIdentity({
             projectId,
             nodeId,
             kind,

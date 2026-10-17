@@ -8,17 +8,23 @@
     "output.ts": "R2 immutable byte/receipt CAS scoped by Project and shared run/slot identity. Primary media and optional provider covers have separate verified receipts.",
     "publication.ts": "Owner and task/output checks, immutable legacy D1 Asset preparation, detached shared Canvas operation; ProjectRoom acknowledges durable append before asset_ref visibility.",
     "status.ts": "Journal-backed public task status overrides legacy Asset-row hints, including text success and obsolete-target failure.",
-    "recovery.ts": "Scheduled recovery of due journal runs using the existing Workflow ID; runtime admission remains authoritative before any provider submission.",
+    "recovery.ts": "Cron recovery across the exported owner list; due rows are re-scheduled by frozen identity only.",
     "registry.ts": "Supported hosted wire adapters; native switches stay first, then an explicit Worker-safe plugin allowlist routes provider-executor plugins through the shared PluginExecutionPort.",
     "adapters": "Provider translation only. Async services return opaque tokens and never own scheduling.",
     "params.ts": "Compatibility type re-export of shared-runtime generation-params.",
     "plugin-provider-adapter.ts": "Plugin-owned provider routes: builds the same frozen provider values as the Node adapter, binds credentials from the selected hosted account, and calls the in-process PluginExecutionPort.",
-    "plugin-execution": "Dynamically imported Cloudflare composition root for first-party in-process plugin modules, their ExecutorContext, and durable invocation replay. Never in Worker startup."
+    "plugin-execution": "Dynamically imported Cloudflare composition root for first-party in-process plugin modules, their ExecutorContext, and durable invocation replay. Never in Worker startup.",
+    "executable-admission.ts": "Canvas custom Action admission: validates the node's frozen pluginBinding, fails plugin_unavailable without a row, claims the node, journals under api-cf:executable, then schedules the existing GenerationWorkflow.",
+    "executable-runtime.ts": "Cloudflare composition root for executable Actions: shared DurableRunEngine coordinator, PluginExecutionPort provider, R2 stage and ProjectRoom publication.",
+    "executable-binding.ts": "Resolve a frozen binding to code-registered first-party execution or the user's per-plugin remote endpoint; first-party ids never use the remote path.",
+    "executable-action-params.ts": "Hosted admission/publication view of one frozen executable Action run.",
+    "project-owner.ts": "Accountable Project owner lookup used by remote settings and Asset publication."
   },
   "compatibility": [
     "Live GenerationWorkflow uses shared graph and D1/R2 ports while retaining legacy task IDs and D1 Asset/node publication; this is not native Generator Output Commit migration.",
     "Pre-migration Workflow payloads without a durable identity require owner reconciliation; they are never blindly resubmitted.",
     "Hook completion markers prevent ordinary replay, not exactly-once external billing. Billing integrations must deduplicate by taskId.",
-    "Provider failure values use the portable action-sdk/executable-failure subpath. Unit-test aliases resolve both SDK root and subpaths to one source implementation, preserving instanceof across adapters and runtime."
+    "Provider failure values use the portable action-sdk/executable-failure subpath. Unit-test aliases resolve both SDK root and subpaths to one source implementation, preserving instanceof across adapters and runtime.",
+    "Executable Action runs share the hosted D1 journal, GenerationWorkflow, R2 broker and ProjectRoom publication; they live under owner api-cf:executable."
   ]
 }

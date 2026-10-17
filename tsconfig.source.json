@@ -165,6 +165,12 @@
       "@clash/shared-runtime/executable-run": [
         "packages/shared-runtime/src/executable-run.ts"
       ],
+      "@clash/shared-runtime/canvas-executable-node": [
+        "packages/shared-runtime/src/canvas-executable-node.ts"
+      ],
+      "@clash/shared-runtime/executable-plugin-remote": [
+        "packages/shared-runtime/src/executable-plugin-remote.ts"
+      ],
       "@clash/shared-runtime/project-host-client": [
         "packages/shared-runtime/src/project-host-client.ts"
       ],

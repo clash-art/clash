@@ -16,6 +16,7 @@ import {
 import {
   ExecutablePluginBindingSchema,
   GeneratorActionOutputContractSchema,
+  ExecutablePluginInvocationSchema,
   ExecutablePluginJsonValueSchema,
   ExecutablePluginOutputSchema,
   ExecutablePluginReferenceSchema,
@@ -34,15 +35,14 @@ import {
 } from "@clash/shared-types";
 import {
   durableRunIdempotencyKey,
+  type DurableProviderExecutor,
   type DurableProviderStep,
   type DurableRunRecord,
 } from "./durable-run-engine.js";
+import { sha256Hex } from "./sha256-hex.js";
 
 export type FrozenExecutableTargetKind =
-  | "provider-executor"
-  | "action"
-  | "generator-action"
-  | "local-executor";
+  "provider-executor" | "action" | "generator-action" | "local-executor";
 
 type ProviderKind = "image" | "video" | "audio" | "text" | "model";
 
@@ -89,6 +89,11 @@ export interface FrozenExecutableInput {
   pluginOutputSlot?: string;
   /** Frozen optimistic guard for projecting this immutable run onto a mutable Canvas node. */
   nodeProjectionRevisionId?: string;
+  /**
+   * The plugin declares upstream deduplication of a repeated submit with the
+   * same `invocationId`, so an ambiguous submit may be retried.
+   */
+  idempotentSubmit?: boolean;
   accountId?: string;
   kind: ProviderKind;
   projectId: string;
@@ -188,6 +193,7 @@ function parseFrozenExecutorInputUnchecked(
   const publicOwner = json.publicOwner;
   const pluginOutputSlot = json.pluginOutputSlot;
   const nodeProjectionRevisionId = json.nodeProjectionRevisionId;
+  const idempotentSubmit = json.idempotentSubmit;
   const assetInputs =
     json.assetInputs === undefined
       ? []
@@ -216,20 +222,24 @@ function parseFrozenExecutorInputUnchecked(
     // Prompt requirements belong to the Model Card. Delivery records preserve
     // provenance verbatim, including an empty prompt for reference-only models.
     if (delivery.prompt !== undefined && typeof delivery.prompt !== "string") {
-      throw new FrozenExecutorInputError("Frozen Provider executor delivery.prompt must be a string.");
+      throw new FrozenExecutorInputError(
+        "Frozen Provider executor delivery.prompt must be a string.",
+      );
     }
     parsedDelivery = {
       kind: "project-asset",
       actionId: nonEmptyString(delivery.actionId, "delivery.actionId"),
       name: nonEmptyString(delivery.name, "delivery.name"),
-      ...(delivery.prompt === undefined
-        ? {}
-        : { prompt: delivery.prompt }),
+      ...(delivery.prompt === undefined ? {} : { prompt: delivery.prompt }),
     };
   }
   // Native Generator delivery owns the Asset; a Canvas node is only an
   // optional guarded projection of that same output, not a second destination.
-  if (nodeId !== undefined && parsedDelivery && targetKind !== "generator-action") {
+  if (
+    nodeId !== undefined &&
+    parsedDelivery &&
+    targetKind !== "generator-action"
+  ) {
     throw new FrozenExecutorInputError(
       "Frozen Provider executor cannot target both a Canvas node and a direct Project Asset delivery.",
     );
@@ -313,11 +323,17 @@ function parseFrozenExecutorInputUnchecked(
   const providerExecution =
     json.providerExecution === undefined
       ? undefined
-      : parseGeneratorProviderExecution(json.providerExecution, json.projectId, json.kind);
+      : parseGeneratorProviderExecution(
+          json.providerExecution,
+          json.projectId,
+          json.kind,
+        );
   if (
     providerExecution &&
     (targetKind !== "generator-action" ||
-      parsedGeneratorOutputContract?.some((port) => !isModelGenerationOutputType(port.assetType)))
+      parsedGeneratorOutputContract?.some(
+        (port) => !isModelGenerationOutputType(port.assetType),
+      ))
   ) {
     throw new FrozenExecutorInputError(
       "A frozen Generator Provider route requires a native media or plain-text Document output contract.",
@@ -365,6 +381,7 @@ function parseFrozenExecutorInputUnchecked(
             "nodeProjectionRevisionId",
           ),
         }),
+    ...(idempotentSubmit === true ? { idempotentSubmit: true } : {}),
     ...(accountId === undefined
       ? {}
       : { accountId: nonEmptyString(accountId, "accountId") }),
@@ -396,7 +413,9 @@ function parseGeneratorProviderExecution(
   kind: ExecutablePluginJsonValue,
 ): FrozenGeneratorProviderExecution {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new FrozenExecutorInputError("Frozen Generator Provider execution must be an object.");
+    throw new FrozenExecutorInputError(
+      "Frozen Generator Provider execution must be an object.",
+    );
   }
   // Reuse the Provider boundary's leaf validators. Do not compose schemas from
   // different Zod installations: structural comparison expands recursive JSON types.
@@ -408,7 +427,9 @@ function parseGeneratorProviderExecution(
     kind,
     binding: value.binding,
     ...(value.accountId === undefined ? {} : { accountId: value.accountId }),
-    ...(value.assetInputs === undefined ? {} : { assetInputs: value.assetInputs }),
+    ...(value.assetInputs === undefined
+      ? {}
+      : { assetInputs: value.assetInputs }),
     input: value.input,
   });
   return {
@@ -458,7 +479,8 @@ export type ProviderPluginFailure = Extract<
 >["error"];
 
 /** Provider outputs include 3D Project Assets even though the generic AIGC card catalog does not. */
-export type ProviderPluginExecutorKind = ModelKind | Extract<AssetKind, "model">;
+export type ProviderPluginExecutorKind =
+  ModelKind | Extract<AssetKind, "model">;
 
 export interface ProviderPluginExecutorRequest {
   pluginId: string;
@@ -608,15 +630,24 @@ function providerStepFromResponse(
     const port = target.generatorOutputContract?.find(
       (candidate) => candidate.slot === run.outputSlot,
     );
-    const normalized = target.kind === "text" && port?.assetType.kind === "document" &&
+    const normalized =
+      target.kind === "text" &&
+      port?.assetType.kind === "document" &&
       port.assetType.documentKind === MODEL_TEXT_DOCUMENT_KIND &&
       port.assetType.schemaVersion === MODEL_TEXT_DOCUMENT_SCHEMA_VERSION &&
-      output.kind === "value" && typeof output.value === "string"
-      ? { slot: run.outputSlot, kind: "document" as const, document: {
-          documentKind: MODEL_TEXT_DOCUMENT_KIND, schemaVersion: MODEL_TEXT_DOCUMENT_SCHEMA_VERSION, body: output.value,
-        } }
-      : output;
-    return generatorActionStep(run, {
+      output.kind === "value" &&
+      typeof output.value === "string"
+        ? {
+            slot: run.outputSlot,
+            kind: "document" as const,
+            document: {
+              documentKind: MODEL_TEXT_DOCUMENT_KIND,
+              schemaVersion: MODEL_TEXT_DOCUMENT_SCHEMA_VERSION,
+              body: output.value,
+            },
+          }
+        : output;
+    return executableGeneratorActionStep(run, {
       protocol: "clash.plugin.result/v1",
       invocationId: durableRunIdempotencyKey(run),
       status: "completed",
@@ -677,9 +708,7 @@ export function providerPluginResponseFromResult(
         : { retryAfterMs: result.retryAfterMs }),
     };
   }
-  const textOutputs = result.outputs.filter(
-    (output) => output.slot === "text",
-  );
+  const textOutputs = result.outputs.filter((output) => output.slot === "text");
   if (textOutputs.length > 1) {
     throw new Error(
       `Provider plugin ${binding.pluginId}/${binding.exportId} returned ${textOutputs.length} outputs for slot "text"; expected one.`,
@@ -772,7 +801,7 @@ export function pluginOutputSlotsForDurableRun(
   return [frozen.kind, "media"];
 }
 
-export function generatorActionStep(
+export function executableGeneratorActionStep(
   run: DurableRunRecord,
   result: ExecutablePluginResult,
 ): DurableProviderStep {
@@ -864,12 +893,21 @@ export function generatorActionStep(
   }
   if (output.kind === "document") {
     try {
-      parseDocumentBody(output.document.documentKind, output.document.schemaVersion, output.document.body);
+      parseDocumentBody(
+        output.document.documentKind,
+        output.document.schemaVersion,
+        output.document.body,
+      );
     } catch (error) {
-      return { status: "failed", error: {
-        code: "contract_violation", message: error instanceof Error ? error.message : String(error),
-        retryable: false, requestState: "accepted",
-      } };
+      return {
+        status: "failed",
+        error: {
+          code: "contract_violation",
+          message: error instanceof Error ? error.message : String(error),
+          retryable: false,
+          requestState: "accepted",
+        },
+      };
     }
   }
   return { status: "completed", outputs: [output] };
@@ -897,6 +935,416 @@ export function executableProviderRequest(
     assetInputs: execution.assetInputs ?? [],
     input: execution.input,
     ...(pollState === undefined ? {} : { pollState }),
+  };
+}
+
+/** Host-owned request for one executable Action invocation. Moved from the Local adapter. */
+export interface ExecutablePluginActionRequest {
+  binding: ExecutablePluginBinding;
+  /** `durableRunIdempotencyKey(run)`: identical on every attempt of one frozen run. */
+  invocationId: string;
+  taskId: string;
+  /** Durable output slot paired with `taskId` in the owner journal. */
+  outputSlot?: string;
+  projectId: string;
+  nodeId?: string;
+  input: {
+    values: Record<string, ExecutablePluginJsonValue>;
+    references: ExecutablePluginReference[];
+  };
+  actor: ExecutablePluginInvocation["actor"];
+  /** Generator Actions may be durable; legacy Actions always omit this and submit once. */
+  operation?: "submit" | "poll";
+  /** Opaque state returned by an accepted Generator Action invocation. */
+  pollState?: ExecutablePluginJsonValue;
+  /** Host-owned remaining durable attempt budget. */
+  timeoutMs?: number;
+}
+
+export type ExecutablePluginActionInvoker = (
+  request: ExecutablePluginActionRequest,
+) => Promise<ExecutablePluginResult>;
+
+/** The one `clash.plugin.invoke/v1` envelope every Action binding receives. */
+export function executablePluginActionInvocation(
+  request: ExecutablePluginActionRequest,
+): ExecutablePluginInvocation {
+  const binding = ExecutablePluginBindingSchema.parse(request.binding);
+  return ExecutablePluginInvocationSchema.parse({
+    protocol: "clash.plugin.invoke/v1",
+    invocationId: request.invocationId,
+    taskId: request.taskId,
+    projectId: request.projectId,
+    ...(request.nodeId ? { nodeId: request.nodeId } : {}),
+    target: { ...binding, kind: "action" },
+    input: request.input,
+    actor: request.actor,
+    ...(request.operation === undefined
+      ? {}
+      : { operation: request.operation }),
+    ...(request.pollState === undefined
+      ? {}
+      : { pollState: request.pollState }),
+  });
+}
+
+export function executableActionRequest(
+  run: DurableRunRecord,
+  now: number,
+  operation: "submit" | "poll" = "submit",
+  pollState?: ExecutablePluginJsonValue,
+): ExecutablePluginActionRequest {
+  const frozen = parseFrozenExecutableInput(run.executorInput);
+  if (
+    (frozen.targetKind !== "action" &&
+      frozen.targetKind !== "generator-action" &&
+      frozen.targetKind !== "local-executor") ||
+    !frozen.actor
+  ) {
+    throw new FrozenExecutorInputError(
+      "A custom Action request requires a frozen Action target and actor.",
+    );
+  }
+  return {
+    binding: frozen.binding,
+    invocationId: durableRunIdempotencyKey(run),
+    taskId: run.actionRunId,
+    outputSlot: run.outputSlot,
+    projectId: frozen.projectId,
+    ...(frozen.nodeId ? { nodeId: frozen.nodeId } : {}),
+    input: frozen.input,
+    actor: frozen.actor,
+    operation,
+    ...(pollState === undefined ? {} : { pollState }),
+    timeoutMs: remainingAttemptTimeoutMs(run, now),
+  };
+}
+
+function customActionText(value: ExecutablePluginJsonValue): string {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (typeof value.text === "string") return value.text;
+    if (typeof value.content === "string") return value.content;
+  }
+  return JSON.stringify(value);
+}
+
+/** Validate one legacy custom Action result against its frozen kind and plugin output slot. */
+export function executableActionStep(
+  run: DurableRunRecord,
+  result: ExecutablePluginResult,
+): DurableProviderStep {
+  const frozen = parseFrozenExecutableInput(run.executorInput);
+  if (result.status === "failed") {
+    return { status: "failed", error: result.error };
+  }
+  if (result.status === "accepted") {
+    return {
+      status: "failed",
+      error: {
+        code: "contract_violation",
+        message:
+          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} accepted work, ` +
+          "but custom Actions do not declare a poll operation.",
+        retryable: false,
+        requestState: "accepted",
+      },
+    };
+  }
+  if (result.outputs.length !== 1) {
+    return {
+      status: "failed",
+      error: {
+        code: "contract_violation",
+        message:
+          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
+          `${result.outputs.length} outputs for one legacy Action output; expected exactly one.`,
+        retryable: false,
+        requestState: "accepted",
+      },
+    };
+  }
+
+  const output = result.outputs[0]!;
+  const expectedSlots = pluginOutputSlotsForDurableRun(frozen, run.outputSlot);
+  if (!expectedSlots.includes(output.slot)) {
+    return {
+      status: "failed",
+      error: {
+        code: "contract_violation",
+        message:
+          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
+          `output slot ${output.slot}; expected ${expectedSlots.join(" or ")}.`,
+        retryable: false,
+        requestState: "accepted",
+      },
+    };
+  }
+  if (frozen.kind === "text") {
+    if (output.kind !== "value") {
+      return {
+        status: "failed",
+        error: {
+          code: "contract_violation",
+          message:
+            `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
+            `${output.kind} output for a text Action; expected value.`,
+          retryable: false,
+          requestState: "accepted",
+        },
+      };
+    }
+    return {
+      status: "completed",
+      outputs: [
+        {
+          slot: run.outputSlot,
+          kind: "value",
+          value:
+            frozen.targetKind === "local-executor"
+              ? output.value
+              : customActionText(output.value),
+        },
+      ],
+    };
+  }
+  if (output.kind !== "asset") {
+    return {
+      status: "failed",
+      error: {
+        code: "contract_violation",
+        message:
+          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
+          `${output.kind} output for a ${frozen.kind} Action; expected asset.`,
+        retryable: false,
+        requestState: "accepted",
+      },
+    };
+  }
+  if (output.asset.kind !== frozen.kind) {
+    return {
+      status: "failed",
+      error: {
+        code: "contract_violation",
+        message:
+          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
+          `${output.asset.kind} for a ${frozen.kind} Action.`,
+        retryable: false,
+        requestState: "accepted",
+      },
+    };
+  }
+  return {
+    status: "completed",
+    outputs: [{ ...output, slot: run.outputSlot }],
+  };
+}
+
+export interface ExecutableRunProviderOptions {
+  now(): number;
+  /** Executable plugin Actions and native Generator Actions. */
+  action?: ExecutablePluginActionInvoker;
+  /** Host-local work still enters the same Durable Run graph; this is its submit adapter. */
+  localExecutor?: ExecutablePluginActionInvoker;
+  /** Provider-executor plugin routes. */
+  provider?: ProviderPluginExecutor;
+  /** The realm's error for a runtime this deployment cannot reach. */
+  unavailable(message: string): Error;
+}
+
+/**
+ * The one submit/poll dispatch for frozen executable runs, by `targetKind`.
+ * Each adapter supplies only the invokers it can bind; the step mapping and
+ * the poll rules are identical in every realm.
+ */
+export function createExecutableRunProvider(
+  options: ExecutableRunProviderOptions,
+): DurableProviderExecutor {
+  const action = (message: string) => {
+    if (!options.action) throw options.unavailable(message);
+    return options.action;
+  };
+  const provider = () => {
+    if (!options.provider) {
+      throw options.unavailable("Provider executor runtime is unavailable.");
+    }
+    return options.provider;
+  };
+  return {
+    async submit({ run, idempotencyKey }) {
+      const frozen = parseFrozenExecutableInput(run.executorInput);
+      if (frozen.targetKind === "local-executor") {
+        if (!options.localExecutor) {
+          throw options.unavailable(
+            "Host-local durable executor is unavailable.",
+          );
+        }
+        return executableActionStep(
+          run,
+          await options.localExecutor(
+            executableActionRequest(run, options.now()),
+          ),
+        );
+      }
+      if (frozen.targetKind === "action") {
+        return executableActionStep(
+          run,
+          await action("Executable plugin Action runtime is unavailable.")(
+            executableActionRequest(run, options.now()),
+          ),
+        );
+      }
+      if (
+        frozen.targetKind === "generator-action" &&
+        !frozen.providerExecution
+      ) {
+        return executableGeneratorActionStep(
+          run,
+          await action("Executable Generator Action runtime is unavailable.")(
+            executableActionRequest(run, options.now(), "submit"),
+          ),
+        );
+      }
+      return executableProviderStep(
+        run,
+        await provider()(
+          executableProviderRequest(run, idempotencyKey, options.now()),
+        ),
+      );
+    },
+    async poll({ run, pollState }) {
+      const frozen = parseFrozenExecutableInput(run.executorInput);
+      if (
+        frozen.targetKind === "generator-action" &&
+        !frozen.providerExecution
+      ) {
+        return executableGeneratorActionStep(
+          run,
+          await action("Executable Generator Action runtime is unavailable.")(
+            executableActionRequest(run, options.now(), "poll", pollState),
+          ),
+        );
+      }
+      if (
+        frozen.targetKind === "action" ||
+        frozen.targetKind === "local-executor"
+      ) {
+        return {
+          status: "failed",
+          error: {
+            code: "contract_violation",
+            message: "Custom Actions do not support durable polling.",
+            retryable: false,
+            requestState: "accepted",
+          },
+        };
+      }
+      return executableProviderStep(
+        run,
+        await provider()(
+          executableProviderRequest(
+            run,
+            durableRunIdempotencyKey(run),
+            options.now(),
+            pollState,
+          ),
+        ),
+      );
+    },
+  };
+}
+
+/** Key-sorted JSON text hashed into every frozen revision; moved verbatim from the Local adapter. */
+export function canonicalRevisionJson(value: unknown): string {
+  const serialized = JSON.stringify(value, (_key, entry: unknown) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return entry;
+    }
+    const record = entry as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, record[key]]),
+    );
+  });
+  if (serialized === undefined) {
+    throw new TypeError("Action revision input must be JSON-serializable.");
+  }
+  return serialized;
+}
+
+/**
+ * The frozen execution revision of one Canvas run. Host-private account
+ * selection, actor attribution and publication ownership do not participate.
+ */
+export function executableRevisionId(
+  executor: Omit<FrozenExecutableInput, "schemaVersion">,
+): `sha256:${string}` {
+  let semanticInput = executor.input;
+  if (
+    executor.targetKind === "local-executor" &&
+    executor.input.values.localExecutor === "generation"
+  ) {
+    const generationInput = executor.input.values.generationInput;
+    if (
+      generationInput &&
+      typeof generationInput === "object" &&
+      !Array.isArray(generationInput)
+    ) {
+      const {
+        taskId: _taskId,
+        projectId: _projectId,
+        nodeId: _nodeId,
+        actorType: _actorType,
+        actorUserId: _actorUserId,
+        actorAgentId: _actorAgentId,
+        providerAccountId: _providerAccountId,
+        ...semanticGenerationInput
+      } = generationInput;
+      semanticInput = {
+        ...executor.input,
+        values: {
+          ...executor.input.values,
+          generationInput: semanticGenerationInput,
+        },
+      };
+    }
+  }
+  return `sha256:${sha256Hex(
+    canonicalRevisionJson({
+      schemaVersion: 1,
+      targetKind: executor.targetKind ?? "provider-executor",
+      binding: executor.binding,
+      ...(executor.actionId ? { actionId: executor.actionId } : {}),
+      kind: executor.kind,
+      projectId: executor.projectId,
+      ...(executor.nodeId ? { nodeId: executor.nodeId } : {}),
+      assetInputs: executor.assetInputs ?? [],
+      ...(executor.delivery ? { delivery: executor.delivery } : {}),
+      ...(executor.provider ? { provider: executor.provider } : {}),
+      ...(executor.modelEndpoint
+        ? { modelEndpoint: executor.modelEndpoint }
+        : {}),
+      ...(executor.nodeProjectionRevisionId
+        ? { nodeProjectionRevisionId: executor.nodeProjectionRevisionId }
+        : {}),
+      input: semanticInput,
+    }),
+  )}`;
+}
+
+/** Revision-scoped Canvas run identity: `project:<p>:node:<n>:revision:<hex>` + `text`/`media`. */
+export function durableExecutorIdentity(input: {
+  projectId: string;
+  nodeId: string;
+  kind: ProviderKind;
+  actionRevisionId: string;
+}): { actionRunId: string; outputSlot: string } {
+  return {
+    actionRunId:
+      `project:${input.projectId}:node:${input.nodeId}:revision:` +
+      input.actionRevisionId.slice("sha256:".length),
+    outputSlot: input.kind === "text" ? "text" : "media",
   };
 }
 
@@ -935,7 +1383,10 @@ function promptForRoute(
   const content = (input.references ?? [])
     .filter((reference) => reference.slot === "content")
     .sort((left, right) => left.index - right.index);
-  if (binding?.type !== "positional-tokens" || !content.some((part) => "asset" in part)) {
+  if (
+    binding?.type !== "positional-tokens" ||
+    !content.some((part) => "asset" in part)
+  ) {
     return input.prompt;
   }
   // Token numbers follow occurrences, not Asset identity. The same immutable Asset can be placed
@@ -946,7 +1397,11 @@ function promptForRoute(
       if ("text" in part) return part.text.value;
       if ("document" in part) return "";
       const modality = part.asset.kind;
-      if (modality !== "image" && modality !== "video" && modality !== "audio") {
+      if (
+        modality !== "image" &&
+        modality !== "video" &&
+        modality !== "audio"
+      ) {
         return "";
       }
       const template = binding.tokens?.[modality];
@@ -992,20 +1447,34 @@ export function providerPluginExecutorRequest(
   // adapter. Keep them out of Model Card validation and fail closed for another
   // executor, rather than silently ignoring the user's sampling/window settings.
   const video = input.video;
-  if (video && (input.kind !== "text" || route.executorPluginId !== "clash.google"
-    || route.executorExportId !== "google-execute")) {
-    throw new Error(`Provider executor ${route.executorPluginId}/${route.executorExportId} does not support media-analysis video controls.`);
+  if (
+    video &&
+    (input.kind !== "text" ||
+      route.executorPluginId !== "clash.google" ||
+      route.executorExportId !== "google-execute")
+  ) {
+    throw new Error(
+      `Provider executor ${route.executorPluginId}/${route.executorExportId} does not support media-analysis video controls.`,
+    );
   }
-  const remainingMs = input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
-  if (remainingMs !== undefined && (!Number.isFinite(remainingMs) || remainingMs <= 0)) {
-    throw new Error("Media generation Host deadline has elapsed before Provider dispatch.");
+  const remainingMs =
+    input.deadlineAt === undefined ? undefined : input.deadlineAt - Date.now();
+  if (
+    remainingMs !== undefined &&
+    (!Number.isFinite(remainingMs) || remainingMs <= 0)
+  ) {
+    throw new Error(
+      "Media generation Host deadline has elapsed before Provider dispatch.",
+    );
   }
   return {
     pluginId: route.executorPluginId,
     exportId: route.executorExportId,
     ...(route.accountId ? { accountId: route.accountId } : {}),
     kind: input.kind,
-    ...(remainingMs === undefined ? {} : { timeoutMs: Math.max(1, Math.ceil(remainingMs)) }),
+    ...(remainingMs === undefined
+      ? {}
+      : { timeoutMs: Math.max(1, Math.ceil(remainingMs)) }),
     taskId: input.taskId,
     projectId: input.projectId ?? "local",
     ...(input.nodeId ? { nodeId: input.nodeId } : {}),
@@ -1027,13 +1496,19 @@ export function providerPluginExecutorRequest(
         ...(input.duration !== undefined ? { duration: input.duration } : {}),
         modelParams: {
           ...providerVisibleModelParams(input.modelParams),
-          ...(video ? {
-            video_processing: video.processing,
-            video_fps: video.fps,
-            video_media_resolution: video.mediaResolution,
-            ...(video.startSeconds === undefined ? {} : { video_start_seconds: video.startSeconds }),
-            ...(video.endSeconds === undefined ? {} : { video_end_seconds: video.endSeconds }),
-          } : {}),
+          ...(video
+            ? {
+                video_processing: video.processing,
+                video_fps: video.fps,
+                video_media_resolution: video.mediaResolution,
+                ...(video.startSeconds === undefined
+                  ? {}
+                  : { video_start_seconds: video.startSeconds }),
+                ...(video.endSeconds === undefined
+                  ? {}
+                  : { video_end_seconds: video.endSeconds }),
+              }
+            : {}),
         },
       },
       references: [...(input.references ?? [])],

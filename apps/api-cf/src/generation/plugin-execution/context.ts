@@ -1,13 +1,12 @@
 import type { ExecutorContextOverrides } from "@clash/action-sdk/browser";
 import type {
   ExecutablePluginJsonValue,
-  ExecutablePluginOutput,
   ExecutablePluginReference,
 } from "@clash/shared-types/executable-plugin";
 import type { ModelUpstreamRoute } from "@clash/shared-types";
 import { getProviderCredentials } from "../../services/provider-accounts";
 import { createGenerationOutputBroker } from "../output";
-import { outputPersistenceFailure } from "../context";
+import { brokerUploadContext } from "./output-upload";
 import type { Env } from "../../config";
 import type { DurableRunRecord } from "@clash/shared-runtime/durable-run-engine";
 import type { GenerationParams } from "../params";
@@ -28,26 +27,6 @@ function hostedParams(run: Pick<DurableRunRecord, "executorInput">): GenerationP
     throw new Error("Hosted plugin execution requires frozen generation params.");
   }
   return input.params;
-}
-
-function assetKind(
-  kind: "image" | "video" | "audio" | "model",
-): "image" | "video" | "audio" {
-  if (kind === "model") {
-    throw new Error("Hosted plugin execution cannot stage a model output.");
-  }
-  return kind;
-}
-
-function base64Bytes(value: string): Uint8Array {
-  const binary = atob(value);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function defaultMediaType(kind: "image" | "video" | "audio"): string {
-  if (kind === "image") return "image/png";
-  if (kind === "video") return "video/mp4";
-  return "audio/mpeg";
 }
 
 export function createCloudExecutorContext(
@@ -82,46 +61,7 @@ export function createCloudExecutorContext(
   // A failed lookup must not become a rejected promise nobody observes.
   void credentials.catch(() => undefined);
 
-  async function upload(request: {
-    slot: string;
-    kind: "image" | "video" | "audio" | "model";
-    mediaType?: string;
-    bytes?: Uint8Array;
-    url?: string;
-  }): Promise<ExecutablePluginOutput> {
-    const kind = assetKind(request.kind);
-    if (!request.bytes && !request.url) {
-      throw new Error(
-        `Plugin upload for slot ${request.slot} carried neither bytes nor a URL.`,
-      );
-    }
-    try {
-      let bytes = request.bytes;
-      let mediaType = request.mediaType ?? defaultMediaType(kind);
-      if (!bytes) {
-        const response = await fetch(request.url!);
-        if (!response.ok) {
-          throw new Error(
-            `Provider output download failed: HTTP ${response.status}`,
-          );
-        }
-        mediaType =
-          request.mediaType ??
-          response.headers.get("content-type") ??
-          defaultMediaType(kind);
-        bytes = new Uint8Array(await response.arrayBuffer());
-      }
-      return {
-        slot: request.slot,
-        kind: "asset",
-        asset: await broker.store(bytes, mediaType, kind),
-      };
-    } catch (error) {
-      // Same classification as GenerationContext.uploadBytes/uploadFromUrl: the provider has
-      // already accepted the work, so this retries persistence and never resubmits.
-      throw outputPersistenceFailure(error);
-    }
-  }
+  const { upload, asset } = brokerUploadContext(broker, "Plugin");
 
   return {
     store: {
@@ -140,18 +80,7 @@ export function createCloudExecutorContext(
       },
     },
     upload,
-    async asset(request) {
-      const bytes = request.dataBase64
-        ? base64Bytes(request.dataBase64)
-        : undefined;
-      return upload({
-        slot: request.slot,
-        kind: request.kind,
-        ...(request.mediaType ? { mediaType: request.mediaType } : {}),
-        ...(bytes ? { bytes } : {}),
-        ...(request.url ? { url: request.url } : {}),
-      });
-    },
+    asset,
     async document(request) {
       return {
         slot: request.slot,
