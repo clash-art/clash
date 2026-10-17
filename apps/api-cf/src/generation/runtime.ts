@@ -7,18 +7,26 @@ import {
   createGenerationPipeline,
   enqueueGeneration,
   frozenGeneration as readFrozenGeneration,
+  GenerationPublicationConflict,
   HOSTED_GENERATION_OUTPUT_SLOT,
   type GenerationPipelinePorts,
 } from "@clash/shared-runtime/hosted-generation";
 import type { CloudDurableRunJournal } from "@clash/shared-runtime/cloud-run-coordinator";
 import type { ExecutablePluginJsonValue } from "@clash/shared-types/executable-plugin";
-import type { ModelUpstreamRoute } from "@clash/shared-types";
+import {
+  ProjectAssetPublicationMetadataSchema,
+  type ModelUpstreamRoute,
+} from "@clash/shared-types";
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
 import { HOSTED_GENERATION_OWNER } from "../cloud-runs/owners";
 import type { Env } from "../config";
 import { getPlugins } from "../plugins/registry";
 import type { Plugin } from "../plugins/types";
 import { probeAsset } from "../services/asset-probe";
+import {
+  readEffectiveTenant,
+  sealStagedResource,
+} from "../services/project-asset-resources";
 import { GenerationContext } from "./context";
 import { createGenerationOutputBroker } from "./output";
 import { resolveAdapter } from "./registry";
@@ -188,6 +196,36 @@ function cloudflarePorts(
         metadata?: Record<string, unknown>;
         cover?: import("@clash/shared-types/executable-plugin").ExecutablePluginAssetHandle;
       };
+      // A Timeline render becomes a Project Asset: seal its bytes as the
+      // tenant's Resource now, so every publication attempt imports one fact.
+      if (params.type === "video_render") {
+        const tenantId = await readEffectiveTenant(env, params.projectId);
+        if (!tenantId)
+          throw new GenerationPublicationConflict("Project not found");
+        const resource = await sealStagedResource(env, {
+          projectId: params.projectId,
+          tenantId,
+          stagedKey: receipt.storageKey,
+          kind: receipt.kind,
+          byteLength: receipt.byteLength,
+          contentType: receipt.mediaType,
+        });
+        const name = `${params.nodeId}.mp4`;
+        return json({
+          updates: { assetId: params.taskId },
+          render: {
+            resource,
+            name,
+            metadata: ProjectAssetPublicationMetadataSchema.parse({
+              ...projection.metadata,
+              bytes: receipt.byteLength,
+              contentType: receipt.mediaType,
+              originalName: name,
+            }),
+            createdAt: options.clock?.now() ?? Date.now(),
+          },
+        } satisfies HostedGenerationPublication);
+      }
       const cover = projection.cover
         ? await createGenerationOutputBroker(
             env.R2_BUCKET,
@@ -195,16 +233,13 @@ function cloudflarePorts(
             params.projectId,
           ).resolve(projection.cover)
         : undefined;
-      const probe =
-        params.type === "video_render"
-          ? { metadata: projection.metadata ?? {}, coverR2Key: undefined }
-          : await probeAsset(
-              env,
-              receipt.kind,
-              receipt.storageKey,
-              params.projectId,
-              { skipVideoCover: !!cover },
-            );
+      const probe = await probeAsset(
+        env,
+        receipt.kind,
+        receipt.storageKey,
+        params.projectId,
+        { skipVideoCover: !!cover },
+      );
       const durationMs =
         probe.metadata.durationMs ??
         projection.durationMs ??

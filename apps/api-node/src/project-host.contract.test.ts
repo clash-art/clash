@@ -31,6 +31,8 @@ describeProjectHostContract("api-node (Postgres + disk)", async () => {
     timeline: {
       definition: loadTimelineDefinition(),
       receiptSecret: "contract-receipt-secret",
+      // Admission only: the queued run is exercised in timeline-render.test.ts.
+      render: {},
     },
   });
   return {
@@ -44,6 +46,7 @@ describeProjectHostContract("api-node (Postgres + disk)", async () => {
         headers,
       });
     },
+    timelineRenderRunId: "derived-from-render-node",
     capabilities: {
       "catalog.generators": "supported",
       "catalog.views": "supported",
@@ -54,8 +57,7 @@ describeProjectHostContract("api-node (Postgres + disk)", async () => {
       "timeline.attach": "supported",
       "timeline.detach": "supported",
       "timeline.delete": "supported",
-      // No cloud render executor: the shared command answers 501.
-      "timeline.render": "unavailable",
+      "timeline.render": "supported",
       "assets.list": "supported",
       "assets.batch": "supported",
       "assets.get": "supported",

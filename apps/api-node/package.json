@@ -12,7 +12,7 @@
     "migrate": "node src/migrate.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit --project tsconfig.check.json",
-    "worker:outbox": "node --import ./src/telemetry-outbox.ts src/outbox-worker.ts",
+    "worker:outbox": "tsx --tsconfig tsconfig.check.json --import ./src/telemetry-outbox.ts src/outbox-worker.ts",
     "test:cluster": "node scripts/test-cluster.ts"
   },
   "dependencies": {

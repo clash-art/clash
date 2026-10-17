@@ -43,6 +43,9 @@ export function startServer(
       ? {
           definition: loadTimelineDefinition(),
           receiptSecret: env.BETTER_AUTH_SECRET,
+          // The outbox worker renders; this process admits renders and
+          // serves the signed media render-server fetches.
+          ...(config.renderServerUrl ? { render: {} } : {}),
         }
       : undefined,
   });

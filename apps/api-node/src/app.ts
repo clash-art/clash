@@ -7,6 +7,10 @@ import {
   type TimelineHostOptions,
 } from "./timeline-host.ts";
 import { createProjectRoutes } from "./projects.ts";
+import {
+  createSignedProjectMediaRoutes,
+  PROJECT_MEDIA_URL_PREFIX,
+} from "./project-media-url.ts";
 import { mountContentUpload } from "./content-upload.ts";
 import type { UploadServicePorts } from "@clash/asset-sdk/upload-service";
 import type { MetadataServicePorts } from "@clash/metadata-service";
@@ -114,6 +118,21 @@ export function createNodeCloudApp(options: {
         ? c.body(null, 204)
         : c.json({ error: "Token not found" }, 404);
     });
+  }
+  // render-server fetches Timeline media here with a signed, expiring URL
+  // instead of a session; outside /api, so the session/token middleware does
+  // not apply. Mounted only when this deployment renders.
+  if (options.timeline?.render) {
+    const clock = options.timeline.render.clock;
+    app.route(
+      PROJECT_MEDIA_URL_PREFIX,
+      createSignedProjectMediaRoutes({
+        db: options.db,
+        directory: options.assetDirectory ?? "data/assets",
+        secret: options.timeline.receiptSecret,
+        ...(clock ? { now: () => clock.now() } : {}),
+      }),
+    );
   }
   // Mounted before the generic /api auth + 8 MiB body limit: the upload
   // service authenticates itself and bounds bodies per part (8 MiB + control).

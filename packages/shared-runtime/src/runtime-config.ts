@@ -118,7 +118,9 @@ export function defaultRuntimeCapabilities(
       auth: { mode: "better-auth" },
       host: {
         // The hosted web composition root binds the browser render adapter,
-        // which falls back to the Cloudflare adapter's RENDER_CONTAINER path.
+        // which falls back to the server render path: Cloudflare's
+        // RENDER_CONTAINER pipeline, or Node's render queue when it has
+        // RENDER_SERVER_URL (otherwise Node answers 501).
         timelineRender: "available",
         // Served by the shared text-revisions module (Cloudflare adapter:
         // D1 + R2; Node adapter: Postgres + disk).

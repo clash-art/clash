@@ -9,12 +9,18 @@ import {
   type CreateAssetParams,
 } from "../services/assets";
 import type { GenerationParams } from "./params";
+import type {
+  TimelineRenderNodePublication,
+  TimelineRenderOutput,
+} from "./timeline-render-publication";
 
 import { GenerationPublicationConflict } from "@clash/shared-runtime/hosted-generation";
 export { GenerationPublicationConflict };
 export interface HostedGenerationPublication {
   updates: Record<string, unknown>;
   asset?: CreateAssetParams;
+  /** `video_render`: the sealed Resource to import as the run's Project Asset. */
+  render?: TimelineRenderOutput;
   failure?: DurablePublicFailure;
 }
 export async function assertHostedGenerationAccess(
@@ -94,19 +100,33 @@ async function publishAsset(
   }
 }
 
-/** Acknowledge real ProjectRoom publication before the durable run reports success. */
+/**
+ * Acknowledge real ProjectRoom publication before the durable run reports success.
+ * A Timeline render (`video_render`) publishes a Project Asset and its render node
+ * in one room transaction; every other generation keeps the library Asset path.
+ */
 export async function publishHostedGeneration(
   env: Env,
   params: GenerationParams,
   publication: HostedGenerationPublication,
 ): Promise<void> {
   await assertHostedGenerationAccess(env, params);
+  const render = params.type === "video_render";
+  if (render && !publication.failure && !publication.render)
+    throw new GenerationPublicationConflict(
+      "Timeline render output was not staged as a Project Resource.",
+    );
   if (publication.asset) await publishAsset(env, params, publication.asset);
+  const identity = {
+    taskId: params.taskId,
+    nodeId: params.nodeId,
+    actorUserId: params.actorUserId,
+  };
   const response = await env.ROOM.get(
     env.ROOM.idFromName(params.projectId),
   ).fetch(
     new Request(
-      `https://do/loro/${encodeURIComponent(params.projectId)}/generation-publication`,
+      `https://do/loro/${encodeURIComponent(params.projectId)}/${render ? "timeline-render-publication" : "generation-publication"}`,
       {
         method: "POST",
         headers: {
@@ -114,13 +134,22 @@ export async function publishHostedGeneration(
           "x-internal-loro": "true",
           "x-loro-project-id": params.projectId,
         },
-        body: JSON.stringify({
-          taskId: params.taskId,
-          nodeId: params.nodeId,
-          actorUserId: params.actorUserId,
-          updates: publication.updates,
-          ...(publication.failure ? { failure: publication.failure } : {}),
-        }),
+        body: JSON.stringify(
+          render
+            ? ({
+                ...identity,
+                ...(publication.failure
+                  ? { failure: publication.failure }
+                  : { render: publication.render }),
+              } satisfies TimelineRenderNodePublication)
+            : {
+                ...identity,
+                updates: publication.updates,
+                ...(publication.failure
+                  ? { failure: publication.failure }
+                  : {}),
+              },
+        ),
       },
     ),
   );

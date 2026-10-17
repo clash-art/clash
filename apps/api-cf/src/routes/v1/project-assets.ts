@@ -41,6 +41,15 @@ import {
   createR2ResourceRegistry,
   resourceLocator,
 } from "../../services/project-content-cloud";
+import {
+  claimResource,
+  digestHex,
+  persistTenant,
+  placeContent,
+  readEffectiveTenant,
+  resourceFor,
+  sealStagedResource,
+} from "../../services/project-asset-resources";
 import { requireSecret } from "../../services/require-secret";
 import {
   INVALID_PROJECT_ASSET_TRASH,
@@ -211,22 +220,9 @@ export function projectAssetImportMetadata(
 }
 
 async function effectiveTenant(env: Env, projectId: string): Promise<string> {
-  const row = await env.DB.prepare(
-    "SELECT COALESCE(tenant_id, 'personal:' || owner_id) AS tenant_id FROM project WHERE id = ? AND deleted_at IS NULL LIMIT 1",
-  )
-    .bind(projectId)
-    .first<{ tenant_id: string | null }>();
-  if (!row?.tenant_id)
-    throw new ProjectAssetRequestError(404, "Project not found");
-  return row.tenant_id;
-}
-
-async function persistTenant(env: Env, projectId: string): Promise<void> {
-  await env.DB.prepare(
-    "UPDATE project SET tenant_id = COALESCE(tenant_id, 'personal:' || owner_id) WHERE id = ?",
-  )
-    .bind(projectId)
-    .run();
+  const tenantId = await readEffectiveTenant(env, projectId);
+  if (!tenantId) throw new ProjectAssetRequestError(404, "Project not found");
+  return tenantId;
 }
 
 async function roomCall(
@@ -374,56 +370,6 @@ function setReadReceipt(
 
 function stagingKey(): string {
   return `${PROJECT_ASSET_IMPORT_STAGING_PREFIX}${crypto.randomUUID()}`;
-}
-
-function digestHex(bytes: ArrayBuffer): string {
-  return [...new Uint8Array(bytes)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function resourceFor(input: {
-  digest: string;
-  kind: AssetKind;
-  byteLength: number;
-  contentType?: string;
-}): Resource {
-  return {
-    id: `sha256:${input.digest}`,
-    kind: input.kind,
-    digest: { algorithm: "sha256", value: input.digest },
-    byteLength: input.byteLength,
-    ...(input.contentType ? { contentType: input.contentType } : {}),
-  };
-}
-
-async function claimResource(
-  env: Env,
-  tenantId: string,
-  resource: Resource,
-): Promise<Resource> {
-  const registry = createR2ResourceRegistry(env.R2_BUCKET as never);
-  return (await registry(tenantId, resource.id, resource)) ?? resource;
-}
-
-async function placeContent(
-  env: Env,
-  tenantId: string,
-  stagedKey: string,
-  resource: Resource,
-): Promise<void> {
-  const contentKey = await resourceLocator(tenantId, resource);
-  const existing = await env.R2_BUCKET.head(contentKey);
-  if (existing?.size === resource.byteLength) return;
-  const staged = await env.R2_BUCKET.get(stagedKey);
-  if (!staged) throw new Error("Staged Project Asset bytes are missing");
-  await env.R2_BUCKET.put(
-    contentKey,
-    staged.body,
-    resource.contentType
-      ? { httpMetadata: { contentType: resource.contentType } }
-      : undefined,
-  );
 }
 
 async function stageImportBody(
@@ -726,23 +672,14 @@ export function createProjectAssetRoutes() {
             409,
             "Import session byte length does not match",
           );
-        const object = await c.env.R2_BUCKET.get(session.stagingKey);
-        if (!object)
-          throw new ProjectAssetRequestError(
-            404,
-            "Import session staging not found",
-          );
-        const digestStream = new crypto.DigestStream("SHA-256");
-        await object.body.pipeTo(digestStream);
-        const resource = resourceFor({
-          digest: digestHex(await digestStream.digest),
+        const claimed = await sealStagedResource(c.env, {
+          projectId,
+          tenantId,
+          stagedKey: session.stagingKey,
           kind: session.kind,
           byteLength: claims.byteLength,
           ...(claims.contentType ? { contentType: claims.contentType } : {}),
         });
-        await persistTenant(c.env, projectId);
-        const claimed = await claimResource(c.env, tenantId, resource);
-        await placeContent(c.env, tenantId, session.stagingKey, claimed);
         let entry: ProjectAssetEntry;
         try {
           entry = await commitAsset(c.env, projectId, userId, {

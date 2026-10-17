@@ -1,5 +1,6 @@
 import { presenceDevice } from "../loro/presence-device";
 import { GenerationPublicationConflict, assertHostedGenerationAccess, generationAdmissionUpdate, generationPublicationUpdate, type GenerationNodePublication } from "../generation/publication";
+import type { TimelineRenderNodePublication } from "../generation/timeline-render-publication";
 /**
  * ProjectRoom — pure Loro CRDT sequencer Durable Object.
  *
@@ -1549,10 +1550,11 @@ export class ProjectRoom extends DurableObject<Env> {
       });
     }
 
-    if ((operation === "generation-publication" || operation === "generation-admission") && request.method === "POST") {
+    if ((operation === "generation-publication" || operation === "generation-admission" || operation === "timeline-render-publication") && request.method === "POST") {
       try {
-        const body = await request.json() as GenerationNodePublication;
-        if (!body.taskId || !body.nodeId || !body.actorUserId || !body.updates || typeof body.updates !== "object") return Response.json({ error: "Invalid generation publication" }, { status: 400 });
+        const body = await request.json() as GenerationNodePublication & TimelineRenderNodePublication;
+        const render = operation === "timeline-render-publication";
+        if (!body.taskId || !body.nodeId || !body.actorUserId || (render ? !body.render === !body.failure : !body.updates || typeof body.updates !== "object")) return Response.json({ error: "Invalid generation publication" }, { status: 400 });
         await assertHostedGenerationAccess(this.env, { projectId, actorUserId: body.actorUserId } as never);
         // NodeProcessor calls admission while processing this room's import queue.
         // Its matching pendingTask is already installed locally; persist it before
@@ -1562,8 +1564,13 @@ export class ProjectRoom extends DurableObject<Env> {
           await this.persistAndMaybeCompact(this.doc.export({ mode: "update" }));
           return Response.json({ ok: true });
         }
+        // Timeline renders publish a Project Asset; the shared Asset module loads on first use.
+        const renderPublication = render ? await import("../generation/timeline-render-publication") : null;
+        const assets = render ? await import("../services/project-asset-room") : null;
         await this.enqueueLoroImport({ data: new Uint8Array(), runRealtimeEffects: false, applyGeneration: async () => {
-          const update = operation === "generation-admission" ? generationAdmissionUpdate(this.doc, body) : generationPublicationUpdate(this.doc, body);
+          const update = renderPublication && assets
+            ? await renderPublication.timelineRenderPublicationUpdate(this.doc, projectId, body, (fork, command) => assets.importProjectAsset(this.env, projectId, fork, command))
+            : operation === "generation-admission" ? generationAdmissionUpdate(this.doc, body) : generationPublicationUpdate(this.doc, body);
           if (update) {
             await this.persistAndMaybeCompact(update);
             this.broadcastBinary(update);

@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import { Hono } from "hono";
+import type { LoroDoc } from "loro-crdt";
 import { HTTPException } from "hono/http-exception";
 import { bodyLimit } from "hono/body-limit";
 import {
@@ -24,6 +25,8 @@ import {
   projectAssetReceiptMessage,
   projectProjectAsset,
   selectProjectAssets,
+  type ProjectAssetImportCommand,
+  type ProjectAssetImportResult,
 } from "@clash/shared-runtime/cloud-project-host/project-assets";
 import {
   createHmacProjectAssetImportSessionTokens,
@@ -54,6 +57,41 @@ const fail = (status: 400 | 404 | 409, message: string): never => {
 const RESOURCE_QUERY =
   "SELECT resource FROM project_resource WHERE project_id=$1 AND resource_id=$2";
 
+/** The Resource admitted to this Project under `resourceId`, or null. */
+export async function readProjectResource(
+  db: PostgresQueryPort,
+  projectId: string,
+  resourceId: string,
+): Promise<Resource | null> {
+  const result = await db.query<{ resource: Resource }>(RESOURCE_QUERY, [
+    projectId,
+    resourceId,
+  ]);
+  return result.rows[0] ? ResourceSchema.parse(result.rows[0].resource) : null;
+}
+
+/**
+ * Publish stored bytes as a Project Asset inside the caller's Project
+ * transaction: the shared import commit on `doc` plus the Resource row, so
+ * both land with the same log append or not at all.
+ */
+export async function admitProjectMedia(
+  doc: LoroDoc,
+  tx: PostgresQueryPort,
+  command: ProjectAssetImportCommand,
+): Promise<ProjectAssetImportResult> {
+  const { projectId, resource } = command;
+  const imported = await commitProjectAssetImport(doc, command, {
+    readResource: (resourceId) => readProjectResource(tx, projectId, resourceId),
+  });
+  if (imported.ok && imported.created)
+    await tx.query(
+      "INSERT INTO project_resource(project_id,resource_id,resource) VALUES($1,$2,$3::jsonb)",
+      [projectId, resource.id, JSON.stringify(resource)],
+    );
+  return imported;
+}
+
 /** Postgres + disk storage ports for the shared Project Asset logic. */
 export function createProjectAssetRoutes(options: {
   db: PostgresTransactionPort;
@@ -63,19 +101,8 @@ export function createProjectAssetRoutes(options: {
 }) {
   const app = new Hono<{ Variables: { userId: string } }>();
   const directory = resolve(options.directory);
-  const readResource = async (
-    projectId: string,
-    resourceId: string,
-    db: PostgresQueryPort = options.db,
-  ) => {
-    const result = await db.query<{ resource: Resource }>(RESOURCE_QUERY, [
-      projectId,
-      resourceId,
-    ]);
-    return result.rows[0]
-      ? ResourceSchema.parse(result.rows[0].resource)
-      : null;
-  };
+  const readResource = (projectId: string, resourceId: string) =>
+    readProjectResource(options.db, projectId, resourceId);
   const projection = {
     readResource: (projectId: string, resourceId: string) =>
       readResource(projectId, resourceId),
@@ -115,28 +142,19 @@ export function createProjectAssetRoutes(options: {
       id,
       true,
       async (doc, tx) => {
-        const imported = await commitProjectAssetImport(
-          doc,
-          {
-            projectId: id,
-            projectAssetId,
-            resource: uploaded.resource,
-            name: uploaded.name,
-            metadata,
-            createdAt: Date.now(),
-            ...(input.duplicateContent
-              ? { duplicateContent: input.duplicateContent }
-              : {}),
-          },
-          { readResource: (resourceId) => readResource(id, resourceId, tx) },
-        );
+        const imported = await admitProjectMedia(doc, tx, {
+          projectId: id,
+          projectAssetId,
+          resource: uploaded.resource,
+          name: uploaded.name,
+          metadata,
+          createdAt: Date.now(),
+          ...(input.duplicateContent
+            ? { duplicateContent: input.duplicateContent }
+            : {}),
+        });
         // A failure throws, rolling back the transaction and any doc edit.
         if (!imported.ok) return fail(409, String(imported.body.error));
-        if (imported.created)
-          await tx.query(
-            "INSERT INTO project_resource(project_id,resource_id,resource) VALUES($1,$2,$3::jsonb)",
-            [id, uploaded.resource.id, JSON.stringify(uploaded.resource)],
-          );
         return imported.entry;
       },
     );

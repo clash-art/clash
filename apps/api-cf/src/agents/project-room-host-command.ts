@@ -86,8 +86,8 @@ export async function runProjectRoomHostCommand(
     newId: () => randomUUID(),
     // The Cloudflare adapter owns a render executor: the pending node the
     // shared command creates is picked up by the existing RENDER_CONTAINER
-    // pipeline (NodeProcessor -> GenerationWorkflow). api-node omits the
-    // port, so its answer stays 501.
+    // pipeline (NodeProcessor -> GenerationWorkflow). api-node binds the
+    // same port only when its render queue is configured.
     timelineRender: { actorUserId: userId },
   };
   const command = parsed.command;

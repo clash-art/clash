@@ -40,8 +40,10 @@ export interface TimelineHostCommandPorts {
   newId(): string;
   /**
    * Present only on an adapter whose backend executes the pending render node
-   * that `request_timeline_render` creates; the authenticated user is
-   * recorded as its actor. Absent, the command answers 501.
+   * that `request_timeline_render` creates (Cloudflare: NodeProcessor ->
+   * GenerationWorkflow; Node: the durable render queue, when RENDER_SERVER_URL
+   * is configured). The authenticated user is recorded as its actor. Absent,
+   * the command answers 501.
    */
   timelineRender?: { actorUserId: string };
 }
