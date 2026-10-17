@@ -1257,6 +1257,9 @@ importers:
       '@use-gesture/react':
         specifier: ^10.3.1
         version: 10.3.1(react@19.2.5)
+      mediabunny:
+        specifier: 1.50.8
+        version: 1.50.8
       react-moveable:
         specifier: ^0.56.0
         version: 0.56.0

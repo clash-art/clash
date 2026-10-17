@@ -1,3 +1,5 @@
+import type { FilmstripWorkerRequest, FilmstripWorkerResponse } from './filmstripWorkerProtocol';
+
 export type FilmstripCacheEntry = {
   canvas: HTMLCanvasElement;
   frameWidth: number;
@@ -246,7 +248,7 @@ export function getPersistentMediaCacheId(
   return null;
 }
 
-export async function generateVideoFilmstrip({
+export async function generateVideoFilmstripOnMainThread({
   videoSrc,
   duration,
   sampleCount = DEFAULT_FILMSTRIP_SAMPLE_COUNT,
@@ -338,4 +340,125 @@ export async function generateVideoFilmstrip({
   } finally {
     cleanup();
   }
+}
+
+type FilmstripRequestOptions = Parameters<typeof generateVideoFilmstripOnMainThread>[0];
+
+let filmstripWorker: Worker | null = null;
+let filmstripWorkerRequestId = 0;
+
+export function canGenerateFilmstripInWorker(): boolean {
+  return (
+    typeof Worker !== 'undefined' &&
+    typeof OffscreenCanvas !== 'undefined' &&
+    typeof VideoDecoder !== 'undefined' &&
+    typeof createImageBitmap !== 'undefined'
+  );
+}
+
+function getFilmstripWorker(): Worker {
+  filmstripWorker ??= new Worker(new URL('./filmstrip.worker.ts', import.meta.url), {
+    type: 'module',
+    name: 'timeline-filmstrip',
+  });
+  return filmstripWorker;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error('filmstrip encode failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Builds the strip in a worker with WebCodecs. Resolves `null` when the worker
+ * path cannot handle the source (no WebCodecs, unsupported codec/container,
+ * fetch/CORS failure) so the caller can fall back to the `<video>` path.
+ */
+export function generateVideoFilmstripInWorker({
+  videoSrc,
+  duration,
+  sampleCount = DEFAULT_FILMSTRIP_SAMPLE_COUNT,
+  frameHeight = 80,
+  onSample,
+}: FilmstripRequestOptions): Promise<string | null> {
+  if (!canGenerateFilmstripInWorker()) return Promise.resolve(null);
+  let worker: Worker;
+  try {
+    worker = getFilmstripWorker();
+  } catch {
+    return Promise.resolve(null);
+  }
+  const resolvedSrc = new URL(videoSrc, globalThis.location?.href).href;
+  const id = ++filmstripWorkerRequestId;
+  return new Promise((resolve) => {
+    let snapshot: FilmstripCacheEntry | null = null;
+    let context: CanvasRenderingContext2D | null = null;
+    const finish = (value: string | null) => {
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+      resolve(value);
+    };
+    const onError = () => {
+      // A worker that fails to load or crashes is not reused.
+      filmstripWorker?.terminate();
+      filmstripWorker = null;
+      finish(null);
+    };
+    const onMessage = (event: MessageEvent<FilmstripWorkerResponse>) => {
+      const message = event.data;
+      if (message.id !== id) return;
+      switch (message.type) {
+        case 'meta': {
+          if (!onSample) return;
+          const canvas = document.createElement('canvas');
+          canvas.width = message.frameWidth * message.sampleCount;
+          canvas.height = message.frameHeight;
+          context = canvas.getContext('2d');
+          snapshot = {
+            canvas,
+            frameWidth: message.frameWidth,
+            frameHeight: message.frameHeight,
+            framesPerRow: message.sampleCount,
+            sampleCount: message.sampleCount,
+            duration,
+          };
+          return;
+        }
+        case 'sample': {
+          if (snapshot && context) {
+            context.drawImage(message.bitmap, message.index * snapshot.frameWidth, 0);
+            onSample?.(snapshot, message.index);
+          }
+          message.bitmap.close();
+          return;
+        }
+        case 'done':
+          blobToDataUrl(message.blob).then(finish, () => finish(null));
+          return;
+        case 'unsupported':
+          finish(null);
+          return;
+      }
+    };
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    const request: FilmstripWorkerRequest = { id, src: resolvedSrc, duration, sampleCount, frameHeight };
+    worker.postMessage(request);
+  });
+}
+
+/**
+ * Timeline filmstrip: WebCodecs in a worker when available, otherwise (or when
+ * the worker cannot decode the source) the `<video>` seek path.
+ */
+export async function generateVideoFilmstrip(
+  options: FilmstripRequestOptions,
+): Promise<string | undefined> {
+  const fromWorker = await generateVideoFilmstripInWorker(options);
+  if (fromWorker !== null) return fromWorker;
+  return generateVideoFilmstripOnMainThread(options);
 }
