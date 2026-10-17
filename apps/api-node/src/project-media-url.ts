@@ -61,6 +61,10 @@ export function createSignedProjectMediaRoutes(options: {
   let key: Promise<CryptoKey> | undefined;
   app.get("/:projectId/:assetId", async (c) => {
     c.header("Cache-Control", "private, no-store");
+    // Same as the Cloudflare signed /assets routes: the signature is the only
+    // authority (no cookies), so any origin may read it. render-server's
+    // headless browser fetches media cross-origin from its page.
+    c.header("Access-Control-Allow-Origin", "*");
     const projectId = c.req.param("projectId"),
       assetId = c.req.param("assetId");
     const exp = c.req.query("exp") ?? "";

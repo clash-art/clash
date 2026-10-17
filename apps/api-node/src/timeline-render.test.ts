@@ -340,6 +340,7 @@ describe("signed Project media URL", () => {
     expect(full.status).toBe(200);
     expect(full.headers.get("content-type")).toBe("video/mp4");
     expect(full.headers.get("cache-control")).toBe("private, no-store");
+    expect(full.headers.get("access-control-allow-origin")).toBe("*");
     expect(new Uint8Array(await full.arrayBuffer())).toEqual(new Uint8Array(sample));
     const ranged = await node.app.request(url, { headers: { range: "bytes=4-7" } });
     expect(ranged.status).toBe(206);
