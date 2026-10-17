@@ -8,7 +8,7 @@ import {
   type SessionIdentity,
 } from "@clash/shared-runtime/project-authorization";
 import type { D1Database } from "@cloudflare/workers-types";
-import { createAuth, type AuthBindings } from "../auth";
+import { loadAuth, type AuthBindings } from "../services/auth-loader";
 import { verifySessionFast } from "../services/session-fast";
 import type { Env } from "../config";
 import { serverLog } from "../logger";
@@ -80,7 +80,7 @@ async function getBetterAuthSession(
   try {
     value = env.BETTER_AUTH_ORIGIN
       ? await fetchBetterAuthSession(request, env, env.BETTER_AUTH_ORIGIN)
-      : await createAuth(env as unknown as AuthBindings).api.getSession({
+      : await (await loadAuth()).createAuth(env as unknown as AuthBindings).api.getSession({
           headers: new Headers(request.headers),
         });
   } catch (error) {

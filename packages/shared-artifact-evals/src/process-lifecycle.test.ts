@@ -139,8 +139,10 @@ describe.each([
         'const fs = require("node:fs")',
         'const path = require("node:path")',
         'const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {stdio:"ignore"})',
-        "fs.writeFileSync(process.env.BENCH_SIGNAL_PID_PATH, JSON.stringify({agentPid:process.pid,grandchildPid:grandchild.pid}))",
+        // partial.txt first: the pid file is the test's "ready to signal" marker,
+        // so writing it last keeps SIGTERM from landing before the checkpoint.
         'fs.writeFileSync(path.join(process.env.CLASH_BENCH_WORKSPACE, "partial.txt"), "checkpoint")',
+        "fs.writeFileSync(process.env.BENCH_SIGNAL_PID_PATH, JSON.stringify({agentPid:process.pid,grandchildPid:grandchild.pid}))",
         'process.stdout.write("agent-ready\\n")',
         "setInterval(() => {}, 1000)",
       ].join("\n"),

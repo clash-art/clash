@@ -7,11 +7,12 @@
  */
 import { Hono } from "hono";
 import type { Env } from "../config";
-import { createAuthForHandler, type AuthBindings } from "../auth";
+import { loadAuth, type AuthBindings } from "../services/auth-loader";
 
 export const betterAuthRoutes = new Hono<{ Bindings: Env }>();
 
 betterAuthRoutes.all("/*", async (c) => {
+  const { createAuthForHandler } = await loadAuth();
   const auth = createAuthForHandler(c.env as unknown as AuthBindings);
   return auth.handler(c.req.raw);
 });

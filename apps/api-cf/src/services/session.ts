@@ -1,5 +1,5 @@
 import type { D1Database, IncomingRequestCfProperties } from "@cloudflare/workers-types";
-import { createAuth, type AuthBindings } from "../auth";
+import { loadAuth, type AuthBindings } from "./auth-loader";
 import { verifySessionFast } from "./session-fast";
 
 export const DEV_USER_ID = "dev-user";
@@ -24,6 +24,7 @@ export async function getUserIdFromRequest(
   } catch {
     // fall through to the full Better Auth path
   }
+  const { createAuth } = await loadAuth();
   const auth = createAuth(env, cf);
   try {
     const session: unknown = await auth.api.getSession({
