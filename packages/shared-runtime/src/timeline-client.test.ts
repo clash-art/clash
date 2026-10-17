@@ -31,6 +31,30 @@ describe("native Timeline client", () => {
     expect(observed).toEqual({ timeline, readToken: "before" });
   });
 
+  it("hands render to a bound executor, whose fallback is the Host request", async () => {
+    const request = vi.fn(async () =>
+      Response.json({ submitted: true, actionRunId: "timeline-render:r1", renderNodeId: "r1" }));
+    const observed = { timeline, readToken: "receipt" };
+    const direct = createTimelineClient({ projectId: "project", request });
+    expect(await direct.render(observed)).toEqual({ actionRunId: "timeline-render:r1", renderNodeId: "r1" });
+    expect(JSON.parse(request.mock.calls[0]![1].body)).toMatchObject({
+      action: "request_timeline_render", timelineId: "cut", ifMatch: "receipt",
+    });
+
+    const seen: unknown[] = [];
+    const routed = createTimelineClient({
+      projectId: "project", request,
+      renderExecutor: async (input) => {
+        seen.push({ projectId: input.projectId, observed: input.observed, actorAgentId: input.actorAgentId });
+        return input.submit();
+      },
+    });
+    expect(await routed.render(observed, "agent-1")).toEqual({ actionRunId: "timeline-render:r1", renderNodeId: "r1" });
+    expect(seen).toEqual([{ projectId: "project", observed, actorAgentId: "agent-1" }]);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(request.mock.calls[1]![1].body)).toMatchObject({ actorAgentId: "agent-1" });
+  });
+
   it("rejects reads lacking concurrency evidence", async () => {
     const client = createTimelineClient({
       projectId: "project", request: async () => Response.json({ timelines: [timeline], versions: {} }),

@@ -2,7 +2,7 @@ import { createLoroStreamSession } from "@clash/replica/loro-stream-session";
 import { createLogger } from "../lib/logger";
 import { addCanvasGraph } from "../lib/addCanvasGraph";
 import { applyCanvasLayout, type NodePatch } from "../lib/loroNodeSync";
-import { useHostTimelines } from "./useHostTimelines";
+import { useHostTimelines, type HostTimelineRenderJob } from "./useHostTimelines";
 import { useEffect, useRef, useCallback, useMemo, useState } from "react";
 import { LoroDoc, UndoManager } from "loro-crdt";
 import { archiveRejectedSync, readLatestSyncRecovery, type SyncRecoveryDraft } from "../lib/syncRecovery";
@@ -224,6 +224,8 @@ export interface UseLoroSyncReturn {
     timelineId: string,
     options: { actorUserId: string; actorAgentId?: string },
   ) => ReturnType<ReturnType<typeof useHostTimelines>["requestTimelineRender"]>;
+  renderJob: HostTimelineRenderJob | null;
+  cancelTimelineRender: () => void;
   removeNode: (nodeId: string, options?: LoroHostWriteOptions) => boolean;
   removeNodes: (nodeIds: string[], options?: LoroHostWriteOptions) => boolean;
   addEdge: (
@@ -514,6 +516,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const {
     timelines, timelineError, createTimeline, createTimelineOnCanvas,
     deleteTimeline, attachTimeline, detachTimeline, applyTimelineState, requestTimelineRender,
+    renderJob, cancelTimelineRender,
   } = useHostTimelines({ projectId, doc, canvasId, connected, onMutation });
   const [directorStages, setDirectorStages] = useState<ProjectDirectorStage[]>(
     [],
@@ -2078,6 +2081,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       applyTimelineState,
       applyTimelineDsl,
       requestTimelineRender,
+      renderJob,
+      cancelTimelineRender,
       removeNode,
       removeNodes,
       addEdge,
@@ -2098,6 +2103,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       applyTimelineDsl,
       applyTimelineState,
       requestTimelineRender,
+      renderJob,
+      cancelTimelineRender,
       applyDirectorStageState,
       attachTimeline,
       attachDirectorStage,

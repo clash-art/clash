@@ -397,6 +397,32 @@ describe("Project Asset HTTP client", () => {
     expect(urls[1]).toContain("/import-file");
   });
 
+  it("forces the import-session transport for a small render output", async () => {
+    const urls: string[] = [];
+    const client = createProjectAssetHttpClient({
+      fetch: async (input) => {
+        urls.push(String(input));
+        return Response.json({
+          sessionId: "session.small",
+          upload: { url: "https://upload.test/assets/capability/token" },
+        });
+      },
+    });
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: new File([new Uint8Array(4)], "render.mp4", {
+          type: "video/mp4",
+        }),
+        kind: "video",
+        projectAssetId: "asset:render",
+        chunked: true,
+      }),
+    ).rejects.toBeDefined();
+    expect(urls[0]).toContain("/import-sessions");
+    expect(urls[0]).not.toContain("/import-file");
+  });
+
   it("uploads chunks and finalizes when the server offers a session", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = createProjectAssetHttpClient({

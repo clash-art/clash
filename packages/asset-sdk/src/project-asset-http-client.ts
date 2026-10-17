@@ -57,6 +57,12 @@ export interface ProjectAssetHttpClient {
       metadataHints?: AssetImportMetadataHints;
       /** Opts in to a streamed body; see `assetImportRequest`. */
       onProgress?: AssetImportProgressListener;
+      /**
+       * Force the chunked import session even when the file is below the
+       * single-shot limit. Render outputs use this so there is one upload
+       * transport regardless of file size.
+       */
+      chunked?: boolean;
     },
   ): Promise<ResolvedAsset>;
   admit(
@@ -149,6 +155,7 @@ type ProjectImportCommandSnapshot = {
   duplicateContent?: "allow" | "reject";
   metadataHints?: AssetImportMetadataHints;
   onProgress?: AssetImportProgressListener;
+  chunked?: boolean;
 };
 
 function snapshotProjectImport(
@@ -170,6 +177,7 @@ function snapshotProjectImport(
       ? { metadataHints: sanitizeAssetImportMetadataHints(input.metadataHints) }
       : {}),
     ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    ...(input.chunked ? { chunked: true } : {}),
   };
 }
 
@@ -177,7 +185,7 @@ function snapshotProjectImport(
 function streamingUploadSource(file: AssetImportFile): CloudContentUploadSource {
   const reader = file.stream().getReader();
   let consumed = 0;
-  let pending: Uint8Array[] = [];
+  const pending: Uint8Array[] = [];
   let pendingLength = 0;
   return {
     byteLength: file.size,
@@ -374,7 +382,7 @@ export function createProjectAssetHttpClient(
       const maxBytes =
         options.singleShotMaxBytes ?? PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES;
       const base = url.slice(0, -"/import-file".length);
-      if (snapshot.file.size > maxBytes) {
+      if (snapshot.chunked === true || snapshot.file.size > maxBytes) {
         const sessionResponse = await fetch(
           base + "/import-sessions",
           requestInit({
