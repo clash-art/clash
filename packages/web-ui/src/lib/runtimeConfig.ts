@@ -96,19 +96,43 @@ export async function refreshRuntimeConfig(): Promise<ResolvedRuntimeEndpointCon
   return runtimeRefresh;
 }
 
+let unauthorizedListener: (() => void) | undefined;
+
+/**
+ * Issue #160: an API 401 means the browser session is gone. The session store
+ * registers here so runtimeFetch callers sign the app out without a refetch.
+ */
+export function setApiUnauthorizedListener(
+  listener: (() => void) | undefined,
+): void {
+  unauthorizedListener = listener;
+}
+
+function noticeUnauthorized(path: string, response: Response): Response {
+  if (
+    response.status === 401 &&
+    path.startsWith("/api/") &&
+    !path.startsWith("/api/better-auth/") &&
+    getRuntimeCapabilities().auth.mode === "better-auth"
+  ) {
+    unauthorizedListener?.();
+  }
+  return response;
+}
+
 export async function runtimeFetch(
   path: string,
   init?: RequestInit,
   fetchImpl: typeof fetch = fetch,
 ): Promise<Response> {
   try {
-    return await fetchImpl(runtimeApiUrl(path), init);
+    return noticeUnauthorized(path, await fetchImpl(runtimeApiUrl(path), init));
   } catch (error) {
     if (!isDesktopRuntime() || !desktopRuntimeBridge()?.refreshRuntime) {
       throw error;
     }
     await refreshRuntimeConfig();
-    return fetchImpl(runtimeApiUrl(path), init);
+    return noticeUnauthorized(path, await fetchImpl(runtimeApiUrl(path), init));
   }
 }
 

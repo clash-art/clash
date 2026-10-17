@@ -3,7 +3,7 @@ import { cloudflareClient } from "better-auth-cloudflare/client";
 import { emailOTPClient } from "better-auth/client/plugins";
 import { runtimeApiUrl } from "./runtimeConfig";
 
-type SessionQuery = {
+export type SessionQuery = {
   data: {
     user?: {
       id?: string | null;
@@ -45,6 +45,63 @@ type AuthClient = {
   signOut: (input?: unknown) => Promise<AuthResult>;
 };
 
+/** Better Auth's session atom state (nanostores). */
+export type SessionAtomState = {
+  data: SessionQuery["data"];
+  error: ({ status?: number } & Record<string, unknown>) | Error | null;
+  isPending: boolean;
+  isRefetching: boolean;
+  refetch: () => Promise<unknown>;
+};
+
+export type SessionAtom = {
+  get(): SessionAtomState;
+  set(value: SessionAtomState): void;
+  listen(listener: (value: SessionAtomState) => void): () => void;
+};
+
+/**
+ * Better Auth paths whose success makes the client refetch the session (its
+ * own `$sessionSignal` matchers plus the email OTP plugin's). Better Auth
+ * fires that signal 10ms after the response, so a caller that navigates
+ * straight after sign-in would otherwise read the stale session first.
+ */
+const SESSION_MUTATION_PATHS = [
+  "/sign-in/email",
+  "/sign-in/email-otp",
+  "/sign-up/email",
+  "/sign-out",
+  "/update-user",
+  "/update-session",
+  "/delete-user",
+  "/verify-email",
+  "/revoke-session",
+  "/revoke-sessions",
+  "/revoke-other-sessions",
+  "/change-email",
+  "/change-password",
+  "/email-otp/request-email-change",
+];
+
+let sessionMutationListener: (() => void) | undefined;
+
+/** Called synchronously when a session-changing auth request succeeds. */
+export function setSessionMutationListener(listener: (() => void) | undefined) {
+  sessionMutationListener = listener;
+}
+
+function notifySessionMutation(url: unknown) {
+  let pathname: string;
+  try {
+    pathname = new URL(String(url), "http://localhost").pathname;
+  } catch {
+    return;
+  }
+  if (SESSION_MUTATION_PATHS.some((path) => pathname.endsWith(path))) {
+    sessionMutationListener?.();
+  }
+}
+
 let _client: AuthClient | null = null;
 
 function authBaseUrl(): string {
@@ -61,8 +118,28 @@ function getClient(): AuthClient {
   _client = createAuthClient({
     baseURL: authBaseUrl(),
     plugins: [cloudflareClient(), emailOTPClient()],
+    // Issue #160: no focus/interval refetch here; sessionStore owns the one
+    // throttled focus refetch. Sign-in/out still refetch via $sessionSignal
+    // and other tabs via Better Auth's storage broadcast.
+    sessionOptions: { refetchOnWindowFocus: false, refetchInterval: 0 },
+    fetchOptions: {
+      // Resolve `fetch` per request rather than capturing it at creation.
+      customFetchImpl: (input: RequestInfo | URL, init?: RequestInit) =>
+        fetch(input, init),
+      onSuccess: (context: { request: { url: unknown } }) => {
+        notifySessionMutation(context.request.url);
+      },
+    },
   } as any) as unknown as AuthClient;
   return _client;
+}
+
+/** The app-wide session atom, or null where no Better Auth client exists. */
+export function getAuthSessionAtom(): SessionAtom | null {
+  const client = getClient() as unknown as {
+    $store?: { atoms?: { session?: SessionAtom } };
+  };
+  return client.$store?.atoms?.session ?? null;
 }
 
 // On SSR there's no `window.location.origin`, so we can't construct a real
