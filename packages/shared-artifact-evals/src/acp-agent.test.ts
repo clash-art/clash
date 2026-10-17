@@ -28,7 +28,7 @@ afterEach(async () => {
 /** Runs one turn against the scripted ACP agent process. */
 async function run(
   env: Record<string, string>,
-  options: { command?: string; timeoutMs?: number } = {},
+  options: { command?: string; timeoutMs?: number; thinkingLevel?: string } = {},
 ): Promise<{
   result: Awaited<ReturnType<typeof runAcpAgentSession>>;
   lines: AcpEventLine[];
@@ -49,6 +49,7 @@ async function run(
     timeoutMs: options.timeoutMs ?? 20_000,
     stderrFd: openSync(join(cwd, "stderr.log"), "w"),
     events,
+    ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
   });
   const lines = Buffer.concat(chunks)
     .toString("utf8")
@@ -138,6 +139,55 @@ describe("ACP agent session", () => {
     expect(silent.lines[0]).toMatchObject({
       type: "acp.session",
       configOptions: [],
+    });
+  }, 30_000);
+
+  it("accepts and records a thinking level the harness adjusted (deepseek-flash: medium -> high)", async () => {
+    // clash-art/clash#42/#50: `deepseek/deepseek-flash:medium` has no
+    // `medium`, so Pi runs it at `high` without an error.
+    const configOptions = [
+      {
+        id: "thinking",
+        name: "Thinking",
+        category: "thought_level",
+        type: "select",
+        currentValue: "high",
+        options: ["off", "low", "high", "max"].map((value) => ({
+          value,
+          name: value,
+        })),
+      },
+    ];
+
+    const { result, lines } = await run(
+      { ACP_FIXTURE_CONFIG_OPTIONS: JSON.stringify(configOptions) },
+      { thinkingLevel: "medium" },
+    );
+
+    expect(result).toEqual({ status: "completed", exitCode: 0, signal: null });
+    expect(lines[0]).toMatchObject({
+      type: "acp.session",
+      thinkingLevel: {
+        requested: "medium",
+        effective: "high",
+        available: ["off", "low", "high", "max"],
+        status: "adjusted",
+      },
+    });
+  }, 30_000);
+
+  it("refuses a run whose session reports no thinking level", async () => {
+    const { result, lines } = await run({}, { thinkingLevel: "medium" });
+
+    expect(result).toMatchObject({
+      status: "failed",
+      error:
+        "ACP session reports no thinking level; the requested 'medium' had no effect",
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      type: "acp.session",
+      thinkingLevel: { requested: "medium", available: [], status: "unreported" },
     });
   }, 30_000);
 

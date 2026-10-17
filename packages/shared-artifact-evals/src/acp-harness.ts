@@ -238,7 +238,7 @@ export async function installAcpHarness(input: {
 export function acpHeadlessLaunch(
   agent: AcpBenchmarkAgent,
   directories: { agentDir: string; sessionDir: string },
-): { args: string[]; env: Record<string, string> } {
+): { args: string[]; env: Record<string, string>; thinkingLevel?: string } {
   const entry = harnessEntry(agent.adapter);
   // The provider and the thinking level are written inside the model value.
   // The thinking level is requested only together with a model; a provider
@@ -260,6 +260,8 @@ export function acpHeadlessLaunch(
   return {
     args: [...launch.args, ...(agent.args ?? [])],
     env: launch.env,
+    // What the launch asked for; the session reports what it runs at.
+    ...(agent.model ? { thinkingLevel: BENCHMARK_THINKING_LEVEL } : {}),
   };
 }
 

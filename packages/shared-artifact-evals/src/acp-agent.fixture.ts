@@ -9,7 +9,9 @@
  *                      the prompt, "refusal" stops the turn with a refusal,
  *                      "permission" asks the client for permission first
  * ACP_FIXTURE_CONFIG_OPTIONS  JSON array returned as the new session's
- *                      `configOptions`
+ *                      `configOptions`. Without it, a launch whose `--model`
+ *                      value ends in `:<level>` (the Pi recipe) is answered,
+ *                      like Pi, with a `thought_level` option at that level.
  * ACP_FIXTURE_WORK     Node script that does the turn's work in the workspace,
  *                      in place of the default one-file submission
  */
@@ -25,6 +27,27 @@ type Message = {
 };
 
 const mode = process.env.ACP_FIXTURE_MODE ?? "ok";
+
+/** What Pi reports for `--model <provider>/<model>:<level>`. */
+function launchConfigOptions(): Array<Record<string, unknown>> {
+  const argv = process.argv.slice(2);
+  const model = argv[argv.indexOf("--model") + 1];
+  const level = argv.includes("--model") ? model?.split(":")[1] : undefined;
+  if (!level) return [];
+  return [
+    {
+      id: "thinking",
+      name: "Thinking",
+      category: "thought_level",
+      type: "select",
+      currentValue: level,
+      options: ["off", "low", "medium", "high"].map((value) => ({
+        value,
+        name: value,
+      })),
+    },
+  ];
+}
 const replay = process.env.ACP_FIXTURE_REPLAY
   ? readFileSync(process.env.ACP_FIXTURE_REPLAY, "utf8")
       .split("\n")
@@ -79,7 +102,9 @@ function handle(message: Message & { result?: unknown }): void {
           ? {
               configOptions: JSON.parse(process.env.ACP_FIXTURE_CONFIG_OPTIONS),
             }
-          : {}),
+          : launchConfigOptions().length > 0
+            ? { configOptions: launchConfigOptions() }
+            : {}),
       },
     });
     return;

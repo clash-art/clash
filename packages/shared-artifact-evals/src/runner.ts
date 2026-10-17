@@ -1804,6 +1804,7 @@ async function runAgent(input: {
         timeoutMs: input.benchmark.timeoutMs,
         stderrFd: stderr.fd,
         events,
+        ...(launch.thinkingLevel ? { thinkingLevel: launch.thinkingLevel } : {}),
         onSpawn: (spawned) => {
           acpChild = input.processScope.track(spawned);
         },
