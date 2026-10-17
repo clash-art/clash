@@ -31,25 +31,28 @@ export type AuthBindings = {
   RESEND_API_KEY?: string;
   NODE_ENV?: string;
   ENVIRONMENT?: string;
-  /** Issue #154: cookie cache lifetime in seconds; "0" turns it off. */
+  /** Issues #154/#157: cookie cache lifetime in seconds (0..3600, default 3600); "0" turns it off. */
   BETTER_AUTH_COOKIE_CACHE_SECONDS?: string;
 };
 
 /**
- * Issue #154: lifetime of Better Auth's signed `session_data` cookie. While it
- * is fresh, get-session answers from the cookie (HMAC-verified, no D1 query).
- * This is also the longest that get-session can keep reporting a session that
- * was revoked from another device. Data routes (api-cf, meta) still check the
- * sessions table on every request, so they reject a revoked session at once.
+ * Issues #154/#157: lifetime of Better Auth's signed `session_data` cookie.
+ * While it is fresh, get-session answers from the cookie (HMAC-verified, no
+ * D1 query). It is also the longest that get-session can keep reporting a
+ * session revoked from another device as signed in: up to 1 hour by default.
+ * Authorization is not affected: data routes (api-cf, meta) check the sessions
+ * table on every request and reject a revoked session immediately, and the
+ * client treats any API 401 as signed out.
  */
-export const DEFAULT_COOKIE_CACHE_SECONDS = 60;
+export const DEFAULT_COOKIE_CACHE_SECONDS = 3600;
+export const MAX_COOKIE_CACHE_SECONDS = 3600;
 
 export function resolveCookieCacheSeconds(env: AuthBindings): number {
   const raw = env.BETTER_AUTH_COOKIE_CACHE_SECONDS;
   if (raw === undefined || raw.trim() === "") return DEFAULT_COOKIE_CACHE_SECONDS;
   const n = Number(raw);
   // Bounded on purpose: a long cache would stretch the revocation window.
-  if (!Number.isInteger(n) || n < 0 || n > 300) return DEFAULT_COOKIE_CACHE_SECONDS;
+  if (!Number.isInteger(n) || n < 0 || n > MAX_COOKIE_CACHE_SECONDS) return DEFAULT_COOKIE_CACHE_SECONDS;
   return n;
 }
 
