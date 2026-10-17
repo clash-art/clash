@@ -1,8 +1,10 @@
 import React from "react";
 import {
   normalizeEditorAsset,
-  useEditor,
   useEditorDispatch,
+  useEditorPlaybackRefs,
+  useEditorStaticState,
+  type EditorState,
 } from "@clash/remotion-core";
 import {
   TIMELINE_LIBRARY_CATEGORIES,
@@ -246,7 +248,16 @@ export const TimelineLibraryPanel: React.FC<TimelineLibraryPanelProps> = ({
   embedded = false,
   onAdmitLibraryMedia,
 }) => {
-  const { state } = useEditor();
+  // Read the playhead through refs: the panel only needs the frame when an
+  // item is applied, so it must not re-render on every playback frame.
+  const staticState = useEditorStaticState();
+  const { currentFrameRef, playingRef } = useEditorPlaybackRefs();
+  const readState = (): EditorState => ({
+    ...staticState,
+    currentFrame: currentFrameRef.current,
+    playing: playingRef.current,
+  });
+  const renderState = readState();
   const dispatch = useEditorDispatch();
   const [search, setSearch] = React.useState("");
   const [groupId, setGroupId] =
@@ -356,12 +367,12 @@ export const TimelineLibraryPanel: React.FC<TimelineLibraryPanelProps> = ({
           <div className="grid grid-cols-[repeat(auto-fit,minmax(8rem,1fr))] gap-2">
             {records.map((record) => {
               const existingMediaAsset = findTimelineLibraryProjectAsset(
-                state,
+                staticState,
                 record,
               );
               const admissionInput = timelineLibraryMediaAdmissionInput(record);
               const previewApplication = buildTimelineLibraryApplication({
-                state,
+                state: renderState,
                 record,
                 createId: (prefix) => `preview-${prefix}`,
                 mediaAsset: existingMediaAsset,
@@ -390,7 +401,7 @@ export const TimelineLibraryPanel: React.FC<TimelineLibraryPanelProps> = ({
                               )
                             : undefined);
                         const application = buildTimelineLibraryApplication({
-                          state,
+                          state: readState(),
                           record,
                           createId,
                           mediaAsset,
