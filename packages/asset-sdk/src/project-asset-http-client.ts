@@ -6,10 +6,17 @@ import {
   type ResolvedAsset,
 } from "@clash/shared-types";
 import {
+  PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES,
   assetImportRequest,
+  sanitizeAssetImportMetadataHints,
   type AssetImportFile,
+  type AssetImportMetadataHints,
   type AssetImportProgressListener,
 } from "./asset-import-request.js";
+import {
+  uploadCloudContent,
+  type CloudContentUploadSource,
+} from "./cloud-content-upload.js";
 
 export const PROJECT_ASSET_READ_RECEIPT_HEADER = "x-clash-read-receipt";
 
@@ -46,6 +53,8 @@ export interface ProjectAssetHttpClient {
       projectAssetId: string;
       /** `reject` asks the Host to fail rather than add a second active Asset over the same bytes. */
       duplicateContent?: "allow" | "reject";
+      /** Browser-observed media facts; the Worker cannot probe the file itself. */
+      metadataHints?: AssetImportMetadataHints;
       /** Opts in to a streamed body; see `assetImportRequest`. */
       onProgress?: AssetImportProgressListener;
     },
@@ -75,8 +84,15 @@ export interface ProjectAssetHttpClientOptions {
   token?: string;
   fetch?: typeof globalThis.fetch;
   credentials?: "omit" | "same-origin" | "include";
+  /**
+   * Override where `importFile` switches from one request to the chunked
+   * session path. Defaults to `PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES`; tests use
+   * a small value to exercise the wire path without a 64 MiB fixture.
+   */
+  singleShotMaxBytes?: number;
   resolveConnection?: () =>
-    ProjectAssetHttpConnection | Promise<ProjectAssetHttpConnection>;
+    | ProjectAssetHttpConnection
+    | Promise<ProjectAssetHttpConnection>;
   createHttpError?: (status: number, body: unknown) => Error;
 }
 
@@ -131,6 +147,7 @@ type ProjectImportCommandSnapshot = {
   kind: AssetKind;
   projectAssetId: string;
   duplicateContent?: "allow" | "reject";
+  metadataHints?: AssetImportMetadataHints;
   onProgress?: AssetImportProgressListener;
 };
 
@@ -149,8 +166,60 @@ function snapshotProjectImport(
     ...(input.duplicateContent
       ? { duplicateContent: input.duplicateContent }
       : {}),
+    ...(input.metadataHints
+      ? { metadataHints: sanitizeAssetImportMetadataHints(input.metadataHints) }
+      : {}),
     ...(input.onProgress ? { onProgress: input.onProgress } : {}),
   };
+}
+
+/** Sequential part reader for a source that only exposes `stream()`. */
+function streamingUploadSource(file: AssetImportFile): CloudContentUploadSource {
+  const reader = file.stream().getReader();
+  let consumed = 0;
+  let pending: Uint8Array[] = [];
+  let pendingLength = 0;
+  return {
+    byteLength: file.size,
+    async readPart(offset, length) {
+      if (offset !== consumed)
+        throw new Error("Project Asset upload parts must be read in order");
+      while (pendingLength < length) {
+        const next = await reader.read();
+        if (next.done) throw new Error("Project Asset source ended early");
+        pending.push(next.value);
+        pendingLength += next.value.byteLength;
+      }
+      const part = new Uint8Array(length);
+      let written = 0;
+      while (written < length) {
+        const head = pending[0]!;
+        const take = Math.min(head.byteLength, length - written);
+        part.set(head.subarray(0, take), written);
+        written += take;
+        if (take === head.byteLength) pending.shift();
+        else pending[0] = head.subarray(take);
+        pendingLength -= take;
+      }
+      consumed += length;
+      return part;
+    },
+  };
+}
+
+function uploadSourceFor(file: AssetImportFile): CloudContentUploadSource {
+  if (file instanceof Blob) {
+    return {
+      byteLength: file.size,
+      async readPart(offset, length) {
+        const bytes = await file
+          .slice(offset, offset + length)
+          .arrayBuffer();
+        return new Uint8Array(bytes);
+      },
+    };
+  }
+  return streamingUploadSource(file);
 }
 
 function newDeleteOperationId(): string {
@@ -302,6 +371,70 @@ export function createProjectAssetHttpClient(
         snapshot.projectId,
         "/import-file",
       );
+      const maxBytes =
+        options.singleShotMaxBytes ?? PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES;
+      const base = url.slice(0, -"/import-file".length);
+      if (snapshot.file.size > maxBytes) {
+        const sessionResponse = await fetch(
+          base + "/import-sessions",
+          requestInit({
+            method: "POST",
+            headers: headers(connected, { "content-type": "application/json" }),
+            body: JSON.stringify({
+              kind: snapshot.kind,
+              projectAssetId: snapshot.projectAssetId,
+              fileName: snapshot.fileName,
+              byteLength: snapshot.file.size,
+              contentType: snapshot.file.type,
+              ...(snapshot.duplicateContent
+                ? { duplicateContent: snapshot.duplicateContent }
+                : {}),
+              ...(snapshot.metadataHints
+                ? { metadataHints: snapshot.metadataHints }
+                : {}),
+            }),
+          }),
+        );
+        const sessionBody = (await sessionResponse
+          .json()
+          .catch(() => undefined)) as
+          | {
+              code?: unknown;
+              sessionId?: unknown;
+              upload?: { url?: unknown };
+            }
+          | undefined;
+        if (
+          sessionResponse.status === 501 &&
+          sessionBody?.code === "COMMAND_UNAVAILABLE"
+        ) {
+          // A Host with no import cap answers 501; its single-shot import has
+          // no 64 MiB product limit, so the client simply falls back.
+        } else if (!sessionResponse.ok) {
+          throw (
+            options.createHttpError?.(sessionResponse.status, sessionBody) ??
+            new ProjectAssetHttpError(sessionResponse.status, sessionBody)
+          );
+        } else {
+          const sessionId = sessionBody?.sessionId;
+          const uploadUrl = sessionBody?.upload?.url;
+          if (typeof sessionId !== "string" || typeof uploadUrl !== "string")
+            throw new Error(
+              "Project Asset Host returned an invalid import session",
+            );
+          await uploadCloudContent({
+            url: uploadUrl,
+            source: uploadSourceFor(snapshot.file),
+            headers: headers(connected),
+            fetch,
+          });
+          const finalized = await fetch(
+            `${base}/import-sessions/${encodeURIComponent(sessionId)}/finalize`,
+            requestInit({ method: "POST", headers: headers(connected) }),
+          );
+          return ResolvedAssetSchema.parse(await responseBody(finalized));
+        }
+      }
       const request = assetImportRequest({
         url,
         file: snapshot.file,
@@ -314,6 +447,9 @@ export function createProjectAssetHttpClient(
             : {}),
         },
         headers: headers(connected),
+        ...(snapshot.metadataHints
+          ? { metadataHints: snapshot.metadataHints }
+          : {}),
         ...(snapshot.onProgress ? { onProgress: snapshot.onProgress } : {}),
       });
       const response = await fetch(request.url, requestInit(request.init));

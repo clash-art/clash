@@ -1,4 +1,5 @@
 import type {
+  AssetDeliveryImportSession,
   AssetDeliveryOperation,
   AssetDeliveryPurpose,
   AssetDeliveryScope,
@@ -111,6 +112,9 @@ function claimsPayload(
     ...(input.contentType === undefined
       ? {}
       : { contentType: input.contentType }),
+    ...(input.importSession === undefined
+      ? {}
+      : { importSession: input.importSession }),
   };
 }
 
@@ -120,6 +124,82 @@ function encodeClaims(claims: AssetDeliveryCapabilityClaims): string {
 
 function validString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+const IMPORT_KINDS = new Set(["image", "video", "audio", "model"]);
+
+function parseImportSession(value: unknown): AssetDeliveryImportSession | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    !validString(record.ownerId) ||
+    !validString(record.stagingKey) ||
+    !validString(record.kind) ||
+    !IMPORT_KINDS.has(record.kind) ||
+    !validString(record.projectAssetId) ||
+    !validString(record.fileName)
+  ) {
+    return null;
+  }
+  if (
+    record.duplicateContent !== undefined &&
+    record.duplicateContent !== "allow" &&
+    record.duplicateContent !== "reject"
+  ) {
+    return null;
+  }
+  const stagingKey = record.stagingKey.trim();
+  if (
+    stagingKey.startsWith("/") ||
+    stagingKey.includes("..") ||
+    stagingKey.includes("\\")
+  )
+    return null;
+  let metadataHints: AssetDeliveryImportSession["metadataHints"];
+  if (record.metadataHints !== undefined) {
+    if (
+      !record.metadataHints ||
+      typeof record.metadataHints !== "object" ||
+      Array.isArray(record.metadataHints)
+    )
+      return null;
+    const hints = record.metadataHints as Record<string, unknown>;
+    for (const key of ["durationMs", "width", "height"] as const) {
+      const value = hints[key];
+      if (
+        value !== undefined &&
+        (typeof value !== "number" ||
+          !Number.isSafeInteger(value) ||
+          value < 0)
+      )
+        return null;
+    }
+    if (
+      hints.frameRate !== undefined &&
+      (typeof hints.frameRate !== "number" ||
+        !Number.isFinite(hints.frameRate) ||
+        hints.frameRate <= 0)
+    )
+      return null;
+    if (hints.hasAudio !== undefined && typeof hints.hasAudio !== "boolean")
+      return null;
+    metadataHints = hints as NonNullable<
+      AssetDeliveryImportSession["metadataHints"]
+    >;
+  }
+  return {
+    ownerId: record.ownerId.trim(),
+    stagingKey,
+    kind: record.kind as AssetDeliveryImportSession["kind"],
+    projectAssetId: record.projectAssetId.trim(),
+    fileName: record.fileName.trim(),
+    ...(record.duplicateContent === undefined
+      ? {}
+      : {
+          duplicateContent: record.duplicateContent as "allow" | "reject",
+        }),
+    ...(metadataHints === undefined ? {} : { metadataHints }),
+  };
 }
 
 function parseClaims(value: unknown): AssetDeliveryCapabilityClaims | null {
@@ -176,6 +256,13 @@ function parseClaims(value: unknown): AssetDeliveryCapabilityClaims | null {
   if (record.contentType !== undefined && !validString(record.contentType)) {
     return null;
   }
+  let importSession: AssetDeliveryImportSession | undefined;
+  if (record.importSession !== undefined) {
+    if (operation !== "upload") return null;
+    const parsed = parseImportSession(record.importSession);
+    if (!parsed) return null;
+    importSession = parsed;
+  }
 
   return {
     version: 1,
@@ -200,6 +287,7 @@ function parseClaims(value: unknown): AssetDeliveryCapabilityClaims | null {
     ...(record.contentType === undefined
       ? {}
       : { contentType: record.contentType as string }),
+    ...(importSession === undefined ? {} : { importSession }),
   };
 }
 

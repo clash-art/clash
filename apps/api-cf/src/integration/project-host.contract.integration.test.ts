@@ -3,9 +3,9 @@
  * (D1, R2 and ProjectRoom from cloudflare:test), authenticated with a D1 API
  * token like every other public client.
  *
- * api-cf serves the plugin catalog and Timeline host-command (ProjectRoom,
- * #180). The Project Asset routes are declared, as the editor requires, and
- * listed as known gaps: they must keep failing until the asset adapter lands.
+ * api-cf serves the plugin catalog, Timeline host-command (ProjectRoom,
+ * #180) and Project Assets (R2 + ProjectRoom, #181, incl. trash/restore).
+ * Timeline render needs a render Host and is declared unavailable (501).
  */
 import { env } from "cloudflare:test";
 import { LoroDoc } from "loro-crdt";
@@ -85,20 +85,12 @@ describeProjectHostContract("api-cf (Cloudflare Workers)", async () => {
       "assets.get": "supported",
       "assets.references": "supported",
       "assets.import": "supported",
-      "assets.trash": "unavailable",
-      "assets.restore": "unavailable",
+      "assets.import.chunked": "supported",
+      "assets.trash": "supported",
+      "assets.restore": "supported",
       "assets.media": "supported",
     },
-    knownGaps: [
-      "assets.list",
-      "assets.batch",
-      "assets.get",
-      "assets.references",
-      "assets.import",
-      "assets.trash",
-      "assets.restore",
-      "assets.media",
-    ],
+    knownGaps: [],
     sampleVideo: {
       bytes: Uint8Array.from(atob(sample), (char) => char.charCodeAt(0)),
       fileName: CONTRACT_SAMPLE_VIDEO_FILE,

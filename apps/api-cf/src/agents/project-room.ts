@@ -1493,6 +1493,37 @@ export class ProjectRoom extends DurableObject<Env> {
       : await this.ensureRoomInitialized(projectId, { enableTaskPolling: false });
     if (initError) return initError;
 
+    // Project Asset reads and commits. The adapter (and the shared Asset
+    // module it imports) loads here on first use, never at DO startup.
+    if (
+      (operation === "assets-list" ||
+        operation === "assets-get" ||
+        operation === "assets-commit" ||
+        operation === "assets-lifecycle") &&
+      (request.method === "GET" || request.method === "POST")
+    ) {
+      const assets = await import("../services/project-asset-room");
+      return assets.handleProjectAssetRoomOperation({
+        operation: operation.slice("assets-".length) as
+          | "list"
+          | "get"
+          | "commit"
+          | "lifecycle",
+        request,
+        env: this.env,
+        projectId,
+        doc: this.doc,
+        enqueue: (run) =>
+          this.enqueueLoroImport({
+            data: new Uint8Array(),
+            runRealtimeEffects: false,
+            applyGeneration: run,
+          }),
+        persist: (update) => this.persistAndMaybeCompact(update),
+        broadcast: (update) => this.broadcastBinary(update),
+      });
+    }
+
     if ((operation === "generation-publication" || operation === "generation-admission") && request.method === "POST") {
       try {
         const body = await request.json() as GenerationNodePublication;

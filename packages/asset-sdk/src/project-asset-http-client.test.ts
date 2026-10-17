@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createProjectAssetHttpClient } from "./project-asset-http-client.js";
+import { PROJECT_CLOUD_CONTENT_PART_BYTES } from "./content-transfer.js";
 
 /** Reads a streaming import-file request back as the command it carries. */
 function importForm(input: unknown, init?: RequestInit): FormData {
@@ -336,5 +337,117 @@ describe("Project Asset HTTP client", () => {
     await expect(
       client.get({ projectId: "project/one", assetId: "asset:one" }),
     ).rejects.toThrow(/unrecognized key.*storageKey/i);
+  });
+
+  it("carries metadata hints on the import-file query", async () => {
+    const fetch = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify(readyAsset), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const client = createProjectAssetHttpClient({ fetch });
+    await client.importFile({
+      projectId: "project/one",
+      file: new File([new Uint8Array([1, 2, 3, 4])], "frame.png", {
+        type: "image/png",
+      }),
+      kind: "image",
+      projectAssetId: "asset:one",
+      metadataHints: { width: 64, height: 32, durationMs: 1_000 },
+    });
+    const query = new URL(String(fetch.mock.calls[0]![0]), "http://host.test")
+      .searchParams;
+    expect(query.get("width")).toBe("64");
+    expect(query.get("height")).toBe("32");
+    expect(query.get("durationMs")).toBe("1000");
+  });
+
+  it("falls back to single shot when a Host answers 501 to the session request", async () => {
+    const urls: string[] = [];
+    const client = createProjectAssetHttpClient({
+      singleShotMaxBytes: 1,
+      fetch: async (input) => {
+        urls.push(String(input));
+        if (String(input).includes("/import-sessions"))
+          return new Response(
+            JSON.stringify({
+              error: "unavailable",
+              code: "COMMAND_UNAVAILABLE",
+            }),
+            { status: 501, headers: { "content-type": "application/json" } },
+          );
+        return new Response(JSON.stringify(readyAsset), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: new File([new Uint8Array([1, 2, 3, 4])], "frame.png", {
+          type: "image/png",
+        }),
+        kind: "image",
+        projectAssetId: "asset:one",
+      }),
+    ).resolves.toEqual(readyAsset);
+    expect(urls[0]).toContain("/import-sessions");
+    expect(urls[1]).toContain("/import-file");
+  });
+
+  it("uploads chunks and finalizes when the server offers a session", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = createProjectAssetHttpClient({
+      singleShotMaxBytes: 1,
+      fetch: async (input, init) => {
+        const url = String(input);
+        calls.push({ url, init });
+        if (url.includes("/import-sessions/session.abc/finalize"))
+          return new Response(JSON.stringify(readyAsset), {
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/import-sessions"))
+          return new Response(
+            JSON.stringify({
+              sessionId: "session.abc",
+              upload: { url: "https://upload.test/assets/capability/token" },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        const operation = new URL(url).searchParams.get("upload");
+        if (operation === "begin")
+          return new Response(
+            JSON.stringify({
+              uploadId: new URL(url).searchParams.get("uploadId"),
+              partSize: PROJECT_CLOUD_CONTENT_PART_BYTES,
+              parts: [],
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        return new Response(null, { status: 204 });
+      },
+    });
+    const bytes = new Uint8Array(40).map((_, index) => index);
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: new File([bytes], "frame.png", { type: "image/png" }),
+        kind: "image",
+        projectAssetId: "asset:one",
+      }),
+    ).resolves.toEqual(readyAsset);
+    expect(calls.map(({ url }) => url)).toEqual([
+      expect.stringContaining("/import-sessions"),
+      expect.stringContaining("upload=begin"),
+      expect.stringContaining("upload=part"),
+      expect.stringContaining("upload=complete"),
+      expect.stringContaining("/import-sessions/session.abc/finalize"),
+    ]);
+    const part = calls.find(({ url }) => url.includes("upload=part"));
+    expect(new Uint8Array(await new Response(part?.init?.body).arrayBuffer())).toEqual(
+      bytes,
+    );
   });
 });

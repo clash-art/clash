@@ -20,6 +20,7 @@ import {
 import {
   createCapabilityResolver,
   createD1ContentReferenceIndex,
+  createD1ProjectAccessAuthorizer,
   createD1ProjectContentAdmission,
   createDurableObjectContentRoomPort,
   createR2ResourceRegistry,
@@ -82,6 +83,7 @@ function cloudflarePorts(env: UploadEnv) {
   const admission = createD1ProjectContentAdmission(env.DB as never);
   return {
     authorize: admission.authorize,
+    authorizeProject: createD1ProjectAccessAuthorizer(env.DB as never),
     index: createD1ContentReferenceIndex(env.DB as never),
     room: createDurableObjectContentRoomPort(env.ROOM as never),
     resource: createR2ResourceRegistry(env.R2_BUCKET as never),

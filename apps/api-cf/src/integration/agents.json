@@ -6,6 +6,7 @@
     "test-worker.ts": "Local integration Worker bindings and existing durable runtime entrypoints.",
     "project-websocket-auth.integration.test.ts": "Real public createApp to ProjectRoom workerd WebSocket authorization, both raw and loro-v1, D1 API/session revocation, hibernation, JWT expiry, passive-read protection and pre-initialization rejection. Only external Better Auth get-session is mocked.",
     "supervisor-auth.integration.test.ts": "Real Supervisor storage and WebSocket authorization, including hibernated token revocation before AIChat mutation and deleted-project broadcast suppression.",
-    "project-host.contract.integration.test.ts": "Shared Project Host contract against the real createApp in workerd. Catalog must pass; host-command and Project Asset routes are known gaps until the remote adapter lands. Also checks Timeline validation with the Function constructor disabled (deployed workerd forbids code generation; the vitest pool allows it)."
+    "project-assets.integration.test.ts": "Real D1/R2/ProjectRoom import path for Project Assets: single-shot and chunked session imports, list/get/receipt, duplicate-content 409, tenant pinning, and Range/CORS bytes from the upload Worker app.",
+    "project-host.contract.integration.test.ts": "Shared Project Host contract against the real createApp in workerd. Catalog and Project Assets must pass; Timeline host-command remains a known gap until the parallel PR lands. Also checks Timeline validation with the Function constructor disabled (deployed workerd forbids code generation; the vitest pool allows it)."
   }
 }

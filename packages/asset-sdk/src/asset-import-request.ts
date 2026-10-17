@@ -22,6 +22,123 @@ export interface AssetImportFile {
 }
 
 /**
+ * Product cap for a single `import-file` request body. Larger files go through
+ * the signed import-session / multipart upload path instead. It is exported so
+ * every adapter and client agrees on where the switch happens.
+ */
+export const PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES = 64 * 1024 * 1024;
+
+/** Largest Project Asset any Host imports, whichever path carries the bytes. */
+export const PROJECT_ASSET_IMPORT_MAX_BYTES = 512 * 1024 * 1024;
+
+/** Media facts the browser can observe before the Worker/Node Host can probe. */
+export interface AssetImportMetadataHints {
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  frameRate?: number;
+  hasAudio?: boolean;
+}
+
+/** Sane bounds for untrusted browser hints; anything outside is ignored. */
+export const ASSET_IMPORT_METADATA_HINT_LIMITS = {
+  durationMs: 24 * 60 * 60 * 1000,
+  width: 16_384,
+  height: 16_384,
+  frameRate: 240,
+} as const;
+
+function nonNegativeInteger(
+  value: unknown,
+  maximum: number,
+): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= maximum
+    ? parsed
+    : undefined;
+}
+
+function positiveNumber(value: unknown, maximum: number): number | undefined {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : NaN;
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= maximum
+    ? parsed
+    : undefined;
+}
+
+function booleanHint(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  return undefined;
+}
+
+/**
+ * Keep only the media hints a server may trust enough to display. Invalid or
+ * out-of-range fields are dropped, never rejected, so an old client or a
+ * browser that cannot probe still imports.
+ */
+export function sanitizeAssetImportMetadataHints(
+  value: unknown,
+): AssetImportMetadataHints {
+  if (!value || typeof value !== "object") return {};
+  const record = value as Record<string, unknown>;
+  const hints: AssetImportMetadataHints = {};
+  const durationMs = nonNegativeInteger(
+    record.durationMs,
+    ASSET_IMPORT_METADATA_HINT_LIMITS.durationMs,
+  );
+  if (durationMs !== undefined) hints.durationMs = durationMs;
+  const width = nonNegativeInteger(
+    record.width,
+    ASSET_IMPORT_METADATA_HINT_LIMITS.width,
+  );
+  if (width !== undefined) hints.width = width;
+  const height = nonNegativeInteger(
+    record.height,
+    ASSET_IMPORT_METADATA_HINT_LIMITS.height,
+  );
+  if (height !== undefined) hints.height = height;
+  const frameRate = positiveNumber(
+    record.frameRate,
+    ASSET_IMPORT_METADATA_HINT_LIMITS.frameRate,
+  );
+  if (frameRate !== undefined) hints.frameRate = frameRate;
+  const hasAudio = booleanHint(record.hasAudio);
+  if (hasAudio !== undefined) hints.hasAudio = hasAudio;
+  return hints;
+}
+
+/** Flatten valid hints into the `import-file` query fields. */
+export function assetImportMetadataHintFields(
+  hints: AssetImportMetadataHints | undefined,
+): Record<string, string> {
+  const value = sanitizeAssetImportMetadataHints(hints);
+  return {
+    ...(value.durationMs === undefined
+      ? {}
+      : { durationMs: String(value.durationMs) }),
+    ...(value.width === undefined ? {} : { width: String(value.width) }),
+    ...(value.height === undefined ? {} : { height: String(value.height) }),
+    ...(value.frameRate === undefined
+      ? {}
+      : { frameRate: String(value.frameRate) }),
+    ...(value.hasAudio === undefined
+      ? {}
+      : { hasAudio: String(value.hasAudio) }),
+  };
+}
+
+/**
  * Builds the streaming `import-file` request: the body is the file itself and
  * the command fields travel in the query, so no client holds a second copy of
  * the bytes. A Blob body is read from its backing store by the runtime as it
@@ -38,10 +155,12 @@ export function assetImportRequest(input: {
   fileName: string;
   fields: Record<string, string>;
   headers: Record<string, string>;
+  metadataHints?: AssetImportMetadataHints;
   onProgress?: AssetImportProgressListener;
 }): { url: string; init: RequestInit } {
   const query = new URLSearchParams({
     ...input.fields,
+    ...assetImportMetadataHintFields(input.metadataHints),
     fileName: input.fileName,
     byteLength: String(input.file.size),
   });

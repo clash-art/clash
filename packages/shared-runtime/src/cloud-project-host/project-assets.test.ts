@@ -5,12 +5,17 @@ import {
   createActionAssetBinding,
   projectAssetMutationReadTokenFromDoc,
   readProjectAsset,
+  agentReadReceiptToken,
+  markActionAssetBindingAuthority,
+  unbindActionAssetBinding,
   type Resource,
 } from "@clash/shared-types";
 import {
   commitProjectAssetImport,
+  applyProjectAssetLifecycle,
   observeProjectAsset,
   parseProjectAssetBatchIds,
+  parseProjectAssetDeleteOperationId,
   projectProjectAsset,
   selectProjectAssets,
   type ProjectAssetImportCommand,
@@ -168,5 +173,137 @@ describe("cloud Project Asset document logic", () => {
     });
     expect(unavailable.status).toBe("unavailable");
     expect(unavailable.url).toBeUndefined();
+  });
+
+  describe("trash and restore (soft delete)", () => {
+    const sign = (version: string) => `sig-${version.slice(-16)}`;
+    const ports = {
+      verifyReceipt: (version: string, receipt: string) =>
+        receipt === sign(version),
+    };
+    const trash = (
+      expectedReadToken: string | undefined,
+      deleteOperationId = "op-1",
+      actorClientType = "browser",
+    ) =>
+      applyProjectAssetLifecycle(
+        doc,
+        {
+          action: "trash",
+          projectId: "p",
+          projectAssetId: "asset:a",
+          deleteOperationId,
+          deletedAt: "2026-10-17T00:00:00.000Z",
+          purgeAfter: "2026-11-16T00:00:00.000Z",
+          observation: {
+            actorClientType,
+            ...(expectedReadToken ? { expectedReadToken } : {}),
+          },
+        },
+        ports,
+      );
+    const restore = (expectedReadToken?: string, actorClientType = "browser") =>
+      applyProjectAssetLifecycle(
+        doc,
+        {
+          action: "restore",
+          projectId: "p",
+          projectAssetId: "asset:a",
+          observation: {
+            actorClientType,
+            ...(expectedReadToken ? { expectedReadToken } : {}),
+          },
+        },
+        ports,
+      );
+    const observed = () => observeProjectAsset(doc, "p", "asset:a")!.version;
+
+    it("trashes with a tombstone, keeps the entry listed, retries idempotently, and restores", async () => {
+      await importAsset("asset:a", resource("r1", "a"));
+      const token = observed();
+      const trashed = trash(token);
+      expect(trashed).toMatchObject({
+        ok: true,
+        mutated: true,
+        entry: {
+          lifecycle: {
+            state: "trashed",
+            deleteOperationId: "op-1",
+            deletedAt: "2026-10-17T00:00:00.000Z",
+            purgeAfter: "2026-11-16T00:00:00.000Z",
+          },
+        },
+      });
+      // The list is the trash view; bytes and the Resource are untouched.
+      expect(selectProjectAssets(doc, "p")).toMatchObject([
+        { id: "asset:a", lifecycle: { state: "trashed" }, source: { resourceId: "r1" } },
+      ]);
+      // A retry of the same operation (even with the old token) is a no-op.
+      expect(trash(token)).toMatchObject({ ok: true, mutated: false });
+      // Another operation working from the pre-delete read is stale.
+      expect(trash(token, "op-2")).toMatchObject({ ok: false, status: 409, body: { code: "STALE_READ" } });
+      const restored = restore(observed());
+      expect(restored).toMatchObject({ ok: true, mutated: true, entry: { lifecycle: { state: "active" } } });
+      expect(readProjectAsset(doc, "asset:a")?.lifecycle).toEqual({ state: "active" });
+      expect(restore(observed())).toMatchObject({ ok: true, mutated: false });
+    });
+
+    it("refuses stale reads, unknown Assets, and agents without a valid receipt", async () => {
+      await importAsset("asset:a", resource("r1", "a"));
+      const before = observed();
+      createActionAssetBinding(doc, {
+        id: "in",
+        owner: { kind: "draft", actionId: "action" },
+        direction: "input",
+        slot: "image",
+        projectAssetId: "asset:a",
+      });
+      expect(trash(before)).toMatchObject({ ok: false, status: 409, body: { code: "STALE_READ" } });
+      expect(unbindActionAssetBinding(doc, "in").ok).toBe(true);
+      expect(
+        applyProjectAssetLifecycle(
+          doc,
+          { action: "restore", projectId: "p", projectAssetId: "missing", observation: {} },
+          ports,
+        ),
+      ).toMatchObject({ ok: false, status: 404, body: { code: "PROJECT_ASSET_NOT_FOUND" } });
+      const current = observed();
+      expect(trash(current, "op-1", "agent")).toMatchObject({ ok: false, status: 409, body: { code: "READ_REQUIRED" } });
+      expect(
+        trash(agentReadReceiptToken({ readToken: current, receipt: "forged" }), "op-1", "agent"),
+      ).toMatchObject({ ok: false, status: 409, body: { code: "INVALID_READ_PROOF" } });
+      expect(
+        trash(agentReadReceiptToken({ readToken: current, receipt: sign(current) }), "op-1", "agent"),
+      ).toMatchObject({ ok: true, mutated: true });
+    });
+
+    it("refuses an Asset still used as an Action input, materializing legacy references first", async () => {
+      await importAsset("asset:a", resource("r1", "a"));
+      markActionAssetBindingAuthority(doc);
+      createActionAssetBinding(doc, {
+        id: "in",
+        owner: { kind: "draft", actionId: "action" },
+        direction: "input",
+        slot: "image",
+        projectAssetId: "asset:a",
+      });
+      expect(trash(observed())).toMatchObject({
+        ok: false,
+        status: 409,
+        body: { code: "ASSET_IN_USE", references: [{ id: "in" }] },
+      });
+      expect(readProjectAsset(doc, "asset:a")?.lifecycle.state).toBe("active");
+    });
+
+    it("marks binding authority on a document that never ran the local cutover", async () => {
+      await importAsset("asset:a", resource("r1", "a"));
+      expect(trash(observed())).toMatchObject({ ok: true, mutated: true });
+    });
+
+    it("validates the delete operation id", () => {
+      expect(parseProjectAssetDeleteOperationId({ deleteOperationId: " op " })).toBe("op");
+      for (const invalid of [null, {}, { deleteOperationId: "" }, { deleteOperationId: 1 }, { deleteOperationId: "x".repeat(513) }])
+        expect(parseProjectAssetDeleteOperationId(invalid)).toBeNull();
+    });
   });
 });

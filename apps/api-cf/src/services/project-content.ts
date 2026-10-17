@@ -14,6 +14,7 @@ import type { Env } from "../config";
 import {
   ProjectContentConflictError,
   createD1ContentReferenceIndex,
+  createD1ProjectAccessAuthorizer,
   createD1ProjectContentAdmission,
   createDurableObjectContentRoomPort,
   createR2ResourceRegistry,
@@ -36,6 +37,12 @@ export interface ProjectContentPorts {
     userId?: string;
     tenantId?: string;
   }): Promise<{ tenantId: string } | null>;
+  /** Project-level access for owner preview reads and chunked imports. */
+  authorizeProject?(input: {
+    projectId: string;
+    tenantId: string;
+    ownerId?: string;
+  }): Promise<boolean>;
   /** Content-reference index (issue #130). Preferred over any room lookup. */
   index?: ContentReferenceIndex;
   /** Room-computed references + `content.published` notify (index-miss fallback). */
@@ -89,6 +96,7 @@ export function projectContentResolverFor(ports: ProjectContentPorts) {
 export function createCloudProjectContentPorts(env: Env): ProjectContentPorts {
   return {
     authorize: createD1ProjectContentAdmission(env.DB as never).authorize,
+    authorizeProject: createD1ProjectAccessAuthorizer(env.DB as never),
     index: createD1ContentReferenceIndex(env.DB as never),
     room: createDurableObjectContentRoomPort(env.ROOM as never),
     resource: createR2ResourceRegistry(env.R2_BUCKET as never),

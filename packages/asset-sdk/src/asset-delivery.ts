@@ -41,12 +41,34 @@ export interface AssetDeliveryAuthorizationInput {
   purpose: AssetDeliveryPurpose;
 }
 
+/**
+ * Signed facts for a chunked Project Asset import. The bytes land under
+ * `stagingKey` first; no Resource exists until finalization computes its digest.
+ */
+export interface AssetDeliveryImportSession {
+  ownerId: string;
+  stagingKey: string;
+  kind: "image" | "video" | "audio" | "model";
+  projectAssetId: string;
+  fileName: string;
+  duplicateContent?: "allow" | "reject";
+  metadataHints?: {
+    durationMs?: number;
+    width?: number;
+    height?: number;
+    frameRate?: number;
+    hasAudio?: boolean;
+  };
+}
+
 export interface AssetDeliverySignerInput extends AssetDeliveryAuthorizationInput {
   method: "GET" | "PUT";
   expiresAt: string;
   byteLength?: number;
   digest?: string;
   contentType?: string;
+  /** Present only for a chunked Project Asset import-session capability. */
+  importSession?: AssetDeliveryImportSession;
 }
 
 export interface AssetDeliverySignerResult {

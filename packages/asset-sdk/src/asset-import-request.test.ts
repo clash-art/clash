@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES,
+  assetImportMetadataHintFields,
   assetImportRequest,
+  sanitizeAssetImportMetadataHints,
   type AssetImportFile,
 } from "./asset-import-request.js";
 
@@ -82,5 +85,44 @@ describe("assetImportRequest", () => {
       loadedBytes: bytes.byteLength,
       totalBytes: file.size,
     });
+  });
+
+  it("carries only bounded metadata hints in the query", () => {
+    const { url } = assetImportRequest({
+      url: "http://host.test/import-file",
+      file: new Blob([bytes], { type: "video/mp4" }),
+      fileName: "clip.mp4",
+      fields: { kind: "video" },
+      headers: {},
+      metadataHints: {
+        durationMs: 1_500,
+        width: 1_920,
+        height: 1_080,
+        frameRate: 29.97,
+        hasAudio: true,
+      },
+    });
+    const query = new URL(url).searchParams;
+    expect(query.get("durationMs")).toBe("1500");
+    expect(query.get("width")).toBe("1920");
+    expect(query.get("height")).toBe("1080");
+    expect(query.get("frameRate")).toBe("29.97");
+    expect(query.get("hasAudio")).toBe("true");
+  });
+
+  it("drops invalid hints and exposes the 64 MiB single-shot boundary", () => {
+    expect(
+      sanitizeAssetImportMetadataHints({
+        durationMs: -1,
+        width: Number.POSITIVE_INFINITY,
+        height: 20_000,
+        frameRate: 0,
+        hasAudio: "true",
+      }),
+    ).toEqual({ hasAudio: true });
+    expect(assetImportMetadataHintFields({ width: 10 })).toEqual({
+      width: "10",
+    });
+    expect(PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES).toBe(64 * 1024 * 1024);
   });
 });
