@@ -12,15 +12,9 @@
  * Compose as part of the Node monolith (`mountContentUpload(app, …)`) or run
  * it alone as a microservice (`createUploadServer`, src/upload-server.ts).
  */
-import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
-import { dirname, join } from "node:path";
-import { Readable } from "node:stream";
 import { Hono } from "hono";
 import {
-  MultipartContentError,
   createUploadService,
   type ContentPublishedEvent,
   type ContentReferenceIndex,
@@ -31,10 +25,7 @@ import {
   type UploadIdentityVerifier,
   type UploadServicePorts,
 } from "@clash/asset-sdk/upload-service";
-import {
-  PROJECT_CLOUD_CONTENT_PART_BYTES,
-  type AssetDeliveryStore,
-} from "@clash/asset-sdk/delivery";
+import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
 import { createContentReferenceIndexer } from "@clash/replica/content-index";
 import { projectSyncContent } from "@clash/shared-types/project-sync-content";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
@@ -130,116 +121,11 @@ export function createPostgresContentReferenceIndex(
   };
 }
 
-const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
-
-/** Filesystem AssetDeliveryStore with resumable multipart staging. Objects
- * become visible only via an atomic rename after digest verification. */
-export function createFsAssetDeliveryStore(root: string): AssetDeliveryStore {
-  const safe = (locator: string) => {
-    if (!locator || locator.startsWith("/") || locator.includes("..")) throw new Error("Invalid locator");
-    return join(root, "objects", locator);
-  };
-  type Session = Parameters<NonNullable<AssetDeliveryStore["multipart"]>["begin"]>[0];
-  const dirOf = (s: Session) => {
-    if (!/^[a-zA-Z0-9_-]{16,128}$/.test(s.uploadId))
-      throw new MultipartContentError(400, "Invalid upload session ID");
-    return join(root, "staging", sha256(new TextEncoder().encode(s.target.identity)), s.uploadId);
-  };
-  const readState = async (dir: string) =>
-    JSON.parse(await readFile(join(dir, "state.json"), "utf8").catch(() => "null")) as
-      | { target: Session["target"]; aborted?: boolean }
-      | null;
-  const live = async (s: Session) => {
-    const dir = dirOf(s);
-    const state = await readState(dir);
-    if (state?.aborted) throw new MultipartContentError(410, "Upload session was aborted");
-    if (state && JSON.stringify(state.target) !== JSON.stringify(s.target))
-      throw new MultipartContentError(409, "Upload session target changed");
-    return { dir, state };
-  };
-  const parts = async (dir: string) =>
-    (await readdir(dir).catch(() => [] as string[]))
-      .filter((n) => /^part-\d+$/.test(n))
-      .map((n) => Number(n.slice(5)))
-      .sort((a, b) => a - b);
-  return {
-    async head(locator) {
-      const s = await stat(safe(locator)).catch(() => undefined);
-      return s?.isFile() ? { size: s.size } : undefined;
-    },
-    async get(locator, range) {
-      const path = safe(locator);
-      const s = await stat(path).catch(() => undefined);
-      if (!s?.isFile()) return undefined;
-      const stream = createReadStream(path, range ? { start: range.offset, end: range.offset + range.length - 1 } : {});
-      return { body: Readable.toWeb(stream) as ReadableStream<Uint8Array>, size: s.size };
-    },
-    async put(locator, bytes) {
-      const path = safe(locator);
-      await mkdir(dirname(path), { recursive: true });
-      const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-      await writeFile(tmp, bytes);
-      await rename(tmp, path);
-    },
-    multipart: {
-      async begin(s) {
-        const { dir, state } = await live(s);
-        if (!state) {
-          await mkdir(dir, { recursive: true });
-          await writeFile(join(dir, "state.json"), JSON.stringify({ target: s.target }));
-        }
-        return {
-          parts: await Promise.all(
-            (await parts(dir)).map(async (partNumber) => ({
-              partNumber,
-              sha256: sha256(await readFile(join(dir, `part-${partNumber}`))),
-            })),
-          ),
-        };
-      },
-      async part(s, partNumber, bytes) {
-        const { dir, state } = await live(s);
-        if (!state) throw new MultipartContentError(409, "Upload session not begun");
-        const count = Math.max(1, Math.ceil(s.target.byteLength / PROJECT_CLOUD_CONTENT_PART_BYTES));
-        const expected = partNumber === count ? s.target.byteLength - (count - 1) * PROJECT_CLOUD_CONTENT_PART_BYTES : PROJECT_CLOUD_CONTENT_PART_BYTES;
-        if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > count || bytes.length !== expected)
-          throw new MultipartContentError(400, "Multipart part length or number does not match");
-        const tmp = join(dir, `.part-${partNumber}.${Date.now()}`);
-        await writeFile(tmp, bytes);
-        await rename(tmp, join(dir, `part-${partNumber}`));
-      },
-      async complete(s, beforePublish) {
-        const { dir, state } = await live(s);
-        if (!state) throw new MultipartContentError(409, "Upload session not begun");
-        const hash = createHash("sha256");
-        const chunks: Buffer[] = [];
-        let total = 0;
-        for (const n of await parts(dir)) {
-          const b = await readFile(join(dir, `part-${n}`));
-          hash.update(b);
-          chunks.push(b);
-          total += b.length;
-        }
-        if (total !== s.target.byteLength) throw new MultipartContentError(409, "Multipart upload is incomplete");
-        if (`sha256:${hash.digest("hex")}` !== s.target.digest)
-          throw new MultipartContentError(400, "Multipart object digest mismatch");
-        await beforePublish();
-        const path = safe(s.target.locator);
-        await mkdir(dirname(path), { recursive: true });
-        const tmp = join(dir, "assembled");
-        await writeFile(tmp, Buffer.concat(chunks));
-        await rename(tmp, path);
-        await rm(dir, { recursive: true, force: true });
-      },
-      async abort(s) {
-        const dir = dirOf(s);
-        await rm(dir, { recursive: true, force: true });
-        await mkdir(dir, { recursive: true });
-        await writeFile(join(dir, "state.json"), JSON.stringify({ target: s.target, aborted: true }));
-      },
-    },
-  };
-}
+/**
+ * Re-exported from the shared Node entry so existing imports keep working.
+ * The store itself is shared with local-api.
+ */
+export { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
 
 /** In-process room port for a Node process that hosts rooms itself. `compute`
  * returns the room's current references (e.g. projectSyncContent(doc)). */

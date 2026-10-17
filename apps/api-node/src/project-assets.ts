@@ -1,5 +1,5 @@
-import { createHmac } from "node:crypto";
-import { resolve } from "node:path";
+import { createHmac, randomUUID } from "node:crypto";
+import { join, resolve } from "node:path";
 import { stat } from "node:fs/promises";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -24,15 +24,27 @@ import {
   projectAssetReceiptMessage,
   projectProjectAsset,
   selectProjectAssets,
-  projectAssetOperationUnavailable,
 } from "@clash/shared-runtime/cloud-project-host/project-assets";
-import { PROJECT_ASSET_IMPORT_MAX_BYTES } from "@clash/asset-sdk";
+import {
+  createHmacProjectAssetImportSessionTokens,
+  createProjectAssetImportSession,
+  finalizeProjectAssetImportSession,
+  handleProjectAssetImportSessionContent,
+  type ProjectAssetImportSessionPorts,
+} from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
+import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
+import {
+  PROJECT_ASSET_IMPORT_MAX_BYTES,
+  sanitizeAssetImportMetadataHints,
+  type AssetImportMetadataHints,
+} from "@clash/asset-sdk";
 import type { PostgresQueryPort } from "@clash/shared-runtime/project-authorization-postgres";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import { withProjectDocument } from "./project-document.ts";
 import {
   storedMediaPath,
   readMediaUploadForm,
+  storeMediaBytes,
   storeMediaUpload,
   serveStoredMedia,
 } from "./media-store.ts";
@@ -82,6 +94,116 @@ export function createProjectAssetRoutes(options: {
   };
   const project = (projectId: string, entry: ProjectAssetEntry) =>
     projectProjectAsset(projection, { projectId, entry });
+
+  /** The one import commit path: single-shot and session finalize both use it. */
+  const commitImportedMedia = async (input: {
+    owner: string;
+    projectId: string;
+    projectAssetId: string;
+    uploaded: Awaited<ReturnType<typeof storeMediaBytes>>;
+    duplicateContent?: "allow" | "reject";
+    metadataHints?: AssetImportMetadataHints;
+  }) => {
+    const { owner, projectId: id, projectAssetId, uploaded } = input;
+    const metadata = {
+      ...uploaded.metadata,
+      ...sanitizeAssetImportMetadataHints(input.metadataHints),
+    };
+    const entry = await withProjectDocument(
+      options.db,
+      owner,
+      id,
+      true,
+      async (doc, tx) => {
+        const imported = await commitProjectAssetImport(
+          doc,
+          {
+            projectId: id,
+            projectAssetId,
+            resource: uploaded.resource,
+            name: uploaded.name,
+            metadata,
+            createdAt: Date.now(),
+            ...(input.duplicateContent
+              ? { duplicateContent: input.duplicateContent }
+              : {}),
+          },
+          { readResource: (resourceId) => readResource(id, resourceId, tx) },
+        );
+        // A failure throws, rolling back the transaction and any doc edit.
+        if (!imported.ok) return fail(409, String(imported.body.error));
+        if (imported.created)
+          await tx.query(
+            "INSERT INTO project_resource(project_id,resource_id,resource) VALUES($1,$2,$3::jsonb)",
+            [id, uploaded.resource.id, JSON.stringify(uploaded.resource)],
+          );
+        return imported.entry;
+      },
+    );
+    return project(id, entry);
+  };
+
+  const importStaging = createFsAssetDeliveryStore(
+    join(directory, "import-sessions"),
+  );
+  const importSessionPorts = (
+    projectId: string,
+  ): ProjectAssetImportSessionPorts => ({
+    clock: { now: () => Date.now() },
+    newId: randomUUID,
+    tokens: createHmacProjectAssetImportSessionTokens({
+      secret: options.receiptSecret,
+      now: () => Date.now(),
+    }),
+    access: {
+      async canAccessProject({ projectId: id, ownerId }) {
+        const owned = await options.db.query(
+          "SELECT id FROM project WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL",
+          [id, ownerId],
+        );
+        return owned.rows.length > 0;
+      },
+    },
+    staging: {
+      store: importStaging,
+      delete: (locator) => importStaging.delete(locator),
+    },
+    uploadUrl: (sessionId) =>
+      `${options.publicUrl.replace(/\/+$/u, "")}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-sessions/${encodeURIComponent(sessionId)}/content`,
+    async commit(input) {
+      const bytes = new Uint8Array(
+        await new Response(await input.openSource()).arrayBuffer(),
+      );
+      const uploaded = await storeMediaBytes(directory, {
+        kind: input.kind,
+        name: input.fileName,
+        type: input.contentType ?? "",
+        bytes,
+      });
+      return commitImportedMedia({
+        owner: input.ownerId,
+        projectId: input.projectId,
+        projectAssetId: input.projectAssetId,
+        uploaded,
+        ...(input.duplicateContent
+          ? { duplicateContent: input.duplicateContent }
+          : {}),
+        ...(input.metadataHints
+          ? { metadataHints: input.metadataHints }
+          : {}),
+      });
+    },
+    async resolveCommitted({ projectId: id, ownerId, projectAssetId }) {
+      const entry = await withProjectDocument(
+        options.db,
+        ownerId,
+        id,
+        false,
+        (doc) => readProjectAsset(doc, projectAssetId, { projectId: id }),
+      );
+      return entry ? project(id, entry) : null;
+    },
+  });
   app.use("/:projectId/assets/*", async (c, next) => {
     const owned = await options.db.query(
       "SELECT id FROM project WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL",
@@ -93,8 +215,8 @@ export function createProjectAssetRoutes(options: {
   });
   app.use(
     "/:projectId/assets/import-file",
-    // One request carries any supported size here (no Worker body limit), so
-    // the chunked session path stays a Cloudflare transport detail.
+    // A single request may carry any supported size here (no Worker body
+    // limit). Chunked sessions remain available for clients that opt in.
     bodyLimit({ maxSize: PROJECT_ASSET_IMPORT_MAX_BYTES }),
   );
   app.get("/:projectId/assets", async (c) => {
@@ -134,35 +256,15 @@ export function createProjectAssetRoutes(options: {
     if (typeof assetId !== "string" || !assetId.trim() || assetId.length > 512)
       return fail(400, "Invalid Asset ID");
     const uploaded = await storeMediaUpload(directory, form);
-    const entry = await withProjectDocument(
-      options.db,
-      c.get("userId"),
-      id,
-      true,
-      async (doc, tx) => {
-        const imported = await commitProjectAssetImport(
-          doc,
-          {
-            projectId: id,
-            projectAssetId: assetId,
-            resource: uploaded.resource,
-            name: uploaded.name,
-            metadata: uploaded.metadata,
-            createdAt: Date.now(),
-          },
-          { readResource: (resourceId) => readResource(id, resourceId, tx) },
-        );
-        // A failure throws, rolling back the transaction and any doc edit.
-        if (!imported.ok) return fail(409, String(imported.body.error));
-        if (imported.created)
-          await tx.query(
-            "INSERT INTO project_resource(project_id,resource_id,resource) VALUES($1,$2,$3::jsonb)",
-            [id, uploaded.resource.id, JSON.stringify(uploaded.resource)],
-          );
-        return imported.entry;
-      },
+    return c.json(
+      await commitImportedMedia({
+        owner: c.get("userId"),
+        projectId: id,
+        projectAssetId: assetId,
+        uploaded,
+      }),
+      201,
     );
-    return c.json(await project(id, entry), 201);
   });
   for (const references of [false, true])
     app.get(
@@ -272,14 +374,46 @@ export function createProjectAssetRoutes(options: {
       observation: writeObservation((name) => c.req.header(name)),
     }),
   );
-  // Single-shot import accepts the full product size (above), so the chunked
-  // session path, which exists for the Worker request-size limit, is absent.
-  app.post("/:projectId/assets/import-sessions", (c) => {
-    const { status, body } = projectAssetOperationUnavailable(
-      "import-sessions",
+  // Chunked import: the same Asset SDK protocol the Cloudflare adapter serves,
+  // over the shared filesystem staging store and the single-shot commit above.
+  app.post("/:projectId/assets/import-sessions", async (c) => {
+    const result = await createProjectAssetImportSession(
+      {
+        projectId: c.req.param("projectId"),
+        ownerId: c.get("userId"),
+        body: await c.req.json().catch(() => null),
+      },
+      importSessionPorts(c.req.param("projectId")),
     );
-    return c.json(body, status);
+    return c.json(result.body, result.status);
   });
+  app.post(
+    "/:projectId/assets/import-sessions/:sessionId/finalize",
+    async (c) => {
+      const result = await finalizeProjectAssetImportSession(
+        {
+          projectId: c.req.param("projectId"),
+          sessionId: c.req.param("sessionId"),
+          ownerId: c.get("userId"),
+        },
+        importSessionPorts(c.req.param("projectId")),
+      );
+      return c.json(result.body, result.status);
+    },
+  );
+  app.put(
+    "/:projectId/assets/import-sessions/:sessionId/content",
+    async (c) =>
+      handleProjectAssetImportSessionContent(
+        c.req.raw,
+        {
+          projectId: c.req.param("projectId"),
+          sessionId: c.req.param("sessionId"),
+          ownerId: c.get("userId"),
+        },
+        importSessionPorts(c.req.param("projectId")),
+      ),
+  );
   app.get("/:projectId/assets/:assetId/media", async (c) => {
     const id = c.req.param("projectId");
     const entry = await withProjectDocument(

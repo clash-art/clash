@@ -273,6 +273,7 @@ const PLATFORM_IMPORT =
 const SHARED_ENTRIES = [
   "packages/shared-runtime/src/cloud-project-host/timeline-commands.ts",
   "packages/shared-runtime/src/cloud-project-host/project-assets.ts",
+  "packages/shared-runtime/src/cloud-project-host/project-asset-import-sessions.ts",
   "packages/shared-runtime/src/cloud-project-host/plugin-catalog.ts",
   "packages/shared-runtime/src/cloud-project-host/text-revisions.ts",
   "packages/shared-runtime/src/project-host-contract/index.ts",

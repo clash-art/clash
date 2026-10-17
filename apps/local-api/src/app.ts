@@ -81,7 +81,15 @@ import {
   type ProjectRecoveryPolicy,
 } from "@clash/shared-runtime";
 import { AssetSdkContractError } from "@clash/asset-sdk";
-import { projectAssetOperationUnavailable } from "@clash/shared-runtime/cloud-project-host/project-assets";
+import {
+  createHmacProjectAssetImportSessionTokens,
+  createProjectAssetImportSession,
+  finalizeProjectAssetImportSession,
+  handleProjectAssetImportSessionContent,
+  type ProjectAssetImportSessionPorts,
+} from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
+import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
+import { resolveProviderSecretKey } from "./local-provider-store.js";
 import {
   agentReadReceiptToken,
   actionSourceModel,
@@ -3794,6 +3802,62 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     });
     return projectAssetService;
   };
+  // Chunked Project Asset import: one filesystem staging store and one HMAC
+  // session codec for the local Host. The finalize commit reuses `installOwned`,
+  // the same path the single-shot import uses.
+  const importStaging = createFsAssetDeliveryStore(
+    join(options.dataDir, "asset-import-sessions"),
+  );
+  let importSessionSecret: Promise<string> | undefined;
+  const importSessionSecretAt = () =>
+    (importSessionSecret ??= resolveProviderSecretKey(options.dataDir).then(
+      (key) => key.toString("base64"),
+    ));
+  const importSessionPorts = async (
+    projectId: string,
+    origin: string,
+  ): Promise<ProjectAssetImportSessionPorts> => ({
+    clock: { now: () => Date.now() },
+    newId: randomUUID,
+    tokens: createHmacProjectAssetImportSessionTokens({
+      secret: await importSessionSecretAt(),
+      now: () => Date.now(),
+    }),
+    access: {
+      // The local Host is single-user: the configured Host user owns every
+      // Project. The signed token still binds the concrete owner.
+      async canAccessProject({ projectId: id, ownerId }) {
+        return ownerId === userId && !!id.trim();
+      },
+    },
+    staging: {
+      store: importStaging,
+      delete: (locator) => importStaging.delete(locator),
+    },
+    uploadUrl: (sessionId) =>
+      `${origin}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-sessions/${encodeURIComponent(sessionId)}/content`,
+    async commit(input) {
+      return projectAssetServiceAt(origin).installOwned({
+        projectId: input.projectId,
+        projectAssetId: input.projectAssetId,
+        kind: input.kind,
+        source: Readable.fromWeb(
+          (await input.openSource()) as import("node:stream/web").ReadableStream,
+        ),
+        declaredByteLength: input.byteLength,
+        name: input.fileName,
+        ...(input.contentType ? { contentType: input.contentType } : {}),
+        metadata: input.metadataHints ?? {},
+        provenance: { kind: "import" },
+        ...(input.duplicateContent
+          ? { duplicateContent: input.duplicateContent }
+          : {}),
+      });
+    },
+    async resolveCommitted({ projectId: id, projectAssetId }) {
+      return projectAssetServiceAt(origin).read(id, projectAssetId);
+    },
+  });
   const projectCanvasThumbnailInput = (
     projectId: string,
     entry: Awaited<ReturnType<typeof projectCanvasPreviewEntryFor>>,
@@ -4878,14 +4942,51 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     }
   });
 
-  // Local single-shot import has no hosted 64 MiB cap, so the shared client's
-  // chunked session path stays unavailable here (501, never 404).
+  // Chunked import sessions: the same Asset SDK protocol the Cloudflare
+  // adapter serves, with filesystem staging and the single-shot commit path.
   app.post(
     "/api/v1/projects/:projectId/assets/import-sessions",
-    (c) => {
-      const { status, body } =
-        projectAssetOperationUnavailable("import-sessions");
-      return c.json(body, status);
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const result = await createProjectAssetImportSession(
+        {
+          projectId,
+          ownerId: userId,
+          body: await c.req.json().catch(() => null),
+        },
+        await importSessionPorts(projectId, requestOrigin(c)),
+      );
+      return c.json(result.body, result.status);
+    },
+  );
+  app.post(
+    "/api/v1/projects/:projectId/assets/import-sessions/:sessionId/finalize",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const result = await finalizeProjectAssetImportSession(
+        {
+          projectId,
+          sessionId: c.req.param("sessionId"),
+          ownerId: userId,
+        },
+        await importSessionPorts(projectId, requestOrigin(c)),
+      );
+      return c.json(result.body, result.status);
+    },
+  );
+  app.put(
+    "/api/v1/projects/:projectId/assets/import-sessions/:sessionId/content",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      return handleProjectAssetImportSessionContent(
+        c.req.raw,
+        {
+          projectId,
+          sessionId: c.req.param("sessionId"),
+          ownerId: userId,
+        },
+        await importSessionPorts(projectId, requestOrigin(c)),
+      );
     },
   );
 

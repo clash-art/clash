@@ -143,6 +143,11 @@
       "import": "./src/project-cloud-admission-postgres.ts",
       "default": "./dist/project-cloud-admission-postgres.js"
     },
+    "./fs-asset-delivery-store": {
+      "types": "./src/fs-asset-delivery-store.ts",
+      "import": "./src/fs-asset-delivery-store.ts",
+      "default": "./dist/fs-asset-delivery-store.js"
+    },
     "./cloud-run-journal": {
       "types": "./src/cloud-run-journal.ts",
       "import": "./src/cloud-run-journal.ts",
@@ -187,6 +192,11 @@
       "types": "./src/cloud-project-host/project-assets.ts",
       "import": "./src/cloud-project-host/project-assets.ts",
       "default": "./dist/cloud-project-host/project-assets.js"
+    },
+    "./cloud-project-host/project-asset-import-sessions": {
+      "types": "./src/cloud-project-host/project-asset-import-sessions.ts",
+      "import": "./src/cloud-project-host/project-asset-import-sessions.ts",
+      "default": "./dist/cloud-project-host/project-asset-import-sessions.js"
     },
     "./cloud-project-host/text-revisions": {
       "types": "./src/cloud-project-host/text-revisions.ts",
