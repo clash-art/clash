@@ -55,3 +55,22 @@ describe.each(["apps/api-cf/wrangler.toml", "apps/web/wrangler.toml"])(
     });
   },
 );
+
+describe("apps/api-cf/wrangler.toml staging media origin", () => {
+  const staging = stagingTables(
+    readFileSync(resolve(__dirname, "../../..", "apps/api-cf/wrangler.toml"), "utf8"),
+  );
+
+  // Remote plugins, providers and the render server fetch signed media URLs
+  // from this origin; it must be absolute and point at the staging Web Worker,
+  // never at a production host.
+  it("pins WORKER_PUBLIC_URL to the staging Web Worker origin", () => {
+    const line = staging.find((entry) => /^WORKER_PUBLIC_URL\s*=/.test(entry));
+    const value = line ? JSON.parse(line.split("=").slice(1).join("=").trim()) : undefined;
+    expect(value).toBeTypeOf("string");
+    const url = new URL(value);
+    expect(url.protocol).toBe("https:");
+    expect(url.hostname.startsWith("clash-web-staging.")).toBe(true);
+    expect(url.pathname).toBe("/");
+  });
+});

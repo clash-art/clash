@@ -333,6 +333,11 @@ BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # explicitly (empty = falls through to RENDER_CONTAINER DO at runtime).
 RENDER_SERVER_URL = ""
 MEDIA_GATEWAY_URL = ""
+# Absolute origin for signed media URLs handed to remote plugins, providers
+# and the render server. Staging traffic enters through the staging Web
+# Worker, which proxies /assets to this Worker, so that origin is the public
+# one. Production keeps setting WORKER_PUBLIC_URL as a secret (see above).
+WORKER_PUBLIC_URL = "https://clash-web-staging.hrhrngxy.workers.dev"
 
 # Recover journaled generation whose Workflow scheduling or execution was interrupted.
 [triggers]
