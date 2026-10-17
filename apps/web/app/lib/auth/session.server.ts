@@ -22,8 +22,11 @@ export async function getUserIdFromRequest(
   if (env.SKIP_LOGIN === "true") return DEV_USER_ID;
   const auth = createAuth(env, cf);
   try {
+    // Server-side authorization reads the sessions table, never the cookie
+    // cache (issue #154), so a revoked session is rejected immediately.
     const session = (await auth.api.getSession({
       headers: new Headers(request.headers),
+      query: { disableCookieCache: true },
     })) as AuthSession;
     return session?.user?.id ?? null;
   } catch {

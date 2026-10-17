@@ -151,6 +151,9 @@ service = "clash-meta-staging"
 # equal the value on clash-api-staging, which validates the same session cookie.
 [env.staging.vars]
 ENVIRONMENT = "staging"
+# Issue #154: get-session cache misses read through D1 read replicas (Sessions
+# API, primary re-check on null). Remove to roll back to primary-only reads.
+D1_READ_REPLICAS = "auto"
 BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # Wrangler refuses to inherit top-level vars; redeclare to silence the warning.
 # Empty = "service binding will resolve" — only used as a dev fallback.

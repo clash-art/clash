@@ -1,4 +1,5 @@
 import type { IncomingRequestCfProperties } from "@cloudflare/workers-types";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { emailOTP } from "better-auth/plugins";
@@ -30,7 +31,54 @@ export type AuthBindings = {
   RESEND_API_KEY?: string;
   NODE_ENV?: string;
   ENVIRONMENT?: string;
+  /** Issue #154: cookie cache lifetime in seconds; "0" turns it off. */
+  BETTER_AUTH_COOKIE_CACHE_SECONDS?: string;
 };
+
+/**
+ * Issue #154: lifetime of Better Auth's signed `session_data` cookie. While it
+ * is fresh, get-session answers from the cookie (HMAC-verified, no D1 query).
+ * This is also the longest that get-session can keep reporting a session that
+ * was revoked from another device. Data routes (api-cf, meta) still check the
+ * sessions table on every request, so they reject a revoked session at once.
+ */
+export const DEFAULT_COOKIE_CACHE_SECONDS = 60;
+
+export function resolveCookieCacheSeconds(env: AuthBindings): number {
+  const raw = env.BETTER_AUTH_COOKIE_CACHE_SECONDS;
+  if (raw === undefined || raw.trim() === "") return DEFAULT_COOKIE_CACHE_SECONDS;
+  const n = Number(raw);
+  // Bounded on purpose: a long cache would stretch the revocation window.
+  if (!Number.isInteger(n) || n < 0 || n > 300) return DEFAULT_COOKIE_CACHE_SECONDS;
+  return n;
+}
+
+/**
+ * The D1 handle Better Auth's queries go to for the current request. The
+ * per-isolate instance below is built once, so it cannot hold a request's D1
+ * Sessions API handle. Instead it reads through this scope, and get-session
+ * runs a cache miss against a read replica (see get-session.server.ts).
+ * Outside a scope, every query goes to the primary binding.
+ */
+type ScopedD1 = D1Database | D1DatabaseSession;
+const d1Scope = new AsyncLocalStorage<ScopedD1>();
+
+/** Better Auth (drizzle) only calls prepare/batch, which both handle types have. */
+export function runWithD1<T>(db: ScopedD1, fn: () => T): T {
+  return d1Scope.run(db, fn);
+}
+
+function routedD1(primary: D1Database): D1Database {
+  const current = () => (d1Scope.getStore() ?? primary) as D1Database;
+  return {
+    prepare: (query: string) => current().prepare(query),
+    batch: (statements: D1PreparedStatement[]) => current().batch(statements),
+    exec: (query: string) => current().exec(query),
+    dump: () => (current() as unknown as { dump(): Promise<ArrayBuffer> }).dump(),
+    withSession: (constraint?: string) =>
+      (primary as unknown as { withSession(c?: string): unknown }).withSession(constraint),
+  } as unknown as D1Database;
+}
 
 /**
  * Resolve the session signing secret. The published dev fallback is only
@@ -78,11 +126,27 @@ async function sendOtpEmail(
   }
 }
 
+type AuthInstance = ReturnType<typeof buildAuth>;
+const authByEnv = new WeakMap<object, AuthInstance>();
+
 /**
- * Build a Better Auth instance bound to the current request's Cloudflare env.
- * Called per request to avoid stale bindings.
+ * Better Auth instance for this env, built once per isolate (issue #154; the
+ * same pattern api-cf uses since #134). Building one (plugin init, drizzle
+ * adapter, schema merge) used to happen on every /api/better-auth/* request.
+ * The instance keeps no per-request state. `cf` only feeds geolocation, which
+ * is off below, so it is not part of the key. Rate limiting is unchanged: in
+ * better-auth 1.6 the "memory" store is module-level, so it was already
+ * per isolate. A different env object (tests) gets its own instance.
  */
-export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
+export function createAuth(env: AuthBindings, _cf?: IncomingRequestCfProperties): AuthInstance {
+  const cached = authByEnv.get(env);
+  if (cached) return cached;
+  const auth = buildAuth(env);
+  authByEnv.set(env, auth);
+  return auth;
+}
+
+function buildAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
   const secret = resolveAuthSecret(env);
   const baseURL = env.BETTER_AUTH_URL;
   const googleClientId = env.AUTH_GOOGLE_ID;
@@ -99,7 +163,7 @@ export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) 
         geolocationTracking: false,
         cf: (cf ?? {}) as IncomingRequestCfProperties,
         d1: {
-          db: drizzle(env.DB, { schema: betterAuthSchema }) as unknown as any,
+          db: drizzle(routedD1(env.DB), { schema: betterAuthSchema }) as unknown as any,
           options: {
             usePlural: true,
             debugLogs: false,
@@ -118,6 +182,17 @@ export function createAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) 
           ...(isLocalAuthBaseUrl(baseURL) ? devTrustedOrigins : []),
         ],
         secret,
+        session: {
+          // Issue #154: signed session_data cookie. Sign-out expires it along
+          // with session_token. Sensitive endpoints (revoke-*, change-password,
+          // ...) bypass it inside Better Auth.
+          cookieCache: (() => {
+            const maxAge = resolveCookieCacheSeconds(env);
+            return maxAge > 0
+              ? { enabled: true, maxAge, strategy: "compact" as const }
+              : { enabled: false };
+          })(),
+        },
         // Keep email/password for Settings → API tokens flows that may rely on
         // password-style accounts; it's harmless if unused by the main login UI.
         emailAndPassword: { enabled: true },
