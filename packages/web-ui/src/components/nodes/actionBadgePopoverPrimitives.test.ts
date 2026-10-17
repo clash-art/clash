@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { sourceContains } from "../../test-support/source-match";
+
 const readNodeSource = (file: string) =>
     readFileSync(join(process.cwd(), "packages/web-ui/src/components/nodes", file), "utf8");
 
@@ -10,7 +12,8 @@ describe("ActionBadge popover primitives", () => {
         const source = readNodeSource("ActionBadge.tsx");
 
         expect(source).toContain("NodeToolbar");
-        expect(source).toContain("{showPanel ? (\n        <NodeToolbar");
+        // The action panel mounts only while open (#163/#164); whitespace-insensitive.
+        expect(sourceContains(source, "{showPanel ? (<NodeToolbar")).toBe(true);
         expect(source).toContain('useCanvasTransientUiOwner("action-panel", id)');
         expect(source).toContain("../ui/popover");
         expect(source).toContain("PopoverContent");
