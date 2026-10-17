@@ -213,6 +213,11 @@
       "import": "./src/cloud-project-host/text-revisions.ts",
       "default": "./dist/cloud-project-host/text-revisions.js"
     },
+    "./cloud-project-host/voice-input": {
+      "types": "./src/cloud-project-host/voice-input.ts",
+      "import": "./src/cloud-project-host/voice-input.ts",
+      "default": "./dist/cloud-project-host/voice-input.js"
+    },
     "./cloud-project-host/plugin-catalog": {
       "types": "./src/cloud-project-host/plugin-catalog.ts",
       "import": "./src/cloud-project-host/plugin-catalog.ts",

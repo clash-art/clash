@@ -5,6 +5,7 @@
     "project-assets.ts": "Project Asset HTTP adapter: owner/D1 checks, single-shot and chunked R2 imports, signed read receipts, preview capability projections, references, 501 trash/restore and the empty personal library. Document reads/commits call ProjectRoom internal assets-* ops.",
     "index.ts": "Default v1 route registration.",
     "projects.ts": "Project CRUD and cloud admission API.",
-    "plugin-catalog.ts": "GET generator-definitions, plugin-views, plugin-actions with local-api response shapes; loads the catalog service on first request."
+    "plugin-catalog.ts": "GET generator-definitions, plugin-views, plugin-actions with local-api response shapes; loads the catalog service on first request.",
+    "voice-input.ts": "Cloudflare adapter of /api/v1/audio/voice-input and /api/v1/audio/transcriptions. Reads hosted provider accounts/model cards for readiness and transcribes through the hosted text-generation adapter; local ASR stays local-only."
   }
 }
