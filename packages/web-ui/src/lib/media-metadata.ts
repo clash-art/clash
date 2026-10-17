@@ -81,23 +81,32 @@ async function probeMedia(
   });
 }
 
-async function probeImage(url: string): Promise<AssetImportMetadataHints> {
+async function probeImage(file: File): Promise<AssetImportMetadataHints> {
+  // Decoding without a DOM element; a browser that cannot decode yields no hints.
+  if (typeof createImageBitmap !== "function") return {};
   return withTimeout((finish) => {
-    const image = new Image();
-    image.addEventListener(
-      "load",
-      () =>
-        finish({
-          ...(image.naturalWidth > 0 ? { width: image.naturalWidth } : {}),
-          ...(image.naturalHeight > 0
-            ? { height: image.naturalHeight }
-            : {}),
-        }),
-      { once: true },
+    createImageBitmap(file).then(
+      (bitmap) => {
+        const hints = {
+          ...(bitmap.width > 0 ? { width: bitmap.width } : {}),
+          ...(bitmap.height > 0 ? { height: bitmap.height } : {}),
+        };
+        bitmap.close();
+        finish(hints);
+      },
+      () => finish({}),
     );
-    image.addEventListener("error", () => finish({}), { once: true });
-    image.src = url;
   });
+}
+
+/** Only a type the browser says it can play will ever report metadata. */
+function canPlay(kind: "video" | "audio", type: string): boolean {
+  if (!type) return false;
+  try {
+    return document.createElement(kind).canPlayType(type) !== "";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -108,21 +117,23 @@ export async function probeProjectAssetMetadata(
   file: File,
   kind: AssetKind,
 ): Promise<AssetImportMetadataHints> {
-  if (
-    typeof document === "undefined" ||
-    typeof URL.createObjectURL !== "function"
-  )
-    return {};
-  const url = URL.createObjectURL(file);
+  const known: AssetImportMetadataHints = kind === "audio" ? { hasAudio: true } : {};
   try {
-    if (kind === "image") return await probeImage(url);
-    if (kind === "video") return await probeMedia(url, "video");
-    if (kind === "audio")
-      return { ...(await probeMedia(url, "audio")), hasAudio: true };
-    return {};
+    if (kind === "image") return await probeImage(file);
+    if (kind !== "video" && kind !== "audio") return known;
+    if (
+      typeof document === "undefined" ||
+      typeof URL.createObjectURL !== "function" ||
+      !canPlay(kind, file.type)
+    )
+      return known;
+    const url = URL.createObjectURL(file);
+    try {
+      return { ...(await probeMedia(url, kind)), ...known };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   } catch {
-    return {};
-  } finally {
-    URL.revokeObjectURL(url);
+    return known;
   }
 }
