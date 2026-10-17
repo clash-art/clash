@@ -38,9 +38,10 @@
     "remotion": "^4.0.0"
   },
   "dependencies": {
-    "@clash/shared-types": "workspace:*",
     "@clash/remotion-core": "workspace:*",
     "@clash/remotion-effects": "workspace:*",
+    "@clash/shared-types": "workspace:*",
+    "@remotion/media": "4.0.536",
     "typescript": "^5.9.3"
   },
   "devDependencies": {

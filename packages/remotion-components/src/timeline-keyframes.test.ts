@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { ImageItem } from "@clash/remotion-core";
 import {
+  computeTimelineItemMaskClipPath,
+  computeTimelineItemMaskGeometry,
   computeTimelineItemMaskStyle,
   computeTimelineItemLocalFrame,
   computeTimelineItemTransformStyle,
@@ -8,7 +10,7 @@ import {
 } from "./VideoComposition";
 
 describe("Timeline item keyframe rendering", () => {
-  it("encodes feathered inverted masks as real SVG alpha masks", () => {
+  it("encodes feathered inverted masks as a raster alpha mask", () => {
     const item: ImageItem = {
       id: "masked",
       type: "image",
@@ -19,11 +21,11 @@ describe("Timeline item keyframe rendering", () => {
         shape: "ellipse",
         position: [50, 40],
         size: [60, 30],
-      rotation: 90,
-      feather: 25,
-      inverted: true,
-    },
-  };
+        rotation: 90,
+        feather: 25,
+        inverted: true,
+      },
+    };
 
     const style = computeTimelineItemMaskStyle({
       item,
@@ -31,18 +33,59 @@ describe("Timeline item keyframe rendering", () => {
       renderedWidth: 1600,
       renderedHeight: 900,
     });
-    const maskImage = String(style.maskImage);
-    const encodedSvg = maskImage.slice(maskImage.indexOf(',') + 1, -2);
-    const svg = decodeURIComponent(encodedSvg);
+    const geometry = computeTimelineItemMaskGeometry({
+      item,
+      itemLocalFrame: 0,
+      renderedWidth: 1600,
+      renderedHeight: 900,
+    });
 
-    expect(svg).toContain('viewBox="0 0 100 100" preserveAspectRatio="none"');
-    expect(svg).toContain('<feGaussianBlur stdDeviation="0.7031 1.25"');
-    expect(svg).toContain('<rect x="0" y="0" width="100" height="100" fill="white"/>');
-    expect(svg).toContain('<ellipse cx="50" cy="40" rx="30" ry="15" fill="black"');
-    expect(svg).toContain('<g transform="matrix(0 1.7778 -0.5625 0 72.5 -48.8889)">');
-    expect(svg).toContain('mask="url(#clip-mask)"');
+    expect(String(style.maskImage)).toMatch(
+      /^url\("data:image\/png;base64,/,
+    );
     expect(style.WebkitMaskImage).toBe(style.maskImage);
-    expect(style.maskSize).toBe('100% 100%');
+    expect(style.maskPosition).toBe("0% 0%");
+    expect(style.maskSize).toBe("100% 100%");
+    expect(geometry?.featherPixels).toBeCloseTo(11.25, 5);
+    expect(geometry?.inverted).toBe(true);
+    expect(geometry?.primitive).toBe("ellipse");
+  });
+
+  it("uses clip-path for unfeathered masks and rotates polygons in physical space", () => {
+    const item: ImageItem = {
+      id: "masked",
+      type: "image",
+      src: "image.png",
+      from: 0,
+      durationInFrames: 30,
+      mask: {
+        shape: "rectangle",
+        position: [50, 50],
+        size: [40, 20],
+        rotation: 90,
+        feather: 0,
+        inverted: false,
+      },
+    };
+    const geometry = computeTimelineItemMaskGeometry({
+      item,
+      itemLocalFrame: 0,
+      renderedWidth: 1600,
+      renderedHeight: 900,
+    });
+    expect(geometry).not.toBeNull();
+
+    const style = computeTimelineItemMaskStyle({
+      item,
+      itemLocalFrame: 0,
+      renderedWidth: 1600,
+      renderedHeight: 900,
+    });
+    expect(style.maskImage).toBeUndefined();
+    expect(String(style.clipPath)).toMatch(/^polygon\(/);
+    expect(
+      computeTimelineItemMaskClipPath(geometry!, 1600, 900),
+    ).toContain("55.625% 14.4444%");
   });
 
   it("derives item-local time from composition time even for the contiguous-sequence offset", () => {
@@ -95,7 +138,6 @@ describe("Timeline item keyframe rendering", () => {
       itemLocalFrame: 10,
       compositionWidth: 1000,
       compositionHeight: 500,
-      trackZIndex: 3,
     })).toEqual({
       position: "absolute",
       left: "calc(50% + 50px)",
@@ -104,7 +146,6 @@ describe("Timeline item keyframe rendering", () => {
       height: "10%",
       transform: "translate(-50%, -50%) rotate(45deg) scale(1.5, 0.75)",
       opacity: 0.5,
-      zIndex: 3,
     });
   });
 
