@@ -1,6 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { loader } from "./home";
+import type { loader as homeLoader } from "./home";
+
+// The session is a page-lifetime cache (#160): each case loads fresh modules.
+let loader: typeof homeLoader;
+
+beforeEach(async () => {
+  vi.resetModules();
+  ({ loader } = await import("./home"));
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -60,6 +69,42 @@ describe("home loader marketplace feed", () => {
     );
 
     await expect(loader({} as never)).rejects.toMatchObject({ status: 302 });
+  });
+
+  it("shares one get-session across layout and home loader re-runs", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const path = new URL(String(input), "http://clash.local").pathname;
+      if (path === "/api/better-auth/get-session") {
+        return Response.json({ user: { id: "user-1" } });
+      }
+      if (path === "/api/marketplace/feed") {
+        return Response.json({ version: 1, featuredPlugins: [] });
+      }
+      if (path === "/api/v1/projects") {
+        return Response.json({ projects: [] });
+      }
+      return Response.json([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { loader: layoutLoader } = await import(
+      "../layouts/appLayoutLoader"
+    );
+
+    for (let navigation = 0; navigation < 3; navigation += 1) {
+      await expect(layoutLoader({} as never)).resolves.toEqual({
+        isAuthenticated: true,
+      });
+      await expect(loader({} as never)).resolves.toMatchObject({
+        authed: true,
+      });
+    }
+
+    const sessionReads = fetchMock.mock.calls.filter(
+      ([input]) =>
+        new URL(String(input), "http://clash.local").pathname ===
+        "/api/better-auth/get-session",
+    );
+    expect(sessionReads).toHaveLength(1);
   });
 
   it("redirects when the hosted project read reports an expired session", async () => {

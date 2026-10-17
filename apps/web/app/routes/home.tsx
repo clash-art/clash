@@ -3,9 +3,12 @@ import { redirect, useLoaderData } from "react-router";
 import HomePageClient from "@clash/web-ui/components/HomePageClient";
 import {
   getRuntimeCapabilities,
-  runtimeApiUrl,
   runtimeFetch,
 } from "@clash/web-ui/lib/runtimeConfig";
+import {
+  getSession,
+  sessionFailureStatus,
+} from "@clash/web-ui/lib/sessionStore";
 import {
   emptyMarketplaceFeedData,
   loadMarketplaceFeedData,
@@ -13,22 +16,12 @@ import {
 
 export async function loader(_: LoaderFunctionArgs) {
   if (getRuntimeCapabilities().auth.mode === "better-auth") {
-    let session: Response;
-    try {
-      session = await fetch(runtimeApiUrl("/api/better-auth/get-session"), {
-        credentials: "include",
-      });
-    } catch {
-      throw new Response("Unable to verify session", { status: 503 });
+    const session = await getSession();
+    const failure = sessionFailureStatus(session);
+    if (failure !== null) {
+      throw new Response("Unable to verify session", { status: failure });
     }
-    if (session.status === 401) throw redirect("/login");
-    if (!session.ok) {
-      throw new Response("Unable to verify session", {
-        status: session.status,
-      });
-    }
-    const data = (await session.json()) as { user?: { id?: string } } | null;
-    if (!data?.user?.id) throw redirect("/login");
+    if (!session.data?.user?.id) throw redirect("/login");
   }
 
   const [projects, marketplaceFeed] = await Promise.all([

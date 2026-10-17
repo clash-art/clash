@@ -1,24 +1,12 @@
 import type { LoaderFunctionArgs } from "react-router";
-import {
-  getRuntimeCapabilities,
-  runtimeApiUrl,
-} from "@clash/web-ui/lib/runtimeConfig";
+import { getRuntimeCapabilities } from "@clash/web-ui/lib/runtimeConfig";
+import { getSession } from "@clash/web-ui/lib/sessionStore";
 
 export async function loader(_: LoaderFunctionArgs) {
   if (getRuntimeCapabilities().auth.mode === "local-user") {
     return { isAuthenticated: true };
   }
-  try {
-    const response = await fetch(
-      runtimeApiUrl("/api/better-auth/get-session"),
-      { credentials: "include" },
-    );
-    if (!response.ok) return { isAuthenticated: false };
-    const data = (await response.json()) as {
-      user?: { id?: string };
-    } | null;
-    return { isAuthenticated: !!data?.user?.id };
-  } catch {
-    return { isAuthenticated: false };
-  }
+  // The shared session source: fetched once per page load, then cached (#160).
+  const { data } = await getSession();
+  return { isAuthenticated: !!data?.user?.id };
 }

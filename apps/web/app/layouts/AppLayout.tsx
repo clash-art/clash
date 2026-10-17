@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   Outlet,
   useLoaderData,
@@ -8,14 +7,9 @@ import {
 import LayoutContent from "@clash/web-ui/components/LayoutContent";
 import DevLogBridge from "@clash/web-ui/components/DevLogBridge";
 import { ConfirmDialogProvider } from "@clash/web-ui/components/ConfirmDialog";
-import {
-  getEffectiveChromeAuth,
-  shouldProbeSessionForChrome,
-} from "./authChrome";
-import {
-  isDesktopRuntime,
-  runtimeApiUrl,
-} from "@clash/web-ui/lib/runtimeConfig";
+import { getEffectiveChromeAuth } from "./authChrome";
+import { isDesktopRuntime } from "@clash/web-ui/lib/runtimeConfig";
+import { useSessionSignedIn } from "@clash/web-ui/lib/sessionStore";
 import type { loader } from "./appLayoutLoader";
 
 function routeLoadingName(pathname: string): string {
@@ -127,41 +121,11 @@ export default function AppLayout() {
   const { isAuthenticated } = useLoaderData<typeof loader>();
   const pathname = useLocation().pathname;
   const navigation = useNavigation();
-  const [probedAuthenticated, setProbedAuthenticated] =
-    useState(isAuthenticated);
-
-  useEffect(() => {
-    setProbedAuthenticated(isAuthenticated);
-  }, [isAuthenticated]);
-
-  useEffect(() => {
-    if (!shouldProbeSessionForChrome(pathname, isAuthenticated)) return;
-
-    let cancelled = false;
-
-    async function probeSession() {
-      try {
-        const res = await fetch(runtimeApiUrl("/api/better-auth/get-session"), {
-          credentials: "include",
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as { user?: { id?: string } } | null;
-        if (!cancelled) setProbedAuthenticated(!!data?.user?.id);
-      } catch {
-        if (!cancelled) setProbedAuthenticated(false);
-      }
-    }
-
-    void probeSession();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isAuthenticated, pathname]);
+  const sessionSignedIn = useSessionSignedIn();
 
   const effectiveAuthenticated = getEffectiveChromeAuth(
     isAuthenticated,
-    probedAuthenticated,
+    sessionSignedIn,
   );
   const pendingPathname =
     isDesktopRuntime() &&
