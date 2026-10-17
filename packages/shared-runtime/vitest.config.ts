@@ -17,6 +17,10 @@ export default defineConfig({
         replacement: resolve(__dirname, "../asset-sdk/src/index.ts"),
       },
       {
+        find: /^@clash\/shared-layout$/,
+        replacement: resolve(__dirname, "../shared-layout/src/index.ts"),
+      },
+      {
         find: /^@clash\/shared-types\/(.+)$/,
         replacement: resolve(__dirname, "../shared-types/src/$1.ts"),
       },

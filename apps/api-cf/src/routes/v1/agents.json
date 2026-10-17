@@ -3,6 +3,7 @@
   "key_files": {
     "project-content.ts": "Exact Project Resource capability issuance and immutable Document body transport. Checks current admission, Loro reference membership and byte integrity; no raw-key authorization.",
     "index.ts": "Default v1 route registration.",
-    "projects.ts": "Project CRUD and cloud admission API."
+    "projects.ts": "Project CRUD and cloud admission API.",
+    "plugin-catalog.ts": "GET generator-definitions, plugin-views, plugin-actions with local-api response shapes; loads the catalog service on first request."
   }
 }

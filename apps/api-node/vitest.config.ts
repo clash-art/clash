@@ -39,10 +39,24 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/shared-runtime\/project-host-contract$/,
+        replacement: resolve(
+          import.meta.dirname,
+          "../../packages/shared-runtime/src/project-host-contract/index.ts",
+        ),
+      },
+      {
         find: /^@clash\/shared-runtime\/(.+)$/,
         replacement: resolve(
           import.meta.dirname,
           "../../packages/shared-runtime/src/$1.ts",
+        ),
+      },
+      {
+        find: /^@clash\/shared-layout$/,
+        replacement: resolve(
+          import.meta.dirname,
+          "../../packages/shared-layout/src/index.ts",
         ),
       },
       {

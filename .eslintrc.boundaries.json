@@ -1,0 +1,334 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": "latest",
+    "sourceType": "module",
+    "ecmaFeatures": {
+      "jsx": true
+    }
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.d.ts"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "packages/web-ui/src/**/*.{ts,tsx}",
+        "packages/remotion-ui/src/**/*.{ts,tsx}",
+        "packages/director-ui/src/**/*.{ts,tsx}",
+        "packages/gui/src/**/*.{ts,tsx}",
+        "packages/remotion-components/src/**/*.{ts,tsx}"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "@clash/local-api",
+                  "@clash/local-api/*",
+                  "@clash/api-node",
+                  "@clash/api-node/*",
+                  "@clash/api-cf",
+                  "@clash/api-cf/*",
+                  "@clash/render-server",
+                  "@clash/render-server/*",
+                  "@clash/desktop",
+                  "@clash/desktop/*",
+                  "@clash/web",
+                  "@clash/web/*"
+                ],
+                "message": "UI packages depend only on the shared capability interfaces; backend adapters are chosen at the composition root."
+              },
+              {
+                "group": [
+                  "**/apps/*",
+                  "**/apps/**"
+                ],
+                "message": "UI packages must not reach into app (adapter / composition root) sources."
+              },
+              {
+                "group": [
+                  "cloudflare:*",
+                  "@cloudflare/*",
+                  "wrangler",
+                  "wrangler/*",
+                  "pg",
+                  "pg/*",
+                  "postgres",
+                  "@electric-sql/*"
+                ],
+                "message": "UI packages must not import platform runtimes."
+              },
+              {
+                "group": [
+                  "@clash/shared-runtime/local-daemon",
+                  "@clash/shared-runtime/host-discovery",
+                  "@clash/shared-runtime/cloud-project-host",
+                  "@clash/shared-runtime/cloud-project-host/*",
+                  "@clash/shared-runtime/project-host-contract",
+                  "@clash/shared-runtime/project-host-contract/*"
+                ],
+                "message": "Local-host discovery and server-side Project Host modules are adapter/composition-root only."
+              }
+            ],
+            "paths": [
+              {
+                "name": "@clash/shared-runtime",
+                "importNames": [
+                  "resolveRuntimeConfig"
+                ],
+                "message": "Runtime mode is resolved only by lib/runtimeConfig.ts; read capabilities instead."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/web-ui/src/lib/betterAuthClient.ts",
+        "packages/web-ui/src/hooks/useAgentCopilot.ts",
+        "packages/web-ui/src/lib/runtimeConfig.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/shared-runtime/src/cloud-project-host/**/*.ts",
+        "packages/shared-runtime/src/project-host-contract/**/*.ts"
+      ],
+      "excludedFiles": [
+        "**/*.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "cloudflare:*",
+                  "@cloudflare/*",
+                  "wrangler",
+                  "wrangler/*",
+                  "workerd",
+                  "agents",
+                  "agents/*",
+                  "partyserver",
+                  "partyserver/*"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "node:*",
+                  "fs",
+                  "fs/*",
+                  "path",
+                  "os",
+                  "child_process",
+                  "crypto",
+                  "stream",
+                  "worker_threads",
+                  "http",
+                  "https",
+                  "net"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "pg",
+                  "pg/*",
+                  "postgres",
+                  "@electric-sql/*",
+                  "drizzle-orm",
+                  "drizzle-orm/*",
+                  "better-sqlite3",
+                  "kysely"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "hono",
+                  "hono/*",
+                  "better-auth",
+                  "better-auth/*"
+                ],
+                "message": "Shared Project Host modules are command-in / JSON-out; HTTP and auth shells live in the adapters."
+              },
+              {
+                "group": [
+                  "**/apps/*",
+                  "**/apps/**",
+                  "@clash/local-api*",
+                  "@clash/api-node*",
+                  "@clash/api-cf*",
+                  "@clash/desktop*",
+                  "@clash/web",
+                  "@clash/web/*"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "../local-daemon*",
+                  "../host-discovery*",
+                  "../workspace-*",
+                  "../project-cloud-admission-postgres*",
+                  "@clash/shared-runtime/local-daemon",
+                  "@clash/shared-runtime/host-discovery"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              }
+            ]
+          }
+        ],
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "Identifier[name=/^(process|Deno|Bun|caches|WebSocketPair|navigator|__CLASH_RUNTIME_CONFIG__|__CLASH_DESKTOP__|DurableObject|DurableObjectState|R2Bucket|D1Database|KVNamespace)$/]",
+            "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+          },
+          {
+            "selector": "MemberExpression[property.name=/^(process|Deno|Bun|caches|navigator|__CLASH_RUNTIME_CONFIG__|__CLASH_DESKTOP__)$/]",
+            "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+          },
+          {
+            "selector": "MemberExpression[object.name='Date'][property.name='now']",
+            "message": "Use the injected clock port."
+          },
+          {
+            "selector": "NewExpression[callee.name='Date'][arguments.length=0]",
+            "message": "Use the injected clock port."
+          },
+          {
+            "selector": "MemberExpression[property.name='randomUUID']",
+            "message": "Use the injected id port."
+          },
+          {
+            "selector": "MemberExpression[object.name='Math'][property.name='random']",
+            "message": "Use the injected id port."
+          },
+          {
+            "selector": "MemberExpression[object.name='crypto'][property.name='subtle']",
+            "message": "Use the injected signing/digest port."
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "packages/asset-sdk/src/**/*.ts"
+      ],
+      "excludedFiles": [
+        "**/*.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "cloudflare:*",
+                  "@cloudflare/*",
+                  "wrangler",
+                  "wrangler/*",
+                  "workerd",
+                  "agents",
+                  "agents/*",
+                  "partyserver",
+                  "partyserver/*"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "node:*",
+                  "fs",
+                  "fs/*",
+                  "path",
+                  "os",
+                  "child_process",
+                  "crypto",
+                  "stream",
+                  "worker_threads",
+                  "http",
+                  "https",
+                  "net"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "pg",
+                  "pg/*",
+                  "postgres",
+                  "@electric-sql/*",
+                  "drizzle-orm",
+                  "drizzle-orm/*",
+                  "better-sqlite3",
+                  "kysely"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "hono",
+                  "hono/*",
+                  "better-auth",
+                  "better-auth/*"
+                ],
+                "message": "Shared Project Host modules are command-in / JSON-out; HTTP and auth shells live in the adapters."
+              },
+              {
+                "group": [
+                  "**/apps/*",
+                  "**/apps/**",
+                  "@clash/local-api*",
+                  "@clash/api-node*",
+                  "@clash/api-cf*",
+                  "@clash/desktop*",
+                  "@clash/web",
+                  "@clash/web/*"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              },
+              {
+                "group": [
+                  "../local-daemon*",
+                  "../host-discovery*",
+                  "../workspace-*",
+                  "../project-cloud-admission-postgres*",
+                  "@clash/shared-runtime/local-daemon",
+                  "@clash/shared-runtime/host-discovery"
+                ],
+                "message": "Shared Project Host modules are platform-agnostic: storage, DB, blob, realtime, clock, ids and auth arrive through injected ports; only api-cf / api-node / local-api composition roots know the platform."
+              }
+            ]
+          }
+        ],
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "Identifier[name=/^(process|Deno|Bun|caches|WebSocketPair|navigator|__CLASH_RUNTIME_CONFIG__|__CLASH_DESKTOP__|DurableObject|DurableObjectState|R2Bucket|D1Database|KVNamespace)$/]",
+            "message": "The asset SDK is platform-agnostic: adapters inject storage, registry, room and identity ports."
+          },
+          {
+            "selector": "MemberExpression[property.name=/^(process|Deno|Bun|caches|navigator|__CLASH_RUNTIME_CONFIG__|__CLASH_DESKTOP__)$/]",
+            "message": "The asset SDK is platform-agnostic: adapters inject storage, registry, room and identity ports."
+          }
+        ]
+      }
+    }
+  ]
+}

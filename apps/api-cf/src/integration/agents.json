@@ -5,6 +5,7 @@
     "project-content-multipart.integration.test.ts": "Product-limit Resource HTTP/R2 round trip with one reusable request-part buffer and incremental download hashing; large Document replication, private staging, resume, publication/abort races, corruption and TTL cleanup. Never deep-compare large byte arrays or allocate an entire product-limit object.",
     "test-worker.ts": "Local integration Worker bindings and existing durable runtime entrypoints.",
     "project-websocket-auth.integration.test.ts": "Real public createApp to ProjectRoom workerd WebSocket authorization, both raw and loro-v1, D1 API/session revocation, hibernation, JWT expiry, passive-read protection and pre-initialization rejection. Only external Better Auth get-session is mocked.",
-    "supervisor-auth.integration.test.ts": "Real Supervisor storage and WebSocket authorization, including hibernated token revocation before AIChat mutation and deleted-project broadcast suppression."
+    "supervisor-auth.integration.test.ts": "Real Supervisor storage and WebSocket authorization, including hibernated token revocation before AIChat mutation and deleted-project broadcast suppression.",
+    "project-host.contract.integration.test.ts": "Shared Project Host contract against the real createApp in workerd. Catalog must pass; host-command and Project Asset routes are known gaps until the remote adapter lands. Also checks Timeline validation with the Function constructor disabled (deployed workerd forbids code generation; the vitest pool allows it)."
   }
 }

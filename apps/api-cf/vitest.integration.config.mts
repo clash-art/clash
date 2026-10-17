@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
@@ -5,18 +6,34 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-plugin";
 // Pull D1 migrations from the web app (the canonical schema location).
 const migrationsPath = path.resolve(__dirname, "../web/drizzle");
 
+// workerd has no filesystem: the Project Host contract's sample video arrives as a binding.
+const contractSampleVideo = readFileSync(
+  path.resolve(
+    __dirname,
+    "../../packages/shared-runtime/src/project-host-contract/fixtures/sample-64x64-1s.mp4",
+  ),
+).toString("base64");
+
 export default defineConfig(async () => {
   const migrations = await readD1Migrations(migrationsPath);
 
   return {
     resolve: {
       alias: [
+        {
+          find: /^@clash\/shared-runtime\/project-host-contract$/,
+          replacement: path.resolve(
+            __dirname,
+            "../../packages/shared-runtime/src/project-host-contract/index.ts",
+          ),
+        },
         ...[
           "shared-types",
           "shared-runtime",
           "action-sdk",
           "asset-sdk",
           "shared-cloud-schema",
+          "metadata-service",
         ].flatMap((name) => [
           {
             find: new RegExp(`^@clash/${name}/(.+)$`),
@@ -70,7 +87,10 @@ export default defineConfig(async () => {
         isolatedStorage: false,
         main: "./src/integration/test-worker.ts",
         miniflare: {
-          bindings: { TEST_MIGRATIONS: migrations as unknown } as Record<
+          bindings: {
+            TEST_MIGRATIONS: migrations as unknown,
+            CONTRACT_SAMPLE_VIDEO_BASE64: contractSampleVideo,
+          } as Record<
             string,
             unknown
           >,

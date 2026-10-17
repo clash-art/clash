@@ -41,14 +41,15 @@
     "benchmark:artifacts": "pnpm --dir packages/shared-artifact-evals exec tsx src/cli.ts",
     "benchmark:agent-product": "pnpm --dir packages/shared-artifact-evals exec tsx src/cli.ts --suite benchmarks/agent-product/v1/suite.json",
     "assets:director:anny": "tsx scripts/generate-director-anny-assets.ts",
-    "lint": "node scripts/source-check-config.ts --check && tsc --noEmit --project tsconfig.quality.json && turbo run lint typecheck --concurrency=3",
+    "lint": "node scripts/source-check-config.ts --check && pnpm run lint:boundaries && tsc --noEmit --project tsconfig.quality.json && turbo run lint typecheck --concurrency=3",
     "lint:package": "turbo run lint --filter",
     "typecheck": "node scripts/source-check-config.ts --check && tsc --noEmit --project tsconfig.quality.json && turbo run typecheck --concurrency=3",
     "typecheck:package": "turbo run typecheck --filter",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "quality:configs:write": "node scripts/source-check-config.ts --write",
-    "quality:configs:check": "node scripts/source-check-config.ts --check"
+    "quality:configs:check": "node scripts/source-check-config.ts --check",
+    "lint:boundaries": "eslint --no-eslintrc --no-inline-config -c .eslintrc.boundaries.json --ext .ts,.tsx packages/web-ui/src packages/remotion-ui/src packages/director-ui/src packages/gui/src packages/remotion-components/src packages/shared-runtime/src packages/asset-sdk/src"
   },
   "keywords": [
     "creative-platform",
@@ -83,7 +84,9 @@
     "@types/node": "^24.0.0",
     "ws": "^8.18.0",
     "@types/ws": "^8.5.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "eslint": "^8.57.0",
+    "@typescript-eslint/parser": "^8.49.0"
   },
   "packageManager": "pnpm@10.34.5",
   "pnpm": {

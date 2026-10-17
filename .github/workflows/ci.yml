@@ -25,10 +25,17 @@ jobs:
           linux-apt-packages: ffmpeg
 
       - run: make lint
-      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts scripts/e2e/harness.test.ts
+      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts scripts/e2e/harness.test.ts scripts/architecture-boundaries.test.ts
       - run: pnpm --filter @clash/desktop test
       - name: Verify Web unit tests
         run: pnpm --dir apps/web exec vitest run
+      - name: Verify every Project Host adapter passes the shared contract
+        run: |
+          pnpm --dir packages/shared-runtime exec vitest run src/cloud-project-host src/generator-contract.test.ts src/generator-validator-codegen.test.ts
+          pnpm --dir apps/local-api exec vitest run src/project-host.contract.test.ts
+          pnpm --dir apps/api-node exec vitest run src/project-host.contract.test.ts src/timeline-host.test.ts src/timeline-definition.test.ts src/personal-assets.test.ts
+          pnpm --dir apps/api-cf exec vitest run src/startup-imports.test.ts src/generated/cloud-plugin-validators.test.ts
+          pnpm --dir apps/api-cf exec vitest run --config vitest.integration.config.mts src/integration/project-host.contract.integration.test.ts
       - name: Verify Storyboard references and chat drafts
         run: pnpm --dir packages/web-ui exec vitest run src/components/PluginStoryboardSurface.test.tsx src/components/copilot/useCopilotComposerDraft.test.tsx src/components/copilot/projectAssetReferences.test.ts src/components/copilot/ChatInput.test.tsx
       - name: Verify workspace controls and native Asset provenance

@@ -186,6 +186,9 @@
       "@clash/shared-runtime/minimax-executor": [
         "packages/shared-runtime/src/minimax-executor.ts"
       ],
+      "@clash/shared-runtime/project-host-contract": [
+        "packages/shared-runtime/src/project-host-contract/index.ts"
+      ],
       "@clash/shared-types": [
         "packages/shared-types/src/index.ts"
       ],
