@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ObservedProjectTimeline } from "@clash/shared-runtime";
-import { createBrowserTimelineRenderExecutor } from "./adapter";
+import {
+  createBrowserTimelineRenderExecutor,
+  TimelineRenderPublicationRejected,
+} from "./adapter";
 
 const observed = {
   readToken: "receipt",
@@ -147,7 +150,9 @@ describe("browser Timeline render executor", () => {
     const publishRender = vi
       .fn()
       .mockRejectedValueOnce(new Error("publication unavailable"))
-      .mockRejectedValueOnce(new Error("publication unavailable"));
+      .mockRejectedValueOnce(
+        new TimelineRenderPublicationRejected("Timeline not found"),
+      );
     const discardAsset = vi.fn(async () => undefined);
     const run = executor({
       renderFrame: async () => new Blob(["mp4"], { type: "video/mp4" }),
@@ -163,12 +168,37 @@ describe("browser Timeline render executor", () => {
         onProgress: () => undefined,
         submit: submitRender,
       }),
-    ).rejects.toThrow("publication unavailable");
+    ).rejects.toThrow("Timeline not found");
     expect(publishRender).toHaveBeenCalledTimes(2);
     expect(discardAsset).toHaveBeenCalledWith({
       projectId: "project-1",
       assetId: "asset-1",
     });
+    expect(submitRender).not.toHaveBeenCalled();
+  });
+
+  it("keeps the uploaded Asset when publication failed ambiguously", async () => {
+    const submitRender = vi.fn(submit);
+    const discardAsset = vi.fn(async () => undefined);
+    const run = executor({
+      renderFrame: async () => new Blob(["mp4"], { type: "video/mp4" }),
+      uploadAsset: async () => ({ id: "asset-1" }) as never,
+      publishRender: vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+      discardAsset,
+    });
+    await expect(
+      run({
+        projectId: "project-1",
+        observed,
+        signal: new AbortController().signal,
+        onProgress: () => undefined,
+        submit: submitRender,
+      }),
+    ).rejects.toThrow("Failed to fetch");
+    // The node may already reference the Asset; never trash it here.
+    expect(discardAsset).not.toHaveBeenCalled();
     expect(submitRender).not.toHaveBeenCalled();
   });
 });

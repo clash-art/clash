@@ -262,6 +262,15 @@ async function signedTrackSources(
   return bind(tracks) as unknown[];
 }
 
+/**
+ * The server answered and refused the publication (4xx), so no Canvas node
+ * references the uploaded Asset. Anything else (network loss, 5xx) is
+ * ambiguous: the idempotent completion may already have published it.
+ */
+export class TimelineRenderPublicationRejected extends Error {
+  override name = "TimelineRenderPublicationRejected";
+}
+
 async function publishTimelineRender(input: {
   projectId: string;
   timelineId: string;
@@ -289,7 +298,11 @@ async function publishTimelineRender(input: {
     typeof body?.renderNodeId !== "string" ||
     typeof body.actionRunId !== "string"
   )
-    throw new Error(
+    throw new (
+      response.status >= 400 && response.status < 500
+        ? TimelineRenderPublicationRejected
+        : Error
+    )(
       typeof body?.error === "string"
         ? body.error
         : `Timeline render publication failed with HTTP ${response.status}`,
@@ -376,12 +389,17 @@ export function createBrowserTimelineRenderExecutor(
             timelineId: observed.timeline.id,
             assetId: upload.id,
           });
-        } catch {
-          await discardAsset({
-            projectId,
-            assetId: upload.id,
-          }).catch(() => undefined);
-          throw error;
+        } catch (retryError) {
+          // Discard only when the server definitively refused. After an
+          // ambiguous failure the node may exist and reference this Asset;
+          // trashing it would break a published render. An unreferenced
+          // Asset stays in the library and a retry republishes idempotently.
+          if (retryError instanceof TimelineRenderPublicationRejected)
+            await discardAsset({
+              projectId,
+              assetId: upload.id,
+            }).catch(() => undefined);
+          throw retryError;
         }
       }
     } catch (error) {

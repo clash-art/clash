@@ -3,7 +3,8 @@
  *
  * Starts the real Vite dev server, renders a short 1080p text timeline twice:
  * inline on the page's main thread (baseline), then in a cross-site iframe
- * (localhost parent -> 127.0.0.1 frame, as in our PoC). The parent observes
+ * (localhost parent -> 127.0.0.1 frame: different sites, so Chrome site
+ * isolation puts the frame in its own renderer process; ports alone do not). The parent observes
  * long tasks only for the render window. A main-thread render must produce
  * some; the iframe path must produce none on the parent.
  *
@@ -134,7 +135,9 @@ async function main() {
       await baseline.close();
 
       const hosted = await browser.newPage();
-      await hosted.goto(`http://127.0.0.1:${hostPort}/`);
+      // `localhost` and `127.0.0.1` are different sites. Two ports on one host
+      // are the same site and would share the parent's renderer process.
+      await hosted.goto(`http://localhost:${hostPort}/`);
       const iframe = await hosted.evaluate(
         (input) =>
           (
@@ -144,6 +147,17 @@ async function main() {
           ).startRender(input),
         request,
       );
+      // Self-check that the frame really is out-of-process (an OOPIF has its
+      // own CDP target of type "iframe"); otherwise the numbers prove nothing.
+      const cdp = await browser.newBrowserCDPSession();
+      const { targetInfos } = (await cdp.send("Target.getTargets")) as {
+        targetInfos: { type: string; url: string }[];
+      };
+      const outOfProcess = targetInfos.some(
+        (target) =>
+          target.type === "iframe" && target.url.startsWith(frameOrigin),
+      );
+      await cdp.detach();
       await hosted.close();
 
       const sum = (values: number[]) =>
@@ -156,7 +170,8 @@ async function main() {
               longtasks: mainThread.length,
               totalMs: sum(mainThread),
             },
-            crossOriginIframe: {
+            crossSiteIframe: {
+              outOfProcess,
               parentLongtasks: iframe.length,
               totalMs: sum(iframe),
             },
@@ -169,6 +184,7 @@ async function main() {
         mainThread.length > 0,
         "expected the main-thread baseline to produce a long task",
       );
+      assert(outOfProcess, "expected the render frame to be an out-of-process iframe");
       assert(
         iframe.length === 0,
         `expected zero parent long tasks, saw ${iframe.length}`,

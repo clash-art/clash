@@ -333,6 +333,10 @@ BETTER_AUTH_BASE_PATH = "/api/better-auth"
 # explicitly (empty = falls through to RENDER_CONTAINER DO at runtime).
 RENDER_SERVER_URL = ""
 MEDIA_GATEWAY_URL = ""
+# Browser Timeline export: signed Asset URLs answer CORS only for these.
+# The render frame is a separate site (pages.dev) so Chrome isolates it.
+RENDER_FRAME_ORIGIN = "https://clash-render-frame-staging.pages.dev"
+WEB_PUBLIC_ORIGIN = "https://clash-web-staging.hrhrngxy.workers.dev"
 
 # Recover journaled generation whose Workflow scheduling or execution was interrupted.
 [triggers]
