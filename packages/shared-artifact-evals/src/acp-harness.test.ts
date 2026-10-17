@@ -209,7 +209,13 @@ describe("ACP harness resolution", () => {
         directories,
       ),
     ).toEqual(
-      (({ args, env }) => ({ args: [...args, "--x"], env }))(
+      (({ args, env }) => ({
+        args: [...args, "--x"],
+        env,
+        // The requested level travels with the launch so the session can be
+        // checked against it (#50).
+        thinkingLevel: "medium",
+      }))(
         buildAcpHeadlessLaunch(entry, {
           ...directories,
           trustProject: true,

@@ -9,6 +9,10 @@ import {
   type SessionOptions,
   type Spawner,
 } from "@openma/common/acp-runtime";
+import {
+  resolveAcpHeadlessThinkingLevel,
+  type AcpHeadlessThinkingLevel,
+} from "@openma/common/acp-harnesses/headless-launch";
 
 /**
  * One line of the ACP event log an ACP-driven adapter writes to `events.jsonl`.
@@ -28,6 +32,12 @@ export type AcpEventLine =
        * the harness resolved them to.
        */
       configOptions: Array<Record<string, unknown>>;
+      /**
+       * The thinking level the launch requested and the one the session runs
+       * at, resolved by `@openma/common` (clash-art/clash#50). Present when
+       * the launch requested one.
+       */
+      thinkingLevel?: AcpHeadlessThinkingLevel;
     }
   | { type: "acp.session_update"; update: Record<string, unknown> }
   | {
@@ -125,6 +135,13 @@ export async function runAcpAgentSession(input: {
   /** Receives one JSON line per session event; ended when the turn settles. */
   events: Writable;
   onSpawn?: (child: ChildProcess) => void;
+  /**
+   * The thinking level the launch requested. The harness may run another
+   * level when the model does not offer it; that is accepted and recorded.
+   * A session that reports no thinking level at all is refused, because the
+   * request had no effect and the Attempt would not say what ran.
+   */
+  thinkingLevel?: string;
 }): Promise<AcpAgentRunResult> {
   let child: ChildProcess | undefined;
   let spawnError: string | undefined;
@@ -213,6 +230,13 @@ export async function runAcpAgentSession(input: {
         };
   }
 
+  const thinkingLevel =
+    input.thinkingLevel === undefined
+      ? undefined
+      : resolveAcpHeadlessThinkingLevel(
+          session.configOptions,
+          input.thinkingLevel,
+        );
   let stopReason: string | undefined;
   let failure: string | undefined;
   let timedOut = false;
@@ -242,7 +266,16 @@ export async function runAcpAgentSession(input: {
           }
         : {}),
       configOptions: session.configOptions.map((option) => ({ ...option })),
+      ...(thinkingLevel ? { thinkingLevel } : {}),
     });
+    if (thinkingLevel?.status === "unreported") {
+      // `finally` below still disposes the session and ends the log.
+      return {
+        status: "failed",
+        ...exitState(),
+        error: `ACP session reports no thinking level; the requested '${thinkingLevel.requested}' had no effect`,
+      };
+    }
     for await (const event of session.prompt(input.prompt)) {
       const line = acpEventLine(event);
       write(line);
