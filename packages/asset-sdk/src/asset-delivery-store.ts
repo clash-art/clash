@@ -82,4 +82,7 @@ export interface AssetDeliveryStore {
     bytes: Uint8Array,
     options?: { contentType?: string },
   ): Promise<void> | void;
+  /** Remove a stored object. Import staging uses this after finalization;
+   * stores that cannot delete may omit it. */
+  delete?(locator: string): Promise<void> | void;
 }

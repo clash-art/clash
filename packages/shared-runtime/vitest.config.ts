@@ -13,6 +13,10 @@ export default defineConfig({
         replacement: resolve(__dirname, "../action-sdk/src/index.ts"),
       },
       {
+        find: /^@clash\/asset-sdk\/(.+)$/,
+        replacement: resolve(__dirname, "../asset-sdk/src/$1.ts"),
+      },
+      {
         find: /^@clash\/asset-sdk$/,
         replacement: resolve(__dirname, "../asset-sdk/src/index.ts"),
       },

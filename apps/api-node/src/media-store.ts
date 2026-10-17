@@ -8,6 +8,7 @@ import { HTTPException } from "hono/http-exception";
 import {
   AssetKindSchema,
   ResourceSchema,
+  type AssetKind,
   type Resource,
 } from "@clash/shared-types";
 const fail = (status: 400 | 404, message: string): never => {
@@ -79,28 +80,34 @@ export async function readMediaUploadForm(request: Request): Promise<FormData> {
   return form;
 }
 
-export async function storeMediaUpload(directory: string, form: FormData) {
-  const kind = AssetKindSchema.safeParse(form.get("kind"));
-  const file = form.get("file");
-  if (
-    !kind.success ||
-    !(file instanceof File) ||
-    !file.size ||
-    !file.name.trim() ||
-    file.name.length > 512
-  )
+/**
+ * The one byte-installation path for both `import-file` and the chunked
+ * session finalize: validate the media type, seal the immutable Resource and
+ * link the bytes into the content-addressed store.
+ */
+export async function storeMediaBytes(
+  directory: string,
+  input: {
+    kind: AssetKind;
+    name: string;
+    type: string;
+    bytes: Uint8Array;
+  },
+) {
+  const { kind, name, type } = input;
+  if (!input.bytes.length || !name.trim() || name.length > 512)
     return fail(400, "A named, non-empty media file and kind are required");
   const contentType =
-    file.type && file.type !== "application/octet-stream"
-      ? file.type
-      : extensions[file.name.split(".").at(-1)?.toLowerCase() ?? ""];
-  if (!contentType || types[contentType] !== kind.data)
+    type && type !== "application/octet-stream"
+      ? type
+      : extensions[name.split(".").at(-1)?.toLowerCase() ?? ""];
+  if (!contentType || types[contentType] !== kind)
     return fail(400, "Unsupported media type or mismatched asset kind");
-  const bytes = Buffer.from(await file.arrayBuffer());
+  const bytes = Buffer.from(input.bytes);
   const digest = createHash("sha256").update(bytes).digest("hex");
   const resource = ResourceSchema.parse({
     id: randomUUID(),
-    kind: kind.data,
+    kind,
     digest: { algorithm: "sha256", value: digest },
     byteLength: bytes.length,
     contentType,
@@ -124,9 +131,22 @@ export async function storeMediaUpload(directory: string, form: FormData) {
 
   return {
     resource,
-    name: file.name,
-    metadata: { bytes: bytes.length, contentType, originalName: file.name },
+    name,
+    metadata: { bytes: bytes.length, contentType, originalName: name },
   };
+}
+
+export async function storeMediaUpload(directory: string, form: FormData) {
+  const kind = AssetKindSchema.safeParse(form.get("kind"));
+  const file = form.get("file");
+  if (!kind.success || !(file instanceof File))
+    return fail(400, "A named, non-empty media file and kind are required");
+  return storeMediaBytes(directory, {
+    kind: kind.data,
+    name: file.name,
+    type: file.type,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  });
 }
 export async function serveStoredMedia(
   c: Context,

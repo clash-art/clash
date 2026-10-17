@@ -61,7 +61,7 @@ describeProjectHostContract("api-node (Postgres + disk)", async () => {
       "assets.get": "supported",
       "assets.references": "supported",
       "assets.import": "supported",
-      "assets.import.chunked": "unavailable",
+      "assets.import.chunked": "supported",
       "assets.trash": "supported",
       "assets.restore": "supported",
       "assets.media": "supported",
