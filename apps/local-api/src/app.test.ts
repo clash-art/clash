@@ -251,6 +251,11 @@ describe("local API app", () => {
           workflows: { runner: "local-node", mediaPostprocess: "disabled" },
           loro: { persistence: "local", sync: "local-websocket" },
           auth: { mode: "local-user" },
+          host: {
+            timelineRender: "available",
+            textRevisions: "available",
+            localAudio: "available",
+          },
         },
       },
     });
