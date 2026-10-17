@@ -1,4 +1,7 @@
-import { ProviderExecutionError, providerHttpError } from "@clash/action-sdk";
+import {
+  ProviderExecutionError,
+  providerHttpError,
+} from "@clash/action-sdk/executable-failure";
 
 export const HUNYUAN3D_TEXT_TO_3D_ENDPOINT = "fal-ai/hunyuan3d-v3/text-to-3d";
 

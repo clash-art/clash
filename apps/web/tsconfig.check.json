@@ -162,6 +162,12 @@
       "@clash/shared-runtime/durable-run-engine": [
         "packages/shared-runtime/src/durable-run-engine.ts"
       ],
+      "@clash/shared-runtime/executable-plugin-port": [
+        "packages/shared-runtime/src/executable-plugin-port.ts"
+      ],
+      "@clash/shared-runtime/executable-run": [
+        "packages/shared-runtime/src/executable-run.ts"
+      ],
       "@clash/shared-runtime/project-host-client": [
         "packages/shared-runtime/src/project-host-client.ts"
       ],
@@ -287,6 +293,9 @@
       ],
       "@clash-plugin/fal/stdio": [
         "plugins/fal/src/stdio.ts"
+      ],
+      "@clash-plugin/fal/module": [
+        "plugins/fal/src/module.ts"
       ],
       "@clash-plugin/google/manifest.json": [
         "plugins/google/manifest.json"

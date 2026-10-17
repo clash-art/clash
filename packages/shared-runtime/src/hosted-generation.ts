@@ -17,6 +17,7 @@ import {
 } from "./cloud-run-coordinator.js";
 import {
   createBoundedRetryPolicy,
+  type DurableRetryPolicy,
   type DurableRunRecord,
   type DurableProviderExecutor,
   type DurableOutputStore,
@@ -50,6 +51,14 @@ export interface GenerationPipelinePorts {
   stage: DurableOutputStore["stage"];
   publish: DurableProjectPublisher["publish"];
   publishFailure: NonNullable<DurableProjectPublisher["publishFailure"]>;
+  /**
+   * Whether an ambiguous submit (`requestState: "unknown"`: transport failure or an attempt
+   * that expired before its checkpoint) may be retried for this request. Defaults to the
+   * availability trade-off of the Durable Run protocol (retry under the same idempotency key).
+   * Adapters return `false` for routes whose upstream cannot deduplicate a repeated submit,
+   * so an ambiguous submit fails terminally instead of risking a second charge.
+   */
+  mayRetryAmbiguousSubmit?(params: GenerationParams): boolean;
 }
 export function frozenGeneration(
   run: DurableRunRecord,
@@ -168,6 +177,25 @@ export async function enqueueGeneration(
   return run!;
 }
 
+/** Ambiguous submits are retried only when the request's upstream can deduplicate them. */
+export function atMostOnceAmbiguousSubmit(
+  policy: DurableRetryPolicy,
+  mayRetry: (run: DurableRunRecord) => boolean,
+): DurableRetryPolicy {
+  return {
+    delayMs(input) {
+      if (
+        input.operation === "submit" &&
+        input.failure.requestState === "unknown" &&
+        !mayRetry(input.run)
+      ) {
+        return null;
+      }
+      return policy.delayMs(input);
+    },
+  };
+}
+
 /** Platform-neutral admission, lifecycle and retry policy; ports own IO and scheduling. */
 export function createGenerationPipeline(ports: GenerationPipelinePorts) {
   const params = (run: DurableRunRecord) =>
@@ -176,11 +204,14 @@ export function createGenerationPipeline(ports: GenerationPipelinePorts) {
     ownerId: ports.ownerId,
     journal: ports.journal,
     clock: ports.clock,
-    retryPolicy: createBoundedRetryPolicy({
-      maxFailures: { submit: 2, poll: 4, stage: 4, publish: 4 },
-      baseDelayMs: 2000,
-      maxDelayMs: 60000,
-    }),
+    retryPolicy: atMostOnceAmbiguousSubmit(
+      createBoundedRetryPolicy({
+        maxFailures: { submit: 2, poll: 4, stage: 4, publish: 4 },
+        baseDelayMs: 2000,
+        maxDelayMs: 60000,
+      }),
+      (run) => ports.mayRetryAmbiguousSubmit?.(params(run)) ?? true,
+    ),
     attemptTimeoutMs: {
       submit: 30 * 60_000,
       poll: 30 * 60_000,

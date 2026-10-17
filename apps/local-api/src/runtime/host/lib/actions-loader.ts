@@ -145,7 +145,7 @@ interface HostedActionPackage {
   contractTests: Record<string, ExecutablePluginContractTestDocument>;
 }
 
-async function readHostedPackage(dir: string): Promise<HostedActionPackage> {
+export async function readHostedPackage(dir: string): Promise<HostedActionPackage> {
   const raw = JSON.parse(
     await readFile(join(dir, "manifest.json"), "utf8"),
   ) as Record<string, unknown>;

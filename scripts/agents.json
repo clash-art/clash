@@ -8,6 +8,7 @@
     "source-check-config.ts": "Materializes runtime-specific source-check paths from root tsconfig.source.json plus sparse source-check-profiles.json. Default/check mode only reports drift; --write explicitly refreshes generated profiles.",
     "source-check-config.test.ts": "Tests preservation of browser/app-local aliases and non-mutating failure when shared mappings change.",
     "executable-scripts.test.ts": "Executes native imports and the agent bundler in isolated fixtures, preserving generated JavaScript package boundaries without a release build.",
-    "packaged-runtime-binaries.ts": "Shared npm/self-contained/Desktop packaging helper: npm invocation per platform, ffmpeg/ffprobe installer paths, and the executable bit a read-only install cannot repair later."
+    "packaged-runtime-binaries.ts": "Shared npm/self-contained/Desktop packaging helper: npm invocation per platform, ffmpeg/ffprobe installer paths, and the executable bit a read-only install cannot repair later.",
+    "remotion-parity/": "Server (@remotion/renderer) vs browser (@remotion/web-renderer) composition parity check. Generates ffmpeg fixtures at run time and gates every sample frame on SSIM >= 0.95; run with pnpm test:remotion-parity."
   }
 }

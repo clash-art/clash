@@ -183,6 +183,16 @@
       "import": "./src/executable-plugin-schema-hash.ts",
       "default": "./dist/executable-plugin-schema-hash.js"
     },
+    "./executable-plugin-port": {
+      "types": "./src/executable-plugin-port.ts",
+      "import": "./src/executable-plugin-port.ts",
+      "default": "./dist/executable-plugin-port.js"
+    },
+    "./executable-run": {
+      "types": "./src/executable-run.ts",
+      "import": "./src/executable-run.ts",
+      "default": "./dist/executable-run.js"
+    },
     "./cloud-project-host/timeline-commands": {
       "types": "./src/cloud-project-host/timeline-commands.ts",
       "import": "./src/cloud-project-host/timeline-commands.ts",
