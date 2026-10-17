@@ -13,12 +13,12 @@ import type { LoroDoc } from "loro-crdt";
 import {
   completeTimelineRenderNode,
   projectTimelineRenderActionRunId,
-  readProjectTimeline,
   requestTimelineRevisionRender,
 } from "@clash/shared-types";
 import {
   executeTimelineHostCommand,
   parseTimelineHostCommand,
+  readHostTimeline,
   timelineReceiptMessage,
   type TimelineHostCommandResult,
 } from "@clash/shared-runtime/cloud-project-host/timeline-commands";
@@ -142,7 +142,13 @@ export async function runProjectRoomTimelineRenderCompletion(
     if (!(await owned(port, userId))) return notFound();
     const live = port.doc();
     const fork = live.fork();
-    const timeline = readProjectTimeline(fork, timelineId);
+    // Same read as the Timeline Host commands: hosted Timelines are
+    // `clash.timeline` Project Generators, not entries of the legacy map.
+    const timeline = readHostTimeline(
+      fork,
+      cloudPluginCatalog().generatorDefinitions(),
+      timelineId,
+    );
     if (!timeline)
       return { status: 404, body: { error: "Timeline not found" } };
     // Only an Asset already imported into this Project can be published.

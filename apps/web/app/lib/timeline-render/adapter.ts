@@ -341,13 +341,21 @@ export function createBrowserTimelineRenderExecutor(
     submit,
   }): Promise<TimelineRenderReceipt> => {
     let reachedPublication = false;
+    // The Host submission runs at most once per export. A failed (possibly
+    // ambiguous) container submission is never retried here: a second one
+    // could queue a second render node.
+    let submitted = false;
+    const submitOnce = () => {
+      submitted = true;
+      return submit();
+    };
     try {
       const preflight = preflightBrowserTimelineRender({
         state: observed.timeline.state,
         maxDurationSeconds,
         browser,
       });
-      if (!preflight.ok) return await submit();
+      if (!preflight.ok) return await submitOnce();
       const tracks = await signedTrackSources(projectId, preflight.tracks);
       const file = await renderFrame({
         frameUrl: frameUrlFrom(options.frameOrigin),
@@ -406,8 +414,8 @@ export function createBrowserTimelineRenderExecutor(
       if (signal.aborted || isAbort(error)) throw abortError();
       // A finished upload with a failed publication is not a render failure:
       // falling back would publish a second output for one user action.
-      if (reachedPublication) throw error;
-      return await submit();
+      if (reachedPublication || submitted) throw error;
+      return await submitOnce();
     }
   };
 }

@@ -109,6 +109,41 @@ describe('OpenInMenu', () => {
     ).toBe('true');
   });
 
+  it('can be reopened during its own export to cancel it', async () => {
+    const onCancelExport = vi.fn();
+    const { rerender } = render(
+      <OpenInMenu
+        onExport={() => new Promise<void>(() => undefined)}
+        onCancelExport={onCancelExport}
+        availability={availability}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Export video' }));
+    // The executor reports progress before any render node exists.
+    rerender(
+      <OpenInMenu
+        exportProgress={[
+          {
+            renderNodeId: 'active-render:timeline-1',
+            timelineId: 'timeline-1',
+            timelineRevisionId: 'timeline-revision-v1:abc',
+            status: 'rendering',
+            progress: 0.1,
+          },
+        ]}
+        onExport={() => new Promise<void>(() => undefined)}
+        onCancelExport={onCancelExport}
+        availability={availability}
+      />,
+    );
+    const button = screen.getByRole('button', { name: /Exporting/ });
+    expect(button.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel video export' }));
+    expect(onCancelExport).toHaveBeenCalledTimes(1);
+  });
+
   it('opens an installed editor from the combined menu', async () => {
     const onOpenInNle = vi.fn(async () => undefined);
     render(

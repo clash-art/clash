@@ -1,8 +1,11 @@
 import { LoroDoc } from "loro-crdt";
 import { describe, expect, it } from "vitest";
-import { createProjectTimeline, listTimelineExportProgress } from "@clash/shared-types";
+import { listTimelineExportProgress } from "@clash/shared-types";
 import { commitProjectAssetImport } from "@clash/shared-runtime/cloud-project-host/project-assets";
-import { runProjectRoomTimelineRenderCompletion } from "./project-room-host-command";
+import {
+  runProjectRoomHostCommand,
+  runProjectRoomTimelineRenderCompletion,
+} from "./project-room-host-command";
 
 const RENDERED = {
   id: "resource-1",
@@ -43,29 +46,34 @@ function completionPort(doc: LoroDoc, persisted: Uint8Array[] = []) {
   };
 }
 
-function docWithTimeline() {
+/** Created through the real Host command, exactly as the hosted editor does. */
+async function docWithTimeline() {
   const doc = new LoroDoc();
-  const created = createProjectTimeline(doc, {
-    id: "timeline-1",
-    name: "Cut",
-    state: {
-      tracks: [
-        {
-          id: "track",
-          items: [
-            { id: "title", type: "text", text: "Hi", from: 0, durationInFrames: 30 },
-          ],
-        },
-      ],
+  const created = await runProjectRoomHostCommand(completionPort(doc), {
+    userId: "user-1",
+    command: {
+      action: "create_timeline",
+      timelineId: "timeline-1",
+      name: "Cut",
+      state: {
+        tracks: [
+          {
+            id: "track",
+            items: [
+              { id: "title", type: "text", text: "Hi", from: 0, durationInFrames: 30 },
+            ],
+          },
+        ],
+      },
     },
   });
-  if (!created.ok) throw new Error(created.error);
-  return { doc, timeline: created.timeline };
+  if (created.status !== 200) throw new Error(JSON.stringify(created.body));
+  return { doc, timeline: { id: "timeline-1" } };
 }
 
 describe("Cloudflare browser render publication", () => {
   it("creates and completes the render node in one serialized write", async () => {
-    const { doc, timeline } = docWithTimeline();
+    const { doc, timeline } = await docWithTimeline();
     await importRenderedAsset(doc);
     const persisted: Uint8Array[] = [];
     const result = await runProjectRoomTimelineRenderCompletion(
@@ -95,7 +103,7 @@ describe("Cloudflare browser render publication", () => {
   });
 
   it("rejects a Timeline the user does not own without creating a node", async () => {
-    const { doc, timeline } = docWithTimeline();
+    const { doc, timeline } = await docWithTimeline();
     const result = await runProjectRoomTimelineRenderCompletion(
       {
         projectId: "project-1",
@@ -116,7 +124,7 @@ describe("Cloudflare browser render publication", () => {
   });
 
   it("is idempotent per Timeline and Asset: a retried publication returns the same node", async () => {
-    const { doc, timeline } = docWithTimeline();
+    const { doc, timeline } = await docWithTimeline();
     await importRenderedAsset(doc);
     const persisted: Uint8Array[] = [];
     const input = { userId: "user-1", timelineId: timeline.id, assetId: "asset-1" };
@@ -128,7 +136,7 @@ describe("Cloudflare browser render publication", () => {
   });
 
   it("refuses to publish an Asset that is not in the Project", async () => {
-    const { doc, timeline } = docWithTimeline();
+    const { doc, timeline } = await docWithTimeline();
     const result = await runProjectRoomTimelineRenderCompletion(completionPort(doc), {
       userId: "user-1",
       timelineId: timeline.id,

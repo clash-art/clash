@@ -201,4 +201,26 @@ describe("browser Timeline render executor", () => {
     expect(discardAsset).not.toHaveBeenCalled();
     expect(submitRender).not.toHaveBeenCalled();
   });
+
+  it("submits the container fallback at most once when it fails", async () => {
+    const submitRender = vi.fn(async () => {
+      throw new Error("HTTP 503");
+    });
+    const renderFrame = vi.fn();
+    const run = executor({ renderFrame });
+    await expect(
+      run({
+        projectId: "project-1",
+        observed: {
+          ...observed,
+          timeline: { ...observed.timeline, state: { tracks: [] } },
+        },
+        signal: new AbortController().signal,
+        onProgress: () => undefined,
+        submit: submitRender,
+      }),
+    ).rejects.toThrow("HTTP 503");
+    expect(renderFrame).not.toHaveBeenCalled();
+    expect(submitRender).toHaveBeenCalledTimes(1);
+  });
 });

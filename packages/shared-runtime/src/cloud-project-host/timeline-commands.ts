@@ -295,6 +295,25 @@ function run(
  * 501 COMMAND_UNAVAILABLE (never 404), so clients can tell a missing executor
  * from a missing Timeline.
  */
+/**
+ * The Timeline a Host command addresses, read exactly as the commands read it
+ * (the `clash.timeline` Project Generator), for adapter-only operations such
+ * as publishing a browser render. Null when absent or unresolvable.
+ */
+export function readHostTimeline(
+  doc: LoroDoc,
+  definitions: readonly GeneratorDefinition[],
+  timelineId: string,
+): ProjectTimeline | null {
+  const resolved = resolveGeneratorProjectionDefinition(
+    definitions,
+    "clash.timeline",
+  );
+  if (!resolved.ok) return null;
+  const read = readLocalTimelineGenerator(doc, resolved.definition, timelineId);
+  return read.ok ? read.timeline : null;
+}
+
 export function executeTimelineHostCommand(
   doc: LoroDoc,
   command: ProjectHostCommand,

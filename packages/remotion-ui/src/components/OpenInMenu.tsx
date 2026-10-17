@@ -139,8 +139,9 @@ export function OpenInMenu({
   return (
     <div className="min-w-0">
       <Ariakit.MenuProvider>
+        {/* Stays openable while exporting: progress and Cancel live in this menu. */}
         <Ariakit.MenuButton
-          disabled={operationBusy}
+          disabled={opening !== null}
           className="clash-workbench-control-button flex h-8 min-w-[92px] items-center justify-between gap-2 bg-brand px-3 text-xs font-semibold text-brand-foreground shadow-sm transition-colors hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:cursor-wait disabled:opacity-80"
         >
           <span>
