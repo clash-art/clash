@@ -44,7 +44,7 @@ export const GenerateSemanticIDRequestSchema = z.object({
 export type GenerateSemanticIDRequest = z.infer<typeof GenerateSemanticIDRequestSchema>;
 
 export const TaskSubmitRequestSchema = z.object({
-  task_type: z.enum(["image_gen", "video_gen", "audio_gen", "text_gen", "image_desc", "video_desc", "video_thumbnail", "video_render"]),
+  task_type: z.enum(["image_gen", "video_gen", "audio_gen", "text_gen", "image_desc", "video_desc", "video_thumbnail"]),
   project_id: z.string(),
   node_id: z.string(),
   params: z.record(z.string(), z.any()),
