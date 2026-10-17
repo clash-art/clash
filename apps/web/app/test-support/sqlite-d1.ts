@@ -26,7 +26,7 @@ function toSqlite(value: unknown): Value {
   return value as Value;
 }
 
-export const WEB_DRIZZLE_MIGRATIONS = resolve(__dirname, "../../../web/drizzle");
+export const WEB_DRIZZLE_MIGRATIONS = resolve(__dirname, "../../drizzle");
 
 export function createSqliteD1(migrationsDir = WEB_DRIZZLE_MIGRATIONS) {
   const db = new DatabaseSync(":memory:");

@@ -15,7 +15,7 @@ vi.mock("./containers/render", () => ({ RenderContainer: class MockRenderContain
 
 import { createApp } from "./app";
 import { createMetadataWorker } from "./metadata-worker";
-import { createSqliteD1 } from "./test-support/sqlite-d1";
+import { createSqliteD1 } from "../../web/app/test-support/sqlite-d1";
 
 for (const ORIGIN of ["http://localhost:8789", "https://parity.example.test"]) {
   describe(`metadata Worker parity with api-cf (${ORIGIN})`, () => {

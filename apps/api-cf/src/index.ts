@@ -3,12 +3,11 @@
 import * as workers from "cloudflare:workers";
 import { installWorkersTracing } from "@clash/shared-telemetry/cloudflare";
 import { serverLog } from "./logger";
-import { cleanupProjectContentUploads } from "./services/project-content-multipart";
-import { recoverHostedGenerations } from "./generation/recovery";
 import type { Env } from "./config";
 import { createApp } from "./app";
-import { ProjectRoom } from "./agents/project-room";
-import { SupervisorAgent } from "./agents/supervisor";
+// Lazy shells: the implementation modules load on each object's first event
+// instead of at Worker startup (#161).
+import { ProjectRoom, SupervisorAgent } from "./agents/lazy";
 import { GenerationWorkflow } from "./agents/generation";
 import { RuntimeRoom } from "./agents/runtime-room";
 
@@ -41,10 +40,25 @@ const app = createApp();
 export default {
   fetch: app.fetch,
   scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(Promise.all([recoverHostedGenerations(env), cleanupProjectContentUploads(env.R2_BUCKET)]));
+    ctx.waitUntil(
+      Promise.all([
+        recoverHostedGenerations(env),
+        import("./services/project-content-multipart").then((m) =>
+          m.cleanupProjectContentUploads(env.R2_BUCKET),
+        ),
+      ]),
+    );
   },
 };
-export { recoverHostedGenerations };
+
+/** Cron recovery; its generation runtime graph loads on first call (#161). */
+export async function recoverHostedGenerations(
+  env: Env,
+  now?: number,
+): Promise<void> {
+  const recovery = await import("./generation/recovery");
+  return recovery.recoverHostedGenerations(env, now);
+}
 
 // Export Durable Object classes, Workflow, and Container
 export { ProjectRoom, SupervisorAgent, GenerationWorkflow, RuntimeRoom };

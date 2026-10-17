@@ -5,7 +5,7 @@
  */
 import { beforeAll, describe, expect, it } from "vitest";
 import { createAuth, createAuthForHandler } from "../auth";
-import { createSqliteD1 } from "../test-support/sqlite-d1";
+import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
 import { betterAuthSessionCookieParams, verifySessionFast } from "./session-fast";
 import { leanSessionCookieParams } from "./session-cookie";
 
