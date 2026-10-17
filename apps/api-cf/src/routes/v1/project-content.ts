@@ -1,8 +1,10 @@
-import { MultipartContentError } from "../../services/project-content-multipart";
 import {
-  handleMultipartContent,
-  exactLengthContentStream,
-} from "../project-content-transfer";
+  MultipartContentError,
+  createUploadService,
+  trustedHeaderIdentity,
+  type ContentReferenceIndex,
+} from "@clash/asset-sdk/upload-service";
+import { serverLog } from "../../logger";
 import { Hono } from "hono";
 import { ProjectResourceDeliveryRequestSchema } from "@clash/shared-types/project-sync-content";
 import {
@@ -22,8 +24,23 @@ import {
   documentLocator,
   resourceLocator,
   projectContentReferences,
+  projectContentResolverFor,
   type ProjectContentPorts,
 } from "../../services/project-content";
+
+const EMPTY_INDEX: ContentReferenceIndex = {
+  async document() {
+    return undefined;
+  },
+  async resource() {
+    return undefined;
+  },
+};
+const uploadLog = (
+  level: "debug" | "info" | "warn" | "error",
+  event: string,
+  fields: Record<string, unknown>,
+) => (serverLog as any)[level]?.(event, fields);
 
 export function createProjectContentRoutes(
   options: {
@@ -61,8 +78,10 @@ export function createProjectContentRoutes(
       localReplicaId: input.localReplicaId,
     });
     if (!admission) return c.json({ error: "not_admitted" }, 403);
-    const refs = await projectContentReferences(ports, projectId);
-    const ref = refs.resources.find((value) => value.resourceId === resourceId);
+    const ref = await projectContentResolverFor(ports).resource(
+      projectId,
+      resourceId,
+    );
     if (!ref) return c.json({ error: "resource_not_in_project" }, 404);
     if (
       input.operation === "upload" &&
@@ -120,121 +139,31 @@ export function createProjectContentRoutes(
           });
     return c.json({ resource, capability });
   });
-  routes.on(
-    ["GET", "HEAD", "PUT"],
-    "/:id/document-bodies/:digest",
-    async (c) => {
-      const userId = c.req.header("x-user-id"),
-        localReplicaId = c.req.header("x-local-replica-id");
-      if (!userId || !localReplicaId)
-        return c.json({ error: "unauthorized" }, 401);
-      const projectId = c.req.param("id"),
-        ports = portsFor(c.env);
-      const admission = await ports.authorize({
-        projectId,
-        localReplicaId,
-        userId,
-      });
-      if (!admission) return c.json({ error: "not_admitted" }, 403);
-      const digest = c.req.param("digest"),
-        refs = await projectContentReferences(ports, projectId);
-      const ref = refs.documents.find((value) => value.digest === digest);
-      if (!ref) return c.json({ error: "document_not_in_project" }, 404);
-      const store =
-        options.store ?? createR2AssetDeliveryStore(c.env.R2_BUCKET);
-      assertContentTransferSize(ref.byteLength, options.maxBytes);
-      const key = await documentLocator(admission.tenantId, digest);
-      if (c.req.method === "PUT") {
-        const response = await handleMultipartContent(
-          c.req.raw,
-          store,
-          {
-            identity: JSON.stringify({
-              tenantId: admission.tenantId,
-              projectId,
-              localReplicaId,
-              digest,
-            }),
-            locator: key,
-            digest: ref.digest,
-            byteLength: ref.byteLength,
-            contentType: ref.contentType,
-          },
-          async () => {
-            if (!(await ports.authorize({ projectId, localReplicaId, userId })))
-              throw new MultipartContentError(
-                403,
-                "Document no longer admitted",
-              );
-            if (
-              !(
-                await projectContentReferences(ports, projectId)
-              ).documents.some(
-                (value) =>
-                  value.digest === ref.digest &&
-                  value.byteLength === ref.byteLength,
-              )
-            )
-              throw new MultipartContentError(
-                403,
-                "Document no longer referenced",
-              );
-          },
-        );
-        if (response) return response;
-        const requestMaxBytes = Math.min(
-          options.maxBytes ?? PROJECT_CLOUD_CONTENT_PART_BYTES,
-          PROJECT_CLOUD_CONTENT_PART_BYTES,
-        );
-        const declaredLength = c.req.header("content-length");
-        if (declaredLength !== undefined)
-          assertContentTransferSize(Number(declaredLength), requestMaxBytes);
-        const bytes = await readBoundedContent(c.req.raw.body, {
-          maxBytes: requestMaxBytes,
-        });
-        if (
-          bytes.byteLength !== ref.byteLength ||
-          `sha256:${await contentHash(bytes)}` !== ref.digest
-        )
-          return c.json({ error: "document_integrity_mismatch" }, 400);
-        if (!(await ports.authorize({ projectId, localReplicaId, userId })))
-          return c.json({ error: "not_admitted" }, 403);
-        if (
-          !(await projectContentReferences(ports, projectId)).documents.some(
-            (value) => value.digest === digest,
-          )
-        )
-          return c.json({ error: "document_not_in_project" }, 404);
-        await store.put(key, bytes, { contentType: ref.contentType });
-        return c.body(null, 204);
-      }
-      if (c.req.method === "HEAD") {
-        const head = await store.head(key);
-        return head && head.size === ref.byteLength
-          ? new Response(null, {
-              headers: {
-                "Content-Length": String(head.size),
-                "Cache-Control": "private, no-store",
-              },
-            })
-          : c.json({ error: "document_not_replicated" }, 404);
-      }
-      const value = await store.get(key);
-      if (!value) return c.json({ error: "document_not_replicated" }, 404);
-      assertContentTransferSize(value.size, options.maxBytes);
-      if (value.size !== ref.byteLength)
-        return c.json({ error: "document_integrity_mismatch" }, 502);
-      return new Response(
-        exactLengthContentStream(value.body, ref.byteLength),
-        {
-          headers: {
-            "Content-Type": ref.contentType,
-            "Content-Length": String(ref.byteLength),
-            "Cache-Control": "private, no-store",
-          },
-        },
-      );
-    },
-  );
+  // Document bodies: the platform-agnostic upload service (issue #130). The
+  // identity middleware in app.ts already validated and re-set x-user-id.
+  routes.on(["GET", "HEAD", "PUT"], "/:id/document-bodies/:digest", (c) => {
+    const ports = portsFor(c.env);
+    return createUploadService({
+      identity: trustedHeaderIdentity,
+      admission: ports,
+      index: ports.index ?? EMPTY_INDEX,
+      room: {
+        ...ports.room,
+        ...(ports.room?.references || ports.snapshot
+          ? { references: (id: string) => projectContentReferences(ports, id) }
+          : {}),
+      },
+      store: options.store ?? createR2AssetDeliveryStore(c.env.R2_BUCKET),
+      maxBytes: options.maxBytes,
+      telemetry: { log: uploadLog },
+      defer: (work) => {
+        try {
+          c.executionCtx.waitUntil(work);
+        } catch {
+          void work.catch(() => {});
+        }
+      },
+    }).documentBody(c.req.raw, c.req.param("id"), c.req.param("digest"));
+  });
   return routes;
 }

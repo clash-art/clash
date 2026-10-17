@@ -70,10 +70,15 @@
       "types": "./dist/marketplace-installation.d.ts",
       "import": "./dist/marketplace-installation.js",
       "default": "./dist/marketplace-installation.js"
+    },
+    "./sync-error-severity": {
+      "types": "./dist/sync-error-severity.d.ts",
+      "import": "./dist/sync-error-severity.js",
+      "default": "./dist/sync-error-severity.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts src/project-sync-content.ts src/marketplace-installation.ts --format esm --dts --clean --target es2020",
+    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts src/project-sync-content.ts src/marketplace-installation.ts src/sync-error-severity.ts --format esm --dts --clean --target es2020",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",

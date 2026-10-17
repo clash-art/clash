@@ -19,6 +19,12 @@ import { GenerationPublicationConflict, assertHostedGenerationAccess, generation
 import { DurableObject } from "cloudflare:workers";
 import { LoroDoc } from "loro-crdt";
 import { ReplicaEngine } from "@clash/replica";
+import {
+  createContentReferenceIndexer,
+  type ContentReferenceIndexer,
+} from "@clash/replica/content-index";
+import { projectSyncContent } from "@clash/shared-types/project-sync-content";
+import { createD1ContentReferenceIndex } from "../services/project-content-cloud";
 import { LoroStateAdapter } from "@clash/replica/loro";
 import {
   LoroProtocolServerSession,
@@ -403,6 +409,31 @@ export class ProjectRoom extends DurableObject<Env> {
     });
   }
 
+  private contentIndexer?: ContentReferenceIndexer<
+    ReturnType<typeof projectSyncContent>
+  >;
+  private contentIndexerProject?: string;
+
+  /** Issue #130: keeps D1 project_content_ref in step with the doc so uploads
+   * never need this room's snapshot. */
+  private contentIndex() {
+    if (!this.contentIndexer || this.contentIndexerProject !== this.projectId) {
+      const projectId = this.projectId;
+      const index = createD1ContentReferenceIndex(this.env.DB as never);
+      this.contentIndexerProject = projectId;
+      this.contentIndexer = createContentReferenceIndexer({
+        compute: () => projectSyncContent(this.doc),
+        writer: { replace: (refs) => index.replace(projectId, refs) },
+        onError: (error) =>
+          log.warn(
+            `[room proj=${projectId.slice(-6)}] content index write failed:`,
+            error,
+          ),
+      });
+    }
+    return this.contentIndexer;
+  }
+
   private async persistAndMaybeCompact(
     update: Uint8Array,
     eventId = crypto.randomUUID(),
@@ -413,7 +444,10 @@ export class ProjectRoom extends DurableObject<Env> {
       if (!this.replica) throw new Error("Project replica is not initialized");
       const result = await this.replica.submit({ id: eventId, update });
       this.nextSeq = this.replica.cursor;
-      if (result.appended) this.updatesSinceCompact++;
+      if (result.appended) {
+        this.updatesSinceCompact++;
+        this.contentIndex().changed();
+      }
       if (
         this.compactionInFlight &&
         this.updatesSinceCompact >= UPDATES_HARD_COMPACT_THRESHOLD
@@ -1452,7 +1486,8 @@ export class ProjectRoom extends DurableObject<Env> {
 
     const operation = pathParts[pathParts.length - 1];
     const projectId = this.extractLoroProjectId(request, url);
-    const initError = operation === "generation-admission" && this.replica && this.projectId === projectId
+    const initError = operation === "content-published" ||
+      (operation === "generation-admission" && this.replica && this.projectId === projectId)
       ? null
       : await this.ensureRoomInitialized(projectId, { enableTaskPolling: false });
     if (initError) return initError;
@@ -1481,6 +1516,36 @@ export class ProjectRoom extends DurableObject<Env> {
       } catch (error) {
         return Response.json({ error: error instanceof GenerationPublicationConflict ? error.message : "Generation publication failed" }, { status: error instanceof GenerationPublicationConflict ? 409 : 503 });
       }
+    }
+
+    // Issue #130: upload-service index-miss fallback. Computes references in
+    // the room (no snapshot leaves the DO) and refreshes the D1 index.
+    if (operation === "content-refs" && request.method === "GET") {
+      try {
+        return Response.json(await this.contentIndex().refresh(), {
+          headers: { "cache-control": "no-store" },
+        });
+      } catch (error) {
+        log.error("content-refs error:", error);
+        return Response.json(
+          { error: "Project content references unavailable" },
+          { status: 503 },
+        );
+      }
+    }
+
+    // Issue #130: small completion notice from the stateless upload service.
+    // Recorded only; peers learn about bodies from the CRDT revision itself.
+    if (operation === "content-published" && request.method === "POST") {
+      const event = (await request.json().catch(() => null)) as {
+        digest?: string;
+        byteLength?: number;
+        kind?: string;
+      } | null;
+      log.info(
+        `[room proj=${projectId.slice(-6)}] content.published ${event?.kind ?? "?"} ${event?.digest?.slice(0, 19) ?? "?"} ${event?.byteLength ?? "?"}B`,
+      );
+      return new Response(null, { status: 204 });
     }
 
     if (operation === "snapshot" && request.method === "GET") {

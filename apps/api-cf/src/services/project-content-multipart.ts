@@ -4,6 +4,8 @@ import {
   assertContentTransferSize,
   type AssetDeliveryStore,
 } from "@clash/asset-sdk/delivery";
+import { MultipartContentError } from "@clash/asset-sdk/upload-service";
+export { MultipartContentError };
 
 type Multipart = NonNullable<AssetDeliveryStore["multipart"]>;
 type Session = Parameters<Multipart["begin"]>[0];
@@ -22,14 +24,6 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 const LEASE_MS = 5 * 60 * 1000;
 const digest = (bytes: string | Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
-export class MultipartContentError extends Error {
-  constructor(
-    readonly status: 400 | 403 | 409 | 410 | 501,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 function invalid(message: string): never {
   throw new MultipartContentError(409, message);
 }

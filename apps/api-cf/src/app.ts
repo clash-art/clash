@@ -69,6 +69,13 @@ export interface CreateAppOptions {
   projectAdmissionStore?: CloudProjectAdmissionStore;
 }
 
+export function isUploadServicePath(path: string): boolean {
+  return (
+    /^\/api\/v1\/projects\/[^/]+\/document-bodies\/[^/]+$/.test(path) ||
+    path.startsWith("/assets/capability/")
+  );
+}
+
 function decodeProjectIdParam(raw: string): string {
   try {
     return decodeURIComponent(raw);
@@ -152,6 +159,15 @@ export function createApp(
   const app = new Hono<{ Bindings: Env }>();
 
   app.use("/*", cors());
+
+  // Issue #130: Document-body and capability uploads belong to the stateless
+  // upload Worker. Forward before identity resolution (that Worker
+  // authenticates itself); without the binding they are served in-process.
+  app.use("/*", async (c, next) => {
+    if (c.env?.API_UPLOAD && isUploadServicePath(c.req.path))
+      return c.env.API_UPLOAD.fetch(c.req.raw);
+    await next();
+  });
 
   // Public API identity is always derived here. An x-user-id supplied by a
   // browser, CLI, reverse proxy, or service binding is untrusted input.

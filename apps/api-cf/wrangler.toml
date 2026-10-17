@@ -24,6 +24,7 @@ compatibility_flags = ["nodejs_compat"]
 "@clash/shared-types/actions/asset-edit" = "../../packages/shared-types/src/actions/asset-edit.ts"
 "@clash/shared-types/project-sync-content" = "../../packages/shared-types/src/project-sync-content.ts"
 "@clash/shared-types/marketplace-installation" = "../../packages/shared-types/src/marketplace-installation.ts"
+"@clash/shared-types/sync-error-severity" = "../../packages/shared-types/src/sync-error-severity.ts"
 
 # Static `.wasm` imports (loro-crdt/bundler) must be bundled as precompiled
 # WebAssembly modules rather than fetched or eval'd at runtime.
@@ -306,6 +307,13 @@ migrations_dir = "../web/drizzle"
 [[env.staging.r2_buckets]]
 binding = "R2_BUCKET"
 bucket_name = "clash-staging-assets"
+
+# Issue #130: forward Document-body / capability uploads to the stateless
+# upload Worker (wrangler.upload.toml). Remove this block to roll back; the
+# same routes are still served in-process by this Worker.
+[[env.staging.services]]
+binding = "API_UPLOAD"
+service = "clash-upload-staging"
 
 # The top-level [triggers] cron is inherited by this environment.
 
