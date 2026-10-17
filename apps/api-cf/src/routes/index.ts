@@ -407,10 +407,6 @@ api.post("/api/tasks/submit", async (c) => {
     return c.json({ task_id: taskId, status: Status.Pending });
   }
 
-  if (task_type === "video_render") {
-    return c.json({ error: "Video rendering is handled client-side via Remotion" }, 501);
-  }
-
   return c.json({ error: `Unknown task_type: ${task_type}` }, 400);
 });
 

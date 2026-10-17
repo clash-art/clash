@@ -640,7 +640,7 @@ describe("Hono routes", () => {
       });
     });
 
-    it("submits video_render → 501 client-side", async () => {
+    it("rejects video_render task_type during validation (4xx, never 501)", async () => {
       const res = await app.request(
         "/api/tasks/submit",
         {
@@ -656,7 +656,11 @@ describe("Hono routes", () => {
         env,
       );
 
-      expect(res.status).toBe(501);
+      expect(res.status).toBe(400);
+      const json: any = await res.json();
+      expect(json.error).toBe("Validation failed");
+      expect(vi.mocked(startGeneration)).not.toHaveBeenCalled();
+      expect(env.GENERATION_WORKFLOW.create).not.toHaveBeenCalled();
     });
   });
 
