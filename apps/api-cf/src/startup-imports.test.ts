@@ -112,7 +112,9 @@ function lazyOnlyOffenders(graph: ReturnType<typeof eagerGraph>): string[] {
           file === "packages/shared-runtime/src/timeline-generator-product.ts" ||
           file === "packages/shared-runtime/src/generator-contract.ts" ||
           file.startsWith("apps/api-cf/src/generated/") ||
-          file.startsWith("apps/api-cf/src/services/cloud-plugin-"),
+          file.startsWith("apps/api-cf/src/services/cloud-plugin-") ||
+          file.startsWith("packages/shared-runtime/src/cloud-project-host/") ||
+          file === "apps/api-cf/src/agents/project-room-host-command.ts",
       ),
   ];
 }
@@ -138,6 +140,15 @@ describe("Worker startup import graph", () => {
     const startup = eagerGraph(join(SRC, "index.ts"));
     expect(startup.files.has(join(SRC, "app.ts"))).toBe(true);
     expect(lazyOnlyOffenders(startup)).toEqual([]);
+  });
+
+  it("keeps the Timeline Host command adapter out of ProjectRoom's cold start", () => {
+    const room = eagerGraph(join(SRC, "agents/project-room.ts"));
+    expect(lazyOnlyOffenders(room)).toEqual([]);
+    const adapter = eagerGraph(join(SRC, "agents/project-room-host-command.ts"));
+    expect(lazyOnlyOffenders(adapter)).toContain(
+      "packages/shared-runtime/src/cloud-project-host/timeline-commands.ts",
+    );
   });
 
   it("would detect those modules: the catalog service reaches all of them", () => {
