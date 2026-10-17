@@ -221,8 +221,9 @@ if (embedded) {
 }
 
 /**
- * E2E seam: the same render entry can run inline so a test can compare its
- * long tasks with the iframe path. It is never used by the product adapter.
+ * Dev-server-only E2E seam: the same render entry can run inline so a test can
+ * compare its long tasks with the iframe path. It is never used by the product
+ * adapter and is not installed in production builds.
  */
 declare global {
   interface Window {
@@ -231,5 +232,7 @@ declare global {
     ) => Promise<Blob>;
   }
 }
-window.__renderTimelineInline = (request) =>
-  renderRequest(request, new AbortController().signal, () => undefined);
+if (import.meta.env.DEV) {
+  window.__renderTimelineInline = (request) =>
+    renderRequest(request, new AbortController().signal, () => undefined);
+}
