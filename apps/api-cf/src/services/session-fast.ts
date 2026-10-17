@@ -5,7 +5,7 @@
  * the check itself lives in ./session-cookie (no better-auth import).
  */
 import type { D1Database } from "@cloudflare/workers-types";
-import { createAuth, type AuthBindings } from "../auth";
+import { loadAuth, type AuthBindings } from "./auth-loader";
 import {
   hmacKey,
   verifySessionCookie,
@@ -21,6 +21,7 @@ export async function betterAuthSessionCookieParams(env: AuthBindings): Promise<
   let pending = paramsByEnv.get(env);
   if (!pending) {
     pending = (async () => {
+      const { createAuth } = await loadAuth();
       const ctx = await createAuth(env).$context;
       return {
         cookieName: ctx.authCookies.sessionToken.name,
