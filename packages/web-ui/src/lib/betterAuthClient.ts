@@ -2,6 +2,7 @@ import { createAuthClient } from "better-auth/react";
 import { cloudflareClient } from "better-auth-cloudflare/client";
 import { emailOTPClient } from "better-auth/client/plugins";
 import { runtimeApiUrl } from "./runtimeConfig";
+import { clearSessionSnapshot, snapshotFetch } from "./sessionSnapshot";
 
 export type SessionQuery = {
   data: {
@@ -98,6 +99,7 @@ function notifySessionMutation(url: unknown) {
     return;
   }
   if (SESSION_MUTATION_PATHS.some((path) => pathname.endsWith(path))) {
+    clearSessionSnapshot();
     sessionMutationListener?.();
   }
 }
@@ -124,8 +126,10 @@ function getClient(): AuthClient {
     sessionOptions: { refetchOnWindowFocus: false, refetchInterval: 0 },
     fetchOptions: {
       // Resolve `fetch` per request rather than capturing it at creation.
+      // Issue #160: the first get-session of a page may be answered from a
+      // fresh cross-tab snapshot (see sessionSnapshot.ts).
       customFetchImpl: (input: RequestInfo | URL, init?: RequestInit) =>
-        fetch(input, init),
+        snapshotFetch(input, init),
       onSuccess: (context: { request: { url: unknown } }) => {
         notifySessionMutation(context.request.url);
       },

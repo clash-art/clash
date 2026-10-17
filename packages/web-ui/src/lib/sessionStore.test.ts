@@ -22,7 +22,7 @@ function sessionFetches(): number {
 
 function sessionBody() {
   return serverUser
-    ? { user: serverUser, session: { id: "session-1", userId: serverUser.id } }
+    ? { user: serverUser, session: { id: "session-1", userId: serverUser.id, token: "secret-token" } }
     : null;
 }
 
@@ -49,6 +49,7 @@ beforeEach(() => {
   globalThis.__CLASH_RUNTIME_CONFIG__ = undefined;
   serverUser = { id: "user-1" };
   requests = [];
+  localStorage.clear();
   // Each test gets fresh modules; drop the previous store's focus listener.
   documentListeners = [];
   const add = document.addEventListener.bind(document);
@@ -93,6 +94,11 @@ afterEach(() => {
   vi.restoreAllMocks();
   globalThis.__CLASH_RUNTIME_CONFIG__ = undefined;
 });
+
+async function settle<T>(promise: Promise<T>): Promise<T> {
+  await act(() => vi.advanceTimersByTimeAsync(10));
+  return promise;
+}
 
 describe("shared session source (#160)", () => {
   it("serves every startup consumer from exactly one get-session", async () => {
@@ -212,4 +218,60 @@ describe("shared session source (#160)", () => {
       expect(sessionFetches()).toBe(0);
     },
   );
+
+  it("a new tab reuses a fresh cross-tab snapshot instead of get-session", async () => {
+    const first = await load();
+    await settle(first.getSession());
+    expect(sessionFetches()).toBe(1);
+    // The persisted snapshot never carries the session token.
+    const stored = localStorage.getItem("clash.session-snapshot.v1") ?? "";
+    expect(stored).toContain("session-1");
+    expect(stored).not.toContain("secret-token");
+
+    // Another page load (new tab) within five minutes. The first tab's
+    // document listeners belong to another document in a real browser.
+    for (const [type, listener] of documentListeners.splice(0)) {
+      document.removeEventListener(type, listener);
+    }
+    vi.resetModules();
+    vi.advanceTimersByTime(60_000);
+    const tab = await load();
+    const view = renderHook(() => tab.client.useSession());
+    const session = await settle(tab.getSession());
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(session.data?.user?.id).toBe("user-1");
+    expect(view.result.current.data?.user?.id).toBe("user-1");
+    expect(sessionFetches()).toBe(1);
+
+    // Its focus throttle counts from the snapshot's age (fetched 60 s ago).
+    vi.advanceTimersByTime(4 * 60_000 + 1_000);
+    setVisibility("hidden");
+    setVisibility("visible");
+    await act(() => vi.advanceTimersByTimeAsync(10));
+    expect(sessionFetches()).toBe(2);
+  });
+
+  it("an old snapshot, a signed-out answer or an API 401 is never reused", async () => {
+    const first = await load();
+    await settle(first.getSession());
+    vi.resetModules();
+    vi.advanceTimersByTime(5 * 60_000 + 1);
+    const stale = await load();
+    await settle(stale.getSession());
+    expect(sessionFetches()).toBe(2);
+
+    await settle(stale.runtime.runtimeFetch("/api/v1/projects"));
+    expect(localStorage.getItem("clash.session-snapshot.v1")).toBeNull();
+    vi.resetModules();
+    const afterUnauthorized = await load();
+    await settle(afterUnauthorized.getSession());
+    expect(sessionFetches()).toBe(3);
+
+    serverUser = null;
+    vi.resetModules();
+    vi.advanceTimersByTime(5 * 60_000 + 1);
+    const signedOut = await load();
+    expect((await settle(signedOut.getSession())).data).toBeNull();
+    expect(localStorage.getItem("clash.session-snapshot.v1")).toBeNull();
+  });
 });

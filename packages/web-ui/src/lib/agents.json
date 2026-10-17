@@ -20,5 +20,8 @@
     "storyboardViewState.ts": "Validated Storyboard state adapter for the framework-node patch accepted by useLoroSync.updateNode. Writes data.state; persistence regression reopens a real Loro snapshot.",
     "uiTrace.ts": "Typed GUI action tracing on @opentelemetry/api only (UiActionAttributes is a closed table — ids, counts, flags). The app shell installs the SDK; withActionTrace emits the action span and hands out its W3C traceparent for Host propagation (prompt frames).",
     "localTelemetry.ts": "Typed client for GET/PATCH /api/v1/local/telemetry; validates views against the shared PublicTelemetryConfig schema."
+  },
+  "files": {
+    "sessionSnapshot.ts": "Cross-tab get-session snapshot (localStorage, 5 min): a new tab's first get-session answers from it; cleared on sign-out, auth mutations, signed-out answers and API 401."
   }
 }
