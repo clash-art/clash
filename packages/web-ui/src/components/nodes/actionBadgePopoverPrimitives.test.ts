@@ -10,7 +10,7 @@ describe("ActionBadge popover primitives", () => {
         const source = readNodeSource("ActionBadge.tsx");
 
         expect(source).toContain("NodeToolbar");
-        expect(source).toContain("isVisible={showPanel}");
+        expect(source).toContain("{showPanel ? (\n        <NodeToolbar");
         expect(source).toContain('useCanvasTransientUiOwner("action-panel", id)');
         expect(source).toContain("../ui/popover");
         expect(source).toContain("PopoverContent");
