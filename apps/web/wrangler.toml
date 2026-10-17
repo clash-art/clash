@@ -141,6 +141,12 @@ service = "clash-api-staging"
 binding = "API_UPLOAD"
 service = "clash-upload-staging"
 
+# Issue #138: lean metadata Worker (apps/api-cf/wrangler.meta.toml).
+# Remove to roll back; API_CF still serves the same metadata routes.
+[[env.staging.services]]
+binding = "API_META"
+service = "clash-meta-staging"
+
 # Required secret (`wrangler secret put BETTER_AUTH_SECRET --env staging`): must
 # equal the value on clash-api-staging, which validates the same session cookie.
 [env.staging.vars]

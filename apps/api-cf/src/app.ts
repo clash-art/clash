@@ -45,6 +45,10 @@ import {
 import { authenticateRequest } from "./loro/auth";
 import { setResolvedIdentity } from "./services/request-identity";
 import {
+  DEFERRED_HEADER as METADATA_DEFERRED_HEADER,
+  isMetadataServiceRequest,
+} from "@clash/metadata-service/routes";
+import {
   createD1ProjectMetadataStore,
   type CloudProjectMetadataStore,
 } from "./services/cloud-project-metadata";
@@ -178,6 +182,19 @@ export function createApp(
   app.use("/*", async (c, next) => {
     if (c.env?.API_UPLOAD && isUploadServicePath(c.req.path))
       return c.env.API_UPLOAD.fetch(c.req.raw);
+    await next();
+  });
+
+  // Issue #138: metadata reads + Project metadata replication belong to the
+  // lean metadata Worker when it is bound. Requests it handed back (a Better
+  // Auth session due for refresh) carry DEFERRED_HEADER and are served here.
+  app.use("/*", async (c, next) => {
+    if (
+      c.env?.API_META &&
+      c.req.header(METADATA_DEFERRED_HEADER) !== "1" &&
+      isMetadataServiceRequest(c.req.method, c.req.path)
+    )
+      return c.env.API_META.fetch(c.req.raw);
     await next();
   });
 

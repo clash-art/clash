@@ -21,6 +21,8 @@ export interface Env {
   ROOM: DurableObjectNamespace;
   /** Issue #130: stateless upload Worker; when bound, upload paths are forwarded to it. */
   API_UPLOAD?: { fetch(request: Request): Promise<Response> };
+  /** Issue #138: lean metadata Worker (optional; routes fall back in-process). */
+  API_META?: { fetch(request: Request): Promise<Response> };
   SUPERVISOR: DurableObjectNamespace;
   GENERATION_WORKFLOW: Workflow;
   RENDER_CONTAINER: DurableObjectNamespace<import("./containers/render").RenderContainer>;

@@ -210,3 +210,54 @@ describe("upload service routing (#130)", () => {
     expect(response.status).toBe(418);
   });
 });
+
+describe("metadata Worker forwarding (#138)", () => {
+  const forwardedTo = async (path: string, method = "GET", withMeta = true) => {
+    const env = gatewayEnv();
+    let meta: Request | undefined;
+    if (withMeta)
+      env.API_META = {
+        fetch: async (request) => {
+          meta = request;
+          return new Response("meta", { status: 299 });
+        },
+      };
+    const response = await worker.fetch(
+      new Request("https://clash.test" + path, { method, headers: { "x-user-id": "forged" } }),
+      env,
+    );
+    return { status: response.status, meta };
+  };
+
+  it.each([
+    ["/api/projects", "GET"],
+    ["/api/projects/p1", "GET"],
+    ["/api/settings/tokens", "GET"],
+    ["/loro/p1/metadata", "GET"],
+    ["/loro/p1/metadata", "PUT"],
+  ])("forwards %s %s without caller identity", async (path, method) => {
+    const r = await forwardedTo(path, method);
+    expect(r.status).toBe(299);
+    expect(r.meta?.headers.has("x-user-id")).toBe(false);
+    expect(r.meta?.headers.has("x-clash-require-identity")).toBe(false);
+  });
+
+  it("forwards /api/v1/projects/:id and asks the Worker to fail closed", async () => {
+    const r = await forwardedTo("/api/v1/projects/p1");
+    expect(r.status).toBe(299);
+    expect(r.meta?.headers.get("x-clash-require-identity")).toBe("1");
+  });
+
+  it.each([
+    ["/api/projects", "POST"],
+    ["/api/settings/tokens", "POST"],
+    ["/loro/p1/updates", "POST"],
+    ["/api/v1/projects", "GET"],
+  ])("keeps %s %s on api-cf", async (path, method) => {
+    expect((await forwardedTo(path, method)).status).toBe(418);
+  });
+
+  it("falls back to api-cf when API_META is not bound", async () => {
+    expect((await forwardedTo("/api/projects", "GET", false)).status).toBe(418);
+  });
+});

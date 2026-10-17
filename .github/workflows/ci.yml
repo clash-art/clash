@@ -49,5 +49,10 @@ jobs:
         run: pnpm --filter @clash/local-api test
       - name: Verify api-cf identity and D1 query budgets
         run: pnpm --dir apps/api-cf exec vitest run src/app.d1-query-count.test.ts src/services/session-fast.contract.test.ts src/app.auth.test.ts src/app.project-transport-auth.test.ts
+      - name: Verify metadata-service ports, Worker parity, and Node mono/micro smoke
+        run: |
+          pnpm --dir packages/metadata-service exec vitest run
+          pnpm --dir apps/api-cf exec vitest run src/metadata-worker.parity.test.ts
+          pnpm --dir apps/api-node exec vitest run src/metadata-service.test.ts
       - name: Verify benchmark catalog, runner, and evaluator contracts
         run: pnpm --dir packages/shared-artifact-evals exec vitest run

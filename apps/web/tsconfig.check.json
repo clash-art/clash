@@ -411,6 +411,15 @@
       "@clash/action-sdk/executable-failure": [
         "packages/action-sdk/src/executable-failure.ts"
       ],
+      "@clash/metadata-service": [
+        "packages/metadata-service/src/index.ts"
+      ],
+      "@clash/metadata-service/*": [
+        "packages/metadata-service/src/*.ts"
+      ],
+      "@clash/shared-types/project-metadata": [
+        "packages/shared-types/src/project-metadata.ts"
+      ],
       "@/*": [
         "apps/web/app/*"
       ],

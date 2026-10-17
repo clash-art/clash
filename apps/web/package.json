@@ -29,6 +29,7 @@
     "@ai-sdk/google": "^2.0.43",
     "@ai-sdk/react": "^3.0.140",
     "@clash/gui": "workspace:*",
+    "@clash/metadata-service": "workspace:*",
     "@clash/remotion-components": "workspace:*",
     "@clash/remotion-core": "workspace:*",
     "@clash/remotion-ui": "workspace:*",

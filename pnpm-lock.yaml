@@ -88,6 +88,9 @@ importers:
       '@clash/asset-sdk':
         specifier: workspace:*
         version: link:../../packages/asset-sdk
+      '@clash/metadata-service':
+        specifier: workspace:*
+        version: link:../../packages/metadata-service
       '@clash/remotion-core':
         specifier: workspace:*
         version: link:../../packages/remotion-core
@@ -176,6 +179,9 @@ importers:
       '@clash/asset-sdk':
         specifier: workspace:*
         version: link:../../packages/asset-sdk
+      '@clash/metadata-service':
+        specifier: workspace:*
+        version: link:../../packages/metadata-service
       '@clash/replica':
         specifier: workspace:*
         version: link:../../packages/shared-replica
@@ -576,6 +582,9 @@ importers:
       '@clash/gui':
         specifier: workspace:*
         version: link:../../packages/gui
+      '@clash/metadata-service':
+        specifier: workspace:*
+        version: link:../../packages/metadata-service
       '@clash/remotion-components':
         specifier: workspace:*
         version: link:../../packages/remotion-components
@@ -1094,6 +1103,19 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
+
+  packages/metadata-service:
+    dependencies:
+      '@clash/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
+    devDependencies:
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.0
+        version: 4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(@vitest/ui@1.3.1)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0))
 
   packages/remotion-components:
     dependencies:

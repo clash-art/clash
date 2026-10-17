@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@clash/asset-sdk": "workspace:*",
+    "@clash/metadata-service": "workspace:*",
     "@clash/replica": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-telemetry": "workspace:*",

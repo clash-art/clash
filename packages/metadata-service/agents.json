@@ -1,0 +1,14 @@
+{
+  "summary": "Platform-agnostic Project metadata HTTP service: project directory reads, Project metadata replication (/loro/:id/metadata) and API token listing over injected ports.",
+  "context_hints": [
+    "No platform SDK, Durable Object, Loro document, better-auth or ORM in this package; Cloudflare (D1/ProjectRoom) and Node (Postgres) adapters live in their apps",
+    "The wire contract (paths, status codes, error bodies, JSON shapes) is api-cf's; apps/api-cf/src/metadata-worker.parity.test.ts compares this service with api-cf's in-process routes on the same database",
+    "IdentityVerifier may answer \"defer\" when the platform's auth library must write (sliding session refresh); the service then hands the request to ports.defer (api-cf in-process) unchanged",
+    "Import schemas from @clash/shared-types subpaths only, never the barrel"
+  ],
+  "key_files": {
+    "src/index.ts": "Ports, route table and createMetadataService.",
+    "src/previews.ts": "Project card asset preview selection (placed media nodes first, then imported Asset refs).",
+    "src/memory.ts": "In-memory adapters for tests and the Node smoke composition."
+  }
+}

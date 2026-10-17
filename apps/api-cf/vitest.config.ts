@@ -69,6 +69,14 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/metadata-service\/(.+)$/,
+        replacement: resolve(__dirname, "../../packages/metadata-service/src/$1.ts"),
+      },
+      {
+        find: /^@clash\/metadata-service$/,
+        replacement: resolve(__dirname, "../../packages/metadata-service/src/index.ts"),
+      },
+      {
         find: /^@clash\/asset-sdk\/upload-service$/,
         replacement: resolve(
           __dirname,
