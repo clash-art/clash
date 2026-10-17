@@ -22,13 +22,28 @@ export class GenerationWorkflow extends WorkflowEntrypoint<
       );
     }
     // Loaded on first run, not at Worker startup (#161).
-    const [{ runCloudDurableWorkflowEntrypoint }, { createHostedGenerationRuntime }] =
-      await Promise.all([
-        import("../cloud-runs/cloud-durable-workflow"),
-        import("../generation/runtime"),
-      ]);
+    const [
+      { runCloudDurableWorkflowEntrypoint },
+      { createD1CloudDurableRunJournal },
+      { EXECUTABLE_ACTION_OWNER },
+    ] = await Promise.all([
+      import("../cloud-runs/cloud-durable-workflow"),
+      import("../cloud-runs/cloud-durable-run-journal"),
+      import("../cloud-runs/owners"),
+    ]);
+    // The D1 row owns the run; never infer the executor from the payload.
+    const journal = createD1CloudDurableRunJournal(this.env.DB);
+    const record = await journal.load(event.payload);
+    const coordinator =
+      record?.owner.id === EXECUTABLE_ACTION_OWNER
+        ? (
+            await import("../generation/executable-runtime")
+          ).createExecutableActionRuntime(this.env, { journal })
+        : (await import("../generation/runtime")).createHostedGenerationRuntime(
+            this.env,
+          );
     const run = await runCloudDurableWorkflowEntrypoint({
-      coordinator: createHostedGenerationRuntime(this.env),
+      coordinator,
       payload: event.payload,
       step,
     });

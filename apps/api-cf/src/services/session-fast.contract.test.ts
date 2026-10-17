@@ -87,7 +87,9 @@ for (const origin of ["http://localhost:8789", "https://staging.example.test"]) 
       const [name, value] = cookie.split("; ").find((c) => c.includes("session_token"))!.split("=");
       const decoded = decodeURIComponent(value!);
       const badSig = `${name}=${encodeURIComponent(decoded.slice(0, -5) + "AAAA=")}`;
-      const badToken = `${name}=${encodeURIComponent("x" + decoded.slice(1))}`;
+      // Always change the first character (a token that already starts with "x"
+      // would otherwise stay valid and fail this test about 1 run in 62).
+      const badToken = `${name}=${encodeURIComponent((decoded[0] === "x" ? "y" : "x") + decoded.slice(1))}`;
       for (const c of [badSig, badToken, `${name}=garbage`]) {
         expect(await official(c)).toBeNull();
         expect(await fast(c)).toBeNull();

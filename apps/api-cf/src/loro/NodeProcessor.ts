@@ -16,6 +16,10 @@ import { Status } from '../domain/canvas';
 import type { GenerationParams } from '../agents/generation';
 import { getAssetById, getAssetsByIds } from '../services/assets';
 import { signAssetPath } from '../services/asset-signing';
+import {
+  canvasMentionResolver,
+  pendingCustomActionNode,
+} from '@clash/shared-runtime/canvas-executable-node';
 
 import {
   MODEL_CARDS,
@@ -140,16 +144,6 @@ async function inspectWorkflowStatus(
   return result;
 }
 
-/** Convert ArrayBuffer to base64, chunked to avoid stack overflow. */
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  const CHUNK = 8192;
-  const chunks: string[] = [];
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    chunks.push(String.fromCharCode(...bytes.subarray(i, i + CHUNK)));
-  }
-  return btoa(chunks.join(''));
-}
 
 function toPlainRecord(value: unknown): Record<string, any> {
   if (typeof (value as { toJSON?: () => unknown } | null)?.toJSON === 'function') {
@@ -356,6 +350,14 @@ export async function recoverOrphanedTasks(
     const innerData = data?.data || {};
     const pendingTask = innerData.pendingTask as string | undefined;
     if (!pendingTask) continue;
+    // Executable Actions are owned by the Durable Run journal and its cron scan;
+    // a Workflow status probe cannot see their output slot and must not clear the
+    // optimistic lock while the frozen row is still recoverable.
+    if (
+      typeof innerData.actionType === 'string' &&
+      innerData.actionType.startsWith('custom:')
+    )
+      continue;
     candidates.push({
       nodeId,
       nodeType,
@@ -424,9 +426,7 @@ export async function processPendingNodes(
 
       const status = innerData.status as string;
       const assetId = typeof innerData.assetId === 'string' ? innerData.assetId : undefined;
-      const description = innerData.description;
       const pendingTask = innerData.pendingTask;
-      const pendingTaskAt = typeof innerData.pendingTaskAt === 'number' ? innerData.pendingTaskAt : undefined;
 
       // Optimistic lock — skip nodes already in flight. Orphan recovery is the
       // alarm's job (see recoverOrphanedTasks) so this hot path stays fast.
@@ -517,19 +517,54 @@ export async function processPendingNodes(
         continue;
       }
 
-      // Executable plugins run through local-api's Host-scoped SDK and Durable Run Engine.
-      // The hosted Cloud adapter was a second execution model: it retried an opaque HTTP submit and
-      // could charge twice across the ambiguous-submit boundary. Cloud execution remains a designed
-      // port until it can use the same journal, step graph, staging, and publication contracts.
-      if (status === Status.Pending && !assetId && innerData.actionType?.startsWith('custom:')) {
-        const error =
-          'Cloud executable-plugin execution is unavailable; run this Action through local-api.';
-        appendNodeLog(doc, nodeId, `FAILED: ${error}`, broadcast);
-        updateNodeData(doc, nodeId, {
-          pendingTask: undefined,
-          status: Status.Failed,
-          error,
-        }, broadcast);
+      // Executable plugin Actions use the same Durable Run journal, step graph, staging and
+      // publication contracts as local-api. The admission module is loaded on first use so
+      // plugin code and the executable runtime stay out of ProjectRoom's cold start.
+      if (!assetId && typeof innerData.actionType === 'string' && innerData.actionType.startsWith('custom:')) {
+        const custom = pendingCustomActionNode({ type: nodeType, data: innerData });
+        if (!custom) continue;
+        const actionActorUserId = typeof innerData.actorUserId === 'string' ? innerData.actorUserId : undefined;
+        if (!actionActorUserId) {
+          const error = 'Missing actor attribution — node created before Phase 0 attribution rollout';
+          log.warn('attribution.missing.action', { nodeId });
+          updateNodeData(doc, nodeId, {
+            pendingTask: undefined,
+            status: Status.Failed,
+            error,
+          }, broadcast);
+          continue;
+        }
+        try {
+          const { submitExecutableAction } = await import('../generation/executable-admission');
+          await submitExecutableAction(env, {
+            projectId,
+            nodeId,
+            data: innerData,
+            userId: actionActorUserId,
+            custom,
+            resolveMention: canvasMentionResolver(nodesMap),
+            onFrozen: ({ identity }) => {
+              // Optimistic lock installed before the admission self-request, so
+              // ProjectRoom persists it instead of waiting on its own queue.
+              appendNodeLog(doc, nodeId, `task=${identity.actionRunId.slice(0, 8)} type=custom-action`, broadcast);
+              updateNodeData(doc, nodeId, {
+                status: Status.Generating,
+                pendingTask: identity.actionRunId,
+                pendingTaskAt: Date.now(),
+              }, broadcast);
+            },
+          });
+          submitted = true;
+        } catch (e: any) {
+          const error = e instanceof Error ? e.message : String(e);
+          appendNodeLog(doc, nodeId, `FAILED: ${error}`, broadcast);
+          updateNodeData(doc, nodeId, {
+            pendingTask: undefined,
+            pendingTaskAt: undefined,
+            status: Status.Failed,
+            error,
+          }, broadcast);
+        }
         continue;
       }
       // Case 1: pending + no asset yet -> submit generation task

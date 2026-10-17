@@ -298,7 +298,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     }));
   });
 
-  it("fails hosted custom actions without starting a second Cloud execution engine", async () => {
+  it("fails a custom Action with no executable binding as plugin_unavailable", async () => {
     const doc = makeDoc([
       {
         id: "custom-worker-node",
@@ -320,8 +320,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     expect(doc.getMap("nodes").get("custom-worker-node")).toMatchObject({
       data: {
         status: "failed",
-        error:
-          "Cloud executable-plugin execution is unavailable; run this Action through local-api.",
+        error: expect.stringContaining("plugin_unavailable"),
       },
     });
     expect(triggerPolling).not.toHaveBeenCalled();

@@ -6,6 +6,7 @@
     "index.ts": "Default v1 route registration.",
     "projects.ts": "Project CRUD and cloud admission API.",
     "plugin-catalog.ts": "GET generator-definitions, plugin-views, plugin-actions with local-api response shapes; loads the catalog service on first request.",
-    "voice-input.ts": "Cloudflare adapter of /api/v1/audio/voice-input and /api/v1/audio/transcriptions. Reads hosted provider accounts/model cards for readiness and transcribes through the hosted text-generation adapter; local ASR stays local-only."
+    "voice-input.ts": "Cloudflare adapter of /api/v1/audio/voice-input and /api/v1/audio/transcriptions. Reads hosted provider accounts/model cards for readiness and transcribes through the hosted text-generation adapter; local ASR stays local-only.",
+    "plugin-settings.ts": "POST/GET/DELETE third-party plugin endpoints. Validates https/public hosts at save, seals the signing secret with ACTION_SECRET_KEY, and never returns it."
   }
 }

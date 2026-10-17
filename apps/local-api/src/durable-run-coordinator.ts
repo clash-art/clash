@@ -3,11 +3,9 @@ import { isDeepStrictEqual } from "node:util";
 import {
   DurableRunEngine,
   createDurableRunRecord,
-  durableRunIdempotencyKey,
   type DurableOutputStore,
   type DurableProjectPublisher,
   type DurableProviderFailure,
-  type DurableProviderStep,
   type DurableRetryPolicy,
   type DurableRunAdvanceResult,
   type DurableRunClock,
@@ -15,35 +13,21 @@ import {
   type DurableRunOperation,
   type DurableRunRecord,
 } from "@clash/shared-runtime";
-import {
-  ExecutablePluginJsonValueSchema,
-  ExecutablePluginOutputSchema,
-  type ExecutablePluginInvocation,
-  type ExecutablePluginJsonValue,
-  type ExecutablePluginResult,
-} from "@clash/shared-types";
+import { ExecutablePluginJsonValueSchema } from "@clash/shared-types";
 
 import type { SqliteDurableRunJournal } from "./durable-run-journal";
 import type { ProviderPluginExecutor } from "./local-aigc.js";
 import { ProviderPluginHostUnavailableError } from "./local-aigc.js";
-import type {
-  ExecutablePluginActionInvoker,
-  ExecutablePluginActionRequest,
-} from "./plugin-action-runtime";
 
 import {
-  executableProviderRequest,
-  executableProviderStep,
+  createExecutableRunProvider,
   FrozenExecutorInputError,
-  generatorActionStep,
   parseFrozenExecutableInput,
-  pluginOutputSlotsForDurableRun,
-  remainingAttemptTimeoutMs,
+  type ExecutablePluginActionInvoker,
   type FrozenExecutableInput,
   type FrozenExecutableTargetKind,
   type FrozenGeneratorProviderExecution,
   type FrozenProjectAssetDelivery,
-  type ProviderPluginExecutorRequest,
 } from "@clash/shared-runtime/executable-run";
 
 export type {
@@ -131,158 +115,6 @@ export interface LocalDurableRunCoordinatorOptions {
   attemptTimeoutMs?: Partial<Record<DurableRunOperation, number>>;
   deadlineReconciliationTimeoutMs?: number;
   recoveryFinalizationTimeoutMs?: number;
-}
-
-function customActionText(value: ExecutablePluginJsonValue): string {
-  if (typeof value === "string") return value;
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    if (typeof value.text === "string") return value.text;
-    if (typeof value.content === "string") return value.content;
-  }
-  return JSON.stringify(value);
-}
-
-function customActionStep(
-  run: DurableRunRecord,
-  result: ExecutablePluginResult,
-): DurableProviderStep {
-  const frozen = parseFrozenExecutorInput(run.executorInput);
-  if (result.status === "failed") {
-    return { status: "failed", error: result.error };
-  }
-  if (result.status === "accepted") {
-    return {
-      status: "failed",
-      error: {
-        code: "contract_violation",
-        message:
-          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} accepted work, ` +
-          "but custom Actions do not declare a poll operation.",
-        retryable: false,
-        requestState: "accepted",
-      },
-    };
-  }
-  if (result.outputs.length !== 1) {
-    return {
-      status: "failed",
-      error: {
-        code: "contract_violation",
-        message:
-          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
-          `${result.outputs.length} outputs for one legacy Action output; expected exactly one.`,
-        retryable: false,
-        requestState: "accepted",
-      },
-    };
-  }
-
-  const output = result.outputs[0]!;
-  const expectedSlots = pluginOutputSlotsForDurableRun(
-    frozen,
-    run.outputSlot,
-  );
-  if (!expectedSlots.includes(output.slot)) {
-    return {
-      status: "failed",
-      error: {
-        code: "contract_violation",
-        message:
-          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
-          `output slot ${output.slot}; expected ${expectedSlots.join(" or ")}.`,
-        retryable: false,
-        requestState: "accepted",
-      },
-    };
-  }
-  if (frozen.kind === "text") {
-    if (output.kind !== "value") {
-      return {
-        status: "failed",
-        error: {
-          code: "contract_violation",
-          message:
-            `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
-            `${output.kind} output for a text Action; expected value.`,
-          retryable: false,
-          requestState: "accepted",
-        },
-      };
-    }
-    return {
-      status: "completed",
-      outputs: [
-        {
-          slot: run.outputSlot,
-          kind: "value",
-          value:
-            frozen.targetKind === "local-executor"
-              ? output.value
-              : customActionText(output.value),
-        },
-      ],
-    };
-  }
-  if (output.kind !== "asset") {
-    return {
-      status: "failed",
-      error: {
-        code: "contract_violation",
-        message:
-          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
-          `${output.kind} output for a ${frozen.kind} Action; expected asset.`,
-        retryable: false,
-        requestState: "accepted",
-      },
-    };
-  }
-  if (output.asset.kind !== frozen.kind) {
-    return {
-      status: "failed",
-      error: {
-        code: "contract_violation",
-        message:
-          `Action plugin ${frozen.binding.pluginId}/${frozen.binding.exportId} returned ` +
-          `${output.asset.kind} for a ${frozen.kind} Action.`,
-        retryable: false,
-        requestState: "accepted",
-      },
-    };
-  }
-  return {
-    status: "completed",
-    outputs: [{ ...output, slot: run.outputSlot }],
-  };
-}
-
-function customActionRequest(
-  run: DurableRunRecord,
-  now: number,
-  operation: "submit" | "poll" = "submit",
-  pollState?: ExecutablePluginJsonValue,
-): ExecutablePluginActionRequest {
-  const frozen = parseFrozenExecutableInput(run.executorInput);
-  if (
-    (frozen.targetKind !== "action" &&
-      frozen.targetKind !== "generator-action" &&
-      frozen.targetKind !== "local-executor") ||
-    !frozen.actor
-  ) {
-    throw new FrozenExecutorInputError(
-      "A custom Action request requires a frozen Action target and actor.",
-    );
-  }
-  return {
-    binding: frozen.binding,
-    taskId: run.actionRunId,
-    projectId: frozen.projectId,
-    ...(frozen.nodeId ? { nodeId: frozen.nodeId } : {}),
-    input: frozen.input,
-    actor: frozen.actor,
-    operation,
-    ...(pollState === undefined ? {} : { pollState }),
-    timeoutMs: remainingAttemptTimeoutMs(run, now),
-  };
 }
 
 function classifyThrownError(
@@ -419,87 +251,15 @@ export function createLocalDurableRunCoordinator(
   const clock = options.clock ?? { now: () => Date.now() };
   const engine = new DurableRunEngine({
     journal: options.journal,
-    provider: {
-      async submit({ run, idempotencyKey }) {
-        const frozen = parseFrozenExecutorInput(run.executorInput);
-        if (frozen.targetKind === "local-executor") {
-          if (!options.localExecutor) {
-            throw new ProviderPluginHostUnavailableError(
-              "Host-local durable executor is unavailable.",
-            );
-          }
-          return customActionStep(
-            run,
-            await options.localExecutor(customActionRequest(run, clock.now())),
-          );
-        }
-        if (frozen.targetKind === "action") {
-          if (!options.executablePluginAction) {
-            throw new ProviderPluginHostUnavailableError(
-              "Executable plugin Action runtime is unavailable.",
-            );
-          }
-          return customActionStep(
-            run,
-            await options.executablePluginAction(
-              customActionRequest(run, clock.now()),
-            ),
-          );
-        }
-        if (frozen.targetKind === "generator-action" && !frozen.providerExecution) {
-          if (!options.executablePluginAction) {
-            throw new ProviderPluginHostUnavailableError(
-              "Executable Generator Action runtime is unavailable.",
-            );
-          }
-          return generatorActionStep(
-            run,
-            await options.executablePluginAction(
-              customActionRequest(run, clock.now(), "submit"),
-            ),
-          );
-        }
-        const response = await options.providerPluginExecutor(
-          executableProviderRequest(run, idempotencyKey, clock.now()),
-        );
-        return executableProviderStep(run, response);
-      },
-      async poll({ run, pollState }) {
-        const frozen = parseFrozenExecutorInput(run.executorInput);
-        if (frozen.targetKind === "generator-action" && !frozen.providerExecution) {
-          if (!options.executablePluginAction) {
-            throw new ProviderPluginHostUnavailableError(
-              "Executable Generator Action runtime is unavailable.",
-            );
-          }
-          return generatorActionStep(
-            run,
-            await options.executablePluginAction(
-              customActionRequest(run, clock.now(), "poll", pollState),
-            ),
-          );
-        }
-        if (
-          frozen.targetKind === "action" ||
-          frozen.targetKind === "local-executor"
-        ) {
-          return {
-            status: "failed",
-            error: {
-              code: "contract_violation",
-              message: "Custom Actions do not support durable polling.",
-              retryable: false,
-              requestState: "accepted",
-            },
-          };
-        }
-        const idempotencyKey = durableRunIdempotencyKey(run);
-        const response = await options.providerPluginExecutor(
-          executableProviderRequest(run, idempotencyKey, clock.now(), pollState),
-        );
-        return executableProviderStep(run, response);
-      },
-    },
+    provider: createExecutableRunProvider({
+      now: () => clock.now(),
+      ...(options.executablePluginAction
+        ? { action: options.executablePluginAction }
+        : {}),
+      ...(options.localExecutor ? { localExecutor: options.localExecutor } : {}),
+      provider: options.providerPluginExecutor,
+      unavailable: (message) => new ProviderPluginHostUnavailableError(message),
+    }),
     outputStore: options.outputStore,
     publisher: options.publisher,
     ownerGuard: {

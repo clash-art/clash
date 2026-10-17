@@ -14,6 +14,11 @@ export interface CloudDurableWorkflowBinding {
     id: string;
     params: Readonly<DurableRunIdentity>;
   }): Promise<unknown>;
+  /** Present on the Cloudflare binding; recovery uses it to revive a finished instance. */
+  get?(id: string): Promise<{
+    status(): Promise<{ status: string }>;
+    restart(): Promise<void>;
+  }>;
 }
 
 export interface CloudDurableRunDispatchResult {
@@ -25,14 +30,31 @@ export interface CloudDurableRunDispatchResult {
 export interface CloudDurableRunRecoveryResult {
   scanned: number;
   scheduled: number;
+  failed: number;
 }
 
-/** Stable instance id; Workflow is a scheduler, not the idempotency record. */
-export function cloudDurableWorkflowId(identity: DurableRunIdentity): string {
+/**
+ * Stable instance id; Workflow is a scheduler, not the idempotency record.
+ * Cloudflare rejects ids that are long or contain ":" (`instance.invalid_id`),
+ * and executable identities are content-addressed `project:…:revision:<hex>`
+ * strings, so the id is a digest of the identity: same identity, same id.
+ */
+export async function cloudDurableWorkflowId(
+  identity: DurableRunIdentity,
+): Promise<string> {
   if (!identity.actionRunId.trim() || !identity.outputSlot.trim()) {
     throw new Error("A cloud Workflow identity requires non-empty fields.");
   }
-  return `cloud-run-${identity.actionRunId}-${encodeURIComponent(identity.outputSlot)}`;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(
+      JSON.stringify([identity.actionRunId, identity.outputSlot]),
+    ),
+  );
+  const hex = Array.from(new Uint8Array(digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+  return `cloud-run-${hex.slice(0, 48)}`;
 }
 
 function isAlreadyExists(error: unknown): boolean {
@@ -60,7 +82,7 @@ export async function dispatchCloudDurableRun(options: {
     clock: options.clock,
   });
   const identity = { actionRunId: run.actionRunId, outputSlot: run.outputSlot };
-  const workflowId = cloudDurableWorkflowId(identity);
+  const workflowId = await cloudDurableWorkflowId(identity);
   const workflowStarted = await scheduleCloudDurableWorkflow({
     workflow: options.workflow,
     identity,
@@ -75,7 +97,7 @@ export async function scheduleCloudDurableWorkflow(options: {
 }): Promise<boolean> {
   try {
     await options.workflow.create({
-      id: cloudDurableWorkflowId(options.identity),
+      id: await cloudDurableWorkflowId(options.identity),
       params: options.identity,
     });
     return true;
@@ -85,6 +107,23 @@ export async function scheduleCloudDurableWorkflow(options: {
     }
     throw error;
   }
+}
+
+/**
+ * The row is still due but its instance already exists. An instance that
+ * ended (step retries exhausted, Worker evicted mid-step) would otherwise
+ * never run again; the journal row, not the instance, decides what happens.
+ */
+async function restartFinishedWorkflow(
+  workflow: CloudDurableWorkflowBinding,
+  identity: DurableRunIdentity,
+): Promise<boolean> {
+  if (!workflow.get) return false;
+  const instance = await workflow.get(await cloudDurableWorkflowId(identity));
+  const { status } = await instance.status();
+  if (!["errored", "terminated", "complete"].includes(status)) return false;
+  await instance.restart();
+  return true;
 }
 
 /**
@@ -103,12 +142,31 @@ export async function recoverCloudDurableRuns(options: {
     options.now,
   );
   let scheduled = 0;
+  let failed = 0;
   for (const run of records) {
-    const started = await scheduleCloudDurableWorkflow({
-      workflow: options.workflow,
-      identity: { actionRunId: run.actionRunId, outputSlot: run.outputSlot },
-    });
-    if (started) scheduled += 1;
+    // One row the scheduler rejects must not starve every row after it; the
+    // failed row stays queued and is retried on the next tick.
+    try {
+      const identity = {
+        actionRunId: run.actionRunId,
+        outputSlot: run.outputSlot,
+      };
+      if (
+        (await scheduleCloudDurableWorkflow({
+          workflow: options.workflow,
+          identity,
+        })) ||
+        (await restartFinishedWorkflow(options.workflow, identity))
+      )
+        scheduled += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn("cloud-durable-run.recovery_schedule_failed", {
+        actionRunId: run.actionRunId,
+        outputSlot: run.outputSlot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
-  return { scanned: records.length, scheduled };
+  return { scanned: records.length, scheduled, failed };
 }

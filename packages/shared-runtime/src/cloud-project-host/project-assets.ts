@@ -44,25 +44,6 @@ export function projectAssetReceiptMessage(
   return JSON.stringify(["project-asset", userId, projectId, version]);
 }
 
-/**
- * Answer for a Project Asset operation this adapter does not offer: 501
- * COMMAND_UNAVAILABLE, the same shape as unsupported Host commands. Never 404:
- * a 404 is indistinguishable from a missing adapter route.
- */
-export function projectAssetOperationUnavailable(operation: string): {
-  status: 501;
-  body: { error: string; code: "COMMAND_UNAVAILABLE"; operation: string };
-} {
-  return {
-    status: 501,
-    body: {
-      error: `Project Asset ${operation} is not available on this server.`,
-      code: "COMMAND_UNAVAILABLE",
-      operation,
-    },
-  };
-}
-
 export const PROJECT_ASSET_BATCH_LIMIT = 1000;
 
 /** File-extension fallback for a browser that sent no usable MIME type. Same
