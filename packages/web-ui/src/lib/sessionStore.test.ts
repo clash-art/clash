@@ -22,7 +22,7 @@ function sessionFetches(): number {
 
 function sessionBody() {
   return serverUser
-    ? { user: serverUser, session: { id: "session-1", userId: serverUser.id } }
+    ? { user: serverUser, session: { id: "session-1", userId: serverUser.id, token: "secret-token" } }
     : null;
 }
 
@@ -223,6 +223,10 @@ describe("shared session source (#160)", () => {
     const first = await load();
     await settle(first.getSession());
     expect(sessionFetches()).toBe(1);
+    // The persisted snapshot never carries the session token.
+    const stored = localStorage.getItem("clash.session-snapshot.v1") ?? "";
+    expect(stored).toContain("session-1");
+    expect(stored).not.toContain("secret-token");
 
     // Another page load (new tab) within five minutes. The first tab's
     // document listeners belong to another document in a real browser.

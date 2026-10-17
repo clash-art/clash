@@ -15,15 +15,25 @@
  *   so a stale snapshot is never shown as signed in after a known sign-out.
  * - The snapshot only drives UI identity. Authorization is unchanged: every
  *   API request is still checked server-side against the sessions table.
- * - It holds what get-session returns to page JS anyway (user id, name,
- *   email, image, session metadata). The session token is httpOnly and is
- *   never part of it.
+ * - It holds what get-session returns to page JS (user id, name, email,
+ *   image, session metadata) minus `session.token`: Better Auth includes the
+ *   token in the get-session body, and it must not be persisted where any
+ *   later same-origin script could read it. No client code reads it.
  */
 export const SESSION_SNAPSHOT_KEY = "clash.session-snapshot.v1";
 /** Same window as the focus refetch throttle. */
 export const SESSION_SNAPSHOT_MAX_AGE_MS = 5 * 60 * 1000;
 
 type Snapshot = { at: number; origin: string; body: string };
+
+type SessionBody = { user?: { id?: string }; session?: Record<string, unknown> } | null;
+
+/** The body to persist: the get-session answer without the session token. */
+function persistableBody(parsed: NonNullable<SessionBody>): string {
+  if (!parsed.session || typeof parsed.session !== "object") return JSON.stringify(parsed);
+  const { token: _token, ...session } = parsed.session;
+  return JSON.stringify({ ...parsed, session });
+}
 
 let firstGetSessionDone = false;
 let servedSnapshotAt: number | null = null;
@@ -101,11 +111,15 @@ export async function snapshotFetch(
   try {
     if (response.ok) {
       const body = await response.clone().text();
-      const parsed = JSON.parse(body) as { user?: { id?: string } } | null;
+      const parsed = JSON.parse(body) as SessionBody;
       if (parsed?.user?.id) {
         storage()?.setItem(
           SESSION_SNAPSHOT_KEY,
-          JSON.stringify({ at: Date.now(), origin, body } satisfies Snapshot),
+          JSON.stringify({
+            at: Date.now(),
+            origin,
+            body: persistableBody(parsed),
+          } satisfies Snapshot),
         );
       } else {
         clearSessionSnapshot();
