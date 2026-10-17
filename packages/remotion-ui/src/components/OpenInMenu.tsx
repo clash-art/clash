@@ -76,6 +76,7 @@ function NleIcon({ target }: { target: NleTarget }) {
 export function OpenInMenu({
   onExport,
   exportProgress = [],
+  onCancelExport,
   onOpenInNle,
   availability,
   availabilityError,
@@ -83,6 +84,7 @@ export function OpenInMenu({
 }: {
   onExport?: () => Promise<void>;
   exportProgress?: readonly TimelineExportProgress[];
+  onCancelExport?: () => void;
   onOpenInNle?: (target: NleTarget) => Promise<void>;
   availability: NleAvailability[] | null;
   availabilityError?: string | null;
@@ -207,6 +209,16 @@ export function OpenInMenu({
                     }
                   />
                 </div>
+                {onCancelExport ? (
+                  <button
+                    type="button"
+                    aria-label="Cancel video export"
+                    onClick={() => onCancelExport()}
+                    className="mt-2 text-[10px] font-semibold text-content-muted underline-offset-2 hover:text-content-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
               </div>
             );
           })}

@@ -39,10 +39,42 @@ function observation(value: unknown, token: unknown): ObservedProjectTimeline {
   };
 }
 
+/** What a Timeline render request returns, whichever executor ran it. */
+export interface TimelineRenderReceipt {
+  actionRunId: string;
+  renderNodeId: string;
+}
+
+/**
+ * In-flight state of one render request. Progress is path-neutral: an
+ * executor that can report it does; the Host-backed default simply never
+ * calls `onProgress` and finishes with the persisted render node.
+ */
+export interface TimelineRenderExecution {
+  signal: AbortSignal;
+  onProgress(progress: number): void;
+}
+
+/**
+ * Executes `render()`. The default asks the Host (`request_timeline_render`);
+ * a composition root may bind another executor, which owns its own fallback
+ * to `submit`, the Host request. A cancelled execution rejects with the
+ * caller's `AbortSignal` reason and must not call `submit`.
+ */
+export type TimelineRenderExecutor = (
+  input: {
+    projectId: string;
+    observed: ObservedProjectTimeline;
+    actorAgentId?: string;
+    submit(): Promise<TimelineRenderReceipt>;
+  } & TimelineRenderExecution,
+) => Promise<TimelineRenderReceipt>;
+
 /** Browser-safe projection client for the existing native Timeline Host commands. */
 export function createTimelineClient(options: {
   projectId: string;
   request: ProjectHostHttpRequest;
+  renderExecutor?: TimelineRenderExecutor;
 }) {
   const command = async (input: ProjectHostCommand): Promise<ProjectHostResponse> => {
     const body = await sendProjectHostCommand({ ...options, command: input });
@@ -91,11 +123,23 @@ export function createTimelineClient(options: {
         actorClientType: "browser", ifMatch: observed.readToken });
       if (body.deleted !== true || body.timelineId !== observed.timeline.id) throw new Error("Timeline deletion was not acknowledged");
     },
-    async render(observed: ObservedProjectTimeline, actorAgentId?: string) {
-      const body = await command({ action: "request_timeline_render", timelineId: observed.timeline.id,
-        actorClientType: "browser", ifMatch: observed.readToken, ...(actorAgentId ? { actorAgentId } : {}) });
-      if (body.submitted !== true || typeof body.actionRunId !== "string" || typeof body.renderNodeId !== "string") throw new Error("Timeline render submission was not acknowledged");
-      return { actionRunId: body.actionRunId, renderNodeId: body.renderNodeId };
+    render(observed: ObservedProjectTimeline, actorAgentId?: string, execution?: TimelineRenderExecution): Promise<TimelineRenderReceipt> {
+      const submit = async () => {
+        const body = await command({ action: "request_timeline_render", timelineId: observed.timeline.id,
+          actorClientType: "browser", ifMatch: observed.readToken, ...(actorAgentId ? { actorAgentId } : {}) });
+        if (body.submitted !== true || typeof body.actionRunId !== "string" || typeof body.renderNodeId !== "string") throw new Error("Timeline render submission was not acknowledged");
+        return { actionRunId: body.actionRunId, renderNodeId: body.renderNodeId };
+      };
+      if (!options.renderExecutor) return submit();
+      const fallbackController = execution ? undefined : new AbortController();
+      return options.renderExecutor({
+        projectId: options.projectId,
+        observed,
+        ...(actorAgentId ? { actorAgentId } : {}),
+        signal: execution?.signal ?? fallbackController!.signal,
+        onProgress: execution?.onProgress ?? (() => undefined),
+        submit,
+      });
     },
   };
 }

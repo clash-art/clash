@@ -1,0 +1,3 @@
+{
+  "summary": "apps/web-only browser Timeline render adapter. preflight decides structural fallback, protocol validates postMessage, adapter owns the cross-origin iframe transport plus upload/publication; render-frame/ (a separate Vite HTML entry) is the only module importing @remotion/web-renderer."
+}

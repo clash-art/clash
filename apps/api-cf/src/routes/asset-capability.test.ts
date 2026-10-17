@@ -205,3 +205,39 @@ it("keeps generic large-Resource range previews streaming outside Project replic
   expect(response.status).toBe(206);
   expect(await response.text()).toBe("hello");
 });
+
+describe("signed Asset CORS", () => {
+  it("echoes only the configured render-frame and web origins", async () => {
+    const now = Date.parse("2026-09-04T00:00:00.000Z");
+    const routes = createAssetCapabilityRoutes({
+      now: () => now,
+      resolve: vi.fn(async () => ({ storageKey: "private/hello.txt" })),
+    });
+    const requestEnv = {
+      ...env(),
+      RENDER_FRAME_ORIGIN: "https://render.example.test",
+      WEB_PUBLIC_ORIGIN: "https://clash.example.test",
+    };
+    const token = await signedToken("read", now);
+    const allowed = await routes.request(
+      new Request(`https://api.example.test/${token}`, {
+        headers: { origin: "https://render.example.test" },
+      }),
+      {},
+      requestEnv,
+    );
+    expect(allowed.headers.get("access-control-allow-origin")).toBe(
+      "https://render.example.test",
+    );
+    expect(allowed.headers.get("vary")).toBe("Origin");
+
+    const rejected = await routes.request(
+      new Request(`https://api.example.test/${token}`, {
+        headers: { origin: "https://evil.example.test" },
+      }),
+      {},
+      requestEnv,
+    );
+    expect(rejected.headers.get("access-control-allow-origin")).toBeNull();
+  });
+});

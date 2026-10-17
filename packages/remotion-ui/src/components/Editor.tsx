@@ -280,6 +280,8 @@ type EditorProps = {
   onExport?: () => Promise<void>;
   /** Persisted render jobs for this Timeline, including optional real progress. */
   exportProgress?: readonly TimelineExportProgress[];
+  /** Cancels the executor-owned part of an active render; absent for Host jobs. */
+  onCancelExport?: () => void;
   /** Creates a revision-pinned interchange package and opens the selected NLE. */
   onOpenInNle?: (target: NleTarget) => Promise<void>;
   /** Installed external editors detected by the desktop main process. */
@@ -317,6 +319,7 @@ export const Editor: React.FC<EditorProps> = ({
   editorKey,
   onExport,
   exportProgress,
+  onCancelExport,
   onOpenInNle,
   nleAvailability = null,
   nleAvailabilityError,
@@ -809,6 +812,7 @@ export const Editor: React.FC<EditorProps> = ({
                     <OpenInMenu
                       onExport={onExport}
                       exportProgress={exportProgress}
+                      onCancelExport={onCancelExport}
                       onOpenInNle={onOpenInNle}
                       availability={nleAvailability}
                       availabilityError={nleAvailabilityError}

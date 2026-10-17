@@ -13,6 +13,8 @@ import {
   ProjectHostCommandSchema,
   agentReadReceiptToken,
   projectTimelineReadToken,
+  projectTimelineRenderActionRunId,
+  requestTimelineRevisionRender,
   resolveGeneratorProjectionDefinition,
   validateAgentReadProof,
   validateCanvasDelete,
@@ -36,6 +38,12 @@ export interface TimelineHostCommandPorts {
   /** Receipt for one observed Timeline version, scoped by the adapter to user and project. */
   sign(version: string): string;
   newId(): string;
+  /**
+   * Present only on an adapter whose backend executes the pending render node
+   * that `request_timeline_render` creates; the authenticated user is
+   * recorded as its actor. Absent, the command answers 501.
+   */
+  timelineRender?: { actorUserId: string };
 }
 
 export interface TimelineHostCommandResult {
@@ -61,6 +69,7 @@ export const TIMELINE_HOST_ACTIONS = [
   "attach_timeline",
   "detach_timeline",
   "delete_timeline",
+  "request_timeline_render",
 ] as const satisfies readonly ProjectHostCommand["action"][];
 
 /** Parse a raw request body; an invalid command answers 400 without touching storage. */
@@ -92,6 +101,14 @@ class CommandFailure extends Error {
   }
 }
 
+const commandUnavailable = (): never => {
+  throw new CommandFailure(
+    "COMMAND_UNAVAILABLE",
+    "This project command is not connected on this server.",
+    501,
+  );
+};
+
 function unwrap<T extends { ok: boolean }>(
   result: T,
 ): Extract<T, { ok: true }> {
@@ -119,6 +136,11 @@ function run(
   definition: GeneratorDefinition,
   ports: TimelineHostCommandPorts,
 ): unknown {
+  // Decided before any read: a missing executor is a 501, never a 404.
+  const render =
+    cmd.action === "request_timeline_render"
+      ? (ports.timelineRender ?? commandUnavailable())
+      : undefined;
   const envelope = (timeline: ProjectTimeline) => {
     const version = projectTimelineReadToken(timeline);
     return {
@@ -171,15 +193,17 @@ function run(
     cmd.action !== "update_timeline_state" &&
     cmd.action !== "attach_timeline" &&
     cmd.action !== "detach_timeline" &&
-    cmd.action !== "delete_timeline"
+    cmd.action !== "delete_timeline" &&
+    cmd.action !== "request_timeline_render"
   )
-    throw new CommandFailure(
-      "COMMAND_UNAVAILABLE",
-      "This project command is not connected on this server.",
-      501,
-    );
+    commandUnavailable();
+  const timelineId = "timelineId" in cmd ? String(cmd.timelineId) : "";
+  const expectedReadToken =
+    "ifMatch" in cmd && typeof cmd.ifMatch === "string"
+      ? cmd.ifMatch
+      : undefined;
   const current = unwrap(
-    readLocalTimelineGenerator(doc, definition, String(cmd.timelineId)),
+    readLocalTimelineGenerator(doc, definition, timelineId),
   ).timeline;
   // Every writer must carry the observation obtained with its draft. The
   // signed receipt is scoped to this account and project across API restarts.
@@ -187,7 +211,7 @@ function run(
     actorClientType: "agent",
     operation: "Timeline change",
     currentReadToken: projectTimelineReadToken(current),
-    expectedReadToken: typeof cmd.ifMatch === "string" ? cmd.ifMatch : undefined,
+    expectedReadToken,
     requireReceipt: true,
     readReceiptVerifier: (p) =>
       p.namespace === "timeline" &&
@@ -196,6 +220,26 @@ function run(
   });
   if (!proof.ok)
     throw new CommandFailure(proof.code ?? "READ_REQUIRED", proof.error);
+  if (render && cmd.action === "request_timeline_render") {
+    // The pending render node every render request creates, for the
+    // observed revision; the adapter's backend processor picks it up.
+    const requested = requestTimelineRevisionRender(doc, {
+      timeline: current,
+      actorUserId: render.actorUserId,
+      ...("actorAgentId" in cmd &&
+      typeof cmd.actorAgentId === "string"
+        ? { actorAgentId: cmd.actorAgentId }
+        : {}),
+      generateId: ports.newId,
+    });
+    if (!requested.ok)
+      throw new CommandFailure("TIMELINE_RENDER_REJECTED", requested.error);
+    return {
+      submitted: true,
+      actionRunId: projectTimelineRenderActionRunId(requested.renderNodeId),
+      renderNodeId: requested.renderNodeId,
+    };
+  }
   if (cmd.action === "update_timeline_state")
     return envelope(
       unwrap(

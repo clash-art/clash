@@ -1,0 +1,3 @@
+{
+  "summary": "Cross-origin iframe render entry. Runs renderMediaOnWeb against the real VideoComposition, probes media with mediabunny canDecode, reports progress to the parent, and aborts via AbortController on cancel."
+}

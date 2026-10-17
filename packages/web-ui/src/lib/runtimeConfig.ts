@@ -2,6 +2,7 @@ import {
   apiUrl,
   resolveRuntimeConfig,
   webSocketUrl,
+  type TimelineRenderExecutor,
   type RuntimeCapabilities,
   type RuntimeMode,
   type ResolvedRuntimeEndpointConfig,
@@ -88,6 +89,25 @@ export function isDesktopRuntime(): boolean {
 
 export function getRuntimeCapabilities(): RuntimeCapabilities {
   return resolvedRuntimeConfig().capabilities;
+}
+
+let timelineRenderExecutor: TimelineRenderExecutor | undefined;
+
+/**
+ * Composition roots only (`apps/web`): bind the deployment's Timeline render
+ * adapter behind the Timeline client's `render`. Unbound, the Host renders.
+ * Packages are barred from calling it by `.eslintrc.boundaries.json`.
+ */
+export function bindTimelineRenderExecutor(
+  executor: TimelineRenderExecutor | undefined,
+): void {
+  timelineRenderExecutor = executor;
+}
+
+export function boundTimelineRenderExecutor():
+  | TimelineRenderExecutor
+  | undefined {
+  return timelineRenderExecutor;
 }
 
 export function runtimeApiUrl(path: string): string {
