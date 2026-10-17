@@ -8,12 +8,15 @@ compatibility_flags = ["nodejs_compat"]
 # (`new URL("./loro_wasm_bg.wasm", import.meta.url)`), which Wrangler's plain
 # esbuild bundle can't resolve — the Worker crashes on startup. The `base64`
 # entry fails differently: it compiles wasm at runtime, which workerd forbids
-# ("Wasm code generation disallowed by embedder"). The `bundler` entry has an
-# explicit Cloudflare Workers path and statically imports its .wasm, which
-# workerd accepts as a precompiled module. Alias the bare specifier centrally
-# instead of rewriting every source import.
+# ("Wasm code generation disallowed by embedder"). The `bundler` entry
+# statically imports its .wasm, which workerd accepts as a precompiled module,
+# but instantiates it with a top-level `await`: inside a lazily imported module
+# graph (#161) that makes esbuild's module inits async, and an import cycle
+# between async inits hangs the request. src/loro/loro-crdt-workerd.ts uses the
+# `web` entry instead and instantiates the precompiled .wasm synchronously.
+# Alias the bare specifier centrally instead of rewriting every source import.
 [alias]
-"loro-crdt" = "loro-crdt/bundler"
+"loro-crdt" = "./src/loro/loro-crdt-workerd.ts"
 # Bundle ONE copy of @clash/shared-types. api-cf imports it from source via
 # tsconfig paths, but other workspace packages resolve its package exports to
 # dist/, so without this the bundle carried two copies and ran its top-level

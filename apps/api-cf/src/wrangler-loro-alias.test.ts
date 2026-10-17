@@ -7,9 +7,11 @@ import { describe, expect, it } from "vitest";
  * (`new URL("./loro_wasm_bg.wasm", import.meta.url)`), which Wrangler's
  * esbuild bundle cannot load — the Worker crashes at startup. The `base64`
  * entry instead compiles wasm at runtime, which workerd rejects with
- * "Wasm code generation disallowed by embedder". The `bundler` entry has a
- * Cloudflare Workers path and statically imports its `.wasm`, so Wrangler can
- * bundle it as a CompiledWasm module.
+ * "Wasm code generation disallowed by embedder". The `bundler` entry statically
+ * imports its `.wasm` (bundled as a CompiledWasm module) but instantiates it
+ * with a top-level `await`, which hangs lazily imported module graphs (#161).
+ * The Worker shim uses the `web` entry and instantiates the precompiled module
+ * synchronously.
  *
  * Rather than rewriting every source import, wrangler.toml carries one
  * central `[alias]` mapping. This test parses that table.
@@ -36,11 +38,17 @@ describe("apps/api-cf/wrangler.toml [alias]", () => {
   const toml = readFileSync(resolve(__dirname, "../wrangler.toml"), "utf8");
   const alias = parseAliasTable(toml);
 
-  it("maps the bare loro-crdt specifier to the Worker-safe bundler entry", () => {
-    expect(alias["loro-crdt"]).toBe("loro-crdt/bundler");
+  it("maps the bare loro-crdt specifier to the synchronous Worker shim", () => {
+    expect(alias["loro-crdt"]).toBe("./src/loro/loro-crdt-workerd.ts");
+    const shim = readFileSync(
+      resolve(__dirname, "loro/loro-crdt-workerd-init.ts"),
+      "utf8",
+    );
+    expect(shim).toMatch(/\binitSync\(/);
+    expect(shim).not.toMatch(/\bawait\b/);
   });
 
-  it("declares a CompiledWasm rule so the bundler entry's .wasm import loads", () => {
+  it("declares a CompiledWasm rule so the shim's .wasm import loads", () => {
     const rules = toml
       .split(/^\[\[rules\]\]\s*$/m)
       .slice(1)
