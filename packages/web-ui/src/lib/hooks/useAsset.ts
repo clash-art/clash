@@ -9,6 +9,7 @@ import {
   type AssetKind,
   type ResolvedAsset,
 } from "@clash/shared-types";
+import { probeProjectAssetMetadata } from "../media-metadata";
 import { fetchWithRetry } from "./retryFetch";
 
 type ScopedAsset = {
@@ -271,11 +272,13 @@ export async function importProjectAssetFile(
 ): Promise<ResolvedAsset> {
   const projectAssetId =
     options.projectAssetId ?? `asset-${crypto.randomUUID()}`;
+  const metadataHints = await probeProjectAssetMetadata(file, options.kind);
   const asset = await projectAssets.importFile({
     projectId,
     file,
     kind: options.kind,
     projectAssetId,
+    metadataHints,
   });
   if (asset.id !== projectAssetId) {
     throw new Error(

@@ -12,7 +12,13 @@ import {
   type Resource,
 } from "@clash/shared-types";
 import {
+  INVALID_PROJECT_ASSET_TRASH,
+  PROJECT_ASSET_PURGE_DELAY_MS,
+  applyProjectAssetLifecycle,
   commitProjectAssetImport,
+  parseProjectAssetDeleteOperationId,
+  type ProjectAssetLifecycleCommand,
+  type ProjectAssetLifecycleResult,
   observeProjectAsset,
   parseProjectAssetBatchIds,
   projectAssetReceiptMessage,
@@ -20,6 +26,7 @@ import {
   selectProjectAssets,
   projectAssetOperationUnavailable,
 } from "@clash/shared-runtime/cloud-project-host/project-assets";
+import { PROJECT_ASSET_IMPORT_MAX_BYTES } from "@clash/asset-sdk";
 import type { PostgresQueryPort } from "@clash/shared-runtime/project-authorization-postgres";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import { withProjectDocument } from "./project-document.ts";
@@ -86,7 +93,9 @@ export function createProjectAssetRoutes(options: {
   });
   app.use(
     "/:projectId/assets/import-file",
-    bodyLimit({ maxSize: 64 * 1024 * 1024 }),
+    // One request carries any supported size here (no Worker body limit), so
+    // the chunked session path stays a Cloudflare transport detail.
+    bodyLimit({ maxSize: PROJECT_ASSET_IMPORT_MAX_BYTES }),
   );
   app.get("/:projectId/assets", async (c) => {
     const id = c.req.param("projectId");
@@ -184,13 +193,91 @@ export function createProjectAssetRoutes(options: {
         );
       },
     );
-  // Trash and restore have no Postgres/disk port yet: say so (501), never 404.
-  app.delete("/:projectId/assets/:assetId", (c) => {
-    const { status, body } = projectAssetOperationUnavailable("trash");
-    return c.json(body, status);
+  // Trash and restore are soft deletes of the Project document (shared
+  // lifecycle logic); stored media and Resource rows are untouched.
+  const receiptFor = (owner: string, id: string, version: string) =>
+    createHmac("sha256", options.receiptSecret)
+      .update(projectAssetReceiptMessage(owner, id, version))
+      .digest("base64url");
+  const writeObservation = (header: (name: string) => string | undefined) => {
+    const actorClientType = header("x-clash-client-type")?.trim();
+    const expectedReadToken = header("x-clash-if-match")?.trim();
+    return {
+      ...(actorClientType ? { actorClientType } : {}),
+      ...(expectedReadToken ? { expectedReadToken } : {}),
+    };
+  };
+  const lifecycle = async (
+    c: any,
+    command: ProjectAssetLifecycleCommand,
+  ): Promise<Response> => {
+    const owner = c.get("userId") as string;
+    const id = command.projectId;
+    type Outcome =
+      | Extract<ProjectAssetLifecycleResult, { ok: false }>
+      | (Extract<ProjectAssetLifecycleResult, { ok: true }> & {
+          version: string | undefined;
+        });
+    const outcome = await withProjectDocument<Outcome>(
+      options.db,
+      owner,
+      id,
+      (result) => result.ok && result.mutated,
+      (doc): Outcome => {
+        const result = applyProjectAssetLifecycle(doc, command, {
+          verifyReceipt: (version, receipt) =>
+            receipt === receiptFor(owner, id, version),
+        });
+        if (!result.ok) return result;
+        const observed = observeProjectAsset(doc, id, command.projectAssetId);
+        return { ...result, version: observed?.version };
+      },
+    );
+    if (!outcome.ok) return c.json(outcome.body, outcome.status);
+    if (outcome.version)
+      c.header(
+        "x-clash-read-receipt",
+        agentReadReceiptToken({
+          readToken: outcome.version,
+          receipt: receiptFor(owner, id, outcome.version),
+        }),
+      );
+    return c.json(await project(id, outcome.entry));
+  };
+  app.delete("/:projectId/assets/:assetId", async (c) => {
+    const deleteOperationId = parseProjectAssetDeleteOperationId(
+      await c.req.json().catch(() => null),
+    );
+    if (!deleteOperationId)
+      return c.json(
+        INVALID_PROJECT_ASSET_TRASH.body,
+        INVALID_PROJECT_ASSET_TRASH.status,
+      );
+    const now = Date.now();
+    return lifecycle(c, {
+      action: "trash",
+      projectId: c.req.param("projectId"),
+      projectAssetId: c.req.param("assetId"),
+      deleteOperationId,
+      deletedAt: new Date(now).toISOString(),
+      purgeAfter: new Date(now + PROJECT_ASSET_PURGE_DELAY_MS).toISOString(),
+      observation: writeObservation((name) => c.req.header(name)),
+    });
   });
-  app.post("/:projectId/assets/:assetId/restore", (c) => {
-    const { status, body } = projectAssetOperationUnavailable("restore");
+  app.post("/:projectId/assets/:assetId/restore", (c) =>
+    lifecycle(c, {
+      action: "restore",
+      projectId: c.req.param("projectId"),
+      projectAssetId: c.req.param("assetId"),
+      observation: writeObservation((name) => c.req.header(name)),
+    }),
+  );
+  // Single-shot import accepts the full product size (above), so the chunked
+  // session path, which exists for the Worker request-size limit, is absent.
+  app.post("/:projectId/assets/import-sessions", (c) => {
+    const { status, body } = projectAssetOperationUnavailable(
+      "import-sessions",
+    );
     return c.json(body, status);
   });
   app.get("/:projectId/assets/:assetId/media", async (c) => {

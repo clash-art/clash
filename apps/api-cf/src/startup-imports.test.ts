@@ -111,10 +111,14 @@ function lazyOnlyOffenders(graph: ReturnType<typeof eagerGraph>): string[] {
           /^plugins\/.*\.json$/.test(file) ||
           file === "packages/shared-runtime/src/timeline-generator-product.ts" ||
           file === "packages/shared-runtime/src/generator-contract.ts" ||
+          file ===
+            "packages/shared-runtime/src/cloud-project-host/project-assets.ts" ||
           file.startsWith("apps/api-cf/src/generated/") ||
           file.startsWith("apps/api-cf/src/services/cloud-plugin-") ||
           file.startsWith("packages/shared-runtime/src/cloud-project-host/") ||
-          file === "apps/api-cf/src/agents/project-room-host-command.ts",
+          file === "apps/api-cf/src/agents/project-room-host-command.ts" ||
+          file.startsWith("apps/api-cf/src/services/project-asset-room") ||
+          file.startsWith("apps/api-cf/src/routes/v1/project-assets"),
       ),
   ];
 }
@@ -148,6 +152,20 @@ describe("Worker startup import graph", () => {
     const adapter = eagerGraph(join(SRC, "agents/project-room-host-command.ts"));
     expect(lazyOnlyOffenders(adapter)).toContain(
       "packages/shared-runtime/src/cloud-project-host/timeline-commands.ts",
+    );
+  });
+
+  it("keeps Loro and the Project Asset module out of the upload Worker", () => {
+    const upload = eagerGraph(join(SRC, "upload-worker.ts"));
+    expect(
+      [...upload.packages].filter((spec) => /^loro-crdt(\/|$)/.test(spec)),
+    ).toEqual([]);
+    const files = [...upload.files].map((file) => relative(REPO, file));
+    expect(files).not.toContain(
+      "packages/shared-runtime/src/cloud-project-host/project-assets.ts",
+    );
+    expect(files).not.toContain(
+      "apps/api-cf/src/services/project-asset-room.ts",
     );
   });
 

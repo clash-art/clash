@@ -2,6 +2,7 @@
   "summary": "Authenticated v1 Hono product routes. Register shared default route instances in index.ts; createApp can mount injected Node/SaaS adapters before defaults.",
   "key_files": {
     "project-content.ts": "Exact Project Resource capability issuance and immutable Document body transport. Checks current admission, Loro reference membership and byte integrity; no raw-key authorization.",
+    "project-assets.ts": "Project Asset HTTP adapter: owner/D1 checks, single-shot and chunked R2 imports, signed read receipts, preview capability projections, references, 501 trash/restore and the empty personal library. Document reads/commits call ProjectRoom internal assets-* ops.",
     "index.ts": "Default v1 route registration.",
     "projects.ts": "Project CRUD and cloud admission API.",
     "plugin-catalog.ts": "GET generator-definitions, plugin-views, plugin-actions with local-api response shapes; loads the catalog service on first request."

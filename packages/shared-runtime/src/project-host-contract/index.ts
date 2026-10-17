@@ -446,8 +446,55 @@ export function describeProjectHostContract(
         await expectUnavailable(response);
       },
     });
-    capability("assets.list", {
+    capability("assets.import.chunked", {
       supported: [
+        [
+          "imports a file above the single-shot cap through a session",
+          async () => {
+            // A small client-side cap exercises the session path without a
+            // 64 MiB fixture; the server cap itself is unchanged.
+            const chunked = createProjectAssetHttpClient({
+              endpoint: harness.endpoint,
+              fetch: (input, init) => harness.fetch(input, init),
+              singleShotMaxBytes: 1024,
+            });
+            expect(harness.sampleVideo.bytes.byteLength).toBeGreaterThan(1024);
+            const imported = await chunked.importFile({
+              projectId: harness.projectId,
+              projectAssetId: unique("asset:chunked"),
+              kind: "video",
+              file: new File(
+                [
+                  harness.sampleVideo.bytes as Uint8Array<ArrayBuffer>,
+                ],
+                harness.sampleVideo.fileName,
+                { type: harness.sampleVideo.contentType },
+              ),
+            });
+            expectPlayable(imported);
+          },
+        ],
+      ],
+      async unavailable() {
+        await expectUnavailable(
+          await harness.fetch(
+            `${harness.endpoint}${assetPath("/import-sessions")}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                kind: "video",
+                projectAssetId: unique("asset:chunked"),
+                fileName: harness.sampleVideo.fileName,
+                byteLength: harness.sampleVideo.bytes.byteLength,
+                contentType: harness.sampleVideo.contentType,
+              }),
+            },
+          ),
+        );
+      },
+    });
+    capability("assets.list", {      supported: [
         [
           "lists an imported Asset as ready with a URL",
           async () => {
@@ -547,26 +594,86 @@ export function describeProjectHostContract(
           expect(asset.url).toBeUndefined();
       },
     });
-    const trashed = async () => {
+    const trashed = async (deleteOperationId = unique("delete")) => {
       const imported = await importVideo();
       const observed = await assets.get({
         projectId: harness.projectId,
         assetId: imported.id,
       });
-      return assets.trash({
+      const result = await assets.trash({
         projectId: harness.projectId,
         assetId: imported.id,
+        deleteOperationId,
         actorClientType: "browser",
         receipt: observed.receipt,
       });
+      return { ...result, observed, deleteOperationId };
     };
+    const lifecycleOf = async (assetId: string) =>
+      (await assets.list({ projectId: harness.projectId })).find(
+        (asset) => asset.id === assetId,
+      )?.lifecycle;
     capability("assets.trash", {
       supported: [
         [
-          "moves an observed Asset to the trash",
+          "moves an observed Asset to the trash and lists it there",
           async () => {
             const result = await trashed();
-            expect(result.value.lifecycle.state).toBe("trashed");
+            expect(result.value.lifecycle).toMatchObject({
+              state: "trashed",
+              deleteOperationId: result.deleteOperationId,
+            });
+            expect(result.receipt).toMatch(READ_RECEIPT_PATTERN);
+            expect(await lifecycleOf(result.value.id)).toMatchObject({
+              state: "trashed",
+            });
+          },
+        ],
+        [
+          "retries the same delete operation idempotently",
+          async () => {
+            const first = await trashed();
+            const again = await assets.trash({
+              projectId: harness.projectId,
+              assetId: first.value.id,
+              deleteOperationId: first.deleteOperationId,
+              actorClientType: "browser",
+              receipt: first.observed.receipt,
+            });
+            expect(again.value.lifecycle).toEqual(first.value.lifecycle);
+          },
+        ],
+        [
+          "rejects a delete based on a stale read with 409",
+          async () => {
+            const first = await trashed();
+            const response = await harness.fetch(
+              `${harness.endpoint}${assetPath(`/${encodeURIComponent(first.value.id)}`)}`,
+              {
+                method: "DELETE",
+                headers: {
+                  "content-type": "application/json",
+                  "x-clash-client-type": "browser",
+                  "x-clash-if-match": first.observed.receipt!,
+                },
+                body: JSON.stringify({ deleteOperationId: unique("delete") }),
+              },
+            );
+            expect(response.status).toBe(409);
+          },
+        ],
+        [
+          "answers 404 for an unknown Asset",
+          async () => {
+            const response = await harness.fetch(
+              `${harness.endpoint}${assetPath(`/${encodeURIComponent("asset:missing")}`)}`,
+              {
+                method: "DELETE",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ deleteOperationId: unique("delete") }),
+              },
+            );
+            expect(response.status).toBe(404);
           },
         ],
       ],
@@ -596,6 +703,14 @@ export function describeProjectHostContract(
               receipt: result.receipt,
             });
             expect(restored.value.lifecycle).toEqual({ state: "active" });
+            expect(await lifecycleOf(result.value.id)).toEqual({
+              state: "active",
+            });
+            // The restored Asset still plays.
+            const media = await harness.fetch(restored.value.url!, {
+              headers: { Range: "bytes=0-15" },
+            });
+            expect(media.status).toBe(206);
           },
         ],
       ],

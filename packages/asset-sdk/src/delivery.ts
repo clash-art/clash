@@ -11,6 +11,7 @@ export {
   type AssetDeliveryAuthorizationInput,
   type AssetDeliveryAuthorizer,
   type AssetDeliveryErrorCode,
+  type AssetDeliveryImportSession,
   type AssetDeliveryOperation,
   type AssetDeliveryPort,
   type AssetDeliveryPortOptions,

@@ -30,10 +30,16 @@ export {
   type GlobalResourceRegistryPort,
 } from "./global-asset-client.js";
 
-export type {
-  AssetImportFile,
-  AssetImportProgress,
-  AssetImportProgressListener,
+export {
+  ASSET_IMPORT_METADATA_HINT_LIMITS,
+  PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES,
+  PROJECT_ASSET_IMPORT_MAX_BYTES,
+  assetImportMetadataHintFields,
+  sanitizeAssetImportMetadataHints,
+  type AssetImportFile,
+  type AssetImportMetadataHints,
+  type AssetImportProgress,
+  type AssetImportProgressListener,
 } from "./asset-import-request.js";
 
 export {
@@ -60,6 +66,7 @@ export {
   type AssetDeliveryAuthorizationInput,
   type AssetDeliveryAuthorizer,
   type AssetDeliveryErrorCode,
+  type AssetDeliveryImportSession,
   type AssetDeliveryOperation,
   type AssetDeliveryPort,
   type AssetDeliveryPortOptions,

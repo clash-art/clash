@@ -81,6 +81,7 @@ import {
   type ProjectRecoveryPolicy,
 } from "@clash/shared-runtime";
 import { AssetSdkContractError } from "@clash/asset-sdk";
+import { projectAssetOperationUnavailable } from "@clash/shared-runtime/cloud-project-host/project-assets";
 import {
   agentReadReceiptToken,
   actionSourceModel,
@@ -4876,6 +4877,17 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       return localProjectAssetErrorResponse(error);
     }
   });
+
+  // Local single-shot import has no hosted 64 MiB cap, so the shared client's
+  // chunked session path stays unavailable here (501, never 404).
+  app.post(
+    "/api/v1/projects/:projectId/assets/import-sessions",
+    (c) => {
+      const { status, body } =
+        projectAssetOperationUnavailable("import-sessions");
+      return c.json(body, status);
+    },
+  );
 
   app.get(
     "/api/v1/projects/:projectId/assets/:projectAssetId/references",

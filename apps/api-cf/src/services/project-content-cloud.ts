@@ -213,26 +213,169 @@ export function createR2ResourceRegistry(bucket: R2Like) {
 export interface ResolverPorts {
   authorize: ProjectContentAdmission["authorize"];
   resource(tenantId: string, resourceId: string, claim?: Resource): Promise<Resource | null>;
+  /** Project-level access for capabilities that are not bound to a Host replica. */
+  authorizeProject?(input: {
+    projectId: string;
+    tenantId: string;
+    ownerId?: string;
+  }): Promise<boolean>;
+}
+
+/** Staging namespace for a chunked Project Asset import. A capability may only
+ * ever address an object below this prefix, never an arbitrary R2 key. */
+export const PROJECT_ASSET_IMPORT_STAGING_PREFIX = "project-content-imports/";
+
+/**
+ * Owner/tenant re-check for a preview read or a chunked-import upload. The
+ * Project must be live, its effective tenant is `tenant_id` or
+ * `personal:<owner>`, and the caller may additionally bind one owner.
+ */
+export function createD1ProjectAccessAuthorizer(db: D1Like) {
+  return async (input: {
+    projectId: string;
+    tenantId: string;
+    ownerId?: string;
+  }): Promise<boolean> => {
+    const row = await db
+      .prepare(
+        "SELECT owner_id, tenant_id, deleted_at FROM project WHERE id = ? LIMIT 1",
+      )
+      .bind(input.projectId)
+      .first<{
+        owner_id: string;
+        tenant_id: string | null;
+        deleted_at: number | null;
+      }>();
+    if (!row || row.deleted_at !== null) return false;
+    const tenantId = row.tenant_id ?? `personal:${row.owner_id}`;
+    if (tenantId !== input.tenantId) return false;
+    return input.ownerId === undefined || input.ownerId === row.owner_id;
+  };
+}
+
+interface ResolvedCapability {
+  storageKey: string;
+  contentType?: string;
+  byteLength?: number;
 }
 
 /** Capability resolver shared by api-cf and the upload Worker. */
 export function createCapabilityResolver<P extends ResolverPorts, E>(
   portsFor: (env: E) => P,
   referencesFor: (ports: P) => { resource(projectId: string, resourceId: string): Promise<{ kind: string } | undefined> },
+  options: {
+    now?: () => number;
+    /** Short enough that a Project deletion or a new Resource becomes visible
+     * without a D1/registry round trip on every Range chunk. */
+    cacheTtlMs?: number;
+    cacheMaxEntries?: number;
+  } = {},
 ) {
-  return async (
+  const now = options.now ?? Date.now;
+  const ttlMs = Math.min(Math.max(options.cacheTtlMs ?? 15_000, 0), 60_000);
+  const maxEntries = Math.max(options.cacheMaxEntries ?? 256, 1);
+  const cache = new Map<
+    string,
+    { value: ResolvedCapability; expiresAt: number }
+  >();
+  const cacheKey = (claims: Parameters<typeof resolve>[0]) =>
+    JSON.stringify([
+      claims.operation,
+      claims.purpose,
+      claims.resourceId,
+      claims.scope,
+      claims.byteLength,
+      claims.expiresAt,
+      claims.importSession,
+    ]);
+  const remember = (
+    key: string,
+    value: ResolvedCapability,
+    tokenExpiresAt: number,
+  ) => {
+    const expiresAt = Math.min(now() + ttlMs, tokenExpiresAt);
+    if (expiresAt <= now()) return;
+    if (cache.size >= maxEntries) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(key, { value, expiresAt });
+  };
+  const resolve = async (
     claims: {
       scope: { projectId?: string; localReplicaId?: string; tenantId: string };
       resourceId: string;
       operation: string;
+      purpose?: string;
       digest?: string;
       byteLength?: number;
+      expiresAt?: string;
+      contentType?: string;
+      importSession?: {
+        ownerId: string;
+        stagingKey: string;
+      };
     },
     env: E,
-  ) => {
+  ): Promise<ResolvedCapability | undefined> => {
     const { projectId, localReplicaId, tenantId } = claims.scope;
-    if (!projectId || !localReplicaId) return undefined;
     const ports = portsFor(env);
+
+    // Chunked Project Asset import: no Resource exists yet, so admission is
+    // the signed owner/tenant claim plus a staging key below our namespace.
+    if (claims.operation === "upload" && claims.importSession) {
+      const { ownerId, stagingKey } = claims.importSession;
+      if (
+        !projectId ||
+        !ports.authorizeProject ||
+        !stagingKey.startsWith(PROJECT_ASSET_IMPORT_STAGING_PREFIX) ||
+        stagingKey.includes("..") ||
+        stagingKey.includes("\\") ||
+        claims.byteLength === undefined
+      )
+        return undefined;
+      if (
+        !(await ports.authorizeProject({ projectId, tenantId, ownerId }))
+      )
+        return undefined;
+      return {
+        storageKey: stagingKey,
+        ...(claims.contentType === undefined
+          ? {}
+          : { contentType: claims.contentType }),
+        byteLength: claims.byteLength,
+      };
+    }
+
+    // Project-owner preview read: the editor's media URL carries no Host
+    // replica. Re-check the live Project/tenant, then the same reference and
+    // registry facts a replica capability uses.
+    if (
+      claims.operation === "read" &&
+      claims.purpose === "preview" &&
+      projectId &&
+      !localReplicaId
+    ) {
+      if (
+        !ports.authorizeProject ||
+        !(await ports.authorizeProject({ projectId, tenantId }))
+      )
+        return undefined;
+      const reference = await referencesFor(ports).resource(
+        projectId,
+        claims.resourceId,
+      );
+      if (!reference) return undefined;
+      const resource = await ports.resource(tenantId, claims.resourceId);
+      if (!resource || resource.kind !== reference.kind) return undefined;
+      return {
+        storageKey: await resourceLocator(tenantId, resource),
+        contentType: resource.contentType,
+        byteLength: resource.byteLength,
+      };
+    }
+
+    if (!projectId || !localReplicaId) return undefined;
     if (!(await ports.authorize({ projectId, localReplicaId, tenantId })))
       return undefined;
     const reference = await referencesFor(ports).resource(projectId, claims.resourceId);
@@ -250,5 +393,24 @@ export function createCapabilityResolver<P extends ResolverPorts, E>(
       contentType: resource.contentType,
       byteLength: resource.byteLength,
     };
+  };
+  return async (
+    claims: Parameters<typeof resolve>[0],
+    env: E,
+  ): Promise<ResolvedCapability | undefined> => {
+    const key = cacheKey(claims);
+    const cached = cache.get(key);
+    if (cached) {
+      if (cached.expiresAt > now()) return cached.value;
+      cache.delete(key);
+    }
+    const value = await resolve(claims, env);
+    if (value) {
+      const tokenExpiresAt = claims.expiresAt
+        ? Date.parse(claims.expiresAt)
+        : now() + ttlMs;
+      remember(key, value, tokenExpiresAt);
+    }
+    return value;
   };
 }

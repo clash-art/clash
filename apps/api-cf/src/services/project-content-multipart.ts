@@ -106,7 +106,12 @@ export function createR2ProjectMultipartStore(
   return {
     async begin(session) {
       assertContentTransferSize(session.target.byteLength);
-      if (!/^sha256:[a-f0-9]{64}$/.test(session.target.digest))
+      // An empty digest marks a private Asset-import staging upload: the
+      // client cannot know the content digest yet, so finalization computes it.
+      if (
+        session.target.digest &&
+        !/^sha256:[a-f0-9]{64}$/.test(session.target.digest)
+      )
         throw new MultipartContentError(400, "Invalid immutable digest");
       const prefix = prefixFor(session),
         key = `${prefix}session.json`;
@@ -263,7 +268,8 @@ export function createR2ProjectMultipartStore(
         );
         if (
           length !== session.target.byteLength ||
-          `sha256:${hash.digest("hex")}` !== session.target.digest
+          (session.target.digest !== "" &&
+            `sha256:${hash.digest("hex")}` !== session.target.digest)
         )
           throw new MultipartContentError(
             400,
@@ -292,7 +298,10 @@ export function createR2ProjectMultipartStore(
         if (!verified) invalid("Verified staging object is missing");
         // R2 verifies the full checksum before atomically exposing the canonical object.
         await bucket.put(session.target.locator, verified.body, {
-          sha256: session.target.digest.slice(7),
+          // Import staging has no digest yet; finalization computes it.
+          ...(session.target.digest
+            ? { sha256: session.target.digest.slice(7) }
+            : {}),
           httpMetadata: session.target.contentType
             ? { contentType: session.target.contentType }
             : {},

@@ -602,7 +602,10 @@ export function createInMemoryAssetDeliveryStore(): AssetDeliveryStore & {
           all.set(b, offset);
           offset += b.length;
         }
-        if (`sha256:${await contentHash(all)}` !== s.target.digest)
+        if (
+          s.target.digest !== "" &&
+          `sha256:${await contentHash(all)}` !== s.target.digest
+        )
           throw new MultipartContentError(400, "Multipart object digest mismatch");
         await beforePublish();
         objects.set(s.target.locator, { bytes: all, contentType: s.target.contentType });

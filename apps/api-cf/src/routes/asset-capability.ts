@@ -161,8 +161,13 @@ export function createAssetCapabilityRoutes(
     const token = c.req.param("token");
     const claims = await verifyCloudAssetDeliveryCapability(c.env, token, now);
     if (!claims) return c.text("Invalid or expired capability", 403);
+    const importSession =
+      claims.operation === "upload" && claims.importSession !== undefined;
     const boundedTransfer =
-      !!claims.scope.localReplicaId || options.maxBytes !== undefined;
+      !!claims.scope.localReplicaId ||
+      importSession ||
+      claims.purpose === "preview" ||
+      options.maxBytes !== undefined;
 
     const expectedMethod = claims.operation === "read" ? "GET" : "PUT";
     if (
@@ -191,7 +196,7 @@ export function createAssetCapabilityRoutes(
       }
       if (boundedTransfer)
         assertContentTransferSize(claims.byteLength, options.maxBytes);
-      if (claims.scope.localReplicaId) {
+      if (claims.scope.localReplicaId || importSession) {
         const response = await handleMultipartContent(
           c.req.raw,
           store,
@@ -199,8 +204,19 @@ export function createAssetCapabilityRoutes(
             identity: JSON.stringify({
               scope: claims.scope,
               resourceId: claims.resourceId,
+              ...(claims.importSession
+                ? {
+                    importSession: {
+                      ownerId: claims.importSession.ownerId,
+                      stagingKey: claims.importSession.stagingKey,
+                      projectAssetId: claims.importSession.projectAssetId,
+                    },
+                  }
+                : {}),
             }),
             locator: storageKey,
+            // Import staging has no digest until finalization; the store only
+            // verifies it when the claim carries one.
             digest: claims.digest ?? "",
             byteLength: claims.byteLength,
             contentType: resource.contentType ?? claims.contentType,
