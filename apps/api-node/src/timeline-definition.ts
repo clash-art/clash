@@ -1,36 +1,25 @@
 import { readFileSync } from "node:fs";
-import {
-  generatorDefinitionFromExecutablePluginRegistration,
-  validateExecutablePluginPackage,
-} from "@clash/shared-types";
-import { executablePluginSchemaHash } from "@clash/shared-runtime/executable-plugin-schema-hash";
+import { createCloudPluginCatalog } from "@clash/shared-runtime/cloud-project-host/plugin-catalog";
+
+/** The bundled plugins this server executes: the Timeline projection, without a render executor. */
+export function loadCloudPluginCatalog() {
+  const root = new URL("../../../plugins/remotion/", import.meta.url);
+  const read = (path: string): unknown =>
+    JSON.parse(readFileSync(new URL(path, root), "utf8"));
+  return createCloudPluginCatalog(
+    [
+      {
+        manifest: read("manifest.json"),
+        generators: { "generators/timeline.json": read("generators/timeline.json") },
+      },
+    ],
+    { executableGeneratorIds: ["clash.timeline"] },
+  );
+}
 
 /** Load the bundled projection contract, without advertising a render executor. */
 export function loadTimelineDefinition() {
-  const root = new URL("../../../plugins/remotion/", import.meta.url);
-  const manifest = JSON.parse(
-    readFileSync(new URL("manifest.json", root), "utf8"),
-  );
-  const document = JSON.parse(
-    readFileSync(new URL("generators/timeline.json", root), "utf8"),
-  );
-  const pkg = validateExecutablePluginPackage(
-    manifest,
-    {},
-    {},
-    { generators: { "generators/timeline.json": document } },
-  );
-  return generatorDefinitionFromExecutablePluginRegistration({
-    pluginId: pkg.manifest.id,
-    version: pkg.manifest.version,
-    schemaHash: executablePluginSchemaHash(
-      pkg.manifest,
-      pkg.cards,
-      pkg.providers,
-      pkg.modelBindings,
-      pkg.generators,
-      pkg.views,
-    ),
-    document: pkg.generators["generators/timeline.json"]!,
-  });
+  const [definition] = loadCloudPluginCatalog().generatorDefinitions();
+  if (!definition) throw new Error("The bundled Timeline plugin is missing");
+  return definition;
 }

@@ -45,6 +45,10 @@ export default defineConfig({
         replacement: resolve(__dirname, "../../packages/shared-types/src/index.ts"),
       },
       {
+        find: /^@clash\/shared-runtime\/project-host-contract$/,
+        replacement: resolve(__dirname, "../../packages/shared-runtime/src/project-host-contract/index.ts"),
+      },
+      {
         find: /^@clash\/shared-runtime\/(.+)$/,
         replacement: resolve(__dirname, "../../packages/shared-runtime/src/$1.ts"),
       },

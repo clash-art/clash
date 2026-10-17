@@ -22,7 +22,7 @@ function sources(dir: string): string[] {
   });
 }
 
-/** Static value imports (`import x from`, `export … from`), not `import type`. */
+/** Static value imports (`import x from`, `export … from`, `import "x"`), not `import type`. */
 function staticImports(file: string): string[] {
   const text = readFileSync(file, "utf8");
   const specs: string[] = [];
@@ -35,7 +35,86 @@ function staticImports(file: string): string[] {
       continue;
     specs.push(m[2]);
   }
+  for (const m of text.matchAll(/^\s*import\s+["']([^"']+)["']/gm))
+    specs.push(m[1]);
   return specs;
+}
+
+const REPO = resolve(SRC, "../../..");
+const WORKSPACE_PATHS = (
+  JSON.parse(
+    readFileSync(join(REPO, "tsconfig.source.json"), "utf8"),
+  ) as { compilerOptions: { paths: Record<string, string[]> } }
+).compilerOptions.paths;
+
+function existing(path: string): string | undefined {
+  const candidates = [
+    path,
+    `${path}.ts`,
+    `${path}.tsx`,
+    `${path}.js`,
+    join(path, "index.ts"),
+    path.replace(/\.js$/, ".ts"),
+  ];
+  return candidates.find((p) => {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Repo source for a relative or workspace (`@clash/*`) specifier; undefined for packages. */
+function resolveSource(spec: string, from: string): string | undefined {
+  if (spec.startsWith(".")) return existing(resolve(dirname(from), spec));
+  const exact = WORKSPACE_PATHS[spec]?.[0];
+  if (exact) return existing(join(REPO, exact));
+  const wildcard = Object.keys(WORKSPACE_PATHS)
+    .filter((key) => key.endsWith("/*") && spec.startsWith(key.slice(0, -1)))
+    .sort((a, b) => b.length - a.length)[0];
+  if (!wildcard) return undefined;
+  const target = WORKSPACE_PATHS[wildcard][0].replace(
+    "*",
+    spec.slice(wildcard.length - 1),
+  );
+  return existing(join(REPO, target.replace(/\.ts$/, "")));
+}
+
+/** Every module Worker startup evaluates: static imports only, across workspace packages. */
+function eagerGraph(entry: string): { files: Set<string>; packages: Set<string> } {
+  const files = new Set<string>();
+  const packages = new Set<string>();
+  const visit = (file: string) => {
+    if (files.has(file)) return;
+    files.add(file);
+    if (!/\.[cm]?[jt]sx?$/.test(file)) return;
+    for (const spec of staticImports(file)) {
+      const source = resolveSource(spec, file);
+      if (source) visit(source);
+      else if (!spec.startsWith(".")) packages.add(spec);
+      else throw new Error(`Unresolved import ${spec} in ${file}`);
+    }
+  };
+  visit(entry);
+  return { files, packages };
+}
+
+/** Modules that must load on first use: Ajv (`new Function`), Generator product logic, plugin JSON. */
+function lazyOnlyOffenders(graph: ReturnType<typeof eagerGraph>): string[] {
+  return [
+    ...[...graph.packages].filter((spec) => /^ajv(\/|$)/.test(spec)),
+    ...[...graph.files]
+      .map((file) => relative(REPO, file))
+      .filter(
+        (file) =>
+          /^plugins\/.*\.json$/.test(file) ||
+          file === "packages/shared-runtime/src/timeline-generator-product.ts" ||
+          file === "packages/shared-runtime/src/generator-contract.ts" ||
+          file.startsWith("apps/api-cf/src/generated/") ||
+          file.startsWith("apps/api-cf/src/services/cloud-plugin-"),
+      ),
+  ];
 }
 
 describe("Worker startup import graph", () => {
@@ -53,5 +132,23 @@ describe("Worker startup import graph", () => {
         .map((s) => `${rel} -> ${s}`);
     });
     expect(offenders).toEqual([]);
+  });
+
+  it("keeps Ajv, Generator product logic, generated validators and plugin JSON out of startup", () => {
+    const startup = eagerGraph(join(SRC, "index.ts"));
+    expect(startup.files.has(join(SRC, "app.ts"))).toBe(true);
+    expect(lazyOnlyOffenders(startup)).toEqual([]);
+  });
+
+  it("would detect those modules: the catalog service reaches all of them", () => {
+    const catalog = eagerGraph(join(SRC, "services/cloud-plugin-catalog.ts"));
+    const offenders = lazyOnlyOffenders(catalog);
+    for (const expected of [
+      "ajv",
+      "plugins/remotion/manifest.json",
+      "apps/api-cf/src/generated/cloud-plugin-validators.js",
+      "packages/shared-runtime/src/generator-contract.ts",
+    ])
+      expect(offenders).toContain(expected);
   });
 });

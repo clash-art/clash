@@ -177,6 +177,31 @@
       "types": "./src/executable-plugin-schema-hash.ts",
       "import": "./src/executable-plugin-schema-hash.ts",
       "default": "./dist/executable-plugin-schema-hash.js"
+    },
+    "./cloud-project-host/timeline-commands": {
+      "types": "./src/cloud-project-host/timeline-commands.ts",
+      "import": "./src/cloud-project-host/timeline-commands.ts",
+      "default": "./dist/cloud-project-host/timeline-commands.js"
+    },
+    "./cloud-project-host/project-assets": {
+      "types": "./src/cloud-project-host/project-assets.ts",
+      "import": "./src/cloud-project-host/project-assets.ts",
+      "default": "./dist/cloud-project-host/project-assets.js"
+    },
+    "./cloud-project-host/plugin-catalog": {
+      "types": "./src/cloud-project-host/plugin-catalog.ts",
+      "import": "./src/cloud-project-host/plugin-catalog.ts",
+      "default": "./dist/cloud-project-host/plugin-catalog.js"
+    },
+    "./generator-validator-codegen": {
+      "types": "./src/generator-validator-codegen.ts",
+      "import": "./src/generator-validator-codegen.ts",
+      "default": "./dist/generator-validator-codegen.js"
+    },
+    "./project-host-contract": {
+      "types": "./src/project-host-contract/index.ts",
+      "import": "./src/project-host-contract/index.ts",
+      "default": "./dist/project-host-contract/index.js"
     }
   },
   "engines": {
@@ -193,6 +218,7 @@
     "@clash/action-sdk": "workspace:*",
     "@clash/asset-sdk": "workspace:*",
     "@clash/shared-types": "workspace:*",
+    "@noble/hashes": "2.2.0",
     "ajv": "^8.20.0",
     "loro-crdt": "1.16.3"
   },

@@ -11,6 +11,7 @@ import { sessionsRuntimeRoutes } from "./sessions-runtime";
 import { agentRoutes } from "./agents";
 import { modelProviderRoutes } from "./model-providers";
 import { providerUsageRoutes } from "./provider-usage";
+import { pluginCatalogRoutes } from "./plugin-catalog";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
 
@@ -25,6 +26,8 @@ v1Routes.route("/runtimes", runtimesRoutes);
 v1Routes.route("/agents", agentRoutes);
 v1Routes.route("/", modelProviderRoutes);
 v1Routes.route("/", providerUsageRoutes);
+// Generator Definitions, plugin Views and Actions this deployment executes.
+v1Routes.route("/", pluginCatalogRoutes);
 // Local-runtime session lifecycle (BYO local agent; distinct from cloud
 // /api/v1/sessions). Browser opens WS to /api/v1/local-sessions/:id/_stream
 // for the duplex event/prompt stream. Session creation lives next to it

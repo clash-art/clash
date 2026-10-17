@@ -1,4 +1,5 @@
 import { createProjectAssetRoutes } from "./project-assets.ts";
+import { loadCloudPluginCatalog } from "./timeline-definition.ts";
 import {
   createTimelineHostRoutes,
   type TimelineHostOptions,
@@ -180,6 +181,26 @@ export function createNodeCloudApp(options: {
     );
     return c.json({ projects: result.rows });
   });
+  // Plugin catalog: what this server executes (shared cloud catalog, same
+  // shapes as the local Host). Loaded on first request.
+  let pluginCatalog: ReturnType<typeof loadCloudPluginCatalog> | undefined;
+  const catalog = () => (pluginCatalog ??= loadCloudPluginCatalog());
+  app.get("/api/v1/generator-definitions", (c) =>
+    c.json({ definitions: catalog().generatorDefinitions() }),
+  );
+  app.get("/api/v1/generator-definitions/:pluginId/:definitionId", (c) => {
+    const definition = catalog().resolveGeneratorDefinition(
+      c.req.param("pluginId"),
+      c.req.param("definitionId"),
+    );
+    return definition
+      ? c.json({ definition })
+      : c.json({ error: "Generator Definition not found" }, 404);
+  });
+  app.get("/api/v1/plugin-views", (c) => c.json({ views: catalog().views() }));
+  app.get("/api/v1/plugin-actions", (c) =>
+    c.json({ actions: catalog().actions() }),
+  );
   app.route("/api/v1/projects", createProjectRoutes(options.db, syncBaseUrl));
   if (options.timeline)
     app.route(

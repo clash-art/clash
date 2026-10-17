@@ -6,12 +6,14 @@ import { createRelayStore } from "./relay-store.ts";
 import { cursorNumber } from "./checkpoint-store.ts";
 
 /** A short-lived command replica over the same log as browser edits. Holding
- * the log head serializes CAS evaluation and append with every other producer. */
+ * the log head serializes CAS evaluation and append with every other producer.
+ * `mutate` may inspect the result: shared command handlers report whether
+ * their edits should be appended. */
 export async function withProjectDocument<T>(
   db: PostgresTransactionPort,
   ownerId: string,
   projectId: string,
-  mutate: boolean,
+  mutate: boolean | ((result: T) => boolean),
   work: (doc: LoroDoc, tx: PostgresQueryPort) => T | Promise<T>,
 ): Promise<T> {
   return db.transaction(async (tx) => {
@@ -62,7 +64,7 @@ export async function withProjectDocument<T>(
           if ((before.get(peer) ?? 0) < end)
             throw Error("Project replica has unresolved dependencies");
         const result = await work(doc, tx);
-        if (mutate) {
+        if (typeof mutate === "function" ? mutate(result) : mutate) {
           doc.commit();
           await store.append(
             randomUUID(),

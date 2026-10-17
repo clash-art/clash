@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "./sha256-hex.js";
 import type {
   ExecutablePluginManifest,
   ExecutablePluginCardDocument,
@@ -27,19 +27,17 @@ export function executablePluginSchemaHash(
   generators: Record<string, ExecutablePluginGeneratorDocument> = {},
   views: Record<string, ExecutablePluginViewDocument> = {},
 ): `sha256:${string}` {
-  return `sha256:${createHash("sha256")
-    .update(
-      canonicalJson({
-        apiVersion: manifest.apiVersion,
-        id: manifest.id,
-        version: manifest.version,
-        contributes: manifest.contributes,
-        cards,
-        providers,
-        modelBindings,
-        generators,
-        views,
-      }),
-    )
-    .digest("hex")}`;
+  return `sha256:${sha256Hex(
+    canonicalJson({
+      apiVersion: manifest.apiVersion,
+      id: manifest.id,
+      version: manifest.version,
+      contributes: manifest.contributes,
+      cards,
+      providers,
+      modelBindings,
+      generators,
+      views,
+    }),
+  )}`;
 }

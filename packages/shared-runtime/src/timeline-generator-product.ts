@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "./sha256-hex.js";
 
 import type { LoroDoc } from "loro-crdt";
 
@@ -243,9 +243,7 @@ function proposeRevisionId(input: {
     persistentInputRefs: input.persistentInputRefs,
     parentRevisionId: input.parentRevisionId,
   };
-  const digest = createHash("sha256")
-    .update(canonicalJson(canonical))
-    .digest("hex");
+  const digest = sha256Hex(canonicalJson(canonical));
   return `genrev_sha256:${digest}`;
 }
 

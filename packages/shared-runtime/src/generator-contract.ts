@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { isDeepStrictEqual } from "node:util";
+import { sha256Hex } from "./sha256-hex.js";
 
 import Ajv, { type ErrorObject, type ValidateFunction } from "ajv";
 import type { LoroDoc } from "loro-crdt";
@@ -20,7 +19,36 @@ import {
   type GeneratorRevisionRef,
 } from "@clash/shared-types";
 
-const ajv = new Ajv({ allErrors: true, strict: true });
+/** Options shared by runtime compilation and build-time standalone validators. */
+export const GENERATOR_SCHEMA_AJV_OPTIONS = {
+  allErrors: true,
+  strict: true,
+} as const;
+
+// Constructed on the first fallback compile: Ajv compiles with `new Function`,
+// which workerd forbids, so a Worker must find every schema precompiled.
+let ajv: Ajv | undefined;
+
+/** The callable surface used here; Ajv standalone validators provide it too. */
+export type PrecompiledGeneratorValidator = Pick<ValidateFunction, "errors"> &
+  ((data: unknown) => boolean);
+
+const precompiledValidators = new Map<string, PrecompiledGeneratorValidator>();
+
+/** Lookup key of one JSON Schema: its canonical JSON text. */
+export function generatorSchemaKey(schema: unknown): string {
+  return canonicalJson(schema);
+}
+
+/** Install build-time validators, looked up by `generatorSchemaKey` before compiling. */
+export function registerPrecompiledGeneratorValidators(
+  entries: Iterable<
+    readonly [schemaKey: string, validate: PrecompiledGeneratorValidator]
+  >,
+): void {
+  for (const [schemaKey, validate] of entries)
+    precompiledValidators.set(schemaKey, validate);
+}
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
@@ -34,6 +62,11 @@ function canonicalJson(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+/** Structural equality of plain JSON values (portable; no `node:util`). */
+function sameJson(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 function contractError(message: string): never {
@@ -52,8 +85,11 @@ function formatSchemaErrors(errors: ErrorObject[] | null | undefined): string {
 function compileSchema(
   schema: GeneratorDefinition["stateSchema"],
   subject: string,
-): ValidateFunction {
+): PrecompiledGeneratorValidator {
+  const precompiled = precompiledValidators.get(generatorSchemaKey(schema));
+  if (precompiled) return precompiled;
   try {
+    ajv ??= new Ajv(GENERATOR_SCHEMA_AJV_OPTIONS);
     return ajv.compile(schema);
   } catch (error) {
     contractError(
@@ -201,7 +237,7 @@ export function validateLocalGeneratorRevisionContract(input: {
 }): GeneratorRevision {
   const definition = GeneratorDefinitionSchema.parse(input.definition);
   if (
-    !isDeepStrictEqual(input.revision.definitionRef, definitionRef(definition))
+    !sameJson(input.revision.definitionRef, definitionRef(definition))
   ) {
     contractError(
       "Generator revision definition provenance does not match the installed definition.",
@@ -255,7 +291,7 @@ export function prepareLocalGeneratorActionRun(
       `Generator revision ${input.generatorRevision.generatorId}/${input.generatorRevision.generatorRevisionId} not found.`,
     );
   }
-  if (!isDeepStrictEqual(revision.definitionRef, definitionRef(definition))) {
+  if (!sameJson(revision.definitionRef, definitionRef(definition))) {
     contractError(
       "The installed Generator definition does not match the immutable revision.",
     );
@@ -364,9 +400,7 @@ export function buildLocalGeneratorActionRun(
     invocationInputRefs,
     outputContract,
   };
-  const invocationFingerprint = `sha256:${createHash("sha256")
-    .update(canonicalJson(semanticInvocation))
-    .digest("hex")}` as const;
+  const invocationFingerprint = `sha256:${sha256Hex(canonicalJson(semanticInvocation))}` as const;
   return {
     definition,
     revision,

@@ -50,6 +50,12 @@ importers:
       '@types/ws':
         specifier: ^8.5.0
         version: 8.18.1
+      '@typescript-eslint/parser':
+        specifier: ^8.49.0
+        version: 8.62.1(eslint@8.57.0)(typescript@5.9.3)
+      eslint:
+        specifier: ^8.57.0
+        version: 8.57.0
       prettier:
         specifier: ^3.0.0
         version: 3.9.4
@@ -1443,6 +1449,9 @@ importers:
       '@clash/shared-types':
         specifier: workspace:*
         version: link:../shared-types
+      '@noble/hashes':
+        specifier: 2.2.0
+        version: 2.2.0
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
