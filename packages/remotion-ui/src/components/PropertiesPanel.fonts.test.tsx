@@ -66,13 +66,13 @@ describe("Text inspector discovery", () => {
     const add = screen.getByRole("button", {
       name: "Add Position keyframe at current frame",
     });
-    expect(add.textContent).toMatch(/Add keyframe/);
+    expect(add.getAttribute("data-keyframe-diamond")).toBe("hollow");
     fireEvent.click(add);
     expect(latest!.tracks[0].items[0].keyframes?.position?.[0].frame).toBe(10);
     expect(
       screen.getByRole("button", {
         name: "Remove Position keyframe at current frame",
-      }).textContent,
-    ).toMatch(/Remove keyframe/);
+      }).getAttribute("data-keyframe-diamond"),
+    ).toBe("filled");
   });
 });

@@ -17,7 +17,8 @@ import {
   useEditorDispatch,
   useEditorStaticState,
 } from '@clash/remotion-core';
-import { frameToPixels, secondsToFrames } from './utils/timeFormatter';
+import { formatTimecode, frameToPixels, secondsToFrames } from './utils/timeFormatter';
+import { KEYFRAME_CHANNEL_NAMES_ZH } from '../keyframeChannelNames';
 import { getRendererForItem } from './items/registry';
 import { generateVideoThumbnailAtTime, thumbnailCache } from '../../utils/thumbnailCache';
 import {
@@ -55,7 +56,7 @@ import {
 } from './waveformPresentation';
 import { createTimelineTextEditUpdates } from './textItemEditing';
 import { AudioFadeEnvelope } from './AudioFadeEnvelope';
-import { getTrackHeightForTrack, getTextKeyframeBandHeight } from './trackGeometry';
+import { getTrackHeightForTrack } from './trackGeometry';
 
 export type TimelineKeyframeMarker = {
   channels: Array<(typeof TIMELINE_KEYFRAME_CHANNELS)[number]>;
@@ -90,36 +91,34 @@ export const getTimelineKeyframeMarkers = (item: Item): TimelineKeyframeMarker[]
 };
 
 export type TimelineKeyframeMarkerLayout = {
-  bottom: number;
+  /** Hit target top, relative to the clip: centered on the clip's top edge. */
+  top: number;
   buttonLeft: number | string;
   buttonTransform: string;
-  glyph: 'start-cap' | 'diamond' | 'end-cap';
+  /** Where the square sits inside its hit target, so endpoint keys stay inside the clip. */
+  glyphAlign: 'start' | 'center' | 'end';
 };
+
+/** Hit target and glyph of a keyframe marker (a small cyan square on the clip's top edge). */
+export const TIMELINE_KEYFRAME_MARKER_HIT_SIZE = 14;
+export const TIMELINE_KEYFRAME_MARKER_SQUARE_SIZE = 8;
+export const TIMELINE_KEYFRAME_MARKER_COLOR = 'var(--clash-timeline-keyframe-marker, #22d3ee)';
 
 export const getTimelineKeyframeMarkerLayout = (
   marker: TimelineKeyframeMarker,
 ): TimelineKeyframeMarkerLayout => {
+  const top = -TIMELINE_KEYFRAME_MARKER_HIT_SIZE / 2;
   if (marker.edge === 'start') {
-    return {
-      bottom: 4,
-      buttonLeft: 0,
-      buttonTransform: 'none',
-      glyph: 'start-cap',
-    };
+    return { top, buttonLeft: 0, buttonTransform: 'none', glyphAlign: 'start' };
   }
   if (marker.edge === 'end') {
-    return {
-      bottom: 4,
-      buttonLeft: '100%',
-      buttonTransform: 'translateX(-100%)',
-      glyph: 'end-cap',
-    };
+    return { top, buttonLeft: '100%', buttonTransform: 'translateX(-100%)', glyphAlign: 'end' };
   }
   return {
-    bottom: 4,
+    top,
     buttonLeft: `${marker.leftPercent}%`,
     buttonTransform: 'translateX(-50%)',
-    glyph: 'diamond',
+    glyphAlign: 'center',
   };
 };
 
@@ -1067,7 +1066,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
         {/* New renderer (image/text) */}
         {useNewRenderer && (
           <div style={{ position: 'absolute', inset: 0 }}>
-            <Renderer item={resolvedItemForRenderer} asset={asset} width={width} height={resolvedItemType === 'text' ? availableHeight - getTextKeyframeBandHeight(track, primaryTrackId) : itemHeight} pixelsPerFrame={pixelsPerFrame} />
+            <Renderer item={resolvedItemForRenderer} asset={asset} width={width} height={resolvedItemType === 'text' ? availableHeight : itemHeight} pixelsPerFrame={pixelsPerFrame} />
           </div>
         )}
 
@@ -1178,11 +1177,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
       {isSelected && !isDragOverlay
         ? getTimelineKeyframeMarkers(item).map((marker) => {
           const layout = getTimelineKeyframeMarkerLayout(marker);
-          const glyphPath = layout.glyph === 'start-cap'
-            ? 'M 1 2 L 5 6 L 1 10 Z'
-            : layout.glyph === 'end-cap'
-              ? 'M 11 2 L 7 6 L 11 10 Z'
-              : 'M 6 2 L 10 6 L 6 10 L 2 6 Z';
+          const glyphOffset = (TIMELINE_KEYFRAME_MARKER_HIT_SIZE - TIMELINE_KEYFRAME_MARKER_SQUARE_SIZE) / 2;
           return (
             <button
               key={marker.frame}
@@ -1193,8 +1188,8 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
               data-keyframe-edge={marker.edge}
               data-keyframe-frame={marker.frame}
               data-keyframe-count={marker.channels.length}
-              data-keyframe-glyph={layout.glyph}
-              title={`${marker.channels.join(' + ')} · frame ${marker.frame}`}
+              data-keyframe-glyph="square"
+              title={`${marker.channels.map((channel) => KEYFRAME_CHANNEL_NAMES_ZH[channel] ?? channel).join(' + ')}关键帧 · ${formatTimecode(item.from + marker.frame, fps)}`}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
@@ -1205,53 +1200,41 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
               }}
               style={{
                 position: 'absolute',
-                bottom: layout.bottom,
+                top: layout.top,
                 left: layout.buttonLeft,
-                width: 18,
-                height: 18,
+                width: TIMELINE_KEYFRAME_MARKER_HIT_SIZE,
+                height: TIMELINE_KEYFRAME_MARKER_HIT_SIZE,
                 padding: 0,
                 border: 0,
                 background: 'transparent',
                 cursor: 'pointer',
                 transform: layout.buttonTransform,
-                zIndex: 9,
+                // Above the full-width volume hit strip (32) so a marker stays
+                // clickable on clips with audio; fade handles (33+) stay on top.
+                zIndex: 33,
               }}
             >
-              <svg
+              <span
                 aria-hidden="true"
-                viewBox="0 0 12 12"
-                width="12"
-                height="12"
+                data-keyframe-square=""
                 style={{
                   position: 'absolute',
-                  top: 3,
-                  left: layout.glyph === 'start-cap'
-                    ? -1
-                    : layout.glyph === 'diamond'
-                      ? 3
-                      : undefined,
-                  right: layout.glyph === 'end-cap' ? -1 : undefined,
-                  overflow: 'visible',
+                  top: glyphOffset,
+                  left: layout.glyphAlign === 'start'
+                    ? 0
+                    : layout.glyphAlign === 'center'
+                      ? glyphOffset
+                      : TIMELINE_KEYFRAME_MARKER_HIT_SIZE - TIMELINE_KEYFRAME_MARKER_SQUARE_SIZE,
+                  width: TIMELINE_KEYFRAME_MARKER_SQUARE_SIZE,
+                  height: TIMELINE_KEYFRAME_MARKER_SQUARE_SIZE,
+                  borderRadius: 1,
+                  background: TIMELINE_KEYFRAME_MARKER_COLOR,
+                  boxShadow: marker.channels.length > 1
+                    ? '0 0 0 1px rgba(255,255,255,0.95), 0 0 0 3px rgba(34,211,238,0.35)'
+                    : '0 0 0 1px rgba(255,255,255,0.95)',
                   pointerEvents: 'none',
                 }}
-              >
-                {marker.channels.length > 1 ? (
-                  <path
-                    d={glyphPath}
-                    fill="none"
-                    stroke="rgba(255,107,82,0.3)"
-                    strokeWidth="4"
-                    strokeLinejoin="round"
-                  />
-                ) : null}
-                <path
-                  d={glyphPath}
-                  fill={colors.accent.primary}
-                  stroke="rgba(255,255,255,0.9)"
-                  strokeWidth="1"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              />
             </button>
           );
         })

@@ -578,7 +578,7 @@ describe("Project workspace surfaces", () => {
     });
     expect(onExport).not.toHaveBeenCalled();
     expect(onSave).toHaveBeenCalledWith(timeline.id, expect.anything(), projectTimelineReadToken(timeline));
-    expect(notices).toContain(reason);
+    expect(notices).toContain(`[TIMELINE_SAVE_FAILED] ${reason}`);
     } finally {
       window.removeEventListener("clash:timeline-notice", notice);
     }

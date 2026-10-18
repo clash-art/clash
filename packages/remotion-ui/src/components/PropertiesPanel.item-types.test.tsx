@@ -77,7 +77,7 @@ const chooseInspectorOption = (selectName: string, optionName: string) => {
 };
 
 describe("PropertiesPanel item type coverage", () => {
-  it("labels static item size as a source multiplier instead of pixels", () => {
+  it("edits the static size through Scale until the property is keyed", () => {
     const image: ImageItem = {
       id: "scaled-image",
       type: "image",
@@ -87,18 +87,17 @@ describe("PropertiesPanel item type coverage", () => {
       properties: { x: 0, y: 0, width: 1, height: 1 },
     };
 
-    renderInspector(image);
+    const stateRef = renderInspector(image);
 
-    expect(screen.getByText("Base source scale")).toBeTruthy();
-    expect(screen.getByText(/Unitless multipliers, not pixels/i)).toBeTruthy();
-    expect(
-      screen.getByRole("spinbutton", { name: "Width source scale multiplier" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("spinbutton", {
-        name: "Height source scale multiplier",
-      }),
-    ).toBeTruthy();
+    expect(screen.queryByText("Base source scale")).toBeNull();
+    expect(screen.queryByText(/Move the playhead, add a keyframe/)).toBeNull();
+    fireEvent.change(screen.getByRole("spinbutton", { name: "X scale" }), {
+      target: { value: "2" },
+    });
+    expect(latestItem<ImageItem>(stateRef)).toMatchObject({
+      properties: { width: 2, height: 1 },
+    });
+    expect(latestItem<ImageItem>(stateRef).keyframes).toBeUndefined();
   });
 
   it("adds a real clip mask and authors mask motion at the item-local playhead", () => {
@@ -236,12 +235,12 @@ describe("PropertiesPanel item type coverage", () => {
         name: "Add Scale keyframe at current frame",
       }),
     );
-    fireEvent.change(
-      screen.getByRole("spinbutton", { name: "X animated scale" }),
-      {
-        target: { value: "1.5" },
-      },
-    );
+    // Scale shows the effective size (static 0.5 × keyed 1): 0.75 keys 1.5×.
+    const scale = screen.getByRole("spinbutton", {
+      name: "X scale",
+    }) as HTMLInputElement;
+    expect(scale.value).toBe("0.5");
+    fireEvent.change(scale, { target: { value: "0.75" } });
     fireEvent.click(
       screen.getByRole("button", {
         name: "Add Rotation keyframe at current frame",
@@ -365,7 +364,12 @@ describe("PropertiesPanel item type coverage", () => {
     const previous = screen.getByRole("button", {
       name: "Previous Position keyframe",
     });
-    expect(previous.parentElement).not.toBe(toggle.parentElement);
+    const next = screen.getByRole("button", { name: "Next Position keyframe" });
+    // Prev/next arrows sit directly beside the diamond: ‹ ◆ ›.
+    const group = toggle.closest('[data-keyframe-controls="Position"]');
+    expect(group).toBeTruthy();
+    expect([...group!.querySelectorAll("button")]).toEqual([previous, toggle, next]);
+    expect(toggle.getAttribute("data-keyframe-diamond")).toBe("filled");
     expect(
       screen.getByTestId("scalar-keyframe-controls").className,
     ).not.toContain("grid-cols-2");

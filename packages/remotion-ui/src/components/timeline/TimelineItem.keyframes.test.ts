@@ -62,52 +62,20 @@ describe('TimelineItem keyframe markers', () => {
     expect(source).not.toContain('handleDeleteClick');
   });
 
-  it('anchors endpoint caps to exact clip boundaries while keeping their hit targets inside', () => {
-    const getMarkerLayout = (
-      TimelineItemModule as typeof TimelineItemModule & {
-        getTimelineKeyframeMarkerLayout?: (
-          marker: ReturnType<typeof getTimelineKeyframeMarkers>[number],
-        ) => {
-          bottom: number;
-          buttonLeft: number | string;
-          buttonTransform: string;
-          glyph: 'start-cap' | 'diamond' | 'end-cap';
-        };
-      }
-    ).getTimelineKeyframeMarkerLayout;
-
-    expect(getMarkerLayout).toBeTypeOf('function');
+  it('centers square markers on the top edge and keeps endpoint squares inside the clip', () => {
+    const { getTimelineKeyframeMarkerLayout } = TimelineItemModule;
     expect(
       ([
         { edge: 'start', leftPercent: 0 },
         { edge: 'middle', leftPercent: 37.5 },
         { edge: 'end', leftPercent: 100 },
       ] as const).map((marker) =>
-        getMarkerLayout?.({
-          channels: ['position'],
-          frame: 0,
-          ...marker,
-        }),
+        getTimelineKeyframeMarkerLayout({ channels: ['position'], frame: 0, ...marker }),
       ),
     ).toEqual([
-      {
-        bottom: 4,
-        buttonLeft: 0,
-        buttonTransform: 'none',
-        glyph: 'start-cap',
-      },
-      {
-        bottom: 4,
-        buttonLeft: '37.5%',
-        buttonTransform: 'translateX(-50%)',
-        glyph: 'diamond',
-      },
-      {
-        bottom: 4,
-        buttonLeft: '100%',
-        buttonTransform: 'translateX(-100%)',
-        glyph: 'end-cap',
-      },
+      { top: -7, buttonLeft: 0, buttonTransform: 'none', glyphAlign: 'start' },
+      { top: -7, buttonLeft: '37.5%', buttonTransform: 'translateX(-50%)', glyphAlign: 'center' },
+      { top: -7, buttonLeft: '100%', buttonTransform: 'translateX(-100%)', glyphAlign: 'end' },
     ]);
   });
 });

@@ -49,6 +49,7 @@ import {
   TIMELINE_MASK_STATIC_CONTROL_BINDINGS,
   TIMELINE_MASK_VECTOR_ANIMATION_BINDINGS,
   TIMELINE_KEYFRAME_INTERPOLATIONS,
+  type TimelineKeyframeChannel,
   type TimelineMaskNumberInputAnnotation,
   type TimelineMaskScalarAnimationBinding,
   type TimelineMaskStaticControlBinding,
@@ -63,6 +64,9 @@ import {
 } from './ui/controls';
 import { AspectRatioPicker } from './AspectRatioPicker';
 import { getContinuousTransitionBoundaries } from '../library/applyTimelineLibraryItem';
+import { formatTimecode } from './timeline/utils/timeFormatter';
+import { emitTimelineNotice } from './timeline/timelineNotice';
+import { KEYFRAME_CHANNEL_NAMES_ZH } from './keyframeChannelNames';
 
 const TRANSITION_TYPES: TransitionType[] = [
   'crossfade',
@@ -355,8 +359,12 @@ const SplitButton: React.FC<{
   );
 });
 
+export const KEYFRAME_OUTSIDE_CLIP_NOTICE =
+  '[KEYFRAME_OUTSIDE_CLIP] Move the playhead onto the selected clip to edit its keyframes.';
+
 type KeyframeControlHeaderProps = {
   label: string;
+  channel: TimelineKeyframeChannel;
   active: boolean;
   itemFrom: number;
   itemLocalFrame: number;
@@ -365,11 +373,14 @@ type KeyframeControlHeaderProps = {
   previousFrame: number | null;
   nextFrame: number | null;
   onToggle: () => void;
-  onInterpolationChange: (interpolation: 'hold' | 'linear') => void;
 };
 
+const keyframeArrowClassName = `flex h-6 w-5 items-center justify-center ${controlRadiusClassName} text-stone-400 hover:bg-warm-hover hover:text-stone-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent`;
+
+/** Property label with a CapCut-style ‹ ◆ › keyframe control on the right. */
 const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
   label,
+  channel,
   active,
   itemFrom,
   itemLocalFrame,
@@ -378,75 +389,96 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
   previousFrame,
   nextFrame,
   onToggle,
-  onInterpolationChange,
 }) => {
   const dispatch = useEditorDispatch();
+  const { fps } = useEditorStaticState();
   const navigate = (frame: number | null) => {
     if (frame === null) return;
     dispatch({ type: 'SET_CURRENT_FRAME', payload: itemFrom + frame });
   };
+  const name = KEYFRAME_CHANNEL_NAMES_ZH[channel] ?? label;
+  const timecode = formatTimecode(itemFrom + itemLocalFrame, fps);
+  const toggleTitle = !canEditKeyframes
+    ? '将播放头移到所选片段内以编辑关键帧'
+    : currentKey
+      ? `删除 ${timecode} 的${name}关键帧`
+      : `在 ${timecode} 添加${name}关键帧`;
 
   return (
-    <div className="mb-1 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1">
+    <div className="mb-1 flex min-w-0 items-center justify-between gap-2">
       <span className={`font-medium text-stone-500 dark:text-stone-400 ${editorTypeClassName.caption}`}>
         {label}
       </span>
-      <RemotionButton
-        type="button"
-        aria-label={`${currentKey ? 'Remove' : 'Add'} ${label} keyframe at current frame`}
-        title={canEditKeyframes ? `${currentKey ? 'Remove' : 'Add'} ${label} keyframe at frame ${itemLocalFrame}` : 'Move the playhead onto the selected clip to edit keyframes'}
-        disabled={!canEditKeyframes}
-        onClick={onToggle}
-        className={`flex min-h-7 items-center justify-center gap-1 px-2 text-xs ${controlRadiusClassName} border ${
-          currentKey
-            ? 'border-brand/60 bg-brand-light text-brand'
-            : active
-              ? 'border-brand/35 bg-warm-surface text-brand'
-              : 'border-warm-border bg-warm-page/40 text-stone-400'
-        }`}
-      >
-        <span aria-hidden="true">{currentKey ? '◆' : '◇'}</span>
-        {currentKey ? 'Remove keyframe' : 'Add keyframe'}
-      </RemotionButton>
-      {!canEditKeyframes ? <span className="col-span-2 text-xs text-stone-500">Move the playhead onto this clip to edit keyframes.</span> : active && <span className="col-span-2 text-xs text-stone-500">{currentKey ? 'On keyframe' : 'Between keyframes'} · clip frame {itemLocalFrame}</span>}
-      {active && (
-      <div className="col-span-2 flex min-w-0 items-center gap-1">
+      <div className="flex shrink-0 items-center" data-keyframe-controls={label}>
         <RemotionButton
           type="button"
           aria-label={`Previous ${label} keyframe`}
-          title={`Previous ${label} keyframe`}
+          title={`上一个${name}关键帧`}
           disabled={previousFrame === null}
           onClick={() => navigate(previousFrame)}
-          className={`flex h-6 min-w-6 items-center justify-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 px-1 text-stone-500 disabled:cursor-not-allowed disabled:opacity-35`}
+          className={keyframeArrowClassName}
         >
-          ‹ Previous
+          <span aria-hidden="true">‹</span>
+        </RemotionButton>
+        <RemotionButton
+          type="button"
+          aria-label={`${currentKey ? 'Remove' : 'Add'} ${label} keyframe at current frame`}
+          aria-pressed={Boolean(currentKey)}
+          title={toggleTitle}
+          disabled={!canEditKeyframes}
+          onClick={onToggle}
+          data-keyframe-diamond={currentKey ? 'filled' : 'hollow'}
+          className={`flex h-6 w-6 items-center justify-center ${controlRadiusClassName} hover:bg-warm-hover disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent ${
+            currentKey ? 'text-brand' : active ? 'text-brand/70' : 'text-stone-400'
+          }`}
+        >
+          <svg aria-hidden="true" viewBox="0 0 12 12" width="12" height="12">
+            <path
+              d="M 6 1.25 L 10.75 6 L 6 10.75 L 1.25 6 Z"
+              fill={currentKey ? 'currentColor' : 'none'}
+              stroke="currentColor"
+              strokeWidth="1.3"
+              strokeLinejoin="round"
+            />
+          </svg>
         </RemotionButton>
         <RemotionButton
           type="button"
           aria-label={`Next ${label} keyframe`}
-          title={`Next ${label} keyframe`}
+          title={`下一个${name}关键帧`}
           disabled={nextFrame === null}
           onClick={() => navigate(nextFrame)}
-          className={`flex h-6 min-w-6 items-center justify-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 px-1 text-stone-500 disabled:cursor-not-allowed disabled:opacity-35`}
+          className={keyframeArrowClassName}
         >
-          Next ›
+          <span aria-hidden="true">›</span>
         </RemotionButton>
-        {currentKey && (
-          <RemotionSelect
-            ariaLabel={`${label} keyframe interpolation`}
-            title={`${label} outgoing interpolation`}
-            value={currentKey.interpolation}
-            onValueChange={onInterpolationChange}
-            options={TIMELINE_KEYFRAME_INTERPOLATIONS.map((interpolation) => ({
-              value: interpolation,
-              label: interpolation === 'linear' ? 'Linear' : 'Hold',
-            }))}
-            containerClassName="min-w-0 flex-1"
-            className={`h-6 min-w-0 flex-1 ${controlRadiusClassName} border border-warm-border bg-warm-page/40 px-1 text-stone-600 ${editorTypeClassName.caption}`}
-          />
-        )}
       </div>
-      )}
+    </div>
+  );
+};
+
+/** Secondary control: interpolation of the segment leaving the current keyframe. */
+const KeyframeInterpolationControl: React.FC<{
+  label: string;
+  currentKey: { interpolation: 'hold' | 'linear' } | undefined;
+  onInterpolationChange: (interpolation: 'hold' | 'linear') => void;
+}> = ({ label, currentKey, onInterpolationChange }) => {
+  if (!currentKey) return null;
+  return (
+    <div className="mt-1 flex items-center justify-end gap-1 text-stone-400">
+      <span className={editorTypeClassName.caption}>To next key</span>
+      <RemotionSelect
+        ariaLabel={`${label} keyframe interpolation`}
+        title={`${label} outgoing interpolation`}
+        value={currentKey.interpolation}
+        onValueChange={onInterpolationChange}
+        options={TIMELINE_KEYFRAME_INTERPOLATIONS.map((interpolation) => ({
+          value: interpolation,
+          label: interpolation === 'linear' ? 'Linear' : 'Hold',
+        }))}
+        containerClassName="w-20"
+        className={`h-6 w-20 ${controlRadiusClassName} border border-transparent bg-transparent px-1 text-stone-500 hover:border-warm-border ${editorTypeClassName.caption}`}
+      />
     </div>
   );
 };
@@ -485,7 +517,10 @@ const PositionKeyframeControl: React.FC<{
     itemLocalFrame,
   );
   const updateItem = (updates: Partial<Item>) => {
-    if (!canEditKeyframes && 'keyframes' in updates) return;
+    if (!canEditKeyframes && 'keyframes' in updates) {
+      emitTimelineNotice(KEYFRAME_OUTSIDE_CLIP_NOTICE);
+      return;
+    }
     dispatch({
       type: 'UPDATE_ITEM',
       payload: { trackId, itemId: item.id, updates },
@@ -537,6 +572,7 @@ const PositionKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label="Position"
+        channel="position"
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -545,7 +581,6 @@ const PositionKeyframeControl: React.FC<{
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
         onToggle={toggleCurrentKeyframe}
-        onInterpolationChange={updateInterpolation}
       />
       <div className="grid grid-cols-2 gap-2">
         {(['X', 'Y'] as const).map((axisLabel, axis) => (
@@ -566,6 +601,7 @@ const PositionKeyframeControl: React.FC<{
           </label>
         ))}
       </div>
+      <KeyframeInterpolationControl label="Position" currentKey={currentKey} onInterpolationChange={updateInterpolation} />
     </div>
   );
 });
@@ -596,7 +632,10 @@ const ScaleKeyframeControl: React.FC<{
   );
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, 'scale', itemLocalFrame);
   const updateItem = (updates: Partial<Item>) => {
-    if (!canEditKeyframes && 'keyframes' in updates) return;
+    if (!canEditKeyframes && 'keyframes' in updates) {
+      emitTimelineNotice(KEYFRAME_OUTSIDE_CLIP_NOTICE);
+      return;
+    }
     dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
   };
   const toggleCurrentKeyframe = () => updateItem({
@@ -608,9 +647,27 @@ const ScaleKeyframeControl: React.FC<{
           interpolation: DEFAULT_TIMELINE_KEYFRAME_INTERPOLATION,
         }),
   } as Partial<Item>);
+  // The field shows the effective scale (static size × animated multiplier),
+  // matching the preview handles: unkeyed edits change the static size, keyed
+  // edits write the multiplier at the playhead (auto-key).
+  const baseScale = [properties.width, properties.height] as const;
+  const effectiveScale = [0, 1].map((axis) => (
+    Math.round(baseScale[axis]! * sampled.scale[axis]! * 10000) / 10000
+  ));
   const updateAxis = (axis: 0 | 1, value: number) => {
+    const nextEffective = Math.max(0, value);
+    if (!active) {
+      updateItem({
+        properties: {
+          ...properties,
+          width: axis === 0 ? nextEffective : properties.width,
+          height: axis === 1 ? nextEffective : properties.height,
+        },
+      } as Partial<Item>);
+      return;
+    }
     const nextValue = [...sampled.scale] as [number, number];
-    nextValue[axis] = Math.max(0, value);
+    nextValue[axis] = baseScale[axis] === 0 ? nextEffective : nextEffective / baseScale[axis];
     updateItem({
       keyframes: upsertTimelineKeyframe(item.keyframes, 'scale', {
         frame: itemLocalFrame,
@@ -633,6 +690,7 @@ const ScaleKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label="Scale"
+        channel="scale"
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -641,7 +699,6 @@ const ScaleKeyframeControl: React.FC<{
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
         onToggle={toggleCurrentKeyframe}
-        onInterpolationChange={updateInterpolation}
       />
       <div className="grid grid-cols-2 gap-2">
         {(['X', 'Y'] as const).map((axisLabel, axis) => (
@@ -652,17 +709,18 @@ const ScaleKeyframeControl: React.FC<{
             <span className={editorTypeClassName.caption}>{axisLabel}</span>
             <RemotionNumberInput
               key={`${item.id}:${itemLocalFrame}`}
-              aria-label={`${axisLabel} animated scale`}
+              aria-label={`${axisLabel} scale`}
               step="0.01"
               min="0"
-              disabled={!active || !canEditKeyframes}
-              value={sampled.scale[axis]}
+              disabled={active && !canEditKeyframes}
+              value={effectiveScale[axis]}
               onValueChange={(value) => updateAxis(axis as 0 | 1, value)}
               className={`${fieldClassName} border-0 bg-transparent pl-0 focus:ring-0`}
             />
           </label>
         ))}
       </div>
+      <KeyframeInterpolationControl label="Scale" currentKey={currentKey} onInterpolationChange={updateInterpolation} />
     </div>
   );
 });
@@ -710,7 +768,10 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, channel, itemLocalFrame);
   const value = sampled[channel];
   const updateItem = (updates: Partial<Item>) => {
-    if (!canEditKeyframes && 'keyframes' in updates) return;
+    if (!canEditKeyframes && 'keyframes' in updates) {
+      emitTimelineNotice(KEYFRAME_OUTSIDE_CLIP_NOTICE);
+      return;
+    }
     dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
   };
   const toggleCurrentKeyframe = () => updateItem({
@@ -754,6 +815,7 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
     <div>
       <KeyframeControlHeader
         label={label}
+        channel={channel}
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -762,7 +824,6 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
         onToggle={toggleCurrentKeyframe}
-        onInterpolationChange={updateInterpolation}
       />
       <RemotionNumberInput
         key={`${item.id}:${itemLocalFrame}`}
@@ -775,6 +836,7 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
         onValueChange={updateValue}
         className={fieldClassName}
       />
+      <KeyframeInterpolationControl label={label} currentKey={currentKey} onInterpolationChange={updateInterpolation} />
     </div>
   );
 });
@@ -803,7 +865,10 @@ const MaskVectorKeyframeControl: React.FC<{
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, channel, itemLocalFrame);
   const value = sampled[field];
   const updateItem = (updates: Partial<Item>) => {
-    if (!canEditKeyframes && 'keyframes' in updates) return;
+    if (!canEditKeyframes && 'keyframes' in updates) {
+      emitTimelineNotice(KEYFRAME_OUTSIDE_CLIP_NOTICE);
+      return;
+    }
     dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
   };
   const toggleCurrentKeyframe = () => updateItem({
@@ -849,6 +914,7 @@ const MaskVectorKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label={label}
+        channel={channel}
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -857,7 +923,6 @@ const MaskVectorKeyframeControl: React.FC<{
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
         onToggle={toggleCurrentKeyframe}
-        onInterpolationChange={updateInterpolation}
       />
       <div className="grid grid-cols-2 gap-2">
         {axisLabels.map((axisLabel, axis) => (
@@ -883,6 +948,7 @@ const MaskVectorKeyframeControl: React.FC<{
           </label>
         ))}
       </div>
+      <KeyframeInterpolationControl label={label} currentKey={currentKey} onInterpolationChange={updateInterpolation} />
     </div>
   );
 });
@@ -903,7 +969,10 @@ const MaskScalarKeyframeControl: React.FC<{
   const adjacent = findAdjacentTimelineKeyframes(item.keyframes, channel, itemLocalFrame);
   const value = sampled[field];
   const updateItem = (updates: Partial<Item>) => {
-    if (!canEditKeyframes && 'keyframes' in updates) return;
+    if (!canEditKeyframes && 'keyframes' in updates) {
+      emitTimelineNotice(KEYFRAME_OUTSIDE_CLIP_NOTICE);
+      return;
+    }
     dispatch({ type: 'UPDATE_ITEM', payload: { trackId, itemId: item.id, updates } });
   };
   const toggleCurrentKeyframe = () => updateItem({
@@ -948,6 +1017,7 @@ const MaskScalarKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label={label}
+        channel={channel}
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -956,7 +1026,6 @@ const MaskScalarKeyframeControl: React.FC<{
         previousFrame={adjacent.previousFrame}
         nextFrame={adjacent.nextFrame}
         onToggle={toggleCurrentKeyframe}
-        onInterpolationChange={updateInterpolation}
       />
       <RemotionInput
         aria-label={ariaLabel}
@@ -971,6 +1040,7 @@ const MaskScalarKeyframeControl: React.FC<{
         )}
         className={fieldClassName}
       />
+      <KeyframeInterpolationControl label={label} currentKey={currentKey} onInterpolationChange={updateInterpolation} />
     </div>
   );
 });
@@ -1329,8 +1399,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
 
       {(item.type === 'text' || supportsVisualTransform) && (
         <nav aria-label="Properties sections" className="flex shrink-0 gap-2 border-b border-warm-border px-4 py-2">
-          {item.type === 'text' && <RemotionButton className="rounded-md border border-warm-border px-3 py-1.5 text-xs hover:bg-warm-hover" onClick={() => textSectionRef.current?.scrollIntoView({ block: 'start' })}>Font & text</RemotionButton>}
-          {supportsVisualTransform && <RemotionButton className="rounded-md border border-warm-border px-3 py-1.5 text-xs hover:bg-warm-hover" onClick={() => transformSectionRef.current?.scrollIntoView({ block: 'start' })}>Keyframes</RemotionButton>}
+          {item.type === 'text' && <RemotionButton className={`rounded-md border border-warm-border px-3 py-1.5 hover:bg-warm-hover ${editorTypeClassName.control}`} onClick={() => textSectionRef.current?.scrollIntoView({ block: 'start' })}>Font & text</RemotionButton>}
+          {supportsVisualTransform && <RemotionButton className={`rounded-md border border-warm-border px-3 py-1.5 hover:bg-warm-hover ${editorTypeClassName.control}`} onClick={() => transformSectionRef.current?.scrollIntoView({ block: 'start' })}>Keyframes</RemotionButton>}
         </nav>
       )}
       <div className={panelScrollClassName}>
@@ -1468,57 +1538,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
         {supportsVisualTransform && (
         <div ref={transformSectionRef} className={inspectorSectionClassName}>
           <h3 className={sectionTitleClassName}>Transform</h3>
-          <p className={`mb-3 text-stone-500 ${editorTypeClassName.caption}`}>Move the playhead, add a keyframe, then change its value. Move to another time and add another keyframe to animate.</p>
           <div className="space-y-3">
             <PositionKeyframeControl trackId={trackId} item={item} />
-            <div>
-              <span className={labelClassName}>Base source scale</span>
-              <p className={`mb-1 text-stone-400 ${editorTypeClassName.caption}`}>
-                Unitless multipliers, not pixels. 1 × 1 uses contain fit.
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <label className={`grid grid-cols-[18px_minmax(0,1fr)] items-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 pl-2 text-stone-400`}>
-                  <span className={editorTypeClassName.caption}>W×</span>
-                  <RemotionInput
-                    aria-label="Width source scale multiplier"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={item.properties?.width ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.width}
-                    onChange={(e) => updateItem({
-                      properties: {
-                        ...item.properties,
-                        x: item.properties?.x ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.x,
-                        y: item.properties?.y ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.y,
-                        width: parseFloat(e.target.value) || 0,
-                        height: item.properties?.height ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.height,
-                      }
-                    })}
-                    className={`${fieldClassName} border-0 bg-transparent pl-0 focus:ring-0`}
-                  />
-                </label>
-                <label className={`grid grid-cols-[18px_minmax(0,1fr)] items-center ${controlRadiusClassName} border border-warm-border bg-warm-page/40 pl-2 text-stone-400`}>
-                  <span className={editorTypeClassName.caption}>H×</span>
-                  <RemotionInput
-                    aria-label="Height source scale multiplier"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={item.properties?.height ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.height}
-                    onChange={(e) => updateItem({
-                      properties: {
-                        ...item.properties,
-                        x: item.properties?.x ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.x,
-                        y: item.properties?.y ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.y,
-                        width: item.properties?.width ?? TIMELINE_SHARED_DEFAULTS.itemBase.properties.width,
-                        height: parseFloat(e.target.value) || 0,
-                      }
-                    })}
-                    className={`${fieldClassName} border-0 bg-transparent pl-0 focus:ring-0`}
-                  />
-                </label>
-              </div>
-            </div>
             <ScaleKeyframeControl trackId={trackId} item={item} />
             <div data-testid="scalar-keyframe-controls" className="space-y-3">
               <ScalarKeyframeControl

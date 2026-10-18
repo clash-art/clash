@@ -765,8 +765,9 @@ export function ProjectTimelineEditorSurface({
         }
         return true;
       } catch (error) {
+        // Coded so an unsaved edit (e.g. a keyframe toggle) is never a silent half-state.
         window.dispatchEvent(new CustomEvent<string>("clash:timeline-notice", {
-          detail: error instanceof Error ? error.message : String(error),
+          detail: `[TIMELINE_SAVE_FAILED] ${error instanceof Error ? error.message : String(error)}`,
         }));
         return false;
       } finally {

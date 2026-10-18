@@ -52,7 +52,7 @@ it("keeps an unfinished numeric edit out of the Timeline and restores it on blur
   expect((screen.getByRole("spinbutton", { name: "X position in pixels" }) as HTMLInputElement).value).toBe("-120");
 
   fireEvent.click(screen.getByRole("button", { name: "Add Scale keyframe at current frame" }));
-  const scale = screen.getByRole("spinbutton", { name: "X animated scale" }) as HTMLInputElement;
+  const scale = screen.getByRole("spinbutton", { name: "X scale" }) as HTMLInputElement;
   const keysBefore = saved!.tracks[0].items[0].keyframes;
   fireEvent.change(scale, { target: { value: "" } });
   expect(saved!.tracks[0].items[0].keyframes).toEqual(keysBefore);
