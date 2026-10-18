@@ -11,8 +11,20 @@ import { Canvas } from "@clash/shared-types";
 
 const mocks = vi.hoisted(() => ({
   processPendingNodes: vi.fn(),
+  reconcile: vi.fn(),
   revalidate: vi.fn(),
 }));
+
+/** Workers runtime global used by the constructor's ping/pong auto-response. */
+class WebSocketRequestResponsePairStub {
+  constructor(
+    readonly request: string,
+    readonly response: string,
+  ) {}
+}
+Object.assign(globalThis, {
+  WebSocketRequestResponsePair: WebSocketRequestResponsePairStub,
+});
 
 vi.mock("../loro/auth", async (importOriginal) => ({
   ...await importOriginal<typeof import("../loro/auth")>(),
@@ -33,11 +45,7 @@ vi.mock("cloudflare:workers", () => ({
 
 vi.mock("../loro/NodeProcessor", () => ({
   processPendingNodes: mocks.processPendingNodes,
-  recoverOrphanedTasks: vi.fn(),
-}));
-
-vi.mock("../loro/TaskPolling", () => ({
-  pollNodeTasks: vi.fn(),
+  reconcileUnadmittedTasks: mocks.reconcile,
 }));
 
 vi.mock("../lib/runtime-status", () => ({
@@ -108,16 +116,131 @@ function createRoom(
   const ctx = {
     storage,
     getWebSockets: vi.fn(() => [ws]),
+    setWebSocketAutoResponse: vi.fn(),
     waitUntil: (promise: Promise<unknown>) => { pending.push(promise); },
-  } as any as DurableObjectState;
-  const room = new ProjectRoom(ctx, { ENVIRONMENT: "development" } as any);
+  };
+  const room = new ProjectRoom(ctx as any as DurableObjectState, { ENVIRONMENT: "development" } as any);
   const flush = async () => { while (pending.length) await Promise.all(pending.splice(0)); };
-  return { room, data, storage, ws, flush };
+  return { room, data, storage, ws, ctx, flush };
 }
+
+function remoteUpdate(room: ProjectRoom, label: string) {
+  const source = new LoroDoc();
+  source.getMap("nodes").set("n1", { type: "text", data: { label } });
+  return room.fetch(new Request("https://room/loro/project/updates", {
+    method: "POST",
+    headers: {
+      "x-internal-loro": "true",
+      "x-loro-project-id": "project",
+      "content-type": "application/octet-stream",
+    },
+    body: source.export({ mode: "snapshot" }),
+  }));
+}
+
+beforeEach(() => {
+  mocks.reconcile.mockReset().mockResolvedValue({ retry: false });
+});
 
 describe("ProjectRoom Loro remote persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("answers text ping keepalives by auto-response so they never wake the room", () => {
+    const { ctx } = createRoom();
+    expect(ctx.setWebSocketAutoResponse).toHaveBeenCalledTimes(1);
+    expect(ctx.setWebSocketAutoResponse.mock.calls[0]![0]).toMatchObject({
+      request: "ping",
+      response: "pong",
+    });
+  });
+
+  it("skips the checkpoint when nothing was appended since the last one, but clears a satisfied request", async () => {
+    const { room, data } = createRoom();
+    expect((await remoteUpdate(room, "once")).status).toBe(204);
+    await (room as any).runCompaction("[test]");
+    expect(data.get("loro:snapshot-seq")).toBe(1);
+    const checkpoint = vi.spyOn((room as any).replica, "checkpoint");
+    data.set("loro:checkpoint-requested-seq", 1);
+
+    await room.alarm();
+
+    expect(checkpoint).not.toHaveBeenCalled();
+    expect(data.has("loro:checkpoint-requested-seq")).toBe(false);
+  });
+
+  it("compacts once when the last socket closes with a dirty log", async () => {
+    const { room, data, ws } = createRoom();
+    expect((await remoteUpdate(room, "unflushed")).status).toBe(204);
+    expect(data.has("loro:snapshot")).toBe(false);
+    const compaction = vi.spyOn(room as any, "runCompaction");
+
+    await room.webSocketClose(ws as any, 1000, "bye");
+
+    expect(compaction).toHaveBeenCalledTimes(1);
+    expect(data.get("loro:snapshot-seq")).toBe(1);
+  });
+
+  it("does not load the room or compact when the last socket closes with a clean log", async () => {
+    const { room, data, ws } = createRoom();
+    data.set("projectId", "project");
+    data.set("loro:next-seq", 3);
+    data.set("loro:snapshot-seq", 3);
+    const internals = room as any;
+    internals.initRoom = vi.fn();
+    internals.runCompaction = vi.fn();
+
+    await room.webSocketClose(ws as any, 1000, "bye");
+
+    expect(internals.initRoom).not.toHaveBeenCalled();
+    expect(internals.runCompaction).not.toHaveBeenCalled();
+  });
+
+  it("does not compact on close while another socket remains open", async () => {
+    const { room, ws, ctx } = createRoom();
+    expect((await remoteUpdate(room, "dirty")).status).toBe(204);
+    const other = { ...ws, readyState: 1 };
+    ctx.getWebSockets.mockReturnValue([ws, other]);
+    const compaction = vi.spyOn(room as any, "runCompaction");
+
+    await room.webSocketClose(ws as any, 1000, "bye");
+
+    expect(compaction).not.toHaveBeenCalled();
+  });
+
+  it("persists a reconcile retry and arms exactly one alarm; the alarm reruns it and clears the key", async () => {
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const { room, data } = createRoom();
+      const internals = room as any;
+      let alarmAt: number | null = null;
+      internals.scheduleAlarmAtEarliest = vi.fn(async (at: number) => {
+        if (alarmAt === null || at < alarmAt) alarmAt = at;
+      });
+      mocks.reconcile
+        .mockReset()
+        .mockResolvedValueOnce({ retry: true })
+        .mockResolvedValue({ retry: false });
+
+      await internals.initRoom("project");
+
+      expect(mocks.reconcile).toHaveBeenCalledTimes(1);
+      expect(data.has("loro:reconcile-retry")).toBe(true);
+      expect(internals.scheduleAlarmAtEarliest.mock.calls).toEqual([[now + 60_000]]);
+      expect(alarmAt).toBe(now + 60_000);
+
+      now = alarmAt!;
+      alarmAt = null;
+      await room.alarm();
+
+      expect(mocks.reconcile).toHaveBeenCalledTimes(2);
+      expect(data.has("loro:reconcile-retry")).toBe(false);
+      expect(alarmAt).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("imports remote updates, persists them, broadcasts them, and returns snapshots", async () => {
@@ -377,46 +500,20 @@ describe("socket authorization cache", () => {
     }
   });
 
-  it("never schedules an alarm for authorization; the idle recheck closes a revoked socket on the existing alarm tick", async () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
-    try {
-      mocks.revalidate.mockReset().mockResolvedValue(true);
-      const { room, ws, schedule } = fixture();
-      await expect(room.authorizeSocket(ws)).resolves.toBe(true);
-      expect(schedule).not.toHaveBeenCalled();
-      // A recheck inside the window costs no D1.
-      clock.mockReturnValue(12_000);
-      await room.recheckIdleSockets();
-      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
-      expect(ws.close).not.toHaveBeenCalled();
-      mocks.revalidate.mockResolvedValue(false);
-      clock.mockReturnValue(15_000);
-      await room.recheckIdleSockets();
-      expect(mocks.revalidate).toHaveBeenCalledTimes(2);
-      expect(ws.close).toHaveBeenCalledWith(1008, REVOKED);
-      expect(schedule).not.toHaveBeenCalled();
-    } finally {
-      clock.mockRestore();
-    }
-  });
-
-  it("an hour of an idle authorized room wakes only on the 60 s task-poll alarm", async () => {
+  it("an hour of an idle authorized room arms no alarm and never wakes", async () => {
     const t0 = 1_000_000;
     let now = t0;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     try {
       mocks.revalidate.mockReset().mockResolvedValue(true);
-      const { room, ws, data } = fixture();
+      const { room, ws, storage } = fixture();
       // A single alarm slot with the room's earliest-wins semantics.
-      let alarmAt: number | null = t0 + 60_000;
+      let alarmAt: number | null = null;
       room.scheduleAlarmAtEarliest = vi.fn(async (at: number) => {
         if (alarmAt === null || at < alarmAt) alarmAt = at;
       });
-      room.projectId = "project";
-      room.initRoom = vi.fn();
-      room.taskPoll = vi.fn();
-      room.runCompaction = vi.fn();
-      data.set("taskPollDueAt", t0 + 60_000);
+      // Connect: initialize (reconcile + pending scan) and authorize the socket.
+      await room.initRoom("project");
       await expect(room.authorizeSocket(ws)).resolves.toBe(true);
 
       let wakes = 0;
@@ -426,36 +523,30 @@ describe("socket authorization cache", () => {
         wakes++;
         await room.alarm();
       }
-      expect(wakes).toBe(60);
-      // The initial check plus one per tick (each tick is past the window).
-      expect(mocks.revalidate).toHaveBeenCalledTimes(61);
-      expect(room.taskPoll).toHaveBeenCalledTimes(60);
+      expect(alarmAt).toBeNull();
+      expect(wakes).toBe(0);
+      expect(storage.setAlarm).not.toHaveBeenCalled();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
       expect(ws.close).not.toHaveBeenCalled();
     } finally {
       clock.mockRestore();
     }
   });
 
-  it("an alarm before the task poll is due rechecks sockets but neither loads the room nor runs the task poll or compaction", async () => {
-    const clock = vi.spyOn(Date, "now").mockReturnValue(15_000);
-    try {
-      mocks.revalidate.mockReset().mockResolvedValue(true);
-      const { room, ws, data, schedule } = fixture();
-      data.set("taskPollDueAt", 70_000);
-      room.initRoom = vi.fn();
-      room.taskPoll = vi.fn();
-      room.runCompaction = vi.fn();
-      await room.alarm();
-      expect(room.initRoom).not.toHaveBeenCalled();
-      expect(room.taskPoll).not.toHaveBeenCalled();
-      expect(room.runCompaction).not.toHaveBeenCalled();
-      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
-      expect(ws.close).not.toHaveBeenCalled();
-      // Only the persisted 60 s task poll stays scheduled; no authorization wake.
-      expect(schedule.mock.calls).toEqual([[70_000]]);
-    } finally {
-      clock.mockRestore();
-    }
+  it("an alarm with nothing requested returns without loading the room or writing storage", async () => {
+    mocks.revalidate.mockReset().mockResolvedValue(true);
+    const { room, data, storage } = fixture();
+    data.set("projectId", "project");
+    room.initRoom = vi.fn();
+    room.runCompaction = vi.fn();
+    await room.alarm();
+    expect(room.initRoom).not.toHaveBeenCalled();
+    expect(room.runCompaction).not.toHaveBeenCalled();
+    expect(mocks.reconcile).not.toHaveBeenCalled();
+    expect(mocks.revalidate).not.toHaveBeenCalled();
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(storage.delete).not.toHaveBeenCalled();
+    expect(storage.setAlarm).not.toHaveBeenCalled();
   });
 
   it("reuses successful authorization for frames until the five-second TTL expires", async () => {

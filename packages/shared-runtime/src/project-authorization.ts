@@ -56,51 +56,64 @@ export interface ProjectAuthorizationPolicy {
   allowDeleted?: boolean;
 }
 
+/** False only for a real denial; a store failure rejects. */
+async function isProjectOwner(
+  options: ProjectAuthenticatorOptions,
+  projectId: string,
+  userId: string,
+  policy: ProjectAuthorizationPolicy = {},
+): Promise<boolean> {
+  const row = await options.store.readProject(projectId);
+  return !!(
+    row &&
+    row.ownerId === userId &&
+    (row.deletedAt == null || policy.allowDeleted === true)
+  );
+}
+
 async function assertProjectOwner(
   options: ProjectAuthenticatorOptions,
   projectId: string,
   userId: string,
   policy: ProjectAuthorizationPolicy = {},
 ) {
-  const row = await options.store.readProject(projectId);
-  if (
-    !row ||
-    row.ownerId !== userId ||
-    (row.deletedAt != null && policy.allowDeleted !== true)
-  )
+  if (!(await isProjectOwner(options, projectId, userId, policy)))
     throw new Error("Forbidden");
 }
 
 /** Recheck before accepting a command or delivering private data. JWTs have a
  * finite lifetime and current Project ownership, not invented per-JWT revocation.
- * Better Auth and API credentials additionally require their current authority record. */
+ * Better Auth and API credentials additionally require their current authority record.
+ *
+ * Resolves false only for a real denial (no Project, other owner, deleted,
+ * expired, missing or foreign credential record). A store failure rejects:
+ * an unavailable check is not a revocation, and callers report it as such. */
 export async function revalidateProjectConnection(
   options: ProjectAuthenticatorOptions,
   auth: AuthResult,
   policy: ProjectAuthorizationPolicy = {},
 ): Promise<boolean> {
-  try {
-    if (!auth?.authorization || !auth.userId || !auth.projectId) return false;
-    const proof = auth.authorization;
-    if (proof.kind === "development") return options.development === true;
-    if (options.development !== true)
-      await assertProjectOwner(options, auth.projectId, auth.userId, policy);
-    if (proof.kind === "jwt")
-      return Number.isFinite(proof.expiresAt) && proof.expiresAt > Date.now();
-    if (proof.kind === "api-token") {
-      const token = await options.store.readApiToken(proof.tokenHash);
-      return token?.userId === auth.userId;
-    }
-    if (proof.kind === "session") {
-      if (!Number.isFinite(proof.expiresAt) || proof.expiresAt <= Date.now())
-        return false;
-      const session = await options.store.readSession(proof.sessionId);
-      return session?.userId === auth.userId && session.expiresAt > Date.now();
-    }
+  if (!auth?.authorization || !auth.userId || !auth.projectId) return false;
+  const proof = auth.authorization;
+  if (proof.kind === "development") return options.development === true;
+  if (
+    options.development !== true &&
+    !(await isProjectOwner(options, auth.projectId, auth.userId, policy))
+  )
     return false;
-  } catch {
-    return false;
+  if (proof.kind === "jwt")
+    return Number.isFinite(proof.expiresAt) && proof.expiresAt > Date.now();
+  if (proof.kind === "api-token") {
+    const token = await options.store.readApiToken(proof.tokenHash);
+    return token?.userId === auth.userId;
   }
+  if (proof.kind === "session") {
+    if (!Number.isFinite(proof.expiresAt) || proof.expiresAt <= Date.now())
+      return false;
+    const session = await options.store.readSession(proof.sessionId);
+    return session?.userId === auth.userId && session.expiresAt > Date.now();
+  }
+  return false;
 }
 
 async function sha256(input: string): Promise<string> {

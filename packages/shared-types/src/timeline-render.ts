@@ -382,7 +382,7 @@ export type TimelineRenderCompletion =
 
 /**
  * Projects finished bytes that a render adapter produced itself into the
- * same node shape the container pipeline's TaskPolling writes when a task
+ * same node shape the container pipeline's publication writes when a task
  * completes (`status: "completed"`, `assetId`, no pending task). Both paths
  * therefore surface through `listTimelineExportProgress` and the renders
  * list; the adapter that uploaded the bytes must not invent a second

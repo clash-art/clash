@@ -118,7 +118,7 @@ export async function runProjectRoomHostCommand(
  * adapter) as the same render node the container pipeline writes: the node
  * is created through the shared pending-render constructor and completed
  * before the room commits, so NodeProcessor never sees it as pending and
- * no second render starts. Same node projection as TaskPolling completion.
+ * no second render starts. Same node projection as durable render publication.
  */
 export async function runProjectRoomTimelineRenderCompletion(
   port: ProjectRoomHostCommandPort,

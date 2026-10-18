@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { LoroDoc } from "loro-crdt";
-import { processPendingNodes, recoverOrphanedTasks } from "./NodeProcessor";
+import { processPendingNodes, reconcileUnadmittedTasks } from "./NodeProcessor";
 import { startGeneration } from "../generation/start";
+import { hostedGenerationStatus } from "../generation/status";
+import { appendNodeLog } from "./NodeUpdater";
 vi.mock("../generation/start", () => ({ startGeneration: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("../generation/status", () => ({ hostedGenerationStatus: vi.fn().mockResolvedValue(undefined) }));
 import type { Env } from "../config";
@@ -123,7 +125,6 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
 
 describe("NodeProcessor - processPendingNodes", () => {
   const broadcast = vi.fn();
-  const triggerPolling = vi.fn().mockResolvedValue(undefined);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -153,7 +154,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
     expect(doc.getMap("nodes").get("seedance-edit")).toMatchObject({
@@ -170,10 +171,9 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
-    expect(triggerPolling).not.toHaveBeenCalled();
   });
 
   it("skips nodes that already have pendingTask", async () => {
@@ -186,7 +186,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
   });
@@ -201,7 +201,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     // GENERATION_WORKFLOW.create should have been called with correct params
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
@@ -217,9 +217,6 @@ describe("NodeProcessor - processPendingNodes", () => {
 
     // GENERATION_WORKFLOW should have been called
     expect(startGeneration).toHaveBeenCalled();
-
-    // triggerPolling should have been called
-    expect(triggerPolling).toHaveBeenCalled();
 
     // Node should have pendingTask set + status changed to generating
     const nodesMap = doc.getMap("nodes");
@@ -244,7 +241,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
@@ -254,7 +251,6 @@ describe("NodeProcessor - processPendingNodes", () => {
         }),
       })
     );
-    expect(triggerPolling).toHaveBeenCalled();
   });
 
   it("resolves hosted H3 prompt badges with their original modalities and order", async () => {
@@ -320,7 +316,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       } as any,
     });
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(expect.objectContaining({
       params: expect.objectContaining({
@@ -361,7 +357,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
     expect(doc.getMap("nodes").get("custom-worker-node")).toMatchObject({
@@ -370,11 +366,10 @@ describe("NodeProcessor - processPendingNodes", () => {
         error: expect.stringContaining("plugin_unavailable"),
       },
     });
-    expect(triggerPolling).not.toHaveBeenCalled();
   });
   it("does not enqueue the retired description no-op for a completed asset", async () => {
     const doc = makeDoc([{ id: "completed", type: "image", data: { status: "completed", assetId: "asset" } }]);
-    await processPendingNodes(doc, makeEnv(), "project", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "project", broadcast);
     expect(startGeneration).not.toHaveBeenCalled();
     expect((doc.getMap("nodes").get("completed") as any).data.status).toBe("completed");
   });
@@ -392,7 +387,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     const env = makeEnv();
     vi.mocked(startGeneration).mockRejectedValueOnce(new Error("Workflow down"));
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     // On failure, pendingTask is cleared and status set to failed
     const nodesMap = doc.getMap("nodes");
@@ -413,7 +408,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     const env = makeEnv();
     vi.mocked(startGeneration).mockRejectedValueOnce(new Error("Workflow error"));
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     const nodesMap = doc.getMap("nodes");
     const nodeData = nodesMap.get("node-fail2") as any;
@@ -430,10 +425,9 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
-    expect(triggerPolling).not.toHaveBeenCalled();
   });
 
   it("submits video nodes with timelineDsl as video_render task", async () => {
@@ -449,7 +443,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     // dev-localhost fallback — provide one explicitly.
     const env = makeEnv({ MEDIA_GATEWAY_URL: "http://localhost:3000" });
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
@@ -502,7 +496,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       },
     ]);
 
-    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
@@ -569,7 +563,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       },
     ]);
 
-    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
@@ -632,7 +626,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       },
     ]);
 
-    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
     const node = doc.getMap("nodes").get("n-render") as any;
@@ -640,36 +634,6 @@ describe("NodeProcessor - processPendingNodes", () => {
     expect(node.data.pendingTask ?? null).toBeNull();
     expect(node.data.error).toContain("track-video:item-video-1");
     expect(node.data.error).toContain("asset:clip");
-  });
-
-  it("formats workflow object errors when recovering orphaned tasks", async () => {
-    const doc = makeDoc([
-      {
-        id: "n-render",
-        type: "video_render",
-        data: {
-          status: "generating",
-          pendingTask: "task-render-1",
-        },
-      },
-    ]);
-    const env = makeEnv({
-      GENERATION_WORKFLOW: {
-        get: vi.fn().mockResolvedValue({
-          status: vi.fn().mockResolvedValue({
-            status: "errored",
-            error: { message: "Render server error 500: missing src" },
-          }),
-        }),
-      } as any,
-    });
-
-    await recoverOrphanedTasks(doc, env, broadcast);
-
-    const node = doc.getMap("nodes").get("n-render") as any;
-    expect(node.data.status).toBe("failed");
-    expect(node.data.error).toContain("Render server error 500: missing src");
-    expect(node.data.error).not.toContain("[object Object]");
   });
 
   it("does not submit description for audio nodes", async () => {
@@ -682,20 +646,9 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
-  });
-
-  it("does not call triggerPolling when no tasks were submitted", async () => {
-    const doc = makeDoc([
-      { id: "n1", type: "image", data: { status: "completed", src: "x", description: "y" } },
-    ]);
-    const env = makeEnv();
-
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
-
-    expect(triggerPolling).not.toHaveBeenCalled();
   });
 
   // ─── Optimistic Lock Tests ───
@@ -717,7 +670,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       statusAtCreateTime = (doc.getMap("nodes").get("node-lock") as any).data.status;
     });
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     // pendingTask and status should have been set BEFORE workflow.create was called
     expect(pendingTaskAtCreateTime).toBe("proj-1-gen-node-lock");
@@ -734,7 +687,7 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     // Should not submit a new task
     expect(startGeneration).not.toHaveBeenCalled();
@@ -751,10 +704,9 @@ describe("NodeProcessor - processPendingNodes", () => {
     ]);
     const env = makeEnv();
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, env, "proj-1", broadcast);
 
     expect(startGeneration).not.toHaveBeenCalled();
-    expect(triggerPolling).not.toHaveBeenCalled();
   });
 
   it("video_gen with a required-input inputMode but no refs → node marked failed", async () => {
@@ -766,5 +718,67 @@ describe("NodeProcessor - processPendingNodes", () => {
     // frame). No such model currently exists, so this test documents the
     // pre-flight behavior without asserting on a real card today.
     // TODO: restore once a first_last or required=true model ships.
+  });
+});
+
+describe("NodeProcessor - reconcileUnadmittedTasks", () => {
+  const broadcast = vi.fn();
+  const status = vi.mocked(hostedGenerationStatus);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("fails a node whose pendingTask has no journal row with GENERATION_ADMISSION_LOST", async () => {
+    status.mockReset().mockResolvedValue(undefined);
+    const doc = makeDoc([
+      { id: "lost", type: "image", data: { status: "generating", pendingTask: "task-lost", pendingTaskAt: 1 } },
+    ]);
+
+    await expect(reconcileUnadmittedTasks(doc, makeEnv(), broadcast)).resolves.toEqual({ retry: false });
+
+    expect(status).toHaveBeenCalledWith(expect.anything(), "task-lost");
+    const node = doc.getMap("nodes").get("lost") as any;
+    expect(node.data).toMatchObject({ status: "failed", errorCode: "GENERATION_ADMISSION_LOST" });
+    expect(node.data.error).toEqual(expect.any(String));
+    expect(node.data.pendingTask ?? null).toBeNull();
+    expect(node.data.pendingTaskAt ?? null).toBeNull();
+    expect(appendNodeLog).toHaveBeenCalledWith(doc, "lost", expect.stringMatching(/^FAILED: /), broadcast);
+  });
+
+  it("leaves a node whose run is in the journal untouched", async () => {
+    status.mockReset().mockResolvedValue({ managedByJournal: true, status: "generating" } as any);
+    const doc = makeDoc([
+      { id: "admitted", type: "video", data: { status: "generating", pendingTask: "task-ok" } },
+    ]);
+
+    await expect(reconcileUnadmittedTasks(doc, makeEnv(), broadcast)).resolves.toEqual({ retry: false });
+
+    expect((doc.getMap("nodes").get("admitted") as any).data).toEqual({ status: "generating", pendingTask: "task-ok" });
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("skips custom: actions without looking them up", async () => {
+    status.mockReset().mockResolvedValue(undefined);
+    const doc = makeDoc([
+      { id: "action", type: "image", data: { status: "generating", pendingTask: "run-1", actionType: "custom:fal-render" } },
+    ]);
+
+    await expect(reconcileUnadmittedTasks(doc, makeEnv(), broadcast)).resolves.toEqual({ retry: false });
+
+    expect(status).not.toHaveBeenCalled();
+    expect((doc.getMap("nodes").get("action") as any).data.pendingTask).toBe("run-1");
+  });
+
+  it("leaves the node untouched and asks for a retry when the journal lookup throws", async () => {
+    status.mockReset().mockRejectedValue(new Error("D1_ERROR: network connection lost"));
+    const doc = makeDoc([
+      { id: "unknown", type: "audio", data: { status: "generating", pendingTask: "task-unknown" } },
+    ]);
+
+    await expect(reconcileUnadmittedTasks(doc, makeEnv(), broadcast)).resolves.toEqual({ retry: true });
+
+    expect((doc.getMap("nodes").get("unknown") as any).data).toEqual({ status: "generating", pendingTask: "task-unknown" });
+    expect(broadcast).not.toHaveBeenCalled();
   });
 });

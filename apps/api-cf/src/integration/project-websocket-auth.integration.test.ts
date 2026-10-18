@@ -1,7 +1,6 @@
 import {
   env,
   evictDurableObject,
-  runDurableObjectAlarm,
   runInDurableObject,
 } from "cloudflare:test";
 import { SignJWT } from "jose";
@@ -214,7 +213,12 @@ const AUTHORIZATION_WINDOW_MS = 5_000;
 const REVOKED_REASON =
   "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** Send unless the room already closed the socket (e.g. its idle recheck). */
+/** A frame that reaches the room's handler; "ping" is answered by auto-response. */
+const AWARENESS_FRAME = JSON.stringify({
+  type: "awareness.update",
+  selectedNodeIds: [],
+});
+/** Send unless the room already closed the socket. */
 function trySend(socket: WebSocket, data: string | ArrayBuffer | Uint8Array) {
   try {
     socket.send(data);
@@ -420,11 +424,10 @@ it.each(["deleted", "expired"])(
         .bind(Date.now() - 1, sessionId)
         .run();
     }
-    // Bounded window (#240): the first frame after the window lapses is
-    // refused (the idle recheck may close it first).
+    // Bounded window (#240): the first frame after the window lapses is refused.
     const closed = waitForClose(connected.socket, AUTHORIZATION_WINDOW_MS + 3000);
     await sleep(AUTHORIZATION_WINDOW_MS + 100);
-    trySend(connected.socket, "ping");
+    trySend(connected.socket, AWARENESS_FRAME);
     const event = await closed;
     expect(event.code).toBe(1008);
     expect(event.reason).toBe(REVOKED_REASON);
@@ -548,38 +551,55 @@ it("expires an established JWT connection before its next protocol command", asy
     setTimeout(resolve, expiresAt * 1000 - Date.now() + 20),
   );
   const closed = waitForClose(connected.socket);
-  connected.socket.send("ping");
+  connected.socket.send(AWARENESS_FRAME);
   const event = await closed;
   expect(event.code).toBe(1008);
   expect(event.reason).toBe(REVOKED_REASON);
 });
 
-it("rechecks an idle revoked socket on the existing 60 s alarm tick and schedules no extra alarm", async () => {
+it("arms no alarm while an idle socket is connected; a revoked idle socket closes on its next frame", async () => {
   const f = await fixture();
   const { sessionId, cookie } = await sessionCookie(f.userId, Date.now() + 60_000);
   const connected = await connect(f, { cookie });
-  await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
   const alarm = () =>
     runInDurableObject(f.room, (_instance, state) => state.storage.getAlarm());
-  // No near-term authorization wake: only the 60 s task poll alarm, if any.
-  const scheduled = await alarm();
-  if (scheduled !== null)
-    expect(scheduled).toBeGreaterThanOrEqual(Date.now() + 50_000);
+  expect(await alarm()).toBeNull();
+  await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
   let closeEvent: CloseEvent | undefined;
   connected.socket.addEventListener("close", (event) => {
     closeEvent = event;
   });
-  // The window lapses with no frame and no wake: the socket stays open.
+  // The window lapses with no frame and no timer: the socket stays open.
   await sleep(AUTHORIZATION_WINDOW_MS + 1000);
   expect(closeEvent).toBeUndefined();
-  expect(await alarm()).toBe(scheduled);
-  // The existing alarm tick (which must exist while a socket is connected)
-  // rechecks the idle socket and closes it.
+  expect(await alarm()).toBeNull();
   const closed = waitForClose(connected.socket);
-  expect(await runDurableObjectAlarm(f.room)).toBe(true);
+  connected.socket.send(AWARENESS_FRAME);
   const event = await closed;
   expect(event.code).toBe(1008);
   expect(event.reason).toBe(REVOKED_REASON);
+});
+
+it("answers ping with pong via auto-response", async () => {
+  const f = await fixture();
+  const connected = await connect(f);
+  const pong = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("No pong")), 3000);
+    connected.socket.addEventListener("message", (event) => {
+      if (event.data === "pong") {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
+  connected.socket.send("ping");
+  await pong;
+  const answered = await runInDurableObject(f.room, (_instance, state) =>
+    state
+      .getWebSockets()
+      .map((socket) => state.getWebSocketAutoResponseTimestamp(socket)),
+  );
+  expect(answered.some((timestamp) => timestamp !== null)).toBe(true);
 });
 
 it("re-derives a stale credential label from the user record on Host reconnect", async () => {

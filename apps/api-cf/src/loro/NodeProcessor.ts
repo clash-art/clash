@@ -43,108 +43,6 @@ const getModelCard = (modelId?: string) => {
 
 type NodeType = 'image' | 'video' | 'audio' | 'text' | 'video_render';
 
-// Fallback upper-bound wall time per node kind. Used when the selected model card
-// doesn't specify its own `maxRuntimeMs`. Set generously above the 99th-percentile
-// run so we never misclassify a legitimately slow task.
-const DEFAULT_RUNNING_ORPHAN_MS: Record<string, number> = {
-  image: 15 * 60 * 1000,
-  video: 30 * 60 * 1000,
-  audio: 10 * 60 * 1000,
-  text: 5 * 60 * 1000,
-  video_render: 30 * 60 * 1000,
-};
-
-function resolveMaxRuntimeMs(nodeType: string, modelId?: string): number {
-  const card = getModelCard(modelId);
-  return card?.maxRuntimeMs ?? DEFAULT_RUNNING_ORPHAN_MS[nodeType] ?? 30 * 60 * 1000;
-}
-
-/**
- * Pick which workflow binding owns a given taskId.
- * All our generation tasks currently use GENERATION_WORKFLOW.
- */
-function getWorkflowBinding(env: Env): Workflow | undefined {
-  return env.GENERATION_WORKFLOW as Workflow | undefined;
-}
-
-function stringifyWorkflowError(error: unknown): string | undefined {
-  if (!error) return undefined;
-  if (typeof error === 'string') return error;
-  if (error instanceof Error) return error.message;
-
-  if (typeof error === 'object') {
-    const record = error as Record<string, unknown>;
-    for (const key of ['message', 'error', 'cause']) {
-      const value = record[key];
-      if (typeof value === 'string' && value.length > 0) {
-        return value;
-      }
-    }
-
-    try {
-      return JSON.stringify(error);
-    } catch {
-      // Fall through to String() below.
-    }
-  }
-
-  return String(error);
-}
-
-/**
- * Check the workflow engine's view of a task. Returns a terminal status if the
- * workflow is effectively dead (errored / terminated / instance missing), or null
- * if it's still legitimately in-flight or unknown.
- *
- * Needed because miniflare's workflow engine doesn't resume after worker hot-reload
- * (no alarm() method on Engine; scheduler.wait is in-memory only). Stuck workflows
- * sit in "running" forever locally — for us that's indistinguishable from normal
- * running, so we additionally trust "complete" / "errored" / "terminated".
- */
-/** Hard timeout — miniflare wf.get/status can hang on certain instances and pin the DO loop. */
-const WF_STATUS_TIMEOUT_MS = 1500;
-
-async function inspectWorkflowStatus(
-  env: Env,
-  taskId: string
-): Promise<{ status: string; error?: string } | null> {
-  try {
-    const durable = await hostedGenerationStatus(env, taskId);
-    if (durable) return { status: "journal-managed" };
-  } catch (error) {
-    log.warn("Durable generation status unavailable", { taskId, error: String(error) });
-    return null;
-  }
-  const wf = getWorkflowBinding(env);
-  if (!wf) return null;
-
-  const probe = (async () => {
-    try {
-      const inst = await wf.get(taskId);
-      const s = await inst.status();
-      return { status: String(s.status ?? ''), error: stringifyWorkflowError(s.error) };
-    } catch (e) {
-      const msg = String(e);
-      if (/not\s*found|Error 3001|doesn't exist/i.test(msg)) return { status: 'missing' };
-      log.warn('inspectWorkflowStatus error', { taskId, error: msg });
-      return null;
-    }
-  })();
-
-  const timeout = new Promise<{ status: string }>((resolve) =>
-    setTimeout(() => resolve({ status: 'timeout' }), WF_STATUS_TIMEOUT_MS),
-  );
-
-  const result = await Promise.race([probe, timeout]);
-  // 'timeout' is treated as 'unknown' upstream — caller should not act on it.
-  if (result && (result as { status: string }).status === 'timeout') {
-    log.warn('inspectWorkflowStatus timed out — treating as unknown', { taskId });
-    return null;
-  }
-  return result;
-}
-
-
 function toPlainRecord(value: unknown): Record<string, any> {
   if (typeof (value as { toJSON?: () => unknown } | null)?.toJSON === 'function') {
     const json = (value as { toJSON: () => unknown }).toJSON();
@@ -211,82 +109,78 @@ function timelineItemAssets(nodesMap: Map<string, any>) {
 }
 
 /**
- * Recover orphaned tasks — scan nodes with `pendingTask` and mark Failed any
- * whose backing workflow is errored / terminated / missing, or whose runtime
- * has exceeded the per-kind cap (covers miniflare's lost-timer hibernation).
- *
- * SLOW PATH: each pending node triggers a workflow status RPC (timeboxed).
- * Caller must NOT run this from the WebSocket message-processing critical
- * section — it's reserved for the alarm timer to keep WS handling responsive.
- * Per-task probes run in parallel so total cost is max-of-N rather than sum.
+ * Message on a node whose optimistic lock was persisted but whose Durable Run
+ * journal row never landed.
  */
-export async function recoverOrphanedTasks(
+export const GENERATION_ADMISSION_LOST_MESSAGE =
+  'Generation was not admitted because the project room restarted before the run was recorded. Run it again.';
+
+/**
+ * Reconcile in-flight nodes whose admission never reached the Durable Run
+ * journal. Runs when a room instance initializes, before any admission can be
+ * in flight in that instance.
+ *
+ * Replaces the alarm-driven orphan recovery. That recovery already returned
+ * early for every journal-managed run, and Workflow-dead or too-long runs are
+ * owned by the journal (`deadlineAt`, the cron restarting errored/terminated
+ * Workflows, failure projection via publication). The only case it still
+ * caught was a node whose `pendingTask` optimistic lock was persisted while the
+ * room died before the journal row was written; that node fails here, coded.
+ *
+ * A failed journal lookup (D1 unavailable) leaves the node untouched and
+ * reports `retry: true` so the caller runs the reconcile again later.
+ */
+export async function reconcileUnadmittedTasks(
   doc: LoroDoc,
   env: Env,
   broadcast: (data: Uint8Array) => void,
-): Promise<void> {
-  const nodesMap = doc.getMap('nodes');
-  const candidates: Array<{ nodeId: string; nodeType: NodeType; pendingTask: string; pendingTaskAt?: number; modelId?: string }> = [];
-
-  for (const [nodeId, nodeData] of nodesMap.entries()) {
+): Promise<{ retry: boolean }> {
+  const candidates: Array<{ nodeId: string; pendingTask: string }> = [];
+  for (const [nodeId, nodeData] of doc.getMap('nodes').entries()) {
     const data = nodeData as Record<string, any>;
-    const nodeType = data?.type as NodeType;
-    if (!['image', 'video', 'audio', 'video_render'].includes(nodeType)) continue;
+    if (!['image', 'video', 'audio', 'text', 'video_render'].includes(data?.type)) continue;
     const innerData = data?.data || {};
-    const pendingTask = innerData.pendingTask as string | undefined;
-    if (!pendingTask) continue;
-    // Executable Actions are owned by the Durable Run journal and its cron scan;
-    // a Workflow status probe cannot see their output slot and must not clear the
-    // optimistic lock while the frozen row is still recoverable.
-    if (
-      typeof innerData.actionType === 'string' &&
-      innerData.actionType.startsWith('custom:')
-    )
-      continue;
-    candidates.push({
-      nodeId,
-      nodeType,
-      pendingTask,
-      pendingTaskAt: typeof innerData.pendingTaskAt === 'number' ? innerData.pendingTaskAt : undefined,
-      modelId: (innerData.modelId || innerData.model) as string | undefined,
-    });
+    const pendingTask = innerData.pendingTask;
+    if (typeof pendingTask !== 'string' || !pendingTask) continue;
+    // Executable Actions are owned by their own journal owner and output slot.
+    if (typeof innerData.actionType === 'string' && innerData.actionType.startsWith('custom:')) continue;
+    candidates.push({ nodeId, pendingTask });
   }
 
-  if (candidates.length === 0) return;
-
-  await Promise.allSettled(
-    candidates.map(async ({ nodeId, nodeType, pendingTask, pendingTaskAt, modelId }) => {
-      const info = await inspectWorkflowStatus(env, pendingTask);
-      const current = doc.getMap('nodes').get(nodeId) as { data?: { pendingTask?: string } } | undefined;
-      if (current?.data?.pendingTask !== pendingTask || info?.status === 'journal-managed') return;
-      const age = pendingTaskAt ? Date.now() - pendingTaskAt : undefined;
-      const runningTooLong = info?.status === 'running'
-        && age !== undefined
-        && age > resolveMaxRuntimeMs(nodeType, modelId);
-
-      if (info && ['errored', 'terminated', 'missing'].includes(info.status)) {
-        const reason = `orphan task: workflow status=${info.status}${info.error ? ` (${info.error})` : ''}`;
-        log.warn('Orphan pendingTask (terminal status), marking node Failed', { nodeId, nodeType, taskId: pendingTask, status: info.status });
-        appendNodeLog(doc, nodeId, `FAILED: ${reason}`, broadcast);
-        updateNodeData(doc, nodeId, { pendingTask: undefined, pendingTaskAt: undefined, status: Status.Failed, error: reason }, broadcast);
-      } else if (runningTooLong) {
-        const ageSec = Math.round((age ?? 0) / 1000);
-        const reason = `orphan task: workflow still "running" after ${ageSec}s (presumed dead — miniflare hot-reload kills in-memory timers)`;
-        log.warn('Orphan pendingTask (running-too-long), marking node Failed', { nodeId, nodeType, taskId: pendingTask, ageSec });
-        appendNodeLog(doc, nodeId, `FAILED: ${reason}`, broadcast);
-        updateNodeData(doc, nodeId, { pendingTask: undefined, pendingTaskAt: undefined, status: Status.Failed, error: reason }, broadcast);
+  let retry = false;
+  await Promise.all(
+    candidates.map(async ({ nodeId, pendingTask }) => {
+      let admitted: boolean;
+      try {
+        admitted = (await hostedGenerationStatus(env, pendingTask)) !== undefined;
+      } catch (error) {
+        log.warn('Durable generation status unavailable; reconcile will retry', { nodeId, taskId: pendingTask, error: String(error) });
+        retry = true;
+        return;
       }
+      if (admitted) return;
+      const current = doc.getMap('nodes').get(nodeId) as { data?: { pendingTask?: string } } | undefined;
+      if (current?.data?.pendingTask !== pendingTask) return;
+      log.warn('Unadmitted pendingTask, marking node Failed', { nodeId, taskId: pendingTask });
+      appendNodeLog(doc, nodeId, `FAILED: ${GENERATION_ADMISSION_LOST_MESSAGE}`, broadcast);
+      updateNodeData(doc, nodeId, {
+        pendingTask: undefined,
+        pendingTaskAt: undefined,
+        status: Status.Failed,
+        error: GENERATION_ADMISSION_LOST_MESSAGE,
+        errorCode: 'GENERATION_ADMISSION_LOST',
+      }, broadcast);
     }),
   );
+  return { retry };
 }
 
 /**
  * Process pending nodes — submit tasks via Workflow.
  *
- * FAST PATH: only handles nodes WITHOUT pendingTask (new submissions).
- * Nodes already in flight are skipped here; their failures are caught by
- * `recoverOrphanedTasks` from the alarm timer. This separation keeps the
- * WebSocket message handler off the slow workflow.status() critical path.
+ * Only handles nodes WITHOUT pendingTask (new submissions). Completion and
+ * failure of a submitted run reach the room by publication push from the
+ * Durable Run journal; `reconcileUnadmittedTasks` covers lost admissions.
  *
  * Uses `pendingTask` as optimistic lock: set synchronously before any
  * async work so concurrent invocations (via event loop interleaving) skip.
@@ -296,11 +190,9 @@ export async function processPendingNodes(
   env: Env,
   projectId: string,
   broadcast: (data: Uint8Array) => void,
-  triggerPolling: () => Promise<void>,
 ): Promise<void> {
   try {
     const nodesMap = doc.getMap('nodes');
-    let submitted = false;
 
     for (const [nodeId, nodeData] of nodesMap.entries()) {
       const data = nodeData as Record<string, any>;
@@ -313,8 +205,7 @@ export async function processPendingNodes(
       const assetId = typeof innerData.assetId === 'string' ? innerData.assetId : undefined;
       const pendingTask = innerData.pendingTask;
 
-      // Optimistic lock — skip nodes already in flight. Orphan recovery is the
-      // alarm's job (see recoverOrphanedTasks) so this hot path stays fast.
+      // Optimistic lock — skip nodes already in flight.
       if (pendingTask) continue;
 
       const hasTimelineDsl = innerData.timelineDsl != null;
@@ -375,7 +266,6 @@ export async function processPendingNodes(
         try {
           await startGeneration(env, taskId, genParams);
           appendNodeLog(doc, nodeId, `submitted`, broadcast);
-          submitted = true;
         } catch (e: any) {
           if (String(e).includes('already exists')) {
             appendNodeLog(doc, nodeId, `already running`, broadcast);
@@ -424,7 +314,6 @@ export async function processPendingNodes(
               }, broadcast);
             },
           });
-          submitted = true;
         } catch (e: any) {
           const error = e instanceof Error ? e.message : String(e);
           appendNodeLog(doc, nodeId, `FAILED: ${error}`, broadcast);
@@ -672,15 +561,8 @@ export async function processPendingNodes(
           updateNodeData(doc, nodeId, { pendingTask: undefined, status: Status.Failed, error: result.error }, broadcast);
         } else {
           appendNodeLog(doc, nodeId, `submitted`, broadcast);
-          submitted = true;
         }
       }
-
-
-    }
-
-    if (submitted) {
-      await triggerPolling();
     }
   } catch (error) {
     log.error('Error:', error);
