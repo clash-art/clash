@@ -4,14 +4,19 @@
  * Architecture: never touches the Loro CRDT doc — awareness is pure
  * ephemeral sideband JSON. See `apps/api-cf/src/agents/project-room.ts`
  * for the matching server-side broadcaster (throttled to ~12Hz outbound;
- * stale entries pruned after 8s).
+ * stale entries pruned after 45s).
  *
  * Throttling chain:
  *   - Local cursor/selection deltas are coalesced here to ~50ms (20Hz)
  *     before hitting the WS — see SEND_THROTTLE_MS below.
  *   - Server coalesces outbound broadcasts at ~80ms (12Hz).
- *   - Server prunes entries idle > 8s; we mirror that on receive as
- *     defence-in-depth (a server pause shouldn't strand cursors forever).
+ *   - Server and client both prune entries idle > PEER_STALE_MS (45s); we
+ *     mirror the server on receive as defence-in-depth (a server pause
+ *     shouldn't strand cursors forever).
+ *   - While the tab is visible and the user produced input in the last
+ *     ACTIVE_WINDOW_MS (60s), we resend a heartbeat every HEARTBEAT_MS (20s).
+ *     Hidden or idle tabs send one explicit clear frame instead of waking the
+ *     room every heartbeat.
  *
  * Identity: the server stamps each WS with the authenticated user's
  * userId/userName/userAvatar and its `kind` — clients can NOT claim their
@@ -28,8 +33,16 @@ import type {
 
 /** Outbound throttle for local cursor/selection updates. */
 const SEND_THROTTLE_MS = 50;
-/** Defence-in-depth: drop peers we haven't heard about for this long. */
-const PEER_STALE_MS = 8_000;
+/** How often an active, visible tab refreshes its awareness entry. */
+export const HEARTBEAT_MS = 20_000;
+/** The user counts as active if they produced input within this window. */
+export const ACTIVE_WINDOW_MS = 60_000;
+/**
+ * Defence-in-depth: drop peers we haven't heard about for this long. Must stay
+ * above HEARTBEAT_MS with margin for timer jitter, so a still-but-active
+ * cursor never flickers between refreshes.
+ */
+export const PEER_STALE_MS = 45_000;
 
 /**
  * 10-colour canvas palette — muted enough to sit inside the warm Clash
@@ -131,6 +144,10 @@ export function usePresenceAwareness(
 
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSendAtRef = useRef(0);
+  // Last time the user produced input (or changed cursor/selection), and
+  // whether we've already sent the one clear frame that marks us away.
+  const lastInputAtRef = useRef(0);
+  const awayRef = useRef(false);
 
   const flushSend = useCallback(() => {
     sendTimerRef.current = null;
@@ -172,6 +189,38 @@ export function usePresenceAwareness(
     sendTimerRef.current = setTimeout(flushSend, delay);
   }, [flushSend]);
 
+  /**
+   * Send ONE explicit clear frame and stay quiet until the tab is visible and
+   * the user is active again. Peers drop the cursor immediately instead of
+   * waiting for PEER_STALE_MS, and the hibernated room is no longer woken by
+   * a heartbeat every HEARTBEAT_MS.
+   */
+  const markAway = useCallback(() => {
+    if (awayRef.current) return;
+    awayRef.current = true;
+    if (sendTimerRef.current) {
+      clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = null;
+    }
+    sendSideband({ type: 'awareness.update', cursor: null, selectedNodeIds: [] });
+    lastSentRef.current = { cursor: undefined, selectedNodeIds: [], cursorPresent: true };
+  }, [sendSideband]);
+
+  /** Record user activity, returning from away with an immediate forced send. */
+  const noteActivity = useCallback(() => {
+    lastInputAtRef.current = Date.now();
+    if (!awayRef.current) return;
+    awayRef.current = false;
+    if (sendTimerRef.current) {
+      clearTimeout(sendTimerRef.current);
+      sendTimerRef.current = null;
+    }
+    // Reset the no-op guard so the first frame after returning is always sent,
+    // exactly as the heartbeat does.
+    lastSentRef.current.cursorPresent = false;
+    flushSend();
+  }, [flushSend]);
+
   const setLocalCursor = useCallback(
     (cursor: { x: number; y: number } | null | undefined) => {
       // Both null and undefined collapse to "no cursor" — peers should see it
@@ -182,9 +231,10 @@ export function usePresenceAwareness(
       const prev = localStateRef.current.cursor;
       if (prev?.x === next?.x && prev?.y === next?.y) return;
       localStateRef.current.cursor = next;
+      noteActivity();
       scheduleSend();
     },
-    [scheduleSend],
+    [noteActivity, scheduleSend],
   );
 
   const setLocalSelection = useCallback(
@@ -194,9 +244,10 @@ export function usePresenceAwareness(
         prev.length === nodeIds.length && prev.every((id, i) => id === nodeIds[i]);
       if (same) return;
       localStateRef.current.selectedNodeIds = nodeIds;
+      noteActivity();
       scheduleSend();
     },
-    [scheduleSend],
+    [noteActivity, scheduleSend],
   );
 
   // Subscribe to incoming broadcasts. We replace the broadcast snapshot
@@ -234,19 +285,56 @@ export function usePresenceAwareness(
     return () => clearInterval(id);
   }, []);
 
-  // Periodically resend our local state — keeps the server-side TTL fresh
-  // for peers' staleness sweeps even when the user holds the cursor still.
-  // Cheap: one frame every 4s when nothing changes.
+  // Passive activity tracking. Only these events refresh the heartbeat window;
+  // pointermove fires often but the handler is a cheap timestamp update.
+  useEffect(() => {
+    const onInput = () => noteActivity();
+    const events = ['pointermove', 'pointerdown', 'keydown', 'wheel', 'focus'] as const;
+    for (const event of events) {
+      window.addEventListener(event, onInput, { passive: true });
+    }
+    return () => {
+      for (const event of events) {
+        window.removeEventListener(event, onInput);
+      }
+    };
+  }, [noteActivity]);
+
+  // Hide = one clear frame, then silence. Returning to the tab counts as
+  // activity so the current local state is sent again immediately.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        markAway();
+      } else {
+        noteActivity();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [markAway, noteActivity]);
+
+  // Periodically refresh our local state so peers' staleness sweeps keep us
+  // alive while the user holds the cursor still. A hidden or idle tab never
+  // resends: it sends the single clear frame from markAway instead.
   useEffect(() => {
     const id = setInterval(() => {
-      if (localStateRef.current.cursor || localStateRef.current.selectedNodeIds.length > 0) {
-        // Force a send even if values match prev — the heartbeat is the point.
-        lastSentRef.current.cursorPresent = false;
-        scheduleSend();
+      const { cursor, selectedNodeIds } = localStateRef.current;
+      if (!cursor && selectedNodeIds.length === 0) return;
+      if (awayRef.current) return;
+      if (
+        document.visibilityState !== 'visible' ||
+        Date.now() - lastInputAtRef.current >= ACTIVE_WINDOW_MS
+      ) {
+        markAway();
+        return;
       }
-    }, 4000);
+      // Force a send even if values match prev — the heartbeat is the point.
+      lastSentRef.current.cursorPresent = false;
+      flushSend();
+    }, HEARTBEAT_MS);
     return () => clearInterval(id);
-  }, [scheduleSend]);
+  }, [flushSend, markAway]);
 
   // Cleanup: explicit "cursor gone" on unmount so peers don't see a ghost.
   useEffect(() => {
