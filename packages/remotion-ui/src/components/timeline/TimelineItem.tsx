@@ -17,7 +17,8 @@ import {
   useEditorDispatch,
   useEditorStaticState,
 } from '@clash/remotion-core';
-import { frameToPixels, secondsToFrames } from './utils/timeFormatter';
+import { formatTimecode, frameToPixels, secondsToFrames } from './utils/timeFormatter';
+import { KEYFRAME_CHANNEL_NAMES_ZH } from '../keyframeChannelNames';
 import { getRendererForItem } from './items/registry';
 import { generateVideoThumbnailAtTime, thumbnailCache } from '../../utils/thumbnailCache';
 import {
@@ -1194,7 +1195,7 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
               data-keyframe-frame={marker.frame}
               data-keyframe-count={marker.channels.length}
               data-keyframe-glyph={layout.glyph}
-              title={`${marker.channels.join(' + ')} · frame ${marker.frame}`}
+              title={`${marker.channels.map((channel) => KEYFRAME_CHANNEL_NAMES_ZH[channel] ?? channel).join(' + ')}关键帧 · ${formatTimecode(item.from + marker.frame, fps)}`}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();

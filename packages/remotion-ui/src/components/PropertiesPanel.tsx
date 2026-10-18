@@ -49,6 +49,7 @@ import {
   TIMELINE_MASK_STATIC_CONTROL_BINDINGS,
   TIMELINE_MASK_VECTOR_ANIMATION_BINDINGS,
   TIMELINE_KEYFRAME_INTERPOLATIONS,
+  type TimelineKeyframeChannel,
   type TimelineMaskNumberInputAnnotation,
   type TimelineMaskScalarAnimationBinding,
   type TimelineMaskStaticControlBinding,
@@ -65,6 +66,7 @@ import { AspectRatioPicker } from './AspectRatioPicker';
 import { getContinuousTransitionBoundaries } from '../library/applyTimelineLibraryItem';
 import { formatTimecode } from './timeline/utils/timeFormatter';
 import { emitTimelineNotice } from './timeline/timelineNotice';
+import { KEYFRAME_CHANNEL_NAMES_ZH } from './keyframeChannelNames';
 
 const TRANSITION_TYPES: TransitionType[] = [
   'crossfade',
@@ -357,23 +359,12 @@ const SplitButton: React.FC<{
   );
 });
 
-/** Chinese tooltip names for animatable channels (the label stays the accessible name). */
-const KEYFRAME_CHANNEL_TOOLTIP_NAMES: Record<string, string> = {
-  Position: '位置',
-  Scale: '缩放',
-  Rotation: '旋转',
-  Opacity: '不透明度',
-  'Mask position': '蒙版位置',
-  'Mask size': '蒙版大小',
-  'Mask rotation': '蒙版旋转',
-  'Mask feather': '蒙版羽化',
-};
-
 export const KEYFRAME_OUTSIDE_CLIP_NOTICE =
   '[KEYFRAME_OUTSIDE_CLIP] Move the playhead onto the selected clip to edit its keyframes.';
 
 type KeyframeControlHeaderProps = {
   label: string;
+  channel: TimelineKeyframeChannel;
   active: boolean;
   itemFrom: number;
   itemLocalFrame: number;
@@ -389,6 +380,7 @@ const keyframeArrowClassName = `flex h-6 w-5 items-center justify-center ${contr
 /** Property label with a CapCut-style ‹ ◆ › keyframe control on the right. */
 const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
   label,
+  channel,
   active,
   itemFrom,
   itemLocalFrame,
@@ -404,7 +396,7 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
     if (frame === null) return;
     dispatch({ type: 'SET_CURRENT_FRAME', payload: itemFrom + frame });
   };
-  const name = KEYFRAME_CHANNEL_TOOLTIP_NAMES[label] ?? label;
+  const name = KEYFRAME_CHANNEL_NAMES_ZH[channel] ?? label;
   const timecode = formatTimecode(itemFrom + itemLocalFrame, fps);
   const toggleTitle = !canEditKeyframes
     ? '将播放头移到所选片段内以编辑关键帧'
@@ -584,6 +576,7 @@ const PositionKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label="Position"
+        channel="position"
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -701,6 +694,7 @@ const ScaleKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label="Scale"
+        channel="scale"
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -825,6 +819,7 @@ const ScalarKeyframeControl: React.FC<ScalarKeyframeControlProps> = React.memo((
     <div>
       <KeyframeControlHeader
         label={label}
+        channel={channel}
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -923,6 +918,7 @@ const MaskVectorKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label={label}
+        channel={channel}
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
@@ -1025,6 +1021,7 @@ const MaskScalarKeyframeControl: React.FC<{
     <div>
       <KeyframeControlHeader
         label={label}
+        channel={channel}
         active={active}
         itemFrom={item.from}
         itemLocalFrame={itemLocalFrame}
