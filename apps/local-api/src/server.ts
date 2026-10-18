@@ -6,6 +6,7 @@ import { localProjectSyncMetadata } from "./app.js";
 import { registerProjectRenderer } from "./project-renderer.js";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
 import { createLocalProjectUpgrade } from "./local-project-upgrade.js";
+import { createPluginRuntimeGate } from "./plugin-runtime-gate.js";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type { Socket } from "node:net";
@@ -227,6 +228,11 @@ export interface LocalApiServerOptions {
   };
   /** Injectable for packaged hosts and deterministic startup tests. */
   codexImagegenPreflight?: () => Promise<CodexImageGeneratorPreflightResult>;
+  /**
+   * Start executable Plugins after listening instead of on the first request that needs them.
+   * The long-lived Host enables this; embedded/test servers stay quiet until a route asks.
+   */
+  warmPluginRuntime?: boolean;
 }
 
 /**
@@ -1518,9 +1524,8 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   });
   let embeddedPluginHost: ActionsHost | null = null;
   let embeddedPluginIpc: PluginHostIpcServer | null = null;
-  let pluginRuntimeReady: Promise<void> | null = null;
-  const ensurePluginRuntime = () =>
-    (pluginRuntimeReady ??= (async () => {
+  let serverClosing = false;
+  const startPluginRuntime = async () => {
       // First-party payloads are loaded only from the Host's closed immutable registry. The
       // actions directory remains the activation authority for third-party process/stdio plugins;
       // a directory with a reserved first-party id is an untrusted shadow and is skipped.
@@ -1569,7 +1574,18 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         }
         // Another local-api host already owns the socket.
       }
-    })());
+  };
+  const pluginRuntime = createPluginRuntimeGate({
+    start: startPluginRuntime,
+    onReady: (ms) => hostLog.info("plugin.runtime_ready", { ms }),
+    onUnavailable: (error, cause) =>
+      hostLog.error("plugin.runtime_unavailable", {
+        code: error.code,
+        error: cause,
+      }),
+  });
+  const ensurePluginRuntime = pluginRuntime.ensure;
+  const warmPluginRuntime = pluginRuntime.warm;
   const providerPluginProjector = (async (request) => {
     await ensurePluginRuntime();
     return pluginHostProjector(request);
@@ -1846,8 +1862,19 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     config: mediaAnalysisConfig,
     aigc: externalAigc,
   });
+  let lastRequestActivityAt = Date.now();
+  let activeRequests = 0;
+  const noteRequestActivity = (event: "start" | "end") => {
+    lastRequestActivityAt = Date.now();
+    if (event === "start") activeRequests += 1;
+    else activeRequests = Math.max(0, activeRequests - 1);
+  };
+  const noteSocketActivity = () => {
+    lastRequestActivityAt = Date.now();
+  };
   const app = createLocalApiApp({
     dataDir: options.dataDir,
+    onRequestActivity: noteRequestActivity,
     prepareProjectWorkspace: async (projectId) => {
       await ensureAgentCwd("clash", projectId, { harnessId: "codex-acp" }, {
         ...process.env,
@@ -2201,17 +2228,35 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
           hostLog.error("host.run_recovery_degraded", { error });
         });
         resolveListening(server);
+        // Warm executable Plugins only after the Host is listening and discovery is published.
+        // The lazy routes share this single-flight promise, so a request never starts a second
+        // runtime and a warm failure is observed exactly once.
+        if (options.warmPluginRuntime) {
+          setImmediate(async () => {
+            // Stay off user request windows: wait for a quiet period after the last HTTP request or
+            // WebSocket upgrade before competing with it for the event loop.
+            const quietMs = 750;
+            while (!serverClosing) {
+              const idleMs = Date.now() - lastRequestActivityAt;
+              if (activeRequests === 0 && idleMs >= quietMs) break;
+              await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(1, quietMs - idleMs))));
+            }
+            if (!serverClosing) warmPluginRuntime();
+          });
+        }
       })().catch((error) => {
         server.close();
         rejectListening(error);
       });
     },
   );
+  server.on("upgrade", noteSocketActivity);
   // A large import-file upload outlives Node's default whole-request timer.
   configureHostServerTimeouts(server as HttpServer);
   wrapServerCloseWithLifecycleCleanup(
     server,
     async () => {
+      serverClosing = true;
       configWatcherClosed = true;
       stopConfigWatcher();
       // Warmup and an already-queued harness reload read local config state;
@@ -2230,7 +2275,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         processProviderHttpInstrumentationReady.then((instrumentation) =>
           instrumentation?.dispose(),
         ),
-        (pluginRuntimeReady ?? Promise.resolve())
+        (pluginRuntime.pending() ?? Promise.resolve())
           .catch(() => undefined)
           .then(async () => {
             await embeddedPluginIpc?.close().catch(() => undefined);
@@ -2331,5 +2376,5 @@ if (
   import.meta.url === directRunUrl &&
   !process.env.CLASH_LOCAL_API_WRAPPER_ENTRY
 ) {
-  void startLocalApiServer({ port, dataDir });
+  void startLocalApiServer({ port, dataDir, warmPluginRuntime: true });
 }

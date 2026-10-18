@@ -36,6 +36,7 @@ import { localFfmpegPath } from "./local-media-binaries";
 import { openPluginStore } from "./plugin-store";
 import { createLocalMetadataStore } from "./local-metadata-store";
 import { getLocalReplicaId } from "./local-replica-identity";
+import { PluginRuntimeUnavailableError } from "./plugin-runtime-unavailable.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -4710,6 +4711,33 @@ describe("local API app", () => {
         description: "Agent override",
       },
     });
+  });
+
+  it("answers plugin routes with a coded 503 when the plugin runtime cannot start", async () => {
+    const unavailable = async () => {
+      throw new PluginRuntimeUnavailableError(new Error("bundled plugin payload is corrupt"));
+    };
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      listPluginCards: unavailable,
+      listPluginViews: unavailable,
+      listPluginProviders: unavailable,
+      listPluginGenerators: unavailable,
+    });
+    for (const path of [
+      "/api/v1/plugin-actions",
+      "/api/v1/plugin-views",
+      "/api/v1/plugin-providers",
+      "/api/v1/generator-definitions",
+    ]) {
+      const response = await app.request(path);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        code: "PLUGIN_RUNTIME_UNAVAILABLE",
+        error: expect.stringContaining("bundled plugin payload is corrupt"),
+      });
+    }
   });
 
   it("projects activated executable action Cards into product custom-action definitions", async () => {

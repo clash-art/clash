@@ -171,6 +171,7 @@ async function main(): Promise<void> {
     agentRuntime: process.env.CLASH_AGENT_RUNTIME === "disabled" ? "disabled" : "enabled",
     projectRendererRoot: process.env.CLASH_PROJECT_RENDERER_ROOT,
     directorStageRenderer,
+    warmPluginRuntime: true,
     discovery: {
       enabled: true,
       runDir,

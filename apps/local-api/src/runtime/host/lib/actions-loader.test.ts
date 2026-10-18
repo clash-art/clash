@@ -781,6 +781,42 @@ describe("ActionsHost mixed execution realms", () => {
     }
   });
 
+  it("loads trusted modules with a small bound, registry order and per-plugin isolation", async () => {
+    const actionsRoot = await mkdtemp(join(tmpdir(), "clash-bounded-bundle-"));
+    const ids = ["clash.parallel-a", "clash.parallel-b", "clash.parallel-c", "clash.parallel-d", "clash.parallel-e"];
+    const brokenId = "clash.parallel-c";
+    const plugins = await Promise.all(
+      ids.map((id) => bundledTestPlugin({ id, resultValue: id })),
+    );
+    let active = 0;
+    let maxActive = 0;
+    const host = new ActionsHost({
+      actionsRoot,
+      trustedBundledPluginModules: plugins.map((plugin) => plugin.registration),
+      async loadTrustedBundledPluginModule(id) {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        try {
+          // Finish in reverse registry order so registration order cannot come from completion.
+          await new Promise((resolve) => setTimeout(resolve, (ids.length - ids.indexOf(id)) * 10));
+          if (id === brokenId) throw new Error("corrupt bundled payload");
+          return plugins.find((plugin) => plugin.loaded.id === id)!.loaded;
+        } finally {
+          active -= 1;
+        }
+      },
+    } satisfies MixedRealmActionEnv);
+
+    try {
+      await host.start();
+      expect(maxActive).toBeGreaterThan(1);
+      expect(maxActive).toBeLessThanOrEqual(4);
+      expect(host.listIds()).toEqual(ids.filter((id) => id !== brokenId));
+    } finally {
+      await host.stopAll();
+    }
+  });
+
   it("keeps bundled modules outside actions-directory reconciliation", async () => {
     const actionsRoot = await mkdtemp(
       join(tmpdir(), "clash-module-reconcile-"),

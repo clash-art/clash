@@ -863,9 +863,11 @@ export function createLocalWorkflowProcessor(
     async process(input) {
       const { doc, projectId } = input;
       const nodes = doc.getMap("nodes");
-      const modelCards = options.modelCards
-        ? await options.modelCards()
-        : MODEL_CARDS;
+      // Opening a Project runs this pass even when nothing is pending. Model Cards come from the
+      // Plugin Host, so resolve them only when a pending node actually needs them.
+      let modelCardsPromise: Promise<ModelCard[]> | undefined;
+      const loadModelCards = () =>
+        (modelCardsPromise ??= options.modelCards ? options.modelCards() : Promise.resolve(MODEL_CARDS));
       let changed = await projectAssets.materializeDoc(projectId, doc);
       const resolveCanvasMention = canvasMentionResolver(nodes);
       const nodeProjectionRevisionId = (
@@ -2025,7 +2027,7 @@ export function createLocalWorkflowProcessor(
                     state: { ...params, ...(card.input.promptModalities.includes("text") ? { prompt } : {}) },
                     persistentInputRefs,
                   };
-                  const canvas = new Canvas(doc, () => {}, typeof node.canvasId === "string" ? node.canvasId : "main", modelCards);
+                  const canvas = new Canvas(doc, () => {}, typeof node.canvasId === "string" ? node.canvasId : "main", await loadModelCards());
                   const sources = [...new Set(canvas.listEdges().filter((edge) => edge.target === nodeId)
                     .map((edge) => edge.source).filter((sourceId) => canvas.readNode(sourceId)?.type === "action-badge"))];
                   if (sources.length > 1) throw new Error("Canvas output has multiple source Actions; its Generator owner is ambiguous.");
@@ -2314,7 +2316,7 @@ export function createLocalWorkflowProcessor(
                 mutate: async (_projectId, mutate) => mutate(doc, async () => { changed = true; await input.checkpoint!(); }),
               },
               resolveDefinition: options.resolveGeneratorDefinition,
-              resolveModelExecution: createLocalModelExecutionPlanner({ aigc, modelCards: async () => modelCards, dataDir: options.dataDir }),
+              resolveModelExecution: createLocalModelExecutionPlanner({ aigc, modelCards: loadModelCards, dataDir: options.dataDir }),
               ownerId: durableOwnerId, journal: durableJournal, deadlineMs: generationDeadlineMs,
               actor: data.actorType === "agent"
                 ? { kind: "agent", ...(typeof data.actorAgentId === "string" ? { id: data.actorAgentId } : {}) }
@@ -2341,7 +2343,7 @@ export function createLocalWorkflowProcessor(
           const prompt = extractPromptText(parsedPromptParts);
           const model = modelFromData(data, `mock-${kind}`);
           const normalizedModel = normalizeModelId(model) ?? model;
-          const modelCard = modelCards.find(
+          const modelCard = (await loadModelCards()).find(
             (card) => card.id === normalizedModel,
           );
           const effectiveModelParams = nodeModelParams(data);
@@ -2576,7 +2578,7 @@ export function createLocalWorkflowProcessor(
               actionRunId = cachedRun.actionRunId;
             } else {
               definition = await options.resolveGeneratorDefinition(generatorPluginId, kind);
-              const canvas = new Canvas(doc, () => {}, typeof node.canvasId === "string" ? node.canvasId : "main", modelCards);
+              const canvas = new Canvas(doc, () => {}, typeof node.canvasId === "string" ? node.canvasId : "main", await loadModelCards());
               const sources = [...new Set(canvas.listEdges().filter((edge) => edge.target === nodeId)
                 .map((edge) => edge.source).filter((sourceId) => canvas.readNode(sourceId)?.type === "action-badge"))];
               if (sources.length > 1) throw new Error("Canvas Model output has multiple source Actions; its Generator owner is ambiguous.");
@@ -2611,7 +2613,7 @@ export function createLocalWorkflowProcessor(
               resolveDefinition: async (pluginId, definitionId) =>
                 definition?.pluginId === pluginId && definition.definitionId === definitionId
                   ? definition : options.resolveGeneratorDefinition!(pluginId, definitionId),
-              resolveModelExecution: createLocalModelExecutionPlanner({ aigc, modelCards: async () => modelCards, dataDir: options.dataDir }),
+              resolveModelExecution: createLocalModelExecutionPlanner({ aigc, modelCards: loadModelCards, dataDir: options.dataDir }),
               ownerId: durableOwnerId, journal: durableJournal, deadlineMs: generationDeadlineMs,
               actor: { kind: data.actorType === "agent" ? "agent" : "user",
                 ...(data.actorType === "agent"

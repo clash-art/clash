@@ -29,6 +29,64 @@ async function fixture() {
     document: JSON.parse(await readFile(new URL("../../../plugins/codex-imagegen/cards/codex-imagegen.json", import.meta.url), "utf8")) });
   return { dataDir, definitions, assets, card };
 }
+it("opens a project that needs no upgrade without starting the plugin runtime", async () => {
+  const { assets } = await fixture();
+  const listActionCards = vi.fn(async () => {
+    throw new Error("the plugin runtime must not start for a plain project");
+  });
+  const listDefinitions = vi.fn(async () => {
+    throw new Error("Generator Definitions must not load for a plain project");
+  });
+  const modelCards = vi.fn(async () => {
+    throw new Error("Model Cards must not load for a plain project");
+  });
+  const upgrade = createLocalProjectUpgrade({
+    materializeDoc: assets.materializeDoc,
+    listDefinitions,
+    modelCards,
+    listActionCards,
+  });
+  const doc = new LoroDoc();
+  try {
+    await upgrade({ projectId: "plain", doc });
+    expect(listActionCards).not.toHaveBeenCalled();
+    expect(listDefinitions).not.toHaveBeenCalled();
+    expect(modelCards).not.toHaveBeenCalled();
+  } finally {
+    doc.free();
+  }
+});
+
+it("still upgrades a legacy generator draft and timeline fixture", async () => {
+  const { dataDir, definitions, assets, card } = await fixture();
+  const seed = new LocalLoroRoomHub(dataDir, undefined, null);
+  await seed.mutateProject("legacy", (doc) => {
+    new Canvas(doc, () => {}).createNode("draft", "action-badge", {
+      actionType: "video-gen",
+      modelId: "minimax-h3",
+      content: "Legacy scene",
+    });
+    expect(createProjectTimeline(doc, { id: "cut", name: "Cut", state: { tracks: [] } }).ok).toBe(true);
+    return { value: undefined, save: true };
+  });
+  await seed.close();
+  const listActionCards = vi.fn(async () => [card]);
+  const upgrade = createLocalProjectUpgrade({
+    materializeDoc: assets.materializeDoc,
+    listDefinitions: async () => definitions,
+    modelCards: async () => MODEL_CARDS,
+    listActionCards,
+  });
+  const hub = new LocalLoroRoomHub(dataDir, undefined, null, upgrade);
+  try {
+    expect(await hub.inspectProject("legacy", (doc) => new Canvas(doc, () => {}).readNode("draft")!.data.generatorId)).toEqual(expect.any(String));
+    expect(await hub.inspectProject("legacy", (doc) => doc.getMap("timelines").size)).toBe(0);
+    expect(listActionCards).toHaveBeenCalledOnce();
+  } finally {
+    await hub.close();
+  }
+});
+
 it.each(["Model", "Action"])("delivers only the upgraded initial WebSocket state and reopens the same persisted Generator (%s)", async (kind) => {
   const { dataDir, definitions, assets, card } = await fixture();
   const seed = new LocalLoroRoomHub(dataDir, undefined, null);
