@@ -518,6 +518,21 @@ export function ProjectAssetSurface({
   );
 }
 
+/** Everything a resolved editor asset is derived from, besides the fetch. */
+function editorAssetInputKey(
+  projectId: string | undefined,
+  input: TimelineMediaInput,
+): string {
+  return JSON.stringify([
+    projectId ?? null,
+    input.sourceNodeId,
+    input.projectAssetId,
+    input.type,
+    input.src,
+    input.displayName ?? null,
+  ]);
+}
+
 export function ProjectTimelineEditorSurface({
   projectId,
   timeline,
@@ -638,11 +653,31 @@ export function ProjectTimelineEditorSurface({
   );
   const [editorAssets, setEditorAssets] =
     useState<EditorAssetInput[]>(seededEditorAssets);
+  // Every Timeline save (a keyframe toggle included) hands us a new but
+  // content-equal `mediaInputs`. Resolved assets for unchanged inputs must
+  // survive that: falling back to the metadata-less seed for even a frame
+  // drops the clip's natural size and the preview stretches it (#256).
+  const resolvedEditorAssetsRef = useRef(new Map<string, EditorAssetInput>());
   useEffect(() => {
     let cancelled = false;
-    setEditorAssets(seededEditorAssets);
+    const resolvedByInput = resolvedEditorAssetsRef.current;
+    const inputKeys = mediaInputs.map((input) =>
+      editorAssetInputKey(projectId, input),
+    );
+    const settle = (next: EditorAssetInput[]) =>
+      setEditorAssets((previous) =>
+        previous.length === next.length &&
+        previous.every((asset, index) => asset === next[index])
+          ? previous
+          : next,
+      );
+    settle(
+      seededEditorAssets.map(
+        (seed, index) => resolvedByInput.get(inputKeys[index]!) ?? seed,
+      ),
+    );
     void Promise.all(
-      mediaInputs.map(async (input): Promise<EditorAssetInput> => {
+      mediaInputs.map(async (input): Promise<EditorAssetInput | null> => {
         try {
           if (!projectId) throw new Error("Project scope unavailable");
           const asset = await getAsset(projectId, input.projectAssetId);
@@ -664,13 +699,28 @@ export function ProjectTimelineEditorSurface({
             waveform: asset.metadata?.waveform,
           };
         } catch {
-          return seededEditorAssets.find(
-            (asset) => asset.sourceNodeId === input.sourceNodeId,
-          )!;
+          return null;
         }
       }),
     ).then((resolved) => {
-      if (!cancelled) setEditorAssets(resolved);
+      if (cancelled) return;
+      const next = resolved.map((asset, index) => {
+        const key = inputKeys[index]!;
+        const previous = resolvedByInput.get(key);
+        // A failed refresh keeps what was already resolved.
+        if (!asset) return previous ?? seededEditorAssets[index]!;
+        // An equal refresh keeps the object, so the editor sees no change.
+        if (previous && JSON.stringify(previous) === JSON.stringify(asset)) {
+          return previous;
+        }
+        resolvedByInput.set(key, asset);
+        return asset;
+      });
+      const liveKeys = new Set(inputKeys);
+      for (const key of resolvedByInput.keys()) {
+        if (!liveKeys.has(key)) resolvedByInput.delete(key);
+      }
+      settle(next);
     });
     return () => {
       cancelled = true;
