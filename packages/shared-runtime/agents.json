@@ -46,6 +46,8 @@
     "src/provider-credentials.ts": "Provider-credential envelope domain separator, cleaning and decryption shared by D1 and PostgreSQL provider stores. Never returns plaintext from settings APIs.",
     "src/google-service-account-auth.ts": "Cloudflare/Node-portable service-account RS256 JWT exchange and cached Vertex access tokens over WebCrypto + fetch.",
     "src/voice-input-provider.ts": "One Provider-route transcription implementation: OpenAI/Anthropic chat audio parts and Gemini inline audio, one idempotent usage-audit event per task id. Pure module outside the Project Host command boundary.",
-    "src/voice-input-routes.ts": "Shared Hono HTTP contract for the three voice-input routes: identity, multipart parsing, 20 MB limit, warmup and error mapping; the only shared-runtime module that imports Hono."
+    "src/voice-input-routes.ts": "Shared Hono HTTP contract for the three voice-input routes: identity, multipart parsing, 20 MB limit, warmup and error mapping; the only shared-runtime module that imports Hono.",
+    "src/provider-oauth-flow.ts": "Vendor-neutral OAuth on Web Crypto for every adapter (local Host, Cloudflare): RFC 7636 S256 PKCE, 32-byte base64url state with constant-time compare, authorizationUrl (host-owned params always win), code exchange/refresh. Token failures are OAuthTokenError with the vendor's RFC 6749 code. How the answer returns (loopback, scheme, web redirect) stays with the adapter.",
+    "src/web-encoding.ts": "Buffer-free base64url and constant-time string compare shared by signed capabilities and OAuth."
   }
 }

@@ -1,6 +1,6 @@
 import type { PluginAuthFlow } from "@clash/shared-types";
 
-import { exchangeAuthorizationCode } from "./auth-flow.js";
+import { exchangeAuthorizationCode } from "@clash/shared-runtime/provider-oauth-flow";
 
 /**
  * The OAuth client belongs to the host, and the plugin never sees it.

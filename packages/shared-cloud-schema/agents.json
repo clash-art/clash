@@ -2,7 +2,7 @@
   "summary": "Backend-only SQLite/D1 Drizzle schema authority, consumed by api-cf, Web backend queries and Drizzle Kit. No browser or domain dependency on this package.",
   "key_files": {
     "src/auth.ts": "Single Better Auth users/sessions/accounts/verifications table definitions and bidirectional ORM relations. Column SQL foreign keys are absent; relation fields/references remain query metadata.",
-    "src/app.ts": "Shared cloud control-plane Project, tenant, token, provider, legacy installed-record and Asset/index tables. Project Loro and local SQLite authority are not moved here.",
+    "src/app.ts": "Shared cloud control-plane Project, tenant, token, provider, legacy installed-record and Asset/index tables. Project Loro and local SQLite authority are not moved here. provider_oauth carries callback_type, encrypted_flow_secret (sealed PKCE verifier/state) and error_code for the hosted web flow (web/drizzle/0031).",
     "src/broker.ts": "API-only capability broker audit table, preserving its existing columns and indexes.",
     "src/runtime.ts": "Web backend runtime, runtime token/session, chat message and agent member index tables; not a replacement local Host state store.",
     "src/schema.test.ts": "Generates actual Drizzle Kit DDL, executes it in SQLite with foreign_keys enabled, exercises cross-auth-ID writes and both directions of Better Auth relation queries.",

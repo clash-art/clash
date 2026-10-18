@@ -8,6 +8,7 @@ import { router } from "./router";
 import { installViteRuntimeConfig } from "./runtime-env";
 import { installWebTelemetry } from "./lib/telemetry";
 import { installTimelineRenderCompositionRoot } from "./lib/timeline-render/composition-root";
+import { installProviderAuthorizationCompositionRoot } from "./lib/provider-authorization/composition-root";
 
 const container = document.getElementById("root");
 if (!container) throw new Error("#root not found");
@@ -16,6 +17,7 @@ installViteRuntimeConfig(import.meta.env);
 // After runtime config: telemetry is local/Desktop only and targets the Host.
 installWebTelemetry({ router });
 installTimelineRenderCompositionRoot();
+installProviderAuthorizationCompositionRoot();
 
 createRoot(container).render(
   <StrictMode>

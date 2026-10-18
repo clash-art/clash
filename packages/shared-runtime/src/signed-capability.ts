@@ -10,25 +10,9 @@
  * they established the caller's authority over `subject`.
  */
 
+import { constantTimeEqual, toBase64Url } from "./web-encoding.js";
+
 const encoder = new TextEncoder();
-
-function toBase64Url(bytes: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-/** Equal-length comparison whose time does not depend on where values differ. */
-function constantTimeEqual(left: string, right: string): boolean {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  if (a.length !== b.length) return false;
-  let difference = 0;
-  for (let index = 0; index < a.length; index += 1)
-    difference |= a[index]! ^ b[index]!;
-  return difference === 0;
-}
 
 export async function importCapabilityKey(secret: string): Promise<CryptoKey> {
   if (!secret) throw new Error("A capability signing secret is required.");

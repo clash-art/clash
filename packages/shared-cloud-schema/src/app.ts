@@ -276,6 +276,9 @@ export const providerOAuth = sqliteTable(
     accountLabel: text("account_label"),
     expiresAt: integer("expires_at", { mode: "timestamp" }),
     error: text("error"),
+    errorCode: text("error_code"),
+    callbackType: text("callback_type"),
+    encryptedFlowSecret: text("encrypted_flow_secret"),
     hasTokens: integer("has_tokens").notNull().default(0),
     createdAt: integer("created_at", { mode: "timestamp" }).default(
       sql`(strftime('%s', 'now'))`,

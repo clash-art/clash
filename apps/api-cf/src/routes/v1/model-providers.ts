@@ -8,14 +8,17 @@ import {
   MODEL_CARDS,
   normalizeModelId,
   UserModelCardConfigSchema,
+  PROVIDER_OAUTH_ERROR_MESSAGES,
+  PROVIDER_OAUTH_RETURN_PARAMS,
   ProviderOAuthIdSchema,
+  type ProviderOAuthErrorCode,
   type ProviderOAuthId,
   type ProviderAccountAvailability,
   type ModelCard,
   type ModelUpstreamRoute,
   type UserModelCardConfig,
 } from "@clash/shared-types";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../../config";
 import {
   deleteModelCardConfig,
@@ -32,11 +35,21 @@ import {
 } from "../../services/provider-accounts";
 import {
   applyProviderOAuth,
+  completeWebProviderOAuthCallback,
   deleteProviderOAuthRecord,
   deleteProviderOAuthRecordsForAccount,
+  findProviderOAuthRecord,
   listProviderOAuthRecords,
   publicProviderOAuth,
+  startWebProviderOAuth,
+  type WebProviderOAuthCallbackResult,
 } from "../../services/provider-oauth";
+import {
+  hostedOAuthProvider,
+  ProviderOAuthConfigError,
+} from "../../services/provider-oauth-config";
+import { publicOrigin } from "../../services/public-origin";
+import { serverLog } from "../../logger";
 import { hostedBaseModelCards } from "../../generation/hosted-model-cards";
 
 export const modelProviderRoutes = new Hono<{ Bindings: Env }>();
@@ -388,20 +401,139 @@ modelProviderRoutes.get("/provider-oauth", async (c) => {
   return c.json({ providers: providers.map(publicProviderOAuth) });
 });
 
+function oauthError(code: ProviderOAuthErrorCode, error: string = PROVIDER_OAUTH_ERROR_MESSAGES[code]) {
+  return { error, code };
+}
+
+/** The settings page a finished web flow returns to. Carries outcome and code, never a token. */
+function providerOAuthReturnUrl(
+  origin: string,
+  result: WebProviderOAuthCallbackResult,
+): string {
+  const url = new URL("/settings", origin);
+  url.searchParams.set("section", "providers");
+  if (result.providerId) url.searchParams.set(PROVIDER_OAUTH_RETURN_PARAMS.provider, result.providerId);
+  url.searchParams.set(PROVIDER_OAUTH_RETURN_PARAMS.status, result.status);
+  if (result.status === "error") url.searchParams.set(PROVIDER_OAUTH_RETURN_PARAMS.code, result.code);
+  return url.toString();
+}
+
+/**
+ * Where the vendor sends the browser back, and where the settings page sends it.
+ *
+ * Reached by top-level navigation from the vendor, so it answers with a redirect in every case,
+ * including a missing session: a JSON 401 would strand the user on a raw error page. The web
+ * gateway forwards this path without the fail-closed identity header for exactly that reason; the
+ * session cookie is still validated by the `/api/*` middleware and nothing is exchanged without it.
+ */
+modelProviderRoutes.get("/provider-oauth/callback", async (c) => {
+  const origin = publicOrigin(c.req.raw, c.env);
+  const redirect = (result: WebProviderOAuthCallbackResult) =>
+    c.redirect(providerOAuthReturnUrl(origin, result), 302);
+  const userId = c.req.header("x-user-id");
+  if (!userId) return redirect({ status: "error", code: "PROVIDER_OAUTH_UNAUTHENTICATED" });
+  try {
+    const result = await completeWebProviderOAuthCallback(c.env, {
+      userId,
+      state: stringField(c.req.query("state")),
+      code: stringField(c.req.query("code")),
+      vendorError: c.req.query("error"),
+      resolveProvider: (providerId) => hostedOAuthProvider(c.env.PROVIDER_OAUTH_PROVIDERS, providerId),
+    });
+    return redirect(result);
+  } catch (error) {
+    // A storage failure mid-callback must still land the user on settings with a code; a raw 500
+    // page after leaving the vendor is the ambiguous state this route exists to avoid.
+    serverLog.child("provider-oauth").error("provider_oauth.callback_server_error", { error });
+    return redirect({ status: "error", code: "PROVIDER_OAUTH_SERVER_ERROR" });
+  }
+});
+
+/** An absent body is `{}`; a present body that is not a JSON object is refused, never ignored. */
+async function optionalJsonObject(c: Context<{ Bindings: Env }>): Promise<Record<string, unknown> | null> {
+  const text = await c.req.text();
+  if (!text.trim()) return {};
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Provider declarations this deployment loads from plugins. Hosted builds bundle none (OAuth
+ * clients come from PROVIDER_OAUTH_PROVIDERS instead), so the truthful answer is an empty list --
+ * not a 404 the settings screen would have to guess about.
+ */
+modelProviderRoutes.get("/plugin-providers", (c) => c.json({ providers: [] }));
+
 modelProviderRoutes.post("/provider-oauth/:providerId/start", async (c) => {
   const userId = c.req.header("x-user-id");
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   const providerId = parseProviderOAuthId(c.req.param("providerId"));
-  if (!providerId) return c.json({ error: "Unsupported OAuth provider" }, 404);
-  return c.json({ error: `${providerId} OAuth is available through the local desktop runtime.` }, 501);
+  if (!providerId) return c.json(oauthError("PROVIDER_OAUTH_UNSUPPORTED", "Unsupported OAuth provider"), 404);
+  let provider;
+  try {
+    provider = hostedOAuthProvider(c.env.PROVIDER_OAUTH_PROVIDERS, providerId);
+  } catch (error) {
+    if (error instanceof ProviderOAuthConfigError) {
+      return c.json(oauthError(error.code, error.message), 503);
+    }
+    throw error;
+  }
+  if (!provider) return c.json(oauthError("PROVIDER_OAUTH_UNSUPPORTED", "Unsupported OAuth provider"), 404);
+  if (!c.env.ACTION_SECRET_KEY) {
+    return c.json(oauthError(
+      "PROVIDER_OAUTH_NOT_CONFIGURED",
+      "ACTION_SECRET_KEY is not configured, so a pending authorization cannot be sealed.",
+    ), 503);
+  }
+  const body = await optionalJsonObject(c);
+  if (!body) return c.json(oauthError("PROVIDER_OAUTH_BAD_REQUEST"), 400);
+  const record = await startWebProviderOAuth(c.env, {
+    userId,
+    provider,
+    ...(stringField(body.accountId) ? { accountId: stringField(body.accountId) } : {}),
+    ...(stringField(body.accountLabel) ? { accountLabel: stringField(body.accountLabel) } : {}),
+    redirectUri: `${publicOrigin(c.req.raw, c.env)}/api/v1/provider-oauth/callback`,
+  });
+  return c.json(publicProviderOAuth(record));
 });
 
 modelProviderRoutes.post("/provider-oauth/:providerId/complete", async (c) => {
   const userId = c.req.header("x-user-id");
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   const providerId = parseProviderOAuthId(c.req.param("providerId"));
-  if (!providerId) return c.json({ error: "Unsupported OAuth provider" }, 404);
-  return c.json({ error: `${providerId} OAuth completion is available through the local desktop runtime.` }, 501);
+  if (!providerId) return c.json(oauthError("PROVIDER_OAUTH_UNSUPPORTED", "Unsupported OAuth provider"), 404);
+  const body = await optionalJsonObject(c);
+  if (!body) return c.json(oauthError("PROVIDER_OAUTH_BAD_REQUEST"), 400);
+  const record = await findProviderOAuthRecord(c.env.DB, userId, providerId, stringField(body.accountId));
+  if (record?.callbackType === "web") {
+    return c.json(oauthError(
+      "PROVIDER_OAUTH_WEB_CALLBACK",
+      `${providerId} authorization is completed by the redirect callback.`,
+    ), 409);
+  }
+  // Device-code and custom-scheme flows finish on the user's machine.
+  return c.json(oauthError(
+    "PROVIDER_OAUTH_REQUIRES_DESKTOP",
+    `${providerId} OAuth completion is available through the local desktop runtime.`,
+  ), 501);
+});
+
+/** Reading another installed app's credential store needs the user's machine. */
+modelProviderRoutes.post("/provider-oauth/:providerId/import-local", async (c) => {
+  const userId = c.req.header("x-user-id");
+  if (!userId) return c.json({ error: "Unauthorized" }, 401);
+  const providerId = parseProviderOAuthId(c.req.param("providerId"));
+  if (!providerId) return c.json(oauthError("PROVIDER_OAUTH_UNSUPPORTED", "Unsupported OAuth provider"), 404);
+  return c.json(oauthError(
+    "PROVIDER_OAUTH_REQUIRES_DESKTOP",
+    `Reusing a local ${providerId} login is available through the local desktop runtime.`,
+  ), 501);
 });
 
 modelProviderRoutes.delete("/provider-oauth/:providerId", async (c) => {

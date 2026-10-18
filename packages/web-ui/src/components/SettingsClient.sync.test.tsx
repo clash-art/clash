@@ -24,6 +24,12 @@ import {
   listVariables,
 } from "@clash/web-ui/lib/clientActions";
 import {
+  bindProviderAuthorization,
+  createDesktopProviderAuthorization,
+  createWebProviderAuthorization,
+} from "@clash/web-ui/lib/provider-authorization";
+import { PROVIDER_OAUTH_ERROR_MESSAGES } from "@clash/shared-types";
+import {
   SETTINGS_NAV_ITEMS,
   SettingsSurface,
   readLastSettingsSection,
@@ -5037,6 +5043,7 @@ describe("SettingsClient model routing", () => {
     cleanup();
     vi.restoreAllMocks();
     delete globalThis.__CLASH_DESKTOP__;
+    bindProviderAuthorization(undefined);
   });
 
   it("uses the shared Settings section and panel rhythm for Providers", () => {
@@ -6134,11 +6141,10 @@ describe("SettingsClient model routing", () => {
       cancelled: false,
       callbackUrl: "minimax-hub://auth-callback?accessToken=hub-access-token",
     }));
-    globalThis.__CLASH_DESKTOP__ = {
-      isDesktop: true,
-      newWindow: vi.fn(),
-      authorizeProvider,
-    };
+    // What the composition root binds in the desktop shell.
+    bindProviderAuthorization(
+      createDesktopProviderAuthorization(authorizeProvider),
+    );
 
     render(
       <MemoryRouter>
@@ -6193,6 +6199,168 @@ describe("SettingsClient model routing", () => {
       );
     });
   });
+
+  it("sends a hosted web flow to the provider through the bound port and completes nothing locally", async () => {
+    const actions = await import("@clash/web-ui/lib/clientActions");
+    vi.mocked((actions as any).listPluginProviders).mockResolvedValue([
+      {
+        pluginId: "hilo-hub-media",
+        pluginVersion: "1.0.0",
+        schemaHash: `sha256:${"e".repeat(64)}`,
+        id: "hilo-hub",
+        name: "MiniMax Hilo Hub",
+        description: "Hub OAuth media provider",
+        upstreamId: "hilo-hub",
+        apiShape: "hilo-hub",
+        executorExportId: "hilo-hub-execute",
+        auth: {
+          methods: [
+            {
+              id: "sign-in",
+              label: "Sign in to MiniMax Hub",
+              flow: {
+                open: "https://hub.minimax.io/login",
+                callback: { type: "loopback" },
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    vi.mocked(actions.listProviderOAuth).mockResolvedValue([]);
+    vi.mocked(actions.startProviderOAuth).mockResolvedValue({
+      providerId: "hilo-hub",
+      accountId: "hilo-primary",
+      status: "pending",
+      flow: "browser",
+      callbackType: "web",
+      verificationUri: "https://hub.minimax.io/login?state=s&code_challenge=c",
+      hasAccessToken: false,
+    });
+    vi.mocked(actions.completeProviderOAuth).mockClear();
+    const assign = vi.fn();
+    bindProviderAuthorization(createWebProviderAuthorization({ assign }));
+    // A desktop bridge on the global must not matter: only the bound port is used.
+    globalThis.__CLASH_DESKTOP__ = {
+      isDesktop: true,
+      newWindow: vi.fn(),
+      authorizeProvider: vi.fn(),
+    };
+
+    render(
+      <MemoryRouter>
+        <SettingsClient
+          initialTokens={[]}
+          initialVariables={[]}
+          initialActions={[]}
+          initialSkills={[]}
+          activeSection="providers"
+          embedded
+          initialModelProviders={[
+            {
+              id: "hilo-primary",
+              label: "Primary Hilo",
+              providerId: "hilo-hub",
+              upstreamId: "hilo-hub",
+              apiShape: "hilo-hub",
+              enabled: true,
+            },
+          ]}
+          initialModelCatalog={[]}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Open MiniMax Hilo Hub BYOK settings",
+      }),
+    );
+    const accounts = screen.getByRole("list", {
+      name: "MiniMax Hilo Hub prioritized accounts",
+    });
+    const accountRow = within(accounts)
+      .getByText("Primary Hilo")
+      .closest("li") as HTMLElement;
+    fireEvent.click(within(accountRow).getByText("Primary Hilo"));
+    fireEvent.click(
+      within(accountRow).getByRole("button", { name: "Connect" }),
+    );
+
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith(
+        "https://hub.minimax.io/login?state=s&code_challenge=c",
+      );
+    });
+    expect(globalThis.__CLASH_DESKTOP__?.authorizeProvider).not.toHaveBeenCalled();
+    expect(actions.completeProviderOAuth).not.toHaveBeenCalled();
+    // No hand-completion control for a flow the redirect finishes.
+    expect(within(accountRow).queryByRole("button", { name: "Complete" })).toBeNull();
+  });
+
+  it.each([
+    {
+      status: "authorized" as const,
+      title: "Connected hilo-hub",
+      row: { status: "authorized" as const, hasAccessToken: true },
+    },
+    {
+      status: "error" as const,
+      code: "PROVIDER_OAUTH_DENIED" as const,
+      title: "Could not connect hilo-hub",
+      message: `${PROVIDER_OAUTH_ERROR_MESSAGES.PROVIDER_OAUTH_DENIED} [PROVIDER_OAUTH_DENIED]`,
+      row: {
+        status: "error" as const,
+        errorCode: "PROVIDER_OAUTH_DENIED",
+        error: PROVIDER_OAUTH_ERROR_MESSAGES.PROVIDER_OAUTH_DENIED,
+        hasAccessToken: false,
+      },
+    },
+  ])(
+    "on return with status=$status, refreshes rows, reports it, and asks the page to drop the query",
+    async ({ status, code, title, message, row }) => {
+      const actions = await import("@clash/web-ui/lib/clientActions");
+      vi.mocked(actions.listProviderOAuth).mockReset();
+      vi.mocked(actions.listProviderOAuth)
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([
+          { providerId: "hilo-hub", accountId: "hilo-primary", ...row },
+        ]);
+      vi.mocked(actions.listModelProviders).mockResolvedValue([]);
+      vi.mocked(actions.listModelCatalog).mockResolvedValue([]);
+      const handled = vi.fn();
+      const providerOAuthReturn =
+        status === "authorized"
+          ? { providerId: "hilo-hub", status }
+          : { providerId: "hilo-hub", status, code: code! };
+
+      render(
+        <MemoryRouter>
+          <AppFeedbackProvider>
+            <SettingsClient
+              initialTokens={[]}
+              initialVariables={[]}
+              initialActions={[]}
+              initialSkills={[]}
+              activeSection="providers"
+              embedded
+              providerOAuthReturn={providerOAuthReturn}
+              onProviderOAuthReturnHandled={handled}
+            />
+          </AppFeedbackProvider>
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByText(title)).toBeTruthy();
+      if (message) expect(screen.getAllByText(message).length).toBeGreaterThan(0);
+      expect(handled).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(actions.listModelProviders).toHaveBeenCalled();
+        expect(actions.listModelCatalog).toHaveBeenCalled();
+        expect(vi.mocked(actions.listProviderOAuth).mock.calls.length).toBeGreaterThanOrEqual(2);
+      });
+    },
+  );
 
   it("explicitly reuses a plugin Provider token from its declared local app source", async () => {
     const actions = await import("@clash/web-ui/lib/clientActions");

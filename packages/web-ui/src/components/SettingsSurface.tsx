@@ -23,6 +23,7 @@ import {
 import betterAuthClient from "@clash/web-ui/lib/betterAuthClient";
 import { getRuntimeCapabilities } from "@clash/web-ui/lib/runtimeConfig";
 import SettingsClient, { type SettingsSection } from "./SettingsClient";
+import type { ProviderOAuthReturn } from "../lib/provider-authorization";
 import { Tooltip } from "./ui/tooltip";
 import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
@@ -107,6 +108,9 @@ export interface SettingsSurfaceProps {
   onClose?: () => void;
   onExpand?: () => void;
   variant?: "dialog" | "page";
+  /** Outcome a provider's web redirect carried back to the settings page. */
+  providerOAuthReturn?: ProviderOAuthReturn | null;
+  onProviderOAuthReturnHandled?: () => void;
 }
 
 export function isSettingsSection(
@@ -213,6 +217,8 @@ export function SettingsSurface({
   onClose,
   onExpand,
   variant = "dialog",
+  providerOAuthReturn,
+  onProviderOAuthReturnHandled,
 }: SettingsSurfaceProps) {
   const [load, setLoad] = useState<LoadState>({ status: "idle" });
   const isPage = variant === "page";
@@ -315,6 +321,8 @@ export function SettingsSurface({
         initialModelCatalog={load.modelCatalog}
         activeSection={activeSection}
         embedded
+        providerOAuthReturn={providerOAuthReturn}
+        onProviderOAuthReturnHandled={onProviderOAuthReturnHandled}
       />
     );
 

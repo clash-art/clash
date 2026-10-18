@@ -19,7 +19,8 @@
     "marketplaceCatalog.ts": "Validates untrusted marketplace entries and retains only installation descriptors matching their product kind, runtime and identity; shared by cloud/local loaders.",
     "storyboardViewState.ts": "Validated Storyboard state adapter for the framework-node patch accepted by useLoroSync.updateNode. Writes data.state; persistence regression reopens a real Loro snapshot.",
     "uiTrace.ts": "Typed GUI action tracing on @opentelemetry/api only (UiActionAttributes is a closed table — ids, counts, flags). The app shell installs the SDK; withActionTrace emits the action span and hands out its W3C traceparent for Host propagation (prompt frames).",
-    "localTelemetry.ts": "Typed client for GET/PATCH /api/v1/local/telemetry; validates views against the shared PublicTelemetryConfig schema."
+    "localTelemetry.ts": "Typed client for GET/PATCH /api/v1/local/telemetry; validates views against the shared PublicTelemetryConfig schema.",
+    "provider-authorization.ts": "ProviderAuthorizationPort bound at the composition root: desktop wraps the shell's authorizeProvider window; web navigates to the provider for callbackType web. Also parses/strips the settings return (providerOAuth, status, code). UI calls providerAuthorization() only and never reads __CLASH_DESKTOP__ for OAuth."
   },
   "files": {
     "sessionSnapshot.ts": "Cross-tab get-session snapshot (localStorage, 5 min): a new tab's first get-session answers from it; cleared on sign-out, auth mutations, signed-out answers and API 401."

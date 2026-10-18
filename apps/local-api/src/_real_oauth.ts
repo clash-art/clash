@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
-import { authorizationUrl, createPkcePair, runLoopbackFlow } from "./auth-flow.js";
+import { authorizationUrl, createPkcePair } from "@clash/shared-runtime/provider-oauth-flow";
+import { runLoopbackFlow } from "./auth-flow.js";
 import { completeDeclaredFlow } from "./oauth-client.js";
 
 const raw = JSON.parse(readFileSync(

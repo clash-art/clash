@@ -5,6 +5,8 @@
  * Routing:
  *   /health                     → 200 OK
  *   /api/better-auth/*          → handled in-worker via better-auth handler
+ *   /api/v1/provider-oauth/callback (GET)
+ *                               → api-cf (session-resolved, answers by redirect)
  *   /api/v1/*                   → api-cf (auth-gated, x-user-id injected)
  *   /sync/*, /agents/*          → api-cf (WebSocket, Durable Objects)
  *   /assets/*                   → api-cf (signed capability delivery only)
@@ -158,6 +160,21 @@ export default {
         gatewayLog.error("gateway.api_meta_proxy_failed", { error: err });
         return proxyToApiCf(forwarded, env);
       }
+    }
+
+    // Provider OAuth web callback: the vendor sends the browser here by
+    // top-level navigation. It is authenticated exactly like the rest of
+    // /api/v1 -- api-cf's /api/* middleware resolves the session cookie into
+    // x-user-id and discards any caller-supplied one -- but it is forwarded
+    // without the fail-closed header, so a missing session answers with a
+    // redirect to the settings page carrying PROVIDER_OAUTH_UNAUTHENTICATED
+    // instead of stranding the user on a raw JSON 401. The route exchanges
+    // nothing without a validated identity.
+    if (path === "/api/v1/provider-oauth/callback" && request.method === "GET") {
+      const callback = new Request(request);
+      callback.headers.delete("x-user-id");
+      callback.headers.delete(REQUIRE_IDENTITY_HEADER);
+      return proxyToApiCf(callback, env);
     }
 
     // Issue #136: api-cf's /api/* middleware already validates the clsh_

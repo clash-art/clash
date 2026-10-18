@@ -3025,7 +3025,7 @@ function browserOAuthToken(
   auth: BrowserProviderOAuth,
 ): string {
   // Only the custom-scheme callback carries the token in a fragment. A loopback flow is completed
-  // by `runLoopbackFlow` and `exchangeAuthorizationCode` in auth-flow.ts, which return a token
+  // by `runLoopbackFlow` (auth-flow.ts) and the shared `exchangeAuthorizationCode`, which return a token
   // rather than a URL, and device code never produces a callback URL at all.
   if (auth.callback.type !== "scheme") {
     throw new Error(

@@ -96,6 +96,11 @@ import {
   type ModelProviderTestResult,
 } from "@clash/web-ui/lib/clientActions";
 import {
+  providerAuthorization,
+  providerOAuthReturnMessage,
+  type ProviderOAuthReturn,
+} from "@clash/web-ui/lib/provider-authorization";
+import {
   getRuntimeCapabilities,
   runtimeApiUrl,
 } from "@clash/web-ui/lib/runtimeConfig";
@@ -177,6 +182,10 @@ interface Props {
   /** When true, the sticky header / page chrome is suppressed and
    *  the layout is meant to live inside a modal panel. */
   embedded?: boolean;
+  /** Outcome a provider's web redirect carried back to this page. */
+  providerOAuthReturn?: ProviderOAuthReturn | null;
+  /** Called once the return is shown, so the page can drop it from the address. */
+  onProviderOAuthReturnHandled?: () => void;
 }
 
 const settingsHoverActionClass = "opacity-0 group-hover:opacity-100";
@@ -814,6 +823,8 @@ export default function SettingsClient({
   initialModelCatalog = [],
   activeSection,
   embedded = false,
+  providerOAuthReturn,
+  onProviderOAuthReturnHandled,
 }: Props) {
   const showAll = activeSection == null;
   const showSection = (s: SettingsSection) => showAll || activeSection === s;
@@ -1195,17 +1206,77 @@ export default function SettingsClient({
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([listProviderOAuth(), listPluginProviders()])
-      .then(([oauthRows, providerRows]) => {
+    // Loaded apart from plugin Providers: a host that serves no Provider
+    // declarations must not hide the authorization rows it does serve.
+    void listProviderOAuth().then(
+      (oauthRows) => {
+        if (!cancelled) setProviderOAuth(oauthRows);
+      },
+      (err: unknown) => {
         if (cancelled) return;
-        setProviderOAuth(oauthRows);
-        setPluginProviders(providerRows);
-      })
-      .catch(() => undefined);
+        feedback.notify({
+          variant: "error",
+          title: "Could not load provider authorizations",
+          message: displayErrorMessage(err),
+        });
+      },
+    );
+    void listPluginProviders().then(
+      (providerRows) => {
+        if (!cancelled) setPluginProviders(providerRows);
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        feedback.notify({
+          variant: "error",
+          title: "Could not load plugin providers",
+          message: displayErrorMessage(err),
+        });
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [feedback]);
+
+  // A web flow ends on this page: the server redirect says how it went.
+  const handledProviderOAuthReturn = useRef<ProviderOAuthReturn | null>(null);
+  useEffect(() => {
+    if (!providerOAuthReturn) return;
+    if (handledProviderOAuthReturn.current === providerOAuthReturn) return;
+    handledProviderOAuthReturn.current = providerOAuthReturn;
+    const name = providerOAuthReturn.providerId
+      ? providerOAuthDisplayName(providerOAuthReturn.providerId)
+      : "Provider";
+    if (providerOAuthReturn.status === "authorized") {
+      feedback.notify({ variant: "success", title: `Connected ${name}` });
+    } else {
+      feedback.notify({
+        variant: "error",
+        title: `Could not connect ${name}`,
+        message: providerOAuthReturnMessage(providerOAuthReturn),
+      });
+    }
+    onProviderOAuthReturnHandled?.();
+    void Promise.all([
+      listProviderOAuth(),
+      listModelProviders(),
+      listModelCatalog(),
+    ]).then(
+      ([oauthRows, providerRows, catalogRows]) => {
+        setProviderOAuth(oauthRows);
+        setModelProviders(providerRows);
+        setModelCatalog(catalogRows);
+      },
+      (err: unknown) => {
+        feedback.notify({
+          variant: "error",
+          title: "Could not refresh provider authorizations",
+          message: displayErrorMessage(err),
+        });
+      },
+    );
+  }, [feedback, onProviderOAuthReturnHandled, providerOAuthReturn]);
 
   const handleStartProviderOAuth = useCallback(
     async (providerId: string, accountId?: string, accountLabel?: string) => {
@@ -1217,22 +1288,9 @@ export default function SettingsClient({
         );
         setProviderOAuth((prev) => upsertProviderOAuthRow(prev, row));
         if (row.flow === "browser") {
-          if (!row.verificationUri || !row.callbackScheme) {
-            throw new Error(
-              "Browser OAuth response is missing its authorization URL or callback scheme.",
-            );
-          }
-          const authorizeProvider =
-            globalThis.__CLASH_DESKTOP__?.authorizeProvider;
-          if (!authorizeProvider) {
-            throw new Error(
-              "Browser Provider OAuth requires the Clash desktop runtime.",
-            );
-          }
-          const authorization = await authorizeProvider({
-            verificationUri: row.verificationUri,
-            callbackScheme: row.callbackScheme,
-          });
+          const authorization = await providerAuthorization().authorize(row);
+          // The page is leaving for the provider; the settings return finishes the story.
+          if (authorization.redirected) return;
           if (authorization.cancelled || !authorization.callbackUrl) return;
           const completed = await completeProviderOAuth(
             providerId,
@@ -2776,6 +2834,8 @@ function providerOAuthStatusText(oauth?: ProviderOAuthInfo): string {
   if (oauth.status === "pending") return "Authorization pending";
   if (oauth.status === "error")
     return oauth.error ? `Error: ${oauth.error}` : "Authorization error";
+  if (oauth.status === "expired")
+    return oauth.error ? `Expired: ${oauth.error}` : "Authorization expired";
   return "Not connected";
 }
 

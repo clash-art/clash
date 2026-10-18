@@ -224,6 +224,53 @@ PKCE, the `state` parameter, the port and the timeout are the host's. A plugin
 that had to implement `state` correctly would eventually implement it
 incorrectly, and the failure is a silent CSRF rather than an error.
 
+### Hosted (Cloudflare) web redirect
+
+The hosted Worker bundles no Provider declarations. The operator registers
+OAuth Providers in the optional `PROVIDER_OAUTH_PROVIDERS` Worker secret, a
+JSON array of the same flow declaration a plugin writes:
+
+```jsonc
+[
+  {
+    "id": "acme",
+    "label": "Acme Media",
+    "flow": {
+      "open": "https://auth.acme.example/authorize",
+      "tokenUrl": "https://auth.acme.example/token",
+      "clientId": "<web client id registered by the operator>",
+      "clientSecret": "<optional>",
+      "params": { "scope": "media" },
+      "callback": { "type": "loopback" }
+    }
+  }
+]
+```
+
+`tokenUrl` and `clientId` are required. The hosted adapter always answers on
+its own redirect, `${WORKER_PUBLIC_URL}/api/v1/provider-oauth/callback`, so
+register that address with the vendor; a `loopback` or `scheme` callback in the
+declaration describes the same authorization-code grant, and `poll-until`
+(device code) is rejected. The secret is parsed on first use, not at Worker
+startup; an invalid entry fails that Provider's start with
+`PROVIDER_OAUTH_NOT_CONFIGURED`, and a Provider absent from the secret answers
+404.
+
+`POST /api/v1/provider-oauth/:id/start` seals the PKCE verifier and `state`
+(ACTION_SECRET_KEY envelope) on a pending row that expires after 10 minutes and
+returns the authorization URL with `callbackType: "web"`. The vendor redirects
+to the callback, which finds the state among the signed-in user's pending flows
+in constant time, consumes it once, exchanges the code, and stores the tokens
+encrypted. It always answers with a redirect to
+`/settings?section=providers&providerOAuth=<id>&status=authorized|error&code=<code>`;
+the settings page shows the message for the code. Codes:
+`PROVIDER_OAUTH_STATE_INVALID` (unknown, reused or another user's state),
+`PROVIDER_OAUTH_STATE_EXPIRED`, `PROVIDER_OAUTH_DENIED` (`access_denied`),
+`PROVIDER_OAUTH_VENDOR_ERROR`, `PROVIDER_OAUTH_EXCHANGE_FAILED`,
+`PROVIDER_OAUTH_NOT_CONFIGURED`, `PROVIDER_OAUTH_UNAUTHENTICATED`.
+`/complete` answers 409 for a web flow; reusing an installed app's login
+(`import-local`) still needs the desktop runtime and answers 501 when hosted.
+
 ### Installed-app import
 
 An import-only method lets the Host reuse a credential already held by an installed desktop app.
