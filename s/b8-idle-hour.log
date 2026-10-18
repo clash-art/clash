@@ -1,0 +1,2 @@
+#248 29b09ae2 | idle room, 1 idle socket, 1 h | DO alarm wakes=720 | D1 checks=721 | taskPoll runs=60
+#249 branch | idle room, 1 idle socket, 1 h | DO alarm wakes=60 | D1 checks=61 | taskPoll runs=60

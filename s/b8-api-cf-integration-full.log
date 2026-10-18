@@ -1,0 +1,117 @@
+
+ RUN  v4.1.0 /workspace/wt-ws3/apps/api-cf
+
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/cfworker-provider.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/client.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/sse.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/transport.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/auth.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/auth.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/auth-utils.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/server/auth/errors.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/index.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/cron.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/utils.js" points to missing source files
+Sourcemap for "/workspace/wt-ws3/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/cron-parser.js" points to missing source files
+uncaught exception; exception = workerd/io/io-context.c++:1692: failed: jsg.Error: The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response. Refer to: https://developers.cloudflare.com/workers/observability/errors/
+stack: /workspace/wt-ws3/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20261012.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@34a80c7
+uncaught exception; exception = workerd/io/io-context.c++:1692: failed: jsg.Error: The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response. Refer to: https://developers.cloudflare.com/workers/observability/errors/
+stack: /workspace/wt-ws3/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20261012.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@34a80c7
+uncaught exception; source = Uncaught (in promise); stack = Error: Render server error 500: composition crashed
+    at GenerationWorkflow.run (/workspace/wt-ws3/apps/api-cf/src/agents/generation.ts:51:13)
+uncaught exception; exception = workerd/io/io-context.c++:1692: failed: jsg.Error: The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response. Refer to: https://developers.cloudflare.com/workers/observability/errors/
+stack: /workspace/wt-ws3/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20261012.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@34a80c7
+uncaught exception; source = Uncaught (in promise); stack = EnvironmentTeardownError: [vitest-worker]: Closing rpc while "resolve" was pending
+    at workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/init.DICorXCo.js:132:12
+    at workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/index.Chj8NDwU.js:139:11
+    at Array.map (<anonymous>)
+    at Proxy.$rejectPendingCalls (workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/index.Chj8NDwU.js:137:62)
+    at workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/init.DICorXCo.js:131:26
+    at workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/init.DICorXCo.js:160:42
+    at Array.map (<anonymous>)
+    at execute (workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/init.DICorXCo.js:160:30)
+    at onMessage (workspace/wt-ws3/node_modules/.pnpm/vitest@4.1.0_@opentelemetry+api@1.9.1_@types+node@24.13.2_@vitest+ui@1.3.1_jsdom@29.1.1_4b64d9332f47a9d1e51b30992a4e65dc/node_modules/vitest/dist/chunks/init.DICorXCo.js:285:14)
+uncaught exception; exception = workerd/jsg/_virtual_includes/iterator/workerd/jsg/value.h:1494: failed: jsg.Error: EnvironmentTeardownError: [vitest-worker]: Closing rpc while "resolve" was pending
+stack: /workspace/wt-ws3/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20261012.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@3257fc0
+stdout | src/integration/project-content-miniflare.integration.test.ts
+{"schemaVersion":1,"timestamp":"2026-10-18T10:28:19.221Z","component":"api-cf","module":"project-room","level":"info","event":"[room proj=de2aa2] content.published document sha256:a7353e457ba7 24B","context":{}}
+
+ ❯ src/integration/project-content-miniflare.integration.test.ts (1 test | 1 failed) 215ms
+     × uses D1 admission, durable ProjectRoom references and immutable R2 bytes with tenant isolation 139ms
+uncaught exception; source = Uncaught (in promise); stack = Error: Unexpected external request: https://render.test/render
+    at GenerationWorkflow.run (/workspace/wt-ws3/apps/api-cf/src/agents/generation.ts:51:13)
+uncaught exception; exception = workerd/io/io-context.c++:1692: failed: jsg.Error: The Workers runtime canceled this request because it detected that your Worker's code had hung and would never generate a response. Refer to: https://developers.cloudflare.com/workers/observability/errors/
+stack: /workspace/wt-ws3/node_modules/.pnpm/@cloudflare+workerd-linux-64@1.20261012.1/node_modules/@cloudflare/workerd-linux-64/bin/workerd@34a80c7
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+ ❯ src/integration/project-content-multipart.integration.test.ts (6 tests | 1 failed) 42489ms
+   × streams the full product-limit Resource through authenticated HTTP multipart and R2 without a whole-object allocation 37976ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/integration/project-content-miniflare.integration.test.ts > default cloud Project content adapters in workerd > uses D1 admission, durable ProjectRoom references and immutable R2 bytes with tenant isolation
+AssertionError: expected 200 to be 404 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 404[39m
+[31m+ 200[39m
+
+ ❯ src/integration/project-content-miniflare.integration.test.ts:177:68
+    175|       .bind(projectId, localReplicaId)
+    176|       .run();
+    177|     expect((await app.request(download.url, {}, bindings)).status).toB…
+       |                                                                    ^
+    178|     await store.admit({
+    179|       userId,
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/integration/project-content-multipart.integration.test.ts > streams the full product-limit Resource through authenticated HTTP multipart and R2 without a whole-object allocation
+AssertionError: expected 200 to be 404 // Object.is equality
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 404[39m
+[31m+ 200[39m
+
+ ❯ src/integration/project-content-multipart.integration.test.ts:237:5
+    235|   expect(
+    236|     (await app.request(download.capability.url, {}, bindings)).status,
+    237|   ).toBe(404);
+       |     ^
+    238| }, 120_000);
+    239|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 1 unhandled error during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+EnvironmentTeardownError: [vitest-worker]: Closing rpc while "onUserConsoleLog" was pending
+This error originated in "src/integration/project-room-miniflare.integration.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  2 failed | 17 passed (19)
+      Tests  2 failed | 85 passed | 40 skipped (127)
+     Errors  1 error
+   Start at  06:27:34
+   Duration  69.48s (transform 36.04s, setup 296.08s, import 7.69s, tests 102.05s, environment 3ms)
+
