@@ -18,6 +18,7 @@ import { readFile } from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
 import { serve } from "@hono/node-server";
 import { configureHostServerTimeouts } from "./host-server-timeouts.js";
+import { primeMachineName } from "./runtime/host/lib/platform.js";
 import { createLocalModelExecutionPlanner } from "./local-model-generation.js";
 import {
   PluginHostClient,
@@ -1310,6 +1311,17 @@ export function createWorkflowPluginBindingResolver(options: {
 const hostLog = createStructuredLogger({ component: "local-api", module: "server" });
 
 export async function startLocalApiServer(options: LocalApiServerOptions) {
+  // Resolve the pretty machine name once, off the request path. Until it settles, `machineName()`
+  // returns os.hostname(); a failed lookup is one coded log record, never a per-request spawn.
+  const machineNameProbe = primeMachineName();
+  void machineNameProbe.then((result) => {
+    if (!result.ok) {
+      hostLog.warn("host.machine_name_unavailable", {
+        code: result.code,
+        error: result.error,
+      });
+    }
+  });
   // The recorder/replayer is intentionally imported only for the explicit test harness option.
   // Its module also supports child-process `--import` startup, so a production Host must not load
   // it (and therefore must not install a process-wide HTTP interceptor) by default.

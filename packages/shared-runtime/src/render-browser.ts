@@ -31,6 +31,8 @@ export const CLASH_BROWSER_CHROME_MODE = "headless-shell";
 export type RemotionBrowserPin = {
   /** `TESTED_VERSION` of the installed `@remotion/renderer`. Never chosen by Clash. */
   testedVersion: string;
+  /** The `VERSION` value Remotion writes for the cache entry Clash is about to use. */
+  cacheVersion: string;
   /** Absolute CommonJS entry of the installed `@remotion/renderer`. */
   rendererEntry: string;
 };
@@ -71,6 +73,8 @@ export type EnsureClashBrowserOptions = ClashBrowserOptions & {
     request: ClashBrowserDownloadRequest,
   ) => Promise<{ executablePath: string }>;
   onProgress?: (progress: ClashBrowserDownloadProgress) => void;
+  /** Observes an existing but unusable cache before it is replaced. */
+  onCacheRejected?: (rejection: ClashBrowserCacheRejection) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
@@ -108,28 +112,60 @@ export function readRemotionBrowserPin(
   const packageRoot = dirname(
     requireFrom.resolve("@remotion/renderer/package.json"),
   );
-  const pinModule = join(
+  const fetcherModule = join(
     packageRoot,
     "dist",
     "browser",
-    "get-chrome-download-url.js",
+    "BrowserFetcher.js",
   );
   let testedVersion: unknown;
+  let cacheVersion: unknown;
   try {
-    testedVersion = (requireFrom(pinModule) as { TESTED_VERSION?: unknown })
-      .TESTED_VERSION;
+    const fetcher = requireFrom(fetcherModule) as {
+      TESTED_VERSION?: unknown;
+      getExpectedVersion?: (options: {
+        version: string | null;
+        chromeMode: "chrome-for-testing" | "headless-shell";
+        platform: string;
+      }) => string;
+      getPlatform?: () => string;
+    };
+    testedVersion = fetcher.TESTED_VERSION;
+    if (
+      typeof fetcher.getExpectedVersion !== "function" ||
+      typeof fetcher.getPlatform !== "function"
+    ) {
+      throw new Error("BrowserFetcher does not expose getExpectedVersion/getPlatform");
+    }
+    cacheVersion = fetcher.getExpectedVersion({
+      version: null,
+      chromeMode: CLASH_BROWSER_CHROME_MODE,
+      platform: fetcher.getPlatform(),
+    });
   } catch (error) {
-    throw new Error(
-      `Cannot read Remotion's pinned Chrome version from ${pinModule}: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    const coded = new Error(
+      `Cannot read Remotion's browser cache version from ${fetcherModule}: ${error instanceof Error ? error.message : String(error)}`,
+    ) as Error & { code: string };
+    coded.code = "RENDER_BROWSER_PIN_UNREADABLE";
+    throw coded;
   }
   if (typeof testedVersion !== "string" || !/^[\w.-]+$/.test(testedVersion)) {
-    throw new Error(
-      `Remotion's pinned Chrome version is missing from ${pinModule}.`,
-    );
+    const coded = new Error(
+      `Remotion's pinned Chrome version is missing from ${fetcherModule}.`,
+    ) as Error & { code: string };
+    coded.code = "RENDER_BROWSER_PIN_UNREADABLE";
+    throw coded;
+  }
+  if (typeof cacheVersion !== "string" || !cacheVersion) {
+    const coded = new Error(
+      `Remotion's browser cache version is missing from ${fetcherModule}.`,
+    ) as Error & { code: string };
+    coded.code = "RENDER_BROWSER_PIN_UNREADABLE";
+    throw coded;
   }
   return {
     testedVersion,
+    cacheVersion,
     rendererEntry: requireFrom.resolve("@remotion/renderer"),
   };
 }
@@ -222,37 +258,119 @@ function readTrimmed(path: string): string | undefined {
   }
 }
 
-function cachedBrowser(
+export type ClashBrowserCacheRejection = {
+  code:
+    | "RENDER_BROWSER_CACHE_VERSION_MISMATCH"
+    | "RENDER_BROWSER_CACHE_UNUSABLE";
+  cacheDir: string;
+  expectedVersion: string;
+  actualVersion: string | null;
+  detail: string;
+};
+
+function codedError(
+  code: string,
+  message: string,
+  details: Record<string, unknown> = {},
+): Error & { code: string } {
+  const error = new Error(message) as Error & { code: string };
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+function inspectCachedBrowser(
   cacheDir: string,
-  testedVersion: string,
-): ClashBrowser | undefined {
-  if (readTrimmed(join(cacheDir, REMOTION_VERSION_FILE)) !== testedVersion) {
-    return undefined;
+  pin: RemotionBrowserPin,
+): { browser: ClashBrowser } | { rejection: ClashBrowserCacheRejection } | undefined {
+  const actualVersion = readTrimmed(join(cacheDir, REMOTION_VERSION_FILE));
+  if (actualVersion === undefined) {
+    // A fresh directory has neither Remotion's VERSION nor Clash's receipt: nothing to report.
+    if (!existsSync(join(cacheDir, RECEIPT_FILE))) return undefined;
+    return {
+      rejection: {
+        code: "RENDER_BROWSER_CACHE_UNUSABLE",
+        cacheDir,
+        expectedVersion: pin.cacheVersion,
+        actualVersion: null,
+        detail: "Remotion VERSION file is missing",
+      },
+    };
+  }
+  if (actualVersion !== pin.cacheVersion) {
+    return {
+      rejection: {
+        code: "RENDER_BROWSER_CACHE_VERSION_MISMATCH",
+        cacheDir,
+        expectedVersion: pin.cacheVersion,
+        actualVersion,
+        detail: `Remotion VERSION is ${actualVersion}`,
+      },
+    };
   }
   let recorded: unknown;
   try {
     recorded = JSON.parse(readFileSync(join(cacheDir, RECEIPT_FILE), "utf8"));
   } catch {
-    return undefined;
+    return {
+      rejection: {
+        code: "RENDER_BROWSER_CACHE_UNUSABLE",
+        cacheDir,
+        expectedVersion: pin.cacheVersion,
+        actualVersion,
+        detail: "Clash browser receipt is missing or unreadable",
+      },
+    };
   }
   const executable = (recorded as { executable?: unknown } | null)?.executable;
-  if (typeof executable !== "string" || !executable) return undefined;
+  if (typeof executable !== "string" || !executable) {
+    return {
+      rejection: {
+        code: "RENDER_BROWSER_CACHE_UNUSABLE",
+        cacheDir,
+        expectedVersion: pin.cacheVersion,
+        actualVersion,
+        detail: "Clash browser receipt has no executable",
+      },
+    };
+  }
   const executablePath = resolve(cacheDir, executable);
-  if (!existsSync(executablePath)) return undefined;
+  if (!existsSync(executablePath)) {
+    return {
+      rejection: {
+        code: "RENDER_BROWSER_CACHE_UNUSABLE",
+        cacheDir,
+        expectedVersion: pin.cacheVersion,
+        actualVersion,
+        detail: `Cached executable does not exist: ${executablePath}`,
+      },
+    };
+  }
   return {
-    executablePath,
-    version: testedVersion,
-    cacheDir,
-    source: "cache",
+    browser: {
+      executablePath,
+      version: pin.testedVersion,
+      cacheDir,
+      source: "cache",
+    },
   };
+}
+
+function cachedBrowser(
+  cacheDir: string,
+  pin: RemotionBrowserPin,
+): ClashBrowser | undefined {
+  const inspected = inspectCachedBrowser(cacheDir, pin);
+  return inspected && "browser" in inspected ? inspected.browser : undefined;
 }
 
 /**
  * The browser a render can use right now, without downloading or spawning anything.
  *
- * Returns the cached headless shell only when Remotion's `VERSION` file beside it equals the
- * installed Remotion's `TESTED_VERSION`; `undefined` means `ensureClashBrowser()` must run first.
- * `CLASH_BROWSER_EXECUTABLE` is returned as given and is validated by `ensureClashBrowser()`.
+ * Returns the cached headless shell only when Remotion's `VERSION` file beside it equals the value
+ * the installed Remotion writes (`BrowserFetcher.getExpectedVersion()`, e.g. `...-remotion-v3`);
+ * `undefined` means `ensureClashBrowser()` must run first. `CLASH_BROWSER_EXECUTABLE` is returned
+ * as given and is validated by `ensureClashBrowser()`.
  */
 export function resolveClashBrowserExecutable(
   options: ClashBrowserOptions = {},
@@ -268,7 +386,7 @@ export function resolveClashBrowserExecutable(
   }
   return cachedBrowser(
     resolveClashBrowserCacheDir(options),
-    resolvePin(options).testedVersion,
+    resolvePin(options),
   );
 }
 
@@ -358,7 +476,8 @@ export function downloadClashBrowserInChildProcess(
       const output = stderr.trim();
       const detail = /^\w*Error: .+$/m.exec(output)?.[0] ?? output;
       rejectDownload(
-        new Error(
+        codedError(
+          "RENDER_BROWSER_DOWNLOAD_FAILED",
           `Chrome Headless Shell download ${reason}${detail ? `: ${detail}` : "."}`,
         ),
       );
@@ -387,8 +506,9 @@ async function ensureCachedBrowser(
 ): Promise<ClashBrowser> {
   const pin = resolvePin(options);
   const cacheDir = resolveClashBrowserCacheDir(options);
-  const cached = cachedBrowser(cacheDir, pin.testedVersion);
-  if (cached) return cached;
+  const inspected = inspectCachedBrowser(cacheDir, pin);
+  if (inspected && "browser" in inspected) return inspected.browser;
+  if (inspected) options.onCacheRejected?.(inspected.rejection);
 
   mkdirSync(cacheDir, { recursive: true });
   const stubPackage = join(cacheDir, "package.json");
@@ -412,21 +532,30 @@ async function ensureCachedBrowser(
   // (`CLASH_HOME` on another volume) has to be compared by real path on both sides.
   const recorded = relative(realPath(cacheDir), realPath(executablePath));
   if (recorded.startsWith("..") || isAbsolute(recorded)) {
-    throw new Error(
+    throw codedError(
+      "RENDER_BROWSER_CACHE_OUTSIDE",
       `Remotion installed Chrome Headless Shell outside the Clash browser cache: ${executablePath}`,
+      { executablePath, cacheDir },
     );
   }
   writeFileAtomically(
     join(cacheDir, RECEIPT_FILE),
     `${JSON.stringify({ executable: recorded, version: pin.testedVersion, chromeMode: CLASH_BROWSER_CHROME_MODE }, null, 2)}\n`,
   );
-  const installed = cachedBrowser(cacheDir, pin.testedVersion);
-  if (!installed) {
-    throw new Error(
-      `Chrome Headless Shell ${pin.testedVersion} is not usable in ${cacheDir} after download.`,
+  const installedState = inspectCachedBrowser(cacheDir, pin);
+  if (!installedState || !("browser" in installedState)) {
+    const detail = installedState?.rejection.detail ?? "cache entry disappeared";
+    throw codedError(
+      "RENDER_BROWSER_CACHE_UNUSABLE",
+      `Chrome Headless Shell ${pin.cacheVersion} is not usable in ${cacheDir} after download (${detail}).`,
+      {
+        cacheDir,
+        expectedVersion: pin.cacheVersion,
+        actualVersion: installedState?.rejection.actualVersion ?? null,
+      },
     );
   }
-  return installed;
+  return installedState.browser;
 }
 
 const inFlight = new Map<string, Promise<ClashBrowser>>();
@@ -445,8 +574,10 @@ export async function ensureClashBrowser(
   const override = clashBrowserExecutableOverride(env);
   if (override) {
     if (!existsSync(override)) {
-      throw new Error(
+      throw codedError(
+        "RENDER_BROWSER_EXECUTABLE_MISSING",
         `CLASH_BROWSER_EXECUTABLE points to ${override}, which does not exist.`,
+        { executablePath: override },
       );
     }
     return {

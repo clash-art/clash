@@ -8015,13 +8015,24 @@ describe("local API app", () => {
     }
   });
 
-  it("waits for the server-owned ACP startup barrier before publishing runtime capabilities", async () => {
+  it("serves cached runtime capabilities without waiting for the ACP startup barrier", async () => {
     let releaseReady!: () => void;
     const localAcpReady = new Promise<void>((resolve) => {
       releaseReady = resolve;
     });
-    const listRuntimes = vi.fn(async () => ({ runtimes: [] }));
-    const listHarnesses = vi.fn(async () => ({ harnesses: [] }));
+    const catalogFreshness = {
+      status: "stale" as const,
+      fetchedAt: null,
+      checkedAt: "2026-10-18T00:00:00.000Z",
+    };
+    const listRuntimes = vi.fn(async () => ({
+      runtimes: [],
+      catalogFreshness,
+    }));
+    const listHarnesses = vi.fn(async () => ({
+      harnesses: [],
+      catalogFreshness,
+    }));
     const app = createLocalApiApp({
       dataDir,
       userId: "local-user",
@@ -8038,38 +8049,29 @@ describe("local API app", () => {
       },
     });
 
-    let readySettled = false;
-    const readyRequest = Promise.resolve(app.request("/api/v1/runtimes")).then(
-      (response) => {
-        readySettled = true;
-        return response;
-      },
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const runtimes = await app.request("/api/v1/runtimes");
+    expect(runtimes.status).toBe(200);
+    expect(listRuntimes).toHaveBeenCalledOnce();
+    expect(await runtimes.json()).toMatchObject({ catalogFreshness });
 
-    expect(readySettled).toBe(false);
-    expect(listRuntimes).not.toHaveBeenCalled();
+    const harnesses = await app.request("/api/v1/local/harnesses");
+    expect(harnesses.status).toBe(200);
+    expect(listHarnesses).toHaveBeenCalledOnce();
+    expect(await harnesses.json()).toMatchObject({ catalogFreshness });
 
-    let harnessesSettled = false;
-    const harnessesRequest = Promise.resolve(
-      app.request("/api/v1/local/harnesses"),
+    // `readiness=wait` remains the explicit opt-in for the full startup barrier.
+    let settled = false;
+    const waiting = Promise.resolve(
+      app.request("/api/v1/runtimes?readiness=wait"),
     ).then((response) => {
-      harnessesSettled = true;
+      settled = true;
       return response;
     });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(harnessesSettled).toBe(false);
-    expect(listHarnesses).not.toHaveBeenCalled();
-
-    const snapshot = await app.request("/api/v1/runtimes?readiness=snapshot");
-    expect(snapshot.status).toBe(200);
-    expect(listRuntimes).toHaveBeenCalledOnce();
-
+    expect(settled).toBe(false);
     releaseReady();
-    expect((await readyRequest).status).toBe(200);
-    expect((await harnessesRequest).status).toBe(200);
+    expect((await waiting).status).toBe(200);
     expect(listRuntimes).toHaveBeenCalledTimes(2);
-    expect(listHarnesses).toHaveBeenCalledOnce();
   });
 
   it("persists homepage composer run choices without creating an ACP session", async () => {

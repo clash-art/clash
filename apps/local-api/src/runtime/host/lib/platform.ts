@@ -8,7 +8,7 @@
  *
  */
 
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { homedir, hostname as osHostname, platform } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -32,31 +32,89 @@ export function osTag(): string {
   return `${platform()}/${process.arch}`;
 }
 
-/** Resolve a useful user-facing machine name for local ACP sessions. */
-export function machineName(): string {
-  const currentPlatform = platform();
-  const candidates: Array<() => string | undefined> = [];
-  if (currentPlatform === "darwin") {
-    candidates.push(() => execSync("scutil --get ComputerName", {
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1000,
-    }).toString().trim());
-  } else if (currentPlatform === "linux") {
-    candidates.push(() => execSync("hostnamectl --pretty", {
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1000,
-    }).toString().trim());
-  }
-  candidates.push(() => osHostname());
+/**
+ * The pretty machine name last reported by the OS, or the hostname until the asynchronous
+ * probe settles. Never spawns a process: a synchronous `execSync` here used to block the event
+ * loop for every `/api/v1/runtimes` request.
+ */
+let prettyMachineName: string | undefined;
 
-  for (const tryCandidate of candidates) {
-    try {
-      const value = tryCandidate();
-      if (value && value.toLowerCase() !== "localhost") return value;
-    } catch {
-      // Try the next platform-specific source.
-    }
-  }
+function fallbackMachineName(): string {
+  const currentPlatform = platform();
+  const hostname = osHostname();
+  if (hostname && hostname.toLowerCase() !== "localhost") return hostname;
   const user = process.env.USER || process.env.USERNAME || "user";
   return `${user}'s ${currentPlatform === "darwin" ? "Mac" : currentPlatform === "linux" ? "Linux box" : "computer"}`;
+}
+
+/** The synchronous name used on request paths. */
+export function machineName(): string {
+  return prettyMachineName ?? fallbackMachineName();
+}
+
+export type MachineNameProbeResult =
+  | { ok: true; name: string }
+  | { ok: false; code: "HOST_MACHINE_NAME_UNAVAILABLE"; error: string };
+
+const MACHINE_NAME_PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * Ask the platform for its user-facing name off the request path. The caller decides how to
+ * report a failure; the Host logs it once at startup and keeps `os.hostname()`.
+ */
+export function probePrettyMachineName(options: {
+  platform?: NodeJS.Platform;
+  execFile?: typeof execFile;
+} = {}): Promise<MachineNameProbeResult> {
+  const currentPlatform = options.platform ?? platform();
+  const command = currentPlatform === "darwin"
+    ? { file: "scutil", args: ["--get", "ComputerName"] }
+    : currentPlatform === "linux"
+      ? { file: "hostnamectl", args: ["--pretty"] }
+      : null;
+  if (!command) {
+    return Promise.resolve({ ok: true, name: machineName() });
+  }
+  const run = options.execFile ?? execFile;
+  return new Promise((resolve) => {
+    run(
+      command.file,
+      command.args,
+      { encoding: "utf8", timeout: MACHINE_NAME_PROBE_TIMEOUT_MS },
+      (error: Error | null, stdout: string) => {
+        if (error || typeof stdout !== "string") {
+          resolve({
+            ok: false,
+            code: "HOST_MACHINE_NAME_UNAVAILABLE",
+            error: `${command.file}: ${error?.message ?? "no output"}`,
+          });
+          return;
+        }
+        const name = stdout.trim();
+        if (!name || name.toLowerCase() === "localhost") {
+          resolve({
+            ok: false,
+            code: "HOST_MACHINE_NAME_UNAVAILABLE",
+            error: `${command.file}: empty or localhost name`,
+          });
+          return;
+        }
+        resolve({ ok: true, name });
+      },
+    );
+  });
+}
+
+let machineNameProbe: Promise<MachineNameProbeResult> | undefined;
+
+/**
+ * Start the pretty-name probe once per process and cache its result. Resolves without throwing,
+ * so an unavailable platform tool never rejects an unawaited startup promise.
+ */
+export function primeMachineName(): Promise<MachineNameProbeResult> {
+  machineNameProbe ??= probePrettyMachineName().then((result) => {
+    if (result.ok) prettyMachineName = result.name;
+    return result;
+  });
+  return machineNameProbe;
 }
