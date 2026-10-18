@@ -453,6 +453,62 @@ export function parseCodedCloseReason(
   return match ? { code: match[1]!, message: match[2]!.trim() } : null;
 }
 
+/** Keepalive interval for the WebSocket transport. */
+export const KEEPALIVE_MS = 30_000;
+const KEEPALIVE_PING = "ping";
+const KEEPALIVE_PONG = "pong";
+
+export const KEEPALIVE_TIMEOUT_CLOSE_CODE = 4000;
+export const KEEPALIVE_TIMEOUT_REASON =
+  "KEEPALIVE_TIMEOUT: No reply from the project room; reconnecting.";
+
+export interface KeepaliveController {
+  stop(): void;
+  /** Record that a frame (text or binary) arrived on this socket. */
+  noteInbound(): void;
+}
+
+/**
+ * Send `"ping"` on an open socket. The Cloudflare ProjectRoom and local-api
+ * answer with `"pong"` without touching room state, so a hibernated room stays
+ * asleep while the connection is proven alive. A proxied socket can go
+ * half-open (the server closed it, the browser still reports OPEN): if a full
+ * interval passes after a ping with no inbound frame, the keepalive stops and
+ * calls `onDead` exactly once.
+ */
+export function startKeepalive(
+  ws: Pick<WebSocket, "readyState" | "send">,
+  options: {
+    intervalMs?: number;
+    onDead?: (info: { idleMs: number }) => void;
+  } = {},
+): KeepaliveController {
+  const { intervalMs = KEEPALIVE_MS, onDead } = options;
+  let lastInboundAt = Date.now();
+  let awaitingReply = false;
+  const id = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (awaitingReply) {
+      clearInterval(id);
+      onDead?.({ idleMs: Date.now() - lastInboundAt });
+      return;
+    }
+    try {
+      ws.send(KEEPALIVE_PING);
+      awaitingReply = true;
+    } catch {
+      // Best-effort: onclose/disconnect will clear the interval.
+    }
+  }, intervalMs);
+  return {
+    stop: () => clearInterval(id),
+    noteInbound: () => {
+      lastInboundAt = Date.now();
+      awaitingReply = false;
+    },
+  };
+}
+
 export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const {
     projectId,
@@ -508,6 +564,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
   const streamRef = useRef<ReturnType<typeof createLoroStreamSession> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const keepaliveRef = useRef<KeepaliveController | null>(null);
   const protocolSessionRef = useRef<LoroProtocolClientSession | null>(null);
   const [connected, setConnected] = useState(false);
   const [syncRejected, setSyncRejected] = useState(false);
@@ -783,6 +840,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   }, [replica, doc, projectId]);
 
   const disconnect = useCallback(() => {
+    keepaliveRef.current?.stop();
+    keepaliveRef.current = null;
     void streamRef.current?.close();
     streamRef.current = null;
     const ws = wsRef.current;
@@ -928,12 +987,34 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
       // Version-vector handshake catches up both sides and uploads offline work.
       protocolSession.join();
+      keepaliveRef.current?.stop();
+      keepaliveRef.current = startKeepalive(ws, {
+        onDead: ({ idleMs }) => {
+          if (isUnmountingRef.current || wsRef.current !== ws) return;
+          syncLog.warn("sync.keepalive_timeout", { projectId, idleMs });
+          setConnected(false);
+          // Reconnect here rather than in onclose: closing a half-open socket
+          // may report 1005/1006, or not fire onclose until the close
+          // handshake times out.
+          ws.onclose = null;
+          try {
+            ws.close(KEEPALIVE_TIMEOUT_CLOSE_CODE, KEEPALIVE_TIMEOUT_REASON);
+          } catch {
+            // Already closing; disconnect() below detaches it either way.
+          }
+          disconnect();
+          scheduleReconnect();
+        },
+      });
     };
 
     ws.onmessage = async (event) => {
       if (isUnmountingRef.current || wsRef.current !== ws) return;
+      keepaliveRef.current?.noteInbound();
       // Text messages = JSON sideband (presence/activity)
       if (typeof event.data === "string") {
+        // Keepalive reply; not JSON, so handle it before parsing.
+        if (event.data === KEEPALIVE_PONG) return;
         try {
           const msg = JSON.parse(event.data);
           if (isSidebandMessage(msg)) {
@@ -983,6 +1064,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     };
 
     ws.onclose = (event) => {
+      keepaliveRef.current?.stop();
+      keepaliveRef.current = null;
       protocolSession.destroy();
       if (wsRef.current !== ws) return;
       syncLog[isUnmountingRef.current || event.code === 1000 || rejectedSyncRef.current ? "debug" : "warn"]("sync.disconnected", {

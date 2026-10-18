@@ -113,9 +113,11 @@ const UPDATES_PER_COMPACT = 100;
 /** Hard cap — if compaction is somehow stuck, force one to keep load fast. */
 const UPDATES_HARD_COMPACT_THRESHOLD = 500;
 
-/** Awareness throttling. Cap outbound broadcasts at ~12Hz; stale entries pruned after 8s. */
+/** Awareness throttling. Cap outbound broadcasts at ~12Hz; stale entries pruned after 45s. */
 const AWARENESS_BROADCAST_MIN_INTERVAL_MS = 80;
-const AWARENESS_STALE_MS = 8_000;
+// Must equal the client's PEER_STALE_MS and stay above its 20s HEARTBEAT_MS so
+// a still-but-active cursor is refreshed before either side prunes it.
+const AWARENESS_STALE_MS = 45_000;
 
 type LoroImportQueueItem = {
   applyGeneration?: () => Promise<void>;
@@ -1195,7 +1197,7 @@ export class ProjectRoom extends DurableObject<Env> {
     }
     try {
       // Fan out one extra awareness frame so peers see the cursor disappear
-      // immediately rather than waiting for the 8-second staleness sweep.
+      // immediately rather than waiting for the 45-second staleness sweep.
       this.flushAwarenessBroadcast();
     } catch (e) {
       log.error(
