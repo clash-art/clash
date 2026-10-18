@@ -9,6 +9,8 @@ export type PlayerTransportStatus = "paused" | "playing" | "buffering" | "error"
 export type PlayerTransportState = {
   status: PlayerTransportStatus;
   error: string | null;
+  /** The Player reports buffering on change, whether or not it is playing. */
+  mediaBuffering: boolean;
 };
 
 export type PlayerTransportEvent =
@@ -26,6 +28,7 @@ export const PLAYER_STALL_TIMEOUT_MS = 20_000;
 export const initialPlayerTransportState: PlayerTransportState = {
   status: "paused",
   error: null,
+  mediaBuffering: false,
 };
 
 export function playerTransportReducer(
@@ -35,21 +38,32 @@ export function playerTransportReducer(
   switch (event.type) {
     case "play":
       // A play event never clears an error by itself; the user retries first.
-      return state.status === "error" ? state : { status: "playing", error: null };
+      if (state.status === "error") return state;
+      return { ...state, status: state.mediaBuffering ? "buffering" : "playing" };
     case "pause":
     case "ended":
       // Pausing is how an error stops the clock; keep the error visible.
       return state.status === "error" || state.status === "paused"
         ? state
-        : { status: "paused", error: null };
+        : { ...state, status: "paused" };
     case "waiting":
-      return state.status === "playing" ? { status: "buffering", error: null } : state;
+      if (state.mediaBuffering && state.status !== "playing") return state;
+      return {
+        ...state,
+        mediaBuffering: true,
+        status: state.status === "playing" ? "buffering" : state.status,
+      };
     case "resume":
-      return state.status === "buffering" ? { status: "playing", error: null } : state;
+      if (!state.mediaBuffering && state.status !== "buffering") return state;
+      return {
+        ...state,
+        mediaBuffering: false,
+        status: state.status === "buffering" ? "playing" : state.status,
+      };
     case "error":
       return state.status === "error" && state.error === event.message
         ? state
-        : { status: "error", error: event.message };
+        : { ...state, status: "error", error: event.message };
     case "retry":
       return state.status === "error" ? initialPlayerTransportState : state;
   }

@@ -21,9 +21,17 @@ describe("player transport state", () => {
     expect(run({ type: "waiting" }).status).toBe("paused");
   });
 
+  it("reports buffering that started while paused once playback is requested", () => {
+    const paused = run({ type: "waiting" });
+    expect(paused.status).toBe("paused");
+    expect(playerTransportReducer(paused, { type: "play" }).status).toBe("buffering");
+    expect(run({ type: "waiting" }, { type: "play" }, { type: "resume" }).status).toBe("playing");
+    expect(run({ type: "waiting" }, { type: "resume" }, { type: "play" }).status).toBe("playing");
+  });
+
   it("keeps an error visible through the pause that stops the clock", () => {
     const state = run({ type: "play" }, { type: "waiting" }, { type: "error", message: "stalled" }, { type: "pause" });
-    expect(state).toEqual({ status: "error", error: "stalled" });
+    expect(state).toMatchObject({ status: "error", error: "stalled" });
     expect(playerTransportIsActive(state.status)).toBe(false);
     // A stray play event cannot hide the error; only an explicit retry clears it.
     expect(playerTransportReducer(state, { type: "play" }).status).toBe("error");

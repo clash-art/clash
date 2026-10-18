@@ -68,7 +68,7 @@ afterEach(() => {
   player.listeners.clear();
 });
 
-function mount() {
+function mount(beforePlay?: () => void) {
   const events: Array<{ type: string; message?: string }> = [];
   const playingChanges: boolean[] = [];
   const draw = (playing: boolean) => (
@@ -88,6 +88,7 @@ function mount() {
   );
   // Mount paused, then request play like the editor does.
   const { rerender } = render(draw(false));
+  if (beforePlay) act(beforePlay);
   rerender(draw(true));
   return { events, playingChanges };
 }
@@ -105,6 +106,14 @@ it("reports buffering and turns a stall that never resolves into a paused error"
   expect(events).toContainEqual(expect.objectContaining({ type: "error" }));
   expect(player.playing).toBe(false);
   expect(playingChanges.at(-1)).toBe(false);
+});
+
+it("a stall that began while paused still times out once playback is requested", () => {
+  const { events } = mount(() => emit("waiting"));
+  expect(player.playing).toBe(true);
+  act(() => vi.advanceTimersByTime(PLAYER_STALL_TIMEOUT_MS));
+  expect(events).toContainEqual(expect.objectContaining({ type: "error" }));
+  expect(player.playing).toBe(false);
 });
 
 it("a buffering stall that resolves keeps playing", () => {
@@ -131,6 +140,20 @@ it("a terminal media failure is an explicit error and stops the clock", () => {
   expect(error.message).not.toContain("sig=1");
   expect(player.playing).toBe(false);
   expect(playingChanges.at(-1)).toBe(false);
+});
+
+it("does not show an opaque capability token as the file name", () => {
+  const token = "v1.eyJ2ZXJzaW9uIjoxLCJvcGVyYXRpb24iOiJyZWFkIn0.c2lnbmF0dXJlLXZhbHVlLXRoYXQtaXMtbG9uZw";
+  const { events } = mount();
+  act(() =>
+    player.inputProps!.onMediaError!({
+      src: `https://web.example/assets/capability/${token}`,
+      message: "Code 4",
+    }),
+  );
+  const error = events.find((event) => event.type === "error")!;
+  expect(error.message).not.toContain(token);
+  expect(error.message).toContain("Code 4");
 });
 
 it("a render error inside the Player is reported and leaves the editor paused", () => {

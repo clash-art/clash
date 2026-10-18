@@ -141,10 +141,9 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   // the Player would otherwise keep advancing over a black layer.
   const handleMediaError = useCallback(
     ({ src, message }: { src: string; message: string }) => {
-      const name = decodeURIComponent(src.split(/[?#]/)[0]?.split("/").pop() || src);
       onTransportEventRef.current?.({
         type: "error",
-        message: `Could not play ${name}: ${message}`,
+        message: `Could not play ${previewMediaErrorName(src)}: ${message}`,
       });
       playerRef.current?.pause();
     },
@@ -439,6 +438,8 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
 
   // 监听 Player 事件. Every transport fact comes from the Player itself.
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Player buffering is reported on change, whether or not it is playing.
+  const bufferingRef = useRef(false);
   const clearStallTimer = useCallback(() => {
     if (stallTimerRef.current !== null) {
       clearTimeout(stallTimerRef.current);
@@ -460,9 +461,24 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
       onFrameUpdateRef.current?.(frame);
     };
 
+    // A stall only counts while the Player is asked to play. Buffering can
+    // start while paused (media mounted on insert) and only matter on play.
+    const startStallTimer = () => {
+      if (stallTimerRef.current !== null) return;
+      stallTimerRef.current = setTimeout(() => {
+        stallTimerRef.current = null;
+        onTransportEventRef.current?.({
+          type: "error",
+          message: `Media did not load within ${PLAYER_STALL_TIMEOUT_MS / 1000}s; playback was paused.`,
+        });
+        player.pause();
+      }, PLAYER_STALL_TIMEOUT_MS);
+    };
+
     const handlePlay = () => {
       onTransportEventRef.current?.({ type: "play" });
       onPlayingChangeRef.current?.(true);
+      if (bufferingRef.current) startStallTimer();
     };
 
     const handlePause = () => {
@@ -483,19 +499,13 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
     // The Player holds its clock while any media is buffering. Surface that,
     // and turn a stall that never resolves into an explicit, paused error.
     const handleWaiting = () => {
+      bufferingRef.current = true;
       onTransportEventRef.current?.({ type: "waiting" });
-      if (stallTimerRef.current !== null || !player.isPlaying()) return;
-      stallTimerRef.current = setTimeout(() => {
-        stallTimerRef.current = null;
-        onTransportEventRef.current?.({
-          type: "error",
-          message: `Media did not load within ${PLAYER_STALL_TIMEOUT_MS / 1000}s; playback was paused.`,
-        });
-        player.pause();
-      }, PLAYER_STALL_TIMEOUT_MS);
+      if (player.isPlaying()) startStallTimer();
     };
 
     const handleResume = () => {
+      bufferingRef.current = false;
       clearStallTimer();
       onTransportEventRef.current?.({ type: "resume" });
     };
@@ -1798,6 +1808,23 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
     </div>
   );
 };
+
+/**
+ * A readable name for a failed media source. Signed or capability URLs end in
+ * opaque tokens, which are not shown; plain file names are.
+ */
+export function previewMediaErrorName(src: string): string {
+  const last = src.split(/[?#]/)[0]?.split("/").pop() ?? "";
+  let name = last;
+  try {
+    name = decodeURIComponent(last);
+  } catch {
+    // keep the raw segment
+  }
+  return name.length <= 80 && /^[^.]+(?:\.[^.]+)*\.[a-z0-9]{2,5}$/i.test(name) && !/^v\d+\.ey/i.test(name)
+    ? name
+    : "a media clip";
+}
 
 export const InteractiveCanvas = React.memo(InteractiveCanvasInner);
 
