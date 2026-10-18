@@ -1,5 +1,10 @@
 import React from "react";
-import { Video, Audio } from "@remotion/media";
+import {
+  PreviewMediaErrorProvider,
+  ReportingAudio as Audio,
+  ReportingVideo as Video,
+  type PreviewMediaErrorReporter,
+} from "./previewMediaErrors";
 import {
   AbsoluteFill,
   Sequence,
@@ -1631,12 +1636,18 @@ export const VideoComposition: React.FC<{
   selectedItemId?: string | null;
   selectionBoxRef?: React.RefObject<HTMLDivElement | null>;
   itemsDomMapRef?: React.RefObject<Map<string, HTMLElement>>;
+  /** Interactive preview only: a media source failed terminally. */
+  onMediaError?: PreviewMediaErrorReporter;
+  /** Interactive preview only: a new value remounts every media element. */
+  mediaEpoch?: number;
 }> = ({
   tracks,
   allNodes,
   selectedItemId,
   selectionBoxRef,
   itemsDomMapRef,
+  onMediaError,
+  mediaEpoch = 0,
 }) => {
   const { width: compWidth, height: compHeight } = useVideoConfig();
   const compositionFrame = useCurrentFrame();
@@ -1796,19 +1807,22 @@ export const VideoComposition: React.FC<{
   }, [selectedItemResolved, compositionFrame, compWidth, compHeight]);
 
   return (
+    <PreviewMediaErrorProvider value={onMediaError ?? null}>
     <AbsoluteFill
+      key={mediaEpoch}
       style={{ backgroundColor: "black", top: 0, left: 0, right: 0, bottom: 0 }}
     >
       {/* Paint tracks bottom-up: track 0 is the top of the timeline UI, so it
           must be last in the DOM. The browser renderer ignores z-index and
           only follows DOM paint order; this keeps preview and both renderers
           visually identical. */}
-      {preparedTracks
-        .map((track, trackIndex) => ({ track, trackIndex }))
+      {[...preparedTracks]
         .reverse()
-        .map(({ track, trackIndex }) => (
+        .map((track) => (
           <TrackComponent
-            key={`${track.id}-${trackIndex}`}
+            // Keyed by identity only: inserting a track above must not
+            // remount (and re-buffer) every media element below it.
+            key={track.id}
             track={track}
             itemsDomMapRef={itemsDomMapRef}
             duckingWindows={duckingWindows}
@@ -1823,5 +1837,6 @@ export const VideoComposition: React.FC<{
         </AbsoluteFill>
       )}
     </AbsoluteFill>
+    </PreviewMediaErrorProvider>
   );
 };
