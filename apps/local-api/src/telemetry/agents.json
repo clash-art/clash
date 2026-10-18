@@ -7,13 +7,14 @@
     "Settings values are resolved in memory and never written to process.env, so agent processes started by the Host do not inherit them.",
     "Spans carry ids, counts and durations only; never prompts, tool arguments or tool output.",
     "The Settings contract (keys, view, PATCH body) is the Zod schema in packages/shared-types/src/telemetry.ts.",
-    "Local clients (the GUI renderer) export with the official OTLP/HTTP JSON exporter to POST /api/v1/local/otlp/v1/traces; the Host decodes spans back into ReadableSpan and feeds its own processors, so client spans share the local summary and the configured exporter, and credentials never reach the client."
+    "Local clients (the GUI renderer) export with the official OTLP/HTTP JSON exporter to POST /api/v1/local/otlp/v1/traces; the Host decodes spans back into ReadableSpan and feeds its own processors, so client spans share the local summary and the configured exporter, and credentials never reach the client.",
+    "Server shutdown flushes the batch processor before the process exits, bounded by the server's 3 s deadline. A rejected or timed-out flush is logged once as host.telemetry_flush_failed with code TELEMETRY_FLUSH_FAILED and pendingSpans, so lost spans are never silent."
   ],
   "key_files": {
     "resolve.ts": "Pure resolution of environment + Settings into an export decision, with per-key value sources. OTel specification defaults live here.",
     "exporters.ts": "Official OTLP exporters keyed by protocol; hides OTEL_EXPORTER_OTLP_* endpoint/header env during construction so Settings stay authoritative.",
     "processors.ts": "SpanLogProcessor (span.end LogRecords) and SwitchableSpanProcessor (hot-swappable export slot).",
-    "pipeline.ts": "NodeTracerProvider assembly, serialized export swaps, ingest() for client spans, and the process-wide installHostTelemetry singleton.",
+    "pipeline.ts": "NodeTracerProvider assembly, serialized export swaps, pending-span accounting, ingest() for client spans, and the process-wide installHostTelemetry singleton.",
     "config-store.ts": "Telemetry Settings as a LocalConfigResource: config.yaml for plain keys, credentials.json for headers, pipeline reapplied after each update.",
     "otlp-ingest.ts": "Decoder for OTLP JSON ExportTraceServiceRequest into SDK ReadableSpans, with per-request limits from the SDK environment defaults; tested by round-tripping the official JsonTraceSerializer."
   }

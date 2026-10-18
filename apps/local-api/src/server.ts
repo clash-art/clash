@@ -1896,6 +1896,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   const noteSocketActivity = () => {
     lastRequestActivityAt = Date.now();
   };
+  // Keep the exact pipeline instance the app uses so shutdown can flush it.
+  const hostTelemetry =
+    options.hostTelemetry === false
+      ? undefined
+      : (options.hostTelemetry ?? installHostTelemetry());
   const app = createLocalApiApp({
     dataDir: options.dataDir,
     logSinkHealth: options.logSinkHealth,
@@ -1935,9 +1940,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     },
     onProjectChanged: async projectId => { await projectCloudSync?.invalidate(projectId); },
     audioConfig,
-    ...(options.hostTelemetry === false
-      ? {}
-      : { hostTelemetry: options.hostTelemetry ?? installHostTelemetry() }),
+    ...(hostTelemetry ? { hostTelemetry } : {}),
     mediaAnalysisConfig,
     resolveGeneratorModelExecution: createLocalModelExecutionPlanner({
       dataDir: options.dataDir,
@@ -2348,6 +2351,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         ? publishedDiscoveryHostId
         : undefined,
     discoveryRunDir,
+    hostTelemetry,
   );
   server.once("error", (error) => {
     if (settled) {
@@ -2393,6 +2397,7 @@ function wrapServerCloseWithLifecycleCleanup(
   disposeLocalAcp: () => Promise<void> | void,
   getHostId: () => string | undefined,
   runDir: string | undefined,
+  hostTelemetry: HostTelemetry | undefined,
 ): void {
   const originalClose = server.close.bind(server);
   // HTTP closeAllConnections excludes upgraded sockets (Project sync and ACP).
@@ -2407,13 +2412,25 @@ function wrapServerCloseWithLifecycleCleanup(
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = Promise.all([
       Promise.resolve(disposeLocalAcp()).catch(() => undefined),
-      Promise.resolve()
-        .then(async () => {
-          const hostId = getHostId();
-          if (hostId) await removeHostDiscovery(hostId, { runDir });
-        })
-        .catch(() => undefined),
-    ]).then(() => undefined);
+      Promise.resolve().then(async () => {
+        const hostId = getHostId();
+        if (!hostId) return;
+        try {
+          await removeHostDiscovery(hostId, { runDir });
+        } catch (error) {
+          hostLog.warn("host.discovery_cleanup_failed", {
+            code: "HOST_DISCOVERY_CLEANUP_FAILED",
+            hostId,
+            error,
+          });
+        }
+      }),
+    ])
+      // Spans ended by the cleanup above still belong to this Host, so flush
+      // the pipeline last. A collector that never answers must not hold the
+      // process past the deadline; the loss is logged as a coded record.
+      .then(() => shutdownHostTelemetry(hostTelemetry))
+      .then(() => undefined);
     return cleanupPromise;
   };
   server.close = ((callback?: (error?: Error) => void) => {
@@ -2429,6 +2446,40 @@ function wrapServerCloseWithLifecycleCleanup(
       void lifecycleCleanup.finally(() => callback?.(error));
     });
   }) as typeof server.close;
+}
+
+const TELEMETRY_SHUTDOWN_DEADLINE_MS = 3_000;
+
+async function shutdownHostTelemetry(
+  telemetry: HostTelemetry | undefined,
+): Promise<void> {
+  if (!telemetry) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const shutdown = Promise.resolve().then(() => telemetry.shutdown());
+  const outcome = await Promise.race([
+    shutdown.then(
+      () => ({ kind: "flushed" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    ),
+    new Promise<{ kind: "timeout" }>((resolve) => {
+      timer = setTimeout(
+        () => resolve({ kind: "timeout" }),
+        TELEMETRY_SHUTDOWN_DEADLINE_MS,
+      );
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (outcome.kind === "flushed") return;
+  hostLog.warn("host.telemetry_flush_failed", {
+    code: "TELEMETRY_FLUSH_FAILED",
+    pendingSpans: telemetry.pendingSpans ?? 0,
+    reason:
+      outcome.kind === "timeout"
+        ? "timeout"
+        : outcome.error instanceof Error
+          ? outcome.error.message
+          : String(outcome.error),
+  });
 }
 
 const directRunUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : "";
