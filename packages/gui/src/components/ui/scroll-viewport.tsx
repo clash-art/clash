@@ -4,11 +4,13 @@ import { DomScrollableElement } from 'monaco-editor/base/browser/ui/scrollbar/sc
 
 type ScrollViewportProps = HTMLAttributes<HTMLDivElement> & {
   containerStyle?: CSSProperties;
+  /** Extra style for the inner content wrapper (e.g. a flex column so a child can fill the viewport height). */
+  contentStyle?: CSSProperties;
 };
 
 /** VS Code's DOM viewport. The forwarded element retains real DOM scroll offsets. */
 export const ScrollViewport = forwardRef<HTMLDivElement, ScrollViewportProps>(function ScrollViewport(
-  { children, style, containerStyle, ...props }, forwardedRef,
+  { children, style, containerStyle, contentStyle, ...props }, forwardedRef,
 ) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
@@ -66,7 +68,7 @@ export const ScrollViewport = forwardRef<HTMLDivElement, ScrollViewportProps>(fu
   return (
     <div ref={hostRef} style={{ position: 'relative', minWidth: 0, minHeight: 0, ...containerStyle }}>
       <div {...props} ref={setViewport} style={{ ...style, width: '100%', height: '100%', overflow: 'hidden', boxSizing: 'border-box' }}>
-        <div ref={contentRef} style={{ minWidth: '100%', minHeight: '100%', width: 'max-content' }}>{children}</div>
+        <div ref={contentRef} style={{ minWidth: '100%', minHeight: '100%', width: 'max-content', ...contentStyle }}>{children}</div>
       </div>
     </div>
   );

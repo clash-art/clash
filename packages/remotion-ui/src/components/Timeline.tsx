@@ -81,6 +81,7 @@ import {
   getTrackBandAtY,
   getTimelineTrackHeights,
   getTimelineTracksHeight,
+  toTrackStackY,
 } from "./timeline/trackGeometry";
 import { TIMELINE_NOTICE_EVENT } from "./timeline/timelineNotice";
 
@@ -521,16 +522,16 @@ export const Timeline: React.FC<{
       if (!container || !viewportEl) return;
 
       const containerRect = container.getBoundingClientRect();
-      const viewportRect = viewportEl.getBoundingClientRect();
       const leftWithinTracks =
         leftOnViewport -
         containerRect.left -
         timelineStyles.trackLabelWidth -
         contentInsetLeftPx +
         viewportEl.scrollLeft;
-      // Use DragOverlay position relative to viewport, then add scrollTop to get absolute position in content
-      // (viewport position is visual, we need absolute position in the entire scrollable content)
-      const topY = topOnViewport - viewportRect.top + viewportEl.scrollTop;
+      // The track stack is bottom-anchored inside the viewport content, so the
+      // overlay's client Y is converted against the stack's rect (which already
+      // reflects scroll) rather than the content top.
+      const topY = toTrackStackY(viewportEl, topOnViewport);
 
       const trackHeights = getTimelineTrackHeights(tracks, primaryTrackId);
       const shortestTrackHeight =
@@ -1066,7 +1067,8 @@ export const Timeline: React.FC<{
       // 计算鼠标相对于 viewport 的位置
       const mouseX =
         e.clientX - rect.left + viewportEl.scrollLeft - contentInsetLeftPx;
-      const y = e.clientY - rect.top + viewportEl.scrollTop;
+      // Vertical hit-testing is relative to the bottom-anchored track stack.
+      const y = toTrackStackY(viewportEl, e.clientY);
 
       // 计算 asset 左边缘的位置（减去拖动偏移量）
       const assetLeftX = mouseX - currentAssetDragOffset;
@@ -1091,8 +1093,10 @@ export const Timeline: React.FC<{
       let insertIdx: number | null = null;
 
       // 与 item 拖动逻辑保持一致：检测是否在轨道边界附近（要插入新 track）
-      if (!band && tracks.length > 0 && y >= tracksHeight) {
-        insertIdx = tracks.length;
+      // Outside the bottom-anchored stack: below it appends a track, the blank
+      // area above it inserts a new track before the first one.
+      if (!band && tracks.length > 0 && (y >= tracksHeight || y < 0)) {
+        insertIdx = y < 0 ? 0 : tracks.length;
         setInsertPosition(insertIdx);
         if (assetDragPreview) setAssetDragPreview(null);
         return;
