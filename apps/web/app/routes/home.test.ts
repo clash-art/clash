@@ -49,7 +49,12 @@ describe("home loader marketplace feed", () => {
         }),
       );
 
-      await expect(loader({} as never)).resolves.toEqual({
+      const data = await loader({} as never);
+      // Local/desktop Home streams the project list so the page renders
+      // (with an explicit "Loading projects…" rail) before the Host answers.
+      expect(data.projects).toBeInstanceOf(Promise);
+      await expect(data.projects).resolves.toEqual([]);
+      expect({ ...data, projects: await data.projects }).toEqual({
         authed: true,
         projects: [],
         marketplaceFeed: {
