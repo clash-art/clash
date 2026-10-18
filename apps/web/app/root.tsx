@@ -5,10 +5,13 @@ import { BrandAsset } from "@clash/web-ui/components/BrandAsset";
 import { useEffect, useState } from "react";
 import { Link, isRouteErrorResponse, useRouteError } from "react-router";
 
+import { createLogger } from "./lib/logger";
 import {
   isRecoverableRouteModuleError,
   recoverFailedRouteModule,
 } from "./lib/routeModuleRecovery";
+
+const routeErrorLog = createLogger("route");
 
 type RouteErrorDetails = {
   code: string;
@@ -110,6 +113,16 @@ export function ErrorBoundary() {
     import.meta.env.DEV &&
     isRecoverableRouteModuleError(error, window.location.origin);
   const [isRecovering, setIsRecovering] = useState(shouldRecover);
+
+  // A route that fails must leave a coded line in the local logs, not only on
+  // screen (a stuck or failed project open used to leave nothing).
+  useEffect(() => {
+    routeErrorLog.error("ui.route_error", {
+      code,
+      detail: detail.slice(0, 300),
+      path: typeof window === "undefined" ? undefined : window.location.pathname,
+    });
+  }, [code, detail]);
 
   useEffect(() => {
     setIsRecovering(shouldRecover);
