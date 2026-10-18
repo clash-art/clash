@@ -1,14 +1,22 @@
 import { expect, it, vi } from "vitest";
 import type { ResolvedAsset } from "@clash/shared-types";
-import { createInMemoryAssetDeliveryStore } from "@clash/asset-sdk/upload-service";
+import {
+  createInMemoryAssetDeliveryStore,
+  MultipartAssemblyError,
+} from "@clash/asset-sdk/upload-service";
 import type { AssetDeliveryStore } from "@clash/asset-sdk/delivery";
 import {
   createProjectAssetImportSession,
   createHmacProjectAssetImportSessionTokens,
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
+  PROJECT_ASSET_DUPLICATE_CONTENT,
+  PROJECT_ASSET_ID_COLLISION,
+  PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED,
+  PROJECT_ASSET_IMPORT_DIGEST_MISMATCH,
   PROJECT_ASSET_IMPORT_SESSION_TTL_MS,
   PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+  PROJECT_ASSET_TRASHED,
   sweepProjectAssetImportStaging,
   type ProjectAssetImportSessionPorts,
 } from "./project-asset-import-sessions.js";
@@ -25,6 +33,7 @@ const asset = {
 
 function stagingStore(overrides: Partial<AssetDeliveryStore> = {}) {
   const objects = new Map<string, Uint8Array>();
+  const digests = new Map<string, string>();
   const store: AssetDeliveryStore = {
     head(locator) {
       const bytes = objects.get(locator);
@@ -49,11 +58,14 @@ function stagingStore(overrides: Partial<AssetDeliveryStore> = {}) {
   };
   return {
     objects,
+    digests,
     port: {
       store,
       delete: async (locator: string) => {
         objects.delete(locator);
+        digests.delete(locator);
       },
+      digest: (locator: string) => digests.get(locator),
     },
   };
 }
@@ -165,6 +177,123 @@ it("creates a signed session and finalizes staged bytes through the commit port"
   expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
 });
 
+it("validates an optional sha256 and decides replay or conflict before an upload URL", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const existing = { ...asset, id: "asset:existing" } as ResolvedAsset;
+  const inspect = vi.fn(async () => existing);
+  f.ports.inspectExistingImport = inspect;
+  expect(await f.session({ sha256: sha })).toEqual({
+    status: 200,
+    body: existing,
+    replayed: true,
+  });
+  expect(inspect).toHaveBeenCalledWith(
+    expect.objectContaining({
+      projectId: "p",
+      ownerId: "owner-a",
+      projectAssetId: "asset:1",
+      sha256: sha,
+    }),
+  );
+
+  f.ports.inspectExistingImport = vi.fn(async () => {
+    throw Object.assign(new Error("different bytes"), {
+      code: "PROJECT_ASSET_ID_COLLISION",
+      projectAssetId: "asset:1",
+    });
+  });
+  expect(await f.session({ sha256: "b".repeat(64) })).toMatchObject({
+    status: 409,
+    body: { code: "PROJECT_ASSET_ID_COLLISION", projectAssetId: "asset:1" },
+  });
+
+  for (const invalid of ["A".repeat(64), "a".repeat(63), "not-a-digest", ""])
+    expect((await f.session({ sha256: invalid })).status).toBe(400);
+
+  // Older clients send no digest: the session path is unchanged.
+  const noDigest = await f.session();
+  expect(noDigest.status).toBe(201);
+});
+
+it("maps only the three known create-time conflicts to 409 and rethrows other errors", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const conflicts = [
+    {
+      code: PROJECT_ASSET_DUPLICATE_CONTENT,
+      projectAssetId: "asset:1",
+      existingProjectAssetIds: ["asset:existing"],
+    },
+    {
+      code: PROJECT_ASSET_ID_COLLISION,
+      projectAssetId: "asset:1",
+    },
+    {
+      code: PROJECT_ASSET_TRASHED,
+      projectAssetId: "asset:1",
+    },
+  ] as const;
+  for (const conflict of conflicts) {
+    const message = `${conflict.code} decided before upload`;
+    f.ports.inspectExistingImport = vi.fn(async () => {
+      throw Object.assign(new Error(message), conflict);
+    });
+    expect(await f.session({ sha256: sha })).toEqual({
+      status: 409,
+      body: { error: message, ...conflict },
+    });
+  }
+
+  // Errno/SQLite/local-resource failures are not conflicts: the adapter's own
+  // route must map them instead of receiving a fabricated 409.
+  for (const code of ["ENOENT", "EACCES", "SQLITE_BUSY"]) {
+    const failure = Object.assign(new Error(`${code}: transport failure`), {
+      code,
+    });
+    f.ports.inspectExistingImport = vi.fn(async () => {
+      throw failure;
+    });
+    await expect(f.session({ sha256: sha })).rejects.toBe(failure);
+  }
+});
+
+it("stores the declared digest and rejects a mismatched assembly, deleting staging", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const created = await f.session({ sha256: sha });
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  expect(claims.sha256).toBe(sha);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.staging.digests.set(claims.stagingLocator, "b".repeat(64));
+  const finalized = await finalizeProjectAssetImportSession(
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    f.ports,
+  );
+  expect(finalized).toMatchObject({
+    status: 409,
+    body: { code: PROJECT_ASSET_IMPORT_DIGEST_MISMATCH },
+  });
+  expect(f.commit).not.toHaveBeenCalled();
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
+});
+
+it("passes a matching declared digest to the commit path", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const created = await f.session({ sha256: sha });
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.staging.digests.set(claims.stagingLocator, sha);
+  await finalizeProjectAssetImportSession(
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    f.ports,
+  );
+  expect(f.commit.mock.calls[0]![0]).toMatchObject({ sha256: sha });
+});
+
 it("rejects an expired session token", async () => {
   const f = fixture();
   const created = await f.session();
@@ -238,7 +367,7 @@ it("rejects a finalize by a different owner or for a different Project", async (
   expect(f.commit).not.toHaveBeenCalled();
 });
 
-it("rejects a staged size mismatch and keeps staging for a retry", async () => {
+it("rejects a staged size mismatch and deletes staging immediately", async () => {
   const f = fixture();
   const created = await f.session();
   if (created.status !== 201) throw new Error("session not created");
@@ -251,10 +380,13 @@ it("rejects a staged size mismatch and keeps staging for a retry", async () => {
     ),
   ).toEqual({
     status: 409,
-    body: { error: "Import session byte length does not match" },
+    body: {
+      error: "Import session byte length does not match",
+      code: "PROJECT_ASSET_IMPORT_SIZE_MISMATCH",
+    },
   });
   expect(f.commit).not.toHaveBeenCalled();
-  expect(f.staging.objects.has(claims.stagingLocator)).toBe(true);
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
 });
 
 it("returns the committed Asset for an idempotent finalize retry", async () => {
@@ -420,4 +552,131 @@ it("serves the multipart protocol on the signed upload URL", async () => {
       ports,
     ),
   ).toEqual({ status: 201, body: asset });
+});
+
+it("returns the existing Asset as an explicit replay from the commit port", async () => {
+  const f = fixture();
+  const created = await f.session();
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.commit.mockResolvedValueOnce({ replayed: asset });
+
+  const result = await finalizeProjectAssetImportSession(
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    f.ports,
+  );
+
+  expect(result).toEqual({ status: 200, body: asset, replayed: true });
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
+});
+
+it("deletes staging when commit fails so a failed finalize leaves no object", async () => {
+  const f = fixture();
+  const created = await f.session();
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.commit.mockRejectedValueOnce(new Error("probe failed"));
+
+  await expect(
+    finalizeProjectAssetImportSession(
+      { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+      f.ports,
+    ),
+  ).rejects.toThrow("probe failed");
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
+});
+
+it("logs PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED when a failed finalize cannot delete staging", async () => {
+  const f = fixture();
+  const created = await f.session();
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.commit.mockRejectedValueOnce(new Error("commit failed"));
+  const onCleanupFailure = vi.fn();
+  f.ports.staging = {
+    ...f.ports.staging,
+    delete: async () => {
+      throw new Error("staging volume unavailable");
+    },
+    onCleanupFailure,
+  };
+
+  await expect(
+    finalizeProjectAssetImportSession(
+      { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+      f.ports,
+    ),
+  ).rejects.toThrow("commit failed");
+  expect(onCleanupFailure).toHaveBeenCalledOnce();
+  expect(onCleanupFailure.mock.calls[0]![1]).toMatchObject({
+    code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+    locator: claims.stagingLocator,
+    message: expect.stringContaining("staging volume unavailable"),
+  });
+  // The object is still listed, so the sweep retries it.
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(true);
+});
+
+it("maps a mid-assembly failure to a coded PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED response", async () => {
+  const f = fixture();
+  const cause = Object.assign(new Error("no space left on device"), {
+    code: "ENOSPC",
+  });
+  const failure = new MultipartAssemblyError(
+    "Multipart object assembly failed (ENOSPC): no space left on device",
+    { cause },
+  );
+  const inner = createInMemoryAssetDeliveryStore();
+  const store: AssetDeliveryStore = {
+    ...inner,
+    multipart: {
+      ...inner.multipart!,
+      async complete() {
+        throw failure;
+      },
+    },
+  };
+  const ports: ProjectAssetImportSessionPorts = {
+    ...f.ports,
+    staging: {
+      store,
+      delete: async (locator) => {
+        inner.objects.delete(locator);
+      },
+    },
+  };
+  const created = await createProjectAssetImportSession(
+    {
+      projectId: "p",
+      ownerId: "owner-a",
+      body: {
+        kind: "video",
+        projectAssetId: "asset:assembly",
+        fileName: "clip.mp4",
+        byteLength: 4,
+        contentType: "video/mp4",
+      },
+    },
+    ports,
+  );
+  if (created.status !== 201) throw new Error("session not created");
+
+  const response = await handleProjectAssetImportSessionContent(
+    new Request(
+      `${created.body.upload.url}?upload=complete&uploadId=assembly-failure-0001`,
+      { method: "PUT" },
+    ),
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    ports,
+  );
+
+  expect(response.status).toBe(500);
+  await expect(response.json()).resolves.toEqual({
+    error: failure.message,
+    code: PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED,
+    cause: "ENOSPC",
+  });
 });

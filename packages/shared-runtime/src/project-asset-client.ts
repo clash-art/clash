@@ -343,6 +343,13 @@ export type ProjectAssetHostClient = {
       kind: AssetKind;
       projectAssetId: string;
       duplicateContent?: "allow" | "reject";
+      /**
+       * Client-computed digest the Host may decide replay from before upload.
+       * A provider runs only when the import takes the chunked session path.
+       */
+      sha256?: string | (() => Promise<string>);
+      /** Called when the Host answered with the existing Asset (replay). */
+      onReplay?: () => void;
       onProgress?: AssetImportProgressListener;
     },
   ): Promise<ProjectAssetHostResult<ResolvedAsset>>;
@@ -559,6 +566,8 @@ export function createProjectAssetHostClient(
             ...(input.duplicateContent
               ? { duplicateContent: input.duplicateContent }
               : {}),
+            ...(input.sha256 ? { sha256: input.sha256 } : {}),
+            ...(input.onReplay ? { onReplay: input.onReplay } : {}),
             ...(input.onProgress ? { onProgress: input.onProgress } : {}),
           },
         };

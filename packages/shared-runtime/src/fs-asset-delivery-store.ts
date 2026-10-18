@@ -7,15 +7,28 @@
  * making the platform-agnostic shared modules import `node:*`.
  *
  * Objects become visible only through an atomic rename after digest
- * verification. Import staging has no digest until finalization, so
- * `multipart.complete` neither hashes nor checks when the target digest is `""`.
+ * verification. `multipart.complete` streams the parts into the object one
+ * bounded chunk at a time and hashes them on the way: that one pass checks a
+ * claimed digest, and is the digest of import staging, which claims none.
  */
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
-import { MultipartContentError } from "@clash/asset-sdk/upload-service";
+import {
+  MultipartAssemblyError,
+  MultipartContentError,
+} from "@clash/asset-sdk/upload-service";
 import {
   PROJECT_CLOUD_CONTENT_PART_BYTES,
   type AssetDeliveryStore,
@@ -23,7 +36,24 @@ import {
 
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
+/** The import transport reports an incomplete part set as an assembly failure. */
+const MULTIPART_ASSEMBLY_FAILED = "PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED";
+
+/** An object this store assembled, with the SHA-256 computed while assembling it. */
+export interface FsAssembledObject {
+  /** Host-private file; a caller that moves it owns its bytes from then on. */
+  path: string;
+  /** Lowercase hex SHA-256. */
+  digest: string;
+  size: number;
+}
+
 export interface FsAssetDeliveryStore extends AssetDeliveryStore {
+  /**
+   * The object `multipart.complete` assembled at `locator` in this process,
+   * if it is still that file. Unknown after a restart: read it instead.
+   */
+  assembled(locator: string): Promise<FsAssembledObject | undefined>;
   /** Remove a published object (import staging is deleted after finalize). */
   delete(locator: string): Promise<void>;
   /** Published objects with their file mtime, for abandoned staging sweeps. */
@@ -68,6 +98,76 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
       .filter((n) => /^part-\d+$/.test(n))
       .map((n) => Number(n.slice(5)))
       .sort((a, b) => a - b);
+  type Identity = { dev: number; ino: number; size: number; mtimeMs: number };
+  const sameFile = (a: Identity, b: Identity) =>
+    a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
+  const assembledObjects = new Map<string, Identity & { digest: string }>();
+  /**
+   * The digest of an assembled object lives beside it, so a finalize after a
+   * Host restart still adopts the object instead of hashing it again.
+   */
+  const digestPath = (path: string) => `${path}.sha256`;
+  const readAssembledDigest = async (
+    path: string,
+  ): Promise<{ digest: string; size: number } | undefined> => {
+    const text = await readFile(digestPath(path), "utf8").catch(() => undefined);
+    if (!text) return undefined;
+    try {
+      const value = JSON.parse(text) as {
+        digest?: unknown;
+        size?: unknown;
+      };
+      if (
+        typeof value.digest !== "string" ||
+        !/^[a-f0-9]{64}$/.test(value.digest) ||
+        !Number.isSafeInteger(value.size) ||
+        (value.size as number) < 0
+      )
+        return undefined;
+      return { digest: value.digest, size: value.size as number };
+    } catch {
+      return undefined;
+    }
+  };
+  /**
+   * Streams the parts, in order, into `target` while hashing them, so memory
+   * stays one read chunk whatever the object size. Any failure removes the
+   * partial file.
+   */
+  async function assemble(sources: string[], target: string, byteLength: number) {
+    try {
+      const hash = createHash("sha256");
+      const out = await open(target, "w");
+      try {
+        let written = 0;
+        for (const source of sources) {
+          for await (const chunk of createReadStream(source) as AsyncIterable<Buffer>) {
+            hash.update(chunk);
+            for (let offset = 0; offset < chunk.length; ) {
+              const { bytesWritten } = await out.write(chunk, offset, chunk.length - offset);
+              if (bytesWritten <= 0) throw new Error("Multipart object write made no progress");
+              offset += bytesWritten;
+            }
+            written += chunk.length;
+          }
+        }
+        if (written !== byteLength)
+          throw new Error(`Multipart parts changed during assembly (${written} of ${byteLength} bytes)`);
+        await out.sync();
+        const info = await out.stat();
+        return { digest: hash.digest("hex"), dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs };
+      } finally {
+        await out.close();
+      }
+    } catch (error) {
+      await rm(target, { force: true }).catch(() => undefined);
+      const errno = (error as NodeJS.ErrnoException).code;
+      throw new MultipartAssemblyError(
+        `Multipart object assembly failed${errno ? ` (${errno})` : ""}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  }
   async function* listObjects(
     dir: string,
     prefix: string,
@@ -86,6 +186,8 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
         continue;
       }
       if (!entry.isFile()) continue;
+      // Digest sidecars are part of their object, not objects of their own.
+      if (entry.name.endsWith(".sha256")) continue;
       const info = await stat(join(dir, entry.name));
       yield { locator, createdAt: info.mtimeMs };
     }
@@ -108,9 +210,39 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
       const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
       await writeFile(tmp, bytes);
       await rename(tmp, path);
+      await rm(digestPath(path), { force: true });
+      assembledObjects.delete(locator);
+    },
+    async assembled(locator) {
+      const path = safe(locator);
+      const known = assembledObjects.get(locator);
+      if (known) {
+        const info = await stat(path).catch(() => undefined);
+        if (info?.isFile() && sameFile(info, known)) {
+          return { path, digest: known.digest, size: known.size };
+        }
+        assembledObjects.delete(locator);
+      }
+      const persisted = await readAssembledDigest(path);
+      if (!persisted) return undefined;
+      const info = await stat(path).catch(() => undefined);
+      if (!info?.isFile() || info.size !== persisted.size) return undefined;
+      assembledObjects.set(locator, {
+        dev: info.dev,
+        ino: info.ino,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        digest: persisted.digest,
+      });
+      return { path, digest: persisted.digest, size: persisted.size };
     },
     async delete(locator) {
-      await rm(safe(locator), { force: true });
+      const path = safe(locator);
+      await Promise.all([
+        rm(path, { force: true }),
+        rm(digestPath(path), { force: true }),
+      ]);
+      assembledObjects.delete(locator);
     },
     list() {
       return listObjects(objectsRoot, "");
@@ -170,27 +302,54 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
       async complete(s, beforePublish) {
         const { dir, state } = await live(s);
         if (!state) throw new MultipartContentError(409, "Upload session not begun");
-        // Import staging carries no digest until finalize (the same convention
-        // as the R2 store), so nothing is hashed here: the Host hashes the
-        // bytes once while staging them. A claimed digest is always verified.
-        const hash = s.target.digest === "" ? undefined : createHash("sha256");
-        const chunks: Buffer[] = [];
-        let total = 0;
-        for (const n of await parts(dir)) {
-          const b = await readFile(join(dir, `part-${n}`));
-          hash?.update(b);
-          chunks.push(b);
-          total += b.length;
+        const numbers = await parts(dir);
+        const count = Math.max(
+          1,
+          Math.ceil(s.target.byteLength / PROJECT_CLOUD_CONTENT_PART_BYTES),
+        );
+        if (
+          numbers.length !== count ||
+          numbers.some((partNumber, index) => partNumber !== index + 1)
+        ) {
+          const missing = new Error(
+            `Multipart object is missing a part (${numbers.length} of ${count} present)`,
+          ) as NodeJS.ErrnoException;
+          missing.code = "ENOENT";
+          throw new MultipartContentError(
+            409,
+            "Multipart upload is incomplete",
+            { code: MULTIPART_ASSEMBLY_FAILED, cause: missing },
+          );
         }
-        if (total !== s.target.byteLength) throw new MultipartContentError(409, "Multipart upload is incomplete");
-        if (hash && `sha256:${hash.digest("hex")}` !== s.target.digest)
-          throw new MultipartContentError(400, "Multipart object digest mismatch");
-        await beforePublish();
-        const path = safe(s.target.locator);
-        await mkdir(dirname(path), { recursive: true });
+        const sources = numbers.map((n) => join(dir, `part-${n}`));
         const tmp = join(dir, "assembled");
-        await writeFile(tmp, Buffer.concat(chunks));
-        await rename(tmp, path);
+        const assembled = await assemble(sources, tmp, s.target.byteLength);
+        const path = safe(s.target.locator);
+        const sidecar = digestPath(path);
+        const sidecarTmp = `${sidecar}.${process.pid}.${Date.now()}.tmp`;
+        let published = false;
+        try {
+          // Import staging carries no digest until finalize (the same
+          // convention as the R2 store); a claimed digest is always verified.
+          if (s.target.digest !== "" && `sha256:${assembled.digest}` !== s.target.digest)
+            throw new MultipartContentError(400, "Multipart object digest mismatch");
+          await beforePublish();
+          await mkdir(dirname(path), { recursive: true });
+          await writeFile(
+            sidecarTmp,
+            JSON.stringify({ digest: assembled.digest, size: assembled.size }),
+            { mode: 0o600 },
+          );
+          await rename(tmp, path);
+          published = true;
+          await rename(sidecarTmp, sidecar);
+        } catch (error) {
+          await rm(tmp, { force: true }).catch(() => undefined);
+          await rm(sidecarTmp, { force: true }).catch(() => undefined);
+          if (published) await rm(path, { force: true }).catch(() => undefined);
+          throw error;
+        }
+        assembledObjects.set(s.target.locator, assembled);
         await rm(dir, { recursive: true, force: true });
       },
       async abort(s) {

@@ -26,6 +26,8 @@ export interface ProjectAssetImportSessionClaims {
   kind: AssetKind;
   fileName: string;
   byteLength: number;
+  /** Client-computed digest of the bytes that will be uploaded, when declared. */
+  sha256?: string;
   contentType?: string;
   duplicateContent?: "allow" | "reject";
   metadataHints?: AssetImportMetadataHints;
@@ -71,6 +73,12 @@ function parseClaims(value: unknown): ProjectAssetImportSessionClaims | null {
   if (record.contentType !== undefined && !text(record.contentType))
     return null;
   if (
+    record.sha256 !== undefined &&
+    (typeof record.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(record.sha256))
+  )
+    return null;
+  if (
     record.duplicateContent !== undefined &&
     record.duplicateContent !== "allow" &&
     record.duplicateContent !== "reject"
@@ -91,6 +99,9 @@ function parseClaims(value: unknown): ProjectAssetImportSessionClaims | null {
     kind: record.kind as AssetKind,
     fileName: record.fileName.trim(),
     byteLength: record.byteLength as number,
+    ...(record.sha256 === undefined
+      ? {}
+      : { sha256: record.sha256 as string }),
     ...(record.contentType === undefined
       ? {}
       : { contentType: record.contentType as string }),

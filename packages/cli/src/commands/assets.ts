@@ -6,6 +6,7 @@ import {
   symlinkSync,
   linkSync,
   copyFileSync,
+  createReadStream,
   statSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -69,6 +70,8 @@ export interface AssetImportResult {
   linkMethod?: AssetLinkMethod;
   registered: true;
   registration: ResolvedAsset;
+  /** True when the Host returned an existing Asset and imported nothing. */
+  replayed: boolean;
 }
 
 export interface AssetFileReplaceResult {
@@ -102,6 +105,7 @@ type ProjectImportSnapshot = {
   sourcePath: string;
   status: Awaited<ReturnType<typeof resolveProjectStatus>>;
   kind: AssetKind;
+  replayed: boolean;
   request: Parameters<ProjectAssetHostClient["importFile"]>[0];
 };
 type GlobalImportSnapshot = {
@@ -159,6 +163,13 @@ export function resolveAssetLinkName(
     throw new Error("asset link name must be a single file name");
   }
   return raw.replace(/:/g, "_");
+}
+
+/** One streamed read, run by the client only for a chunked import session. */
+async function hashFileSha256(path: string): Promise<string> {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  return digest.digest("hex");
 }
 
 function createAssetLink(options: {
@@ -343,6 +354,8 @@ export async function importAssetFile(options: {
   client?: ProjectAssetHostClient;
   download?: (assetId: string, projectId: string) => Promise<string | null>;
   createSymlink?: (target: string, path: string) => void;
+  /** Test seam; production uses the streamed SHA-256 above. */
+  hashFile?: (path: string) => Promise<string>;
 }): Promise<AssetImportResult> {
   let snapshot = projectImports.get(options);
   if (!snapshot) {
@@ -367,28 +380,38 @@ export async function importAssetFile(options: {
       sourcePath,
       requestedKind ?? undefined,
     );
-    snapshot = {
+    const request: Parameters<ProjectAssetHostClient["importFile"]>[0] = {
+      projectId: status.projectId,
+      // File-backed: the Host receives the bytes as they are read from disk.
+      file: await openAssetImportFile(sourcePath, fileType.contentType),
+      fileName: basename(sourcePath),
+      kind: fileType.kind,
+      // The SDK runs this only for a chunked import session: the Host can then
+      // answer a replay/duplicate/collision from the digest without receiving
+      // bytes, and a single-shot import pays no extra local read.
+      sha256: () => (options.hashFile ?? hashFileSha256)(sourcePath),
+      ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+      projectAssetId: stableCliImportId(
+        options,
+        options.projectAssetId,
+        projectImportIds,
+        "asset",
+      ),
+      ...(options.duplicateContent
+        ? { duplicateContent: options.duplicateContent }
+        : {}),
+    };
+    const created: ProjectImportSnapshot = {
       sourcePath,
       status,
       kind: fileType.kind,
-      request: {
-        projectId: status.projectId,
-        // File-backed: the Host receives the bytes as they are read from disk.
-        file: await openAssetImportFile(sourcePath, fileType.contentType),
-        fileName: basename(sourcePath),
-        kind: fileType.kind,
-        ...(options.onProgress ? { onProgress: options.onProgress } : {}),
-        projectAssetId: stableCliImportId(
-          options,
-          options.projectAssetId,
-          projectImportIds,
-          "asset",
-        ),
-        ...(options.duplicateContent
-          ? { duplicateContent: options.duplicateContent }
-          : {}),
-      },
+      replayed: false,
+      request,
     };
+    request.onReplay = () => {
+      created.replayed = true;
+    };
+    snapshot = created;
     projectImports.set(options, snapshot);
   }
   const imported = await (
@@ -403,6 +426,7 @@ export async function importAssetFile(options: {
     sourcePath: snapshot.sourcePath,
     registered: true,
     registration: imported.value,
+    replayed: snapshot.replayed,
   };
 
   if (options.link !== false) {
@@ -978,7 +1002,12 @@ assetsCommand
           printJson(publicAssetResult(result));
         } else {
           const link = result.linkPath ? `, link ${result.linkPath}` : "";
-          console.log(`imported Project Asset ${result.assetId}${link}`);
+          const replay = result.replayed
+            ? " (replayed; nothing new was imported)"
+            : "";
+          console.log(
+            `imported Project Asset ${result.assetId}${link}${replay}`,
+          );
         }
         if (!options.assetId?.trim()) {
           // stderr keeps --json stdout parseable.

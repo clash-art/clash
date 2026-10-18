@@ -19,6 +19,9 @@ import {
 } from "./cloud-content-upload.js";
 
 export const PROJECT_ASSET_READ_RECEIPT_HEADER = "x-clash-read-receipt";
+/** Set by a Host when an import returned the existing Asset unchanged. */
+export const PROJECT_ASSET_IMPORT_REPLAY_HEADER =
+  "x-clash-asset-import-replayed";
 
 export interface ProjectAssetHttpConnection {
   endpoint: string;
@@ -53,6 +56,14 @@ export interface ProjectAssetHttpClient {
       projectAssetId: string;
       /** `reject` asks the Host to fail rather than add a second active Asset over the same bytes. */
       duplicateContent?: "allow" | "reject";
+      /**
+       * Client-computed lowercase SHA-256 the Host may decide replay from
+       * before upload. A provider is resolved only when the import takes the
+       * chunked session path, so a single-request import never pays the read.
+       */
+      sha256?: string | (() => Promise<string>);
+      /** Called when the Host answers with the existing Asset (replay header). */
+      onReplay?: () => void;
       /** Browser-observed media facts; the Worker cannot probe the file itself. */
       metadataHints?: AssetImportMetadataHints;
       /** Opts in to a streamed body; see `assetImportRequest`. */
@@ -153,6 +164,8 @@ type ProjectImportCommandSnapshot = {
   kind: AssetKind;
   projectAssetId: string;
   duplicateContent?: "allow" | "reject";
+  sha256?: string | (() => Promise<string>);
+  onReplay?: () => void;
   metadataHints?: AssetImportMetadataHints;
   onProgress?: AssetImportProgressListener;
   chunked?: boolean;
@@ -173,12 +186,21 @@ function snapshotProjectImport(
     ...(input.duplicateContent
       ? { duplicateContent: input.duplicateContent }
       : {}),
+    ...(input.sha256 ? { sha256: input.sha256 } : {}),
+    ...(input.onReplay ? { onReplay: input.onReplay } : {}),
     ...(input.metadataHints
       ? { metadataHints: sanitizeAssetImportMetadataHints(input.metadataHints) }
       : {}),
     ...(input.onProgress ? { onProgress: input.onProgress } : {}),
     ...(input.chunked ? { chunked: true } : {}),
   };
+}
+
+/** Resolve a caller digest only when the session branch actually needs it. */
+async function resolveImportSha256(
+  sha256: string | (() => Promise<string>) | undefined,
+): Promise<string | undefined> {
+  return typeof sha256 === "function" ? sha256() : sha256;
 }
 
 /** Sequential part reader for a source that only exposes `stream()`. */
@@ -383,6 +405,7 @@ export function createProjectAssetHttpClient(
         options.singleShotMaxBytes ?? PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES;
       const base = url.slice(0, -"/import-file".length);
       if (snapshot.chunked === true || snapshot.file.size > maxBytes) {
+        const sha256 = await resolveImportSha256(snapshot.sha256);
         const sessionResponse = await fetch(
           base + "/import-sessions",
           requestInit({
@@ -397,6 +420,7 @@ export function createProjectAssetHttpClient(
               ...(snapshot.duplicateContent
                 ? { duplicateContent: snapshot.duplicateContent }
                 : {}),
+              ...(sha256 ? { sha256 } : {}),
               ...(snapshot.metadataHints
                 ? { metadataHints: snapshot.metadataHints }
                 : {}),
@@ -412,6 +436,16 @@ export function createProjectAssetHttpClient(
               upload?: { url?: unknown };
             }
           | undefined;
+        if (
+          sessionResponse.status === 200 &&
+          sessionResponse.headers.get(PROJECT_ASSET_IMPORT_REPLAY_HEADER) ===
+            "true"
+        ) {
+          // The Host decided the replay from the client digest before issuing
+          // an upload URL; there is no session to drive.
+          snapshot.onReplay?.();
+          return ResolvedAssetSchema.parse(sessionBody);
+        }
         if (
           sessionResponse.status === 501 &&
           sessionBody?.code === "COMMAND_UNAVAILABLE"
@@ -440,6 +474,10 @@ export function createProjectAssetHttpClient(
             `${base}/import-sessions/${encodeURIComponent(sessionId)}/finalize`,
             requestInit({ method: "POST", headers: headers(connected) }),
           );
+          if (
+            finalized.headers.get(PROJECT_ASSET_IMPORT_REPLAY_HEADER) === "true"
+          )
+            snapshot.onReplay?.();
           return ResolvedAssetSchema.parse(await responseBody(finalized));
         }
       }
@@ -461,6 +499,8 @@ export function createProjectAssetHttpClient(
         ...(snapshot.onProgress ? { onProgress: snapshot.onProgress } : {}),
       });
       const response = await fetch(request.url, requestInit(request.init));
+      if (response.headers.get(PROJECT_ASSET_IMPORT_REPLAY_HEADER) === "true")
+        snapshot.onReplay?.();
       return ResolvedAssetSchema.parse(await responseBody(response));
     },
     async admit(input) {

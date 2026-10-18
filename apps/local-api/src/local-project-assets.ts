@@ -55,10 +55,12 @@ import { createLocalMetadataStore } from "./local-metadata-store.js";
 import {
   createLocalResourceStore,
   LocalResourceError,
+  resourceIdForSha256,
   stageLocalResourceInput,
   type LocalResourceProjection,
   type LocalResourceStageInput,
   type LocalResourceStagingProjection,
+  type LocalResourceStoreEvent,
 } from "./local-resource-store.js";
 import {
   canonicalAssetMediaTypeAssertion,
@@ -72,6 +74,7 @@ export type LocalProjectAssetMigrationErrorCode =
   | "PROJECT_ASSET_ID_COLLISION"
   | "PROJECT_ASSET_DUPLICATE_CONTENT"
   | "PROJECT_ASSET_TRASHED"
+  | "PROJECT_ASSET_IMPORT_DIGEST_MISMATCH"
   | "ACTION_ASSET_BINDING_ID_COLLISION"
   | "ACTION_ASSET_BINDING_MATERIALIZATION_CONFLICT"
   | "RESOURCE_DIGEST_UNAVAILABLE"
@@ -102,6 +105,42 @@ export class LocalProjectAssetMigrationError extends Error {
     this.existingProjectAssetIds = options?.existingProjectAssetIds;
   }
 }
+
+/** One install outcome: a replay returns the existing Asset and imports nothing. */
+export interface LocalProjectAssetInstallResult {
+  asset: ResolvedAsset;
+  replayed: boolean;
+}
+
+/**
+ * Either stream/carry bytes for a new Resource, or adopt a file that an
+ * import session already assembled (whose digest is that assembly's one pass).
+ */
+export type LocalProjectAssetInstallInput = {
+  projectId: string;
+  projectAssetId: string;
+  kind: AssetKind;
+  contentType?: string;
+  name?: string;
+  metadata: ProjectAssetMetadata;
+  provenance?: ProjectAssetProvenance;
+  /** `reject` fails instead of adding a second active Asset over bytes the Project already holds. */
+  duplicateContent?: "allow" | "reject";
+  /** A client-computed digest a streamed source must match. */
+  expectedDigest?: string;
+} & (
+  | LocalResourceStageInput
+  | {
+      assembled: {
+        sourcePath: string;
+        digest: string;
+        byteLength: number;
+      };
+      source?: never;
+      bytes?: never;
+      declaredByteLength?: never;
+    }
+);
 
 export interface LocalProjectAssetService {
   materialize(projectId: string): Promise<void>;
@@ -149,19 +188,21 @@ export interface LocalProjectAssetService {
     /** Host-private invariant checked inside the same serialized Project mutation. */
     assertProjectState?: (doc: import("loro-crdt").LoroDoc) => void;
   }): Promise<ResolvedAsset>;
-  installOwned(
-    input: {
-      projectId: string;
-      projectAssetId: string;
-      kind: AssetKind;
-      contentType?: string;
-      name?: string;
-      metadata: ProjectAssetMetadata;
-      provenance?: ProjectAssetProvenance;
-      /** `reject` fails instead of adding a second active Asset over bytes the Project already holds. */
-      duplicateContent?: "allow" | "reject";
-    } & LocalResourceStageInput,
-  ): Promise<ResolvedAsset>;
+  installOwned(input: LocalProjectAssetInstallInput): Promise<ResolvedAsset>;
+  /** Same as `installOwned`, also saying whether the existing Asset was replayed. */
+  installOwnedResult(
+    input: LocalProjectAssetInstallInput,
+  ): Promise<LocalProjectAssetInstallResult>;
+  /**
+   * Decide replay/duplicate/collision/trashed from a client-computed digest
+   * before any bytes are uploaded. Returns the existing Asset for a replay.
+   */
+  inspectExistingImport(input: {
+    projectId: string;
+    projectAssetId: string;
+    sha256: string;
+    duplicateContent?: "allow" | "reject";
+  }): Promise<ResolvedAsset | null>;
   /** Host-private Project membership read; Resource identity is never exposed by public routes. */
   readEntry(
     projectId: string,
@@ -499,6 +540,8 @@ export function createLocalProjectAssetService(options: {
   >;
   replica?: LocalProjectAssetReplica;
   readReceiptVerifier?: AgentReadReceiptVerifier;
+  /** Host log sink for Resource-store events such as an EXDEV copy fallback. */
+  onResourceEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalProjectAssetService {
   const fileReplicas = new FileReplicaStore(`${options.dataDir}/projects`);
   const replica: LocalProjectAssetReplica = options.replica ?? {
@@ -513,6 +556,7 @@ export function createLocalProjectAssetService(options: {
   const resources = createLocalResourceStore({
     dataDir: options.dataDir,
     ...(options.clashRoot ? { clashRoot: options.clashRoot } : {}),
+    ...(options.onResourceEvent ? { onEvent: options.onResourceEvent } : {}),
   });
 
   async function createEntry(
@@ -1264,6 +1308,200 @@ export function createLocalProjectAssetService(options: {
     };
   }
 
+  async function discardStagedQuietly(resourceId: string): Promise<void> {
+    try {
+      await resources.discardStaged(resourceId);
+    } catch (error) {
+      // The import result is already decided; keep the failure visible so the
+      // bytes are not a silent leak.
+      options.onResourceEvent?.({
+        level: "error",
+        event: "local_resource_staging.discard_failed",
+        fields: {
+          resourceId,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  /**
+   * Decides replay/duplicate/trashed before the Resource store copies, adopts,
+   * seals or inspects anything. `resourceId` is already known for an assembled
+   * session; a single-shot import only learns it after its one staging pass.
+   */
+  async function checkImportBeforeInstall(
+    input: Pick<
+      LocalProjectAssetInstallInput,
+      "projectId" | "projectAssetId" | "duplicateContent"
+    >,
+    resourceId: string,
+  ): Promise<{ replay: ProjectAssetEntry | null }> {
+    const projectId = nonEmpty(input.projectId, "projectId");
+    const projectAssetId = nonEmpty(input.projectAssetId, "projectAssetId");
+    await materialize(projectId);
+    const entries = await authority.list(projectId);
+    const sameContent = (entry: ProjectAssetEntry) =>
+      entry.source.resourceId === resourceId;
+    const current = entries.find((entry) => entry.id === projectAssetId);
+    if (current?.lifecycle.state === "active" && sameContent(current)) {
+      return { replay: current };
+    }
+    // Without this, a re-import of a trashed identity reads as an id
+    // collision and hides the one action that brings the Asset back.
+    if (current?.lifecycle.state === "trashed" && sameContent(current)) {
+      throw new LocalProjectAssetMigrationError(
+        "PROJECT_ASSET_TRASHED",
+        `Project Asset ${projectAssetId} already holds this content and is in the trash. Importing does not bring it back: restore it instead.`,
+        { projectAssetId },
+      );
+    }
+    // Asset identities are immutable, so any existing entry under this id
+    // whose content differs would be rejected by createOwned after the bytes
+    // were already adopted and sealed. Decide it before that work.
+    if (current && !sameContent(current)) {
+      throw new LocalProjectAssetMigrationError(
+        "PROJECT_ASSET_ID_COLLISION",
+        `Project Asset ${projectAssetId} already identifies different immutable content. An existing Asset is never overwritten: read ${projectAssetId} to use it, or publish this content under a new Project Asset ID.`,
+        { projectAssetId },
+      );
+    }
+    if (input.duplicateContent === "reject" && !current) {
+      const existingProjectAssetIds = entries
+        .filter(
+          (entry) => entry.lifecycle.state === "active" && sameContent(entry),
+        )
+        .map((entry) => entry.id)
+        .sort();
+      if (existingProjectAssetIds.length > 0) {
+        throw new LocalProjectAssetMigrationError(
+          "PROJECT_ASSET_DUPLICATE_CONTENT",
+          `This content is already imported as Project Asset ${existingProjectAssetIds.join(", ")}. Nothing was imported as ${projectAssetId}.`,
+          { projectAssetId, existingProjectAssetIds },
+        );
+      }
+    }
+    return { replay: null };
+  }
+
+  async function existingResolved(
+    projectId: string,
+    projectAssetId: string,
+  ): Promise<ResolvedAsset> {
+    // No inspection or representation work: the Asset already exists.
+    const resolved = await client.read({ projectId, projectAssetId });
+    if (!resolved) {
+      throw new LocalProjectAssetMigrationError(
+        "PROJECT_ASSET_NOT_FOUND",
+        `Project Asset ${projectAssetId} is not available in Project ${projectId}.`,
+      );
+    }
+    return resolved;
+  }
+
+  async function publishInstalledInput(
+    input: LocalProjectAssetInstallInput,
+    staged: LocalResourceStagingProjection,
+  ): Promise<ResolvedAsset> {
+    return publishInstalled({
+      projectId: nonEmpty(input.projectId, "projectId"),
+      projectAssetId: nonEmpty(input.projectAssetId, "projectAssetId"),
+      kind: input.kind,
+      resourceId: staged.resourceId,
+      ...(input.name ? { name: input.name } : {}),
+      metadata: {
+        ...input.metadata,
+        bytes: staged.byteLength,
+        ...(input.contentType ? { contentType: input.contentType } : {}),
+        ...(input.name && !input.metadata.originalName
+          ? { originalName: input.name }
+          : {}),
+      },
+      ...(input.provenance ? { provenance: input.provenance } : {}),
+    });
+  }
+
+  async function installOwnedResult(
+    input: LocalProjectAssetInstallInput,
+  ): Promise<LocalProjectAssetInstallResult> {
+    const projectId = nonEmpty(input.projectId, "projectId");
+    const projectAssetId = nonEmpty(input.projectAssetId, "projectAssetId");
+    if ("assembled" in input) {
+      if (
+        input.expectedDigest !== undefined &&
+        input.assembled.digest !== input.expectedDigest
+      ) {
+        throw new LocalProjectAssetMigrationError(
+          "PROJECT_ASSET_IMPORT_DIGEST_MISMATCH",
+          "Import session bytes do not match the declared sha256.",
+          { projectAssetId },
+        );
+      }
+      // The session assembly hashed these bytes once; deciding before adoption
+      // means a duplicate or replay never writes into the Resource store.
+      const resourceId = resourceIdForSha256(input.assembled.digest);
+      const decision = await checkImportBeforeInstall(input, resourceId);
+      if (decision.replay) {
+        return {
+          asset: await existingResolved(projectId, projectAssetId),
+          replayed: true,
+        };
+      }
+      const staged = await resources.adoptAssembled(input.assembled);
+      try {
+        return {
+          asset: await publishInstalledInput(input, staged),
+          replayed: false,
+        };
+      } catch (error) {
+        await discardStagedQuietly(staged.resourceId);
+        throw error;
+      }
+    }
+    const staged = await stageLocalResourceInput(resources, input, input.name);
+    try {
+      const decision = await checkImportBeforeInstall(input, staged.resourceId);
+      if (decision.replay) {
+        await discardStagedQuietly(staged.resourceId);
+        return {
+          asset: await existingResolved(projectId, projectAssetId),
+          replayed: true,
+        };
+      }
+      return {
+        asset: await publishInstalledInput(input, staged),
+        replayed: false,
+      };
+    } catch (error) {
+      await discardStagedQuietly(staged.resourceId);
+      throw error;
+    }
+  }
+
+  async function inspectExistingImport(input: {
+    projectId: string;
+    projectAssetId: string;
+    sha256: string;
+    duplicateContent?: "allow" | "reject";
+  }): Promise<ResolvedAsset | null> {
+    const projectId = nonEmpty(input.projectId, "projectId");
+    const projectAssetId = nonEmpty(input.projectAssetId, "projectAssetId");
+    const resourceId = resourceIdForSha256(input.sha256);
+    const decision = await checkImportBeforeInstall(
+      {
+        projectId,
+        projectAssetId,
+        ...(input.duplicateContent === undefined
+          ? {}
+          : { duplicateContent: input.duplicateContent }),
+      },
+      resourceId,
+    );
+    return decision.replay
+      ? existingResolved(projectId, projectAssetId)
+      : null;
+  }
+
   return {
     materialize,
 
@@ -1323,59 +1561,12 @@ export function createLocalProjectAssetService(options: {
     },
 
     async installOwned(input) {
-      const staged = await stageLocalResourceInput(
-        resources,
-        input,
-        input.name,
-      );
-      const projectId = nonEmpty(input.projectId, "projectId");
-      const projectAssetId = nonEmpty(input.projectAssetId, "projectAssetId");
-      await materialize(projectId);
-      const entries = await authority.list(projectId);
-      const sameContent = (entry: ProjectAssetEntry) =>
-        entry.source.resourceId === staged.resourceId;
-      const current = entries.find((entry) => entry.id === projectAssetId);
-      // Without this, a re-import of a trashed identity reads as an id
-      // collision and hides the one action that brings the Asset back.
-      if (current?.lifecycle.state === "trashed" && sameContent(current)) {
-        throw new LocalProjectAssetMigrationError(
-          "PROJECT_ASSET_TRASHED",
-          `Project Asset ${projectAssetId} already holds this content and is in the trash. Importing does not bring it back: restore it instead.`,
-          { projectAssetId },
-        );
-      }
-      if (input.duplicateContent === "reject" && !current) {
-        const existingProjectAssetIds = entries
-          .filter(
-            (entry) => entry.lifecycle.state === "active" && sameContent(entry),
-          )
-          .map((entry) => entry.id)
-          .sort();
-        if (existingProjectAssetIds.length > 0) {
-          throw new LocalProjectAssetMigrationError(
-            "PROJECT_ASSET_DUPLICATE_CONTENT",
-            `This content is already imported as Project Asset ${existingProjectAssetIds.join(", ")}. Nothing was imported as ${projectAssetId}.`,
-            { projectAssetId, existingProjectAssetIds },
-          );
-        }
-      }
-      return publishInstalled({
-        projectId,
-        projectAssetId,
-        kind: input.kind,
-        resourceId: staged.resourceId,
-        ...(input.name ? { name: input.name } : {}),
-        metadata: {
-          ...input.metadata,
-          bytes: staged.byteLength,
-          ...(input.contentType ? { contentType: input.contentType } : {}),
-          ...(input.name && !input.metadata.originalName
-            ? { originalName: input.name }
-            : {}),
-        },
-        ...(input.provenance ? { provenance: input.provenance } : {}),
-      });
+      return (await installOwnedResult(input)).asset;
     },
+
+    installOwnedResult,
+
+    inspectExistingImport,
 
     async readEntry(projectIdInput, projectAssetId) {
       const projectId = nonEmpty(projectIdInput, "projectId");

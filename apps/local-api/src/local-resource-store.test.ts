@@ -646,3 +646,40 @@ it("retains an opaque replicated Resource identity only after local facts verifi
   expect(await readFile(installed.path)).toEqual(await readFile(source.path));
   await expect(store.installReplica({ resource: { ...remote, kind: "video" }, verifiedResourceId: source.resource.id })).rejects.toThrow(/facts/i);
 });
+
+it("adopts an assembled file by renaming its inode into staging, without copying or hashing it again", async () => {
+  const { clashRoot, store } = await fixture();
+  const bytes = new TextEncoder().encode("assembled resource bytes");
+  const digest = digestOf(bytes);
+  const sourcePath = join(clashRoot, "assembled-object.bin");
+  await writeFile(sourcePath, bytes);
+
+  const staged = await store.adoptAssembled({
+    sourcePath,
+    digest,
+    byteLength: bytes.byteLength,
+  });
+
+  expect(staged).toMatchObject({
+    resourceId: resourceIdForSha256(digest),
+    digest,
+    byteLength: bytes.byteLength,
+  });
+  // A rename moves the inode; only a fallback copy would leave the source.
+  await expect(stat(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+  const sealed = await store.seal({ receipt: staged.receipt, kind: "video" });
+  expect(await readFile(sealed.path)).toEqual(Buffer.from(bytes));
+});
+
+it("discards staged bytes without touching a sealed Resource", async () => {
+  const { store } = await fixture();
+  const bytes = new TextEncoder().encode("staged then discarded");
+  const staged = await store.stage({ bytes });
+  const sealed = await store.seal({ receipt: staged.receipt, kind: "image" });
+
+  await store.discardStaged(staged.resourceId);
+
+  await expect(store.resolveStaged(staged.resourceId)).resolves.toBeUndefined();
+  await expect(stat(staged.path)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(sealed.path)).toEqual(Buffer.from(bytes));
+});
