@@ -33,9 +33,11 @@ import {
   createProjectAssetImportSession,
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
+  PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
   type ProjectAssetImportSessionPorts,
 } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
 import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
+import { apiNodeLog } from "./log.ts";
 import {
   PROJECT_ASSET_IMPORT_MAX_BYTES,
   sanitizeAssetImportMetadataHints,
@@ -56,6 +58,7 @@ const fail = (status: 400 | 404 | 409, message: string): never => {
 };
 const RESOURCE_QUERY =
   "SELECT resource FROM project_resource WHERE project_id=$1 AND resource_id=$2";
+const importStagingLog = apiNodeLog.child("project-asset-import-staging");
 
 /** The Resource admitted to this Project under `resourceId`, or null. */
 export async function readProjectResource(
@@ -185,6 +188,13 @@ export function createProjectAssetRoutes(options: {
     staging: {
       store: importStaging,
       delete: (locator) => importStaging.delete(locator),
+      onCleanupFailure(locator, error) {
+        importStagingLog.error("project_asset_import_staging.cleanup_failed", {
+          code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+          locator,
+          error,
+        });
+      },
     },
     uploadUrl: (sessionId) =>
       `${options.publicUrl.replace(/\/+$/u, "")}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-sessions/${encodeURIComponent(sessionId)}/content`,

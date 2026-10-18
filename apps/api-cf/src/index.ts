@@ -40,13 +40,22 @@ const app = createApp();
 export default {
   fetch: app.fetch,
   scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    // Separate waitUntil calls: one failing job must not cancel the others.
+    ctx.waitUntil(recoverCloudDurableRuns(env));
     ctx.waitUntil(
-      Promise.all([
-        recoverCloudDurableRuns(env),
-        import("./services/project-content-multipart").then((m) =>
-          m.cleanupProjectContentUploads(env.R2_BUCKET),
+      import("./services/project-content-multipart").then((m) =>
+        m.cleanupProjectContentUploads(env.R2_BUCKET),
+      ),
+    );
+    // Lazy like the other cron graphs; abandoned import staging has no hero
+    // request to piggyback on.
+    ctx.waitUntil(
+      import("./services/project-asset-import-staging").then((m) =>
+        m.sweepProjectAssetImportStagingBucket(
+          env.R2_BUCKET,
+          serverLog.child("project-asset-import-staging"),
         ),
-      ]),
+      ),
     );
   },
 };

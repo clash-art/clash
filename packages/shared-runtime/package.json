@@ -208,6 +208,11 @@
       "import": "./src/render-server.ts",
       "default": "./dist/render-server.js"
     },
+    "./fs-import-staging-sweep": {
+      "types": "./src/fs-import-staging-sweep.ts",
+      "import": "./src/fs-import-staging-sweep.ts",
+      "default": "./dist/fs-import-staging-sweep.js"
+    },
     "./signed-capability": {
       "types": "./src/signed-capability.ts",
       "import": "./src/signed-capability.ts",

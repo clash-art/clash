@@ -85,8 +85,11 @@ import {
   createProjectAssetImportSession,
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
+  PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
   type ProjectAssetImportSessionPorts,
 } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
+import { sweepFsProjectAssetImportStaging } from "@clash/shared-runtime/fs-import-staging-sweep";
+import { createStructuredLogger } from "@clash/shared-runtime/logging";
 import {
   VOICE_INPUT_DISABLED_MESSAGE,
   VoiceInputError,
@@ -3632,6 +3635,10 @@ function modelRoutesForProviderAccount(
 }
 
 const backgroundWorkDrains = new WeakMap<Hono, () => Promise<void>>();
+const projectAssetImportLog = createStructuredLogger({
+  component: "local-api",
+  module: "project-asset-import",
+});
 
 /**
  * Wait for work an app started after answering a request, such as the
@@ -3766,6 +3773,18 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   const importStaging = createFsAssetDeliveryStore(
     join(options.dataDir, "asset-import-sessions"),
   );
+  let importStagingSweep: Promise<void> | undefined;
+  const sweepImportStaging = () =>
+    (importStagingSweep = sweepFsProjectAssetImportStaging(
+      importStaging,
+      projectAssetImportLog,
+    ));
+  const importStagingSweepTimer = setInterval(
+    () => void sweepImportStaging(),
+    10 * 60 * 1000,
+  );
+  importStagingSweepTimer.unref?.();
+  void sweepImportStaging();
   let importSessionSecret: Promise<string> | undefined;
   const importSessionSecretAt = () =>
     (importSessionSecret ??= resolveProviderSecretKey(options.dataDir).then(
@@ -3791,6 +3810,16 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     staging: {
       store: importStaging,
       delete: (locator) => importStaging.delete(locator),
+      onCleanupFailure(locator, error) {
+        projectAssetImportLog.error(
+          "project_asset_import_staging.cleanup_failed",
+          {
+            code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+            locator,
+            error,
+          },
+        );
+      },
     },
     uploadUrl: (sessionId) =>
       `${origin}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-sessions/${encodeURIComponent(sessionId)}/content`,
@@ -4135,7 +4164,11 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     options.publicAssetStorage ??
     createPublicAssetStorageService({ dataDir: options.dataDir });
   const app = new Hono();
-  backgroundWorkDrains.set(app, () => projectMetadataReplication.idle());
+  backgroundWorkDrains.set(app, async () => {
+    clearInterval(importStagingSweepTimer);
+    await importStagingSweep;
+    await projectMetadataReplication.idle();
+  });
   const generatorProduct =
     options.generatorProjectAuthority && options.resolveGeneratorDefinition
       ? createLocalGeneratorProductService({

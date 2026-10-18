@@ -8,6 +8,8 @@ import {
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
   PROJECT_ASSET_IMPORT_SESSION_TTL_MS,
+  PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+  sweepProjectAssetImportStaging,
   type ProjectAssetImportSessionPorts,
 } from "./project-asset-import-sessions.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -271,6 +273,94 @@ it("returns the committed Asset for an idempotent finalize retry", async () => {
   expect(again).toEqual(first);
   expect(f.commit).toHaveBeenCalledOnce();
   expect(f.ports.resolveCommitted).toHaveBeenCalledOnce();
+});
+
+it("keeps the 201 when post-commit staging cleanup fails and leaves it for the sweep", async () => {
+  const f = fixture();
+  const created = await f.session();
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+
+  const cleanupFailure = new Error("staging volume unavailable");
+  const onCleanupFailure = vi.fn();
+  let deleteAttempts = 0;
+  f.ports.staging = {
+    ...f.ports.staging,
+    // The post-commit delete fails; the sweep's retry succeeds.
+    delete: async (locator) => {
+      deleteAttempts += 1;
+      if (deleteAttempts === 1) throw cleanupFailure;
+      f.staging.objects.delete(locator);
+    },
+    onCleanupFailure,
+  };
+
+  const finalized = await finalizeProjectAssetImportSession(
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    f.ports,
+  );
+  expect(finalized).toEqual({ status: 201, body: asset });
+  expect(onCleanupFailure).toHaveBeenCalledOnce();
+  const [locator, error] = onCleanupFailure.mock.calls[0]!;
+  expect(locator).toBe(claims.stagingLocator);
+  expect(error).toMatchObject({
+    code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+    locator: claims.stagingLocator,
+    message: expect.stringContaining("staging volume unavailable"),
+  });
+  // The object is still listed, so the sweep can retry it.
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(true);
+
+  const swept = await sweepProjectAssetImportStaging({
+    now: SESSION_START + 2 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS + 1,
+    list: () => [{ locator: claims.stagingLocator, createdAt: SESSION_START }],
+    delete: (entryLocator) => f.ports.staging.delete(entryLocator),
+  });
+  expect(swept).toEqual({ scanned: 1, deleted: 1, failed: [] });
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
+});
+
+it("sweeps staging older than the default cutoff and keeps young entries", async () => {
+  const now = SESSION_START + 10 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS;
+  const deleted: string[] = [];
+  const result = await sweepProjectAssetImportStaging({
+    now,
+    list: () => [
+      { locator: "old", createdAt: now - 2 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS - 1 },
+      { locator: "young", createdAt: now - PROJECT_ASSET_IMPORT_SESSION_TTL_MS },
+    ],
+    delete: async (locator) => {
+      deleted.push(locator);
+    },
+  });
+  expect(result).toEqual({ scanned: 2, deleted: 1, failed: [] });
+  expect(deleted).toEqual(["old"]);
+});
+
+it("reports one failed delete and continues sweeping the rest", async () => {
+  const now = SESSION_START + 10 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS;
+  const deleted: string[] = [];
+  const result = await sweepProjectAssetImportStaging(
+    {
+      now,
+      list: () => [
+        { locator: "bad", createdAt: now - 3 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS },
+        { locator: "good", createdAt: now - 3 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS },
+      ],
+      delete: async (locator) => {
+        if (locator === "bad") throw new Error("permission denied");
+        deleted.push(locator);
+      },
+    },
+    { olderThanMs: 2 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS },
+  );
+  expect(result).toEqual({
+    scanned: 2,
+    deleted: 1,
+    failed: [{ locator: "bad", message: "permission denied" }],
+  });
+  expect(deleted).toEqual(["good"]);
 });
 
 it("serves the multipart protocol on the signed upload URL", async () => {
