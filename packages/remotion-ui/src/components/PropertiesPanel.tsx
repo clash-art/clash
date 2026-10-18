@@ -410,18 +410,16 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
         {label}
       </span>
       <div className="flex shrink-0 items-center" data-keyframe-controls={label}>
-        {active && (
-          <RemotionButton
-            type="button"
-            aria-label={`Previous ${label} keyframe`}
-            title={`上一个${name}关键帧`}
-            disabled={previousFrame === null}
-            onClick={() => navigate(previousFrame)}
-            className={keyframeArrowClassName}
-          >
-            <span aria-hidden="true">‹</span>
-          </RemotionButton>
-        )}
+        <RemotionButton
+          type="button"
+          aria-label={`Previous ${label} keyframe`}
+          title={`上一个${name}关键帧`}
+          disabled={previousFrame === null}
+          onClick={() => navigate(previousFrame)}
+          className={keyframeArrowClassName}
+        >
+          <span aria-hidden="true">‹</span>
+        </RemotionButton>
         <RemotionButton
           type="button"
           aria-label={`${currentKey ? 'Remove' : 'Add'} ${label} keyframe at current frame`}
@@ -444,18 +442,16 @@ const KeyframeControlHeader: React.FC<KeyframeControlHeaderProps> = ({
             />
           </svg>
         </RemotionButton>
-        {active && (
-          <RemotionButton
-            type="button"
-            aria-label={`Next ${label} keyframe`}
-            title={`下一个${name}关键帧`}
-            disabled={nextFrame === null}
-            onClick={() => navigate(nextFrame)}
-            className={keyframeArrowClassName}
-          >
-            <span aria-hidden="true">›</span>
-          </RemotionButton>
-        )}
+        <RemotionButton
+          type="button"
+          aria-label={`Next ${label} keyframe`}
+          title={`下一个${name}关键帧`}
+          disabled={nextFrame === null}
+          onClick={() => navigate(nextFrame)}
+          className={keyframeArrowClassName}
+        >
+          <span aria-hidden="true">›</span>
+        </RemotionButton>
       </div>
     </div>
   );

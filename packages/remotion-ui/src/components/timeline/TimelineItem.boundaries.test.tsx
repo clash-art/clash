@@ -10,13 +10,13 @@ const item: Item = { id: 'title', type: 'text', color: '#fff', text: '大队委�
 const track: Track = { id: 'titles', name: 'Titles', category: 'text', items: [item] };
 const draw = (selected: boolean) => <EditorProvider initialState={{ tracks: [track] }}><TimelineItem item={item} track={track} trackId={track.id} pixelsPerFrame={2} isSelected={selected} assets={[]} onSelect={() => {}} onDelete={() => {}} onUpdate={() => {}} /></EditorProvider>;
 
-it('keeps keyframe hit targets below the complete text label', () => {
+it('puts keyframe markers on the top edge without reserving a band below the text label', () => {
   const { container } = render(draw(true));
   const marker = container.querySelector<HTMLElement>('[data-timeline-keyframe-marker]')!;
   const label = container.querySelector<HTMLElement>('[title="大队委竞选"]')!;
-  const clip = marker.parentElement!;
-  const markerTop = parseFloat(clip.style.height) - 4 - parseFloat(marker.style.bottom) - parseFloat(marker.style.height);
-  expect(parseFloat(label.style.height)).toBeLessThanOrEqual(markerTop);
+  expect(parseFloat(marker.style.top)).toBe(-parseFloat(marker.style.height) / 2);
+  expect(marker.style.bottom).toBe('');
+  // The label may use the full clip height again; markers only overlap its top border.
   expect(parseFloat(label.style.height)).toBeGreaterThanOrEqual(24);
 });
 

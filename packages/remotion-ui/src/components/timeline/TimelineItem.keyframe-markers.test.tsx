@@ -45,6 +45,14 @@ it('marks the union of keyframe frames on the selected clip only', () => {
     ['45', 'opacity'],
   ]);
   expect(markers[1]!.getAttribute('title')).toBe('位置 + 缩放关键帧 · 00:00:02:00');
+  // Small cyan squares on the clip's top edge.
+  for (const marker of markers) {
+    const square = marker.querySelector<HTMLElement>('[data-keyframe-square]')!;
+    expect(marker.dataset.keyframeGlyph).toBe('square');
+    expect(square.style.width).toBe(square.style.height);
+    expect(square.style.background).toContain('#22d3ee');
+    expect(parseFloat(marker.style.top)).toBeLessThan(0);
+  }
 });
 
 it('seeks the playhead to a marker on click', () => {

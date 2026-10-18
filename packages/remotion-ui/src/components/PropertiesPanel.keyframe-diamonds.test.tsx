@@ -174,9 +174,17 @@ describe("CapCut-style keyframe diamonds", () => {
     expect((screen.getByRole("button", { name: "Previous Position keyframe" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("hides ‹ › for a property without keyframes", () => {
+  it.each(["Position", "Scale", "Rotation", "Opacity"])("ends the %s row with ‹ ◇ › even before it has keyframes", (label) => {
     mount(image());
-    expect(screen.queryByRole("button", { name: "Previous Rotation keyframe" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Next Rotation keyframe" })).toBeNull();
+    const group = document.querySelector(`[data-keyframe-controls="${label}"]`)!;
+    const buttons = [...group.querySelectorAll("button")] as HTMLButtonElement[];
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+      `Previous ${label} keyframe`,
+      `Add ${label} keyframe at current frame`,
+      `Next ${label} keyframe`,
+    ]);
+    expect(buttons[0]!.disabled).toBe(true);
+    expect(buttons[1]!.disabled).toBe(false);
+    expect(buttons[2]!.disabled).toBe(true);
   });
 });
