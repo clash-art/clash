@@ -1,0 +1,12 @@
+MEASURE #246 per-frame | 1 socket inbound, 1 s | frames=100 | D1 checks=100
+MEASURE #246 per-frame | 1 socket inbound, 30 s | frames=3000 | D1 checks=3000
+MEASURE #246 per-frame | 20 sockets same user, broadcasts, 1 s | frames=100 | D1 checks=100
+MEASURE #246 per-frame | 20 sockets same user, broadcasts, 30 s | frames=3000 | D1 checks=3000
+MEASURE bounded 5s | 1 socket inbound, 1 s | frames=100 | D1 checks=1
+MEASURE bounded 5s | 1 socket inbound, 30 s | frames=3000 | D1 checks=6
+MEASURE bounded 5s | 20 sockets same user, broadcasts, 1 s | frames=100 | D1 checks=1
+MEASURE bounded 5s | 20 sockets same user, broadcasts, 30 s | frames=3000 | D1 checks=6
+MEASURE pre-#246 27a8adc4 | 1 socket inbound, 1 s | frames=100 | D1 checks=1
+MEASURE pre-#246 27a8adc4 | 1 socket inbound, 30 s | frames=3000 | D1 checks=6
+MEASURE pre-#246 27a8adc4 | 20 sockets same user, broadcasts, 1 s | frames=100 | D1 checks=1
+MEASURE pre-#246 27a8adc4 | 20 sockets same user, broadcasts, 30 s | frames=3000 | D1 checks=6

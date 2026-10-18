@@ -1,0 +1,4 @@
+sign-out: 200
+coded error visible after 4409 ms
+shown: Your session expired or your access to this project was revoked. Sign in again, then retry. Your local edits are kept. [PROJECT_AUTHORIZATION_REVOKED]
+ws closed: wss://clash-web-staging.hrhrngxy.workers.dev/sync/6a08f319-fbf0-4d3d-b5ba-d5d4d0f478f1?protocol=loro-v1

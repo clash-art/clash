@@ -1,0 +1,14 @@
+active trial 1: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 4057 ms after revoke
+active trial 2: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 1394 ms after revoke
+active trial 3: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 2457 ms after revoke
+active trial 4: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 3789 ms after revoke
+active trial 5: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 2508 ms after revoke
+active summary: 5/5 closed coded; min 1394 ms, median 2508 ms, max 4057 ms
+control socket (valid session, idle): still open
+idle trial 1: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 5157 ms after revoke
+idle trial 2: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 4863 ms after revoke
+idle trial 3: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 1216 ms after revoke
+idle trial 4: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 4345 ms after revoke
+idle trial 5: closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." 4270 ms after revoke
+idle summary: 5/5 closed coded; min 1216 ms, median 4345 ms, max 5157 ms
+control socket (valid session, idle): still open
