@@ -17,6 +17,7 @@ import {
   listTextRevisionHistory,
   readTextRevisionContent,
   textRevisionContentHeaders,
+  type TextRevisionBlobPort,
   type TextRevisionPorts,
 } from "@clash/shared-runtime/cloud-project-host/text-revisions";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
@@ -24,17 +25,79 @@ import type { PostgresTransactionPort } from "@clash/shared-runtime/project-clou
 // Project ids are server-issued; anything else never names a directory.
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
-export function createTextRevisionRoutes(options: {
-  db: PostgresTransactionPort;
-  directory: string;
-}) {
-  const app = new Hono<{ Variables: { userId: string } }>();
-  const root = resolve(options.directory);
+/** A missing body is ENOENT; every other filesystem failure must surface. */
+export class TextRevisionStorageError extends Error {
+  readonly code = "TEXT_REVISION_STORAGE_FAILED";
+  readonly status = 500;
+
+  constructor(cause: unknown) {
+    const errno = (cause as { code?: unknown } | null)?.code;
+    super(
+      `Text revision storage failed (${
+        typeof errno === "string" && errno
+          ? errno
+          : typeof errno === "number"
+            ? String(errno)
+            : "unknown"
+      })`,
+      { cause },
+    );
+    this.name = "TextRevisionStorageError";
+  }
+}
+
+const isMissing = (error: unknown): boolean =>
+  (error as { code?: unknown } | null)?.code === "ENOENT";
+
+export function createTextRevisionBlobPort(
+  directory: string,
+): TextRevisionBlobPort {
+  const root = resolve(directory);
   const blobPath = (projectId: string, hash: string) => {
     if (!SAFE_ID.test(projectId) || !/^[a-f0-9]{16}$/.test(hash))
       throw new Error("Unsafe text revision blob path");
     return join(root, projectId, `${hash}.md`);
   };
+  return {
+    async read(projectId, hash) {
+      const path = blobPath(projectId, hash);
+      try {
+        return await readFile(path, "utf8");
+      } catch (error) {
+        if (isMissing(error)) return null;
+        throw new TextRevisionStorageError(error);
+      }
+    },
+    async has(projectId, hash) {
+      const path = blobPath(projectId, hash);
+      try {
+        return (await stat(path)).isFile();
+      } catch (error) {
+        if (isMissing(error)) return false;
+        throw new TextRevisionStorageError(error);
+      }
+    },
+    async write(projectId, hash, content) {
+      const target = blobPath(projectId, hash);
+      try {
+        await mkdir(join(root, projectId), { recursive: true });
+        // Write-then-rename: a crash never leaves a truncated final body.
+        const temporary = `${target}.${randomUUID()}.tmp`;
+        await writeFile(temporary, content, "utf8");
+        await rename(temporary, target);
+      } catch (error) {
+        throw new TextRevisionStorageError(error);
+      }
+    },
+  };
+}
+
+export function createTextRevisionRoutes(options: {
+  db: PostgresTransactionPort;
+  directory: string;
+}) {
+  const app = new Hono<{ Variables: { userId: string } }>();
+  const blobs = createTextRevisionBlobPort(options.directory);
   const ports = (userId: string): TextRevisionPorts => ({
     async canAccessProject(projectId) {
       if (!SAFE_ID.test(projectId)) return false;
@@ -78,22 +141,7 @@ export function createTextRevisionRoutes(options: {
         );
       },
     },
-    blobs: {
-      read: (projectId, hash) =>
-        readFile(blobPath(projectId, hash), "utf8").catch(() => null),
-      has: (projectId, hash) =>
-        stat(blobPath(projectId, hash))
-          .then((info) => info.isFile())
-          .catch(() => false),
-      async write(projectId, hash, content) {
-        const target = blobPath(projectId, hash);
-        await mkdir(join(root, projectId), { recursive: true });
-        // Write-then-rename: a crash never leaves a truncated final body.
-        const temporary = `${target}.${randomUUID()}.tmp`;
-        await writeFile(temporary, content, "utf8");
-        await rename(temporary, target);
-      },
-    },
+    blobs,
   });
 
   app.post("/api/v1/text-revisions", async (c) => {

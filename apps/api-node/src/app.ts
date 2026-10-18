@@ -20,6 +20,8 @@ import { createPersonalAssetRoutes } from "./personal-assets.ts";
 import type { NodeAuth } from "./auth.ts";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { HTTPException } from "hono/http-exception";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ProjectCloudAdmissionRequestSchema } from "@clash/shared-types";
 import { authenticateApiToken } from "@clash/shared-runtime/project-authorization";
 import { createPostgresProjectAuthorizationStore } from "@clash/shared-runtime/project-authorization-postgres";
@@ -28,6 +30,7 @@ import {
   type PostgresTransactionPort,
 } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import { createNodeVoiceInputRoutes } from "./voice-input.ts";
+import { apiNodeLog, errorFacts } from "./log.ts";
 
 export function createNodeCloudApp(options: {
   db: PostgresTransactionPort;
@@ -285,12 +288,35 @@ export function createNodeCloudApp(options: {
       ? c.json({ admission })
       : c.json({ error: "Project not found" }, 404);
   });
-  app.onError(
-    () =>
-      new Response(JSON.stringify({ error: "Cloud request failed" }), {
-        status: 500,
-        headers: { "content-type": "application/json" },
-      }),
-  );
+  app.onError((error, c) => {
+    // Hono's own refusals (body limit, malformed input) already carry their status and response.
+    if (error instanceof HTTPException) return error.getResponse();
+    apiNodeLog.error("http.unhandled_error", {
+      path: c.req.path,
+      ...errorFacts(error),
+    });
+    const failure = error as
+      | { code?: unknown; status?: unknown; message?: unknown }
+      | null;
+    const code = failure?.code;
+    const status = failure?.status;
+    if (
+      typeof code === "string" &&
+      /^[A-Z][A-Z0-9_]+$/.test(code) &&
+      typeof status === "number" &&
+      Number.isInteger(status) &&
+      status >= 400 &&
+      status <= 599 &&
+      typeof failure?.message === "string"
+    )
+      return c.json(
+        { error: failure.message, code },
+        status as ContentfulStatusCode,
+      );
+    return c.json(
+      { error: "Cloud request failed", code: "INTERNAL_ERROR" },
+      500,
+    );
+  });
   return app;
 }
