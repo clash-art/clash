@@ -57,6 +57,8 @@ import {
   parseProjectAssetDeleteOperationId,
   type ProjectAssetLifecycleCommand,
 } from "@clash/shared-runtime/cloud-project-host/project-assets";
+import { PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
+import { serverLog } from "../../logger";
 
 const unauthorized = (c: any) =>
   c.json({ error: "unauthorized" }, 401);
@@ -421,7 +423,17 @@ async function stageImportBody(
     await placeContent(env, tenantId, stagedKey, claimed);
     return claimed;
   } finally {
-    await env.R2_BUCKET.delete(stagedKey).catch(() => undefined);
+    try {
+      await env.R2_BUCKET.delete(stagedKey);
+    } catch (error) {
+      // The sweep is the retry path: the object stays under the import prefix
+      // and is removed on a later pass.
+      serverLog.error("project_asset_import_staging.cleanup_failed", {
+        code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+        locator: stagedKey,
+        error,
+      });
+    }
   }
 }
 
@@ -703,9 +715,18 @@ export function createProjectAssetRoutes() {
               : {}),
           });
         } finally {
-          await c.env.R2_BUCKET.delete(session.stagingKey).catch(
-            () => undefined,
-          );
+          try {
+            await c.env.R2_BUCKET.delete(session.stagingKey);
+          } catch (error) {
+            // The Asset is committed, so the finalize still returns 201. The
+            // sweep is the retry path: the object stays listed and is removed
+            // by the next sweep.
+            serverLog.error("project_asset_import_staging.cleanup_failed", {
+              code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+              locator: session.stagingKey,
+              error,
+            });
+          }
         }
         return c.json(
           await projectAsset(

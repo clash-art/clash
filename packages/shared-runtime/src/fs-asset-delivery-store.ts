@@ -26,19 +26,30 @@ const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 export interface FsAssetDeliveryStore extends AssetDeliveryStore {
   /** Remove a published object (import staging is deleted after finalize). */
   delete(locator: string): Promise<void>;
+  /** Published objects with their file mtime, for abandoned staging sweeps. */
+  list(): AsyncIterable<{ locator: string; createdAt: number }>;
+  /**
+   * Unfinished multipart uploads (`<target hash>/<uploadId>`), dated by their last write. A session
+   * that uploaded parts and never completed leaves only these, never an object.
+   */
+  listUploads(): AsyncIterable<{ locator: string; createdAt: number }>;
+  /** Remove one unfinished multipart upload directory named by `listUploads`. */
+  deleteUpload(locator: string): Promise<void>;
 }
 
 /** Filesystem AssetDeliveryStore with resumable multipart staging. */
 export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
+  const objectsRoot = join(root, "objects");
+  const uploadsRoot = join(root, "staging");
   const safe = (locator: string) => {
     if (!locator || locator.startsWith("/") || locator.includes("..")) throw new Error("Invalid locator");
-    return join(root, "objects", locator);
+    return join(objectsRoot, locator);
   };
   type Session = Parameters<NonNullable<AssetDeliveryStore["multipart"]>["begin"]>[0];
   const dirOf = (s: Session) => {
     if (!/^[a-zA-Z0-9_-]{16,128}$/.test(s.uploadId))
       throw new MultipartContentError(400, "Invalid upload session ID");
-    return join(root, "staging", sha256(new TextEncoder().encode(s.target.identity)), s.uploadId);
+    return join(uploadsRoot, sha256(new TextEncoder().encode(s.target.identity)), s.uploadId);
   };
   const readState = async (dir: string) =>
     JSON.parse(await readFile(join(dir, "state.json"), "utf8").catch(() => "null")) as
@@ -57,6 +68,28 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
       .filter((n) => /^part-\d+$/.test(n))
       .map((n) => Number(n.slice(5)))
       .sort((a, b) => a - b);
+  async function* listObjects(
+    dir: string,
+    prefix: string,
+  ): AsyncGenerator<{ locator: string; createdAt: number }> {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    for (const entry of entries) {
+      const locator = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        yield* listObjects(join(dir, entry.name), locator);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const info = await stat(join(dir, entry.name));
+      yield { locator, createdAt: info.mtimeMs };
+    }
+  }
   return {
     async head(locator) {
       const s = await stat(safe(locator)).catch(() => undefined);
@@ -78,6 +111,34 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
     },
     async delete(locator) {
       await rm(safe(locator), { force: true });
+    },
+    list() {
+      return listObjects(objectsRoot, "");
+    },
+    async *listUploads() {
+      let targets;
+      try {
+        targets = await readdir(uploadsRoot, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      for (const target of targets) {
+        if (!target.isDirectory()) continue;
+        for (const upload of await readdir(join(uploadsRoot, target.name), { withFileTypes: true })) {
+          if (!upload.isDirectory()) continue;
+          const dir = join(uploadsRoot, target.name, upload.name);
+          // The newest write in the session is its age: a part upload refreshes it.
+          let createdAt = (await stat(dir)).mtimeMs;
+          for (const name of await readdir(dir))
+            createdAt = Math.max(createdAt, (await stat(join(dir, name))).mtimeMs);
+          yield { locator: `${target.name}/${upload.name}`, createdAt };
+        }
+      }
+    },
+    async deleteUpload(locator) {
+      if (!/^[a-f0-9]{64}\/[a-zA-Z0-9_-]{16,128}$/.test(locator)) throw new Error("Invalid upload locator");
+      await rm(join(uploadsRoot, locator), { recursive: true, force: true });
     },
     multipart: {
       async begin(s) {

@@ -51,10 +51,136 @@ export {
   type ProjectAssetImportSessionTokenPort,
 } from "./project-asset-import-session-token.js";
 
+export const PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED =
+  "PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED";
+export const PROJECT_ASSET_IMPORT_STAGING_SWEEP_FAILED =
+  "PROJECT_ASSET_IMPORT_STAGING_SWEEP_FAILED";
+
+/** Abandoned staging is swept only after twice the session lifetime. */
+export const PROJECT_ASSET_IMPORT_STAGING_SWEEP_OLDER_THAN_MS =
+  2 * PROJECT_ASSET_IMPORT_SESSION_TTL_MS;
+
+export interface ProjectAssetImportStagingEntry {
+  locator: string;
+  /** Creation time as epoch milliseconds. */
+  createdAt: number;
+}
+
+export interface ProjectAssetImportStagingSweepPorts {
+  /** Current time as epoch milliseconds, or a clock returning it. */
+  now: number | (() => number);
+  /** Staged objects; each entry is considered independently. */
+  list():
+    | Iterable<ProjectAssetImportStagingEntry>
+    | AsyncIterable<ProjectAssetImportStagingEntry>
+    | Promise<
+        | Iterable<ProjectAssetImportStagingEntry>
+        | AsyncIterable<ProjectAssetImportStagingEntry>
+      >;
+  delete(locator: string): Promise<void> | void;
+}
+
+export interface ProjectAssetImportStagingSweepResult {
+  scanned: number;
+  deleted: number;
+  failed: Array<{ locator: string; message: string }>;
+}
+
 export interface ProjectAssetImportStagingPort {
   store: AssetDeliveryStore;
   /** Delete staged bytes after a successful finalize. */
   delete(locator: string): Promise<void>;
+  /**
+   * Report a failed post-commit delete. The caller does not fail the finalize:
+   * the Asset is committed, and the periodic sweep retries the object.
+   */
+  onCleanupFailure?(locator: string, error: unknown): void;
+}
+
+export class ProjectAssetImportStagingCleanupError extends Error {
+  readonly code = PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED;
+
+  constructor(
+    readonly locator: string,
+    cause: unknown,
+  ) {
+    super(
+      `Failed to delete Project Asset import staging ${locator}: ${errorMessage(cause)}`,
+      { cause },
+    );
+    this.name = "ProjectAssetImportStagingCleanupError";
+  }
+}
+
+/**
+ * Delete abandoned import staging. A live session is at most
+ * `PROJECT_ASSET_IMPORT_SESSION_TTL_MS` old, so the default cutoff of twice
+ * that never touches one. One failed delete is reported and does not stop the
+ * rest of the sweep.
+ */
+export async function sweepProjectAssetImportStaging(
+  ports: ProjectAssetImportStagingSweepPorts,
+  options: { olderThanMs?: number } = {},
+): Promise<ProjectAssetImportStagingSweepResult> {
+  const olderThanMs =
+    options.olderThanMs ?? PROJECT_ASSET_IMPORT_STAGING_SWEEP_OLDER_THAN_MS;
+  const now = typeof ports.now === "function" ? ports.now() : ports.now;
+  const failed: ProjectAssetImportStagingSweepResult["failed"] = [];
+  let scanned = 0;
+  let deleted = 0;
+  for await (const entry of await ports.list()) {
+    scanned += 1;
+    if (now - entry.createdAt <= olderThanMs) continue;
+    try {
+      await ports.delete(entry.locator);
+      deleted += 1;
+    } catch (error) {
+      failed.push({ locator: entry.locator, message: errorMessage(error) });
+    }
+  }
+  return { scanned, deleted, failed };
+}
+
+/** The structured-logger shape every adapter's logger already has. */
+export interface ProjectAssetImportStagingSweepLog {
+  info(event: string, fields: Record<string, unknown>): void;
+  error(event: string, fields: Record<string, unknown>): void;
+}
+
+/**
+ * Sweep each staging source and log the outcome with stable codes. One source failing (listing
+ * itself threw) is logged and does not skip the others. Shared so every adapter reports a sweep
+ * the same way instead of re-implementing the loop.
+ */
+export async function sweepAndReportProjectAssetImportStaging(
+  sources: Readonly<Record<string, ProjectAssetImportStagingSweepPorts>>,
+  log: ProjectAssetImportStagingSweepLog,
+  options: { olderThanMs?: number } = {},
+): Promise<void> {
+  for (const [source, ports] of Object.entries(sources)) {
+    try {
+      const result = await sweepProjectAssetImportStaging(ports, options);
+      log.info("project_asset_import_staging.swept", {
+        source,
+        scanned: result.scanned,
+        deleted: result.deleted,
+        failed: result.failed.length,
+      });
+      for (const failure of result.failed)
+        log.error("project_asset_import_staging.sweep_failed", {
+          code: PROJECT_ASSET_IMPORT_STAGING_SWEEP_FAILED,
+          source,
+          locator: failure.locator,
+          message: failure.message,
+        });
+    } catch (error) {
+      log.error("project_asset_import_staging.sweep_failed", {
+        code: PROJECT_ASSET_IMPORT_STAGING_SWEEP_FAILED,
+        source,
+        message: errorMessage(error),
+      });
+    }
+  }
 }
 
 export interface ProjectAssetImportCommitInput {
@@ -122,7 +248,10 @@ const invalid = (error: string): ProjectAssetImportSessionResult => ({
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 
-const requiredString = (value: unknown, label: string): string | null => {
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const requiredString = (value: unknown, _label: string): string | null => {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized && normalized.length <= 512 ? normalized : null;
@@ -309,7 +438,31 @@ export async function finalizeProjectAssetImportSession(
     },
   });
   // The Asset is committed; staging is transport-private from here on.
-  await ports.staging.delete(claims.stagingLocator).catch(() => undefined);
+  try {
+    await ports.staging.delete(claims.stagingLocator);
+  } catch (error) {
+    // The sweep is the retry path: the object stays listed and is removed by
+    // the next sweep. Keep the 201 because the user's import already succeeded.
+    const failure = new ProjectAssetImportStagingCleanupError(
+      claims.stagingLocator,
+      error,
+    );
+    const report = ports.staging.onCleanupFailure;
+    if (report) {
+      try {
+        report(claims.stagingLocator, failure);
+      } catch (reportError) {
+        console.error(
+          `[${PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED}] ${failure.message}`,
+          reportError,
+        );
+      }
+    } else {
+      console.error(
+        `[${PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED}] ${failure.message}`,
+      );
+    }
+  }
   return { status: 201, body: asset };
 }
 

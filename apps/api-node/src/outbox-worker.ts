@@ -1,8 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createNodeTaskRuntime } from "./task-runtime.ts";
 import { databaseUrl, publicUrl, renderServerUrl } from "./config.ts";
 import { createHttpRenderServerPort } from "@clash/shared-runtime/render-server";
+import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
+import { sweepFsProjectAssetImportStaging } from "@clash/shared-runtime/fs-import-staging-sweep";
 import { createNodeTimelineRenderService } from "./timeline-render.ts";
 import { openPostgres } from "./postgres.ts";
 import {
@@ -21,6 +24,28 @@ import {
 } from "./metrics.ts";
 
 const log = apiNodeLog.child("outbox-worker");
+const IMPORT_STAGING_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+
+/** Periodically remove abandoned chunked-import staging from the asset disk. */
+export async function runProjectAssetImportStagingSweep(options: {
+  assetDirectory: string;
+  signal: AbortSignal;
+  intervalMs?: number;
+}): Promise<void> {
+  // Same root as the import-session routes in project-assets.ts.
+  const store = createFsAssetDeliveryStore(
+    join(resolve(options.assetDirectory), "import-sessions"),
+  );
+  const intervalMs = options.intervalMs ?? IMPORT_STAGING_SWEEP_INTERVAL_MS;
+  while (!options.signal.aborted) {
+    await sweepFsProjectAssetImportStaging(store, log);
+    try {
+      await delay(intervalMs, undefined, { signal: options.signal });
+    } catch (error) {
+      if (!options.signal.aborted) throw error;
+    }
+  }
+}
 
 export async function runOutboxWorker(options: {
   outbox: ReplicaOutbox;
@@ -72,12 +97,13 @@ if (
     // Timeline renders run here when RENDER_SERVER_URL is set; otherwise the
     // API answers request_timeline_render with 501 and no runs are queued.
     const renderOrigin = renderServerUrl(process.env);
+    const assetDirectory = process.env.CLOUD_ASSET_DIR ?? "data/assets";
     const render = renderOrigin
       ? createNodeTimelineRenderService(database.db, {
           renderServer: createHttpRenderServerPort(renderOrigin),
           mediaSecret: process.env.BETTER_AUTH_SECRET!,
           publicUrl: publicUrl(process.env),
-          assetDirectory: process.env.CLOUD_ASSET_DIR ?? "data/assets",
+          assetDirectory,
         })
       : undefined;
     const tasks = createNodeTaskRuntime({
@@ -107,6 +133,10 @@ if (
           // Queued work and log are retained for retry.
           onError: () =>
             log.error("outbox.dispatch_failed", { queue: "checkpoint" }),
+        }),
+        runProjectAssetImportStagingSweep({
+          assetDirectory,
+          signal: stop.signal,
         }),
       ]);
     } finally {
