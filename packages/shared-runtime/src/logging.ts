@@ -105,13 +105,16 @@ export function sanitizeLogValue(value: unknown): unknown {
   }
 }
 
+/** Records whose fields already ran through `sanitizeLogValue` in this process. */
+const sanitizedLogRecords = new WeakSet<object>();
+
 export function createLogRecord(
   input: Pick<LogRecord, "component" | "module" | "level" | "event"> & {
     timestamp?: string;
     context?: Record<string, unknown>;
   },
 ): LogRecord {
-  return {
+  const record: LogRecord = {
     schemaVersion: 1,
     timestamp: input.timestamp ?? new Date().toISOString(),
     component: cleanText(input.component),
@@ -120,6 +123,13 @@ export function createLogRecord(
     event: cleanText(input.event),
     context: sanitizeLogValue(input.context ?? {}) as Record<string, unknown>,
   };
+  sanitizedLogRecords.add(record);
+  return record;
+}
+
+/** True only for a record produced by `createLogRecord` in this process. */
+export function isSanitizedLogRecord(value: unknown): boolean {
+  return typeof value === "object" && value !== null && sanitizedLogRecords.has(value);
 }
 
 /** Accept only our versioned envelope; third-party console JSON stays a message. */
@@ -146,6 +156,28 @@ export function parseLogRecord(text: string): LogRecord | undefined {
   }
 }
 
+export type StructuredLogRecordWriter = (record: LogRecord) => void;
+
+let structuredLogRecordWriter: StructuredLogRecordWriter | undefined;
+
+/**
+ * Route structured records to the process file sink instead of `console`.
+ *
+ * The Host/Desktop capture installs this so `createStructuredLogger` callers
+ * do not serialize to a stream that is then parsed again (one JSON round-trip
+ * and one sanitize pass saved per record). Call with `undefined` on close.
+ */
+export function setStructuredLogRecordWriter(
+  writer: StructuredLogRecordWriter | undefined,
+): void {
+  structuredLogRecordWriter = writer;
+}
+
+/** Current direct writer, or undefined when no capture owns the process. */
+export function getStructuredLogRecordWriter(): StructuredLogRecordWriter | undefined {
+  return structuredLogRecordWriter;
+}
+
 export function createStructuredLogger(options: {
   component: string;
   module: string;
@@ -156,7 +188,14 @@ export function createStructuredLogger(options: {
   const now = options.now ?? Date.now;
   const write =
     options.write ??
-    ((record: LogRecord) => console[record.level](JSON.stringify(record)));
+    ((record: LogRecord) => {
+      const direct = getStructuredLogRecordWriter();
+      if (direct) {
+        direct(record);
+        return;
+      }
+      console[record.level](JSON.stringify(record));
+    });
   const seen = new Set<string>();
   let startedAt = now();
   let suppressedCount = 0;

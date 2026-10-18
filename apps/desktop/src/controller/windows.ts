@@ -185,6 +185,9 @@ export function createDesktopWindowController({
       keyOf: ({ level, message, sourceId, lineNumber }) => `${level}:${sourceId}:${lineNumber}:${message}`,
       isCritical: ({ level }) => level === "error" || level === "warning",
       maxEventsPerWindow: 100,
+      // A renderer error storm must not turn into an unbounded synchronous
+      // stream of desktop JSONL writes; the excess is counted in the summary.
+      maxEventsPerSecond: 50,
       windowMs: 10_000,
     });
     let recoveringRenderer = false;

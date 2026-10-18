@@ -14,6 +14,16 @@ the hosted services, and how to instrument new code.
   `DEFAULT_JSONL_LOG_RETENTION`: 25 MB total, 7 days). A caller that cannot
   read its retention configuration deletes nothing. Read logs with
   `clash logs` (see `packages/cli/src/commands/logs.ts`).
+
+  Writes are asynchronous and batched through one open fd; retention scans
+  happen in the background on segment rotation, not per record. The queue is
+  flushed on `close()` and on the process `exit` event (crash path). A write
+  failure keeps a bounded retry tail, reopens with backoff, and recovers
+  automatically; while degraded `/health` returns `logSink: "degraded"` and
+  `logSinkCode: "LOG_SINK_WRITE_FAILED"`, and recovery emits
+  `log.sink_recovered {dropped}`. Process-wide capture admits at most 50
+  records/s (two-second burst) and reports `log.suppressed {count}`; plugin
+  stderr is batched with a 200-line / 250 ms bounded window.
 - **Traces on the official OTel SDK.** Spans are created through
   `@opentelemetry/api` only; only the pipeline modules own SDK dependencies:
   - Host: `apps/local-api/src/telemetry/` — `pipeline.ts` installs the

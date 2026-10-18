@@ -5,6 +5,7 @@ import { createLocalProjectCloudSync } from "./project-cloud-sync.js";
 import { localProjectSyncMetadata } from "./app.js";
 import { registerProjectRenderer } from "./project-renderer.js";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
+import type { LogSinkHealth } from "@clash/shared-runtime/observability";
 import { withoutLocalApiCompileCacheEnvironment } from "@clash/shared-runtime/local-compile-cache";
 import { createLocalProjectUpgrade } from "./local-project-upgrade.js";
 import { createPluginRuntimeGate } from "./plugin-runtime-gate.js";
@@ -186,6 +187,8 @@ const dataDir = defaultLocalApiDataDir();
 export interface LocalApiServerOptions {
   port: number;
   dataDir: string;
+  /** Process log-sink health surfaced at `/health` when degraded. */
+  logSinkHealth?: () => LogSinkHealth;
   directorStageRenderer?: LocalDirectorStageRenderer;
   localAcp?: LocalAcpRuntimeAdapter;
   /** MCP hosts own agent conversations; disabled skips ACP startup and sockets. */
@@ -1895,6 +1898,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   };
   const app = createLocalApiApp({
     dataDir: options.dataDir,
+    logSinkHealth: options.logSinkHealth,
     onRequestActivity: noteRequestActivity,
     prepareProjectWorkspace: async (projectId) => {
       await ensureAgentCwd("clash", projectId, { harnessId: "codex-acp" }, {

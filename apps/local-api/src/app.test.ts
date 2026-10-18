@@ -278,6 +278,26 @@ describe("local API app", () => {
     expect(await me.json()).toEqual({ id: "local-user" });
   });
 
+  it("reports a degraded log sink with its coded state in /health", async () => {
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      logSinkHealth: () => ({
+        status: "degraded",
+        code: "LOG_SINK_WRITE_FAILED",
+        dropped: 3,
+      }),
+    });
+
+    const health = await app.request("/health");
+    expect(await health.json()).toMatchObject({
+      ok: true,
+      logSink: "degraded",
+      logSinkCode: "LOG_SINK_WRITE_FAILED",
+      logSinkDropped: 3,
+    });
+  });
+
   it("does not expose the in-process plugin SDK broker over HTTP", async () => {
     const app = createLocalApiApp({ dataDir, userId: "local-user" });
     const response = await app.request("/api/v1/local/plugin-broker", {

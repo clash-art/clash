@@ -57,6 +57,7 @@ const logSink = createBoundedJsonlLogSink({
   filePrefix: "local-api",
   maxBytes: 5 * 1024 * 1024,
   retention: DEFAULT_JSONL_LOG_RETENTION,
+  component: "local-api",
 });
 const observability = installProcessStdioCapture({
   component: "local-api",
@@ -111,7 +112,7 @@ async function closeServer(exitCode: number): Promise<void> {
   browserWarmup.abort();
   observability.event("info", "server.stopping", { exitCode });
   if (!server) {
-    observability.close();
+    await observability.close();
     process.exit(exitCode);
     return;
   }
@@ -119,7 +120,7 @@ async function closeServer(exitCode: number): Promise<void> {
     server!.close(() => resolveClose());
   });
   observability.event("info", "server.stopped", { exitCode });
-  observability.close();
+  await observability.close();
   process.exit(exitCode);
 }
 
@@ -245,6 +246,7 @@ async function main(): Promise<void> {
     agentRuntime: process.env.CLASH_AGENT_RUNTIME === "disabled" ? "disabled" : "enabled",
     projectRendererRoot: process.env.CLASH_PROJECT_RENDERER_ROOT,
     directorStageRenderer,
+    logSinkHealth: () => logSink.health!(),
     warmPluginRuntime: true,
     onPostListenIdle: pruneCompileCache,
     discovery: {
@@ -264,11 +266,11 @@ async function main(): Promise<void> {
   warmBrowser();
 }
 
-void main().catch((error) => {
+void main().catch(async (error) => {
   observability.event("error", "process.failed", {
     error,
   });
-  observability.close();
+  await observability.close();
   console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exit(1);
 });
