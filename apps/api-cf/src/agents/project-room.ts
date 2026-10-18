@@ -68,9 +68,11 @@ import {
 } from "@clash/shared-types";
 
 /**
- * How long one successful authorization check covers a socket. Revocation is
- * enforced within this bounded window (#240): the first frame after it lapses
- * is re-checked, and an alarm re-checks idle sockets when it lapses.
+ * How long one successful authorization check covers a socket (#240): the
+ * first frame after this window lapses is re-checked. Idle sockets are
+ * re-checked only on the room's existing 60 s alarm tick (no dedicated wakes),
+ * so an idle revoked socket closes on the next tick while the room is
+ * alarming, else on its next frame or reconnect.
  */
 const SOCKET_AUTHORIZATION_TTL_MS = 5_000;
 /** WebSocket close reasons are capped at 123 bytes; both stay well below. */
@@ -191,8 +193,6 @@ export class ProjectRoom extends DurableObject<Env> {
   >();
   /** Sockets closed or revoked; a pending check must not authorize them. */
   private closedSockets = new WeakSet<WebSocket>();
-  /** Earliest pending authorization-recheck alarm this instance asked for. */
-  private authorizationRecheckAt = 0;
   private outbound = new Map<WebSocket, Promise<void>>();
 
   /** Throttle activity broadcasts: nodeId → last broadcast timestamp */
@@ -539,10 +539,12 @@ export class ProjectRoom extends DurableObject<Env> {
   /**
    * A hibernated connection carries identity evidence, never raw credentials.
    * This ephemeral cache is rebuilt on wake. Inbound commits share it, so
-   * revocation is enforced within SOCKET_AUTHORIZATION_TTL_MS: the first frame
-   * after a check lapses is re-checked, and recheckIdleSockets() (alarm) closes
-   * an idle revoked socket when its check lapses. An expired credential is
-   * refused immediately, without D1.
+   * the first frame after a check's SOCKET_AUTHORIZATION_TTL_MS window lapses
+   * is re-checked. Idle sockets are re-checked only by recheckIdleSockets() on
+   * the room's existing 60 s alarm tick (no dedicated wakes), so an idle
+   * revoked socket closes on the next tick while the room is alarming, else on
+   * its next frame or reconnect. An expired credential is refused
+   * immediately, without D1.
    */
   private authorizeSocket(ws: WebSocket): boolean | Promise<boolean> {
     if (this.closedSockets.has(ws)) return false;
@@ -594,9 +596,6 @@ export class ProjectRoom extends DurableObject<Env> {
           validUntil,
           Date.now() + SOCKET_AUTHORIZATION_TTL_MS,
         );
-        // An idle socket sends no frame that would re-check it: recheck when
-        // this check lapses so a revoked socket never stays open.
-        void this.scheduleAuthorizationRecheck(entry.expiresAt);
         return true;
       }
       this.closeSocket(ws, 1008, AUTHORIZATION_REVOKED_CLOSE_REASON);
@@ -623,36 +622,17 @@ export class ProjectRoom extends DurableObject<Env> {
     this.protocolSessions.delete(ws);
   }
 
-  /** Wake the room (alarm) no later than `at` to recheck idle sockets. */
-  private scheduleAuthorizationRecheck(at: number): Promise<void> {
-    if (this.authorizationRecheckAt > Date.now() && this.authorizationRecheckAt <= at)
-      return Promise.resolve();
-    this.authorizationRecheckAt = at;
-    return this.scheduleAlarmAtEarliest(at).catch((error) => {
-      // Without the alarm an idle revoked socket would wait for its next frame;
-      // forget the plan so the next successful check schedules it again.
-      this.authorizationRecheckAt = 0;
-      log.warn("Failed to schedule socket authorization recheck:", error);
-    });
-  }
-
   /**
-   * Alarm stage: re-check every socket whose check has lapsed. Live checks
-   * return without D1 and concurrent ones share one check per identity, so
-   * this costs at most one D1 read per identity per SOCKET_AUTHORIZATION_TTL_MS.
-   * Returns the earliest time a still-open socket's check lapses.
+   * Alarm stage: re-check every socket. Runs only on the room's existing 60 s
+   * alarm tick and never schedules a wake of its own, so an idle revoked
+   * socket closes on the next tick while the room is alarming, else on its
+   * next frame or reconnect. Sockets still inside their
+   * SOCKET_AUTHORIZATION_TTL_MS window cost no D1; lapsed ones share one check
+   * per identity.
    */
-  private async recheckIdleSockets(): Promise<number | undefined> {
-    this.authorizationRecheckAt = 0;
+  private async recheckIdleSockets(): Promise<void> {
     const sockets = this.ctx.getWebSockets();
     await Promise.all(sockets.map((ws) => this.authorizeSocket(ws)));
-    let next: number | undefined;
-    for (const ws of sockets) {
-      const expiresAt = this.socketAuthorization.get(ws)?.expiresAt;
-      if (expiresAt && !this.closedSockets.has(ws))
-        next = next === undefined ? expiresAt : Math.min(next, expiresAt);
-    }
-    return next;
   }
 
   /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
@@ -1439,10 +1419,12 @@ export class ProjectRoom extends DurableObject<Env> {
   // ─── Alarm (replaces schedule/cancelSchedule) ────────────────
 
   async alarm(): Promise<void> {
-    // The alarm is shared. It fires for the 60 s task poll, for requested
-    // checkpoints, and when a socket authorization check lapses (#240). The
-    // recheck needs no room state, so a recheck-only wake does not load the doc.
-    const recheckAt = await this.recheckIdleSockets();
+    // The alarm is shared: it fires for the 60 s task poll and for requested
+    // checkpoints. Idle sockets are re-checked here, on whichever tick runs
+    // anyway (#240); authorization never schedules a wake of its own. The
+    // recheck needs no room state, so a wake before the task poll is due (e.g.
+    // a checkpoint request already served) does not load the doc.
+    await this.recheckIdleSockets();
     const checkpointTarget = await this.ctx.storage.get<number>(
       CHECKPOINT_REQUESTED_SEQ_KEY,
     );
@@ -1464,8 +1446,7 @@ export class ProjectRoom extends DurableObject<Env> {
       }
 
       const tag = `[room proj=${this.projectId.slice(-6)}]`;
-      // Same cadence as before the recheck shared this alarm: every 60 s
-      // slot, or sooner when a checkpoint was requested.
+      // Compact on every 60 s slot, or sooner when a checkpoint was requested.
       await this.runCompaction(tag);
 
       // Persistence is event-driven now — every doc commit (local via
@@ -1483,8 +1464,6 @@ export class ProjectRoom extends DurableObject<Env> {
     if (this.ctx.getWebSockets().length > 0) {
       if (taskPollDueAt !== undefined)
         await this.scheduleAlarmAtEarliest(taskPollDueAt);
-      if (recheckAt !== undefined)
-        await this.scheduleAuthorizationRecheck(recheckAt);
     }
   }
 

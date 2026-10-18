@@ -377,28 +377,66 @@ describe("socket authorization cache", () => {
     }
   });
 
-  it("schedules a recheck when the window lapses, so an idle revoked socket is closed without any frame", async () => {
+  it("never schedules an alarm for authorization; the idle recheck closes a revoked socket on the existing alarm tick", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
     try {
       mocks.revalidate.mockReset().mockResolvedValue(true);
       const { room, ws, schedule } = fixture();
-      await room.authorizeSocket(ws);
-      expect(schedule).toHaveBeenCalledWith(15_000);
-      // An alarm inside the window costs no D1 and reports the next lapse.
+      await expect(room.authorizeSocket(ws)).resolves.toBe(true);
+      expect(schedule).not.toHaveBeenCalled();
+      // A recheck inside the window costs no D1.
       clock.mockReturnValue(12_000);
-      await expect(room.recheckIdleSockets()).resolves.toBe(15_000);
+      await room.recheckIdleSockets();
       expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      expect(ws.close).not.toHaveBeenCalled();
       mocks.revalidate.mockResolvedValue(false);
       clock.mockReturnValue(15_000);
-      await expect(room.recheckIdleSockets()).resolves.toBeUndefined();
+      await room.recheckIdleSockets();
       expect(mocks.revalidate).toHaveBeenCalledTimes(2);
       expect(ws.close).toHaveBeenCalledWith(1008, REVOKED);
+      expect(schedule).not.toHaveBeenCalled();
     } finally {
       clock.mockRestore();
     }
   });
 
-  it("a recheck-only alarm neither loads the room nor runs the task poll or compaction", async () => {
+  it("an hour of an idle authorized room wakes only on the 60 s task-poll alarm", async () => {
+    const t0 = 1_000_000;
+    let now = t0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, data } = fixture();
+      // A single alarm slot with the room's earliest-wins semantics.
+      let alarmAt: number | null = t0 + 60_000;
+      room.scheduleAlarmAtEarliest = vi.fn(async (at: number) => {
+        if (alarmAt === null || at < alarmAt) alarmAt = at;
+      });
+      room.projectId = "project";
+      room.initRoom = vi.fn();
+      room.taskPoll = vi.fn();
+      room.runCompaction = vi.fn();
+      data.set("taskPollDueAt", t0 + 60_000);
+      await expect(room.authorizeSocket(ws)).resolves.toBe(true);
+
+      let wakes = 0;
+      while (alarmAt !== null && alarmAt <= t0 + 3_600_000 && wakes < 10_000) {
+        now = alarmAt;
+        alarmAt = null;
+        wakes++;
+        await room.alarm();
+      }
+      expect(wakes).toBe(60);
+      // The initial check plus one per tick (each tick is past the window).
+      expect(mocks.revalidate).toHaveBeenCalledTimes(61);
+      expect(room.taskPoll).toHaveBeenCalledTimes(60);
+      expect(ws.close).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("an alarm before the task poll is due rechecks sockets but neither loads the room nor runs the task poll or compaction", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(15_000);
     try {
       mocks.revalidate.mockReset().mockResolvedValue(true);
@@ -413,9 +451,8 @@ describe("socket authorization cache", () => {
       expect(room.runCompaction).not.toHaveBeenCalled();
       expect(mocks.revalidate).toHaveBeenCalledTimes(1);
       expect(ws.close).not.toHaveBeenCalled();
-      // Both the 60 s task poll and the next authorization lapse stay scheduled.
-      expect(schedule).toHaveBeenCalledWith(70_000);
-      expect(schedule).toHaveBeenCalledWith(20_000);
+      // Only the persisted 60 s task poll stays scheduled; no authorization wake.
+      expect(schedule.mock.calls).toEqual([[70_000]]);
     } finally {
       clock.mockRestore();
     }
