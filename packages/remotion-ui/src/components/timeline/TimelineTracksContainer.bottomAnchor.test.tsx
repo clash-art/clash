@@ -119,6 +119,12 @@ describe('TimelineTracksContainer bottom anchor', () => {
     expect(lanesContent.style.flexDirection).toBe('column');
     expect(lanesContent.style.justifyContent).toBe('flex-end');
     expect(lanesContent.style.minHeight).toBe('100%');
+    // The scroll viewport's content wrapper only has min-height:100%, so the
+    // lanes content must grow inside a flex column to span the full height.
+    expect(lanesContent.style.flexGrow).toBe('1');
+    const scrollContent = lanesContent.parentElement as HTMLElement;
+    expect(scrollContent.style.display).toBe('flex');
+    expect(scrollContent.style.flexDirection).toBe('column');
     expect(stack.style.position).toBe('relative');
     expect(stack.style.flexShrink).toBe('0');
 
@@ -262,6 +268,8 @@ describe('TimelineTracksContainer bottom anchor', () => {
       const { container } = renderContainer();
       const viewport = container.querySelector('.tracks-viewport') as HTMLElement;
       expect(viewport.scrollTop).toBe(1000);
+      const labels = container.querySelector('.track-labels-panel') as HTMLElement;
+      expect(labels.scrollTop).toBe(viewport.scrollTop);
     } finally {
       if (scrollHeight) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeight);
       if (clientHeight) Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeight);

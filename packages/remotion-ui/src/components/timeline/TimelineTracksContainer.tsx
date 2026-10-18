@@ -624,12 +624,19 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     return 44;
   }, [assets]);
 
+  // Whether the lanes viewport is scrolled to its bottom (see the
+  // bottom-anchor effect below). Starts pinned.
+  const pinnedToBottomRef = useRef(true);
+
   // 同步垂直滚动（标签面板 ↔ 轨道视口）
   // Sync vertical scroll between labels and tracks; report horizontal scroll to parent.
   const handleViewportScroll = useCallback(() => {
     if (viewportRef.current && labelsRef.current) {
       const scrollTop = viewportRef.current.scrollTop;
       labelsRef.current.scrollTop = scrollTop;
+      const viewport = viewportRef.current;
+      pinnedToBottomRef.current =
+        viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1;
 
       // Sync horizontal scroll to consumers (ruler, playhead, etc.)
       const scrollLeft = viewportRef.current.scrollLeft;
@@ -655,9 +662,11 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
   }, [measureScrollbars, durationInFrames, pixelsPerFrame, viewportWidth]);
 
   // Bottom-anchored lanes: when the stack is taller than the viewport, keep
-  // its bottom edge (primary + audio lanes) visible by default. This only runs
-  // on mount, when tracks appear from an empty timeline, and on the transition
-  // from fitting to overflowing; ordinary renders never fight a manual scroll.
+  // its bottom edge (primary + audio lanes) visible by default. It scrolls to
+  // the bottom on mount, when tracks appear from an empty timeline, on the
+  // transition from fitting to overflowing, and while the view was already
+  // pinned to the bottom (stick-to-bottom). If the user scrolled up, layout
+  // changes leave their position alone.
   const previousTrackCountRef = useRef(tracks.length);
   const wasOverflowingRef = useRef(false);
   const didInitialOverflowScrollRef = useRef(false);
@@ -666,6 +675,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     const viewport = viewportRef.current;
     if (!viewport) return;
     viewport.scrollTop = viewport.scrollHeight;
+    pinnedToBottomRef.current = true;
     // Programmatic scrollTop changes do not fire scroll events, so mirror the
     // position onto the label rail explicitly.
     if (labelsRef.current) labelsRef.current.scrollTop = viewport.scrollTop;
@@ -681,6 +691,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
       (!didInitialOverflowScrollRef.current && overflowing)
       || appearedFromEmpty
       || becameOverflowing
+      || (overflowing && pinnedToBottomRef.current)
     ) {
       scrollToTrackStackBottom();
     }
@@ -1175,6 +1186,11 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
       {/* 右侧轨道视口 */}
       <ScrollViewport
         containerStyle={{ flex: 1 }}
+        // The content wrapper only has min-height:100%, which a child's
+        // percentage min-height cannot resolve against. Make it a flex column
+        // so the lanes content can grow to the full viewport height and pack
+        // the track stack to the bottom.
+        contentStyle={{ display: 'flex', flexDirection: 'column' }}
         data-timeline-editing-canvas=""
         ref={setViewportElement}
         className="tracks-viewport bg-transparent"
@@ -1194,6 +1210,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             position: 'relative',
             minWidth: totalWidth,
             minHeight: '100%',
+            flexGrow: 1,
             background: colors.bg.primary,
             display: 'flex',
             flexDirection: 'column',
@@ -1366,7 +1383,9 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                     style={{
                       position: 'absolute',
                       top: 0,
-                      bottom: -1,
+                      // Not -1: with the stack bottom-anchored, a 1px overhang
+                      // on the last lane creates a phantom vertical scroll.
+                      bottom: 0,
                       left: -(contentInsetLeftPx ?? 0),
                       width: contentInsetLeftPx ?? 0,
                       boxSizing: 'border-box',
