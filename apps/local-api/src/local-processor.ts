@@ -291,10 +291,12 @@ function durableProviderNodeData(
     delete next.content;
     delete next.textRevision;
   }
-  if (updates.status !== "failed") {
-    delete next.error;
-    delete next.failureCode;
-  }
+  // `failureCode` is the retired spelling of `errorCode`.
+  delete next.failureCode;
+  if (updates.status !== "failed") delete next.error;
+  // A failure without its own code must not keep an earlier failure's code.
+  if (updates.status !== "failed" || updates.errorCode === undefined)
+    delete next.errorCode;
   return next;
 }
 
@@ -925,7 +927,7 @@ export function createLocalWorkflowProcessor(
                   : {}),
             }
           : run.status === "failed"
-            ? { status: "failed", error: task.failure?.message ?? "Generation failed.", failureCode: task.failure?.code }
+            ? { status: "failed", error: task.failure?.message ?? "Generation failed.", errorCode: task.failure?.code }
             : { status: "generating" };
         const data = durableProviderNodeData(target.data, {
           ...updates,
@@ -1741,7 +1743,7 @@ export function createLocalWorkflowProcessor(
             }
             if (
               current.status === "failed" &&
-              current.failureCode === failure.code &&
+              current.errorCode === failure.code &&
               current.error === failure.message
             ) {
               await input.checkpoint?.();
@@ -1751,7 +1753,7 @@ export function createLocalWorkflowProcessor(
               ...target,
               data: durableProviderNodeData(current, {
                 status: "failed",
-                failureCode: failure.code,
+                errorCode: failure.code,
                 error: failure.message,
               }),
             });
@@ -2089,12 +2091,13 @@ export function createLocalWorkflowProcessor(
               };
               delete nextData.pendingTask;
               delete nextData.pendingTaskAt;
+              delete nextData.errorCode;
               nodes.set(nodeId, { ...node, data: nextData });
             }
             changed = true;
             continue;
           }
-          const failureCode = parsedBinding.success
+          const errorCode = parsedBinding.success
             ? "PLUGIN_ACTION_RUNTIME_UNAVAILABLE"
             : "LEGACY_CUSTOM_ACTION_PROTOCOL_RETIRED";
           const error = parsedBinding.success
@@ -2105,7 +2108,7 @@ export function createLocalWorkflowProcessor(
             data: {
               ...data,
               status: "failed",
-              failureCode,
+              errorCode,
               error,
             },
           });
@@ -2134,7 +2137,7 @@ export function createLocalWorkflowProcessor(
             data: {
               ...renderData,
               status: "failed",
-              failureCode: "TIMELINE_RENDER_INPUT_INVALID",
+              errorCode: "TIMELINE_RENDER_INPUT_INVALID",
               error:
                 "Timeline render is missing its frozen Action input owner.",
             },
@@ -2151,7 +2154,7 @@ export function createLocalWorkflowProcessor(
             data: {
               ...renderData,
               status: "failed",
-              failureCode: "TIMELINE_RENDER_INPUT_INVALID",
+              errorCode: "TIMELINE_RENDER_INPUT_INVALID",
               error:
                 "Timeline render is missing its shared frozen Timeline envelope.",
             },
@@ -2254,6 +2257,7 @@ export function createLocalWorkflowProcessor(
             };
             delete nextData.pendingTask;
             delete nextData.pendingTaskAt;
+            delete nextData.errorCode;
             nodes.set(nodeId, { ...node, data: nextData });
           }
           changed = true;

@@ -1762,4 +1762,9 @@ export { GeneratorRunDiagnosticsSchema, type GeneratorRunDiagnostics } from "./g
 export * from "./project-content.js";
 
 export { isCanvasAssetReferenceEdge } from "./canvas-asset-references.js";
+export {
+  formatNodeFailure,
+  NODE_FAILURE_WITHOUT_MESSAGE,
+  UNKNOWN_NODE_FAILURE_CODE,
+} from "./node-failure.js";
 export { timelineOccupancyIssues, timelineItemsOverlap } from './timeline-occupancy.js';

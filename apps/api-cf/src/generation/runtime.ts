@@ -276,10 +276,8 @@ function cloudflarePorts(
       );
     },
     async publishFailure({ run, failure }) {
-      await publish(frozenGeneration(run).params, {
-        updates: { errorMessage: failure.message, errorCode: failure.code },
-        failure,
-      });
+      // generationPublicationUpdate projects `failure` as error + errorCode.
+      await publish(frozenGeneration(run).params, { updates: {}, failure });
     },
   };
 }

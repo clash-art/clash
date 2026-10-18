@@ -249,10 +249,8 @@ export function createExecutableActionRuntime(
         if (publication.projectAsset) await releasePluginOutputUpload(env, run);
       },
       async publishFailure({ run, failure }) {
-        await publish(await paramsFor(run), {
-          updates: { errorMessage: failure.message, errorCode: failure.code },
-          failure,
-        });
+        // generationPublicationUpdate projects `failure` as error + errorCode.
+        await publish(await paramsFor(run), { updates: {}, failure });
       },
     },
   });

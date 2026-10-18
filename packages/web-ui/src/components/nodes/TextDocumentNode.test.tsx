@@ -50,6 +50,8 @@ it("routes pending and failed Canvas outputs to the typed reader without inventi
   expect(screen.getByRole("status").textContent).toContain("Analyzing");
   rerender(<TextNode {...{ ...props, data: { ...props.data, status: "failed" } } as any} />);
   expect(screen.getByRole("alert").textContent).toContain("failed");
+  rerender(<TextNode {...{ ...props, data: { ...props.data, status: "failed", error: "Analysis plugin crashed", errorCode: "plugin_unavailable" } } as any} />);
+  expect(screen.getByRole("alert").textContent).toContain("Analysis plugin crashed [plugin_unavailable]");
   expect(fetcher).not.toHaveBeenCalled();
   expect(screen.queryByText("Hello World")).toBeNull();
 });

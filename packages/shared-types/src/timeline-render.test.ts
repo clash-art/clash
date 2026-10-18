@@ -352,4 +352,39 @@ describe("completeTimelineRenderNode", () => {
       }),
     ).toMatchObject({ ok: false });
   });
+
+  it("clears a previous failure message and code when the render completes", () => {
+    const doc = authoritativeTimelineDoc();
+    (workspace as any).createProjectTimeline(doc, {
+      id: "timeline-browser",
+      name: "Browser Cut",
+      state: timelineState,
+    });
+    const requested = (timelineRender as any).requestTimelineRender(doc, {
+      timelineId: "timeline-browser",
+      actorUserId: "user-1",
+      generateId: () => "render-browser-1",
+    });
+    const nodes = doc.getMap("nodes");
+    const node = nodes.get(requested.renderNodeId) as any;
+    nodes.set(requested.renderNodeId, {
+      ...node,
+      data: {
+        ...node.data,
+        status: "failed",
+        error: "Remotion media fetch timed out",
+        errorCode: "provider_unavailable",
+      },
+    });
+    expect(
+      (timelineRender as any).completeTimelineRenderNode(doc, {
+        renderNodeId: requested.renderNodeId,
+        assetId: "asset-browser-1",
+      }),
+    ).toMatchObject({ ok: true });
+    const data = (nodes.get(requested.renderNodeId) as any).data;
+    expect(data.status).toBe("completed");
+    expect(data.error ?? null).toBeNull();
+    expect(data.errorCode ?? null).toBeNull();
+  });
 });

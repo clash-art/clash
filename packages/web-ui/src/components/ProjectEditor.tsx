@@ -205,7 +205,11 @@ import { PresenceAwarenessProvider } from "./PresenceAwarenessContext";
 import { usePresenceAwareness } from "@clash/web-ui/hooks/usePresenceAwareness";
 import type { AwarenessBroadcastMessage } from "@clash/shared-types";
 import { CascadeRunnerMount } from "@clash/web-ui/hooks/useCascadeRunner";
-import { MODEL_CARDS, customActionDefaultParams } from "@clash/shared-types";
+import {
+  MODEL_CARDS,
+  customActionDefaultParams,
+  formatNodeFailure,
+} from "@clash/shared-types";
 import { useExecutablePluginActions } from "@clash/web-ui/hooks/useExecutablePluginActions";
 import {
   useExecutablePluginViews,
@@ -6744,15 +6748,7 @@ export default function ProjectEditor({
             }
           | undefined;
         const data = rawNode?.data;
-        if (data?.status === "failed") {
-          const message =
-            typeof data.error === "string"
-              ? data.error
-              : typeof data.errorMessage === "string"
-                ? data.errorMessage
-                : "Image provider failed to generate the panorama";
-          throw new Error(message);
-        }
+        if (data?.status === "failed") throw new Error(formatNodeFailure(data));
         if (data?.status === "completed" && typeof data.assetId === "string") {
           generatedAssetId = data.assetId;
           break;

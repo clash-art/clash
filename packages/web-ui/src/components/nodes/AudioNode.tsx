@@ -28,6 +28,7 @@ import { Slider, SliderRange, SliderThumb, SliderTrack } from "../ui/slider";
 import { Tooltip } from "../ui/tooltip";
 import { useOptionalLoroSyncContext } from "../LoroSyncContext";
 import { PendingAssetConnectionHint } from "./PendingAssetConnectionHint";
+import { NodeFailureMessage } from "./NodeFailureMessage";
 
 const MEDIA_NODE_CONTROL_CLASS =
   "nodrag nopan bg-black/50 text-white backdrop-blur-sm hover:bg-black/70 focus-visible:ring-white/80 focus-visible:ring-offset-black/20";
@@ -591,9 +592,15 @@ const AudioNode = ({
                 </div>
               )
             ) : status === "failed" ? (
-              <div className="flex items-center gap-2 text-red-500">
-                <X size={24} weight="bold" />
-                <span className="text-sm font-medium">Generation failed</span>
+              <div className="flex min-w-0 flex-col items-center gap-1 text-red-500">
+                <div className="flex items-center gap-2">
+                  <X size={24} weight="bold" />
+                  <span className="text-sm font-medium">Generation failed</span>
+                </div>
+                <NodeFailureMessage
+                  data={data}
+                  className="nodrag nowheel max-h-16 overflow-auto break-words px-2 text-center text-xs text-red-700 select-text"
+                />
               </div>
             ) : (
               <div className="flex items-center gap-2 w-full justify-center">

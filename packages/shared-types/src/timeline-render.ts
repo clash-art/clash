@@ -427,6 +427,7 @@ export function completeTimelineRenderNode(
       pendingTask: undefined,
       pendingTaskAt: undefined,
       error: undefined,
+      errorCode: undefined,
     },
   });
   return { ok: true, renderNodeId, assetId };

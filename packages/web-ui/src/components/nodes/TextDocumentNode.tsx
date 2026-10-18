@@ -6,6 +6,7 @@ import { useTextDocumentRevision } from "../../hooks/useTextDocumentRevision";
 import { Dialog } from "../ui/dialog";
 import { Button } from "../ui/button";
 import { DocumentRevisionContent } from "../DocumentRevisionContent";
+import { NodeFailureMessage } from "./NodeFailureMessage";
 
 /** A result placement reads one Document Revision; it owns no editable text body. */
 function PlainTextDocumentNode({
@@ -63,7 +64,7 @@ function TypedDocumentNode({ data, selected }: NodeProps<Node<Record<string, any
   const analysis = typeof data.documentKind === "string" && data.documentKind.startsWith("media.analysis.");
   const pending = !data.documentRevision && data.status !== "failed";
   const failed = !data.documentRevision && data.status === "failed";
-  const content = failed ? <p role="alert">{analysis ? "Analysis" : "Document generation"} failed. Inspect the operation for details.</p>
+  const content = failed ? <div role="alert"><p>{analysis ? "Analysis" : "Document generation"} failed. Inspect the operation for details.</p><NodeFailureMessage data={data} className="mt-2 break-words text-sm text-red-700" /></div>
     : pending ? <p role="status">{analysis ? "Analyzing…" : "Creating document…"}</p>
     : <DocumentRevisionContent projectId={project?.projectId ?? null} reference={data.documentRevision} />;
   return <>

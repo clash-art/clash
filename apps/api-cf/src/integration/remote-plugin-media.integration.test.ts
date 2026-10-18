@@ -301,7 +301,7 @@ describe("remote plugin Project Asset references and media outputs (Cloudflare)"
     expect(await p.readNode()).toMatchObject({
       status: Status.Failed,
       errorCode: "reference_unavailable",
-      errorMessage: durablePublicFailure(run.failure!).message,
+      error: durablePublicFailure(run.failure!).message,
     });
   });
 
@@ -324,7 +324,7 @@ describe("remote plugin Project Asset references and media outputs (Cloudflare)"
     expect(await p.readNode()).toMatchObject({
       status: Status.Failed,
       errorCode: "contract_violation",
-      errorMessage: durablePublicFailure(run.failure!).message,
+      error: durablePublicFailure(run.failure!).message,
     });
     // Nothing was published in the plugin's name.
     const assets = await p.client.list({ projectId: p.projectId });

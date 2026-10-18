@@ -2676,7 +2676,7 @@ describe("LocalLoroRoom", () => {
     expect((doc.getMap("nodes").get("custom-child") as any).data).toMatchObject(
       {
         status: "failed",
-        failureCode: "LEGACY_CUSTOM_ACTION_PROTOCOL_RETIRED",
+        errorCode: "LEGACY_CUSTOM_ACTION_PROTOCOL_RETIRED",
         error:
           "Legacy custom action grid-split has no executable plugin binding. Install a clash.plugin/v1 plugin and recreate the Action.",
       },

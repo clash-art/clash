@@ -120,7 +120,7 @@ describe("durable Provider generation deadline", () => {
     >;
     expect(node.data).toMatchObject({
       status: "failed",
-      failureCode: "deadline_exceeded",
+      errorCode: "deadline_exceeded",
     });
     for (const field of [
       "providerPollState",

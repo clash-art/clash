@@ -221,6 +221,9 @@ export async function generationPublicationUpdate(
   const status = publication.failure ? Status.Failed : Status.Completed;
   const updates = {
     ...publication.updates,
+    // The run's failure is the node's failure; success clears any earlier one.
+    error: publication.failure?.message,
+    errorCode: publication.failure?.code,
     pendingTask: undefined,
     status,
     generationRunId: publication.taskId,
@@ -345,6 +348,7 @@ export function generationAdmissionUpdate(
     new Canvas(candidate, () => undefined).updateNode(publication.nodeId, {
       pendingTask: publication.taskId,
       status: Status.Generating,
+      error: undefined,
       errorMessage: undefined,
       errorCode: undefined,
     });

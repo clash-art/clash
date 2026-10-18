@@ -30,6 +30,7 @@ import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
 import { Tooltip } from "../ui/tooltip";
 import { PendingAssetConnectionHint } from "./PendingAssetConnectionHint";
+import { NodeFailureMessage } from "./NodeFailureMessage";
 import { AssetGenerationPreview } from "./AssetGenerationPreview";
 
 const MEDIA_NODE_CONTROL_CLASS =
@@ -292,11 +293,7 @@ const VideoNode = ({
             <div className="flex flex-col items-center gap-2">
               <FilmSlate size={32} weight="duotone" />
               <span className="text-xs font-medium">Generation Failed</span>
-              {typeof data.error === "string" && data.error && (
-                <p className="nodrag nowheel max-h-32 overflow-auto break-words px-4 text-center text-xs text-red-700 select-text">
-                  {data.error}
-                </p>
-              )}
+              <NodeFailureMessage data={data} />
             </div>
           </div>
         ) : (

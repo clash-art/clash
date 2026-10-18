@@ -176,6 +176,82 @@ describe("asset node preview navigation", () => {
     },
   );
 
+  it.each([
+    ["image", ImageNode],
+    ["video", VideoNode],
+    ["audio", AudioNode],
+  ] as const)(
+    "shows a failed %s node's message with its failure code",
+    (kind, Component) => {
+      const { unmount } = render(
+        <Component
+          {...baseNodeProps}
+          id={`${kind}-failed-node`}
+          type={kind}
+          width={320}
+          height={180}
+          data={{
+            label: `Failed ${kind}`,
+            status: "failed",
+            error: "Run exceeded its deadline",
+            errorCode: "deadline_exceeded",
+          }}
+        />,
+      );
+
+      expect(
+        screen.getByText("Run exceeded its deadline [deadline_exceeded]"),
+      ).toBeInTheDocument();
+      unmount();
+    },
+  );
+
+  it.each([
+    ["image", ImageNode],
+    ["video", VideoNode],
+  ] as const)(
+    "never renders an empty failure on a %s node",
+    (kind, Component) => {
+      const { unmount } = render(
+        <Component
+          {...baseNodeProps}
+          id={`${kind}-failed-empty-node`}
+          type={kind}
+          width={320}
+          height={180}
+          data={{ label: `Failed ${kind}`, status: "failed" }}
+        />,
+      );
+
+      expect(
+        screen.getByText(
+          "Generation failed without an error message [unknown_failure]",
+        ),
+      ).toBeInTheDocument();
+      unmount();
+    },
+  );
+
+  it("shows only the message when a failed node has no code", () => {
+    render(
+      <VideoNode
+        {...baseNodeProps}
+        id="video-failed-uncoded-node"
+        type="video"
+        width={320}
+        height={180}
+        data={{
+          label: "Failed video",
+          status: "failed",
+          error: "Provider rejected the prompt",
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Provider rejected the prompt")).toBeInTheDocument();
+    expect(screen.queryByText(/\[\]/)).toBeNull();
+  });
+
   it("keeps a single click on an audio node from opening the enlarged player", () => {
     const { container } = render(
       <AudioNode
