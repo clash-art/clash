@@ -833,7 +833,7 @@ export const Editor: React.FC<EditorProps> = ({
               onFocusCapture={() => {
                 activeWorkspaceRef.current = "assets";
               }}
-              className={`flex min-h-0 min-w-0 flex-col overflow-hidden bg-warm-page [grid-row:2] ${transcriptWorkspaceActive ? "[grid-column:1/4]" : "[grid-column:1]"} ${panelCollapseTransitionClass} ${
+              className={`outline-none focus:outline-none flex min-h-0 min-w-0 flex-col overflow-hidden bg-warm-page [grid-row:2] ${transcriptWorkspaceActive ? "[grid-column:1/4]" : "[grid-column:1]"} ${panelCollapseTransitionClass} ${
                 sidePanelCollapsed
                   ? "pointer-events-none -translate-x-2 opacity-0"
                   : `translate-x-0 opacity-100 ${transcriptWorkspaceActive ? "z-10" : ""}`
@@ -934,7 +934,7 @@ export const Editor: React.FC<EditorProps> = ({
               onFocusCapture={() => {
                 activeWorkspaceRef.current = "canvas";
               }}
-              className={`flex min-h-0 min-w-0 items-center justify-center overflow-hidden bg-warm-page [grid-column:2] [grid-row:2] transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+              className={`outline-none focus:outline-none flex min-h-0 min-w-0 items-center justify-center overflow-hidden bg-warm-page [grid-column:2] [grid-row:2] transition-[opacity,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
                 transcriptWorkspaceActive
                   ? "pointer-events-none scale-[0.995] opacity-0"
                   : "scale-100 opacity-100"
@@ -1002,7 +1002,7 @@ export const Editor: React.FC<EditorProps> = ({
               onFocusCapture={() => {
                 activeWorkspaceRef.current = "timeline";
               }}
-              className="clash-timeline-floating-surface clash-timeline-panel-surface relative flex min-h-0 min-w-0 overflow-hidden bg-warm-surface [grid-column:1/4] [grid-row:3]"
+              className="outline-none focus:outline-none clash-timeline-floating-surface clash-timeline-panel-surface relative flex min-h-0 min-w-0 overflow-hidden bg-warm-surface [grid-column:1/4] [grid-row:3]"
             >
               <div
                 data-editor-resize-handle="timeline"
@@ -1062,7 +1062,7 @@ export const Editor: React.FC<EditorProps> = ({
               onFocusCapture={() => {
                 activeWorkspaceRef.current = "assets";
               }}
-              className="shrink-0 overflow-hidden rounded-xl border border-warm-border bg-warm-surface shadow-sm"
+              className="outline-none focus:outline-none shrink-0 overflow-hidden rounded-xl border border-warm-border bg-warm-surface shadow-sm"
               style={{ width: "22%", minWidth: 220, maxWidth: 360 }}
             >
               <AssetPanel
@@ -1102,7 +1102,7 @@ export const Editor: React.FC<EditorProps> = ({
                   onFocusCapture={() => {
                     activeWorkspaceRef.current = "canvas";
                   }}
-                  className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-warm-border bg-warm-muted p-3 shadow-sm"
+                  className="outline-none focus:outline-none flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-warm-border bg-warm-muted p-3 shadow-sm"
                   style={{ minHeight: 0 }}
                 >
                   <div className="h-full w-full overflow-hidden rounded-lg bg-warm-surface shadow-inner ring-1 ring-warm-border/70">
@@ -1128,7 +1128,7 @@ export const Editor: React.FC<EditorProps> = ({
                 onFocusCapture={() => {
                   activeWorkspaceRef.current = "timeline";
                 }}
-                className="relative flex overflow-hidden rounded-xl border border-warm-border bg-warm-surface shadow-sm"
+                className="outline-none focus:outline-none relative flex overflow-hidden rounded-xl border border-warm-border bg-warm-surface shadow-sm"
                 style={{ height: 300, flexShrink: 0 }}
               >
                 <div className="min-w-0 flex-1">

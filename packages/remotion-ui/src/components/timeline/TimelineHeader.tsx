@@ -13,7 +13,6 @@ interface TimelineHeaderProps {
   autoFitEnabled?: boolean;
   onUndo: () => void;
   onRedo: () => void;
-  onAddVideoTrack?: () => void;
   onSplitSelected?: () => void;
   onTrimLeftSelected?: () => void;
   onTrimRightSelected?: () => void;
@@ -38,7 +37,6 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
   autoFitEnabled: _autoFitEnabled = false,
   onUndo,
   onRedo,
-  onAddVideoTrack,
   onSplitSelected,
   onTrimLeftSelected,
   onTrimRightSelected,
@@ -137,34 +135,6 @@ export const TimelineHeader: React.FC<TimelineHeaderProps> = ({
             </svg>
           </TimelineIconButton>
         </div>
-        {onAddVideoTrack ? (
-          <TimelineIconButton
-            aria-label="Add video track"
-            title="Add B-roll video track"
-            onClick={onAddVideoTrack}
-            style={{
-              alignItems: 'center',
-              backgroundColor: colors.bg.secondary,
-              border: `1px solid ${colors.border.default}`,
-              borderRadius: 6,
-              color: colors.text.secondary,
-              display: 'inline-flex',
-              fontSize: 12,
-              fontWeight: 600,
-              gap: 5,
-              height: 28,
-              padding: '0 9px',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="2" y="3" width="9" height="7" rx="1.2" />
-              <path d="M5 13h8a1 1 0 0 0 1-1V6" />
-              <path d="M6.5 6.5h3M8 5v3" />
-            </svg>
-            <span>Video track</span>
-          </TimelineIconButton>
-        ) : null}
         <div
           role="toolbar"
           aria-label="Selected item edit tools"
