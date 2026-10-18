@@ -3,6 +3,7 @@ import type {
   ProjectActionRun,
 } from "@clash/shared-types";
 import type { DurableProviderFailure } from "@clash/shared-runtime";
+import { durablePublicFailure } from "@clash/shared-runtime/durable-run-engine";
 import { parseFrozenExecutorInput } from "./durable-run-coordinator.js";
 import type { SqliteDurableRunJournal } from "./durable-run-journal.js";
 
@@ -57,6 +58,8 @@ function safeFailureMessage(
       return "The prepared output could not be published to the Project. Check its output contract and recover publication from this run.";
     case "plugin_unavailable":
       return "The required execution plugin is unavailable. Check the installed plugin before retrying.";
+    case "reference_unavailable":
+      return durablePublicFailure(failure).message;
     case "invalid_request":
       return "The Provider rejected the request. Check the selected model and input parameters.";
     case "invalid_response":

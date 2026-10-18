@@ -1,6 +1,7 @@
 /**
  * Short-lived signed URLs for one Project Asset's bytes, so apps/render-server
- * can fetch Timeline media without a user credential.
+ * can fetch Timeline media without a user credential, and the api-node
+ * binding of the shared ProjectAssetReferenceResolver that issues them.
  *
  * The signature is the shared capability helper keyed by BETTER_AUTH_SECRET
  * and domain-separated from every other use of that secret. A URL names one
@@ -11,12 +12,18 @@
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import type { LoroDoc } from "loro-crdt";
 import { readProjectAsset } from "@clash/shared-types";
+import {
+  createProjectAssetReferenceResolver,
+  type ProjectAssetReferenceResolver,
+} from "@clash/shared-runtime/cloud-project-host/project-asset-references";
 import {
   importCapabilityKey,
   signCapability,
   verifyCapability,
 } from "@clash/shared-runtime/signed-capability";
+import type { PostgresQueryPort } from "@clash/shared-runtime/project-authorization-postgres";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import { serveStoredMedia } from "./media-store.ts";
 import { readProjectResource } from "./project-assets.ts";
@@ -48,6 +55,41 @@ export async function signProjectMediaUrl(input: {
     PROJECT_MEDIA_URL_DOMAIN,
   );
   return `${input.publicUrl.replace(/\/+$/u, "")}${PROJECT_MEDIA_URL_PREFIX}/${path}?exp=${exp}&sig=${sig}`;
+}
+
+/**
+ * api-node binding of the shared ProjectAssetReferenceResolver: the caller's
+ * owner-scoped Project document and transaction, the Project's Resource rows,
+ * and this module's signed URL. `now` pins one expiry for a whole resolution.
+ */
+export function nodeProjectAssetReferences(input: {
+  doc: LoroDoc;
+  tx: PostgresQueryPort;
+  secret: string;
+  publicUrl: string;
+  now: number;
+}): ProjectAssetReferenceResolver {
+  const expiresAt = new Date(
+    (Math.floor(input.now / 1000) + PROJECT_MEDIA_URL_TTL_SECONDS) * 1000,
+  ).toISOString();
+  return createProjectAssetReferenceResolver({
+    readAsset: async ({ projectId, assetId }) =>
+      readProjectAsset(input.doc, assetId, { projectId }),
+    readCommittedResource: ({ projectId }, entry) =>
+      readProjectResource(input.tx, projectId, entry.source.resourceId),
+    async sign({ target }) {
+      return {
+        url: await signProjectMediaUrl({
+          secret: input.secret,
+          publicUrl: input.publicUrl,
+          projectId: target.projectId,
+          assetId: target.assetId,
+          now: input.now,
+        }),
+        expiresAt,
+      };
+    },
+  });
 }
 
 export function createSignedProjectMediaRoutes(options: {

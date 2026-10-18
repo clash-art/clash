@@ -14,8 +14,8 @@ import { log } from '../logger';
 import { updateNodeData, appendNodeLog } from './NodeUpdater';
 import { Status } from '../domain/canvas';
 import type { GenerationParams } from '../agents/generation';
-import { getAssetById, getAssetsByIds } from '../services/assets';
-import { signAssetPath } from '../services/asset-signing';
+import { getAssetsByIds } from '../services/assets';
+import type { ProjectAssetReferenceResolver } from '@clash/shared-runtime/cloud-project-host/project-asset-references';
 import {
   canvasMentionResolver,
   pendingCustomActionNode,
@@ -160,169 +160,54 @@ function getTimelineItemLookupIds(item: Record<string, any>): string[] {
   return Array.from(new Set(ids));
 }
 
-function srcToStorageKey(src: string): string {
-  if (!src) return src;
-
-  if (src.startsWith('data:') || src.startsWith('blob:')) {
-    return src;
-  }
-
-  const prefixes = ['/assets/', '/api/assets/view/', '/api/assets/'];
-  const pathname = (() => {
-    if (!src.startsWith('/') && !src.startsWith('http://') && !src.startsWith('https://')) {
-      return src;
-    }
-    try {
-      const url = src.startsWith('http')
-        ? new URL(src)
-        : new URL(src, 'http://placeholder.local');
-      return url.pathname;
-    } catch {
-      return src;
-    }
-  })();
-
-  for (const prefix of prefixes) {
-    if (pathname.startsWith(prefix)) {
-      return pathname.slice(prefix.length);
-    }
-  }
-
-  return pathname.startsWith('/') ? pathname.slice(1) : pathname;
-}
-
-function findTimelineMediaItemsMissingSrc(timelineDsl: Record<string, any>): string[] {
-  const missing: string[] = [];
-  const mediaTypes = new Set(['image', 'video', 'audio', 'sticker']);
-
-  for (const track of timelineDsl.tracks || []) {
-    for (const item of track.items || []) {
-      if (!mediaTypes.has(item?.type)) continue;
-      if (typeof item.src === 'string' && item.src.trim().length > 0) continue;
-      missing.push(`${track.id ?? 'track'}:${item?.id ?? 'item'}`);
-    }
-  }
-
-  return missing;
-}
-
 /**
- * Resolve assetId references in timeline DSL items.
- * Populates src/type/naturalWidth/naturalHeight from the referenced asset nodes.
- *
- * Timeline items use a reference-based model. Modern items store sourceNodeId
- * for the canvas node and assetId for the D1 asset row; legacy items stored the
- * canvas node id in assetId.
- * The backend render service doesn't have access to Loro, so we must resolve
- * these references before submitting the render task.
+ * How a Timeline item names its Project Asset on this Canvas: a canvas node
+ * (`sourceNodeId`, or a legacy node id in `assetId`) whose `data.assetId` is
+ * the Asset, or the Asset id directly in `assetId`. The node also supplies the
+ * natural size render-server lays the clip out with.
  */
-async function resolveTimelineDslReferences(
-  timelineDsl: Record<string, any>,
-  nodesMap: Map<string, any>,
-  env: Env,
-): Promise<Record<string, any>> {
-  // Asset rows are the source of truth — match timeline items to canvas
-  // nodes by `data.assetId`. Legacy src-based matching is gone (the field
-  // is no longer maintained).
-  const assetRowIdToNode = new Map<string, any>();
+function timelineItemAssets(nodesMap: Map<string, any>) {
+  const nodeByAssetId = new Map<string, any>();
   for (const [nodeId, nodeData] of nodesMap.entries()) {
     const data = toPlainRecord(nodeData?.data || nodeData);
-    const assetRowId = typeof data.assetId === 'string' ? data.assetId : undefined;
-    if (assetRowId) {
-      assetRowIdToNode.set(assetRowId, { nodeId, ...nodeData });
-    }
+    if (typeof data.assetId === 'string') nodeByAssetId.set(data.assetId, { nodeId, ...nodeData });
   }
-
-  const assetCache = new Map<string, Awaited<ReturnType<typeof getAssetById>>>();
-  const getCachedAsset = async (assetRowId: string) => {
-    if (!assetCache.has(assetRowId)) {
-      assetCache.set(assetRowId, await getAssetById(env.DB, assetRowId));
+  const nodeOf = (item: Record<string, any>) => {
+    for (const lookupId of getTimelineItemLookupIds(item)) {
+      const node = nodesMap.get(lookupId);
+      if (node) return { nodeId: lookupId, ...node };
+      const byAsset = nodeByAssetId.get(lookupId);
+      if (byAsset) return byAsset;
     }
-    return assetCache.get(assetRowId) ?? null;
+    return undefined;
   };
-
-  const resolvedTracks = await Promise.all((timelineDsl.tracks || []).map(async (track: any) => {
-    const resolvedItems = await Promise.all((track.items || []).map(async (item: any) => {
-      let assetNode: any = null;
-
-      // 1. Try explicit canvas node id, D1 asset id, then legacy assetId-as-node-id.
-      for (const lookupId of getTimelineItemLookupIds(item)) {
-        const nodeById = nodesMap.get(lookupId);
-        if (nodeById) {
-          assetNode = { nodeId: lookupId, ...nodeById };
-          break;
-        }
-
-        const nodeByAssetRowId = assetRowIdToNode.get(lookupId);
-        if (nodeByAssetRowId) {
-          assetNode = nodeByAssetRowId;
-          break;
-        }
-      }
-
-      // (Legacy src-based fallback removed — timeline items must reference
-      // canvas nodes by sourceNodeId or D1 assetId. node.data.src is no
-      // longer maintained.)
-
-      if (assetNode) {
-        const assetData = toPlainRecord(assetNode.data || assetNode);
-        const itemAssetId = typeof item.assetId === 'string' ? item.assetId : undefined;
-        const itemAssetIdIsNodeId = itemAssetId ? nodesMap.get(itemAssetId) != null : false;
-        const assetRowId = typeof assetData.assetId === 'string'
-          ? assetData.assetId
-          : itemAssetId && !itemAssetIdIsNodeId
-            ? itemAssetId
-            : undefined;
-        const assetRow = assetRowId ? await getCachedAsset(assetRowId) : null;
-
-        const assetType = assetNode.type || assetRow?.kind || assetData.type || item.type;
-
-        let naturalWidth = assetRow?.metadata?.width ?? assetData.naturalWidth;
-        let naturalHeight = assetRow?.metadata?.height ?? assetData.naturalHeight;
-
-        if ((!naturalWidth || !naturalHeight) && assetData.aspectRatio) {
-          const ar = assetData.aspectRatio;
-          if (typeof ar === 'string' && ar.includes(':')) {
-            const [w, h] = ar.split(':').map(Number);
-            if (w && h) {
-              naturalWidth = 1920;
-              naturalHeight = Math.round(1920 * h / w);
-            }
-          }
-        }
-
-        return {
-          ...item,
-          src: assetRow?.srcR2Key || item.src,
-          type: assetType || item.type,
-          ...(naturalWidth != null && { naturalWidth }),
-          ...(naturalHeight != null && { naturalHeight }),
-          ...(assetData.aspectRatio && { aspectRatio: assetData.aspectRatio }),
-        };
-      }
-
-      const itemAssetId = typeof item.assetId === 'string' ? item.assetId : undefined;
-      if (itemAssetId) {
-        const assetRow = await getCachedAsset(itemAssetId);
-        if (assetRow) {
-          return {
-            ...item,
-            src: assetRow.srcR2Key || item.src,
-            type: assetRow.kind || item.type,
-            ...(assetRow.metadata?.width != null && { naturalWidth: assetRow.metadata.width }),
-            ...(assetRow.metadata?.height != null && { naturalHeight: assetRow.metadata.height }),
-          };
+  return {
+    typeOf: (item: Record<string, any>): unknown => item.type ?? nodeOf(item)?.type,
+    assetIdOf(item: Record<string, any>): string | undefined {
+      const data = toPlainRecord(nodeOf(item)?.data);
+      if (typeof data.assetId === 'string') return data.assetId;
+      return typeof item.assetId === 'string' && !nodesMap.get(item.assetId) ? item.assetId : undefined;
+    },
+    decorate(item: Record<string, any>, reference: { width?: number; height?: number }) {
+      const node = nodeOf(item);
+      const data = toPlainRecord(node?.data);
+      let naturalWidth = reference.width ?? data.naturalWidth;
+      let naturalHeight = reference.height ?? data.naturalHeight;
+      if ((!naturalWidth || !naturalHeight) && typeof data.aspectRatio === 'string' && data.aspectRatio.includes(':')) {
+        const [w, h] = data.aspectRatio.split(':').map(Number);
+        if (w && h) {
+          naturalWidth = 1920;
+          naturalHeight = Math.round(1920 * h / w);
         }
       }
-
-      log.warn(`No asset found for item id=${item.id}, src=${item.src?.slice(0, 50) || 'none'}`);
-      return item;
-    }));
-
-    return { ...track, items: resolvedItems };
-  }));
-
-  return { ...timelineDsl, tracks: resolvedTracks };
+      return {
+        type: node?.type || item.type,
+        ...(naturalWidth != null && { naturalWidth }),
+        ...(naturalHeight != null && { naturalHeight }),
+        ...(data.aspectRatio && { aspectRatio: data.aspectRatio }),
+      };
+    },
+  };
 }
 
 /**
@@ -458,38 +343,23 @@ export async function processPendingNodes(
         updateNodeData(doc, nodeId, { status: Status.Generating, pendingTask: taskId, pendingTaskAt: Date.now() }, broadcast);
         appendNodeLog(doc, nodeId, `task=${taskId.slice(0, 8)} type=video_render`, broadcast);
 
-        // Resolve assetId references in timelineDsl using current Loro state
-        const nodesMap = doc.getMap('nodes');
-        const resolvedDsl = await resolveTimelineDslReferences(innerData.timelineDsl, nodesMap as any, env);
-
-        // Convert R2 keys in src to signed absolute HTTP URLs so render-server's
-        // Chromium/ffmpeg can access the source media via the asset-serving route.
-        const mediaBaseRaw = env.MEDIA_GATEWAY_URL || env.WORKER_PUBLIC_URL
-          || (env.ENVIRONMENT === 'development' ? 'http://localhost:3000' : null);
-        if (!mediaBaseRaw) {
-          throw new Error('MEDIA_GATEWAY_URL or WORKER_PUBLIC_URL must be set — render-server cannot fetch media without an absolute origin');
-        }
-        const mediaBase = mediaBaseRaw.replace(/\/+$/, '');
-        for (const track of resolvedDsl.tracks || []) {
-          for (const item of track.items || []) {
-            if (typeof item.src === 'string' && item.src && !item.src.startsWith('http') && !item.src.startsWith('data:') && !item.src.startsWith('blob:')) {
-              const storageKey = srcToStorageKey(item.src);
-              if (!storageKey || storageKey.startsWith('data:') || storageKey.startsWith('blob:')) {
-                continue;
-              }
-              const signedPath = await signAssetPath(env, storageKey);
-              item.src = `${mediaBase}${signedPath}`;
-            }
-          }
-        }
-
-        const missingMediaSrc = findTimelineMediaItemsMissingSrc(resolvedDsl);
-        if (missingMediaSrc.length > 0) {
-          const error = `Timeline render has media item(s) without src: ${missingMediaSrc.slice(0, 5).join(', ')}`;
-          appendNodeLog(doc, nodeId, `FAILED: ${error}`, broadcast);
-          updateNodeData(doc, nodeId, { pendingTask: undefined, pendingTaskAt: undefined, status: Status.Failed, error }, broadcast);
+        // render-server has no Project access: every media item gets its Asset's
+        // signed src now, or the node fails with the code and nothing is submitted.
+        const { resolveCloudTimelineMedia } = await import('../services/project-asset-references');
+        const resolved = await resolveCloudTimelineMedia(env, {
+          doc,
+          projectId,
+          actorUserId: renderActorUserId,
+          timelineDsl: innerData.timelineDsl,
+          ...timelineItemAssets(doc.getMap('nodes') as unknown as Map<string, any>),
+        });
+        if (!resolved.ok) {
+          const { code, message } = resolved.failure;
+          appendNodeLog(doc, nodeId, `FAILED: ${message}`, broadcast);
+          updateNodeData(doc, nodeId, { pendingTask: undefined, pendingTaskAt: undefined, status: Status.Failed, error: message, errorCode: code }, broadcast);
           continue;
         }
+        const resolvedDsl = resolved.timelineDsl;
 
         const genParams: GenerationParams = {
           taskId,

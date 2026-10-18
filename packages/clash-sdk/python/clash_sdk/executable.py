@@ -77,6 +77,7 @@ _FAILURE_CODES = frozenset({
     "deadline_exceeded",
     "output_persistence_failed",
     "publication_failed",
+    "reference_unavailable",
 })
 _REQUEST_STATES = frozenset({"rejected", "unknown", "accepted"})
 _FAILURE_ERROR_KEYS = frozenset({

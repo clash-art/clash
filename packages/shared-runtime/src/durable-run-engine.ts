@@ -15,12 +15,25 @@ export interface DurablePublicFailure {
   message: string;
 }
 
+/**
+ * Fixed Host sentences for codes whose generic text would hide the user's fix.
+ * Never derived from the private message, which a plugin may have authored.
+ */
+const PUBLIC_FAILURE_MESSAGES: Partial<
+  Record<DurableProviderFailure["code"], string>
+> = {
+  reference_unavailable:
+    "A referenced Asset is missing, trashed or not yet uploaded. Restore or replace the reference before retrying.",
+};
+
 export function durablePublicFailure(
-  failure: DurableProviderFailure,
+  failure: Pick<DurableProviderFailure, "code">,
 ): DurablePublicFailure {
   return {
     code: failure.code,
-    message: "Generation failed. See the owning Host for private diagnostics.",
+    message:
+      PUBLIC_FAILURE_MESSAGES[failure.code] ??
+      "Generation failed. See the owning Host for private diagnostics.",
   };
 }
 

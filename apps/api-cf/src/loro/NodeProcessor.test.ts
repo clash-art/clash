@@ -6,6 +6,53 @@ vi.mock("../generation/start", () => ({ startGeneration: vi.fn().mockResolvedVal
 vi.mock("../generation/status", () => ({ hostedGenerationStatus: vi.fn().mockResolvedValue(undefined) }));
 import type { Env } from "../config";
 
+// The render-time ProjectAssetReferenceResolver port: Project Assets by id, signed by the fake.
+const projectAssets = vi.hoisted(
+  () => new Map<string, { kind: string; state: "active" | "trashed"; width?: number; height?: number }>(),
+);
+vi.mock("../services/project-asset-references", async () => {
+  const shared = await import("@clash/shared-runtime/cloud-project-host/project-asset-references");
+  const { executableFailureFromThrown } = await import("@clash/action-sdk/executable-failure");
+  const references = shared.createProjectAssetReferenceResolver({
+    readAsset: async ({ assetId }) => {
+      const asset = projectAssets.get(assetId);
+      return asset
+        ? ({
+            id: assetId,
+            kind: asset.kind,
+            source: { resourceId: `res-${assetId}` },
+            lifecycle: { state: asset.state },
+            metadata: { width: asset.width, height: asset.height },
+          } as never)
+        : null;
+    },
+    readCommittedResource: async (_target, entry) => ({ id: entry.source.resourceId }) as never,
+    sign: async ({ target }) => ({
+      url: `https://media.test/assets/capability/${target.projectId}/${target.assetId}`,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    }),
+  });
+  return {
+    async resolveCloudTimelineMedia(_env: unknown, input: Record<string, any>) {
+      try {
+        return {
+          ok: true,
+          timelineDsl: await shared.resolveTimelineMediaReferences(input.timelineDsl, {
+            projectId: input.projectId,
+            references,
+            assetIdOf: input.assetIdOf,
+            typeOf: input.typeOf,
+            decorate: input.decorate,
+          }),
+        };
+      } catch (error) {
+        const { code, message } = executableFailureFromThrown(error, "submit");
+        return { ok: false, failure: { code, message } };
+      }
+    },
+  };
+});
+
 // Mock describe service
 vi.mock("../services/describe", () => ({
   generateDescription: vi.fn().mockResolvedValue("A test description"),
@@ -416,14 +463,16 @@ describe("NodeProcessor - processPendingNodes", () => {
     );
   });
 
-  it("resolves render timeline asset refs through D1 assets and signs absolute asset URLs", async () => {
+  it("resolves a legacy node-id timeline ref to its Project Asset's signed src", async () => {
+    projectAssets.clear();
+    projectAssets.set("asset-1", { kind: "image", state: "active", width: 1280, height: 720 });
     const doc = makeDoc([
       {
         id: "asset-node-1",
         type: "image",
         data: {
           status: "completed",
-          assetId: "asset-row-1",
+          assetId: "asset-1",
         },
       },
       {
@@ -453,29 +502,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       },
     ]);
 
-    const first = vi.fn().mockImplementation(async () => ({
-      id: "asset-row-1",
-      userId: "u-1",
-      kind: "image",
-      srcR2Key: "projects/proj-1/assets/cat.png",
-      coverR2Key: null,
-      metadata: JSON.stringify({ width: 1280, height: 720 }),
-      sourceModel: null,
-      sourcePrompt: null,
-      sourceTaskId: null,
-      createdAt: 1,
-      updatedAt: 1,
-    }));
-    const bind = vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}), all: vi.fn(), first });
-    const prepare = vi.fn().mockReturnValue({ bind });
-
-    const env = makeEnv({
-      JWT_SECRET: "test-secret",
-      MEDIA_GATEWAY_URL: "http://localhost:3000",
-      DB: { prepare } as any,
-    });
-
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast, triggerPolling);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
@@ -490,9 +517,7 @@ describe("NodeProcessor - processPendingNodes", () => {
                     type: "image",
                     naturalWidth: 1280,
                     naturalHeight: 720,
-                    src: expect.stringMatching(
-                      /^http:\/\/localhost:3000\/assets\/projects\/proj-1\/assets\/cat\.png\?exp=\d+&sig=/,
-                    ),
+                    src: "https://media.test/assets/capability/proj-1/asset-1",
                   }),
                 ],
               }),
@@ -503,14 +528,16 @@ describe("NodeProcessor - processPendingNodes", () => {
     );
   });
 
-  it("resolves modern render timeline refs with sourceNodeId plus D1 assetId", async () => {
+  it("resolves an imported project video clip (sourceNodeId plus assetId) to a signed src", async () => {
+    projectAssets.clear();
+    projectAssets.set("asset:clip", { kind: "video", state: "active", width: 1920, height: 1080 });
     const doc = makeDoc([
       {
         id: "video-node-1",
         type: "video",
         data: {
           status: "completed",
-          assetId: "asset-row-video-1",
+          assetId: "asset:clip",
         },
       },
       {
@@ -532,7 +559,7 @@ describe("NodeProcessor - processPendingNodes", () => {
                     from: 0,
                     durationInFrames: 120,
                     sourceNodeId: "video-node-1",
-                    assetId: "asset-row-video-1",
+                    assetId: "asset:clip",
                   },
                 ],
               },
@@ -542,29 +569,7 @@ describe("NodeProcessor - processPendingNodes", () => {
       },
     ]);
 
-    const first = vi.fn().mockResolvedValue({
-      id: "asset-row-video-1",
-      userId: "u-1",
-      kind: "video",
-      srcR2Key: "projects/proj-1/assets/dog.mp4",
-      coverR2Key: null,
-      metadata: JSON.stringify({ width: 1920, height: 1080 }),
-      sourceModel: null,
-      sourcePrompt: null,
-      sourceTaskId: null,
-      createdAt: 1,
-      updatedAt: 1,
-    });
-    const bind = vi.fn().mockReturnValue({ run: vi.fn().mockResolvedValue({}), all: vi.fn(), first });
-    const prepare = vi.fn().mockReturnValue({ bind });
-
-    const env = makeEnv({
-      JWT_SECRET: "test-secret",
-      MEDIA_GATEWAY_URL: "http://localhost:3000",
-      DB: { prepare } as any,
-    });
-
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast, triggerPolling);
 
     expect(vi.mocked(startGeneration).mock.calls.map(([, id, params]) => ({ id, params }))).toContainEqual(
       expect.objectContaining({
@@ -578,12 +583,10 @@ describe("NodeProcessor - processPendingNodes", () => {
                     id: "item-video-1",
                     type: "video",
                     sourceNodeId: "video-node-1",
-                    assetId: "asset-row-video-1",
+                    assetId: "asset:clip",
                     naturalWidth: 1920,
                     naturalHeight: 1080,
-                    src: expect.stringMatching(
-                      /^http:\/\/localhost:3000\/assets\/projects\/proj-1\/assets\/dog\.mp4\?exp=\d+&sig=/,
-                    ),
+                    src: "https://media.test/assets/capability/proj-1/asset:clip",
                   }),
                 ],
               }),
@@ -594,7 +597,12 @@ describe("NodeProcessor - processPendingNodes", () => {
     );
   });
 
-  it("fails render submission before workflow when a media timeline item has no resolved src", async () => {
+  it.each([
+    ["missing", undefined],
+    ["trashed", { kind: "video", state: "trashed" as const }],
+  ])("fails the render node with reference_unavailable before the workflow for a %s Asset", async (_label, asset) => {
+    projectAssets.clear();
+    if (asset) projectAssets.set("asset:clip", asset);
     const doc = makeDoc([
       {
         id: "n-render",
@@ -614,7 +622,7 @@ describe("NodeProcessor - processPendingNodes", () => {
                     type: "video",
                     from: 0,
                     durationInFrames: 120,
-                    assetId: "missing-asset-row",
+                    assetId: "asset:clip",
                   },
                 ],
               },
@@ -623,14 +631,15 @@ describe("NodeProcessor - processPendingNodes", () => {
         },
       },
     ]);
-    const env = makeEnv({ MEDIA_GATEWAY_URL: "http://localhost:3000" });
 
-    await processPendingNodes(doc, env, "proj-1", broadcast, triggerPolling);
+    await processPendingNodes(doc, makeEnv(), "proj-1", broadcast, triggerPolling);
 
     expect(startGeneration).not.toHaveBeenCalled();
     const node = doc.getMap("nodes").get("n-render") as any;
-    expect(node.data.status).toBe("failed");
-    expect(node.data.error).toContain("media item(s) without src");
+    expect(node.data).toMatchObject({ status: "failed", errorCode: "reference_unavailable" });
+    expect(node.data.pendingTask ?? null).toBeNull();
+    expect(node.data.error).toContain("track-video:item-video-1");
+    expect(node.data.error).toContain("asset:clip");
   });
 
   it("formats workflow object errors when recovering orphaned tasks", async () => {

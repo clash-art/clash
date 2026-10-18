@@ -1399,6 +1399,8 @@ export const ExecutablePluginFailureCodeSchema = z.enum([
   "deadline_exceeded",
   "output_persistence_failed",
   "publication_failed",
+  /** A pinned Asset reference is missing, trashed or not yet committed; nothing was sent. */
+  "reference_unavailable",
 ]);
 
 /** Structured failure facts shared by runtime results and declarative contract expectations. */

@@ -30,6 +30,7 @@ import { api } from "./routes/index";
 import { v1Routes } from "./routes/v1/index";
 import { assetDeliveryRoutes } from "./routes/assets";
 import { createAssetCapabilityRoutes } from "./routes/asset-capability";
+import { createPluginOutputSessionRoutes } from "./routes/plugin-output-sessions";
 import { betterAuthRoutes } from "./routes/better-auth";
 import { projectsD1Routes } from "./routes/projects-d1";
 import { internalProjectsContextRoutes } from "./routes/internal-projects-context";
@@ -193,6 +194,9 @@ export function createAppRoutes(
     ports: opts.projectContentPorts,
     ...(opts.assetDeliveryStore ? { store: opts.assetDeliveryStore } : {}),
   }));
+
+  // Remote plugin output uploads: a signed run-scoped grant, never a session.
+  app.route("/assets/plugin-output", createPluginOutputSessionRoutes());
 
   // Signed capability delivery is a transport adapter, not Asset authority.
   app.route("/assets", assetDeliveryRoutes);

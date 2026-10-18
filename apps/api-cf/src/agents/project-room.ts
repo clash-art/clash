@@ -1564,13 +1564,14 @@ export class ProjectRoom extends DurableObject<Env> {
           await this.persistAndMaybeCompact(this.doc.export({ mode: "update" }));
           return Response.json({ ok: true });
         }
-        // Timeline renders publish a Project Asset; the shared Asset module loads on first use.
+        // Timeline renders and remote plugin outputs publish a Project Asset; the shared Asset module loads on first use.
         const renderPublication = render ? await import("../generation/timeline-render-publication") : null;
-        const assets = render ? await import("../services/project-asset-room") : null;
+        const assets = render || (operation === "generation-publication" && body.projectAsset) ? await import("../services/project-asset-room") : null;
         await this.enqueueLoroImport({ data: new Uint8Array(), runRealtimeEffects: false, applyGeneration: async () => {
-          const update = renderPublication && assets
-            ? await renderPublication.timelineRenderPublicationUpdate(this.doc, projectId, body, (fork, command) => assets.importProjectAsset(this.env, projectId, fork, command))
-            : operation === "generation-admission" ? generationAdmissionUpdate(this.doc, body) : generationPublicationUpdate(this.doc, body);
+          const importAsset = assets ? (fork: LoroDoc, command: Parameters<typeof assets.importProjectAsset>[3]) => assets.importProjectAsset(this.env, projectId, fork, command) : undefined;
+          const update = renderPublication && importAsset
+            ? await renderPublication.timelineRenderPublicationUpdate(this.doc, projectId, body, importAsset)
+            : operation === "generation-admission" ? generationAdmissionUpdate(this.doc, body) : await generationPublicationUpdate(this.doc, body, importAsset ? { projectId, importAsset } : undefined);
           if (update) {
             await this.persistAndMaybeCompact(update);
             this.broadcastBinary(update);

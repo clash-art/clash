@@ -8,7 +8,7 @@ import {
 import { Status } from "../domain/canvas";
 
 describe("hosted generation projection", () => {
-  it("prepares on a detached replica, publishes once and rejects a late result for another task", () => {
+  it("prepares on a detached replica, publishes once and rejects a late result for another task", async () => {
     const doc = new LoroDoc();
     const canvas = new Canvas(doc, () => undefined);
     canvas.createNode("node", "text", { content: "draft" });
@@ -21,7 +21,7 @@ describe("hosted generation projection", () => {
     const claim = generationAdmissionUpdate(doc, publication)!;
     expect(canvas.readNode("node")?.data.pendingTask).toBeUndefined();
     doc.import(claim);
-    const update = generationPublicationUpdate(doc, publication)!;
+    const update = (await generationPublicationUpdate(doc, publication))!;
     expect(canvas.readNode("node")?.data.content).toBe("draft");
     doc.import(update);
     expect(canvas.readNode("node")?.data).toMatchObject({
@@ -29,11 +29,11 @@ describe("hosted generation projection", () => {
       status: Status.Completed,
       generationRunId: "first",
     });
-    expect(generationPublicationUpdate(doc, publication)).toBeNull();
+    expect(await generationPublicationUpdate(doc, publication)).toBeNull();
     doc.import(
       generationAdmissionUpdate(doc, { ...publication, taskId: "next" })!,
     );
-    expect(() => generationPublicationUpdate(doc, publication)).toThrow(
+    await expect(generationPublicationUpdate(doc, publication)).rejects.toThrow(
       /different task/,
     );
     expect(canvas.readNode("node")?.data.pendingTask).toBe("next");
@@ -41,7 +41,7 @@ describe("hosted generation projection", () => {
   });
 });
 
-it("acknowledges obsolete terminal failure without touching a replacement task", () => {
+it("acknowledges obsolete terminal failure without touching a replacement task", async () => {
   const doc = new LoroDoc();
   const canvas = new Canvas(doc, () => undefined);
   canvas.createNode("node", "text", {
@@ -49,7 +49,7 @@ it("acknowledges obsolete terminal failure without touching a replacement task",
     content: "new content",
   });
   expect(
-    generationPublicationUpdate(doc, {
+    await generationPublicationUpdate(doc, {
       taskId: "old-task",
       nodeId: "node",
       actorUserId: "user",
