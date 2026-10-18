@@ -44,6 +44,7 @@ export function createDesktopFileLogSink(options: {
   return createBoundedJsonlLogSink({
     ...options,
     filePrefix: "desktop",
+    component: "desktop",
   });
 }
 
@@ -71,6 +72,7 @@ export function createDesktopLogger(
   let stdoutOpen = true;
   let stderrOpen = true;
   let fileSinkOpen = Boolean(options.fileSink);
+  let closed = false;
   const now = options.now ?? Date.now;
 
   stdout.on("error", (error) => {
@@ -152,6 +154,18 @@ export function createDesktopLogger(
     writeStream(stream, message);
   }
 
+  // A renderer crash can kill the main process without Electron's will-quit.
+  const onProcessExit = options.fileSink
+    ? () => {
+        try {
+          options.fileSink?.flushSync?.();
+        } catch {
+          /* exit handlers must never throw */
+        }
+      }
+    : undefined;
+  if (onProcessExit) process.once("exit", onProcessExit);
+
   return {
     info: (...args) => write("info", "stdout", ...args),
     warn: (...args) => write("warn", "stderr", ...args),
@@ -182,9 +196,12 @@ export function createDesktopLogger(
       );
     },
     close: () => {
+      if (closed) return;
+      closed = true;
+      if (onProcessExit) process.off("exit", onProcessExit);
       if (!fileSinkOpen || !options.fileSink) return;
       fileSinkOpen = false;
-      options.fileSink.close();
+      void options.fileSink.close();
     },
   };
 }

@@ -16,7 +16,7 @@ process.env.TSX_TSCONFIG_PATH ??= fileURLToPath(
 const dataDir = defaultLocalApiDataDir();
 const observability = installProcessStdioCapture({
   component: "local-api",
-  sink: createBoundedJsonlLogSink({ directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"), filePrefix: "local-api", maxBytes: 5 * 1024 * 1024, retention: DEFAULT_JSONL_LOG_RETENTION }),
+  sink: createBoundedJsonlLogSink({ directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"), filePrefix: "local-api", maxBytes: 5 * 1024 * 1024, retention: DEFAULT_JSONL_LOG_RETENTION, component: "local-api" }),
   maxEventsPerWindow: 200,
   windowMs: 10_000,
 });

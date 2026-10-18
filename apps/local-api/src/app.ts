@@ -98,6 +98,7 @@ import {
 } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
 import { sweepFsProjectAssetImportStaging } from "@clash/shared-runtime/fs-import-staging-sweep";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
+import type { LogSinkHealth } from "@clash/shared-runtime/observability";
 import {
   VOICE_INPUT_DISABLED_MESSAGE,
   VoiceInputError,
@@ -381,6 +382,8 @@ export interface ProviderOAuthDriver {
 
 export interface LocalApiOptions {
   prepareProjectWorkspace?: (projectId: string) => Promise<void>;
+  /** Process log-sink health; a degraded sink is visible at `/health`. */
+  logSinkHealth?: () => LogSinkHealth;
   dataDir: string;
   /** Canonical loopback origin used in Project-scoped ResolvedAsset projections. */
   projectAssetProjectionOrigin?: string | (() => string);
@@ -4722,17 +4725,27 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     c.json({ error: "not found" }, 404),
   );
 
-  app.get("/health", (c) =>
-    c.json({
+  app.get("/health", (c) => {
+    const logSink = options.logSinkHealth?.();
+    return c.json({
       ok: true,
       mode: "local",
       ...(options.hostIdentity ? { host: options.hostIdentity } : {}),
+      ...(logSink
+        ? {
+            logSink: logSink.status,
+            ...(logSink.code ? { logSinkCode: logSink.code } : {}),
+            ...(logSink.dropped !== undefined
+              ? { logSinkDropped: logSink.dropped }
+              : {}),
+          }
+        : {}),
       runtime: {
         mode: "local",
         capabilities: defaultRuntimeCapabilities("local"),
       },
-    }),
-  );
+    });
+  });
 
   /**
    * OTLP/HTTP JSON trace receiver for local clients (the GUI renderer).

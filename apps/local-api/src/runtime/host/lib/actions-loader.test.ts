@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginModule } from "@clash/action-sdk";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type {
   LoadedTrustedBundledPluginModule,
   TrustedBundledPluginModuleRegistration,
@@ -1519,4 +1519,34 @@ it("ActionsHost refuses executable code changed outside atomic activation", asyn
   } finally {
     await second.stopAll();
   }
+});
+
+describe("plugin stderr forwarding", () => {
+  it("batches a bounded ring and counts the lines it dropped", () => {
+    vi.useFakeTimers();
+    const write = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+    try {
+      const forwarder = actionsLoader.createPluginStderrForwarder("test.plugin");
+      for (let i = 0; i < 10_000; i++) forwarder.push(`line ${i}\n`);
+      // Nothing reaches the Host stderr on the per-line hot path.
+      expect(write).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(250);
+      expect(write).toHaveBeenCalledTimes(1);
+      const chunk = String(write.mock.calls[0]![0]);
+      // The newest 200 lines are kept; 9,800 older ones are counted, not logged.
+      expect(chunk).toContain("line 9999");
+      expect(chunk).not.toContain("line 9799\n");
+      expect(chunk).toContain("9800 stderr lines suppressed");
+      expect(
+        chunk.split("\n").filter((line) => line.length > 0),
+      ).toHaveLength(201);
+      forwarder.close();
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      write.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });

@@ -14,6 +14,7 @@ const actionLog = createStructuredLogger({ component: "local-api", module: "plug
 import { providerRegistrationsFrom } from "./provider-declarations.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { deepStrictEqual } from "node:assert";
 import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import {
@@ -351,6 +352,84 @@ interface SupervisedProcessStdio extends SupervisedActionBase {
   backoffMs: number;
   /** Pending restart timer (so stop() can clear it). */
   restartTimer: NodeJS.Timeout | null;
+  /** Bounded, batched plugin stderr; never one Host log record per line. */
+  stderrForwarder: PluginStderrForwarder | null;
+}
+
+const PLUGIN_STDERR_FLUSH_MS = 250;
+const PLUGIN_STDERR_MAX_LINES = 200;
+const PLUGIN_STDERR_MAX_LINE_CHARS = 8_000;
+
+export interface PluginStderrForwarder {
+  push(chunk: Buffer | string): void;
+  flush(): void;
+  close(): void;
+}
+
+/**
+ * A chatty plugin must not turn its stderr into an unbounded stream of Host
+ * JSONL writes. Keep the newest bounded window of lines per flush interval and
+ * report how many older lines were dropped. Flushes are batched writes, never
+ * per-line `process.stderr.write` calls.
+ */
+export function createPluginStderrForwarder(pluginId: string): PluginStderrForwarder {
+  const decoder = new StringDecoder("utf8");
+  let partial = "";
+  let lines: string[] = [];
+  let dropped = 0;
+  let timer: NodeJS.Timeout | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (lines.length === 0 && dropped === 0) return;
+    const body = lines.length > 0 ? `${lines.join("\n")}\n` : "";
+    const summary =
+      dropped > 0 ? `[${pluginId}] ${dropped} stderr lines suppressed\n` : "";
+    try {
+      process.stderr.write(`plugin[${pluginId}]: ${body}${summary}`);
+    } catch {
+      /* detached Host's stderr may already be closed */
+    }
+    lines = [];
+    dropped = 0;
+  };
+  const schedule = () => {
+    if (timer) return;
+    timer = setTimeout(flush, PLUGIN_STDERR_FLUSH_MS);
+    timer.unref?.();
+  };
+  const addLine = (raw: string) => {
+    const line = raw.replace(/\r$/, "").slice(0, PLUGIN_STDERR_MAX_LINE_CHARS);
+    if (!line) return;
+    lines.push(line);
+    if (lines.length > PLUGIN_STDERR_MAX_LINES) {
+      lines.shift();
+      dropped += 1;
+    }
+  };
+  return {
+    push(chunk) {
+      partial +=
+        typeof chunk === "string" ? chunk : decoder.write(Buffer.from(chunk));
+      let newline: number;
+      while ((newline = partial.indexOf("\n")) !== -1) {
+        addLine(partial.slice(0, newline));
+        partial = partial.slice(newline + 1);
+      }
+      if (partial.length > PLUGIN_STDERR_MAX_LINE_CHARS) {
+        addLine(partial);
+        partial = "";
+      }
+      schedule();
+    },
+    flush,
+    close() {
+      partial += decoder.end();
+      if (partial) addLine(partial);
+      partial = "";
+      flush();
+    },
+  };
 }
 
 type SupervisedAction = SupervisedBundledModule | SupervisedProcessStdio;
@@ -661,6 +740,7 @@ export class ActionsHost {
       backoffMs: RESTART_BACKOFF_MIN_MS,
       stopping: false,
       restartTimer: null,
+      stderrForwarder: null,
     };
     this.actions.set(manifest.id, supervised);
     this.dirIndex.set(dirName, manifest.id);
@@ -702,6 +782,7 @@ export class ActionsHost {
       sup.endpoint?.close();
       sup.endpoint = null;
       if (sup.realm === "bundled-module") continue;
+      sup.stderrForwarder?.flush();
       if (sup.restartTimer) {
         clearTimeout(sup.restartTimer);
         sup.restartTimer = null;
@@ -1235,6 +1316,7 @@ export class ActionsHost {
     sup.stopping = true;
     sup.endpoint?.close();
     sup.endpoint = null;
+    if (sup.realm === "process-stdio") sup.stderrForwarder?.flush();
     if (sup.realm === "bundled-module") {
       this.actions.delete(id);
       return;
@@ -1429,11 +1511,15 @@ export class ActionsHost {
           throw new Error("Clash local plugin host context is unavailable.");
         }),
     });
+    const stderrForwarder = createPluginStderrForwarder(manifest.id);
+    sup.stderrForwarder = stderrForwarder;
     child.stderr?.on("data", (chunk: Buffer) => {
-      process.stderr.write(`plugin[${manifest.id}]: ${chunk.toString("utf8")}`);
+      stderrForwarder.push(chunk);
     });
 
     child.once("exit", (code, signal) => {
+      sup.stderrForwarder?.close();
+      sup.stderrForwarder = null;
       const uptime = Date.now() - sup.startedAt;
       actionLog[this.stopping || sup.stopping || code === 0 ? "info" : "warn"]("plugin.exited", { pluginId: manifest.id, code, signal, uptimeMs: uptime });
       sup.child = null;

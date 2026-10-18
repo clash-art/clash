@@ -235,4 +235,37 @@ describe("desktop stdio logger", () => {
     expect(delivered).toEqual(["same", "other"]);
     expect(summaries).toEqual([{ suppressedCount: 2, distinctCount: 2 }]);
   });
+
+  it("caps a unique burst with the shared token bucket", async () => {
+    const module = (await import("./stdio-logger")) as unknown as {
+      createDeduplicatedLogEmitter?: <T>(options: {
+        emit: (value: T) => void;
+        emitSuppressed: (summary: {
+          suppressedCount: number;
+          distinctCount: number;
+        }) => void;
+        keyOf: (value: T) => string;
+        maxEventsPerWindow: number;
+        maxEventsPerSecond: number;
+        windowMs: number;
+        now: () => number;
+      }) => { emit(value: T): void; flush(): void };
+    };
+    const delivered: string[] = [];
+    const summaries: Array<{ suppressedCount: number }> = [];
+    const observer = module.createDeduplicatedLogEmitter?.<string>({
+      emit: (value) => delivered.push(value),
+      emitSuppressed: (summary) => summaries.push(summary),
+      keyOf: (value) => value,
+      maxEventsPerWindow: 100,
+      maxEventsPerSecond: 5,
+      windowMs: 1_000,
+      now: () => 0,
+    });
+    for (let i = 0; i < 100; i++) observer?.emit(`unique-${i}`);
+    observer?.flush();
+    // The burst capacity is two seconds of the rate, never one record per line.
+    expect(delivered.length).toBeLessThanOrEqual(10);
+    expect(summaries.at(-1)?.suppressedCount).toBeGreaterThanOrEqual(90);
+  });
 });
