@@ -1,4 +1,4 @@
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -156,4 +156,60 @@ describe("serveImmutableFileProjection", () => {
       await reader.cancel();
     },
   );
+});
+
+describe("immutable file projection descriptors", () => {
+  const openDescriptors = async () =>
+    (await import("node:fs")).readdirSync("/proc/self/fd").length;
+
+  it.runIf(process.platform === "linux")(
+    "holds no descriptor for a response whose body is never read (client gone before the write)",
+    async () => {
+      const path = await sparseFile(8 * 1024 * 1024);
+      const before = await openDescriptors();
+      const responses = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          serveImmutableFileProjection({
+            path,
+            contentType: "video/mp4",
+            rangeHeader: "bytes=0-",
+          }),
+        ),
+      );
+      expect(responses.every((response) => response.status === 206)).toBe(true);
+      expect(await openDescriptors()).toBeLessThanOrEqual(before);
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "closes the descriptor when a partly read body is cancelled",
+    async () => {
+      const path = await sparseFile(8 * 1024 * 1024);
+      const before = await openDescriptors();
+      const response = await serveImmutableFileProjection({
+        path,
+        contentType: "video/mp4",
+      });
+      const reader = response.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      expect(await openDescriptors()).toBe(before + 1);
+      await reader.cancel();
+      expect(await openDescriptors()).toBe(before);
+    },
+  );
+
+  it("fails the body if the file was replaced after the headers were sent", async () => {
+    const path = await digits();
+    const response = await serveImmutableFileProjection({
+      path,
+      contentType: "application/octet-stream",
+    });
+    // Write the replacement beside the original and rename it over, so the
+    // two files exist at once and cannot share an inode.
+    await writeFile(`${path}.next`, "0123456789");
+    await rename(`${path}.next`, path);
+    await expect(response.arrayBuffer()).rejects.toThrow(
+      "changed while it was being served",
+    );
+  });
 });

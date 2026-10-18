@@ -3635,6 +3635,11 @@ function modelRoutesForProviderAccount(
 }
 
 const backgroundWorkDrains = new WeakMap<Hono, () => Promise<void>>();
+const HOST_REQUEST_SLOW_MS = 10_000;
+const hostRequestLog = createStructuredLogger({
+  component: "local-api",
+  module: "http",
+});
 const projectAssetImportLog = createStructuredLogger({
   component: "local-api",
   module: "project-asset-import",
@@ -4511,6 +4516,35 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       202,
     );
   }
+
+  // A request the Host has not answered after HOST_REQUEST_SLOW_MS is logged
+  // while it is still pending, so a stuck handler (a project that never opens
+  // while /health answers) shows up in the Host log with its route.
+  app.use("*", async (c, next) => {
+    const startedAt = performance.now();
+    const slow = setTimeout(() => {
+      hostRequestLog.warn("http.request_slow", {
+        method: c.req.method,
+        path: c.req.path,
+        pendingMs: Math.round(performance.now() - startedAt),
+      });
+    }, HOST_REQUEST_SLOW_MS);
+    slow.unref?.();
+    try {
+      await next();
+    } finally {
+      clearTimeout(slow);
+      const durationMs = Math.round(performance.now() - startedAt);
+      if (durationMs >= HOST_REQUEST_SLOW_MS) {
+        hostRequestLog.warn("http.request_slow_completed", {
+          method: c.req.method,
+          path: c.req.path,
+          status: c.res?.status,
+          durationMs,
+        });
+      }
+    }
+  });
 
   app.use("*", async (c, next) => {
     const origin = c.req.header("origin");
