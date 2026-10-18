@@ -187,6 +187,8 @@ export interface BrowserTimelineRenderExecutorOptions {
     projectId: string;
     assetId: string;
   }) => Promise<void>;
+  /** Surfaces cleanup failures that would otherwise be lost with an abort. */
+  onNotice?: (message: string) => void;
   browser?: { isWebKit: boolean; hasWebCodecs: boolean };
 }
 
@@ -290,9 +292,15 @@ async function publishTimelineRender(input: {
       }),
     },
   );
-  const body = (await response.json().catch(() => undefined)) as
+  let body:
     | { renderNodeId?: unknown; actionRunId?: unknown; error?: unknown }
     | undefined;
+  try {
+    body = (await response.json()) as typeof body;
+  } catch {
+    // A non-JSON refusal still carries its HTTP status to the caller.
+    body = undefined;
+  }
   if (
     !response.ok ||
     typeof body?.renderNodeId !== "string" ||
@@ -308,6 +316,10 @@ async function publishTimelineRender(input: {
         : `Timeline render publication failed with HTTP ${response.status}`,
     );
   return { renderNodeId: body.renderNodeId, actionRunId: body.actionRunId };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function createBrowserTimelineRenderExecutor(
@@ -331,6 +343,7 @@ export function createBrowserTimelineRenderExecutor(
         assetId: input.assetId,
       });
     });
+  const reportNotice = (message: string) => options.onNotice?.(message);
   const maxDurationSeconds = options.maxDurationSeconds ?? 600;
   const browser = options.browser ?? browserSupport();
   return async ({
@@ -355,7 +368,17 @@ export function createBrowserTimelineRenderExecutor(
         maxDurationSeconds,
         browser,
       });
-      if (!preflight.ok) return await submitOnce();
+      if (!preflight.ok) {
+        const receipt = await submitOnce();
+        return {
+          ...receipt,
+          renderPath: "host",
+          fallback: {
+            reason: preflight.reason,
+            message: preflight.message,
+          },
+        };
+      }
       const tracks = await signedTrackSources(projectId, preflight.tracks);
       const file = await renderFrame({
         frameUrl: frameUrlFrom(options.frameOrigin),
@@ -376,38 +399,60 @@ export function createBrowserTimelineRenderExecutor(
         }),
       });
       if (signal.aborted) {
-        await discardAsset({ projectId, assetId: upload.id }).catch(
-          () => undefined,
-        );
+        try {
+          await discardAsset({ projectId, assetId: upload.id });
+        } catch (discardError) {
+          reportNotice(
+            `Export cancelled, but the uploaded file ${upload.id} could not be removed: ${errorMessage(discardError)}`,
+          );
+        }
         throw abortError();
       }
       reachedPublication = true;
       try {
-        return await publishRender({
+        const receipt = await publishRender({
           projectId,
           timelineId: observed.timeline.id,
           assetId: upload.id,
         });
-      } catch (error) {
+        return { ...receipt, renderPath: "browser" };
+      } catch (firstError) {
         // The bytes are already public. Retry the node projection once rather
         // than starting a second render that would race this Asset.
         try {
-          return await publishRender({
+          const receipt = await publishRender({
             projectId,
             timelineId: observed.timeline.id,
             assetId: upload.id,
           });
+          return {
+            ...receipt,
+            renderPath: "browser",
+            publicationRetried: { firstError: errorMessage(firstError) },
+          };
         } catch (retryError) {
           // Discard only when the server definitively refused. After an
           // ambiguous failure the node may exist and reference this Asset;
           // trashing it would break a published render. An unreferenced
           // Asset stays in the library and a retry republishes idempotently.
-          if (retryError instanceof TimelineRenderPublicationRejected)
-            await discardAsset({
-              projectId,
-              assetId: upload.id,
-            }).catch(() => undefined);
-          throw retryError;
+          let message = `first: ${errorMessage(firstError)}; retry: ${errorMessage(retryError)}`;
+          if (retryError instanceof TimelineRenderPublicationRejected) {
+            try {
+              await discardAsset({
+                projectId,
+                assetId: upload.id,
+              });
+            } catch (discardError) {
+              message += `; discard: could not remove uploaded file ${upload.id}: ${errorMessage(discardError)}`;
+            }
+          }
+          // Keep the retry's class: TimelineRenderPublicationRejected is what
+          // tells callers the failure is definitive rather than ambiguous.
+          if (retryError instanceof Error) {
+            retryError.message = message;
+            throw retryError;
+          }
+          throw new Error(message);
         }
       }
     } catch (error) {
@@ -415,7 +460,15 @@ export function createBrowserTimelineRenderExecutor(
       // A finished upload with a failed publication is not a render failure:
       // falling back would publish a second output for one user action.
       if (reachedPublication || submitted) throw error;
-      return await submitOnce();
+      const receipt = await submitOnce();
+      return {
+        ...receipt,
+        renderPath: "host",
+        fallback: {
+          reason: "browser-render-failed",
+          message: errorMessage(error),
+        },
+      };
     }
   };
 }

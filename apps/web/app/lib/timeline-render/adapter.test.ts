@@ -49,7 +49,7 @@ describe("browser Timeline render executor", () => {
     const renderFrame = vi.fn();
     const submitRender = vi.fn(submit);
     const run = executor({ renderFrame });
-    await run({
+    const receipt = await run({
       projectId: "project-1",
       observed: {
         ...observed,
@@ -61,6 +61,15 @@ describe("browser Timeline render executor", () => {
     });
     expect(renderFrame).not.toHaveBeenCalled();
     expect(submitRender).toHaveBeenCalledTimes(1);
+    expect(receipt).toEqual({
+      actionRunId: "run",
+      renderNodeId: "node",
+      renderPath: "host",
+      fallback: {
+        reason: "no-items",
+        message: "Timeline has no items.",
+      },
+    });
   });
 
   it("falls back exactly once when the frame throws", async () => {
@@ -70,7 +79,7 @@ describe("browser Timeline render executor", () => {
         throw new Error("WebCodecs decode failed");
       },
     });
-    await run({
+    const receipt = await run({
       projectId: "project-1",
       observed,
       signal: new AbortController().signal,
@@ -78,6 +87,13 @@ describe("browser Timeline render executor", () => {
       submit: submitRender,
     });
     expect(submitRender).toHaveBeenCalledTimes(1);
+    expect(receipt).toMatchObject({
+      renderPath: "host",
+      fallback: {
+        reason: "browser-render-failed",
+        message: "WebCodecs decode failed",
+      },
+    });
   });
 
   it("does not fall back when the user cancels", async () => {
@@ -105,6 +121,42 @@ describe("browser Timeline render executor", () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(submitRender).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed discard when the user cancels after upload", async () => {
+    const submitRender = vi.fn(submit);
+    const onNotice = vi.fn();
+    const controller = new AbortController();
+    const publishRender = vi.fn();
+    const run = executor({
+      renderFrame: async () => new Blob(["mp4"], { type: "video/mp4" }),
+      uploadAsset: async () => {
+        controller.abort();
+        return { id: "asset-orphan" } as never;
+      },
+      publishRender,
+      discardAsset: async () => {
+        throw new Error("trash unavailable");
+      },
+      onNotice,
+    });
+    await expect(
+      run({
+        projectId: "project-1",
+        observed,
+        signal: controller.signal,
+        onProgress: () => undefined,
+        submit: submitRender,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(publishRender).not.toHaveBeenCalled();
+    expect(submitRender).not.toHaveBeenCalled();
+    expect(onNotice).toHaveBeenCalledWith(
+      expect.stringContaining("asset-orphan"),
+    );
+    expect(onNotice).toHaveBeenCalledWith(
+      expect.stringContaining("trash unavailable"),
+    );
   });
 
   it("uploads through the injected chunked import and publishes the render node", async () => {
@@ -142,6 +194,36 @@ describe("browser Timeline render executor", () => {
     expect(receipt).toEqual({
       actionRunId: "timeline-render:published",
       renderNodeId: "published",
+      renderPath: "browser",
+    });
+  });
+
+  it("reports a successful publication retry on the receipt", async () => {
+    const publishRender = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("publication unavailable"))
+      .mockResolvedValueOnce({
+        actionRunId: "timeline-render:published",
+        renderNodeId: "published",
+      });
+    const run = executor({
+      renderFrame: async () => new Blob(["mp4"], { type: "video/mp4" }),
+      uploadAsset: async () => ({ id: "asset-1" }) as never,
+      publishRender,
+    });
+    const receipt = await run({
+      projectId: "project-1",
+      observed,
+      signal: new AbortController().signal,
+      onProgress: () => undefined,
+      submit,
+    });
+    expect(publishRender).toHaveBeenCalledTimes(2);
+    expect(receipt).toEqual({
+      actionRunId: "timeline-render:published",
+      renderNodeId: "published",
+      renderPath: "browser",
+      publicationRetried: { firstError: "publication unavailable" },
     });
   });
 
@@ -160,21 +242,55 @@ describe("browser Timeline render executor", () => {
       publishRender,
       discardAsset,
     });
-    await expect(
-      run({
-        projectId: "project-1",
-        observed,
-        signal: new AbortController().signal,
-        onProgress: () => undefined,
-        submit: submitRender,
-      }),
-    ).rejects.toThrow("Timeline not found");
+    const thrown = await run({
+      projectId: "project-1",
+      observed,
+      signal: new AbortController().signal,
+      onProgress: () => undefined,
+      submit: submitRender,
+    }).catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(TimelineRenderPublicationRejected);
+    expect((thrown as Error).message).toContain(
+      "first: publication unavailable",
+    );
+    expect((thrown as Error).message).toContain("retry: Timeline not found");
     expect(publishRender).toHaveBeenCalledTimes(2);
     expect(discardAsset).toHaveBeenCalledWith({
       projectId: "project-1",
       assetId: "asset-1",
     });
     expect(submitRender).not.toHaveBeenCalled();
+  });
+
+  it("includes a definitive rejection's discard failure in the thrown error", async () => {
+    const publishRender = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("publication unavailable"))
+      .mockRejectedValueOnce(
+        new TimelineRenderPublicationRejected("Timeline not found"),
+      );
+    const discardAsset = vi.fn(async () => {
+      throw new Error("trash unavailable");
+    });
+    const run = executor({
+      renderFrame: async () => new Blob(["mp4"], { type: "video/mp4" }),
+      uploadAsset: async () => ({ id: "asset-orphan" }) as never,
+      publishRender,
+      discardAsset,
+    });
+    const thrown = await run({
+      projectId: "project-1",
+      observed,
+      signal: new AbortController().signal,
+      onProgress: () => undefined,
+      submit,
+    }).catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(TimelineRenderPublicationRejected);
+    const message = (thrown as Error).message;
+    expect(message).toContain("first: publication unavailable");
+    expect(message).toContain("retry: Timeline not found");
+    expect(message).toContain("asset-orphan");
+    expect(message).toContain("trash unavailable");
   });
 
   it("keeps the uploaded Asset when publication failed ambiguously", async () => {

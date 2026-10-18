@@ -2,7 +2,10 @@ import {
   ProjectTimelineEnvelopeSchema,
   type ProjectHostCommand,
   type ProjectTimeline,
+  type TimelineRenderFallbackReason,
 } from "@clash/shared-types";
+
+export type { TimelineRenderFallbackReason };
 import {
   sendProjectHostCommand,
   type ProjectHostHttpRequest,
@@ -43,6 +46,15 @@ function observation(value: unknown, token: unknown): ObservedProjectTimeline {
 export interface TimelineRenderReceipt {
   actionRunId: string;
   renderNodeId: string;
+  /** Absent on a plain Host submission, which never chose a browser path. */
+  renderPath?: "browser" | "host";
+  fallback?: {
+    reason: TimelineRenderFallbackReason;
+    message: string;
+  };
+  publicationRetried?: {
+    firstError: string;
+  };
 }
 
 /**

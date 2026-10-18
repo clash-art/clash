@@ -10,7 +10,7 @@ explicit adapters, with compile-time/test coverage gates against descriptor
 drift.
 
 The current release is schema version `14`
-with fingerprint `fnv1a32:c77c1b69`. Version 14
+with fingerprint `fnv1a32:7533d74d`. Version 14
 documents compact Timeline list reads and atomic shared-boundary roll edits.
 Authored Timeline YAML remains compatible. Version 13
 clarifies that create, save, and apply validate automatically before mutation

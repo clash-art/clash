@@ -7,14 +7,13 @@
  * iframe and arrive as an `unsupported` protocol message.
  */
 
-export type BrowserRenderFallbackReason =
-  | "no-items"
-  | "invalid-dimensions"
-  | "duration-cap"
-  | "unexpressible-mask"
-  | "inline-remotion"
-  | "safari-filters"
-  | "webcodecs-unavailable";
+import type { TimelineRenderFallbackReason } from "@clash/shared-types";
+
+/** Preflight refusals: every shared fallback reason except a failed browser attempt. */
+export type BrowserRenderFallbackReason = Exclude<
+  TimelineRenderFallbackReason,
+  "browser-render-failed"
+>;
 
 export interface BrowserRenderPreflightInput {
   state: unknown;

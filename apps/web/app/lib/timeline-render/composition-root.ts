@@ -6,6 +6,7 @@ import {
   bindTimelineRenderExecutor,
   readRuntimeModeAtCompositionRoot,
 } from "@clash/web-ui/lib/runtimeConfig";
+import { emitAppFeedback } from "@clash/web-ui/components/AppFeedback";
 import { createBrowserTimelineRenderExecutor } from "./adapter";
 
 type ViteRenderEnv = {
@@ -62,6 +63,8 @@ export function installTimelineRenderCompositionRoot(): void {
         env.VITE_TIMELINE_RENDER_MAX_DURATION_SECONDS,
         10 * 60,
       ),
+      onNotice: (message) =>
+        emitAppFeedback({ title: message, variant: "warning" }),
     }),
   );
 }
