@@ -439,13 +439,23 @@ export class ActionsHost {
       );
     }
 
-    for (const registration of registrations) {
+    type PreparedBundledModule = {
+      registration: TrustedBundledPluginModuleRegistration;
+      manifest: HostedActionPackage["manifest"];
+      dir: string;
+      cards: Awaited<ReturnType<typeof readHostedPackage>>["cards"];
+      providers: Awaited<ReturnType<typeof readHostedPackage>>["providers"];
+      modelBindings: Awaited<ReturnType<typeof readHostedPackage>>["modelBindings"];
+      generators: Awaited<ReturnType<typeof readHostedPackage>>["generators"];
+      views: Awaited<ReturnType<typeof readHostedPackage>>["views"];
+      schemaHash: LoadedAction["schemaHash"];
+      endpoint: PluginExecutionEndpoint;
+    };
+
+    const prepare = async (
+      registration: TrustedBundledPluginModuleRegistration,
+    ): Promise<PreparedBundledModule | undefined> => {
       try {
-        if (this.actions.has(registration.id)) {
-          throw new Error(
-            `Trusted bundled Plugin id ${registration.id} is registered more than once.`,
-          );
-        }
         const packaged = await load(registration.id);
         if (packaged.id !== registration.id) {
           throw new Error(
@@ -482,24 +492,70 @@ export class ActionsHost {
               );
             }),
         });
-        this.actions.set(manifest.id, {
+        return {
+          registration,
+          manifest,
+          dir: dirname(packaged.manifestPath),
+          cards,
+          providers,
+          modelBindings,
+          generators,
+          views,
+          schemaHash,
+          endpoint,
+        };
+      } catch (error) {
+        process.stderr.write(
+          `actions: bundled module ${registration.id} unavailable: ${(error as Error).message}\n`,
+        );
+        return undefined;
+      }
+    };
+
+    // Module loading is where ESM compile/evaluate happens; keep a small bound so a cold Host
+    // overlaps the payload reads without flooding the event loop with every plugin at once.
+    const prepared: Array<PreparedBundledModule | undefined> = new Array(
+      registrations.length,
+    );
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(4, registrations.length) },
+      async () => {
+        while (cursor < registrations.length) {
+          const index = cursor++;
+          prepared[index] = await prepare(registrations[index]!);
+        }
+      },
+    );
+    await Promise.all(workers);
+
+    // Registration order stays the registry order even when modules finish loading out of order.
+    for (const item of prepared) {
+      if (!item) continue;
+      try {
+        if (this.actions.has(item.registration.id)) {
+          throw new Error(
+            `Trusted bundled Plugin id ${item.registration.id} is registered more than once.`,
+          );
+        }
+        this.actions.set(item.manifest.id, {
           realm: "bundled-module",
           loaded: {
-            manifest,
-            dir: dirname(packaged.manifestPath),
-            cards,
-            providers,
-            modelBindings,
-            generators,
-            views,
-            schemaHash,
+            manifest: item.manifest,
+            dir: item.dir,
+            cards: item.cards,
+            providers: item.providers,
+            modelBindings: item.modelBindings,
+            generators: item.generators,
+            views: item.views,
+            schemaHash: item.schemaHash,
           },
-          endpoint,
+          endpoint: item.endpoint,
           stopping: false,
         });
       } catch (error) {
         process.stderr.write(
-          `actions: bundled module ${registration.id} unavailable: ${(error as Error).message}\n`,
+          `actions: bundled module ${item.registration.id} unavailable: ${(error as Error).message}\n`,
         );
       }
     }

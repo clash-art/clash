@@ -34,9 +34,14 @@ export function createLocalProjectUpgrade(options: {
       }
       throw error;
     }
-    const actionCards = await options.listActionCards?.() ?? [];
-    const hasModels = hasLegacyCanvasGeneratorDrafts(doc, actionCards);
+    // The document is the cheap authority on whether any migration is possible. Only a
+    // candidate document may start the plugin runtime for Action Cards; an ordinary project
+    // open must stay independent of bundled Plugin module loading.
+    const mayHaveLegacyDrafts = hasLegacyCanvasGeneratorDrafts(doc);
     const hasTimelines = doc.getMap("timelines").size > 0;
+    if (!mayHaveLegacyDrafts && !hasTimelines) return changed;
+    const actionCards = mayHaveLegacyDrafts ? (await options.listActionCards?.() ?? []) : [];
+    const hasModels = mayHaveLegacyDrafts && hasLegacyCanvasGeneratorDrafts(doc, actionCards);
     if (!hasModels && !hasTimelines) return changed;
     const [registrations, cards] = await Promise.all([
       options.listDefinitions(), hasModels ? options.modelCards() : Promise.resolve([]),

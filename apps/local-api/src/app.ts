@@ -3,6 +3,7 @@ import { createCloudRoutes } from "./cloud-routes.js";
 import { createCloudLogin } from "./cloud-login.js";
 import { cloudOrigin } from "./cloud-accounts.js";
 import { LocalProjectUpgradeError } from "./local-project-upgrade.js";
+import { PluginRuntimeUnavailableError } from "./plugin-runtime-unavailable.js";
 import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./local-marketplace.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
@@ -25,6 +26,7 @@ import { extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Hono, type Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import type { LoroDoc } from "loro-crdt";
@@ -427,6 +429,8 @@ export interface LocalApiOptions {
   providerGenerationDeadlineMs?: number;
   /** Wake the shared project room after an HTTP command creates pending backend work. */
   processProjectWork?: (projectId: string) => Promise<void>;
+  /** Long-lived Hosts use this to keep background warm-up off active request windows. */
+  onRequestActivity?: (event: "start" | "end") => void;
   resolvePluginBinding?: (
     pluginId: string,
     exportId: string,
@@ -4194,6 +4198,30 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     options.publicAssetStorage ??
     createPublicAssetStorageService({ dataDir: options.dataDir });
   const app = new Hono();
+  if (options.onRequestActivity) {
+    const noteActivity = options.onRequestActivity;
+    app.use("*", async (_c, next) => {
+      noteActivity("start");
+      try {
+        await next();
+      } finally {
+        noteActivity("end");
+      }
+    });
+  }
+  app.onError((error, c) => {
+    if (error instanceof PluginRuntimeUnavailableError) {
+      return c.json({ error: error.message, code: error.code }, 503);
+    }
+    // Hono's default boundary semantics for route-thrown HTTP errors and unexpected failures.
+    if (error instanceof HTTPException) return error.getResponse();
+    console.error(error);
+    return c.text("Internal Server Error", 500);
+  });
+  const pluginRuntimeUnavailableResponse = (error: unknown, c: Context) =>
+    error instanceof PluginRuntimeUnavailableError
+      ? c.json({ error: error.message, code: error.code }, 503)
+      : undefined;
   backgroundWorkDrains.set(app, async () => {
     clearInterval(importStagingSweepTimer);
     await importStagingSweep;
@@ -4697,6 +4725,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         .map(generatorDefinitionFromExecutablePluginRegistration);
       return c.json({ definitions });
     } catch (error) {
+      const unavailable = pluginRuntimeUnavailableResponse(error, c);
+      if (unavailable) return unavailable;
       return c.json(
         { error: error instanceof Error ? error.message : String(error) },
         502,
@@ -4723,6 +4753,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         );
         return c.json({ definition });
       } catch (error) {
+        const unavailable = pluginRuntimeUnavailableResponse(error, c);
+        if (unavailable) return unavailable;
         return c.json(
           { error: error instanceof Error ? error.message : String(error) },
           404,
@@ -10432,6 +10464,8 @@ const ForkPointBodySchema = z.object({
         }
         hostContext.timelineGeneratorDefinition = resolved.definition;
       } catch (error) {
+        const unavailable = pluginRuntimeUnavailableResponse(error, c);
+        if (unavailable) return unavailable;
         return c.json(
           {
             error: error instanceof Error ? error.message : String(error),
@@ -10481,6 +10515,8 @@ const ForkPointBodySchema = z.object({
         }
         hostContext.directorStageGeneratorDefinition = resolved.definition;
       } catch (error) {
+        const unavailable = pluginRuntimeUnavailableResponse(error, c);
+        if (unavailable) return unavailable;
         return c.json(
           {
             error: error instanceof Error ? error.message : String(error),

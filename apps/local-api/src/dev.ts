@@ -36,4 +36,5 @@ if (pluginDevelopment.rebuilt.length > 0) {
 await startLocalApiServer({
   port: Number(process.env.PORT ?? 49321),
   dataDir,
+  warmPluginRuntime: true,
 });
