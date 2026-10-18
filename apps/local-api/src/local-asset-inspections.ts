@@ -22,6 +22,7 @@ import {
   createLocalResourceStore,
   type LocalResourceProjection,
 } from "./local-resource-store.js";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 export { localFfprobePath } from "./local-media-binaries.js";
 
 interface SqliteRunResult {
@@ -1155,17 +1156,16 @@ export function createLocalAssetInspectionService(options: {
   });
   const inspectionInFlight = new Map<string, Promise<InspectionRow>>();
 
+  const connection = createLocalSqliteConnection({
+    dataDir: options.dataDir,
+    path: databasePath,
+    open: openDatabase,
+  });
+
   async function withDatabase<T>(
     task: (database: SqliteDatabase) => T,
   ): Promise<T> {
-    await mkdir(options.dataDir, { recursive: true });
-    const database = openDatabase(databasePath);
-    try {
-      return task(database);
-    } finally {
-      database.close();
-      await chmod(databasePath, 0o600).catch(() => undefined);
-    }
+    return connection.use(task);
   }
 
   async function readInspection(

@@ -34,6 +34,7 @@ import {
   type LocalResourceProjection,
   type LocalResourceStore,
 } from "./local-resource-store.js";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
 export type LocalAssetRepresentationRole = "thumbnail" | "waveform" | "proxy";
 const AUDIO_WAVEFORM_BARS = 128;
@@ -838,17 +839,16 @@ export function createLocalAssetRepresentationService(options: {
   let wakeTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
+  const connection = createLocalSqliteConnection({
+    dataDir: options.dataDir,
+    path: databasePath,
+    open: openDatabase,
+  });
+
   async function withDatabase<T>(
     task: (database: SqliteDatabase) => T,
   ): Promise<T> {
-    await mkdir(options.dataDir, { recursive: true });
-    const database = openDatabase(databasePath);
-    try {
-      return task(database);
-    } finally {
-      database.close();
-      await chmod(databasePath, 0o600).catch(() => undefined);
-    }
+    return connection.use(task);
   }
 
   async function readRecipe(

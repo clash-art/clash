@@ -4,10 +4,12 @@ import { app, protocol } from "electron";
 import { defaultLocalApiDataDir } from "@clash/shared-runtime/local-paths";
 
 import { resolveDesktopStatePaths } from "../paths";
-import { hydrateMacGuiPath } from "../shell-path";
+import { hydrateMacGuiPathAsync } from "../shell-path";
 
 export interface DesktopHostConfiguration {
   dataDir: string;
+  /** Resolves once the macOS GUI PATH has been hydrated (immediately elsewhere). */
+  pathReady: Promise<void>;
 }
 
 export function configureDesktopHost(): DesktopHostConfiguration {
@@ -16,7 +18,7 @@ export function configureDesktopHost(): DesktopHostConfiguration {
     app.commandLine.appendSwitch("remote-debugging-port", remoteDebuggingPort);
   }
 
-  hydrateMacGuiPath();
+  const pathReady = hydrateMacGuiPathAsync();
   const runtimeAppName = process.env.CLASH_APP_NAME?.trim();
   if (runtimeAppName) app.setName(runtimeAppName);
 
@@ -42,5 +44,5 @@ export function configureDesktopHost(): DesktopHostConfiguration {
   app.setPath("logs", state.logs);
   app.setPath("crashDumps", state.crashDumps);
 
-  return { dataDir };
+  return { dataDir, pathReady };
 }

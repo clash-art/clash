@@ -6,6 +6,7 @@ import {
   readdir,
   readFile,
   stat,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -484,6 +485,28 @@ describe("local Resource CAS", () => {
 
     await expect(store.resolve(installed.resource.id)).rejects.toThrow(
       /byte length|corrupt/i,
+    );
+  });
+
+  it("re-hashes a previously verified file once its file identity changes", async () => {
+    const { store } = await fixture();
+    const installed = await store.install({
+      kind: "image",
+      bytes: new TextEncoder().encode("original"),
+      contentType: "image/png",
+      originalName: "settled.png",
+    });
+    // Old enough that a successful read is remembered by file identity.
+    const settled = new Date("2020-01-01T00:00:00Z");
+    await utimes(installed.path, settled, settled);
+    await expect(store.resolve(installed.resource.id)).resolves.toBeTruthy();
+
+    await chmod(installed.path, 0o644);
+    await writeFile(installed.path, new TextEncoder().encode("tampered"));
+    await utimes(installed.path, settled, settled);
+
+    await expect(store.resolve(installed.resource.id)).rejects.toThrow(
+      /digest|corrupt/i,
     );
   });
 

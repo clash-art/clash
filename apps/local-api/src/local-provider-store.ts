@@ -12,6 +12,7 @@ import {
   type LocalProviderOAuthRecord,
   type LocalUserModelCardConfig,
 } from "./provider-accounts.js";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
 type SqlitePrimitive = string | number | null;
 
@@ -985,16 +986,15 @@ export function createLocalProviderStore(dataDir: string) {
     }
   }
 
+  const connection = createLocalSqliteConnection({
+    dataDir,
+    path,
+    open: openDatabase,
+    prepare: applySchema,
+  });
+
   async function withDb<T>(task: (db: SqliteDatabase) => T): Promise<T> {
-    await mkdir(dataDir, { recursive: true });
-    const db = openDatabase(path);
-    try {
-      applySchema(db);
-      return task(db);
-    } finally {
-      db.close();
-      await chmod(path, 0o600).catch(() => undefined);
-    }
+    return connection.use(task);
   }
 
   async function ensureProviderAccountsMigrated(): Promise<void> {

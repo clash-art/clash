@@ -1,5 +1,5 @@
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve } from "node:path";
 import { build } from "esbuild";
 import {
   BUNDLED_PLUGINS,
@@ -110,6 +110,11 @@ for (const plugin of BUNDLED_PLUGINS) {
   }
 }
 
+// Only manifest-declared files are copied, so a code-split chunk would be left
+// behind and the plugin would fail at import time on the user's machine
+// ("Cannot find module .../dist/chunk-*.mjs"). Fail the build instead.
+await assertBundledPayloadImportsResolve(bundledPluginRuntimeRoot);
+
 // Official Marketplace packages ship beside the Host so installation is local and deterministic,
 // but they stay outside bundled-plugins and are never loaded until the user installs one.
 const officialPluginRuntimeRoot = resolve(runtimeDir, "official-plugins");
@@ -208,3 +213,33 @@ await cp(
 
 // Retired flattened copy: Node now resolves the pinned Loro package as a whole.
 await rm(resolve(runtimeDir, "loro_wasm_bg.wasm"), { force: true });
+
+async function assertBundledPayloadImportsResolve(root: string): Promise<void> {
+  const missing: string[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+        continue;
+      }
+      // tsup/esbuild ESM output; prebuilt browser bundles are opaque payloads.
+      if (!entry.name.endsWith(".mjs")) continue;
+      const source = await readFile(path, "utf8");
+      for (const match of source.matchAll(
+        /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)["'](\.{1,2}\/[^"']+)["']/g,
+      )) {
+        const target = resolve(dirname(path), match[1]!);
+        if (!(await stat(target).then((info) => info.isFile(), () => false))) {
+          missing.push(`${relative(root, path)} -> ${match[1]}`);
+        }
+      }
+    }
+  };
+  await visit(root);
+  if (missing.length > 0) {
+    throw new Error(
+      `Bundled plugin payload imports files that are not shipped:\n${missing.join("\n")}`,
+    );
+  }
+}

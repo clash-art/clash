@@ -229,6 +229,21 @@ function ImagePreview({
     });
   }, []);
 
+  // React attaches wheel listeners as passive, so preventDefault() inside an
+  // onWheel prop is ignored and Chromium logs "Unable to preventDefault inside
+  // passive event listener invocation" for every wheel tick. Zooming must
+  // own the gesture, so listen natively with passive: false.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      setSteppedZoom(event.deltaY < 0 ? 1 : -1);
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
+  }, [setSteppedZoom]);
+
   const fitImage = useCallback(() => {
     const stage = stageRef.current;
     const image = imageRef.current;
@@ -252,10 +267,6 @@ function ImagePreview({
       ref={stageRef}
       data-testid="project-image-preview-stage"
       className={`relative h-full w-full overflow-hidden bg-warm-page ${zoom > 1 ? "cursor-grab active:cursor-grabbing" : ""}`}
-      onWheel={(event) => {
-        event.preventDefault();
-        setSteppedZoom(event.deltaY < 0 ? 1 : -1);
-      }}
       onPointerDown={(event) => {
         if (zoom <= 1) return;
         event.currentTarget.setPointerCapture(event.pointerId);

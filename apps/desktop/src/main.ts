@@ -12,13 +12,14 @@ import { startDesktopWithRecovery } from "./startup-recovery";
 import { DEFAULT_JSONL_LOG_RETENTION } from "@clash/shared-runtime/observability";
 import { createDesktopFileLogSink, createDesktopLogger } from "./stdio-logger";
 import { createUpdateQuitGate } from "./update-quit";
+import { createStartupPhaseRecorder } from "./startup-phases";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 let recoverOwnedWindow = () => undefined;
 const ownsDesktopInstance = ownDesktopInstance(app, () => recoverOwnedWindow());
 
 if (ownsDesktopInstance) {
-  const { dataDir } = configureDesktopHost();
+  const { dataDir, pathReady } = configureDesktopHost();
   const hostDiagnosticLogPath = join(app.getPath("logs"), "host-startup.log");
   const fileSink = createDesktopFileLogSink({
     directory: app.getPath("logs"),
@@ -30,10 +31,13 @@ if (ownsDesktopInstance) {
   });
   const updateQuitGate = createUpdateQuitGate();
   app.on("will-quit", () => desktopLog.close());
+  const startupPhase = createStartupPhaseRecorder(desktopLog);
+  startupPhase("main.loaded");
   const runtimeController = createDesktopRuntimeController({
     moduleDir,
     hostDiagnosticLogPath,
     log: desktopLog,
+    startupPhase,
   });
   const windowController = createDesktopWindowController({
     moduleDir,
@@ -54,11 +58,16 @@ if (ownsDesktopInstance) {
   void app
     .whenReady()
     .then(async () => {
+      startupPhase("app.ready");
       windowController.registerHostBindings();
       const outcome = await startDesktopWithRecovery({
         start: async () => {
+          await pathReady;
+          startupPhase("path.ready");
           await runtimeController.initialize(dataDir);
+          startupPhase("runtime.ready");
           await windowController.createWindow();
+          startupPhase("window.loaded");
         },
         decide: async (error) => {
           const detail = error instanceof Error ? error.message : String(error);

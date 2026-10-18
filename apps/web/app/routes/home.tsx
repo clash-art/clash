@@ -24,24 +24,30 @@ export async function loader(_: LoaderFunctionArgs) {
     if (!session.data?.user?.id) throw redirect("/login");
   }
 
-  const [projects, marketplaceFeed] = await Promise.all([
-    runtimeFetch("/api/v1/projects", { credentials: "include" })
-      .then(async (response) => {
-        if (response.status === 401) throw redirect("/login");
-        if (!response.ok) return [];
-        const data = (await response.json()) as { projects?: unknown[] };
-        return Array.isArray(data.projects) ? data.projects : [];
-      })
-      .catch((error: unknown) => {
-        if (error instanceof Response) throw error;
-        return [];
-      }),
-    loadMarketplaceFeedData().catch((error: unknown) => {
+  const projects = runtimeFetch("/api/v1/projects", { credentials: "include" })
+    .then(async (response) => {
+      if (response.status === 401) throw redirect("/login");
+      if (!response.ok) return [];
+      const data = (await response.json()) as { projects?: unknown[] };
+      return Array.isArray(data.projects) ? data.projects : [];
+    })
+    .catch((error: unknown) => {
+      if (error instanceof Response) throw error;
+      return [];
+    });
+  const marketplaceFeed = await loadMarketplaceFeedData().catch(
+    (error: unknown) => {
       if (error instanceof Response) throw error;
       return emptyMarketplaceFeedData;
-    }),
-  ]);
+    },
+  );
 
+  // Hosted sessions keep the blocking list so a 401 still redirects to /login
+  // before anything renders. The local Host streams it: listing reads every
+  // Project's replica and assets, and the Dashboard must not sit behind it.
+  if (getRuntimeCapabilities().auth.mode === "better-auth") {
+    return { authed: true as const, projects: await projects, marketplaceFeed };
+  }
   return { authed: true as const, projects, marketplaceFeed };
 }
 
