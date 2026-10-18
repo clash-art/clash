@@ -20,8 +20,24 @@ export interface ReplicaStreamClientOptions {
   onDisconnected?(): void;
   onError?(error: Error): void;
 }
+/** Keeps the HTTP status and the server's coded `{error, code}` body on the Error,
+ * so a link can tell a revoked credential (stop, ask the user) from a transient one. */
 function streamError(error: StreamError): Error {
-  return new Error(error.message);
+  let body: { error?: unknown; code?: unknown } | undefined;
+  const bodyText = "bodyText" in error ? error.bodyText : undefined;
+  try {
+    body = bodyText ? JSON.parse(bodyText) : undefined;
+  } catch {
+    body = undefined;
+  }
+  const serverMessage = typeof body?.error === "string" ? body.error : undefined;
+  return Object.assign(
+    new Error(serverMessage ? `${error.message}: ${serverMessage}` : error.message),
+    {
+      status: "status" in error ? error.status : undefined,
+      code: typeof body?.code === "string" ? body.code : error.code,
+    },
+  );
 }
 function encode(bytes: Uint8Array): string {
   const chunks: string[] = [];

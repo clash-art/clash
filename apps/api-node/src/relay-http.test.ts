@@ -12,6 +12,7 @@ import { createPostgresCloudProjectAdmissionStore } from "@clash/shared-runtime/
 import { createReplicaHttpGateway } from "./relay-http.ts";
 import { migrateDatabase } from "./migrations.ts";
 import { buildProjectCheckpoint } from "./checkpoint.ts";
+import { CursorCloudReplicaLink } from "../../local-api/src/loro/cursor-cloud-replica-link.ts";
 it("uses the SSE SDK and durable cursors for snapshot bootstrap, log-only reconnect, opaque append and failed local persistence", async () => {
   const db = new PGlite();
   await migrateDatabase(db);
@@ -219,6 +220,83 @@ it("uses the SSE SDK and durable cursors for snapshot bootstrap, log-only reconn
     await new Promise<void>((resolve) => server.close(() => resolve()));
     source.free();
     local.free();
+    await db.close();
+  }
+});
+
+it("answers a revoked credential with a coded 401 and the cursor link stops for the user instead of retrying (#240)", async () => {
+  const db = new PGlite();
+  await migrateDatabase(db);
+  const token = "clsh_" + "b".repeat(40);
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  await db.query(
+    "INSERT INTO api_token(id,user_id,name,token_hash,token_prefix) VALUES ($1,$2,$3,$4,$5)",
+    ["t", "u", "test", tokenHash, "clsh_bbbb"],
+  );
+  await createPostgresCloudProjectAdmissionStore(db).admit({
+    userId: "u",
+    syncBaseUrl: "http://example.com",
+    request: {
+      schemaVersion: 1,
+      projectId: "p",
+      localReplicaId: "l",
+      resourceIds: [],
+      metadata: { projectId: "p", name: "p", description: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null },
+    },
+  });
+  const gateway = createReplicaHttpGateway({ db, pollMs: 25 });
+  const server = createServer(getRequestListener(gateway.app.fetch));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("address");
+  const base = `http://127.0.0.1:${address.port}/api/v1/projects`;
+  const headers = { authorization: `Bearer ${token}` };
+  const doc = new LoroDoc();
+  try {
+    // A project this user was never admitted to stays a coded 404.
+    const missing = await fetch(`${base}/other/replica`, { headers });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toMatchObject({ code: "PROJECT_NOT_FOUND" });
+
+    await db.query("DELETE FROM api_token WHERE token_hash=$1", [tokenHash]);
+    const refused = await fetch(`${base}/p/replica`, { headers });
+    expect(refused.status).toBe(401);
+    expect(await refused.json()).toEqual({
+      error: "Your session expired or your access to this project was revoked.",
+      code: "PROJECT_AUTHORIZATION_REVOKED",
+    });
+
+    const errors: Error[] = [];
+    let required: { classification: unknown; error: Error } | undefined;
+    const link = new CursorCloudReplicaLink(
+      {
+        baseUrl: base,
+        projectId: "p",
+        token,
+        doc: () => doc,
+        commit: async () => {},
+        onError: (error) => errors.push(error),
+        onActionRequired: (classification, error) => {
+          required = { classification, error };
+        },
+      },
+      `${base}/p/replica`,
+    );
+    link.start();
+    const deadline = Date.now() + 5000;
+    while (!required && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    expect(required?.error.message).toMatch(/^Cloud replica 401 PROJECT_AUTHORIZATION_REVOKED: /);
+    // Stopped: no retry loop after the coded refusal.
+    const reported = errors.length;
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(errors.length).toBe(reported);
+    await link.close();
+  } finally {
+    await gateway.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    doc.free();
     await db.close();
   }
 });

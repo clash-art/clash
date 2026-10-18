@@ -445,6 +445,14 @@ const loadFromDB = async (
  * - Local changes: update Loro doc -> subscribeLocalUpdate sends to server
  * - Remote changes: import into Loro doc -> subscribe updates React state
  */
+/** A WebSocket close reason of the form `CODE: message` (codes are UPPER_SNAKE). */
+export function parseCodedCloseReason(
+  reason: string | undefined,
+): { code: string; message: string } | null {
+  const match = /^([A-Z][A-Z0-9_]+): (.+)$/.exec(reason ?? "");
+  return match ? { code: match[1]!, message: match[2]!.trim() } : null;
+}
+
 export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const {
     projectId,
@@ -991,11 +999,13 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
         // Authorization expired or was revoked (1008): retrying cannot succeed
         // and would loop. Ask the user to sign in again; Retry reconnects.
         projectLoadFailedRef.current = true;
+        // The server sends a coded reason (`CODE: message`); show it as is.
+        const coded = parseCodedCloseReason(event.reason);
         setProjectLoadError({
           type: "project.load-error",
           projectId,
           code: "SESSION_EXPIRED",
-          message: "Your sign-in expired or your access to this project was revoked. Sign in again, then retry. Your local edits are kept.",
+          message: `${coded?.message ?? "Your sign-in expired or your access to this project was revoked."} Sign in again, then retry. Your local edits are kept.${coded ? ` [${coded.code}]` : ""}`,
         });
         return;
       }

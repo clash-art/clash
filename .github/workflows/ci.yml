@@ -38,13 +38,13 @@ jobs:
           pnpm --dir apps/local-api exec vitest run src/project-host.contract.test.ts
           # api-node's render worker imports shared-runtime modules that resolve @clash/action-sdk through its built entries.
           pnpm exec turbo run build --filter='@clash/api-node^...'
-          pnpm --dir apps/api-node exec vitest run src/project-host.contract.test.ts src/timeline-host.test.ts src/timeline-definition.test.ts src/personal-assets.test.ts src/timeline-render.test.ts src/app.test.ts
-          pnpm --dir apps/api-cf exec vitest run src/startup-imports.test.ts src/generated/cloud-plugin-validators.test.ts src/routes/v1/project-assets.test.ts src/routes/v1/voice-input.test.ts
-          pnpm --dir apps/api-cf exec vitest run --config vitest.integration.config.mts src/integration/project-host.contract.integration.test.ts src/integration/project-room-host-command.integration.test.ts src/integration/project-assets.integration.test.ts
+          pnpm --dir apps/api-node exec vitest run src/project-host.contract.test.ts src/timeline-host.test.ts src/timeline-definition.test.ts src/personal-assets.test.ts src/timeline-render.test.ts src/app.test.ts src/relay-http.test.ts
+          pnpm --dir apps/api-cf exec vitest run src/startup-imports.test.ts src/generated/cloud-plugin-validators.test.ts src/routes/v1/project-assets.test.ts src/routes/v1/voice-input.test.ts src/agents/project-room-loro-remote.test.ts
+          pnpm --dir apps/api-cf exec vitest run --config vitest.integration.config.mts src/integration/project-host.contract.integration.test.ts src/integration/project-room-host-command.integration.test.ts src/integration/project-assets.integration.test.ts src/integration/project-websocket-auth.integration.test.ts
       - name: Verify Storyboard references and chat drafts
         run: pnpm --dir packages/web-ui exec vitest run src/components/PluginStoryboardSurface.test.tsx src/components/copilot/useCopilotComposerDraft.test.tsx src/components/copilot/projectAssetReferences.test.ts src/components/copilot/ChatInput.test.tsx
       - name: Verify UI reads Project Host capabilities, not backend mode
-        run: pnpm --dir packages/web-ui exec vitest run src/hooks/projectHostReads.runtimeAgnostic.test.tsx src/hooks/useRevisionHistory.test.ts src/lib/runtimeConfig.test.ts src/lib/assetUploadLabel.test.ts src/components/ProjectWorkspaceNavigator.test.tsx src/components/ScopedAssetPicker.test.tsx
+        run: pnpm --dir packages/web-ui exec vitest run src/hooks/projectHostReads.runtimeAgnostic.test.tsx src/hooks/useRevisionHistory.test.ts src/lib/runtimeConfig.test.ts src/lib/assetUploadLabel.test.ts src/hooks/useLoroSync.closeReason.test.ts src/components/ProjectWorkspaceNavigator.test.tsx src/components/ScopedAssetPicker.test.tsx
       - name: Verify workspace controls and native Asset provenance
         run: pnpm --dir packages/web-ui exec vitest run src/components/CloudConnection.test.tsx src/components/ChatbotCopilot.desktop.test.tsx src/components/visualLanguage.test.tsx src/features/assets/AssetWorkspace.test.tsx src/features/assets/relations.test.ts
       - name: Verify current Timeline render and cloud admission contracts
