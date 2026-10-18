@@ -80,7 +80,26 @@ describe("interactive state styling contract", () => {
     expect(css).not.toMatch(
       /\.app-tab-trigger:focus-visible[\s\S]{0,160}box-shadow:\s*0 0 0 1px var\(--app-tab-focus-ring\)/,
     );
-    expect(sourceContains(css, '[data-desktop-workspace-tab="true"]:focus-within')).toBe(true);
+    expect(sourceContains(css, '[data-desktop-workspace-tab="true"]:has(:focus-visible)')).toBe(true);
     expect(sourceContains(css, '[data-desktop-workspace-tab="true"][data-active="true"]')).toBe(true);
+  });
+
+  it("paints desktop workspace tab hover on the whole rounded row, like the Dashboard entry", () => {
+    const css = readRepoFile("apps/web/app/globals.css");
+    // Hover belongs to the row (icon, title, status and close), with the Dashboard's hover token.
+    expect(sourceMatches(
+      css,
+      /\[data-desktop-workspace-tab="true"\]\[data-active="false"\]:hover\s*\{[^}]*background:\s*var\(--clash-warm-hover\)/,
+    )).toBe(true);
+    // Selected uses the Dashboard's raised warm surface.
+    expect(sourceMatches(
+      css,
+      /\[data-desktop-workspace-tab="true"\]\[data-active="true"\]\s*\{[^}]*background:\s*var\(--clash-warm-surface\)[^}]*box-shadow:\s*var\(--clash-shadow-raised\)/,
+    )).toBe(true);
+    // The inner label trigger never paints its own square hover box.
+    expect(sourceMatches(
+      css,
+      /\[data-desktop-workspace-tab="true"\] \[role="tab"\]:hover:not\(\[aria-disabled="true"\]\):not\(\[aria-selected="true"\]\)\s*\{[^}]*background:\s*transparent/,
+    )).toBe(true);
   });
 });

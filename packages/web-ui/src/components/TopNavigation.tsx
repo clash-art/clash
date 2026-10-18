@@ -491,10 +491,10 @@ export default function TopNavigation({
                       key={tab.id}
                       data-desktop-workspace-tab="true"
                       data-active={String(active)}
-                      className={`desktop-no-drag group relative flex h-8 min-w-36 max-w-64 items-center gap-1 rounded-lg border pl-2.5 pr-1 text-sm font-medium transition-[background-color,border-color,box-shadow,color] ${
+                      className={`desktop-no-drag group relative flex h-8 min-w-36 max-w-64 items-center gap-1 rounded-lg pl-2.5 pr-1 text-sm font-medium transition-[background-color,box-shadow,color] ${
                         active
-                          ? "border-warm-border bg-[var(--app-tab-selected-bg)] text-[var(--app-tab-selected-fg)] shadow-raised"
-                          : "border-transparent"
+                          ? "bg-warm-surface text-content-primary shadow-raised"
+                          : "bg-transparent text-content-secondary hover:bg-warm-hover hover:text-content-primary"
                       }`}
                     >
                       <Tab
@@ -502,11 +502,8 @@ export default function TopNavigation({
                         aria-label={tab.title}
                         className={appTabTriggerClassName({
                           selected: active,
-                          className: `flex h-full min-h-0 min-w-0 flex-1 items-center gap-2 truncate text-left ${
-                            active
-                              ? "text-content-primary"
-                              : "text-content-muted hover:text-content-primary"
-                          }`,
+                          className:
+                            "flex h-full min-h-0 min-w-0 flex-1 items-center gap-2 truncate text-left text-inherit",
                         })}
                       >
                         <TabIcon
