@@ -204,11 +204,25 @@ it("allows owner protocol writes but rejects an established socket after its API
   source.free();
 });
 
-function waitForClose(socket: WebSocket) {
+/** ProjectRoom's bounded authorization window (SOCKET_AUTHORIZATION_TTL_MS). */
+const AUTHORIZATION_WINDOW_MS = 5_000;
+const REVOKED_REASON =
+  "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.";
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Send unless the room already closed the socket (e.g. its idle recheck). */
+function trySend(socket: WebSocket, data: string | ArrayBuffer | Uint8Array) {
+  try {
+    socket.send(data);
+  } catch {
+    // Already closed by the room.
+  }
+}
+
+function waitForClose(socket: WebSocket, timeoutMs = 3000) {
   return new Promise<CloseEvent>((resolve, reject) => {
     const timer = setTimeout(
       () => reject(new Error("Revoked socket remained open")),
-      3000,
+      timeoutMs,
     );
     socket.addEventListener(
       "close",
@@ -401,9 +415,14 @@ it.each(["deleted", "expired"])(
         .bind(Date.now() - 1, sessionId)
         .run();
     }
-    const closed = waitForClose(connected.socket);
-    connected.socket.send("ping");
-    expect((await closed).code).toBe(1008);
+    // Bounded window (#240): the first frame after the window lapses is
+    // refused (the idle recheck may close it first).
+    const closed = waitForClose(connected.socket, AUTHORIZATION_WINDOW_MS + 3000);
+    await sleep(AUTHORIZATION_WINDOW_MS + 100);
+    trySend(connected.socket, "ping");
+    const event = await closed;
+    expect(event.code).toBe(1008);
+    expect(event.reason).toBe(REVOKED_REASON);
     expect((await f.request({ cookie })).status).toBe(401);
   },
 );
@@ -464,13 +483,17 @@ it("does not deliver legacy raw broadcasts to a revoked idle observer", async ()
   await env.DB.prepare("DELETE FROM api_token WHERE token_hash = ?")
     .bind(f.tokenHash)
     .run();
+  const closed = waitForClose(observer, AUTHORIZATION_WINDOW_MS + 3000);
+  // Bounded window (#240): once it lapses, nothing more reaches the observer.
+  await sleep(AUTHORIZATION_WINDOW_MS + 100);
   const received: unknown[] = [];
   observer.addEventListener("message", (event) => received.push(event.data));
-  const closed = waitForClose(observer);
   replica.getMap("auth-fixture").set("private-after-revocation", true);
   replica.commit();
   writer.send(replica.export({ mode: "snapshot" }));
-  expect((await closed).code).toBe(1008);
+  const event = await closed;
+  expect(event.code).toBe(1008);
+  expect(event.reason).toBe(REVOKED_REASON);
   expect(received).toEqual([]);
   replica.free();
 });
@@ -521,7 +544,21 @@ it("expires an established JWT connection before its next protocol command", asy
   );
   const closed = waitForClose(connected.socket);
   connected.socket.send("ping");
-  expect((await closed).code).toBe(1008);
+  const event = await closed;
+  expect(event.code).toBe(1008);
+  expect(event.reason).toBe(REVOKED_REASON);
+});
+
+it("closes an idle revoked socket within the authorization window, without any frame", async () => {
+  const f = await fixture();
+  const { sessionId, cookie } = await sessionCookie(f.userId, Date.now() + 60_000);
+  const connected = await connect(f, { cookie });
+  await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
+  const revokedAt = Date.now();
+  const event = await waitForClose(connected.socket, AUTHORIZATION_WINDOW_MS + 3000);
+  expect(event.code).toBe(1008);
+  expect(event.reason).toBe(REVOKED_REASON);
+  expect(Date.now() - revokedAt).toBeLessThan(AUTHORIZATION_WINDOW_MS + 2000);
 });
 
 it("re-derives a stale credential label from the user record on Host reconnect", async () => {
