@@ -453,6 +453,31 @@ export function parseCodedCloseReason(
   return match ? { code: match[1]!, message: match[2]!.trim() } : null;
 }
 
+/** Keepalive interval for the WebSocket transport. */
+export const KEEPALIVE_MS = 30_000;
+const KEEPALIVE_PING = "ping";
+const KEEPALIVE_PONG = "pong";
+
+/**
+ * Send `"ping"` on an open socket. The Cloudflare ProjectRoom and local-api
+ * answer with `"pong"` without touching room state, so a hibernated room stays
+ * asleep while the connection is proven alive. Returns a stop function.
+ */
+export function startKeepalive(
+  ws: Pick<WebSocket, "readyState" | "send">,
+  intervalMs: number = KEEPALIVE_MS,
+): () => void {
+  const id = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(KEEPALIVE_PING);
+    } catch {
+      // Best-effort: onclose/disconnect will clear the interval.
+    }
+  }, intervalMs);
+  return () => clearInterval(id);
+}
+
 export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const {
     projectId,
@@ -508,6 +533,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
   const streamRef = useRef<ReturnType<typeof createLoroStreamSession> | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const keepaliveStopRef = useRef<(() => void) | null>(null);
   const protocolSessionRef = useRef<LoroProtocolClientSession | null>(null);
   const [connected, setConnected] = useState(false);
   const [syncRejected, setSyncRejected] = useState(false);
@@ -783,6 +809,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   }, [replica, doc, projectId]);
 
   const disconnect = useCallback(() => {
+    keepaliveStopRef.current?.();
+    keepaliveStopRef.current = null;
     void streamRef.current?.close();
     streamRef.current = null;
     const ws = wsRef.current;
@@ -928,12 +956,16 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
       // Version-vector handshake catches up both sides and uploads offline work.
       protocolSession.join();
+      keepaliveStopRef.current?.();
+      keepaliveStopRef.current = startKeepalive(ws);
     };
 
     ws.onmessage = async (event) => {
       if (isUnmountingRef.current || wsRef.current !== ws) return;
       // Text messages = JSON sideband (presence/activity)
       if (typeof event.data === "string") {
+        // Keepalive reply; not JSON, so handle it before parsing.
+        if (event.data === KEEPALIVE_PONG) return;
         try {
           const msg = JSON.parse(event.data);
           if (isSidebandMessage(msg)) {
@@ -983,6 +1015,8 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
     };
 
     ws.onclose = (event) => {
+      keepaliveStopRef.current?.();
+      keepaliveStopRef.current = null;
       protocolSession.destroy();
       if (wsRef.current !== ws) return;
       syncLog[isUnmountingRef.current || event.code === 1000 || rejectedSyncRef.current ? "debug" : "warn"]("sync.disconnected", {
