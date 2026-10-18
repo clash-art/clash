@@ -143,6 +143,9 @@ it("serves provider-route voice input with shared readiness instead of 501", asy
     expect(await warmup.json()).toEqual({
       status: "needs-config",
       runtime: "provider-route",
+      error:
+        "The selected voice input model is not configured. Open Settings > Models and configure a provider.",
+      code: "VOICE_INPUT_NOT_CONFIGURED",
     });
 
     const missing = await app.request("/api/v1/audio/transcriptions", {

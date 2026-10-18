@@ -12,6 +12,7 @@ import type {
 } from "@clash/shared-types";
 import {
   VOICE_INPUT_MAX_AUDIO_BYTES,
+  VOICE_INPUT_NOT_CONFIGURED_MESSAGE,
   createHostedVoiceInputPorts,
   type VoiceInputHostedPorts,
   type VoiceInputModelEntry,
@@ -428,6 +429,39 @@ export function describeVoiceInputContract(
         status: "not-needed",
         runtime: "provider-route",
       });
+    });
+
+    it("fails an unconfigured warmup with a coded, user-visible error", async () => {
+      const events: ProviderUsageAuditEvent[] = [];
+      const app = harness.mount(
+        createHostedVoiceInputPorts(
+          "user-1",
+          hostedPorts({
+            entries: [
+              voiceInputContractEntry({
+                selectedRoute: null,
+                missingCredentials: ["apiKey"],
+                tier: "all",
+              }),
+            ],
+            fetch,
+            events,
+          }),
+        ),
+      );
+
+      const response = await call(app, "/audio/voice-input/warmup", {
+        method: "POST",
+      });
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        status: "needs-config",
+        runtime: "provider-route",
+        error: VOICE_INPUT_NOT_CONFIGURED_MESSAGE,
+        code: "VOICE_INPUT_NOT_CONFIGURED",
+      });
+      expect(events).toEqual([]);
     });
 
     it("requires an authenticated user", async () => {

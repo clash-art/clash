@@ -5,7 +5,9 @@
  */
 import { Hono, type Context, type Env } from "hono";
 import {
+  VOICE_INPUT_DISABLED_MESSAGE,
   VOICE_INPUT_MAX_AUDIO_BYTES,
+  VOICE_INPUT_NOT_CONFIGURED_MESSAGE,
   VoiceInputError,
   isVoiceInputProviderReady,
   resolveVoiceInputReadiness,
@@ -66,7 +68,8 @@ export function createVoiceInputRoutes<E extends Env = Env>(
 
   /**
    * Hosted warmup: a ready Provider route needs no local runtime; an
-   * unconfigured one reports the same needs-config state as readiness. The
+   * unconfigured one reports the same needs-config state as readiness, plus the
+   * coded error the composer shows (a bare 409 left the user with "HTTP 409"). The
    * local Host keeps its builtin-rpc warmup under the same path.
    */
   routes.post("/audio/voice-input/warmup", async (c) => {
@@ -76,13 +79,29 @@ export function createVoiceInputRoutes<E extends Env = Env>(
       const ports = options.createPorts(c, userId);
       const selection = await ports.resolveVoiceInputSelection(userId);
       if (!selection.enabled) {
-        return c.json({ status: "disabled", runtime: "provider-route" }, 409);
+        return c.json(
+          {
+            status: "disabled",
+            runtime: "provider-route",
+            error: VOICE_INPUT_DISABLED_MESSAGE,
+            code: "VOICE_INPUT_DISABLED",
+          },
+          409,
+        );
       }
       const entry = await ports.resolveModelEntry(userId, selection.model);
       if (isVoiceInputProviderReady(entry)) {
         return c.json({ status: "not-needed", runtime: "provider-route" });
       }
-      return c.json({ status: "needs-config", runtime: "provider-route" }, 409);
+      return c.json(
+        {
+          status: "needs-config",
+          runtime: "provider-route",
+          error: VOICE_INPUT_NOT_CONFIGURED_MESSAGE,
+          code: "VOICE_INPUT_NOT_CONFIGURED",
+        },
+        409,
+      );
     } catch (error) {
       return errorResponse(c, error);
     }
