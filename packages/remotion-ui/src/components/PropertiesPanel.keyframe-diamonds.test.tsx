@@ -20,7 +20,7 @@ function Playhead() {
   return (
     <>
       <output aria-label="Playhead">{currentFrame}</output>
-      {[0, 10, 20, 25, 200].map((frame) => (
+      {[0, 20].map((frame) => (
         <button key={frame} onClick={() => dispatch({ type: "SET_CURRENT_FRAME", payload: frame })}>
           Seek {frame}
         </button>
@@ -60,7 +60,6 @@ const image = (overrides: Partial<ImageItem> = {}): ImageItem => ({
 
 const diamond = (label: string) =>
   screen.getByRole("button", { name: new RegExp(`^(Add|Remove) ${label} keyframe at current frame$`) });
-const seek = (frame: number) => fireEvent.click(screen.getByRole("button", { name: `Seek ${frame}` }));
 
 describe("CapCut-style keyframe diamonds", () => {
   it.each([

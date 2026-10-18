@@ -1403,8 +1403,8 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
 
       {(item.type === 'text' || supportsVisualTransform) && (
         <nav aria-label="Properties sections" className="flex shrink-0 gap-2 border-b border-warm-border px-4 py-2">
-          {item.type === 'text' && <RemotionButton className="rounded-md border border-warm-border px-3 py-1.5 text-xs hover:bg-warm-hover" onClick={() => textSectionRef.current?.scrollIntoView({ block: 'start' })}>Font & text</RemotionButton>}
-          {supportsVisualTransform && <RemotionButton className="rounded-md border border-warm-border px-3 py-1.5 text-xs hover:bg-warm-hover" onClick={() => transformSectionRef.current?.scrollIntoView({ block: 'start' })}>Keyframes</RemotionButton>}
+          {item.type === 'text' && <RemotionButton className={`rounded-md border border-warm-border px-3 py-1.5 hover:bg-warm-hover ${editorTypeClassName.control}`} onClick={() => textSectionRef.current?.scrollIntoView({ block: 'start' })}>Font & text</RemotionButton>}
+          {supportsVisualTransform && <RemotionButton className={`rounded-md border border-warm-border px-3 py-1.5 hover:bg-warm-hover ${editorTypeClassName.control}`} onClick={() => transformSectionRef.current?.scrollIntoView({ block: 'start' })}>Keyframes</RemotionButton>}
         </nav>
       )}
       <div className={panelScrollClassName}>
