@@ -30,6 +30,13 @@ describe("formatNodeFailure", () => {
     ).toBe("Plugin unavailable [plugin_unavailable]");
   });
 
+  it("reads an older local node's failureCode when errorCode is absent", () => {
+    expect(
+      formatNodeFailure({ error: "Timeline render is missing its frozen Action input owner.", failureCode: "TIMELINE_RENDER_INPUT_INVALID" }),
+    ).toBe("Timeline render is missing its frozen Action input owner. [TIMELINE_RENDER_INPUT_INVALID]");
+    expect(formatNodeFailure({ error: "x", errorCode: "new_code", failureCode: "old_code" })).toBe("x [new_code]");
+  });
+
   it("never renders an empty failure", () => {
     expect(formatNodeFailure({ status: "failed" })).toBe(
       "Generation failed without an error message [unknown_failure]",

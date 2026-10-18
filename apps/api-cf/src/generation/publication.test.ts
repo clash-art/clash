@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { Canvas } from "@clash/shared-types";
 import { LoroDoc } from "loro-crdt";
 import {
+  claimHostedGenerationNode,
+  GenerationPublicationConflict,
   generationAdmissionUpdate,
   generationPublicationUpdate,
 } from "./publication";
@@ -127,4 +129,58 @@ it("acknowledges obsolete terminal failure without touching a replacement task",
     content: "new content",
   });
   doc.free();
+});
+
+describe("Project room admission errors", () => {
+  const params = {
+    taskId: "task-1",
+    nodeId: "node-1",
+    projectId: "project-1",
+    type: "image_gen",
+    actorUserId: "user-1",
+  } as never;
+  const roomReplying = (response: Response) =>
+    ({
+      ROOM: {
+        idFromName: (name: string) => name,
+        get: () => ({ fetch: async () => response }),
+      },
+    }) as never;
+
+  it("carries the room's code and cause instead of a bare HTTP status", async () => {
+    const error = await claimHostedGenerationNode(
+      roomReplying(
+        Response.json(
+          { error: "generation-admission failed in the Project room: storage write timed out", code: "GENERATION_PUBLICATION_FAILED" },
+          { status: 503 },
+        ),
+      ),
+      params,
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(GenerationPublicationConflict);
+    expect((error as Error).message).toBe(
+      "Project generation admission unavailable (HTTP 503, GENERATION_PUBLICATION_FAILED): generation-admission failed in the Project room: storage write timed out",
+    );
+    expect(error).toMatchObject({ status: 503, code: "GENERATION_PUBLICATION_FAILED" });
+  });
+
+  it("names an unreadable room response explicitly", async () => {
+    await expect(
+      claimHostedGenerationNode(roomReplying(new Response("upstream reset", { status: 502 })), params),
+    ).rejects.toThrow(
+      "Project generation admission unavailable (HTTP 502, PROJECT_ROOM_RESPONSE_UNREADABLE): the Project room returned no error message",
+    );
+  });
+
+  it("keeps a room rejection a conflict, with its reason", async () => {
+    const error = await claimHostedGenerationNode(
+      roomReplying(Response.json({ error: "Generation node is missing.", code: "GENERATION_PUBLICATION_CONFLICT" }, { status: 409 })),
+      params,
+    ).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(GenerationPublicationConflict);
+    expect((error as Error).message).toBe(
+      "Project generation admission rejected (HTTP 409, GENERATION_PUBLICATION_CONFLICT): Generation node is missing.",
+    );
+  });
 });

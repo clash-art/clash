@@ -4,7 +4,8 @@
  * A failed generation node carries the failure message in `error` and the
  * durable-run/task failure code (`contract_violation`, `deadline_exceeded`,
  * ...) in `errorCode`. Hosted nodes written before `error` became the single
- * message field may still hold `errorMessage`; it is read as a fallback only.
+ * message field may still hold `errorMessage`, and older local nodes
+ * `failureCode`; both are read as fallbacks only.
  */
 
 export const UNKNOWN_NODE_FAILURE_CODE = "unknown_failure";
@@ -24,7 +25,8 @@ export function formatNodeFailure(data: unknown): string {
   const record =
     data && typeof data === "object" ? (data as Record<string, unknown>) : {};
   const message = text(record.error) ?? text(record.errorMessage);
-  const code = text(record.errorCode);
+  // `failureCode` is the local Host's retired spelling, still on older nodes.
+  const code = text(record.errorCode) ?? text(record.failureCode);
   if (!message)
     return `${NODE_FAILURE_WITHOUT_MESSAGE} [${code ?? UNKNOWN_NODE_FAILURE_CODE}]`;
   return code ? `${message} [${code}]` : message;
