@@ -8,6 +8,7 @@ import {
   createLocalResourceStore,
   type LocalResourceStagingProjection,
 } from "./local-resource-store.js";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
 interface SqliteRunResult {
   changes: number | bigint;
@@ -211,17 +212,16 @@ export function createLocalPluginAssetStagingStore(options: {
     ...(options.clashRoot ? { clashRoot: options.clashRoot } : {}),
   });
 
+  const connection = createLocalSqliteConnection({
+    dataDir: options.dataDir,
+    path: databasePath,
+    open: openDatabase,
+  });
+
   async function withDatabase<T>(
     task: (database: SqliteDatabase) => T,
   ): Promise<T> {
-    await mkdir(options.dataDir, { recursive: true });
-    const database = openDatabase(databasePath);
-    try {
-      return task(database);
-    } finally {
-      database.close();
-      await chmod(databasePath, 0o600).catch(() => undefined);
-    }
+    return connection.use(task);
   }
 
   async function load(input: {

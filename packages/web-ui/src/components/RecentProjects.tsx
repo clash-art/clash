@@ -9,12 +9,15 @@ interface RecentProjectsProps {
   onCreateProject: (projectName: string) => void | Promise<void>;
   composerProjectReferenceId?: string | null;
   onAddProjectReference?: (project: ProjectReference) => void;
+  /** The project list is still being read from the Host. */
+  loading?: boolean;
 }
 export default function RecentProjects({
   projects,
   onCreateProject,
   composerProjectReferenceId = null,
   onAddProjectReference,
+  loading = false,
 }: RecentProjectsProps) {
   const [archivedProjectIds, setArchivedProjectIds] = useState<Set<string>>(
     () => new Set(),
@@ -87,8 +90,18 @@ export default function RecentProjects({
           data-slot="recent-project-rail"
           aria-label="Recently viewed projects"
           className="clash-recent-project-grid"
+          aria-busy={loading || undefined}
           onScroll={updateEdgeCues}
         >
+          {loading ? (
+            <p
+              role="status"
+              data-slot="recent-projects-loading"
+              className="flex min-h-24 items-center px-1 text-sm text-content-secondary"
+            >
+              Loading projects…
+            </p>
+          ) : null}
           {projectList.map((project) => (
             <ProjectCard
               key={project.id}

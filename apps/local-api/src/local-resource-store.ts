@@ -28,6 +28,7 @@ import {
   assetPathForWrite,
   normalizeLocalBlobStorageKey,
 } from "./local-asset-paths.js";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
 interface SqliteRunResult {
   changes: number | bigint;
@@ -427,17 +428,16 @@ export function createLocalResourceStore(options: {
 }): LocalResourceStore {
   const databasePath = `${options.dataDir}/local.sqlite`;
 
+  const connection = createLocalSqliteConnection({
+    dataDir: options.dataDir,
+    path: databasePath,
+    open: openDatabase,
+  });
+
   async function withDatabase<T>(
     task: (database: SqliteDatabase) => T,
   ): Promise<T> {
-    await mkdir(options.dataDir, { recursive: true });
-    const database = openDatabase(databasePath);
-    try {
-      return task(database);
-    } finally {
-      database.close();
-      await chmod(databasePath, 0o600).catch(() => undefined);
-    }
+    return connection.use(task);
   }
 
   async function rowFor(
@@ -475,6 +475,42 @@ export function createLocalResourceStore(options: {
     });
   }
 
+  /**
+   * Immutable bytes already hashed by this process, keyed by path and the file
+   * identity that was hashed. A read re-hashes whenever the file was replaced
+   * or touched (device, inode, size, mtime or ctime changed), so tampering
+   * that goes through the filesystem is still caught (recently changed files
+   * are always re-hashed, see rememberVerifiedRead); an unchanged file is not
+   * re-read on every projection (the Dashboard listing hashed every image and
+   * video in every project, twice, on each request).
+   */
+  const verifiedReads = new Map<string, string>();
+  const verifiedReadKey = (
+    digest: string,
+    info: Awaited<ReturnType<typeof stat>>,
+  ) =>
+    [digest, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(
+      "\0",
+    );
+  function verifiedReadIdentityMatches(
+    path: string,
+    digest: string,
+    info: Awaited<ReturnType<typeof stat>>,
+  ): boolean {
+    return verifiedReads.get(path) === verifiedReadKey(digest, info);
+  }
+  function rememberVerifiedRead(
+    path: string,
+    digest: string,
+    info: Awaited<ReturnType<typeof stat>>,
+  ): void {
+    // File timestamps are coarse (often several ms). Like Git's "racy clean"
+    // rule, a file changed within the last two seconds is never trusted by
+    // identity alone: a same-length rewrite could keep the same stat facts.
+    if (Date.now() - Math.max(Number(info.mtimeMs), Number(info.ctimeMs)) < 2_000) return;
+    verifiedReads.set(path, verifiedReadKey(digest, info));
+  }
+
   async function projection(
     row: LocalResourceRow,
   ): Promise<LocalResourceProjection> {
@@ -500,17 +536,21 @@ export function createLocalResourceStore(options: {
         `Local Resource ${row.resourceId} is corrupt: byte length does not match its registry facts.`,
       );
     }
-    try {
-      await verifyBytes({
-        path,
-        digest: row.digest,
-        byteLength: row.byteLength,
-      });
-    } catch (error) {
-      throw new Error(
-        `Local Resource ${row.resourceId} is corrupt: bytes do not match its immutable digest.`,
-        { cause: error },
-      );
+    if (!verifiedReadIdentityMatches(path, row.digest, info)) {
+      try {
+        await verifyBytes({
+          path,
+          digest: row.digest,
+          byteLength: row.byteLength,
+        });
+      } catch (error) {
+        verifiedReads.delete(path);
+        throw new Error(
+          `Local Resource ${row.resourceId} is corrupt: bytes do not match its immutable digest.`,
+          { cause: error },
+        );
+      }
+      rememberVerifiedRead(path, row.digest, info);
     }
     return {
       resource: resourceFromRow(row),

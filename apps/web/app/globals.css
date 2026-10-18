@@ -5870,20 +5870,37 @@ html[data-clash-sidebar-collapsed="true"] .clash-web-main {
   box-shadow: none;
 }
 
-/* Desktop workspace tabs: ring the chrome row (icon, title, status, close), not the inner label. */
-[data-desktop-workspace-tab="true"]:focus-within {
+/*
+ * Desktop workspace tabs: ring the chrome row (icon, title, status, close), not
+ * the inner label, and only for keyboard focus like the Dashboard entry. A
+ * mouse click must not leave a ring on the selected tab.
+ */
+[data-desktop-workspace-tab="true"]:has(:focus-visible) {
   outline: var(--app-tab-focus-width) solid var(--app-tab-focus-ring);
   outline-offset: calc(-1 * var(--app-tab-focus-width));
   box-shadow: none;
 }
 
+/*
+ * Desktop workspace tabs share the Dashboard entry's pill: the whole row
+ * (icon, title, status, close) is the surface. Selected uses the raised warm
+ * surface, hover uses the warm hover token, and both keep the row's radius.
+ */
 [data-desktop-workspace-tab="true"][data-active="true"] {
-  background: var(--app-tab-selected-bg);
-  color: var(--app-tab-selected-fg);
+  background: var(--clash-warm-surface);
+  color: var(--clash-content-primary);
+  box-shadow: var(--clash-shadow-raised);
 }
 
-[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"],
-[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"]:hover {
+[data-desktop-workspace-tab="true"][data-active="false"]:hover {
+  background: var(--clash-warm-hover);
+  color: var(--clash-content-primary);
+}
+
+/* The inner trigger never paints its own (square, label-only) hover/selected box. */
+[data-desktop-workspace-tab="true"] [role="tab"],
+[data-desktop-workspace-tab="true"] [role="tab"][aria-selected="true"]:hover,
+[data-desktop-workspace-tab="true"] [role="tab"]:hover:not([aria-disabled="true"]):not([aria-selected="true"]) {
   background: transparent;
   color: inherit;
 }

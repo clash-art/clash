@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { chmod, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
 type SqlitePrimitive = string | number | null;
 
@@ -74,16 +75,15 @@ async function exists(path: string): Promise<boolean> {
 export function createSqliteLocalConfigStore(dataDir: string): SqliteLocalConfigStore {
   const path = sqlitePath(dataDir);
 
+  const connection = createLocalSqliteConnection({
+    dataDir,
+    path,
+    open: openDatabase,
+    prepare: applySchema,
+  });
+
   async function withDb<T>(task: (db: SqliteDatabase) => T): Promise<T> {
-    await mkdir(dataDir, { recursive: true });
-    const db = openDatabase(path);
-    try {
-      applySchema(db);
-      return task(db);
-    } finally {
-      db.close();
-      await chmod(path, 0o600).catch(() => undefined);
-    }
+    return connection.use(task);
   }
 
   return {

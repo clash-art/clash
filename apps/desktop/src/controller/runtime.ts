@@ -35,6 +35,7 @@ import {
   type DesktopRuntime,
 } from "../runtime";
 import type { DesktopControllerLogger } from "./types";
+import type { DesktopStartupPhase } from "../startup-phases";
 
 const require = createRequire(import.meta.url);
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
@@ -43,10 +44,12 @@ export function createDesktopRuntimeController({
   moduleDir,
   hostDiagnosticLogPath,
   log,
+  startupPhase = () => undefined,
 }: {
   moduleDir: string;
   hostDiagnosticLogPath: string;
   log: DesktopControllerLogger;
+  startupPhase?: DesktopStartupPhase;
 }) {
   let runtime: DesktopRuntime | null = null;
 
@@ -106,6 +109,7 @@ export function createDesktopRuntimeController({
     let apiPort = DEFAULT_DESKTOP_API_PORT;
     let apiBaseUrl = process.env.CLASH_API_BASE_URL;
     await configureAcpHarnessEnvironment(dataDir);
+    startupPhase("runtime.harness_env_configured");
 
     if (!apiBaseUrl) {
       const runDir = join(clashHomeForLocalDataDir(dataDir), "run");
@@ -132,6 +136,7 @@ export function createDesktopRuntimeController({
         // its HTTP child is replaced. Reuse that writer once it is healthy.
         unhealthyRecoveryTimeoutMs: hostStartupTimeoutMs ?? 15_000,
         launch: async () => {
+          startupPhase("host.launching");
           const sourceHostDaemonEnv = await resolveDesktopSourceHostDaemonEnv({
             sourceHost,
             watchSourceHost,
@@ -189,7 +194,9 @@ export function createDesktopRuntimeController({
         },
       });
       try {
+        startupPhase("host.ensuring");
         const host = await daemon.ensureDaemon();
+        startupPhase("host.ready", { startedBy: host.startedBy });
         apiBaseUrl = host.endpoint;
         log.info(
           `[desktop] using detached Clash host ${host.hostId} at ${host.endpoint} (pid ${host.pid}, started by ${host.startedBy})`,

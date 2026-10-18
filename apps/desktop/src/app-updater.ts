@@ -52,7 +52,7 @@ export async function startDesktopAppUpdater({
   const publish = (patch: Partial<AppUpdateState>): AppUpdateState => {
     state = { ...state, ...patch };
     log.info(
-      `[desktop:update] status=${state.status} version=${state.version} available=${state.available?.version ?? ""} block=${state.installBlock}`,
+      `[desktop:update] status=${state.status} version=${state.version} available=${state.available?.version ?? ""} block=${state.installBlock}${state.errorCode ? ` error=${state.errorCode}` : ""}`,
     );
     recordUpdateEvidence("update-state", {
       status: state.status,
@@ -114,8 +114,16 @@ export async function startDesktopAppUpdater({
     prompted = key;
     void promptAndInstall();
   });
+  // An update failure must name its cause in the log, not only `status=error`.
+  const logUpdateFailure = (error: unknown) =>
+    log.warn(
+      `[desktop:update] update check failed (${updateErrorCode(error)}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   autoUpdater.on("error", (error) => {
     checking = false;
+    logUpdateFailure(error);
     publish({
       status: "error",
       errorCode: updateErrorCode(error),
@@ -134,6 +142,7 @@ export async function startDesktopAppUpdater({
     try {
       await autoUpdater.checkForUpdates();
     } catch (error) {
+      logUpdateFailure(error);
       publish({ status: "error", errorCode: updateErrorCode(error) });
     } finally {
       checking = false;

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 
 export interface ResolveMacGuiPathInput {
@@ -75,5 +75,43 @@ export function hydrateMacGuiPath(env: NodeJS.ProcessEnv = process.env): void {
     env,
     homeDir: homedir(),
     platform: process.platform,
+  });
+}
+
+/** Same login-shell lookup as readMacLoginShellPath, without blocking the main process. */
+export function readMacLoginShellPathAsync(
+  env: Record<string, string | undefined> = process.env,
+): Promise<string> {
+  const shell = env.SHELL || "/bin/zsh";
+  return new Promise((resolve) => {
+    execFile(
+      shell,
+      ["-lc", "printf %s \"$PATH\""],
+      {
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+        timeout: 2000,
+      },
+      (error, stdout) => resolve(error ? "" : String(stdout).trim()),
+    );
+  });
+}
+
+/**
+ * Starts the macOS login-shell PATH lookup without blocking Electron's own
+ * startup (it can take up to its 2 s timeout with a heavy shell profile).
+ * Await the result before anything spawns user tools (the local Host).
+ */
+export async function hydrateMacGuiPathAsync(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== "darwin") return;
+  const loginShellPath = await readMacLoginShellPathAsync(env);
+  env.PATH = resolveMacGuiPath({
+    env,
+    homeDir: homedir(),
+    platform,
+    readLoginShellPath: () => loginShellPath,
   });
 }

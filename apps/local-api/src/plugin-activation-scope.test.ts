@@ -7,7 +7,13 @@ import { createLocalApiApp } from "./app.js";
 const dirs: string[] = [];
 afterEach(async () => {
   await Promise.all(
-    dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+    // Project metadata replication keeps running in the background after the
+    // request returns and can still be writing local.sqlite while we clean up.
+    dirs
+      .splice(0)
+      .map((dir) =>
+        rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
+      ),
   );
 });
 

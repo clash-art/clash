@@ -10,6 +10,7 @@ import type {
   DurableRunPhase,
   DurableRunRecord,
 } from "@clash/shared-runtime";
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
 interface SqliteRunResult {
   changes: number | bigint;
@@ -331,18 +332,15 @@ export function createSqliteDurableRunJournal(
 ): SqliteDurableRunJournal {
   const path = databasePath(dataDir);
 
-  async function withDatabase<T>(
-    task: (database: SqliteDatabase) => T,
-  ): Promise<T> {
-    await mkdir(dataDir, { recursive: true });
-    const database = openDatabase(path);
-    try {
-      applySchema(database);
-      return task(database);
-    } finally {
-      database.close();
-      await chmod(path, 0o600).catch(() => undefined);
-    }
+  const connection = createLocalSqliteConnection({
+    dataDir,
+    path,
+    open: openDatabase,
+    prepare: applySchema,
+  });
+
+  async function withDatabase<T>(task: (database: SqliteDatabase) => T): Promise<T> {
+    return connection.use(task);
   }
 
   return {
