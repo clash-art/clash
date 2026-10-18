@@ -5,7 +5,7 @@ import { classifySyncError } from "@clash/shared-types";
 import {
   CloudReplicaLinkActionRequiredError,
   type LoroCloudReplicaLinkOptions,
-} from "./cloud-replica-link.ts";
+} from "./cloud-replica-link.js";
 
 /** HTTP status of a replica stream failure, if the server answered one. */
 function failureStatus(error: unknown): number | undefined {
