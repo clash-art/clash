@@ -103,6 +103,50 @@ describe("cloud browser login gateway", () => {
   });
 });
 
+describe("provider OAuth web callback gateway", () => {
+  it("forwards the vendor redirect with its session cookie, without forged identity or fail-closed", async () => {
+    const env = gatewayEnv();
+    let received: Request | undefined;
+    env.API_CF = {
+      fetch: async (request) => {
+        received = request;
+        return new Response(null, { status: 302, headers: { location: "https://clash.test/settings" } });
+      },
+    };
+    const response = await worker.fetch(
+      new Request("https://clash.test/api/v1/provider-oauth/callback?code=c&state=s", {
+        headers: {
+          cookie: "better-auth.session_token=abc",
+          "x-user-id": "forged",
+          "x-clash-require-identity": "0",
+        },
+      }),
+      env,
+    );
+    expect(response.status).toBe(302);
+    expect(received?.url).toBe("https://clash.test/api/v1/provider-oauth/callback?code=c&state=s");
+    expect(received?.headers.get("cookie")).toBe("better-auth.session_token=abc");
+    expect(received?.headers.has("x-user-id")).toBe(false);
+    expect(received?.headers.has("x-clash-require-identity")).toBe(false);
+  });
+
+  it("keeps the other provider-oauth routes fail-closed", async () => {
+    const env = gatewayEnv();
+    let received: Request | undefined;
+    env.API_CF = {
+      fetch: async (request) => {
+        received = request;
+        return new Response("api decides", { status: 401 });
+      },
+    };
+    await worker.fetch(
+      new Request("https://clash.test/api/v1/provider-oauth/acme/start", { method: "POST" }),
+      env,
+    );
+    expect(received?.headers.get("x-clash-require-identity")).toBe("1");
+  });
+});
+
 /**
  * `run_worker_first` decides which paths reach this Worker at all: anything
  * outside the list is answered by the SPA assets layer (HTML shell for GET,

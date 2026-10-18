@@ -3,6 +3,7 @@ import {
   type ProjectCloudAdmission,
 } from "@clash/shared-types";
 import type { Env } from "../config";
+import { publicOrigin } from "./public-origin";
 
 import { createCloudProjectAdmissionStore } from "@clash/shared-runtime/project-cloud-admission";
 import type { CloudProjectAdmissionStore } from "@clash/shared-runtime/project-cloud-admission";
@@ -187,8 +188,5 @@ export function createD1CloudProjectAdmissionStore(
 }
 
 export function cloudSyncBaseUrl(request: Request, env: Env): string {
-  return (env.WORKER_PUBLIC_URL ?? new URL(request.url).origin).replace(
-    /\/+$/u,
-    "",
-  );
+  return publicOrigin(request, env);
 }

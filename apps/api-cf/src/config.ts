@@ -37,6 +37,13 @@ export interface Env {
   WORKER_PUBLIC_URL?: string;
   /** AES-GCM key for encrypting/decrypting user variables (action secrets) */
   ACTION_SECRET_KEY?: string;
+  /**
+   * Optional secret: JSON array of operator-registered OAuth Providers,
+   * `[{ id, label?, flow }]` where `flow` is a PluginAuthFlow with tokenUrl and
+   * clientId. Parsed on first use (services/provider-oauth-config.ts), never at
+   * Worker startup. Hosted builds bundle no Provider declarations.
+   */
+  PROVIDER_OAUTH_PROVIDERS?: string;
   /** HMAC key for short-lived hosted executable-plugin broker capabilities. */
   // Better Auth — handler runs in this Worker now (apps/api-cf/src/auth.ts).
   KV?: KVNamespace<string>;

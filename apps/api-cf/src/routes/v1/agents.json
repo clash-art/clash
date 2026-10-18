@@ -7,6 +7,7 @@
     "projects.ts": "Project CRUD and cloud admission API.",
     "plugin-catalog.ts": "GET generator-definitions, plugin-views, plugin-actions with local-api response shapes; loads the catalog service on first request.",
     "voice-input.ts": "Cloudflare wiring for the shared voice-input HTTP factory. Supplies D1 provider-account/model-card catalog, credential envelopes and usage-audit ports; local ASR stays local-only.",
-    "plugin-settings.ts": "POST/GET/DELETE third-party plugin endpoints. Validates https/public hosts at save, seals the signing secret with ACTION_SECRET_KEY, and never returns it."
+    "plugin-settings.ts": "POST/GET/DELETE third-party plugin endpoints. Validates https/public hosts at save, seals the signing secret with ACTION_SECRET_KEY, and never returns it.",
+    "model-providers.ts": "Provider accounts, model cards and Provider OAuth. Hosted OAuth is the web redirect flow: POST start → vendor → GET /provider-oauth/callback → 302 to /settings?section=providers&providerOAuth&status&code (never a token or code). /complete answers 409 for web flows and 501 for scheme/device-code; /import-local is 501 (needs the user's machine)."
   }
 }

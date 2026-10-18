@@ -106,7 +106,8 @@
     "src/cloud-login.ts": "Cloud service discovery and PKCE browser/loopback sign-in; renderer receives only flow status and public identity.",
     "src/cloud-routes.ts": "Origin-guarded local account/login/logout HTTP endpoints; signing in never admits projects.",
     "src/project-cloud-journey.ts": "Project-bound account and readiness projection for Desktop; Web links require all replication capabilities and matching credentials.",
-    "src/project-host.contract.test.ts": "Shared Project Host contract on the real createApp with the bundled Remotion Generator. Known gap: host-command answers a stale Timeline write with HTTP 200 + STALE_READ body instead of 409."
+    "src/project-host.contract.test.ts": "Shared Project Host contract on the real createApp with the bundled Remotion Generator. Known gap: host-command answers a stale Timeline write with HTTP 200 + STALE_READ body instead of 409.",
+    "src/auth-flow.ts": "Loopback callback server only (127.0.0.1, random port, one callback, timeout). PKCE, state, authorization URL and code exchange come from @clash/shared-runtime/provider-oauth-flow."
   },
   "context_hints": [
     "Release compilation uses tsconfig.build.json and emits production source only with noEmitOnError. Cross-package test imports remain covered by the unchanged full-source/test tsconfig.dev.json typecheck and Vitest; tests are not release payloads.",

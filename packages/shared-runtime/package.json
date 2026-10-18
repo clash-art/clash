@@ -213,6 +213,11 @@
       "import": "./src/signed-capability.ts",
       "default": "./dist/signed-capability.js"
     },
+    "./provider-oauth-flow": {
+      "types": "./src/provider-oauth-flow.ts",
+      "import": "./src/provider-oauth-flow.ts",
+      "default": "./dist/provider-oauth-flow.js"
+    },
     "./cloud-project-host/timeline-commands": {
       "types": "./src/cloud-project-host/timeline-commands.ts",
       "import": "./src/cloud-project-host/timeline-commands.ts",

@@ -101,7 +101,8 @@
         "**/*.test.ts",
         "**/*.test.tsx",
         "**/test-support/**",
-        "packages/web-ui/src/lib/runtimeConfig.ts"
+        "packages/web-ui/src/lib/runtimeConfig.ts",
+        "packages/web-ui/src/lib/provider-authorization.ts"
       ],
       "rules": {
         "no-restricted-syntax": [
@@ -117,6 +118,14 @@
           {
             "selector": "Identifier[name='bindTimelineRenderExecutor']",
             "message": "Render adapters are bound only at composition roots (apps/web)."
+          },
+          {
+            "selector": "Identifier[name='bindProviderAuthorization']",
+            "message": "Provider authorization adapters are bound only at composition roots (apps/web)."
+          },
+          {
+            "selector": "MemberExpression[object.property.name='__CLASH_DESKTOP__'][property.name='authorizeProvider']",
+            "message": "Call providerAuthorization(); the desktop authorizeProvider bridge is bound at the composition root."
           },
           {
             "selector": "MemberExpression[property.name='mode'][object.type='CallExpression'][object.callee.name=/^(getRuntimeConfig|resolveRuntimeConfig)$/]",

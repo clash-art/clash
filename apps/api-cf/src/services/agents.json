@@ -16,6 +16,9 @@
     "cloud-plugin-packages.ts": "Bundled plugin packages (static JSON imports) and the executable projection surfaces of the hosted Worker. Lazy-only: never import from the startup graph.",
     "cloud-plugin-catalog.ts": "Builds the catalog on first use after registering the generated precompiled Generator validators (workerd forbids Ajv runtime compilation).",
     "provider-accounts.ts": "D1 provider accounts with AES-GCM credential envelopes shared through @clash/shared-runtime/provider-credentials; public rows expose only configured credential key names.",
-    "provider-usage.ts": "D1 append-only provider usage audit using INSERT OR IGNORE on the event id, so re-appending the same event is a no-op."
+    "provider-usage.ts": "D1 append-only provider usage audit using INSERT OR IGNORE on the event id, so re-appending the same event is a no-op.",
+    "provider-oauth.ts": "D1 provider_oauth rows and the hosted web redirect flow. start seals verifier/state/redirect_uri with the ACTION_SECRET_KEY envelope (own salt) and never stores the authorization URL; the callback matches state only among the user's sealed flows in constant time, consumes it with a conditional update before exchanging, and writes encrypted tokens + authorized in one statement. Every failure ends as a row status with a PROVIDER_OAUTH_* code; a lapsed pending row reads as expired.",
+    "provider-oauth-config.ts": "Operator-registered hosted OAuth Providers from the optional PROVIDER_OAUTH_PROVIDERS secret ([{ id, label?, flow }], flow = PluginAuthFlowSchema with tokenUrl + clientId). Parsed lazily on first use, never at Worker startup; an invalid entry fails that flow with PROVIDER_OAUTH_NOT_CONFIGURED and never echoes the client secret.",
+    "public-origin.ts": "Browser-visible origin from WORKER_PUBLIC_URL, falling back to the request origin; shared by cloud sync URLs and the OAuth redirect_uri."
   }
 }

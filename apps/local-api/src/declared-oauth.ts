@@ -8,9 +8,10 @@ import type { PluginAuthDeclaration, PluginAuthFlow } from "@clash/shared-types"
  * plugin Provider regardless of what it declared.
  *
  * What replaces the registry is not a shorter list of vendors. It is reading the flow the Provider
- * already states, and letting the host supply everything that repeats: PKCE, `state`, the loopback
- * port, the timeout and the token exchange all live in `auth-flow.ts`. What comes from here is the
- * address to open and the vendor's own parameters.
+ * already states, and letting the host supply everything that repeats: the loopback port and the
+ * timeout live in `auth-flow.ts`; PKCE, `state` and the token exchange in
+ * `@clash/shared-runtime/provider-oauth-flow`. What comes from here is the address to open and the
+ * vendor's own parameters.
  */
 
 export interface DeclaredAuthProvider {

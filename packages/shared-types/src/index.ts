@@ -1636,6 +1636,14 @@ export {
   type PluginAuthFormItem,
 } from "./plugin-auth.js";
 
+export {
+  PROVIDER_OAUTH_ERROR_MESSAGES,
+  PROVIDER_OAUTH_RETURN_PARAMS,
+  isProviderOAuthErrorCode,
+  type ProviderOAuthErrorCode,
+  type ProviderOAuthReturnStatus,
+} from "./provider-oauth.js";
+
 export * from "./actions.js";
 export * from "./auth-form.js";
 

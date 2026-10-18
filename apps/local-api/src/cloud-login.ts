@@ -4,8 +4,8 @@ import {
   authorizationUrl,
   createPkcePair,
   exchangeAuthorizationCode,
-  runLoopbackFlow,
-} from "./auth-flow.js";
+} from "@clash/shared-runtime/provider-oauth-flow";
+import { runLoopbackFlow } from "./auth-flow.js";
 import { cloudOrigin, createCloudAccounts } from "./cloud-accounts.js";
 
 type LoginStatus = {

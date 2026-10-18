@@ -66,7 +66,8 @@
     "src/canvas-layout.ts": "Strict presentation-only Canvas geometry, separate from immutable node facts; Canvas reads resolve it and Host peer admission validates it.",
     "src/cloud-connection.ts": "Service discovery, public cloud account and project journey contracts shared by Host and renderer.",
     "src/canvas-asset-references.ts": "Read-only material-edge projection for Views and Canvas-owned Timelines. Native Timeline inputs come from the current Generator revision's persistentInputRefs; legacy Timelines retain draft ActionAssetBindings. Canvas.ensureMediaPlacements creates missing local placements during Timeline writes, never during graph reads.",
-    "src/timeline-occupancy.ts": "Same-lane time-range collision checks at Timeline write boundaries. Legacy revisions remain readable; concurrent visual layers require separate tracks."
+    "src/timeline-occupancy.ts": "Same-lane time-range collision checks at Timeline write boundaries. Legacy revisions remain readable; concurrent visual layers require separate tracks.",
+    "src/provider-oauth.ts": "Stable PROVIDER_OAUTH_* error codes with their user-facing messages, and the settings return query keys. Servers send codes; the settings page shows the message for the code."
   },
   "architecture_notes": "Single Source of Truth (SSOT) pattern. Zod is the master definition. Model cards own provider implementation route metadata via providerImplementations; provider definitions must not reintroduce provider-supported model matrices."
 }

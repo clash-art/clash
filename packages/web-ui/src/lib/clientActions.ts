@@ -97,7 +97,11 @@ export interface ProviderOAuthInfo {
   intervalSeconds?: number;
   accountLabel?: string;
   error?: string;
+  /** Stable PROVIDER_OAUTH_* code beside `error`, when the adapter sets one. */
+  errorCode?: string;
   flow?: "browser";
+  /** `web` when the server finishes the flow by redirect; local hosts report scheme/loopback/poll-until. */
+  callbackType?: string;
   callbackScheme?: string;
   importedFrom?: string;
   hasAccessToken: boolean;
