@@ -26,3 +26,5 @@ export * from './timelineKeyframes';
 export * from './canvasKeyframeEdits';
 export * from './timelineFieldCoverage';
 export * from './timelineFieldConsumers';
+export * from './timelineDuration';
+export * from './timelineClipboard';

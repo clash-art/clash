@@ -178,11 +178,8 @@ function appendItemActions(options: {
           },
         },
       ];
+  // Composition duration follows the content end inside the editor reducer.
   actions.push({ type: "SELECT_ITEM", payload: options.item.id });
-  const itemEnd = options.item.from + options.item.durationInFrames;
-  if (itemEnd > options.state.durationInFrames) {
-    actions.push({ type: "SET_DURATION", payload: itemEnd });
-  }
   return actions;
 }
 

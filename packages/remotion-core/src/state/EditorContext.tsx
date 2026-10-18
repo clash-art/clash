@@ -26,6 +26,7 @@ import {
   TIMELINE_EDITOR_ROOT_DEFAULT_OVERRIDES,
   TIMELINE_SHARED_DEFAULTS,
 } from '../timelineFieldConsumers';
+import { deriveTimelineDurationInFrames } from '../timelineDuration';
 
 function choosePrimaryTrackId(tracks: Track[], preferredId?: string | null): string | null {
   const preferred = preferredId ? tracks.find((track) => track.id === preferredId) : undefined;
@@ -479,12 +480,32 @@ function unhandledEditorAction(action: never): never {
 // dispatch through useEditorDispatch and let the provider drive it.
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
   const next = applyEditorAction(state, action);
-  if (next.tracks === state.tracks) return next;
+  // Same tracks: the derived duration cannot have changed (playback, zoom and
+  // selection actions run per frame, so skip the item scan for them).
+  if (next.tracks === state.tracks) {
+    return next.durationInFrames === state.durationInFrames ? next : withDerivedDuration(next);
+  }
   // Playback, zoom and appearance edits never scan clip geometry. DnD already
   // resolves collisions; this also protects direct inserts and numeric edits.
-  if (action.type === 'UPDATE_ITEM' && !('from' in action.payload.updates) && !('durationInFrames' in action.payload.updates)) return next;
+  if (action.type === 'UPDATE_ITEM' && !('from' in action.payload.updates) && !('durationInFrames' in action.payload.updates)) return withDerivedDuration(next);
   const changedTracks = next.tracks.filter(track => !state.tracks.includes(track));
-  return timelineOccupancyIssues({ tracks: changedTracks }).length ? state : next;
+  return timelineOccupancyIssues({ tracks: changedTracks }).length ? state : withDerivedDuration(next);
+}
+
+/**
+ * Composition duration is a function of the tracks. Every reducer result goes
+ * through here, so no action (insert, trim, move, ripple, undo, SET_DURATION)
+ * can leave a stored duration that disagrees with the content end.
+ */
+function withDerivedDuration(state: EditorState): EditorState {
+  const durationInFrames = deriveTimelineDurationInFrames(state.tracks);
+  if (durationInFrames === state.durationInFrames) return state;
+  return {
+    ...state,
+    durationInFrames,
+    // The transport may sit on the end frame; never leave it past the new end.
+    currentFrame: Math.min(state.currentFrame, durationInFrames),
+  };
 }
 
 function applyEditorAction(state: EditorState, action: EditorAction): EditorState {
@@ -952,7 +973,9 @@ function applyEditorAction(state: EditorState, action: EditorAction): EditorStat
       };
 
     case 'SET_DURATION':
-      return { ...state, durationInFrames: action.payload };
+      // Kept for older callers. Duration is derived from content (see
+      // withDerivedDuration), so an explicit value cannot override it.
+      return state;
 
     default:
       return unhandledEditorAction(action);
@@ -1035,16 +1058,10 @@ export function normalizeInitialState(providedState?: Partial<EditorState>): Edi
     merged.fps = defaultState.fps;
   }
 
-  if (!merged.durationInFrames || merged.durationInFrames < 1) {
-    let maxEnd = 0;
-    for (const track of merged.tracks) {
-      for (const item of track.items) {
-        const end = item.from + item.durationInFrames;
-        if (end > maxEnd) maxEnd = end;
-      }
-    }
-    merged.durationInFrames = maxEnd > 0 ? maxEnd : defaultState.durationInFrames;
-  }
+  // A persisted DSL may carry a stale duration (for example the 1500-frame
+  // default while a clip runs to frame 2640). Content is the source of truth.
+  merged.durationInFrames = deriveTimelineDurationInFrames(merged.tracks);
+  merged.currentFrame = Math.max(0, Math.min(merged.currentFrame, merged.durationInFrames));
 
   return merged;
 }

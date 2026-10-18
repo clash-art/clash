@@ -673,7 +673,9 @@ describe("editorReducer — item ops", () => {
       payload: { startFrame: 30, endFrame: 45 },
     } as any);
 
-    expect(next.durationInFrames).toBe(105);
+    // The locked bed still runs to frame 120, so the derived duration stays
+    // 120; shrinking it to 105 would have cut the locked bed off.
+    expect(next.durationInFrames).toBe(120);
     expect(next.tracks[0].items).toMatchObject([
       { id: "clip", from: 0, durationInFrames: 30, sourceStartInFrames: 10 },
       {
@@ -1102,8 +1104,10 @@ describe("editorReducer — selection / playback / scalars", () => {
     expect(s.playing).toBe(true);
     s = editorReducer(s, { type: "SET_ZOOM", payload: 2 });
     expect(s.zoom).toBe(2);
+    // Duration is derived from content; an explicit value cannot override it.
+    const before = s.durationInFrames;
     s = editorReducer(s, { type: "SET_DURATION", payload: 3000 });
-    expect(s.durationInFrames).toBe(3000);
+    expect(s.durationInFrames).toBe(before);
     s = editorReducer(s, {
       type: "SET_COMPOSITION_SIZE",
       payload: { width: 1280, height: 720 },
