@@ -17,13 +17,13 @@ import type {
   ExecutablePluginJsonValue,
   ExecutablePluginOutput,
 } from "@clash/shared-types";
-import sharp from "sharp";
 
 import type {
   LocalAssetInspectionFacts,
   LocalAssetInspectionService,
 } from "./local-asset-inspections.js";
 import { runFfmpegToFile } from "./local-ffmpeg-run.js";
+import { loadSharp } from "./local-image-codec.js";
 import { localFfmpegPath } from "./local-media-binaries.js";
 import {
   createSqliteDurableRunJournal,
@@ -667,6 +667,7 @@ async function waveformPeaks(
       );
     });
   });
+  const sharp = await loadSharp();
   const { data, info } = await sharp(image)
     .removeAlpha()
     .raw()
@@ -778,6 +779,7 @@ function defaultRecipeRunner(
       source.resource.kind === "video"
         ? await firstVideoFrame(source.path)
         : source.path;
+    const sharp = await loadSharp();
     const bytes = await sharp(input, {
       failOn: "error",
       limitInputPixels: 100_000_000,

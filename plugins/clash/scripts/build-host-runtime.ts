@@ -7,6 +7,7 @@ import {
   bundledPluginPayloadFiles,
 } from "../../../apps/local-api/src/bundled-plugins.js";
 import { assertDependencyDistIsFresh } from "./host-runtime-freshness.js";
+import { assertLazyHostDependenciesStayLazy } from "./host-lazy-dependencies.js";
 import { assertRendererInputsAreFresh } from "../../../scripts/project-renderer-freshness.ts";
 import { writeLocalDaemonRuntimeManifest } from "../../../packages/shared-runtime/src/local-daemon-manifest.ts";
 
@@ -60,9 +61,11 @@ const GENERATED_BANNER =
   "// GENERATED FILE -- DO NOT EDIT. Written by plugins/clash/scripts/build-host-runtime.ts;\n" +
   "// edit the TypeScript sources it bundles and rebuild. Identifiers here may be stale or renamed.\n";
 
-await build({
+const hostBuild = await build({
   entryPoints: [resolve(pluginRoot, "src/local-api-entry.ts")],
   outfile: resolve(runtimeDir, "local-api.cjs"),
+  // The import graph proves that first-use dependencies stay out of Host startup (below).
+  metafile: true,
   bundle: true,
   platform: "node",
   format: "cjs",
@@ -85,6 +88,7 @@ await build({
     js: `${GENERATED_BANNER}const ${importMetaUrlShim} = require("node:url").pathToFileURL(__filename).href;`,
   },
 });
+assertLazyHostDependenciesStayLazy(hostBuild.metafile, "src/local-api-entry.ts");
 
 /**
  * Official Providers are part of the Clash distribution, not packages a user installs later.

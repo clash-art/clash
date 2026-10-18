@@ -1,7 +1,8 @@
-import sharp from "sharp";
+import type { OverlayOptions } from "sharp";
 
 import type { ProjectCanvasPreviewNode } from "@clash/shared-types";
 
+import { loadSharp } from "./local-image-codec.js";
 import type {
   CachedProjectCanvasPreview,
   FileReplicaStore,
@@ -155,6 +156,7 @@ async function mediaTile(
   const mask = Buffer.from(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"><rect width="${width}" height="${height}" rx="${radius}" fill="white"/></svg>`,
   );
+  const sharp = await loadSharp();
   return sharp(media.path, { failOn: "error", limitInputPixels: 100_000_000 })
     .rotate()
     .resize(width, height, { fit: "cover" })
@@ -170,6 +172,8 @@ export async function renderProjectCanvasThumbnail(
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
     throw new TypeError("Main canvas thumbnail requires non-empty bounds.");
   }
+  // Loaded before the per-tile loop so a missing codec fails the thumbnail, not each tile.
+  const sharp = await loadSharp();
   const padding = 24;
   const scale = Math.min(
     (PROJECT_CANVAS_THUMBNAIL_WIDTH - padding * 2) / bounds.width,
@@ -185,7 +189,7 @@ export async function renderProjectCanvasThumbnail(
     width: Math.max(1, node.width * scale),
     height: Math.max(1, node.height * scale),
   });
-  const overlays: sharp.OverlayOptions[] = [];
+  const overlays: OverlayOptions[] = [];
 
   for (const node of input.entry.preview.nodes) {
     if (!node.assetId || (node.type !== "image" && node.type !== "video")) {

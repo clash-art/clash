@@ -12,7 +12,7 @@
   ],
   "key_files": {
     "resolve.ts": "Pure resolution of environment + Settings into an export decision, with per-key value sources. OTel specification defaults live here.",
-    "exporters.ts": "Official OTLP exporters keyed by protocol; hides OTEL_EXPORTER_OTLP_* endpoint/header env during construction so Settings stay authoritative.",
+    "exporters.ts": "Official OTLP exporters keyed by protocol, imported when export is first enabled rather than at Host startup; hides OTEL_EXPORTER_OTLP_* endpoint/header env during construction so Settings stay authoritative.",
     "processors.ts": "SpanLogProcessor (span.end LogRecords) and SwitchableSpanProcessor (hot-swappable export slot).",
     "pipeline.ts": "NodeTracerProvider assembly, serialized export swaps, pending-span accounting, ingest() for client spans, and the process-wide installHostTelemetry singleton.",
     "config-store.ts": "Telemetry Settings as a LocalConfigResource: config.yaml for plain keys, credentials.json for headers, pipeline reapplied after each update.",
