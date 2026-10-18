@@ -53,3 +53,24 @@ it('seeks the playhead to a marker on click', () => {
   fireEvent.click(marker);
   expect(screen.getByLabelText('Playhead').textContent).toBe('75');
 });
+
+it('keeps markers clickable above the volume strip of a clip with audio', () => {
+  const voice = {
+    id: 'voice', type: 'audio', src: 'voice.wav', from: 0, durationInFrames: 60,
+    waveform: Array.from({ length: 2000 }, (_, index) => (index % 10) / 10),
+    keyframes: { opacity: [{ frame: 30, value: 0.5, interpolation: 'linear' }] },
+  } as unknown as Item;
+  const voiceTrack: Track = { id: 'voices', name: 'Voices', items: [voice] };
+  const { container } = render(
+    <EditorProvider initialState={{ fps: 30, tracks: [voiceTrack], currentFrame: 0 }}>
+      <Playhead />
+      <TimelineItem item={voice} track={voiceTrack} trackId={voiceTrack.id} pixelsPerFrame={4} isSelected assets={[]} onSelect={() => {}} onDelete={() => {}} onUpdate={() => {}} />
+    </EditorProvider>,
+  );
+  const marker = container.querySelector<HTMLElement>('[data-timeline-keyframe-marker]')!;
+  const volume = container.querySelector<HTMLElement>('[data-volume-db-hit-target]')!;
+  expect(volume).not.toBeNull();
+  expect(Number(marker.style.zIndex)).toBeGreaterThan(Number(volume.style.zIndex));
+  fireEvent.click(marker);
+  expect(screen.getByLabelText('Playhead').textContent).toBe('30');
+});

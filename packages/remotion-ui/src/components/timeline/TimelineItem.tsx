@@ -1215,7 +1215,9 @@ export const TimelineItem: React.FC<TimelineItemProps> = ({
                 background: 'transparent',
                 cursor: 'pointer',
                 transform: layout.buttonTransform,
-                zIndex: 9,
+                // Above the full-width volume hit strip (32) so a marker stays
+                // clickable on clips with audio; fade handles (33+) stay on top.
+                zIndex: 33,
               }}
             >
               <svg
