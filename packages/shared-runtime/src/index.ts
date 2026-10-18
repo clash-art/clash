@@ -6,6 +6,7 @@ export {
   type ObservedProjectTimeline,
   type TimelineRenderExecution,
   type TimelineRenderExecutor,
+  type TimelineRenderFallbackReason,
   type TimelineRenderReceipt,
 } from "./timeline-client.js";
 

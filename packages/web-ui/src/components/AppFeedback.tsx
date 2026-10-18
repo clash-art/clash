@@ -35,6 +35,19 @@ const noopFeedback: AppFeedbackContextValue = {
 
 const AppFeedbackContext = createContext<AppFeedbackContextValue>(noopFeedback);
 
+const APP_FEEDBACK_EVENT = 'clash:app-feedback';
+
+/**
+ * Composition roots and non-React callbacks use this to reach the same toast
+ * viewport. The provider owns the presentation; this only carries the input.
+ */
+export function emitAppFeedback(input: FeedbackInput): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<FeedbackInput>(APP_FEEDBACK_EVENT, { detail: input }),
+  );
+}
+
 const TOAST_DURATION_MS = 5_000;
 const WARNING_TOAST_DURATION_MS = 7_000;
 
@@ -91,6 +104,15 @@ export function AppFeedbackProvider({ children }: { children: ReactNode }) {
     };
     setToasts((prev) => [item, ...prev].slice(0, 4));
   }, []);
+
+  useEffect(() => {
+    const handleFeedback = (event: Event) => {
+      const detail = (event as CustomEvent<FeedbackInput>).detail;
+      if (detail && typeof detail.title === 'string') notify(detail);
+    };
+    window.addEventListener(APP_FEEDBACK_EVENT, handleFeedback);
+    return () => window.removeEventListener(APP_FEEDBACK_EVENT, handleFeedback);
+  }, [notify]);
 
   useEffect(() => {
     if (toasts.length === 0) return;

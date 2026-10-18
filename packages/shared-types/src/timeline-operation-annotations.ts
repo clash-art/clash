@@ -225,6 +225,23 @@ const TimelineRenderTargetSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+/**
+ * Why a Timeline export ran on the Host instead of in the browser. Defined once here: the browser
+ * preflight, the receipt type and the receipt schema all read this list.
+ */
+export const TIMELINE_RENDER_FALLBACK_REASONS = [
+  "no-items",
+  "invalid-dimensions",
+  "duration-cap",
+  "unexpressible-mask",
+  "inline-remotion",
+  "safari-filters",
+  "webcodecs-unavailable",
+  "browser-render-failed",
+] as const;
+export type TimelineRenderFallbackReason =
+  (typeof TIMELINE_RENDER_FALLBACK_REASONS)[number];
+
 const TimelineRenderReceiptSchema = z
   .object({
     submitted: z.literal(true),
@@ -236,6 +253,18 @@ const TimelineRenderReceiptSchema = z
     status: z.enum(["pending", "completed", "failed"]),
     asset: z.object({ id: IdentifierSchema }).strict().optional(),
     error: z.string().min(1).optional(),
+    renderPath: z.enum(["browser", "host"]).optional(),
+    fallback: z
+      .object({
+        reason: z.enum(TIMELINE_RENDER_FALLBACK_REASONS),
+        message: z.string().min(1),
+      })
+      .strict()
+      .optional(),
+    publicationRetried: z
+      .object({ firstError: z.string().min(1) })
+      .strict()
+      .optional(),
   })
   .passthrough();
 

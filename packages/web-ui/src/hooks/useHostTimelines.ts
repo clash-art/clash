@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LoroDoc } from "loro-crdt";
-import { createTimelineClient, type ObservedProjectTimeline, type ProjectHostHttpRequest } from "@clash/shared-runtime";
+import { createTimelineClient, type ObservedProjectTimeline, type ProjectHostHttpRequest, type TimelineRenderReceipt } from "@clash/shared-runtime";
 import {
   PROJECT_GENERATORS_CONTAINER, projectTimelineReadToken, validateAgentObservation,
   hostMutationRejected, hostMutationSucceeded,
   type ProjectTimeline, type ProjectTimelineMutationResult, type HostMutationRecord,
   type CreateTimelineOnCanvasInput,
 } from "@clash/shared-types";
+import { emitAppFeedback, type FeedbackInput } from "../components/AppFeedback";
 import { boundTimelineRenderExecutor, runtimeApiUrl } from "../lib/runtimeConfig";
 
 // Mutations are never automatically retried after an ambiguous network failure.
@@ -15,6 +16,25 @@ type WriteOptions = { ifMatch?: string; actorClientType?: string };
 export interface HostTimelineRenderJob {
   timelineId: string;
   progress: number;
+}
+
+/** The receipt says which path ran; the notice repeats it in the user's words. */
+export function timelineRenderReceiptNotice(receipt: TimelineRenderReceipt): FeedbackInput | null {
+  const retry = receipt.publicationRetried
+    ? { message: `Publication was retried after: ${receipt.publicationRetried.firstError}` }
+    : {};
+  if (receipt.renderPath === "browser")
+    return { title: "Rendered in your browser", variant: "success", ...retry };
+  if (receipt.renderPath === "host") {
+    if (receipt.fallback)
+      return {
+        title: `Rendering on the server: ${receipt.fallback.message} [${receipt.fallback.reason}]`,
+        variant: "info",
+        ...retry,
+      };
+    return { title: "Rendering on the server", variant: "info", ...retry };
+  }
+  return null;
 }
 
 export function useHostTimelines(options: {
@@ -110,8 +130,13 @@ export function useHostTimelines(options: {
     return result;
   }, [state, mutate, observe]);
   const requestTimelineRender = useCallback(async (id: string, actor: { actorUserId: string; actorAgentId?: string }) => {
+    const announce = (receipt: TimelineRenderReceipt) => {
+      const notice = timelineRenderReceiptNotice(receipt);
+      if (notice) emitAppFeedback(notice);
+      return { ok: true as const, ...receipt };
+    };
     if (!boundTimelineRenderExecutor()) {
-      try { return { ok: true as const, ...await state.client.render(observe(id), actor.actorAgentId) }; }
+      try { return announce(await state.client.render(observe(id), actor.actorAgentId)); }
       catch (error) { return { ok: false as const, error: report(error) }; }
     }
     const controller = new AbortController();
@@ -129,7 +154,7 @@ export function useHostTimelines(options: {
             setRenderJob({ timelineId: id, progress: Math.min(1, Math.max(0, progress)) });
         },
       });
-      return { ok: true as const, ...receipt };
+      return announce(receipt);
     } catch (error) {
       if (controller.signal.aborted) return { ok: false as const, cancelled: true, error: "Render cancelled." };
       return { ok: false as const, error: report(error) };

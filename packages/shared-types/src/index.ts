@@ -269,6 +269,8 @@ export {
 export {
   TIMELINE_OPERATION_CATALOG,
   TIMELINE_OPERATION_REGISTRY,
+  TIMELINE_RENDER_FALLBACK_REASONS,
+  type TimelineRenderFallbackReason,
   type TimelineAgentOperationId,
   type TimelineEditorActionId,
   type TimelineEditorCommandId,

@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
-import { act, renderHook, waitFor, cleanup } from "@testing-library/react";
+import { act, renderHook, waitFor, cleanup, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { LoroDoc } from "loro-crdt";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { TimelineRenderReceipt } from "@clash/shared-runtime";
 import { projectTimelineReadToken, type ProjectTimeline, type ProjectTimelineMutationResult } from "@clash/shared-types";
-import { setRuntimeConfigOverride } from "../lib/runtimeConfig";
+import { bindTimelineRenderExecutor, setRuntimeConfigOverride } from "../lib/runtimeConfig";
+import { AppFeedbackProvider } from "../components/AppFeedback";
 import { useHostTimelines } from "./useHostTimelines";
 
 // These suites model a local Host; hosted Web skips its Host-only reads (#94).
 beforeEach(() => setRuntimeConfigOverride({ mode: "local" }));
 afterEach(() => {
+  bindTimelineRenderExecutor(undefined);
   setRuntimeConfigOverride(undefined);
   cleanup();
 });
@@ -109,5 +113,60 @@ describe("Host Timeline state", () => {
     await waitFor(() => expect(request).toHaveBeenCalledOnce());
     act(() => { doc.getMap("projectGenerators").set("changed", {}); doc.commit(); });
     await waitFor(() => expect(result.current.timelineError).toContain("Migration conflict"));
+  });
+});
+
+describe("Timeline render feedback", () => {
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <AppFeedbackProvider>{children}</AppFeedbackProvider>
+  );
+
+  async function renderWithExecutor(receipt: TimelineRenderReceipt) {
+    bindTimelineRenderExecutor(async () => receipt);
+    const request = vi.fn(async () =>
+      Response.json({ timelines: [timeline], versions: { [timeline.id]: "receipt" } }),
+    );
+    const { result } = renderHook(
+      () => useHostTimelines({ projectId: "project", doc: null, request }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.timelines).toEqual([timeline]));
+    await act(async () => {
+      expect(
+        await result.current.requestTimelineRender(timeline.id, {
+          actorUserId: "user-1",
+        }),
+      ).toMatchObject({ ok: true });
+    });
+  }
+
+  it("shows the browser path and a publication retry", async () => {
+    await renderWithExecutor({
+      actionRunId: "run",
+      renderNodeId: "node",
+      renderPath: "browser",
+      publicationRetried: { firstError: "publication unavailable" },
+    });
+    expect(await screen.findByText("Rendered in your browser")).toBeTruthy();
+    expect(
+      screen.getByText("Publication was retried after: publication unavailable"),
+    ).toBeTruthy();
+  });
+
+  it("shows the Host fallback message and its reason code", async () => {
+    await renderWithExecutor({
+      actionRunId: "run",
+      renderNodeId: "node",
+      renderPath: "host",
+      fallback: {
+        reason: "safari-filters",
+        message: "Safari does not apply CSS filters in the browser renderer.",
+      },
+    });
+    expect(
+      await screen.findByText(
+        "Rendering on the server: Safari does not apply CSS filters in the browser renderer. [safari-filters]",
+      ),
+    ).toBeTruthy();
   });
 });
