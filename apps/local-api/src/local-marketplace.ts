@@ -10,11 +10,16 @@ import {
 } from "@clash/shared-types/marketplace-installation";
 
 type Item = Record<string, unknown> & { id: string };
+type PluginItem = Item & { packageId: string };
 export interface LocalMarketplaceOptions {
   marketplaceActions?: Item[];
   marketplaceSkills?: Item[];
-  marketplacePlugins?: Array<Item & { packageId: string }>;
+  marketplacePlugins?: PluginItem[];
   marketplaceFeed?: Item[];
+  /** Lazily resolve plugins whose availability is known only after Host listen. */
+  resolveMarketplacePlugins?: () => Promise<PluginItem[]>;
+  /** Lazily resolve featured entries from the same post-listen availability gate. */
+  resolveMarketplaceFeed?: () => Promise<Item[]>;
   installMarketplacePlugin?: (
     packageId: string,
     installation?: HostInstallScope,
@@ -67,8 +72,16 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
     ),
   };
   const describe = (item: Item) => withMarketplaceInstallation(item, available);
-  const plugin = (packageId: string) =>
-    options.marketplacePlugins?.find(
+  const resolvePlugins = async () =>
+    options.resolveMarketplacePlugins
+      ? await options.resolveMarketplacePlugins()
+      : options.marketplacePlugins ?? [];
+  const resolveFeed = async () =>
+    options.resolveMarketplaceFeed
+      ? await options.resolveMarketplaceFeed()
+      : options.marketplaceFeed ?? [];
+  const plugin = async (packageId: string) =>
+    (await resolvePlugins()).find(
       (item) =>
         item.packageId === packageId &&
         item.type === "plugin" &&
@@ -78,22 +91,25 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
     options.marketplaceSkills?.find(
       (item) => item.id === id && item.type === "skill",
     );
-  app.get("/api/marketplace/registry", (c) =>
-    c.json({
+  app.get("/api/marketplace/registry", async (c) => {
+    const plugins = await resolvePlugins();
+    return c.json({
       version: 1,
       actions: (options.marketplaceActions ?? []).map(describe),
       skills: (options.marketplaceSkills ?? []).map(describe),
-      plugins: (options.marketplacePlugins ?? []).map(describe),
-    }),
-  );
-  app.get("/api/marketplace/feed", (c) =>
-    c.json({
+      plugins: plugins.map(describe),
+    });
+  });
+  app.get("/api/marketplace/feed", async (c) => {
+    const plugins = await resolvePlugins();
+    const feed = await resolveFeed();
+    return c.json({
       version: 1,
-      featuredPlugins: (options.marketplaceFeed ?? []).map((item) => {
+      featuredPlugins: feed.map((item) => {
         // A featured card may not manufacture installability outside the serving catalog.
         const catalog =
           item.type === "plugin"
-            ? options.marketplacePlugins
+            ? plugins
             : item.type === "skill"
               ? options.marketplaceSkills
               : options.marketplaceActions;
@@ -108,8 +124,8 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
               skills: false,
             });
       }),
-    }),
-  );
+    });
+  });
   app.post(
     "/api/marketplace/actions/:packageId/install",
     legacyActionInstallRetired,
@@ -124,12 +140,12 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
       return new Response(null, { status: 204 });
     });
   app.get("/api/marketplace/plugins/:packageId/install", async (c) => {
-    const item = plugin(c.req.param("packageId"));
+    const item = await plugin(c.req.param("packageId"));
     if (!item) return c.json({ error: "Unknown local marketplace plugin" }, 404);
     return c.json(await options.getPluginInstallScope?.(item.id) ?? { scope: "global" });
   });
   app.post("/api/marketplace/plugins/:packageId/install", async (c) => {
-    const item = plugin(c.req.param("packageId"));
+    const item = await plugin(c.req.param("packageId"));
     if (!item)
       return c.json({ error: "Unknown local marketplace plugin" }, 404);
     if (!marketplaceInstallation(describe(item)))
@@ -175,7 +191,7 @@ export function createLocalMarketplaceRoutes(options: LocalMarketplaceOptions) {
   });
   if (options.uninstallMarketplacePlugin)
     app.delete("/api/marketplace/plugins/:packageId/install", async (c) => {
-      const item = plugin(c.req.param("packageId"));
+      const item = await plugin(c.req.param("packageId"));
       if (!item)
         return c.json({ error: "Unknown local marketplace plugin" }, 404);
       await options.uninstallMarketplacePlugin!(item.id);

@@ -479,6 +479,9 @@ export interface LocalApiOptions {
   uninstallMarketplaceAction?: (actionId: string) => Promise<void>;
   marketplaceSkills?: Array<Record<string, unknown> & { id: string }>;
   marketplaceFeed?: Array<Record<string, unknown> & { id: string }>;
+  resolveMarketplaceFeed?: () => Promise<
+    Array<Record<string, unknown> & { id: string }>
+  >;
   listInstalledMarketplaceSkills?: () => Promise<
     Array<Record<string, unknown>>
   >;
@@ -492,6 +495,14 @@ export interface LocalApiOptions {
       id: string;
       packageId: string;
     }
+  >;
+  resolveMarketplacePlugins?: () => Promise<
+    Array<
+      Record<string, unknown> & {
+        id: string;
+        packageId: string;
+      }
+    >
   >;
   installMarketplacePlugin?: (
     packageId: string,

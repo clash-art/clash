@@ -3,6 +3,65 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
+import { ProviderExecutionError } from "@clash/action-sdk";
+
+describe("Codex ImageGen preflight gate", () => {
+  it("shares one probe and turns an unavailable result into a coded provider failure", async () => {
+    const { createCodexImagegenGate } = await import("./codex-imagegen");
+    let release!: (result: {
+      available: false;
+      reason: "not-logged-in";
+    }) => void;
+    const preflight = vi.fn(
+      () =>
+        new Promise<{ available: false; reason: "not-logged-in" }>(
+          (resolvePreflight) => {
+            release = resolvePreflight;
+          },
+        ),
+    );
+    const gate = createCodexImagegenGate(preflight);
+    const input = { prompt: "A lighthouse", aspectRatio: "1:1", references: [] };
+
+    const first = gate.generate(input);
+    const second = gate.generate(input);
+    await Promise.resolve();
+    expect(preflight).toHaveBeenCalledTimes(1);
+
+    release({ available: false, reason: "not-logged-in" });
+    for (const pending of [first, second]) {
+      await expect(pending).rejects.toMatchObject({
+        name: "ProviderExecutionError",
+        failure: {
+          code: "provider_unavailable",
+          providerCode: "PROVIDER_PREFLIGHT_UNAVAILABLE",
+          retryable: false,
+          requestState: "rejected",
+        },
+      });
+      await expect(pending).rejects.toBeInstanceOf(ProviderExecutionError);
+    }
+  });
+
+  it("generates through the validated CLI once the probe succeeds", async () => {
+    const { createCodexImagegenGate } = await import("./codex-imagegen");
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const generate = vi.fn(async () => ({
+      mediaType: "image/png" as const,
+      bytes,
+    }));
+    const gate = createCodexImagegenGate(async () => ({
+      available: true,
+      codexPath: "/opt/codex",
+      generate,
+    }));
+
+    await expect(
+      gate.generate({ prompt: "A lighthouse", aspectRatio: "1:1", references: [] }),
+    ).resolves.toEqual({ mediaType: "image/png", bytes });
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("Codex ImageGen kernel adapter", () => {
   it("disables the adapter without probing login when the configured CLI path is invalid", async () => {

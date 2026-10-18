@@ -45,6 +45,47 @@ it("advertises installation only when the matching Host installer and active-pac
   });
   expect(next.plugins[1]).not.toHaveProperty("installation");
 });
+it("resolves post-listen plugin availability lazily for the registry, feed and install routing", async () => {
+  let available = false;
+  const resolveMarketplacePlugins = vi.fn(async () =>
+    available ? [plugin] : [],
+  );
+  const host = await app({
+    resolveMarketplacePlugins,
+    resolveMarketplaceFeed: resolveMarketplacePlugins,
+    installMarketplacePlugin: async () => ({ installed: true }),
+  });
+
+  const hidden = (await (
+    await host.request("/api/marketplace/registry")
+  ).json()) as { plugins: Array<{ id: string }> };
+  expect(hidden.plugins).toEqual([]);
+  const hiddenFeed = (await (
+    await host.request("/api/marketplace/feed")
+  ).json()) as { featuredPlugins: Array<{ id: string }> };
+  expect(hiddenFeed.featuredPlugins).toEqual([]);
+  expect(
+    (
+      await host.request(`/api/marketplace/plugins/${plugin.packageId}/install`, {
+        method: "POST",
+      })
+    ).status,
+  ).toBe(404);
+
+  available = true;
+  const visible = (await (
+    await host.request("/api/marketplace/registry")
+  ).json()) as { plugins: Array<{ id: string }> };
+  expect(visible.plugins).toEqual([expect.objectContaining({ id: plugin.id })]);
+  const visibleFeed = (await (
+    await host.request("/api/marketplace/feed")
+  ).json()) as { featuredPlugins: Array<{ id: string }> };
+  expect(visibleFeed.featuredPlugins).toEqual([
+    expect.objectContaining({ id: plugin.id }),
+  ]);
+  expect(resolveMarketplacePlugins).toHaveBeenCalled();
+});
+
 it("does not claim installed when the callback returns success without a valid active package", async () => {
   const install = vi.fn(async () => ({ installed: true }));
   const host = await app({

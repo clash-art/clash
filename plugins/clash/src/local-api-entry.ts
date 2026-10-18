@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   createBoundedJsonlLogSink,
   DEFAULT_JSONL_LOG_RETENTION,
@@ -18,7 +18,32 @@ import {
   prepareDevelopmentBundledPlugins,
   startLocalApiServer,
 } from "@clash/local-api";
+import {
+  clearLocalApiCompileCacheEnvironment,
+  enableLocalApiCompileCache,
+  localApiCompileCacheDir,
+  localApiCompileCacheRoot,
+  pruneLocalApiCompileCache,
+} from "@clash/shared-runtime/local-compile-cache";
 import { createDevelopmentBrowserAssets } from "./development-browser-assets.js";
+
+const dataDir = defaultLocalApiDataDir(process.env);
+// Enable the V8 cache as early as this bundle can run. The launcher also sets NODE_COMPILE_CACHE
+// before spawn so the main bundle itself is cached; this call covers lazily imported plugin
+// modules and direct `node local-api.cjs` launches. Failure is data, never a startup error.
+const compileCache = enableLocalApiCompileCache({ env: process.env });
+// Resolve the fingerprint key before clearing the selectors. The launcher's Node child would
+// otherwise inherit NODE_COMPILE_CACHE and populate this Host's bytecode directory with modules
+// from ACP agents, the Codex/Claude CLIs and plugin workers. Honor either selector when a direct
+// launch supplied one; the explicit directory is compared with the CLASH_HOME root before pruning.
+const configuredCompileCacheDirectory =
+  process.env.NODE_COMPILE_CACHE?.trim() ||
+  process.env.CLASH_COMPILE_CACHE_DIR?.trim();
+const compileCacheDirectory = configuredCompileCacheDirectory
+  ? resolve(configuredCompileCacheDirectory)
+  : localApiCompileCacheDir(process.env, dataDir);
+const compileCacheRoot = localApiCompileCacheRoot(process.env, dataDir);
+clearLocalApiCompileCacheEnvironment(process.env);
 
 type LocalApiServer = Awaited<ReturnType<typeof startLocalApiServer>>;
 
@@ -27,7 +52,6 @@ let stopping = false;
 // Aborts an in-flight browser warm-up download so a stopping Host leaves no child behind.
 const browserWarmup = new AbortController();
 const BROWSER_WARMUP_DELAY_MS = 5_000;
-const dataDir = defaultLocalApiDataDir(process.env);
 const logSink = createBoundedJsonlLogSink({
   directory: join(clashHomeForLocalDataDir(dataDir), "logs", "local-api"),
   filePrefix: "local-api",
@@ -40,7 +64,46 @@ const observability = installProcessStdioCapture({
   maxEventsPerWindow: 200,
   windowMs: 10_000,
 });
+if (compileCache.enabled) {
+  observability.event("info", "host.compile_cache_ready", {
+    directory: compileCache.directory,
+  });
+} else {
+  observability.event("warn", "host.compile_cache_unavailable", {
+    code: compileCache.code,
+    reason: compileCache.reason,
+    directory: compileCache.directory,
+  });
+}
 observability.event("info", "process.started", { pid: process.pid });
+
+/**
+ * Retire fingerprint-keyed cache directories left by earlier Host installs.
+ *
+ * Called from the Host's post-listen idle window, so cleanup never competes with startup or a
+ * user request. Only direct children of the CLASH_HOME compile root are eligible; an explicit
+ * cache directory outside that root is left alone.
+ */
+function pruneCompileCache(): void {
+  if (!compileCache.enabled) return;
+  if (resolve(dirname(compileCacheDirectory)) !== resolve(compileCacheRoot)) return;
+  const result = pruneLocalApiCompileCache({
+    root: compileCacheRoot,
+    currentKey: basename(compileCacheDirectory),
+    onFailure: (failure) => {
+      observability.event("warn", "host.compile_cache_prune_failed", {
+        code: failure.code,
+        path: failure.path,
+        reason: failure.reason,
+      });
+    },
+  });
+  if (result.removed.length > 0) {
+    observability.event("info", "host.compile_cache_pruned", {
+      removed: result.removed,
+    });
+  }
+}
 
 async function closeServer(exitCode: number): Promise<void> {
   if (stopping) return;
@@ -172,6 +235,7 @@ async function main(): Promise<void> {
     projectRendererRoot: process.env.CLASH_PROJECT_RENDERER_ROOT,
     directorStageRenderer,
     warmPluginRuntime: true,
+    onPostListenIdle: pruneCompileCache,
     discovery: {
       enabled: true,
       runDir,

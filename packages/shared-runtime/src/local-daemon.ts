@@ -32,6 +32,7 @@ import {
   type LocalDaemonRuntimeManifest,
 } from "./local-daemon-manifest.js";
 import type { ClashRuntimeProfile } from "./local-paths.js";
+import { localApiCompileCacheDir } from "./local-compile-cache.js";
 
 /**
  * The Node range the daemon supports. Kept beside the launcher so a host can
@@ -757,6 +758,20 @@ export function launchDetachedLocalDaemon(
   const killProcess = options.killProcess ?? process.kill;
   const env = options.env ?? process.env;
   const sourceWatchSupervisor = options.nodeArgs?.includes("watch") === true;
+  // Set before spawn so Node also caches the main Host bundle, not only modules loaded later by
+  // the entry. An explicit caller-provided directory wins; the default stays inside CLASH_HOME.
+  const compileCacheDir =
+    options.daemonEnv?.NODE_COMPILE_CACHE?.trim() ||
+    env.NODE_COMPILE_CACHE?.trim() ||
+    localApiCompileCacheDir(
+      {
+        ...env,
+        ...options.daemonEnv,
+        CLASH_DAEMON_RUNTIME_FINGERPRINT:
+          options.runtimeFingerprint ?? env.CLASH_DAEMON_RUNTIME_FINGERPRINT,
+      },
+      options.dataDir,
+    );
   // Decoupled from the launcher on purpose. Desktop may explicitly use its
   // bundled Electron executable in Node mode after validating that embedded
   // Node against DAEMON_SUPPORTED_NODE_RANGE; every other launcher resolves a
@@ -819,6 +834,8 @@ export function launchDetachedLocalDaemon(
           // explicit opt-in an Electron executable would recursively open the GUI.
           ELECTRON_RUN_AS_NODE: options.electronRunAsNode ? "1" : undefined,
           CLASH_DAEMON_NODE_PATH: runtime.nodePath,
+          NODE_COMPILE_CACHE: compileCacheDir,
+          CLASH_COMPILE_CACHE_DIR: compileCacheDir,
           PORT: options.daemonEnv?.PORT ?? "0",
         },
         stdio:
