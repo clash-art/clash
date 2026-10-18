@@ -8,7 +8,7 @@
  *
  * Objects become visible only through an atomic rename after digest
  * verification. Import staging has no digest until finalization, so
- * `multipart.complete` skips that check when the target digest is `""`.
+ * `multipart.complete` neither hashes nor checks when the target digest is `""`.
  */
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -170,19 +170,20 @@ export function createFsAssetDeliveryStore(root: string): FsAssetDeliveryStore {
       async complete(s, beforePublish) {
         const { dir, state } = await live(s);
         if (!state) throw new MultipartContentError(409, "Upload session not begun");
-        const hash = createHash("sha256");
+        // Import staging carries no digest until finalize (the same convention
+        // as the R2 store), so nothing is hashed here: the Host hashes the
+        // bytes once while staging them. A claimed digest is always verified.
+        const hash = s.target.digest === "" ? undefined : createHash("sha256");
         const chunks: Buffer[] = [];
         let total = 0;
         for (const n of await parts(dir)) {
           const b = await readFile(join(dir, `part-${n}`));
-          hash.update(b);
+          hash?.update(b);
           chunks.push(b);
           total += b.length;
         }
         if (total !== s.target.byteLength) throw new MultipartContentError(409, "Multipart upload is incomplete");
-        // Import staging carries no digest until finalize; the same convention
-        // as the R2 store. A claimed digest is always verified.
-        if (s.target.digest !== "" && `sha256:${hash.digest("hex")}` !== s.target.digest)
+        if (hash && `sha256:${hash.digest("hex")}` !== s.target.digest)
           throw new MultipartContentError(400, "Multipart object digest mismatch");
         await beforePublish();
         const path = safe(s.target.locator);

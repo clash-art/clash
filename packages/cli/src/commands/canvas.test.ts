@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import {
   canvasCommand,
   downloadAssetById,
+  LocalResourceUnavailableError,
   resolveAssetDownloadUrl,
   resolveAssetFile,
   resolveCanvasActor,
@@ -311,6 +312,56 @@ for (const [reason, localFile] of [
     assert.equal(readFileSync(file!.path, "utf8"), "asset-bytes");
   });
 }
+
+test("asset resolver surfaces the Host's coded reason when it cannot serve the bytes", async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));
+  await assert.rejects(
+    resolveAssetFile("asset-1", "project-1", {
+      cacheDir,
+      client: {
+        get: async () => ({
+          projectId: "project-1",
+          value: {
+            id: "asset-1",
+            kind: "video" as const,
+            metadata: {},
+            lifecycle: { state: "active" as const },
+            status: "failed" as const,
+            error: "LOCAL_RESOURCE_MISSING: Local Resource sha256:x has no immutable bytes on this Host.",
+            errorCode: "LOCAL_RESOURCE_MISSING" as const,
+          },
+          receipt: "asset:receipt",
+        }),
+      },
+      localFile: async () => null,
+    }),
+    (error: unknown) =>
+      error instanceof LocalResourceUnavailableError &&
+      error.code === "LOCAL_RESOURCE_MISSING" &&
+      error.message.startsWith("LOCAL_RESOURCE_MISSING: "),
+  );
+
+  // The bytes went missing after the read: the media route says why.
+  await assert.rejects(
+    resolveAssetFile("asset-1", "project-1", {
+      cacheDir,
+      client: readyAssetClient("asset-1"),
+      localFile: async () => null,
+      fetch: async () =>
+        Response.json(
+          {
+            error: "LOCAL_RESOURCE_UNREADABLE: Local Resource sha256:x bytes cannot be read (EACCES).",
+            code: "LOCAL_RESOURCE_UNREADABLE",
+          },
+          { status: 503 },
+        ),
+    }),
+    (error: unknown) =>
+      error instanceof LocalResourceUnavailableError &&
+      error.code === "LOCAL_RESOURCE_UNREADABLE",
+  );
+  assert.deepEqual(readdirSync(cacheDir), []);
+});
 
 test("asset downloader streams the body to disk instead of buffering it", async () => {
   const cacheDir = await mkdtemp(join(tmpdir(), "clash-asset-cache-"));

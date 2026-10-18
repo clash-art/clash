@@ -18,6 +18,7 @@ import {
   type CloudContentUploadSession,
   type ContentTransferLimits,
 } from "@clash/asset-sdk/delivery";
+import { LocalResourceError } from "./local-resource-store.js";
 
 interface CloudContentFile extends ContentTransferLimits {
   path: string;
@@ -112,9 +113,24 @@ export async function uploadCloudContentFile(
   assertContentTransferSize(input.byteLength, input.maxBytes);
   const handle = await open(input.path, "r");
   try {
-    if ((await handle.stat()).size !== input.byteLength)
-      throw new CloudContentIntegrityError();
-    await verifyStream(input, handle.createReadStream({ autoClose: false }));
+    const size = (await handle.stat()).size;
+    if (size !== input.byteLength)
+      throw new LocalResourceError(
+        "LOCAL_RESOURCE_SIZE_MISMATCH",
+        `Local bytes for ${input.digest} have ${size} bytes; expected ${input.byteLength}. Nothing was uploaded.`,
+      );
+    // Local reads never re-hash immutable files; this is the one check that
+    // the bytes still match their digest, and it finishes before any upload.
+    try {
+      await verifyStream(input, handle.createReadStream({ autoClose: false }));
+    } catch (error) {
+      if (!(error instanceof CloudContentIntegrityError)) throw error;
+      throw new LocalResourceError(
+        "LOCAL_RESOURCE_DIGEST_MISMATCH",
+        `Local bytes for ${input.digest} do not match their digest. Nothing was uploaded.`,
+        { cause: error },
+      );
+    }
     await uploadCloudContent({
       url: input.url,
       headers: input.headers,

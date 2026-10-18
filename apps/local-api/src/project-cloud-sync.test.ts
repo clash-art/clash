@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  rm,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -284,6 +291,53 @@ describe("production Project cloud coordinator adapter", () => {
     expect(createHash("sha256").update(f.objects.get(key)!).digest("hex")).toBe(
       createHash("sha256").update(bytes).digest("hex"),
     );
+  });
+  it("refuses to upload a same-length altered large blob through multipart: LOCAL_RESOURCE_DIGEST_MISMATCH, nothing sent", async () => {
+    const f = await fixture(false);
+    const { source } = await f.addResource(
+      "altered-large",
+      new Uint8Array(PROJECT_CLOUD_CONTENT_PART_BYTES + 7),
+    );
+    // Local reads trust the digest computed at import, so this goes unnoticed
+    // until the upload verifies the bytes it is about to send.
+    await chmod(source.path, 0o644);
+    await writeFile(
+      source.path,
+      new Uint8Array(PROJECT_CLOUD_CONTENT_PART_BYTES + 7).fill(1),
+    );
+    const originalFetch = f.options.fetch;
+    const uploadActions: string[] = [];
+    const service = createLocalProjectCloudSync({
+      ...f.options,
+      fetch: async (input, init) => {
+        const action = new URL(String(input)).searchParams.get("upload");
+        if (!action) return originalFetch(input, init);
+        uploadActions.push(action);
+        return new Response(null, { status: 500 });
+      },
+    });
+    cleanup.push(() => service.close());
+    await service.schedule("project");
+
+    const admission = await f.admission();
+    expect(admission?.status).toBe("failed");
+    expect(admission?.lastError).toContain("LOCAL_RESOURCE_DIGEST_MISMATCH");
+    expect(uploadActions).toEqual([]);
+    expect(f.objects.size).toBe(0);
+  });
+  it("refuses to push a same-length altered small blob: LOCAL_RESOURCE_DIGEST_MISMATCH, nothing uploaded", async () => {
+    const f = await fixture(false);
+    const { source, bytes } = await f.addResource("altered-small");
+    await chmod(source.path, 0o644);
+    await writeFile(source.path, new Uint8Array(bytes.byteLength).fill(1));
+
+    await f.service.schedule("project");
+
+    const admission = await f.admission();
+    expect(admission?.status).toBe("failed");
+    expect(admission?.lastError).toContain("LOCAL_RESOURCE_DIGEST_MISMATCH");
+    expect(f.putCount()).toBe(0);
+    expect(f.objects.size).toBe(0);
   });
   it("resumes an interrupted multipart upload after Host restart without resending accepted parts", async () => {
     const f = await fixture(false);

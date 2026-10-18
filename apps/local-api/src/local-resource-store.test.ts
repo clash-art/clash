@@ -6,7 +6,7 @@ import {
   readdir,
   readFile,
   stat,
-  utimes,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -472,7 +472,7 @@ describe("local Resource CAS", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("fails closed when an indexed Resource loses its immutable bytes", async () => {
+  it("reports a truncated immutable file as LOCAL_RESOURCE_SIZE_MISMATCH", async () => {
     const { store } = await fixture();
     const installed = await store.install({
       kind: "image",
@@ -483,12 +483,61 @@ describe("local Resource CAS", () => {
     await chmod(installed.path, 0o644);
     await writeFile(installed.path, new Uint8Array());
 
-    await expect(store.resolve(installed.resource.id)).rejects.toThrow(
-      /byte length|corrupt/i,
-    );
+    await expect(store.resolve(installed.resource.id)).rejects.toMatchObject({
+      name: "LocalResourceError",
+      code: "LOCAL_RESOURCE_SIZE_MISMATCH",
+      resourceId: installed.resource.id,
+    });
+    await expect(
+      store.resolveStream(installed.resource.id),
+    ).rejects.toMatchObject({ code: "LOCAL_RESOURCE_SIZE_MISMATCH" });
   });
 
-  it("re-hashes a previously verified file once its file identity changes", async () => {
+  it("reports a deleted immutable file as LOCAL_RESOURCE_MISSING", async () => {
+    const { store } = await fixture();
+    const installed = await store.install({
+      kind: "image",
+      bytes: new TextEncoder().encode("deleted outside the Host"),
+      contentType: "image/png",
+    });
+    // The sealed file and its staging file share one inode; remove both names.
+    const staged = (await store.resolveStaged(installed.resource.id))!;
+    await unlink(installed.path);
+    await unlink(staged.path);
+
+    await expect(store.resolve(installed.resource.id)).rejects.toMatchObject({
+      code: "LOCAL_RESOURCE_MISSING",
+      errno: "ENOENT",
+    });
+    await expect(
+      store.resolveStaged(installed.resource.id),
+    ).rejects.toMatchObject({ code: "LOCAL_RESOURCE_MISSING" });
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "reports an immutable file without read permission as LOCAL_RESOURCE_UNREADABLE",
+    async () => {
+      const { store } = await fixture();
+      const installed = await store.install({
+        kind: "image",
+        bytes: new TextEncoder().encode("permission removed"),
+        contentType: "image/png",
+      });
+      await chmod(installed.path, 0o000);
+      try {
+        await expect(
+          store.resolve(installed.resource.id),
+        ).rejects.toMatchObject({
+          code: "LOCAL_RESOURCE_UNREADABLE",
+          errno: "EACCES",
+        });
+      } finally {
+        await chmod(installed.path, 0o444);
+      }
+    },
+  );
+
+  it("resolves by stat only: a same-length rewrite is not re-hashed on read", async () => {
     const { store } = await fixture();
     const installed = await store.install({
       kind: "image",
@@ -496,33 +545,13 @@ describe("local Resource CAS", () => {
       contentType: "image/png",
       originalName: "settled.png",
     });
-    // Old enough that a successful read is remembered by file identity.
-    const settled = new Date("2020-01-01T00:00:00Z");
-    await utimes(installed.path, settled, settled);
-    await expect(store.resolve(installed.resource.id)).resolves.toBeTruthy();
-
-    await chmod(installed.path, 0o644);
-    await writeFile(installed.path, new TextEncoder().encode("tampered"));
-    await utimes(installed.path, settled, settled);
-
-    await expect(store.resolve(installed.resource.id)).rejects.toThrow(
-      /digest|corrupt/i,
-    );
-  });
-
-  it("fails closed when immutable bytes change without changing length", async () => {
-    const { store } = await fixture();
-    const installed = await store.install({
-      kind: "image",
-      bytes: new TextEncoder().encode("original"),
-      contentType: "image/png",
-      originalName: "corrupt.png",
-    });
     await chmod(installed.path, 0o644);
     await writeFile(installed.path, new TextEncoder().encode("tampered"));
 
-    await expect(store.resolve(installed.resource.id)).rejects.toThrow(
-      /digest|corrupt/i,
+    // Reads trust the digest computed at import; only a cloud upload
+    // re-checks the bytes (see project-cloud-sync.test.ts).
+    await expect(store.resolve(installed.resource.id)).resolves.toEqual(
+      installed,
     );
   });
 
@@ -541,9 +570,9 @@ describe("local Resource CAS", () => {
       new TextEncoder().encode("corrupted immutable bytes"),
     );
 
-    await expect(store.resolve(installed.resource.id)).rejects.toThrow(
-      /digest|byte length|corrupt/i,
-    );
+    await expect(store.resolve(installed.resource.id)).rejects.toMatchObject({
+      code: "LOCAL_RESOURCE_SIZE_MISMATCH",
+    });
 
     const repaired = await store.install({
       kind: "video",

@@ -36,6 +36,37 @@ async function tempDir(): Promise<string> {
   return mkdtemp(join(tmpdir(), "clash-assets-link-"));
 }
 
+test("assets list/get lines carry a failed Asset's coded reason", () => {
+  const base = {
+    id: "asset:one",
+    kind: "video" as const,
+    metadata: {},
+    lifecycle: { state: "active" as const },
+  };
+  assert.equal(
+    assetCommands.assetStatusLine({ ...base, status: "ready" }),
+    "asset:one video ready",
+  );
+  assert.equal(
+    assetCommands.assetStatusLine({
+      ...base,
+      status: "failed",
+      error: "LOCAL_RESOURCE_MISSING: Local Resource r has no immutable bytes on this Host.",
+      errorCode: "LOCAL_RESOURCE_MISSING",
+    }),
+    "asset:one video failed LOCAL_RESOURCE_MISSING: Local Resource r has no immutable bytes on this Host.",
+  );
+  assert.equal(
+    assetCommands.assetStatusLine({
+      ...base,
+      status: "failed",
+      error: "bytes cannot be read (EIO).",
+      errorCode: "LOCAL_RESOURCE_UNREADABLE",
+    }),
+    "asset:one video failed LOCAL_RESOURCE_UNREADABLE: bytes cannot be read (EIO).",
+  );
+});
+
 test("assets command registers link subcommand", () => {
   assert.equal(assetsCommand.name(), "assets");
   assert.deepEqual(
