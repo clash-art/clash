@@ -231,8 +231,8 @@ it("validates independent gateways and workers against an isolated network Postg
     const b = await gateway("cluster-b");
     const c = await gateway("cluster-c");
     const workers = [
-      launch("../outbox-worker.ts"),
-      launch("../outbox-worker.ts"),
+      launch("../outbox-worker.ts", {}, true),
+      launch("../outbox-worker.ts", {}, true),
     ];
     const checkpoint = workers[0]!;
     await admit(a.port, "recovery");
@@ -361,8 +361,8 @@ it("validates independent gateways and workers against an isolated network Postg
     expect(await outbox.ack(leases[0]!)).toBe(true);
     reports.workerCrashLeaseRecovery = "passed";
     await progress("worker lease recovery passed");
-    launch("../outbox-worker.ts");
-    launch("../outbox-worker.ts");
+    launch("../outbox-worker.ts", {}, true);
+    launch("../outbox-worker.ts", {}, true);
     reports.topology = {
       gatewayProcesses: 3,
       durableOutboxWorkers: 2,

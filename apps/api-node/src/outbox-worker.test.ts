@@ -38,3 +38,24 @@ it("publishes queued work and shuts down without deleting unprocessed leases", a
     await db.close();
   }
 });
+
+it("passes a dispatch failure to onError", async () => {
+  const stop = new AbortController();
+  const failure = new Error("outbox unavailable");
+  const reported: Array<Error | undefined> = [];
+  await runOutboxWorker({
+    outbox: {
+      claim: async () => {
+        throw failure;
+      },
+      ack: async () => true,
+    },
+    publisher: { publish: async () => {} },
+    signal: stop.signal,
+    onError: (error) => {
+      reported.push(error);
+      stop.abort();
+    },
+  });
+  expect(reported).toEqual([failure]);
+});
