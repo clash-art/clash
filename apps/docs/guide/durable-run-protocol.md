@@ -244,8 +244,12 @@ complete. Only then does the publisher expose the Project Asset reference.
 Text outputs retain their existing node content projection. This is the supported
 legacy projection, **not native Generator Output Commit publication**.
 
-`GET /api/tasks/:taskId`, TaskPolling and orphan recovery prefer the journal over
-legacy Asset rows. A prepared Asset cannot imply success. A superseded or deleted
+`GET /api/tasks/:taskId` prefers the journal over legacy Asset rows. ProjectRoom
+does not poll: success and failure reach it by publication push, the cron
+re-drives unprojected rows, and an idle room arms no alarm. On initialization
+the room only fails a node whose `pendingTask` has no journal row (an admission
+lost with the previous instance) with `GENERATION_ADMISSION_LOST`. A prepared
+Asset cannot imply success. A superseded or deleted
 output node cannot be overwritten by late completion, and its old run can report
 failed without waiting forever for an obsolete failure projection. Historical
 tasks without a journal retain the deliberate old lookup path. The nonfunctional

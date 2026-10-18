@@ -207,7 +207,7 @@ domain packages such as `shared-types`.
 
 ### Durable Objects (api-cf)
 
-- **`ProjectRoom`** (`src/agents/project-room.ts`) — Loro CRDT host, WebSocket hub, presence tracking, activity broadcasts (throttled 500ms), task polling, periodic snapshots.
+- **`ProjectRoom`** (`src/agents/project-room.ts`) — Loro CRDT host, WebSocket hub, presence tracking, activity broadcasts (throttled 500ms), event-driven checkpoints. It never polls tasks; an idle room arms no alarm.
 - **`SupervisorAgent`** (`src/agents/supervisor.ts`) — AI chat agent per project. Maintains Loro replica synced with ProjectRoom. Has canvas tools (list/read/create/update/delete nodes, run generation). Room name format: `projectId:agentId`.
 - **`GenerationWorkflow`** (`src/agents/generation.ts`) — Cloudflare Workflow driving the shared DurableRunEngine: journaled submit/poll, durable result staging, and acknowledged legacy node/Asset projection. See `apps/docs/guide/durable-run-protocol.md`.
 

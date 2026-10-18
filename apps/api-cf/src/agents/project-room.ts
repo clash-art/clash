@@ -6,7 +6,8 @@ import type { TimelineRenderNodePublication } from "../generation/timeline-rende
  *
  * Handles:
  * - Loro CRDT sync (binary WebSocket messages)
- * - Task submission (NodeProcessor) and polling (TaskPolling)
+ * - Task submission (NodeProcessor); completion arrives by publication push
+ *   from the Durable Run journal, so the room never polls
  * - Periodic snapshot persistence to D1
  * - Collaboration visibility (presence + activity sideband messages)
  *
@@ -36,13 +37,17 @@ import {
 
 import { log } from "../logger";
 import type { Env } from "../config";
-import { CHECKPOINT_REQUESTED_SEQ_KEY, wipeDocState } from "../loro/storage";
+import {
+  CHECKPOINT_REQUESTED_SEQ_KEY,
+  NEXT_SEQ_KEY,
+  SNAPSHOT_SEQ_KEY,
+  wipeDocState,
+} from "../loro/storage";
 import { createDurableObjectReplicaPorts } from "../loro/replica-ports";
 import {
   processPendingNodes,
-  recoverOrphanedTasks,
+  reconcileUnadmittedTasks,
 } from "../loro/NodeProcessor";
-import { pollNodeTasks } from "../loro/TaskPolling";
 import { updateNodeData, appendNodeLog } from "../loro/NodeUpdater";
 import {
   authenticateRequest,
@@ -69,10 +74,8 @@ import {
 
 /**
  * How long one successful authorization check covers a socket (#240): the
- * first frame after this window lapses is re-checked. Idle sockets are
- * re-checked only on the room's existing 60 s alarm tick (no dedicated wakes),
- * so an idle revoked socket closes on the next tick while the room is
- * alarming, else on its next frame or reconnect.
+ * first frame after this window lapses is re-checked. There is no timer: an
+ * idle revoked socket closes on its next frame or reconnect.
  */
 const SOCKET_AUTHORIZATION_TTL_MS = 5_000;
 /** WebSocket close reasons are capped at 123 bytes; both stay well below. */
@@ -80,8 +83,12 @@ const AUTHORIZATION_REVOKED_CLOSE_REASON =
   "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.";
 const AUTHORIZATION_UNAVAILABLE_CLOSE_REASON =
   "PROJECT_AUTHORIZATION_CHECK_UNAVAILABLE: Could not verify project access; reconnect.";
-/** DO storage key: when the 60 s task poll is next due (the alarm is shared). */
-const TASK_POLL_DUE_KEY = "taskPollDueAt";
+/**
+ * DO storage key: set when the init-time admission reconcile could not reach
+ * the journal. Its retry is the only alarm not requested by a checkpoint.
+ */
+const RECONCILE_RETRY_KEY = "loro:reconcile-retry";
+const RECONCILE_RETRY_DELAY_MS = 60_000;
 
 /** A credential is never valid past its own expiry, whatever a check said. */
 function credentialExpired(auth: AuthResult): boolean {
@@ -101,9 +108,6 @@ function credentialExpired(auth: AuthResult): boolean {
  */
 export const PROJECT_ROOM_MAX_UPDATE_BYTES = 4 * 1024 * 1024;
 
-/** Alarm intervals in milliseconds */
-const TASK_POLL_INTERVAL_MS = 60_000; // 60 seconds
-const TASK_POLL_URGENT_MS = 2_000; // 2 seconds (after new task submission)
 /** Compact the update log into a fresh shallow snapshot every N appended updates. */
 const UPDATES_PER_COMPACT = 100;
 /** Hard cap — if compaction is somehow stuck, force one to keep load fast. */
@@ -220,6 +224,14 @@ export class ProjectRoom extends DurableObject<Env> {
   /** If an update arrives while throttled, schedule one trailing-edge flush. */
   private awarenessFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Text keepalives are answered by the runtime without waking the room.
+    this.ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair("ping", "pong"),
+    );
+  }
+
   // ─── Fetch: entry point for all requests ─────────────────────
 
   async fetch(request: Request): Promise<Response> {
@@ -305,11 +317,25 @@ export class ProjectRoom extends DurableObject<Env> {
       return new Response("Project ID mismatch", { status: 400 });
     }
 
-    if (
-      projectAuthorization &&
-      !(await revalidateProjectConnection(this.env, projectAuthorization))
-    ) {
-      return new Response("Unauthorized", { status: 401 });
+    if (projectAuthorization) {
+      let allowed: boolean;
+      try {
+        allowed = await revalidateProjectConnection(
+          this.env,
+          projectAuthorization,
+        );
+      } catch (error) {
+        // The check failed (D1 unavailable); that is not a revocation.
+        log.warn("Project authorization check unavailable at upgrade:", error);
+        return Response.json(
+          {
+            error: "Could not verify project access; reconnect.",
+            code: "PROJECT_AUTHORIZATION_CHECK_UNAVAILABLE",
+          },
+          { status: 503 },
+        );
+      }
+      if (!allowed) return new Response("Unauthorized", { status: 401 });
     }
 
     // Create WebSocket pair and accept via Hibernation API
@@ -362,13 +388,16 @@ export class ProjectRoom extends DurableObject<Env> {
 
   private async initRoom(
     projectId: string,
-    options: { enableTaskPolling?: boolean } = {},
+    options: { reconcilePendingNodes?: boolean } = {},
   ): Promise<void> {
-    const enableTaskPolling = options.enableTaskPolling ?? true;
+    const reconcilePendingNodes = options.reconcilePendingNodes ?? true;
     this.projectId = projectId;
 
-    // Persist projectId so alarm() can recover after hibernation.
-    await this.ctx.storage.put("projectId", projectId);
+    // Persist projectId so alarm() can recover after hibernation. Re-inits
+    // after hibernation find it already stored and write nothing.
+    if ((await this.ctx.storage.get<string>("projectId")) !== projectId) {
+      await this.ctx.storage.put("projectId", projectId);
+    }
 
     const ports = createDurableObjectReplicaPorts(this.ctx.storage, {
       schedule: (scheduledTime) => this.scheduleAlarmAtEarliest(scheduledTime),
@@ -401,7 +430,7 @@ export class ProjectRoom extends DurableObject<Env> {
       ? this.doc.export({ mode: "update", from: repairVersion })
       : null;
 
-    // Subscribe to LOCAL commits (taskPoll / orphan recovery / HTTP /update-node).
+    // Subscribe to LOCAL commits (node submission / reconcile / HTTP /update-node).
     // Imports from client WebSockets are persisted explicitly in
     // processMessageQueue — Loro's subscribeLocalUpdates does NOT fire for
     // imported updates, by design.
@@ -410,13 +439,54 @@ export class ProjectRoom extends DurableObject<Env> {
       await this.persistAndMaybeCompact(repairUpdate);
     }
 
-    if (enableTaskPolling) {
-      // Schedule first alarm for task polling. Persistence is event-driven now,
-      // not alarm-driven — the alarm is only for polling external task state.
-      await this.scheduleAlarmAtEarliest(Date.now() + TASK_POLL_INTERVAL_MS);
+    if (reconcilePendingNodes) {
+      const tag = `[room proj=${projectId.slice(-6)}]`;
+      // Reconcile first: no admission can be in flight in a freshly
+      // initialized instance, so a pendingTask without a journal row is lost.
+      await this.reconcileAdmissions(tag);
+      // Then submit Pending nodes whose submission was lost with the instance.
+      try {
+        await this.guardedProcessPendingNodes();
+      } catch (e) {
+        log.error(`${tag} init guardedProcessPendingNodes failed:`, e);
+      }
+    }
+  }
 
-      // Process any pending nodes and trigger polling.
-      await this.taskPoll();
+  /**
+   * Run the admission reconcile. A failed journal lookup persists
+   * RECONCILE_RETRY_KEY and arms one alarm; success clears the key. Never
+   * throws, so it cannot fail init or the alarm.
+   *
+   * Holds the node-processing guard: processPendingNodes installs pendingTask
+   * before its journal row is written, so the two must never interleave. If a
+   * submission holds the guard, the attempt is deferred to the retry alarm.
+   */
+  private async reconcileAdmissions(tag: string): Promise<void> {
+    try {
+      let retry = true;
+      if (!this.isProcessingNodes) {
+        this.isProcessingNodes = true;
+        try {
+          ({ retry } = await reconcileUnadmittedTasks(
+            this.doc,
+            this.env,
+            (data: Uint8Array) => this.broadcastBinary(data),
+          ));
+        } finally {
+          this.isProcessingNodes = false;
+        }
+      }
+      if (retry) {
+        await this.ctx.storage.put(RECONCILE_RETRY_KEY, true);
+        await this.scheduleAlarmAtEarliest(
+          Date.now() + RECONCILE_RETRY_DELAY_MS,
+        );
+      } else if ((await this.ctx.storage.get(RECONCILE_RETRY_KEY)) != null) {
+        await this.ctx.storage.delete(RECONCILE_RETRY_KEY);
+      }
+    } catch (e) {
+      log.error(`${tag} reconcileUnadmittedTasks failed:`, e);
     }
   }
 
@@ -495,20 +565,23 @@ export class ProjectRoom extends DurableObject<Env> {
     try {
       if (!this.replica) throw new Error("Project replica is not initialized");
       const t0 = Date.now();
-      const checkpoint = await this.replica.checkpoint();
+      // Nothing appended since the last checkpoint: rewriting it is pure cost.
+      const clean = this.updatesSinceCompact === 0;
+      const cursor = clean
+        ? this.replica.cursor
+        : (await this.replica.checkpoint()).cursor;
       this.nextSeq = this.replica.cursor;
-      this.updatesSinceCompact = this.nextSeq - checkpoint.cursor;
+      this.updatesSinceCompact = this.nextSeq - cursor;
       const requestedCursor = await this.ctx.storage.get<number>(
         CHECKPOINT_REQUESTED_SEQ_KEY,
       );
-      if (requestedCursor != null && requestedCursor <= checkpoint.cursor) {
+      if (requestedCursor != null && requestedCursor <= cursor) {
         await this.ctx.storage.delete(CHECKPOINT_REQUESTED_SEQ_KEY);
       } else if (requestedCursor != null) {
         await this.scheduleAlarmAtEarliest(Date.now());
       }
-      log.info(
-        `${tag} compacted at seq ${checkpoint.cursor} in ${Date.now() - t0}ms`,
-      );
+      if (!clean)
+        log.info(`${tag} compacted at seq ${cursor} in ${Date.now() - t0}ms`);
     } catch (e) {
       log.error(`${tag} compaction failed:`, e);
       throw e;
@@ -540,11 +613,9 @@ export class ProjectRoom extends DurableObject<Env> {
    * A hibernated connection carries identity evidence, never raw credentials.
    * This ephemeral cache is rebuilt on wake. Inbound commits share it, so
    * the first frame after a check's SOCKET_AUTHORIZATION_TTL_MS window lapses
-   * is re-checked. Idle sockets are re-checked only by recheckIdleSockets() on
-   * the room's existing 60 s alarm tick (no dedicated wakes), so an idle
-   * revoked socket closes on the next tick while the room is alarming, else on
-   * its next frame or reconnect. An expired credential is refused
-   * immediately, without D1.
+   * is re-checked. There is no timer: an idle revoked socket closes on its
+   * next frame or reconnect. An expired credential is refused immediately,
+   * without D1.
    */
   private authorizeSocket(ws: WebSocket): boolean | Promise<boolean> {
     if (this.closedSockets.has(ws)) return false;
@@ -620,19 +691,6 @@ export class ProjectRoom extends DurableObject<Env> {
     this.socketAuthorization.delete(ws);
     this.clients.delete(ws);
     this.protocolSessions.delete(ws);
-  }
-
-  /**
-   * Alarm stage: re-check every socket. Runs only on the room's existing 60 s
-   * alarm tick and never schedules a wake of its own, so an idle revoked
-   * socket closes on the next tick while the room is alarming, else on its
-   * next frame or reconnect. Sockets still inside their
-   * SOCKET_AUTHORIZATION_TTL_MS window cost no D1; lapsed ones share one check
-   * per identity.
-   */
-  private async recheckIdleSockets(): Promise<void> {
-    const sockets = this.ctx.getWebSockets();
-    await Promise.all(sockets.map((ws) => this.authorizeSocket(ws)));
   }
 
   /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
@@ -992,6 +1050,8 @@ export class ProjectRoom extends DurableObject<Env> {
 
     // Handle collaboration sideband messages.
     if (typeof message === "string") {
+      // Fallback only: the constructor's auto-response normally answers
+      // "ping" before this handler runs.
       if (message === "ping") {
         this.sendAuthorized(ws, "pong");
         return;
@@ -1148,6 +1208,64 @@ export class ProjectRoom extends DurableObject<Env> {
     } catch {
       // Already closed
     }
+    await this.compactIfLastSocket(ws, "webSocketClose");
+  }
+
+  /**
+   * With no idle checkpoint alarm, the last close is where an unflushed log
+   * tail is folded into the snapshot. Never throws out of a close handler.
+   */
+  private async compactIfLastSocket(ws: WebSocket, tag: string): Promise<void> {
+    try {
+      const othersOpen = this.ctx
+        .getWebSockets()
+        .some(
+          (other) =>
+            other !== ws &&
+            !this.closedSockets.has(other) &&
+            !(other.readyState >= 2), // 2 CLOSING, 3 CLOSED
+        );
+      if (!othersOpen) await this.compactIfDirty(tag);
+    } catch (e) {
+      log.error(
+        `[room proj=${this.projectId.slice(-6)}] ${tag}: compaction threw:`,
+        e,
+      );
+    }
+  }
+
+  /**
+   * Compact only when the update log has entries past the snapshot. The
+   * check reads two counters and does not load the doc, so a clean room is
+   * not initialized just because its last socket closed.
+   */
+  private async compactIfDirty(tag: string): Promise<void> {
+    const [nextSeq, snapshotSeq] = await Promise.all([
+      this.ctx.storage.get<number>(NEXT_SEQ_KEY),
+      this.ctx.storage.get<number>(SNAPSHOT_SEQ_KEY),
+    ]);
+    if ((nextSeq ?? 0) <= (snapshotSeq ?? 0)) return;
+    if (!(await this.initializeAfterHibernation())) return;
+    await this.runCompaction(`[room proj=${this.projectId.slice(-6)}] ${tag}`);
+  }
+
+  /**
+   * After hibernation in-memory state is lost: re-initialize from the stored
+   * projectId without reconciling or submitting nodes. False when no project
+   * ever connected.
+   */
+  private async initializeAfterHibernation(): Promise<boolean> {
+    if (!this.projectId) {
+      const storedId = await this.ctx.storage.get<string>("projectId");
+      if (!storedId) return false;
+      if (!this.initPromise) {
+        this.initPromise = this.initRoom(storedId, {
+          reconcilePendingNodes: false,
+        });
+      }
+    }
+    if (this.initPromise) await this.initPromise;
+    return !!this.replica;
   }
 
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
@@ -1187,6 +1305,7 @@ export class ProjectRoom extends DurableObject<Env> {
     } catch {
       // Already closed
     }
+    await this.compactIfLastSocket(ws, "webSocketError");
   }
 
   // ─── Message Queue Processing ────────────────────────────────
@@ -1409,7 +1528,6 @@ export class ProjectRoom extends DurableObject<Env> {
         this.env,
         this.projectId,
         (data: Uint8Array) => this.broadcastBinary(data),
-        async () => this.triggerTaskPolling(),
       );
     } finally {
       this.isProcessingNodes = false;
@@ -1419,120 +1537,32 @@ export class ProjectRoom extends DurableObject<Env> {
   // ─── Alarm (replaces schedule/cancelSchedule) ────────────────
 
   async alarm(): Promise<void> {
-    // The alarm is shared: it fires for the 60 s task poll and for requested
-    // checkpoints. Idle sockets are re-checked here, on whichever tick runs
-    // anyway (#240); authorization never schedules a wake of its own. The
-    // recheck needs no room state, so a wake before the task poll is due (e.g.
-    // a checkpoint request already served) does not load the doc.
-    await this.recheckIdleSockets();
+    // The alarm is armed only by event-driven needs: a requested checkpoint
+    // (replica policy) or a reconcile retry after a journal lookup failed.
+    // Task completion reaches the room by publication push, and connected
+    // sockets never re-arm it, so an idle room does not wake. A stale alarm
+    // with nothing requested returns without loading the room or writing.
     const checkpointTarget = await this.ctx.storage.get<number>(
       CHECKPOINT_REQUESTED_SEQ_KEY,
     );
-    let taskPollDueAt = await this.ctx.storage.get<number>(TASK_POLL_DUE_KEY);
-    const taskPollDue =
-      taskPollDueAt === undefined || Date.now() >= taskPollDueAt;
+    const reconcileRetry = await this.ctx.storage.get(RECONCILE_RETRY_KEY);
+    if (checkpointTarget == null && reconcileRetry == null) return;
 
-    if (taskPollDue || checkpointTarget != null) {
-      // After hibernation, in-memory state is lost — re-initialize if needed.
-      if (!this.projectId) {
-        const storedId = await this.ctx.storage.get<string>("projectId");
-        if (!storedId) return; // No project ever connected, nothing to do
-        if (!this.initPromise) {
-          this.initPromise = this.initRoom(storedId, {
-            enableTaskPolling: false,
-          });
-        }
-        await this.initPromise;
-      }
-
-      const tag = `[room proj=${this.projectId.slice(-6)}]`;
-      // Compact on every 60 s slot, or sooner when a checkpoint was requested.
-      await this.runCompaction(tag);
-
-      // Persistence is event-driven now — every doc commit (local via
-      // subscribeLocalUpdates, or imported via processMessageQueue) appends
-      // to the update log inside persistAndMaybeCompact. The alarm only
-      // runs task polling; it doesn't need to coordinate snapshot saves.
-      if (taskPollDue) {
-        await this.taskPoll();
-        taskPollDueAt = Date.now() + TASK_POLL_INTERVAL_MS;
-        await this.ctx.storage.put(TASK_POLL_DUE_KEY, taskPollDueAt);
-      }
-    }
-
-    // Re-schedule next alarm only if clients are connected.
-    if (this.ctx.getWebSockets().length > 0) {
-      if (taskPollDueAt !== undefined)
-        await this.scheduleAlarmAtEarliest(taskPollDueAt);
-    }
-  }
-
-  // ─── Task Polling ───────────────────────────────────────────
-
-  private async taskPoll(): Promise<void> {
-    if (!this.projectId) return;
+    if (!(await this.initializeAfterHibernation())) return;
     const tag = `[room proj=${this.projectId.slice(-6)}]`;
-
     try {
-      await this.guardedProcessPendingNodes();
-    } catch (e) {
-      // Don't let a single broken stage take down the whole alarm — log loud
-      // so we can see WHICH project is corrupt, then continue to the next stage.
-      this.handleTaskPollFailure(tag, "guardedProcessPendingNodes", e);
+      if (checkpointTarget != null) await this.runCompaction(tag);
+    } finally {
+      if (reconcileRetry != null) {
+        await this.reconcileAdmissions(tag);
+        // A submission skipped while the reconcile held the guard runs now.
+        try {
+          await this.guardedProcessPendingNodes();
+        } catch (e) {
+          log.error(`${tag} alarm guardedProcessPendingNodes failed:`, e);
+        }
+      }
     }
-
-    try {
-      await recoverOrphanedTasks(this.doc, this.env, (data: Uint8Array) =>
-        this.broadcastBinary(data),
-      );
-    } catch (e) {
-      this.handleTaskPollFailure(tag, "recoverOrphanedTasks", e);
-    }
-
-    try {
-      await pollNodeTasks(
-        this.doc,
-        this.env,
-        this.projectId,
-        (data: Uint8Array) => this.broadcastBinary(data),
-      );
-    } catch (e) {
-      this.handleTaskPollFailure(tag, "pollNodeTasks", e);
-    }
-  }
-
-  /**
-   * Centralised failure handler for taskPoll stages. The repeating
-   * `RangeError: Invalid array buffer length` we saw was unattributed —
-   * we couldn't tell which project's doc was corrupt. Now we log the
-   * project ID, the offending stage, and (if it looks like doc corruption)
-   * a hint that the snapshot is bad.
-   */
-  private handleTaskPollFailure(
-    tag: string,
-    stage: string,
-    error: unknown,
-  ): void {
-    const msg = error instanceof Error ? error.message : String(error);
-    const isCorruption =
-      msg.includes("Invalid array buffer length") ||
-      msg.includes("not a snapshot") ||
-      msg.includes("UnknownVersion");
-    if (isCorruption) {
-      log.error(
-        `${tag} ${stage} CORRUPT_DOC: ${msg} — snapshot likely poisoned, project will not sync until reset`,
-      );
-    } else {
-      log.error(`${tag} ${stage} failed:`, error);
-    }
-  }
-
-  private triggerTaskPolling(): void {
-    void this.scheduleAlarmAtEarliest(Date.now() + TASK_POLL_URGENT_MS).catch(
-      (error) => {
-        log.error("Failed to schedule urgent task poll:", error);
-      },
-    );
   }
 
   // ─── HTTP Endpoints (replaces onRequest) ─────────────────────
@@ -1553,7 +1583,7 @@ export class ProjectRoom extends DurableObject<Env> {
 
   private async ensureRoomInitialized(
     projectId: string,
-    options: { enableTaskPolling?: boolean } = {},
+    options: { reconcilePendingNodes?: boolean } = {},
   ): Promise<Response | null> {
     if (!projectId) return new Response("Missing project ID", { status: 400 });
 
@@ -1588,7 +1618,7 @@ export class ProjectRoom extends DurableObject<Env> {
     const initError = operation === "content-published" ||
       (operation === "generation-admission" && this.replica && this.projectId === projectId)
       ? null
-      : await this.ensureRoomInitialized(projectId, { enableTaskPolling: false });
+      : await this.ensureRoomInitialized(projectId, { reconcilePendingNodes: false });
     if (initError) return initError;
 
     // Project Asset reads and commits. The adapter (and the shared Asset
@@ -1661,7 +1691,7 @@ export class ProjectRoom extends DurableObject<Env> {
 
     // Browser render adapter publication: the bytes were uploaded through the
     // Project Asset import sessions, and this records the render node the same
-    // way the container pipeline's TaskPolling does. Adapter-only route.
+    // way the container pipeline's publication does. Adapter-only route.
     if (operation === "timeline-render-complete" && request.method === "POST") {
       try {
         const { runProjectRoomTimelineRenderCompletion } = await import(

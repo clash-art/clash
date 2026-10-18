@@ -300,3 +300,54 @@ it("answers a revoked credential with a coded 401 and the cursor link stops for 
     await db.close();
   }
 });
+
+it("answers a failed authorization check with the coded 503, not the revoked 401", async () => {
+  const db = new PGlite();
+  await migrateDatabase(db);
+  const token = "clsh_" + "c".repeat(40);
+  await db.query(
+    "INSERT INTO api_token(id,user_id,name,token_hash,token_prefix) VALUES ($1,$2,$3,$4,$5)",
+    ["t", "u", "test", createHash("sha256").update(token).digest("hex"), "clsh_cccc"],
+  );
+  await createPostgresCloudProjectAdmissionStore(db).admit({
+    userId: "u",
+    syncBaseUrl: "http://example.com",
+    request: {
+      schemaVersion: 1,
+      projectId: "p",
+      localReplicaId: "l",
+      resourceIds: [],
+      metadata: { projectId: "p", name: "p", description: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), deletedAt: null },
+    },
+  });
+  // Authentication reads the Project row once; the revalidation's read fails.
+  let ownerReads = 0;
+  const failing = {
+    query: ((sql: string, params?: unknown[]) => {
+      if (sql.includes("SELECT owner_id") && ++ownerReads > 1)
+        return Promise.reject(new Error("connection terminated unexpectedly"));
+      return db.query(sql, params);
+    }) as typeof db.query,
+    transaction: db.transaction.bind(db),
+  };
+  const gateway = createReplicaHttpGateway({ db: failing as never, pollMs: 25 });
+  const server = createServer(getRequestListener(gateway.app.fetch));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw Error("address");
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/projects/p/replica`,
+      { headers: { authorization: `Bearer ${token}` } },
+    );
+    expect(ownerReads).toBeGreaterThan(1); // authentication passed; revalidation failed
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "REPLICA_REQUEST_FAILED" });
+  } finally {
+    await gateway.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await db.close();
+  }
+});

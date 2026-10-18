@@ -264,8 +264,8 @@ const ImageNode = ({
         ) : imageUrl ? (
           // Show the resolved asset whenever it's available — even when
           // Loro still says `status:'failed'`. Stale-failed states leak
-          // in when D1 schema migrations lag behind code (e.g. TaskPolling
-          // sees a SELECT exception and writes failed). The asset row +
+          // in when D1 schema migrations lag behind code (e.g. a status
+          // reader sees a SELECT exception and writes failed). The asset row +
           // R2 blob are intact; rendering them is correct.
           <div className="relative">
             <ProjectedImage

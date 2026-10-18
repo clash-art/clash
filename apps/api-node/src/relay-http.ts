@@ -11,6 +11,7 @@ import { createProjectAuthenticator } from "@clash/shared-runtime/project-author
 import { createPostgresProjectAuthorizationStore } from "@clash/shared-runtime/project-authorization-postgres";
 import type { PostgresTransactionPort } from "@clash/shared-runtime/project-cloud-admission-postgres";
 import { createRelayStore } from "./relay-store.ts";
+import { apiNodeLog, errorFacts } from "./log.ts";
 
 // Only the server interprets offsets; SDK consumers preserve the returned tokens.
 const offset = (cursor: number) => String(cursor).padStart(16, "0");
@@ -88,9 +89,16 @@ export function createReplicaHttpGateway(options: {
             c.req.header("origin") !== new URL(options.publicUrl).origin)
         )
           return c.json({ error: "Forbidden origin" }, 403);
-        /** Why access is refused: a revoked/expired credential (401) or no admission (404). */
+        /** Why access is refused: a revoked/expired credential (401) or no admission (404).
+         * A failed check throws to the coded 503 below; it is never a revocation. */
         async function access(): Promise<"ok" | "revoked" | "not_found"> {
-          if (!(await auth.revalidate(identity))) return "revoked";
+          let valid: boolean;
+          try {
+            valid = await auth.revalidate(identity);
+          } catch (cause) {
+            throw new Error("Project authorization check unavailable", { cause });
+          }
+          if (!valid) return "revoked";
           const { rows } = await options.db.query(
             `SELECT a.project_id FROM project_cloud_admission a JOIN project p ON p.id=a.project_id
            WHERE a.project_id=$1 AND a.user_id=$2 AND p.tenant_id=a.tenant_id AND a.status IN ('pending','syncing','ready') LIMIT 1`,
@@ -243,6 +251,13 @@ export function createReplicaHttpGateway(options: {
           (!subscriptions.has(id) && subscriptions.size >= 128)
         )
           return c.json({ error: "Subscription capacity" }, 503);
+        // A live check that fails or denies ends the stream without claiming
+        // revocation; the client's next request learns which it was (401/503).
+        const liveAllowed = () =>
+          allowed().catch((error) => {
+            apiNodeLog.warn("replica.stream_authorization_unavailable", errorFacts(error));
+            return false;
+          });
         return streamSSE(c, async (stream) => {
           let stopped = false;
           let dirty = true;
@@ -270,9 +285,9 @@ export function createReplicaHttpGateway(options: {
                   wake = resolve;
                 });
               dirty = false;
-              if (stopped || closed || !(await allowed())) break;
+              if (stopped || closed || !(await liveAllowed())) break;
               const page = await readReplicaPage(store, after);
-              if (!(await allowed())) break;
+              if (!(await liveAllowed())) break;
               let deadline: ReturnType<typeof setTimeout> | undefined;
               try {
                 await Promise.race([

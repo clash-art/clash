@@ -85,11 +85,22 @@ export class SupervisorAgent extends AIChatAgent<Env> {
     const authorization = (
       connection.state as { projectAuthorization?: AuthResult } | null
     )?.projectAuthorization;
-    if (
-      authorization &&
-      (await revalidateProjectConnection(this.env, authorization))
-    )
-      return true;
+    let allowed: boolean;
+    try {
+      allowed =
+        !!authorization &&
+        (await revalidateProjectConnection(this.env, authorization));
+    } catch (error) {
+      // The check failed (D1 unavailable): authorization is unknown, not
+      // revoked. 1013 tells the client to reconnect.
+      log.warn("Supervisor revalidation unavailable; closing for retry", error);
+      connection.close(
+        1013,
+        "PROJECT_AUTHORIZATION_CHECK_UNAVAILABLE: Could not verify project access; reconnect.",
+      );
+      return false;
+    }
+    if (allowed) return true;
     connection.close(1008, "Unauthorized");
     return false;
   }
