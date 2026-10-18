@@ -25,10 +25,11 @@ import {
   preassignImportAssetId,
 } from "./assets";
 import * as assetCommands from "./assets";
-import type {
-  AssetImportFile,
-  PersonalGlobalAssetHostClient,
-  ProjectAssetHostClient,
+import {
+  createProjectAssetHostClient,
+  type AssetImportFile,
+  type PersonalGlobalAssetHostClient,
+  type ProjectAssetHostClient,
 } from "@clash/shared-runtime/project-asset-client";
 import { initProject } from "./projects";
 
@@ -232,7 +233,9 @@ async function sparseFileOver4GiB(path: string): Promise<number | null> {
 
 /** Reads the file-backed source an import handed to its client back as plain facts. */
 async function sentFile<T extends { file: AssetImportFile }>(input: T) {
-  const { file, ...command } = input;
+  const { file, onReplay: _onReplay, ...command } = input as T & {
+    onReplay?: () => void;
+  };
   return {
     ...command,
     contentType: file.type,
@@ -750,6 +753,7 @@ test("asset import sends workspace bytes through the shared Host client and link
   });
 
   assert.equal(result.assetId, "asset:host-import");
+  assert.equal(result.replayed, false);
   assert.equal(
     result.linkPath,
     join(cwd, "assets", "links", "asset_host-import.png"),
@@ -757,17 +761,134 @@ test("asset import sends workspace bytes through the shared Host client and link
   assert.equal(result.linkMethod, "symlink");
   assert.equal((await lstat(result.linkPath!)).isSymbolicLink(), true);
   assert.equal(await readFile(result.linkPath!, "utf8"), "asset-bytes");
-  assert.deepEqual(imports, [
-    {
-      projectId: "asset_project",
-      bytes: Array.from(Buffer.from("asset-bytes")),
-      fileName: "hero.png",
-      contentType: "image/png",
-      kind: "image",
-      projectAssetId: "asset:hero-command",
-    },
-  ]);
+  const [imported] = imports as Array<
+    Record<string, unknown> & { sha256?: unknown }
+  >;
+  assert.equal(typeof imported.sha256, "function");
+  assert.equal(
+    await (imported.sha256 as () => Promise<string>)(),
+    "c092df87ad240efa9f032f792b57f5d3812a833b47de33172f59cf70ee2f01c4",
+  );
+  const { sha256: _sha256, ...sentWithoutDigest } = imported;
+  assert.deepEqual(sentWithoutDigest, {
+    projectId: "asset_project",
+    bytes: Array.from(Buffer.from("asset-bytes")),
+    fileName: "hero.png",
+    contentType: "image/png",
+    kind: "image",
+    projectAssetId: "asset:hero-command",
+  });
   assert.equal(JSON.stringify(imports).includes("localBlobKey"), false);
+});
+
+const hostReadyAsset = {
+  id: "asset:host-import",
+  kind: "image" as const,
+  name: "hero.png",
+  metadata: { bytes: 11, contentType: "image/png" },
+  provenance: { kind: "import" as const },
+  lifecycle: { state: "active" as const },
+  status: "ready" as const,
+  url: "https://media.clash.test/api/v1/projects/asset_project/assets/asset%3Ahost-import/media",
+};
+
+function projectHostClientFor(
+  cwd: string,
+  fetch: (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => Promise<Response>,
+): ProjectAssetHostClient {
+  return createProjectAssetHostClient({
+    fetch: fetch as typeof globalThis.fetch,
+    hostClient: {
+      resolveConnection: async () => ({ endpoint: "http://host.test" }),
+      resolveContext: async () => ({
+        projectId: "asset_project",
+        source: "marker" as const,
+        workspaceRoot: cwd,
+      }),
+    },
+  });
+}
+
+test("CLI does not hash a file below the single-shot limit", async () => {
+  const cwd = await tempDir();
+  const homeDir = await tempDir();
+  const source = join(await tempDir(), "hero.png");
+  await writeFile(source, "asset-bytes", "utf8");
+  await initProject({ cwd, projectId: "asset_project" });
+  let hashCalls = 0;
+  const urls: string[] = [];
+  const client = projectHostClientFor(cwd, async (input) => {
+    const url = String(input);
+    urls.push(url);
+    if (url.includes("/import-sessions"))
+      throw new Error("a small import must not open a session");
+    return Response.json(hostReadyAsset, { status: 201 });
+  });
+
+  const result = await importAssetFile({
+    filePath: source,
+    cwd,
+    env: {},
+    homeDir,
+    link: false,
+    client,
+    hashFile: async () => {
+      hashCalls += 1;
+      return "c092df87ad240efa9f032f792b57f5d3812a833b47de33172f59cf70ee2f01c4";
+    },
+  });
+
+  assert.equal(result.assetId, hostReadyAsset.id);
+  assert.deepEqual(
+    urls.map((url) => url.split("?")[0]),
+    ["http://host.test/api/v1/projects/asset_project/assets/import-file"],
+  );
+  assert.equal(hashCalls, 0);
+});
+
+test("CLI sends one digest with the import-session create for a large file", async () => {
+  const cwd = await tempDir();
+  const homeDir = await tempDir();
+  const source = join(await tempDir(), "clip.mp4");
+  await writeFile(source, new Uint8Array(1));
+  await truncate(source, 64 * 1024 * 1024 + 1);
+  await initProject({ cwd, projectId: "asset_project" });
+  const digest = "b".repeat(64);
+  let hashCalls = 0;
+  let sessionBody: Record<string, unknown> | undefined;
+  const client = projectHostClientFor(cwd, async (input, init) => {
+    const url = String(input);
+    if (!url.includes("/import-sessions"))
+      throw new Error(`unexpected request: ${url}`);
+    sessionBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return Response.json(hostReadyAsset, {
+      status: 200,
+      headers: { "x-clash-asset-import-replayed": "true" },
+    });
+  });
+
+  const result = await importAssetFile({
+    filePath: source,
+    cwd,
+    env: {},
+    homeDir,
+    link: false,
+    kind: "video",
+    client,
+    hashFile: async () => {
+      hashCalls += 1;
+      return digest;
+    },
+  });
+
+  assert.equal(result.replayed, true);
+  assert.equal(result.assetId, hostReadyAsset.id);
+  assert.equal(hashCalls, 1);
+  assert.equal(sessionBody?.sha256, digest);
+  assert.equal(sessionBody?.byteLength, 64 * 1024 * 1024 + 1);
 });
 
 test("CLI imports hand the Host client the file itself, never a copy of its bytes", async () => {
@@ -963,6 +1084,7 @@ test("asset replace imports a file then calls copy-on-write canvas replacement w
         kind: "image",
         sourcePath: source,
         registered: true,
+        replayed: false,
         registration: {
           id: "local:sha256:replacement",
           kind: "image",

@@ -198,6 +198,8 @@ export type LocalResourceStageInput =
       source: LocalResourceByteSource;
       /** Exact byte length the transport declared, when it declared one. */
       declaredByteLength?: number;
+      /** Lowercase SHA-256 the caller already computed for these bytes. */
+      expectedDigest?: string;
       bytes?: never;
     };
 
@@ -218,6 +220,9 @@ export function stageLocalResourceInput(
     ...(input.declaredByteLength === undefined
       ? {}
       : { declaredByteLength: input.declaredByteLength }),
+    ...(input.expectedDigest === undefined
+      ? {}
+      : { expectedDigest: input.expectedDigest }),
     maxByteLength: input.declaredByteLength ?? Number.MAX_SAFE_INTEGER,
     ...originalName,
   });

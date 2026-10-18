@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createProjectAssetHttpClient } from "./project-asset-http-client.js";
+import {
+  createProjectAssetHttpClient,
+  PROJECT_ASSET_IMPORT_REPLAY_HEADER,
+} from "./project-asset-http-client.js";
 import { PROJECT_CLOUD_CONTENT_PART_BYTES } from "./content-transfer.js";
 
 /** Reads a streaming import-file request back as the command it carries. */
@@ -475,5 +478,141 @@ describe("Project Asset HTTP client", () => {
     expect(new Uint8Array(await new Response(part?.init?.body).arrayBuffer())).toEqual(
       bytes,
     );
+  });
+
+  it("sends the client digest and returns a create-time replay without uploading", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    let replayed = 0;
+    const sha256 = "a".repeat(64);
+    const client = createProjectAssetHttpClient({
+      singleShotMaxBytes: 1,
+      fetch: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return new Response(JSON.stringify(readyAsset), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            [PROJECT_ASSET_IMPORT_REPLAY_HEADER]: "true",
+          },
+        });
+      },
+    });
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: new File([new Uint8Array(4)], "frame.png", {
+          type: "image/png",
+        }),
+        kind: "image",
+        projectAssetId: "asset:one",
+        sha256,
+        onReplay: () => {
+          replayed += 1;
+        },
+      }),
+    ).resolves.toEqual(readyAsset);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain("/import-sessions");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toMatchObject({ sha256 });
+    expect(replayed).toBe(1);
+  });
+
+  it("does not resolve a digest provider for a single-shot import", async () => {
+    const sha256 = vi.fn(async () => "a".repeat(64));
+    const fetch = vi.fn(async () => Response.json(readyAsset, { status: 201 }));
+    const client = createProjectAssetHttpClient({ fetch });
+
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: new File([new Uint8Array(4)], "frame.png", {
+          type: "image/png",
+        }),
+        kind: "image",
+        projectAssetId: "asset:one",
+        sha256,
+      }),
+    ).resolves.toEqual(readyAsset);
+    expect(sha256).not.toHaveBeenCalled();
+    expect(fetch.mock.calls[0]![0]).toContain("/import-file");
+  });
+
+  it("resolves a digest provider once and sends it with the session create", async () => {
+    const digest = "c".repeat(64);
+    const sha256 = vi.fn(async () => digest);
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = createProjectAssetHttpClient({
+      fetch: async (input, init) => {
+        calls.push({ url: String(input), init });
+        return new Response(JSON.stringify(readyAsset), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            [PROJECT_ASSET_IMPORT_REPLAY_HEADER]: "true",
+          },
+        });
+      },
+    });
+
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: new File([new Uint8Array(4)], "frame.png", {
+          type: "image/png",
+        }),
+        kind: "image",
+        projectAssetId: "asset:one",
+        chunked: true,
+        sha256,
+      }),
+    ).resolves.toEqual(readyAsset);
+    expect(sha256).toHaveBeenCalledTimes(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain("/import-sessions");
+    expect(JSON.parse(String(calls[0]!.init?.body))).toMatchObject({
+      sha256: digest,
+    });
+  });
+
+  it("marks a finalize replay from the response header", async () => {
+    let replayed = 0;
+    const client = createProjectAssetHttpClient({
+      singleShotMaxBytes: 1,
+      fetch: async (input) => {
+        const url = String(input);
+        if (url.includes("/finalize"))
+          return new Response(JSON.stringify(readyAsset), {
+            headers: {
+              "content-type": "application/json",
+              [PROJECT_ASSET_IMPORT_REPLAY_HEADER]: "true",
+            },
+          });
+        if (url.includes("/import-sessions"))
+          return Response.json({
+            sessionId: "session.replay",
+            upload: { url: "https://upload.test/assets/capability/token" },
+          });
+        const operation = new URL(url).searchParams.get("upload");
+        if (operation === "begin")
+          return Response.json({
+            uploadId: new URL(url).searchParams.get("uploadId"),
+            partSize: PROJECT_CLOUD_CONTENT_PART_BYTES,
+            parts: [],
+          });
+        return new Response(null, { status: 204 });
+      },
+    });
+    await client.importFile({
+      projectId: "project/one",
+      file: new File([new Uint8Array(40)], "frame.png", {
+        type: "image/png",
+      }),
+      kind: "image",
+      projectAssetId: "asset:one",
+      onReplay: () => {
+        replayed += 1;
+      },
+    });
+    expect(replayed).toBe(1);
   });
 });

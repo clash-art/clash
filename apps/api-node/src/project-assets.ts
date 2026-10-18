@@ -188,6 +188,8 @@ export function createProjectAssetRoutes(options: {
     staging: {
       store: importStaging,
       delete: (locator) => importStaging.delete(locator),
+      digest: async (locator) =>
+        (await importStaging.assembled(locator))?.digest,
       onCleanupFailure(locator, error) {
         importStagingLog.error("project_asset_import_staging.cleanup_failed", {
           code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,

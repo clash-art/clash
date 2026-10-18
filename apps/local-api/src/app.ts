@@ -90,6 +90,7 @@ import {
   createProjectAssetImportSession,
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
+  PROJECT_ASSET_IMPORT_DIGEST_MISMATCH,
   PROJECT_ASSET_IMPORT_FAILED,
   PROJECT_ASSET_IMPORT_REPLAY_HEADER,
   PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
@@ -1569,6 +1570,16 @@ function localProjectAssetErrorResponse(
 }
 
 function projectAssetImportErrorResponse(error: unknown): Response {
+  if (
+    error instanceof LocalResourceStreamMismatchError ||
+    (error instanceof LocalProjectAssetMigrationError &&
+      error.code === PROJECT_ASSET_IMPORT_DIGEST_MISMATCH)
+  ) {
+    return json(
+      { error: errorMessage(error), code: PROJECT_ASSET_IMPORT_DIGEST_MISMATCH },
+      409,
+    );
+  }
   const response = localProjectAssetErrorResponse(error, {
     fallbackCode: PROJECT_ASSET_IMPORT_FAILED,
   });
@@ -3892,6 +3903,8 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     staging: {
       store: importStaging,
       delete: (locator) => importStaging.delete(locator),
+      digest: async (locator) =>
+        (await importStaging.assembled(locator))?.digest,
       onCleanupFailure(locator, error) {
         projectAssetImportLog.error(
           "project_asset_import_staging.cleanup_failed",
@@ -3902,6 +3915,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           },
         );
       },
+    },
+    async inspectExistingImport(input) {
+      return projectAssetServiceAt(origin).inspectExistingImport(input);
     },
     uploadUrl: (sessionId) =>
       `${origin}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-sessions/${encodeURIComponent(sessionId)}/content`,
@@ -3915,6 +3931,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         ...(input.contentType ? { contentType: input.contentType } : {}),
         metadata: input.metadataHints ?? {},
         provenance: { kind: "import" as const },
+        ...(input.sha256 ? { expectedDigest: input.sha256 } : {}),
         ...(input.duplicateContent
           ? { duplicateContent: input.duplicateContent }
           : {}),
@@ -5137,15 +5154,21 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     "/api/v1/projects/:projectId/assets/import-sessions",
     async (c) => {
       const projectId = c.req.param("projectId");
-      const result = await createProjectAssetImportSession(
-        {
-          projectId,
-          ownerId: userId,
-          body: await c.req.json().catch(() => null),
-        },
-        await importSessionPorts(projectId, requestOrigin(c)),
-      );
-      return c.json(result.body, result.status);
+      try {
+        const result = await createProjectAssetImportSession(
+          {
+            projectId,
+            ownerId: userId,
+            body: await c.req.json().catch(() => null),
+          },
+          await importSessionPorts(projectId, requestOrigin(c)),
+        );
+        if (result.status === 200)
+          c.header(PROJECT_ASSET_IMPORT_REPLAY_HEADER, "true");
+        return c.json(result.body, result.status);
+      } catch (error) {
+        return projectAssetImportErrorResponse(error);
+      }
     },
   );
   app.post(

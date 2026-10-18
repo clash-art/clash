@@ -10,9 +10,13 @@ import {
   createHmacProjectAssetImportSessionTokens,
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
+  PROJECT_ASSET_DUPLICATE_CONTENT,
+  PROJECT_ASSET_ID_COLLISION,
   PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED,
+  PROJECT_ASSET_IMPORT_DIGEST_MISMATCH,
   PROJECT_ASSET_IMPORT_SESSION_TTL_MS,
   PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+  PROJECT_ASSET_TRASHED,
   sweepProjectAssetImportStaging,
   type ProjectAssetImportSessionPorts,
 } from "./project-asset-import-sessions.js";
@@ -29,6 +33,7 @@ const asset = {
 
 function stagingStore(overrides: Partial<AssetDeliveryStore> = {}) {
   const objects = new Map<string, Uint8Array>();
+  const digests = new Map<string, string>();
   const store: AssetDeliveryStore = {
     head(locator) {
       const bytes = objects.get(locator);
@@ -53,11 +58,14 @@ function stagingStore(overrides: Partial<AssetDeliveryStore> = {}) {
   };
   return {
     objects,
+    digests,
     port: {
       store,
       delete: async (locator: string) => {
         objects.delete(locator);
+        digests.delete(locator);
       },
+      digest: (locator: string) => digests.get(locator),
     },
   };
 }
@@ -167,6 +175,123 @@ it("creates a signed session and finalizes staged bytes through the commit port"
   expect(f.commit.mock.calls[0]![0]).not.toHaveProperty("digest");
   // Staging is transport-private once the Asset is committed.
   expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
+});
+
+it("validates an optional sha256 and decides replay or conflict before an upload URL", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const existing = { ...asset, id: "asset:existing" } as ResolvedAsset;
+  const inspect = vi.fn(async () => existing);
+  f.ports.inspectExistingImport = inspect;
+  expect(await f.session({ sha256: sha })).toEqual({
+    status: 200,
+    body: existing,
+    replayed: true,
+  });
+  expect(inspect).toHaveBeenCalledWith(
+    expect.objectContaining({
+      projectId: "p",
+      ownerId: "owner-a",
+      projectAssetId: "asset:1",
+      sha256: sha,
+    }),
+  );
+
+  f.ports.inspectExistingImport = vi.fn(async () => {
+    throw Object.assign(new Error("different bytes"), {
+      code: "PROJECT_ASSET_ID_COLLISION",
+      projectAssetId: "asset:1",
+    });
+  });
+  expect(await f.session({ sha256: "b".repeat(64) })).toMatchObject({
+    status: 409,
+    body: { code: "PROJECT_ASSET_ID_COLLISION", projectAssetId: "asset:1" },
+  });
+
+  for (const invalid of ["A".repeat(64), "a".repeat(63), "not-a-digest", ""])
+    expect((await f.session({ sha256: invalid })).status).toBe(400);
+
+  // Older clients send no digest: the session path is unchanged.
+  const noDigest = await f.session();
+  expect(noDigest.status).toBe(201);
+});
+
+it("maps only the three known create-time conflicts to 409 and rethrows other errors", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const conflicts = [
+    {
+      code: PROJECT_ASSET_DUPLICATE_CONTENT,
+      projectAssetId: "asset:1",
+      existingProjectAssetIds: ["asset:existing"],
+    },
+    {
+      code: PROJECT_ASSET_ID_COLLISION,
+      projectAssetId: "asset:1",
+    },
+    {
+      code: PROJECT_ASSET_TRASHED,
+      projectAssetId: "asset:1",
+    },
+  ] as const;
+  for (const conflict of conflicts) {
+    const message = `${conflict.code} decided before upload`;
+    f.ports.inspectExistingImport = vi.fn(async () => {
+      throw Object.assign(new Error(message), conflict);
+    });
+    expect(await f.session({ sha256: sha })).toEqual({
+      status: 409,
+      body: { error: message, ...conflict },
+    });
+  }
+
+  // Errno/SQLite/local-resource failures are not conflicts: the adapter's own
+  // route must map them instead of receiving a fabricated 409.
+  for (const code of ["ENOENT", "EACCES", "SQLITE_BUSY"]) {
+    const failure = Object.assign(new Error(`${code}: transport failure`), {
+      code,
+    });
+    f.ports.inspectExistingImport = vi.fn(async () => {
+      throw failure;
+    });
+    await expect(f.session({ sha256: sha })).rejects.toBe(failure);
+  }
+});
+
+it("stores the declared digest and rejects a mismatched assembly, deleting staging", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const created = await f.session({ sha256: sha });
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  expect(claims.sha256).toBe(sha);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.staging.digests.set(claims.stagingLocator, "b".repeat(64));
+  const finalized = await finalizeProjectAssetImportSession(
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    f.ports,
+  );
+  expect(finalized).toMatchObject({
+    status: 409,
+    body: { code: PROJECT_ASSET_IMPORT_DIGEST_MISMATCH },
+  });
+  expect(f.commit).not.toHaveBeenCalled();
+  expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
+});
+
+it("passes a matching declared digest to the commit path", async () => {
+  const f = fixture();
+  const sha = "a".repeat(64);
+  const created = await f.session({ sha256: sha });
+  if (created.status !== 201) throw new Error("session not created");
+  const claims = await claimsOf(created.body.sessionId, f.ports);
+  f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  f.staging.digests.set(claims.stagingLocator, sha);
+  await finalizeProjectAssetImportSession(
+    { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
+    f.ports,
+  );
+  expect(f.commit.mock.calls[0]![0]).toMatchObject({ sha256: sha });
 });
 
 it("rejects an expired session token", async () => {

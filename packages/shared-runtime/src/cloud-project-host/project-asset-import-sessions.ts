@@ -6,9 +6,11 @@
  * Mirrors the Cloudflare transport contract the Asset SDK already drives:
  *
  *   POST /assets/import-sessions
- *     { kind, projectAssetId, fileName, byteLength, contentType,
+ *     { kind, projectAssetId, fileName, byteLength, contentType, sha256?,
  *       duplicateContent?, metadataHints? }
  *     → 201 { sessionId, upload: { url } }
+ *     → 200 ResolvedAsset + replay header when sha256 proves a replay
+ *     → 409 coded conflict when sha256 proves duplicate/collision/trashed
  *   PUT  upload.url?upload=begin|part|complete|abort&uploadId&partNumber
  *     (the shared `handleMultipartContent` protocol over an
  *      `AssetDeliveryStore` whose multipart adapter does not verify a digest
@@ -61,6 +63,22 @@ export const PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED =
   "PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED";
 /** A finalize failed for a reason the adapter did not classify. */
 export const PROJECT_ASSET_IMPORT_FAILED = "PROJECT_ASSET_IMPORT_FAILED";
+/**
+ * The create-time conflicts `inspectExistingImport` may decide, and the only
+ * errors the session create maps to 409. Any other thrown error (errno,
+ * SQLite, a local-resource failure) belongs to the adapter's error mapping.
+ */
+export const PROJECT_ASSET_DUPLICATE_CONTENT =
+  "PROJECT_ASSET_DUPLICATE_CONTENT";
+export const PROJECT_ASSET_ID_COLLISION = "PROJECT_ASSET_ID_COLLISION";
+export const PROJECT_ASSET_TRASHED = "PROJECT_ASSET_TRASHED";
+export const PROJECT_ASSET_IMPORT_CONFLICT_CODES: ReadonlySet<string> = new Set(
+  [
+    PROJECT_ASSET_DUPLICATE_CONTENT,
+    PROJECT_ASSET_ID_COLLISION,
+    PROJECT_ASSET_TRASHED,
+  ],
+);
 /** Finalize failure codes; each failure also deletes the session's staging. */
 export const PROJECT_ASSET_IMPORT_SESSION_INVALID =
   "PROJECT_ASSET_IMPORT_SESSION_INVALID";
@@ -68,6 +86,9 @@ export const PROJECT_ASSET_IMPORT_STAGING_NOT_FOUND =
   "PROJECT_ASSET_IMPORT_STAGING_NOT_FOUND";
 export const PROJECT_ASSET_IMPORT_SIZE_MISMATCH =
   "PROJECT_ASSET_IMPORT_SIZE_MISMATCH";
+/** The uploaded bytes did not match the client-computed digest in the session. */
+export const PROJECT_ASSET_IMPORT_DIGEST_MISMATCH =
+  "PROJECT_ASSET_IMPORT_DIGEST_MISMATCH";
 /** Response header set when an import returned the existing Asset unchanged. */
 export const PROJECT_ASSET_IMPORT_REPLAY_HEADER =
   "x-clash-asset-import-replayed";
@@ -106,6 +127,11 @@ export interface ProjectAssetImportStagingPort {
   store: AssetDeliveryStore;
   /** Delete staged bytes once a finalize has succeeded or failed. */
   delete(locator: string): Promise<void>;
+  /**
+   * The digest computed while assembling these bytes, when the store can
+   * report it. Finalize compares it with a client-declared digest.
+   */
+  digest?(locator: string): Promise<string | undefined> | string | undefined;
   /**
    * Report a failed staging delete. It never changes the finalize result (a
    * committed Asset stays committed); the periodic sweep retries the object.
@@ -209,6 +235,8 @@ export interface ProjectAssetImportCommitInput {
   byteLength: number;
   duplicateContent?: "allow" | "reject";
   metadataHints?: AssetImportMetadataHints;
+  /** Client-computed digest; finalize must find these exact bytes. */
+  sha256?: string;
   /**
    * The staged object, for an adapter whose own staging store can adopt the
    * bytes it assembled (with their digest) instead of reading them again.
@@ -238,6 +266,21 @@ export interface ProjectAssetImportSessionPorts {
     }): Promise<boolean>;
   };
   staging: ProjectAssetImportStagingPort;
+  /**
+   * Decide a replay/duplicate/collision/trashed outcome from the
+   * client-computed digest before any upload URL is issued. Returns the
+   * existing Asset for a replay, null to import. Only
+   * `PROJECT_ASSET_DUPLICATE_CONTENT`, `PROJECT_ASSET_ID_COLLISION` and
+   * `PROJECT_ASSET_TRASHED` become a 409 response; any other error is rethrown
+   * for the adapter's own mapping.
+   */
+  inspectExistingImport?(input: {
+    projectId: string;
+    ownerId: string;
+    projectAssetId: string;
+    sha256: string;
+    duplicateContent?: "allow" | "reject";
+  }): Promise<ResolvedAsset | null>;
   /** Absolute same-app URL serving the multipart protocol for this session. */
   uploadUrl(sessionId: string): string;
   /** Reuse the adapter's existing single-shot import commit path. */
@@ -257,6 +300,8 @@ export type ProjectAssetImportSessionResult =
       status: 201;
       body: { sessionId: string; upload: { url: string } };
     }
+  /** A client-digest replay: the existing Asset, and no session was created. */
+  | { status: 200; body: ResolvedAsset; replayed: true }
   | {
       status: 400 | 403 | 404 | 409 | 413;
       body: Record<string, unknown>;
@@ -295,6 +340,55 @@ function parseDuplicateContent(
   return value === "allow" || value === "reject" ? value : null;
 }
 
+/** Optional client digest: lowercase hex SHA-256, no normalization. */
+function parseSha256(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
+    ? value
+    : null;
+}
+
+/**
+ * A known create-time conflict from the Host adapter becomes the same 409 body
+ * the finalize path uses. Every other error is not a conflict and is rethrown.
+ */
+function existingImportConflict(
+  error: unknown,
+): ProjectAssetImportSessionResult | null {
+  if (!error || typeof error !== "object") return null;
+  const record = error as {
+    code?: unknown;
+    message?: unknown;
+    projectAssetId?: unknown;
+    existingProjectAssetIds?: unknown;
+  };
+  if (
+    typeof record.code !== "string" ||
+    !PROJECT_ASSET_IMPORT_CONFLICT_CODES.has(record.code)
+  )
+    return null;
+  return {
+    status: 409,
+    body: {
+      error:
+        typeof record.message === "string"
+          ? record.message
+          : "Project Asset import conflict",
+      code: record.code,
+      ...(typeof record.projectAssetId === "string"
+        ? { projectAssetId: record.projectAssetId }
+        : {}),
+      ...(Array.isArray(record.existingProjectAssetIds)
+        ? {
+            existingProjectAssetIds: record.existingProjectAssetIds.filter(
+              (id): id is string => typeof id === "string",
+            ),
+          }
+        : {}),
+    },
+  };
+}
+
 const importSessionError = (
   status: 403 | 404 | 409,
   code: string,
@@ -309,7 +403,7 @@ export async function createProjectAssetImportSession(
   input: { projectId: string; ownerId: string; body: unknown },
   ports: Pick<
     ProjectAssetImportSessionPorts,
-    "clock" | "newId" | "tokens" | "access" | "uploadUrl"
+    "clock" | "newId" | "tokens" | "access" | "inspectExistingImport" | "uploadUrl"
   >,
 ): Promise<ProjectAssetImportSessionResult> {
   if (!isRecord(input.body))
@@ -337,6 +431,9 @@ export async function createProjectAssetImportSession(
   const duplicateContent = parseDuplicateContent(input.body.duplicateContent);
   if (duplicateContent === null)
     return invalid("duplicateContent must be allow or reject");
+  const sha256 = parseSha256(input.body.sha256);
+  if (sha256 === null)
+    return invalid("sha256 must be 64 lowercase hexadecimal characters");
   const contentType = normalizeProjectAssetContentType({
     contentType:
       typeof input.body.contentType === "string"
@@ -356,6 +453,23 @@ export async function createProjectAssetImportSession(
   )
     return { status: 404, body: { error: "Project not found" } };
 
+  if (sha256 && ports.inspectExistingImport) {
+    try {
+      const replay = await ports.inspectExistingImport({
+        projectId: input.projectId,
+        ownerId: input.ownerId,
+        projectAssetId,
+        sha256,
+        ...(duplicateContent === undefined ? {} : { duplicateContent }),
+      });
+      if (replay) return { status: 200, body: replay, replayed: true };
+    } catch (error) {
+      const conflict = existingImportConflict(error);
+      if (conflict) return conflict;
+      throw error;
+    }
+  }
+
   const stagingLocator = `${PROJECT_ASSET_IMPORT_STAGING_PREFIX}${ports.newId()}`;
   const sessionId = await ports.tokens.sign({
     version: 1,
@@ -365,6 +479,7 @@ export async function createProjectAssetImportSession(
     kind: kind.data,
     fileName,
     byteLength: byteLength as number,
+    ...(sha256 === undefined ? {} : { sha256 }),
     ...(contentType === undefined ? {} : { contentType }),
     ...(duplicateContent === undefined ? {} : { duplicateContent }),
     ...(Object.keys(metadataHints).length
@@ -475,6 +590,17 @@ export async function finalizeProjectAssetImportSession(
         "Import session byte length does not match",
       );
     }
+    if (claims.sha256 && ports.staging.digest) {
+      const assembledDigest = await ports.staging.digest(locator);
+      if (assembledDigest && assembledDigest !== claims.sha256) {
+        await deleteStaging(ports.staging, locator);
+        return importSessionError(
+          409,
+          PROJECT_ASSET_IMPORT_DIGEST_MISMATCH,
+          "Import session bytes do not match the declared sha256",
+        );
+      }
+    }
     // The commit path hashes the staged bytes at most once (an adapter that
     // assembled them already knows their digest); a separate pass here would
     // read the whole object again.
@@ -485,6 +611,7 @@ export async function finalizeProjectAssetImportSession(
       kind: claims.kind,
       fileName: claims.fileName,
       byteLength: claims.byteLength,
+      ...(claims.sha256 === undefined ? {} : { sha256: claims.sha256 }),
       ...(claims.contentType === undefined
         ? {}
         : { contentType: claims.contentType }),
