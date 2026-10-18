@@ -1,7 +1,18 @@
 import { createHash } from "node:crypto";
 import type { ReplicaLinkPort } from "@clash/replica";
 import { createReplicaStreamClient } from "@clash/replica/replica-stream-client";
-import type { LoroCloudReplicaLinkOptions } from "./cloud-replica-link.ts";
+import { classifySyncError } from "@clash/shared-types";
+import {
+  CloudReplicaLinkActionRequiredError,
+  type LoroCloudReplicaLinkOptions,
+} from "./cloud-replica-link.js";
+
+/** HTTP status of a replica stream failure, if the server answered one. */
+function failureStatus(error: unknown): number | undefined {
+  const value = error as { status?: unknown; error?: { status?: unknown } } | null;
+  const status = value?.status ?? value?.error?.status;
+  return typeof status === "number" ? status : undefined;
+}
 /** Loro belongs to the local Host. The remote endpoint only stores/replays bytes. */
 export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   private cursor: string | null = null;
@@ -41,6 +52,27 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   }
   private failed(error: unknown) {
     if (this.stopped) return;
+    const status = failureStatus(error);
+    if (status === 401 || status === 403) {
+      // Revoked or expired credential / lost access: retrying cannot succeed.
+      // Stop and ask the user, like the WebSocket link does on 1008.
+      this.stopped = true;
+      clearTimeout(this.retry);
+      this.retry = undefined;
+      const old = this.client;
+      this.client = undefined;
+      void old?.close();
+      const classification = classifySyncError({ httpStatus: status });
+      const code = (error as { code?: unknown }).code;
+      const blocked = new CloudReplicaLinkActionRequiredError(
+        classification,
+        `Cloud replica ${status}${typeof code === "string" ? ` ${code}` : ""}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      this.options.onError?.(blocked);
+      this.options.onDisconnected?.();
+      this.options.onActionRequired?.(classification, blocked);
+      return;
+    }
     this.options.onError?.(
       error instanceof Error ? error : Error(String(error)),
     );

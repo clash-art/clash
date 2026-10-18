@@ -26,6 +26,12 @@ const records = (page: Awaited<ReturnType<typeof readReplicaPage>>) =>
   }));
 
 /** Authenticated SDK read/append/snapshot/SSE profile; not a general stream provisioning service. */
+/** Body of every 401: the credential is unknown, expired or revoked, or access was lost. */
+const REPLICA_AUTHORIZATION_REVOKED = {
+  error: "Your session expired or your access to this project was revoked.",
+  code: "PROJECT_AUTHORIZATION_REVOKED",
+} as const;
+
 export function createReplicaHttpGateway(options: {
   db: PostgresTransactionPort;
   notifications?: GatewayNotificationSource;
@@ -82,23 +88,32 @@ export function createReplicaHttpGateway(options: {
             c.req.header("origin") !== new URL(options.publicUrl).origin)
         )
           return c.json({ error: "Forbidden origin" }, 403);
-        async function allowed() {
-          if (!(await auth.revalidate(identity))) return false;
+        /** Why access is refused: a revoked/expired credential (401) or no admission (404). */
+        async function access(): Promise<"ok" | "revoked" | "not_found"> {
+          if (!(await auth.revalidate(identity))) return "revoked";
           const { rows } = await options.db.query(
             `SELECT a.project_id FROM project_cloud_admission a JOIN project p ON p.id=a.project_id
            WHERE a.project_id=$1 AND a.user_id=$2 AND p.tenant_id=a.tenant_id AND a.status IN ('pending','syncing','ready') LIMIT 1`,
             [id, identity.userId],
           );
-          return rows.length > 0;
+          return rows.length > 0 ? "ok" : "not_found";
         }
-        if (!(await allowed()))
-          return c.json({ error: "Project not found" }, 404);
+        async function allowed() {
+          return (await access()) === "ok";
+        }
+        // A live stream ends when access is lost; the client's next request
+        // then gets this coded 401 and stops retrying instead of looping.
+        const revoked = () => c.json(REPLICA_AUTHORIZATION_REVOKED, 401);
+        const admitted = await access();
+        if (admitted === "revoked") return revoked();
+        if (admitted === "not_found")
+          return c.json({ error: "Project not found", code: "PROJECT_NOT_FOUND" }, 404);
         if (closed) return c.json({ error: "Gateway shutting down" }, 503);
         const store = createRelayStore(options.db, id);
         if (c.req.method === "HEAD" && operation === "") {
           const head = await store.head();
           const snapshot = await store.loadCheckpoint();
-          if (!(await allowed())) return c.json({ error: "Unauthorized" }, 401);
+          if (!(await allowed())) return revoked();
           c.header("content-type", "application/json");
           c.header("stream-next-offset", offset(head));
           if (snapshot)
@@ -108,7 +123,7 @@ export function createReplicaHttpGateway(options: {
         if (c.req.method === "GET" && operation === "snapshot") {
           const snapshot = await store.loadCheckpoint();
           if (!snapshot) return c.notFound();
-          if (!(await allowed())) return c.json({ error: "Unauthorized" }, 401);
+          if (!(await allowed())) return revoked();
           const requested = c.req.param("snapshotOffset");
           if (!requested)
             return c.redirect(`${c.req.path}/${offset(snapshot.cursor)}`, 307);
@@ -171,7 +186,7 @@ export function createReplicaHttpGateway(options: {
             return c.json({ error: "Update too large" }, 413);
           if (bytes.toString("base64") !== record.update)
             return c.json({ error: "Invalid replica bytes" }, 400);
-          if (!(await allowed())) return c.json({ error: "Unauthorized" }, 401);
+          if (!(await allowed())) return revoked();
           try {
             const cursor = await store.append(key, bytes);
             await notify(id);
@@ -212,7 +227,7 @@ export function createReplicaHttpGateway(options: {
             return c.json({ error: "Invalid offset" }, 409);
           throw error;
         }
-        if (!(await allowed())) return c.json({ error: "Unauthorized" }, 401);
+        if (!(await allowed())) return revoked();
         if (!c.req.query("live")) {
           c.header("stream-next-offset", offset(initial.cursor));
           c.header(
@@ -295,13 +310,21 @@ export function createReplicaHttpGateway(options: {
           }
         });
       } catch (error) {
-        return c.json(
-          { error: "Replica request failed" },
+        const status =
           error instanceof Error && error.message === "Unauthorized"
             ? 401
             : error instanceof Error && error.message === "Forbidden"
               ? 404
-              : 503,
+              : 503;
+        // An unknown, expired or deleted credential reads to the user exactly
+        // like a revoked one: sign in again.
+        if (status === 401) return c.json(REPLICA_AUTHORIZATION_REVOKED, 401);
+        return c.json(
+          {
+            error: "Replica request failed",
+            code: status === 404 ? "PROJECT_NOT_FOUND" : "REPLICA_REQUEST_FAILED",
+          },
+          status,
         );
       }
     },

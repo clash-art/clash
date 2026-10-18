@@ -67,7 +67,36 @@ import {
   reconcileProjectDirectorStageOwnership,
 } from "@clash/shared-types";
 
-const SOCKET_AUTHORIZATION_TTL_MS = 5_000;
+/** WebSocket close reasons are capped at 123 bytes; both stay well below. */
+const AUTHORIZATION_REVOKED_CLOSE_REASON =
+  "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.";
+const AUTHORIZATION_UNAVAILABLE_CLOSE_REASON =
+  "PROJECT_AUTHORIZATION_CHECK_UNAVAILABLE: Could not verify project access; reconnect.";
+
+/**
+ * One revalidation of an identity proof. `startedSeq` is the room frame
+ * counter when the authority read began; it is unset while the check waits
+ * behind an in-flight one, and then it will start after every frame seen so far.
+ */
+type AuthorizationCheck = {
+  startedSeq?: number;
+  settled: boolean;
+  result: Promise<boolean>;
+};
+
+/** A check may authorize a frame only if it started after that frame. */
+function checkCovers(check: AuthorizationCheck, seq: number): boolean {
+  return check.startedSeq === undefined || check.startedSeq >= seq;
+}
+
+/** A credential is never valid past its own expiry, whatever a check said. */
+function credentialExpired(auth: AuthResult): boolean {
+  const proof = auth.authorization;
+  return (
+    (proof?.kind === "jwt" || proof?.kind === "session") &&
+    !(Date.now() < proof.expiresAt)
+  );
+}
 /**
  * Largest single CRDT update a client may commit. Every accepted update stays
  * in the doc history forever (deletes leave tombstones) and is re-exported in
@@ -93,6 +122,8 @@ const AWARENESS_STALE_MS = 8_000;
 type LoroImportQueueItem = {
   applyGeneration?: () => Promise<void>;
   sender?: WebSocket;
+  /** Frame sequence of the sender's inbound frame that carried this update. */
+  senderSeq?: number;
   data: Uint8Array;
   eventId?: string;
   broadcast?: boolean;
@@ -152,22 +183,30 @@ export class ProjectRoom extends DurableObject<Env> {
   private clients: Map<WebSocket, ProjectClientInfo> = new Map();
   private protocolSessions = new Map<WebSocket, LoroProtocolServerSession>();
   /**
-   * Revalidation results shared by every socket presenting the same identity
+   * Monotonic counter stamped on every inbound frame and outbound send or
+   * broadcast. Authorization freshness is measured against it, not wall time.
+   */
+  private frameSeq = 0;
+  /**
+   * Revalidation checks shared by every socket presenting the same identity
    * proof (one user's windows, Hosts and agents). Without this each socket
-   * queried D1 every TTL, so D1 load grew linearly with room size and became
-   * the first fan-out bottleneck (~130-150 sockets on staging).
+   * queried D1 per frame, so D1 load grew linearly with room size and became
+   * the first fan-out bottleneck (~130-150 sockets on staging). At most one
+   * check per identity is in flight and one is queued behind it, so frames
+   * arriving during a D1 round trip coalesce into the queued check.
    */
   private sharedAuthorization = new Map<
     string,
-    { validUntil: number; result: Promise<boolean> }
+    { latest?: AuthorizationCheck; queued?: AuthorizationCheck }
   >();
   private socketAuthorization = new WeakMap<
     WebSocket,
-    {
-      expiresAt: number;
-      inFlight?: Promise<boolean>;
-    }
+    { check: AuthorizationCheck; result: Promise<boolean> }
   >();
+  /** Sockets closed or revoked; a pending check must not authorize them. */
+  private closedSockets = new WeakSet<WebSocket>();
+  /** Sequence of each socket's latest inbound frame, for its commit-time check. */
+  private inboundSeq = new WeakMap<WebSocket, number>();
   private outbound = new Map<WebSocket, Promise<void>>();
 
   /** Throttle activity broadcasts: nodeId → last broadcast timestamp */
@@ -513,109 +552,133 @@ export class ProjectRoom extends DurableObject<Env> {
 
   /**
    * A hibernated connection carries identity evidence, never raw credentials.
-   * This ephemeral cache is rebuilt on wake. Inbound commits share it, so
-   * revocation is enforced within SOCKET_AUTHORIZATION_TTL_MS.
+   * `seq` is the frame this check must authorize: only a check that started
+   * after the frame arrived or was produced may authorize it, so a revoked
+   * credential is refused on its very next frame (#240). Concurrent frames
+   * share one check per identity; a failed check is never reused.
    */
-  private authorizeSocket(ws: WebSocket): boolean | Promise<boolean> {
-    const cached = this.socketAuthorization.get(ws);
-    if (cached?.inFlight) return cached.inFlight;
-    if (cached && Date.now() < cached.expiresAt) return true;
-
+  private authorizeSocket(
+    ws: WebSocket,
+    seq: number,
+  ): boolean | Promise<boolean> {
+    if (this.closedSockets.has(ws)) return false;
     const info = this.clientInfoFor(ws);
     if (info?.internal === true) return true;
+    const auth = info?.projectAuthorization;
+    if (
+      !auth ||
+      (this.projectId && auth.projectId !== this.projectId) ||
+      credentialExpired(auth)
+    ) {
+      this.closeSocket(ws, 1008, AUTHORIZATION_REVOKED_CLOSE_REASON);
+      return false;
+    }
+    const cached = this.socketAuthorization.get(ws);
+    if (cached && checkCovers(cached.check, seq)) return cached.result;
+
+    const check = this.revalidateShared(auth, seq);
     const entry = {
-      expiresAt: 0,
-      inFlight: undefined as Promise<boolean> | undefined,
+      check,
+      result: check.result.then(
+        (authorized) => {
+          // A close/error during D1 must not authorize a frame.
+          if (this.closedSockets.has(ws)) return false;
+          if (!authorized)
+            this.closeSocket(ws, 1008, AUTHORIZATION_REVOKED_CLOSE_REASON);
+          return authorized;
+        },
+        (error) => {
+          // The check itself failed (D1 unavailable), so authorization is
+          // unknown. Dropping the frame silently would leave this peer missing
+          // CRDT updates with no signal. Close with 1013 (try again later)
+          // instead: the client treats it as transient, reconnects and
+          // re-syncs from its version vector, and resends unacked writes.
+          log.warn("Socket revalidation unavailable; closing for retry:", error);
+          this.closeSocket(ws, 1013, AUTHORIZATION_UNAVAILABLE_CLOSE_REASON);
+          return false;
+        },
+      ),
     };
     this.socketAuthorization.set(ws, entry);
-    let validUntil = Date.now() + SOCKET_AUTHORIZATION_TTL_MS;
-    entry.inFlight = (async () => {
-      let authorized: boolean;
-      try {
-        authorized = !!(
-          info?.projectAuthorization &&
-          (!this.projectId ||
-            info.projectAuthorization.projectId === this.projectId) &&
-          (await this.revalidateShared(info.projectAuthorization, (until) => {
-            validUntil = until;
-          }))
-        );
-      } catch (error) {
-        // The check itself failed (D1 unavailable), so authorization is
-        // unknown. Dropping the frame silently would leave this peer missing
-        // CRDT updates with no signal. Close with 1013 (try again later)
-        // instead: the client treats it as transient, reconnects and
-        // re-syncs from its version vector, and resends unacked writes.
-        log.warn("Socket revalidation unavailable; closing for retry:", error);
-        if (this.socketAuthorization.get(ws) === entry) {
-          try {
-            ws.close(1013, "Authorization check unavailable; reconnect");
-          } catch {
-            // Already closed.
-          }
-          this.socketAuthorization.delete(ws);
-          this.clients.delete(ws);
-          this.protocolSessions.delete(ws);
-        }
-        return false;
-      }
-      // A close/error during D1 must not restore authorization or send a frame.
-      if (this.socketAuthorization.get(ws) !== entry) return false;
-      if (authorized) {
-        // Never trust a shared result longer than TTL after it was checked.
-        entry.expiresAt = Math.min(
-          validUntil,
-          Date.now() + SOCKET_AUTHORIZATION_TTL_MS,
-        );
-        return true;
-      }
-      ws.close(1008, "Project authorization expired or revoked");
-      this.socketAuthorization.delete(ws);
-      this.clients.delete(ws);
-      this.protocolSessions.delete(ws);
-      return false;
-    })().finally(() => {
-      entry.inFlight = undefined;
-      if (!entry.expiresAt && this.socketAuthorization.get(ws) === entry) {
-        this.socketAuthorization.delete(ws);
-      }
-    });
-    return entry.inFlight;
+    return entry.result;
   }
 
-  /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
-  private revalidateShared(
-    auth: AuthResult,
-    onValidUntil: (validUntil: number) => void,
-  ): Promise<boolean> {
-    const key = JSON.stringify(auth);
-    const now = Date.now();
-    let hit = this.sharedAuthorization.get(key);
-    if (!hit || now >= hit.validUntil) {
-      if (this.sharedAuthorization.size > 1024) {
-        for (const [k, v] of this.sharedAuthorization)
-          if (now >= v.validUntil) this.sharedAuthorization.delete(k);
-      }
-      const created = {
-        validUntil: now + SOCKET_AUTHORIZATION_TTL_MS,
-        result: revalidateProjectConnection(this.env, auth),
-      };
-      // A failed check is not cached: the next socket retries it.
-      created.result.catch(() => {
-        if (this.sharedAuthorization.get(key) === created)
-          this.sharedAuthorization.delete(key);
-      });
-      this.sharedAuthorization.set(key, created);
-      hit = created;
+  private closeSocket(ws: WebSocket, code: number, reason: string): void {
+    if (this.closedSockets.has(ws)) return;
+    this.closedSockets.add(ws);
+    try {
+      ws.close(code, reason);
+    } catch {
+      // Already closed.
     }
-    onValidUntil(hit.validUntil);
-    return hit.result;
+    this.socketAuthorization.delete(ws);
+    this.clients.delete(ws);
+    this.protocolSessions.delete(ws);
   }
 
-  private sendAuthorized(ws: WebSocket, data: string | Uint8Array): void {
+  /**
+   * Returns a check of `auth` that started after frame `seq`: the latest one
+   * when it qualifies, else the one queued behind the in-flight check, else a
+   * new one. A queued check reads its start sequence only when it runs.
+   */
+  private revalidateShared(auth: AuthResult, seq: number): AuthorizationCheck {
+    const key = JSON.stringify(auth);
+    let slot = this.sharedAuthorization.get(key);
+    if (!slot) {
+      if (this.sharedAuthorization.size > 1024) {
+        // Settled checks only save a D1 read for frames older than them.
+        for (const [k, v] of this.sharedAuthorization)
+          if (!v.queued && (!v.latest || v.latest.settled))
+            this.sharedAuthorization.delete(k);
+      }
+      slot = {};
+      this.sharedAuthorization.set(key, slot);
+    }
+    if (slot.latest && checkCovers(slot.latest, seq)) return slot.latest;
+    if (slot.queued) return slot.queued;
+
+    const owner = slot;
+    const check: AuthorizationCheck = {
+      settled: false,
+      result: Promise.resolve(false),
+    };
+    const run = () => {
+      check.startedSeq = this.frameSeq;
+      if (owner.queued === check) owner.queued = undefined;
+      owner.latest = check;
+      return revalidateProjectConnection(this.env, auth);
+    };
+    const inFlight =
+      owner.latest && !owner.latest.settled ? owner.latest.result : undefined;
+    if (inFlight) {
+      owner.queued = check;
+      check.result = inFlight.then(run, run);
+    } else {
+      check.result = run();
+    }
+    check.result.then(
+      () => {
+        check.settled = true;
+      },
+      () => {
+        // A failed check is not reused: the next frame retries it.
+        check.settled = true;
+        if (owner.latest === check) owner.latest = undefined;
+      },
+    );
+    return check;
+  }
+
+  /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames.
+   * One broadcast passes the same `seq` to all of its recipients. */
+  private sendAuthorized(
+    ws: WebSocket,
+    data: string | Uint8Array,
+    seq = ++this.frameSeq,
+  ): void {
     const pending = (this.outbound.get(ws) ?? Promise.resolve())
       .then(async () => {
-        const authorization = this.authorizeSocket(ws);
+        const authorization = this.authorizeSocket(ws, seq);
         if (
           (authorization === true ||
             (authorization !== false && (await authorization))) &&
@@ -654,6 +717,7 @@ export class ProjectRoom extends DurableObject<Env> {
         for (const [index, update] of updates.entries()) {
           await this.enqueueLoroImport({
             sender: ws,
+            senderSeq: this.inboundSeq.get(ws),
             data: update,
             eventId: `protocol:${batchId}:${index}`,
             broadcast: false,
@@ -672,8 +736,9 @@ export class ProjectRoom extends DurableObject<Env> {
     updates: Uint8Array[],
     sender?: WebSocket,
   ): void {
-    // Encode once per batch, not once per recipient.
+    // Encode once per batch, not once per recipient; one frame sequence for all.
     let frames: Uint8Array[] | undefined;
+    const seq = ++this.frameSeq;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === sender) continue;
       try {
@@ -684,10 +749,10 @@ export class ProjectRoom extends DurableObject<Env> {
             updates,
           );
           for (const frame of frames) {
-            this.sendAuthorized(ws, frame);
+            this.sendAuthorized(ws, frame, seq);
           }
         } else {
-          for (const update of updates) this.sendAuthorized(ws, update);
+          for (const update of updates) this.sendAuthorized(ws, update, seq);
         }
       } catch (error) {
         log.error("Failed to broadcast committed replica event:", error);
@@ -750,13 +815,14 @@ export class ProjectRoom extends DurableObject<Env> {
     // Serialize the shared list once; only selfClientId differs per socket.
     // Same JSON as JSON.stringify({ type, clients, selfClientId? }).
     const head = `{"type":"presence","clients":${JSON.stringify(clients)}`;
+    const seq = ++this.frameSeq;
     for (const ws of this.ctx.getWebSockets()) {
       const selfClientId = this.clients.get(ws)?.id;
       const msg = selfClientId
         ? `${head},"selfClientId":${JSON.stringify(selfClientId)}}`
         : `${head}}`;
       try {
-        this.sendAuthorized(ws, msg);
+        this.sendAuthorized(ws, msg, seq);
       } catch {
         // Connection may have closed
       }
@@ -797,10 +863,11 @@ export class ProjectRoom extends DurableObject<Env> {
     };
 
     const json = JSON.stringify(msg);
+    const seq = ++this.frameSeq;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === sender) continue;
       try {
-        this.sendAuthorized(ws, json);
+        this.sendAuthorized(ws, json, seq);
       } catch {
         // Connection may have closed
       }
@@ -900,7 +967,9 @@ export class ProjectRoom extends DurableObject<Env> {
     ws: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
-    if (!(await this.authorizeSocket(ws))) return;
+    const seq = ++this.frameSeq;
+    this.inboundSeq.set(ws, seq);
+    if (!(await this.authorizeSocket(ws, seq))) return;
     // After hibernation, in-memory state is lost — re-initialize if needed
     if (!this.projectId) {
       const storedId = await this.ctx.storage.get<string>("projectId");
@@ -930,6 +999,7 @@ export class ProjectRoom extends DurableObject<Env> {
       }
       void this.enqueueLoroImport({
         sender: ws,
+        senderSeq: this.inboundSeq.get(ws),
         data: updates,
         runRealtimeEffects: true,
       }).catch((err) => {
@@ -1060,6 +1130,8 @@ export class ProjectRoom extends DurableObject<Env> {
     // swallows the details), so we couldn't tell what was failing. Catch +
     // log so the next occurrence names the failing line.
     try {
+      // A check still in flight must not authorize a frame for this socket.
+      this.closedSockets.add(ws);
       this.socketAuthorization.delete(ws);
       this.clients.delete(ws);
       this.awareness.delete(ws);
@@ -1099,6 +1171,8 @@ export class ProjectRoom extends DurableObject<Env> {
   async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     log.error("WebSocket error:", error);
     try {
+      // A check still in flight must not authorize a frame for this socket.
+      this.closedSockets.add(ws);
       this.socketAuthorization.delete(ws);
       this.clients.delete(ws);
       this.awareness.delete(ws);
@@ -1170,7 +1244,13 @@ export class ProjectRoom extends DurableObject<Env> {
             msg.resolve?.();
             continue;
           }
-          if (msg.sender && !(await this.authorizeSocket(msg.sender))) {
+          if (
+            msg.sender &&
+            !(await this.authorizeSocket(
+              msg.sender,
+              msg.senderSeq ?? ++this.frameSeq,
+            ))
+          ) {
             throw new Error("Project authorization revoked before commit");
           }
           const nodesMap = this.doc.getMap("nodes");
