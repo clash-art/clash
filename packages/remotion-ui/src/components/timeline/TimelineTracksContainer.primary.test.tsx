@@ -52,7 +52,7 @@ describe("TimelineTracksContainer typed lanes", () => {
       </EditorProvider>,
     );
 
-    const labelRows = container.querySelectorAll(".track-labels-panel > div");
+    const labelRows = container.querySelectorAll("[data-timeline-label-stack] > div");
     const labelPanel = container.querySelector('.track-labels-panel') as HTMLElement;
     expect(labelPanel.style.borderRight).toBe(
       '1px solid var(--clash-timeline-border-subtle, #f0ede7)',
@@ -520,7 +520,7 @@ describe("TimelineTracksContainer typed lanes", () => {
     expect(lastVolumeUpdate?.[2]).toEqual({ audioGainDb: -12, volume: undefined });
     expect(voiceItem.textContent).toContain("-12.0 dB");
     fireEvent.pointerUp(volumeSlider, { pointerId: 2 });
-    const labelRows = Array.from(container.querySelectorAll(".track-labels-panel > div"));
+    const labelRows = Array.from(container.querySelectorAll("[data-timeline-label-stack] > div"));
     expect(labelRows.map((row) => row.textContent)).toEqual([
       "Text",
       "Media",
