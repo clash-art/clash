@@ -14,8 +14,14 @@
  *   idempotency-key: invocationId (== durableRunIdempotencyKey(run), every attempt)
  *   x-clash-timestamp: unix seconds
  *   x-clash-signature: hex(HMAC-SHA256(secret, timestamp "\n" idempotency-key "\n" hex(sha256(body))))
- *   body: { invocation, references }  (references: short-lived signed URLs only)
+ *   body: { invocation, references, outputs? }
+ *     references: short-lived signed URLs only
+ *     outputs: one upload capability per media slot the run accepts (additive)
  * 200 → ExecutablePluginResult; 409 → same key, different body.
+ *
+ * A media answer is `{ kind: "asset", slot, asset: <capability.asset> }`, and
+ * is accepted only when the bytes were uploaded through that capability's
+ * session for this run; anything else is a non-retryable contract_violation.
  */
 import {
   ProviderExecutionError,
@@ -23,6 +29,7 @@ import {
 } from "@clash/action-sdk/executable-failure";
 import {
   ExecutablePluginResultSchema,
+  type ExecutablePluginAssetHandle,
   type ExecutablePluginResult,
 } from "@clash/shared-types/executable-plugin";
 
@@ -151,15 +158,29 @@ export interface RemotePluginReference {
   expiresAt: string;
 }
 
+/**
+ * Where one media output's bytes go: a run-scoped chunked import session
+ * (`cloud-project-host/plugin-output-sessions.ts`). `asset` is the exact
+ * handle to answer with; its id is pre-assigned from the durable key.
+ */
+export interface RemotePluginOutputCapability {
+  slot: string;
+  asset: Pick<ExecutablePluginAssetHandle, "assetId" | "uri" | "kind">;
+  upload: { beginUrl: string; expiresAt: string; maxBytes: number };
+}
+
 export interface RemotePluginTarget {
   endpoint: string;
   secret: string;
   references: RemotePluginReference[];
+  outputs?: RemotePluginOutputCapability[];
 }
 
 export interface RemotePluginExecutionOptions {
-  /** Endpoint, secret and signed reference URLs for one invocation; never journaled. */
+  /** Endpoint, secret, signed reference URLs and output capabilities for one invocation; never journaled. */
   target(request: PluginExecutionRequest): Promise<RemotePluginTarget>;
+  /** Whether this run's session behind `capability` completed an upload. */
+  outputUploaded?(capability: RemotePluginOutputCapability): Promise<boolean>;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -252,9 +273,11 @@ export function createRemotePluginExecution(
       const operation = invocation.operation;
       const target = await options.target(request);
       const endpoint = validateRemotePluginEndpoint(target.endpoint);
+      const outputs = target.outputs ?? [];
       const body = JSON.stringify({
         invocation,
         references: target.references,
+        ...(outputs.length ? { outputs } : {}),
       });
       const timestamp = String(Math.floor(now() / 1000));
       const response = await fetchImpl(endpoint, {
@@ -326,6 +349,28 @@ export function createRemotePluginExecution(
             `${parsed.invocationId}, expected ${idempotencyKey}.`,
           "accepted",
         );
+      }
+      if (parsed.status === "completed") {
+        for (const output of parsed.outputs) {
+          if (output.kind !== "asset") continue;
+          const capability = outputs.find(
+            (candidate) =>
+              candidate.slot === output.slot &&
+              candidate.asset.assetId === output.asset.assetId &&
+              candidate.asset.kind === output.asset.kind,
+          );
+          if (
+            !capability ||
+            !options.outputUploaded ||
+            !(await options.outputUploaded(capability))
+          ) {
+            throw contractViolation(
+              `Remote plugin ${invocation.target.pluginId} returned asset ${output.asset.assetId} ` +
+                "that was not uploaded through this run's output session.",
+              "accepted",
+            );
+          }
+        }
       }
       return parsed;
     },

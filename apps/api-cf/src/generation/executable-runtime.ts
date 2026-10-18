@@ -28,12 +28,17 @@ import {
   parseFrozenExecutableInput,
   type ExecutablePluginActionInvoker,
 } from "@clash/shared-runtime/executable-run";
+import { pluginOutputAssetId } from "@clash/shared-runtime/cloud-project-host/plugin-output-sessions";
 import type { ExecutablePluginJsonValue } from "@clash/shared-types/executable-plugin";
 
 import type { Env } from "../config";
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
 import { EXECUTABLE_ACTION_OWNER } from "../cloud-runs/owners";
 import { probeAsset } from "../services/asset-probe";
+import {
+  releasePluginOutputUpload,
+  sealPluginOutputUpload,
+} from "../services/plugin-output-sessions";
 import { executableActionGenerationParams } from "./executable-action-params";
 import { createCloudActionInvoker } from "./plugin-execution/action-invoker";
 import { createGenerationOutputBroker } from "./output";
@@ -91,10 +96,14 @@ function classifyThrownError(
   };
 }
 
-/** The output store is replay-safe because the broker receipt is keyed by the run identity. */
+/**
+ * The output store is replay-safe: a broker receipt and a remote plugin's
+ * upload session are both keyed by the run identity.
+ */
 function actionOutputStore(
   env: Env,
   ownerForProject: (env: Env, projectId: string) => Promise<string>,
+  clock: DurableRunClock,
 ): DurableOutputStore {
   return {
     async stage({ run, outputs }) {
@@ -128,6 +137,26 @@ function actionOutputStore(
         throw new Error(
           "Executable Action media output must be a canonical Asset handle.",
         );
+      }
+      // A remote plugin uploaded through this run's output session; the
+      // remote port accepted the handle only after that upload completed.
+      if (output.asset.assetId === pluginOutputAssetId(run)) {
+        const sealed = await sealPluginOutputUpload(env, {
+          run,
+          projectId: frozen.projectId,
+          kind: output.asset.kind,
+          ...(output.asset.mediaType
+            ? { mediaType: output.asset.mediaType }
+            : {}),
+        });
+        return json({
+          updates: { assetId: output.asset.assetId },
+          projectAsset: {
+            ...sealed,
+            name: `${frozen.binding.pluginId} ${output.asset.kind}`,
+            createdAt: clock.now(),
+          },
+        } satisfies HostedGenerationPublication);
       }
       const receipt = await createGenerationOutputBroker(
         env.R2_BUCKET,
@@ -211,17 +240,17 @@ export function createExecutableActionRuntime(
       action: options.action ?? createCloudActionInvoker(env),
       unavailable: (message) => new Error(message),
     }),
-    outputStore: actionOutputStore(env, ownerForProject),
+    outputStore: actionOutputStore(env, ownerForProject, clock),
     publisher: {
       async publish({ run, stagedOutput }) {
-        await publish(
-          await paramsFor(run),
-          stagedOutput as unknown as HostedGenerationPublication,
-        );
+        const publication =
+          stagedOutput as unknown as HostedGenerationPublication;
+        await publish(await paramsFor(run), publication);
+        if (publication.projectAsset) await releasePluginOutputUpload(env, run);
       },
       async publishFailure({ run, failure }) {
         await publish(await paramsFor(run), {
-          updates: { errorMessage: failure.message },
+          updates: { errorMessage: failure.message, errorCode: failure.code },
           failure,
         });
       },

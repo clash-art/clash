@@ -74,6 +74,16 @@ before reading, a streamed body is cancelled once the cap is crossed, and the
 failure is a non-retryable `contract_violation` so a possibly completed submit
 is never charged twice.
 
+Media therefore never travels in a remote answer. A media Action's request
+body carries `outputs`, one upload capability per accepted slot. Upload the
+bytes through its `upload.beginUrl` (the Host's chunked import session), then
+answer `{ kind: "asset", slot, asset }` with that capability's `asset`
+unchanged. Its id is the same on every retry of the run. Any other Asset
+answer is a `contract_violation`. `references` are signed URLs of Project
+Assets; a reference the Host cannot resolve fails the run with
+`reference_unavailable` before your endpoint is called. See
+[Durable Run protocol](/guide/durable-run-protocol) for the full contract.
+
 The Local Host chooses one of two execution realms without changing that ABI:
 
 - trusted first-party packages in the closed `bundled-module` registry run as

@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { listProjectAssets } from "@clash/shared-types";
+import { listProjectAssets, trashProjectAsset } from "@clash/shared-types";
 import { CONTRACT_SAMPLE_VIDEO_FILE } from "@clash/shared-runtime/project-host-contract";
-import { durableRunIdempotencyKey } from "@clash/shared-runtime/durable-run-engine";
+import {
+  durablePublicFailure,
+  durableRunIdempotencyKey,
+} from "@clash/shared-runtime/durable-run-engine";
 import type { RenderServerPort } from "@clash/shared-runtime/render-server";
 import { signCapability, importCapabilityKey } from "@clash/shared-runtime/signed-capability";
 import { createNodeCloudApp } from "./app.ts";
@@ -293,6 +296,58 @@ describe("Node Timeline render", () => {
         listProjectAssets(doc, { projectId: "p" }).map((entry) => entry.id),
       ),
     ).toEqual(["asset:clip"]);
+  });
+
+  it("fails the render node with reference_unavailable, before rendering, when its clip's Asset is unavailable", async () => {
+    const node = nodeApp(true);
+    await node.importClip("asset:clip");
+    const { body } = await node.requestRender();
+    // The clip leaves the Project after admission (a merged trash on another
+    // replica): the resolver, not the renderer, must catch it.
+    await withProjectDocument(db, "owner", "p", true, (doc) => {
+      expect(
+        trashProjectAsset(doc, {
+          id: "asset:clip",
+          deleteOperationId: "merged-trash",
+          deletedAt: new Date(now).toISOString(),
+          purgeAfter: new Date(now + 86_400_000).toISOString(),
+        }).ok,
+      ).toBe(true);
+    });
+    let renders = 0;
+    const service = createNodeTimelineRenderService(db, {
+      renderServer: {
+        fetch: async () => {
+          renders += 1;
+          return new Response(RENDERED);
+        },
+      },
+      mediaSecret: SECRET,
+      publicUrl: ENDPOINT,
+      assetDirectory: directory,
+      clock,
+    });
+    const identity = { actionRunId: body.actionRunId, outputSlot: "output" };
+    for (
+      let n = 0;
+      n < 8 && (await service.journal.load(identity))?.projectedAt === undefined;
+      n++
+    )
+      await service.coordinator.coordinate({ type: "advance", identity });
+    const run = await service.journal.load(identity);
+    expect(run).toMatchObject({
+      phase: "failed",
+      failure: { code: "reference_unavailable", retryable: false },
+    });
+    expect(run!.failure!.message).toContain("asset:clip");
+    expect(renders).toBe(0);
+    const failed = await renderNode(body.renderNodeId);
+    expect(failed).toMatchObject({
+      status: "failed",
+      errorCode: "reference_unavailable",
+      error: durablePublicFailure(run!.failure!).message,
+    });
+    expect(failed?.pendingTask ?? null).toBeNull();
   });
 
   it("answers 501 and creates nothing when no render server is configured", async () => {

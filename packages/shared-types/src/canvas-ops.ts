@@ -264,6 +264,22 @@ function toLayoutNode(node: NodeInfo): LayoutNode {
   };
 }
 
+/** Each managed Action's projected inputs by binding owner id; `cleared` Actions plan none. */
+function actionAssetInputPlans(
+  nodes: readonly NodeInfo[],
+  edges: readonly CanvasEdgeInfo[],
+  cleared: readonly string[] = [],
+): Map<string, DraftActionAssetInput[]> {
+  const plans = new Map<string, DraftActionAssetInput[]>();
+  for (const actionId of cleared) plans.set(actionId, []);
+  for (const node of nodes) {
+    const inputs = canvasActionAssetInputs({ node, nodes, edges });
+    if (inputs === null) continue;
+    plans.set(`node:${node.id}`, inputs);
+  }
+  return plans;
+}
+
 // ─── Canvas Class ────────────────────────────────────────
 
 export class Canvas {
@@ -1628,22 +1644,26 @@ export class Canvas {
 
   // ── Private ──────────────────────────────────────────
 
+  /**
+   * The binding plans a mutation changes, computed before it is applied. An
+   * Action whose inputs the mutation leaves as they are is not re-planned: a
+   * reference whose Asset became inactive concurrently (a merged trash) must
+   * not block an unrelated edit, nor a run's terminal failure projection.
+   */
   private planActionAssetBindings(
     nodes: readonly NodeInfo[],
     edges: readonly CanvasEdgeInfo[],
     clearedActionIds: readonly string[] = [],
   ): Array<{ actionId: string; inputs: DraftActionAssetInput[] }> {
-    const plans = new Map<string, DraftActionAssetInput[]>();
-    for (const actionId of clearedActionIds) plans.set(actionId, []);
-    for (const node of nodes) {
-      const inputs = canvasActionAssetInputs({ node, nodes, edges });
-      if (inputs === null) continue;
-      plans.set(`node:${node.id}`, inputs);
-    }
-    return [...plans.entries()].map(([actionId, inputs]) => ({
-      actionId,
-      inputs,
-    }));
+    const current = new Map(
+      [...actionAssetInputPlans(this.listNodes(), this.listEdges())].map(
+        ([actionId, inputs]) => [actionId, JSON.stringify(inputs)],
+      ),
+    );
+    const plans = actionAssetInputPlans(nodes, edges, clearedActionIds);
+    return [...plans.entries()]
+      .filter(([actionId, inputs]) => current.get(actionId) !== JSON.stringify(inputs))
+      .map(([actionId, inputs]) => ({ actionId, inputs }));
   }
 
   private validateActionAssetBindingPlans(

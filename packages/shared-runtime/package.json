@@ -238,6 +238,16 @@
       "import": "./src/cloud-project-host/project-asset-import-sessions.ts",
       "default": "./dist/cloud-project-host/project-asset-import-sessions.js"
     },
+    "./cloud-project-host/project-asset-references": {
+      "types": "./src/cloud-project-host/project-asset-references.ts",
+      "import": "./src/cloud-project-host/project-asset-references.ts",
+      "default": "./dist/cloud-project-host/project-asset-references.js"
+    },
+    "./cloud-project-host/plugin-output-sessions": {
+      "types": "./src/cloud-project-host/plugin-output-sessions.ts",
+      "import": "./src/cloud-project-host/plugin-output-sessions.ts",
+      "default": "./dist/cloud-project-host/plugin-output-sessions.js"
+    },
     "./cloud-project-host/text-revisions": {
       "types": "./src/cloud-project-host/text-revisions.ts",
       "import": "./src/cloud-project-host/text-revisions.ts",

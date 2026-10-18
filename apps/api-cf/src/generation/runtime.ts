@@ -277,7 +277,7 @@ function cloudflarePorts(
     },
     async publishFailure({ run, failure }) {
       await publish(frozenGeneration(run).params, {
-        updates: { errorMessage: failure.message },
+        updates: { errorMessage: failure.message, errorCode: failure.code },
         failure,
       });
     },

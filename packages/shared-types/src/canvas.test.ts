@@ -24,7 +24,7 @@ import {
   listActionAssetBindings,
   markActionAssetBindingAuthority,
 } from "./action-asset-bindings.js";
-import { createProjectAsset } from "./project-assets.js";
+import { createProjectAsset, trashProjectAsset } from "./project-assets.js";
 
 const canvasProjectAsset = (id: string) => ({
   id,
@@ -501,6 +501,43 @@ describe("Canvas Action Asset binding authority", () => {
     ).toThrow(/missing-project-asset.*not active/i);
     expect(canvas.listEdges()).toEqual([]);
     expect(listActionAssetBindings(doc)).toEqual([]);
+  });
+
+  it("does not let a concurrently trashed reference block edits that leave it unchanged", () => {
+    const doc = new LoroDoc();
+    createProjectAsset(doc, canvasProjectAsset("asset-clip"));
+    markActionAssetBindingAuthority(doc);
+    const canvas = new Canvas(doc, () => {}, "main");
+    canvas.insertNode(
+      "action",
+      RF_NODE_TYPE.ActionBadge,
+      {
+        actionType: ACTION_TYPE.ImageGen,
+        modelId: "gpt-image-2",
+        referenceImageAssetIds: ["asset-clip"],
+      },
+      null,
+      { x: 0, y: 0 },
+    );
+    canvas.insertNode("other", RF_NODE_TYPE.Image, {}, null, { x: 200, y: 0 });
+    // A trash merged from another replica: the in-use guard ran there, not here.
+    expect(
+      trashProjectAsset(doc, {
+        id: "asset-clip",
+        deleteOperationId: "merged-trash",
+        deletedAt: "2026-10-01T00:00:00.000Z",
+        purgeAfter: "2026-11-01T00:00:00.000Z",
+      }).ok,
+    ).toBe(true);
+
+    // A run's failure projection and an unrelated edit still land.
+    expect(canvas.updateNode("action", { status: "failed", errorCode: "reference_unavailable" })).toBe(true);
+    expect(canvas.updateNode("other", { label: "renamed" })).toBe(true);
+    expect(canvas.readNode("action")?.data).toMatchObject({ status: "failed" });
+    // Introducing the inactive Asset anew is still refused.
+    expect(() =>
+      canvas.updateNode("action", { referenceImageAssetIds: ["asset-clip", "asset-clip"] }),
+    ).toThrow(/asset-clip.*not active/i);
   });
 });
 
