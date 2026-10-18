@@ -204,6 +204,8 @@ describe("local daemon bootstrap", () => {
         CLASH_CLI_ENTRY_PATH: "/opt/clash/clash.cjs",
         CLASH_LOCAL_API_WRAPPER_ENTRY: "1",
         CLASH_DAEMON_RUNTIME_FINGERPRINT: "sha256:runtime-a",
+        NODE_COMPILE_CACHE: "/tmp/clash/cache/compile/sha256-runtime-a",
+        CLASH_COMPILE_CACHE_DIR: "/tmp/clash/cache/compile/sha256-runtime-a",
         PORT: "0",
       },
     });

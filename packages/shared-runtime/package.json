@@ -23,6 +23,11 @@
       "import": "./dist/local-paths.js",
       "default": "./dist/local-paths.js"
     },
+    "./local-compile-cache": {
+      "types": "./dist/local-compile-cache.d.ts",
+      "import": "./dist/local-compile-cache.js",
+      "default": "./dist/local-compile-cache.js"
+    },
     "./render-browser": {
       "types": "./src/render-browser.ts",
       "import": "./src/render-browser.ts",

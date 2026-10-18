@@ -114,42 +114,87 @@ async function listenOnLoopback(
 }
 
 describe("local API server configuration", () => {
-  it("omits Codex ImageGen when its startup preflight is unavailable", async () => {
+  it("starts the Codex preflight after listen and hides ImageGen again when it is unavailable", async () => {
     const root = await mkdtemp(join(tmpdir(), "clash-codex-unavailable-"));
+    const blocker = createServer();
+    const port = await listenOnLoopback(blocker);
+    if (port === null) return;
+    await new Promise<void>((resolveClose) => blocker.close(() => resolveClose()));
     let server: Awaited<ReturnType<typeof startLocalApiServer>> | undefined;
+    let preflightWasListening: boolean | undefined;
+    let releasePreflight!: (result: {
+      available: false;
+      reason: "not-logged-in";
+    }) => void;
+    const preflight = vi.fn(async () => {
+      // The Host must already accept connections when the optional probe starts.
+      preflightWasListening = await fetch(`http://127.0.0.1:${port}/health`, {
+        signal: AbortSignal.timeout(1_000),
+      }).then((response) => response.ok, () => false);
+      return await new Promise<{
+        available: false;
+        reason: "not-logged-in";
+      }>((resolvePreflight) => {
+        releasePreflight = resolvePreflight;
+      });
+    });
 
     try {
       server = await startLocalApiServer({
         dataDir: join(root, "local-api"),
-        port: 0,
+        port,
         remotePersistence: null,
         discovery: { enabled: false },
         localAcp: createConfiguredLocalAcpAdapter({
           CLASH_E2E_STUB_ACP: "1",
         }),
-        codexImagegenPreflight: async () => ({
-          available: false,
-          reason: "not-logged-in",
-        }),
+        codexImagegenPreflight: preflight,
       });
       const address = server.address();
       if (!address || typeof address === "string") {
         throw new Error("local-api did not bind a TCP port");
       }
       const origin = `http://127.0.0.1:${address.port}`;
-      const registry = (await (
-        await fetch(`${origin}/api/marketplace/registry`)
-      ).json()) as { plugins: Array<{ id: string }> };
-      expect(registry.plugins.map(({ id }) => id)).not.toContain(
-        "clash.codex-imagegen",
-      );
+      // Reaching /health while the probe is still pending proves it is not on the listen path.
+      expect((await fetch(`${origin}/health`)).ok).toBe(true);
+      await vi.waitFor(() => expect(preflight).toHaveBeenCalledTimes(1));
+      expect(preflightWasListening).toBe(true);
 
-      const installed = (await (
-        await fetch(`${origin}/api/v1/local/plugins`)
-      ).json()) as Array<{ id?: string }>;
-      expect(installed.map(({ id }) => id)).not.toContain(
-        "clash.codex-imagegen",
-      );
+      releasePreflight({ available: false, reason: "not-logged-in" });
+      await vi.waitFor(async () => {
+        const registry = (await (
+          await fetch(`${origin}/api/marketplace/registry`)
+        ).json()) as {
+          plugins: Array<{ id: string }>;
+        };
+        expect(registry.plugins.map(({ id }) => id)).not.toContain(
+          "clash.codex-imagegen",
+        );
+        const feed = (await (
+          await fetch(`${origin}/api/marketplace/feed`)
+        ).json()) as { featuredPlugins: Array<{ id: string }> };
+        expect(feed.featuredPlugins.map(({ id }) => id)).not.toContain(
+          "clash.codex-imagegen",
+        );
+      });
+
+      const installedActions = (await (
+        await fetch(`${origin}/api/settings/actions`)
+      ).json()) as Array<{ id?: string; actionId?: string }>;
+      expect(
+        installedActions.some(
+          ({ id, actionId }) =>
+            id === "clash.codex-imagegen" || actionId === "codex-imagegen",
+        ),
+      ).toBe(false);
+      expect(
+        (
+          await fetch(
+            `${origin}/api/marketplace/plugins/clash.codex-imagegen/install`,
+            { method: "POST" },
+          )
+        ).status,
+      ).toBe(404);
 
       const definitions = (await (
         await fetch(`${origin}/api/v1/generator-definitions`)
@@ -207,6 +252,12 @@ describe("local API server configuration", () => {
         }),
       );
       expect(registry.actions).toEqual([]);
+      const installedActions = (await (
+        await fetch(`${origin}/api/settings/actions`)
+      ).json()) as Array<{ actionId?: string }>;
+      expect(installedActions.map(({ actionId }) => actionId)).toContain(
+        "codex-imagegen",
+      );
 
       const feed = (await (
         await fetch(`${origin}/api/marketplace/feed`)
@@ -2153,6 +2204,31 @@ describe("local API server configuration", () => {
     expect(shimText).not.toContain("CLASH_API_KEY");
     expect(shimText).toContain("command -v node");
     expect(shimText).toContain("ELECTRON_RUN_AS_NODE=1");
+  });
+
+  it("does not leak the Host compile-cache selectors into agent spawn env", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-agent-tools-"));
+    try {
+      const env = createLocalAgentToolEnv({
+        dataDir,
+        apiBaseUrl: "http://127.0.0.1:49397",
+        env: {
+          PATH: "/usr/bin:/bin",
+          NODE_COMPILE_CACHE: "/tmp/clash/cache/compile/current",
+          CLASH_COMPILE_CACHE_DIR: "/tmp/clash/cache/compile/current",
+        },
+      });
+      expect(env).not.toHaveProperty("NODE_COMPILE_CACHE");
+      expect(env).not.toHaveProperty("CLASH_COMPILE_CACHE_DIR");
+      const shimText = await readFile(
+        join(dataDir, "agent-bin", "clash"),
+        "utf8",
+      );
+      expect(shimText).not.toContain("NODE_COMPILE_CACHE");
+      expect(shimText).not.toContain("CLASH_COMPILE_CACHE_DIR");
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
   });
 
   it("pins the published Clash CLI to the authoritative Clash home", async () => {

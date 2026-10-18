@@ -5,6 +5,7 @@ import { createLocalProjectCloudSync } from "./project-cloud-sync.js";
 import { localProjectSyncMetadata } from "./app.js";
 import { registerProjectRenderer } from "./project-renderer.js";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
+import { withoutLocalApiCompileCacheEnvironment } from "@clash/shared-runtime/local-compile-cache";
 import { createLocalProjectUpgrade } from "./local-project-upgrade.js";
 import { createPluginRuntimeGate } from "./plugin-runtime-gate.js";
 import { createRequire } from "node:module";
@@ -93,6 +94,7 @@ import {
   type HostExecutablePluginPackage,
 } from "./runtime/plugin-package.js";
 import {
+  createCodexImagegenGate,
   preflightCodexImageGenerator,
   type CodexImageGeneratorPreflightResult,
 } from "./codex-imagegen.js";
@@ -233,6 +235,11 @@ export interface LocalApiServerOptions {
    * The long-lived Host enables this; embedded/test servers stay quiet until a route asks.
    */
   warmPluginRuntime?: boolean;
+  /**
+   * Best-effort Host maintenance for the post-listen idle window (for example compile-cache
+   * pruning). Runs only after every in-flight request has gone quiet.
+   */
+  onPostListenIdle?: () => void | Promise<void>;
 }
 
 /**
@@ -330,7 +337,7 @@ export function createLocalAgentToolEnv({
   );
   chmodSync(shim, 0o755);
 
-  return {
+  return withoutLocalApiCompileCacheEnvironment({
     CLASH_API_URL: apiUrl,
     CLASH_HOME: clashHome,
     CLASH_PROFILE: profile,
@@ -354,7 +361,7 @@ export function createLocalAgentToolEnv({
       ? { TSX_TSCONFIG_PATH: env.TSX_TSCONFIG_PATH }
       : {}),
     PATH: [binDir, env.PATH].filter(Boolean).join(delimiter),
-  };
+  });
 }
 
 function createMockCanvasPatch(turnId: string, text: string) {
@@ -1324,17 +1331,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         );
   const clashHome = clashHomeForLocalDataDir(options.dataDir);
   const actionsRoot = join(clashHome, "actions");
-  const codexImagegen = await (
-    options.codexImagegenPreflight ?? preflightCodexImageGenerator
-  )().catch(
-    (): CodexImageGeneratorPreflightResult => ({
-      available: false,
-      reason: "login-check-failed",
-    }),
+  // The probe is optional and must never delay the listening port: it starts after `listen` and
+  // only Codex ImageGen requests wait for it. A failed probe is a coded failure on that path.
+  const codexImagegen = createCodexImagegenGate(
+    options.codexImagegenPreflight ?? preflightCodexImageGenerator,
   );
-  if (!codexImagegen.available) {
-    hostLog.info("host.optional_provider_unavailable", { provider: "codex-imagegen", reason: codexImagegen.reason });
-  }
   const discoveryEnabled = options.discovery?.enabled !== false;
   const pendingDiscoveryHostId = discoveryEnabled ? randomUUID() : undefined;
   const discoveryProfile = resolveClashProfile(process.env);
@@ -1352,15 +1353,22 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     configStore: createClashUserConfigStore(options.dataDir),
   });
   const marketplaceSkills = [...npxSkillsMarketplace.skills];
-  const marketplacePlugins = [
-    ...(codexImagegen.available ? codexImagegenMarketplace.plugins : []),
-    ...officialPluginsMarketplace.plugins,
-  ];
   const codexImagegenPluginId = codexImagegenMarketplace.plugins[0]!.id;
-  const marketplaceFeed = selectMarketplaceFeed({
-    plugins: marketplacePlugins,
-    skills: marketplaceSkills,
-  });
+  // Marketplace surfaces are read after listen, so awaiting the shared preflight here preserves
+  // the old "unavailable Codex ImageGen is not listed" contract without putting the probe on the
+  // startup path. The same single flight also feeds install/uninstall routing and trust.
+  const resolveMarketplacePlugins = async () => {
+    const codexImagegenAvailable = (await codexImagegen.start()).available;
+    return [
+      ...(codexImagegenAvailable ? codexImagegenMarketplace.plugins : []),
+      ...officialPluginsMarketplace.plugins,
+    ];
+  };
+  const resolveMarketplaceFeed = async () =>
+    selectMarketplaceFeed({
+      plugins: await resolveMarketplacePlugins(),
+      skills: marketplaceSkills,
+    });
   const projectAssetFileReplica = new FileReplicaStore(
     join(options.dataDir, "projects"),
   );
@@ -1432,9 +1440,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     },
     uploadOrigin: localOrigin,
     publicAssetStorage,
-    ...(codexImagegen.available
-      ? { generateCodexImage: codexImagegen.generate }
-      : {}),
+    generateCodexImage: (input) => codexImagegen.generate(input),
     directorStageRenderer: options.directorStageRenderer,
     analyzeMedia: async (input) => {
       if (!mediaAnalysisService) {
@@ -1529,14 +1535,17 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       // First-party payloads are loaded only from the Host's closed immutable registry. The
       // actions directory remains the activation authority for third-party process/stdio plugins;
       // a directory with a reserved first-party id is an untrusted shadow and is skipped.
+      // The optional Codex module is trusted only when the post-listen preflight found it usable.
+      const codexImagegenAvailable = (await codexImagegen.start()).available;
+      const trustedBundledPluginModules = codexImagegenAvailable
+        ? TRUSTED_BUNDLED_PLUGIN_MODULES
+        : TRUSTED_BUNDLED_PLUGIN_MODULES.filter(
+            ({ id }) => id !== codexImagegenPluginId,
+          );
       const host = new ActionsHost({
         actionsRoot,
         pluginBroker,
-        trustedBundledPluginModules: codexImagegen.available
-          ? TRUSTED_BUNDLED_PLUGIN_MODULES
-          : TRUSTED_BUNDLED_PLUGIN_MODULES.filter(
-              ({ id }) => id !== codexImagegenPluginId,
-            ),
+        trustedBundledPluginModules,
         loadTrustedBundledPluginModule,
         ...(options.providerHttpInstrumentation
           ? { providerHttpInstrumentation: options.providerHttpInstrumentation }
@@ -2016,32 +2025,35 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         );
       },
     },
-    listInstalledMarketplaceActions: () =>
-      codexImagegen.available
+    listInstalledMarketplaceActions: async () =>
+      (await codexImagegen.start()).available
         ? codexImagegenMarketplace.listInstalled()
-        : Promise.resolve([]),
+        : [],
     marketplaceSkills,
-    marketplaceFeed,
+    resolveMarketplaceFeed,
     listInstalledMarketplaceSkills: () => npxSkillsMarketplace.listInstalled(),
     installMarketplaceSkill: (skillId, installation) => npxSkillsMarketplace.install(skillId, installation),
     uninstallMarketplaceSkill: (skillId) =>
       npxSkillsMarketplace.uninstall(skillId),
-    marketplacePlugins,
+    resolveMarketplacePlugins,
     getPluginInstallScope: (id) => pluginScopes.get(id),
     pluginAvailableInProject: (id, projectId) => pluginScopes.allows(id, projectId),
     installMarketplacePlugin: async (packageId, installation = { scope: "global" }) => {
-      const result = codexImagegen.available && packageId === codexImagegenPluginId
+      const codexImagegenAvailable = (await codexImagegen.start()).available;
+      const result = codexImagegenAvailable && packageId === codexImagegenPluginId
         ? await codexImagegenMarketplace.install(packageId)
         : await officialPluginsMarketplace.install(packageId);
-      const item = marketplacePlugins.find(item => item.packageId === packageId);
+      const item = (await resolveMarketplacePlugins()).find(item => item.packageId === packageId);
       if (!item) throw new Error("Unknown marketplace package");
       await pluginScopes.set(item.id, installation);
       return result;
     },
-    uninstallMarketplacePlugin: (pluginId) =>
-      codexImagegen.available && pluginId === codexImagegenPluginId
+    uninstallMarketplacePlugin: async (pluginId) => {
+      const codexImagegenAvailable = (await codexImagegen.start()).available;
+      return codexImagegenAvailable && pluginId === codexImagegenPluginId
         ? codexImagegenMarketplace.uninstall(pluginId)
-        : officialPluginsMarketplace.uninstall(pluginId),
+        : officialPluginsMarketplace.uninstall(pluginId);
+    },
     pluginPackages: {
       list: () => listHostExecutablePluginPackages(actionsRoot),
       validate: (input) =>
@@ -2194,6 +2206,13 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         }),
       );
       hostLog.info("host.listening", { port: info.port, profile: discoveryProfile, hostId: pendingDiscoveryHostId });
+      // Optional-provider probe: after listen, never before. Requests that need it share this
+      // single flight; the Host stays reachable while the child process is still running.
+      void codexImagegen.start().then((result) => {
+        if (!result.available) {
+          hostLog.info("host.optional_provider_unavailable", { provider: "codex-imagegen", reason: result.reason });
+        }
+      });
       startupProbes.push(
         syncConfig
           .getPublicConfig()
@@ -2228,10 +2247,23 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
           hostLog.error("host.run_recovery_degraded", { error });
         });
         resolveListening(server);
-        // Warm executable Plugins only after the Host is listening and discovery is published.
-        // The lazy routes share this single-flight promise, so a request never starts a second
-        // runtime and a warm failure is observed exactly once.
+        // Warm executable Plugins and run best-effort cache cleanup only after the Host is
+        // listening and discovery is published. The lazy routes share this single-flight promise,
+        // so a request never starts a second runtime and a warm failure is observed exactly once.
+        const idleTasks: Array<{
+          name: string;
+          run: () => void | Promise<void>;
+        }> = [];
         if (options.warmPluginRuntime) {
+          idleTasks.push({ name: "plugin.runtime_warm", run: warmPluginRuntime });
+        }
+        if (options.onPostListenIdle) {
+          idleTasks.push({
+            name: "host.post_listen_idle",
+            run: options.onPostListenIdle,
+          });
+        }
+        if (idleTasks.length > 0) {
           setImmediate(async () => {
             // Stay off user request windows: wait for a quiet period after the last HTTP request or
             // WebSocket upgrade before competing with it for the event loop.
@@ -2241,7 +2273,19 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
               if (activeRequests === 0 && idleMs >= quietMs) break;
               await new Promise((resolve) => setTimeout(resolve, Math.min(250, Math.max(1, quietMs - idleMs))));
             }
-            if (!serverClosing) warmPluginRuntime();
+            if (serverClosing) return;
+            await Promise.all(
+              idleTasks.map(async (task) => {
+                try {
+                  await task.run();
+                } catch (error) {
+                  hostLog.warn("host.post_listen_idle_failed", {
+                    task: task.name,
+                    error,
+                  });
+                }
+              }),
+            );
           });
         }
       })().catch((error) => {

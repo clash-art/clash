@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, extname, join, resolve } from "node:path";
 
+import { ProviderExecutionError } from "@clash/action-sdk";
 import type { ExecutablePluginAssetHandle } from "@clash/shared-types";
 
 const PNG_SIGNATURE = Buffer.from([
@@ -166,6 +167,68 @@ function failedLoginStatusReason(
     return "not-logged-in";
   }
   return "login-check-failed";
+}
+
+/**
+ * Stable code for a Codex ImageGen request that cannot run because the optional-provider
+ * preflight failed. `provider_unavailable` is the shared failure category; this code names the
+ * local cause so clients can distinguish "logged out / CLI missing" from a Provider outage.
+ */
+export const CODEX_IMAGEGEN_PREFLIGHT_UNAVAILABLE =
+  "PROVIDER_PREFLIGHT_UNAVAILABLE";
+
+export function codexImagegenUnavailableFailure(
+  reason: Extract<
+    CodexImageGeneratorPreflightResult,
+    { available: false }
+  >["reason"],
+): ProviderExecutionError {
+  return new ProviderExecutionError({
+    code: "provider_unavailable",
+    message: `Codex ImageGen is unavailable (${reason}).`,
+    retryable: false,
+    requestState: "rejected",
+    providerCode: CODEX_IMAGEGEN_PREFLIGHT_UNAVAILABLE,
+  });
+}
+
+/**
+ * One lazy, single-flight preflight shared by every Codex ImageGen request.
+ *
+ * The Host starts it after `listening`, so no child process delays the port. A request that
+ * arrives earlier waits for the same probe instead of starting a second one; an unavailable
+ * result is a coded failure on the generation path only.
+ */
+export interface CodexImagegenGate {
+  start(): Promise<CodexImageGeneratorPreflightResult>;
+  generate(input: CodexImageGeneratorInput): Promise<CodexImageGeneratorOutput>;
+}
+
+export function createCodexImagegenGate(
+  preflight: () => Promise<CodexImageGeneratorPreflightResult>,
+): CodexImagegenGate {
+  let pending: Promise<CodexImageGeneratorPreflightResult> | undefined;
+  const start = () => {
+    pending ??= Promise.resolve()
+      .then(preflight)
+      .catch(
+        (): CodexImageGeneratorPreflightResult => ({
+          available: false,
+          reason: "login-check-failed",
+        }),
+      );
+    return pending;
+  };
+  return {
+    start,
+    async generate(input) {
+      const result = await start();
+      if (!result.available) {
+        throw codexImagegenUnavailableFailure(result.reason);
+      }
+      return result.generate(input);
+    },
+  };
 }
 
 /**
