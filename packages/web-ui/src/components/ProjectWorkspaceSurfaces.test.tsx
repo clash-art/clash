@@ -33,6 +33,7 @@ const timelineEditorApi = vi.hoisted(() => ({
   exportProgress: undefined as undefined | Array<Record<string, unknown>>,
   previewCacheScope: undefined as string | undefined,
   innerProjectAssetDrop: vi.fn(),
+  renderedAssets: [] as unknown[],
   mutate: (_duration: number) => {},
   zoom: () => {},
 }));
@@ -69,6 +70,7 @@ vi.mock("@clash/remotion-ui", () => ({
     timelineEditorApi.onExport = onExport;
     timelineEditorApi.exportProgress = exportProgress;
     timelineEditorApi.previewCacheScope = previewCacheScope;
+    timelineEditorApi.renderedAssets.push(initialAssets);
     const initializedKey = useRef<string | null>(null);
     if (initializedKey.current !== editorKey) {
       initializedKey.current = editorKey;
@@ -177,6 +179,7 @@ describe("Project workspace surfaces", () => {
     timelineEditorApi.onTranscribeAsset = undefined;
     timelineEditorApi.onExport = undefined;
     timelineEditorApi.exportProgress = undefined;
+    timelineEditorApi.renderedAssets = [];
     vi.unstubAllGlobals();
   });
 
@@ -951,6 +954,70 @@ describe("Project workspace surfaces", () => {
         "https://media.clash.test/video-cover.webp",
       );
     });
+  });
+
+  it("keeps resolved media metadata in place when a save returns content-equal media inputs", async () => {
+    assetApi.getAsset.mockResolvedValue({
+      id: "asset-portrait",
+      kind: "video",
+      status: "ready",
+      url: "https://media.clash.test/portrait.mp4",
+      thumbnailUrl: "https://media.clash.test/portrait-cover.webp",
+      metadata: { originalName: "Portrait", width: 720, height: 960, durationMs: 20000 },
+    });
+    // Every Timeline save (e.g. toggling a Position keyframe) makes the host
+    // recompute its media inputs: a new array with the same content.
+    const mediaInputs = () => [
+      {
+        sourceNodeId: "source-portrait",
+        projectAssetId: "asset-portrait",
+        type: "video" as const,
+        src: "/initial/portrait.mp4",
+      },
+    ];
+    const props = {
+      projectId: "project-1",
+      timeline: {
+        id: "timeline-keyframe",
+        name: "Keyframe Cut",
+        owner: { kind: "project" as const },
+        revisionId: "timeline-revision-v1:test",
+        state: { tracks: [] },
+      },
+      canvases: [],
+      onSave: vi.fn(acknowledgeTimelineSave),
+      onOpenCanvas: vi.fn(),
+    };
+    const { rerender } = render(
+      <ProjectTimelineEditorSurface {...props} mediaInputs={mediaInputs()} />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("remotion-editor").getAttribute("data-asset-thumbnail"),
+      ).toBe("https://media.clash.test/portrait-cover.webp"),
+    );
+    const resolved = timelineEditorApi.renderedAssets.at(-1);
+    expect(resolved).toEqual([
+      expect.objectContaining({ width: 720, height: 960 }),
+    ]);
+
+    timelineEditorApi.renderedAssets = [];
+    for (let save = 0; save < 2; save += 1) {
+      rerender(
+        <ProjectTimelineEditorSurface {...props} mediaInputs={mediaInputs()} />,
+      );
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+
+    // The editor must never see the metadata-less seed again: losing
+    // width/height makes the preview stretch the clip to the composition
+    // for a few frames, which is the visible flash.
+    expect(timelineEditorApi.renderedAssets.length).toBeGreaterThan(0);
+    for (const assets of timelineEditorApi.renderedAssets) {
+      expect(assets).toBe(resolved);
+    }
   });
 
   it("backs the Transcript button with the local word-aligned ASR endpoint", async () => {
