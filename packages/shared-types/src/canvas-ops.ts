@@ -7,11 +7,25 @@
  */
 import type { LoroDoc } from "loro-crdt";
 import { isCanvasAssetReferenceEdge } from "./canvas-asset-references.js";
-import { CANVAS_NODE_LAYOUTS, CanvasNodeLayoutSchema, projectCanvasNodeLayout } from "./canvas-layout.js";
-import { readGeneratorRevision, readProjectGenerator, readProjectActionRun, readOutputCommit } from "./project-generators.js";
+import {
+  CANVAS_NODE_LAYOUTS,
+  CanvasNodeLayoutSchema,
+  projectCanvasNodeLayout,
+} from "./canvas-layout.js";
+import {
+  readGeneratorRevision,
+  readProjectGenerator,
+  readProjectActionRun,
+  readOutputCommit,
+} from "./project-generators.js";
 import type { GeneratorRunCanvasPlacement } from "./generator-requests.js";
 import type { LayoutNode, LayoutEdge } from "@clash/shared-layout";
-import { NEEDS_LAYOUT_POSITION, autoInsertNode, processAutoLayoutNodes, calculateScaledDimensions } from "@clash/shared-layout";
+import {
+  NEEDS_LAYOUT_POSITION,
+  autoInsertNode,
+  processAutoLayoutNodes,
+  calculateScaledDimensions,
+} from "@clash/shared-layout";
 import {
   AGENT_NODE_TYPE_MAP,
   NodeType,
@@ -25,7 +39,10 @@ import {
   type UpstreamRef,
 } from "./canvas.js";
 import { MODEL_CARDS, normalizeModelId, type ModelCard } from "./models.js";
-import { ExecutablePluginBindingSchema, ExecutablePluginViewStateSchema } from "./executable-plugin.js";
+import {
+  ExecutablePluginBindingSchema,
+  ExecutablePluginViewStateSchema,
+} from "./executable-plugin.js";
 import { DirectorReferencePacketSchema } from "./director-reference.js";
 import {
   ensureProjectCanvas,
@@ -44,6 +61,7 @@ import {
   ACTION_ASSET_BINDING_AUTHORITY_VERSION,
   actionAssetBindingAuthorityVersion,
   replaceDraftActionAssetInputBindings,
+  storedDraftActionAssetInputs,
   type DraftActionAssetInput,
 } from "./action-asset-bindings.js";
 import {
@@ -52,8 +70,14 @@ import {
 } from "./canvas-action-asset-inputs.js";
 import { readProjectAsset } from "./project-assets.js";
 import { ProjectTimelineEnvelopeSchema } from "./timeline-envelope.js";
-import { projectCanvasModelGeneratorData, assertCanvasModelGeneratorPatch } from "./canvas-model-generator.js";
-import { assetRevisionKey, canvasAssetRevision } from "./canvas-asset-reference.js";
+import {
+  projectCanvasModelGeneratorData,
+  assertCanvasModelGeneratorPatch,
+} from "./canvas-model-generator.js";
+import {
+  assetRevisionKey,
+  canvasAssetRevision,
+} from "./canvas-asset-reference.js";
 
 // ─── Types ───────────────────────────────────────────────
 
@@ -280,6 +304,26 @@ function actionAssetInputPlans(
   return plans;
 }
 
+/** Canonical form of draft inputs, for comparing a plan with what is stored. */
+function normalizedDraftInputs(
+  inputs: readonly DraftActionAssetInput[],
+): string {
+  return JSON.stringify(
+    inputs
+      .map((input) => ({
+        slot: input.slot.trim(),
+        projectAssetId: input.projectAssetId.trim(),
+        role: input.role ?? null,
+      }))
+      .sort((left, right) => left.slot.localeCompare(right.slot)),
+  );
+}
+
+/** The Action's stored draft input bindings, in the same canonical form. */
+function storedDraftInputs(doc: LoroDoc, actionId: string): string {
+  return normalizedDraftInputs(storedDraftActionAssetInputs(doc, actionId));
+}
+
 // ─── Canvas Class ────────────────────────────────────────
 
 export class Canvas {
@@ -311,7 +355,11 @@ export class Canvas {
         projectCanvasNodeLayout(this.doc, id, raw as Record<string, any>),
         readNodeUpstreamRefs(this.doc, id, raw),
       );
-      if (node.canvas_id === this.canvasId) nodes.push({ ...node, data: projectCanvasModelGeneratorData(this.doc, node.type, node.data) });
+      if (node.canvas_id === this.canvasId)
+        nodes.push({
+          ...node,
+          data: projectCanvasModelGeneratorData(this.doc, node.type, node.data),
+        });
     }
     if (nodeType) nodes = nodes.filter((n) => n.type === nodeType);
     if (parentId) nodes = nodes.filter((n) => n.parent_id === parentId);
@@ -327,7 +375,12 @@ export class Canvas {
       projectCanvasNodeLayout(this.doc, nodeId, raw),
       readNodeUpstreamRefs(this.doc, nodeId, raw),
     );
-    return node.canvas_id === this.canvasId ? { ...node, data: projectCanvasModelGeneratorData(this.doc, node.type, node.data) } : null;
+    return node.canvas_id === this.canvasId
+      ? {
+          ...node,
+          data: projectCanvasModelGeneratorData(this.doc, node.type, node.data),
+        }
+      : null;
   }
 
   searchNodes(query: string, nodeTypes?: string[] | null): NodeInfo[] {
@@ -368,13 +421,19 @@ export class Canvas {
     for (const assetId of new Set(assetIds)) {
       const asset = readProjectAsset(this.doc, assetId);
       if (!asset || asset.lifecycle.state !== "active") continue;
-      if (this.listNodes(asset.kind).some(node => node.data.assetId === assetId)) continue;
+      if (
+        this.listNodes(asset.kind).some((node) => node.data.assetId === assetId)
+      )
+        continue;
       const baseId = `timeline-input:${encodeURIComponent(this.canvasId)}:${encodeURIComponent(assetId)}`;
       let nodeId = baseId;
       let suffix = 1;
-      while (this.doc.getMap("nodes").get(nodeId)) nodeId = `${baseId}:${suffix++}`;
+      while (this.doc.getMap("nodes").get(nodeId))
+        nodeId = `${baseId}:${suffix++}`;
       const result = this.createNode(nodeId, asset.kind, {
-        assetId, status: "completed", label: asset.name ?? asset.metadata.originalName ?? "Media",
+        assetId,
+        status: "completed",
+        label: asset.name ?? asset.metadata.originalName ?? "Media",
       });
       if (result.error) throw new Error(result.error);
     }
@@ -410,7 +469,9 @@ export class Canvas {
     layouts.set(nodeId, {
       ...previous,
       ...layout,
-      ...(layout.style ? { style: { ...previous.style, ...layout.style } } : {}),
+      ...(layout.style
+        ? { style: { ...previous.style, ...layout.style } }
+        : {}),
     });
     this.broadcast(this.doc.export({ mode: "update", from: versionBefore }));
     return true;
@@ -419,14 +480,23 @@ export class Canvas {
   /** Complete legacy placement before Host publication, preserving referenced nodes. */
   layoutPendingNodes(): string[] {
     const records = this.doc.getMap("nodes");
-    const nodes = this.listNodes().map(node => {
+    const nodes = this.listNodes().map((node) => {
       const raw = records.get(node.id) as Record<string, unknown>;
-      const presentation = this.doc.getMap(CANVAS_NODE_LAYOUTS).get(node.id) as Record<string, unknown> | undefined;
-      return { ...toLayoutNode(node), position: raw.position || presentation?.position ? node.position : NEEDS_LAYOUT_POSITION };
+      const presentation = this.doc.getMap(CANVAS_NODE_LAYOUTS).get(node.id) as
+        Record<string, unknown> | undefined;
+      return {
+        ...toLayoutNode(node),
+        position:
+          raw.position || presentation?.position
+            ? node.position
+            : NEEDS_LAYOUT_POSITION,
+      };
     });
     const result = processAutoLayoutNodes(nodes, listNodeOwnedEdges(this.doc));
     if (result.processed.length === 0) return [];
-    const previousPositions = new Map(nodes.map(node => [node.id, node.position]));
+    const previousPositions = new Map(
+      nodes.map((node) => [node.id, node.position]),
+    );
     const updates = new Map<string, { x: number; y: number }>();
     for (const node of result.nodes) {
       const before = previousPositions.get(node.id)!;
@@ -647,7 +717,9 @@ export class Canvas {
 
   private assertEditableEdge(edgeId: string): void {
     if (isCanvasAssetReferenceEdge(edgeId)) {
-      throw new Error("Timeline and View Asset connections follow their material references. Edit the reference in the Timeline or View instead.");
+      throw new Error(
+        "Timeline and View Asset connections follow their material references. Edit the reference in the Timeline or View instead.",
+      );
     }
   }
 
@@ -667,7 +739,11 @@ export class Canvas {
       patch.data && typeof patch.data === "object" && !Array.isArray(patch.data)
         ? (patch.data as Record<string, unknown>)
         : {};
-    assertCanvasModelGeneratorPatch(currentNode.type, raw.data ?? {}, patchData);
+    assertCanvasModelGeneratorPatch(
+      currentNode.type,
+      raw.data ?? {},
+      patchData,
+    );
     const nextData = projectVisibleNodeData({
       ...(raw.data ?? {}),
       ...patchData,
@@ -727,7 +803,8 @@ export class Canvas {
     if (layout) {
       const remaining = { ...layout };
       for (const field of ["position", "width", "height", "style"]) {
-        if (Object.prototype.hasOwnProperty.call(patch, field)) delete remaining[field];
+        if (Object.prototype.hasOwnProperty.call(patch, field))
+          delete remaining[field];
       }
       layouts.set(nodeId, remaining);
     }
@@ -823,70 +900,163 @@ export class Canvas {
   // ── Create with auto-layout ──────────────────────────
 
   /** Host-owned projection of an admitted Run. Never submit a second Run from these nodes. */
-  placeGeneratorRun(actionRunId: string, placement: GeneratorRunCanvasPlacement): boolean {
-    if (placement.canvasId !== this.canvasId) throw new Error("Generator placement belongs to another Canvas.");
+  placeGeneratorRun(
+    actionRunId: string,
+    placement: GeneratorRunCanvasPlacement,
+  ): boolean {
+    if (placement.canvasId !== this.canvasId)
+      throw new Error("Generator placement belongs to another Canvas.");
     const run = readProjectActionRun(this.doc, actionRunId);
-    const revision = run && readGeneratorRevision(this.doc, run.generatorRevision);
-    if (!run || !revision) throw new Error("Read the Generator Run before placing it on Canvas.");
-    const isRunPlacement = !placement.actionCardId && revision.definitionRef.pluginId !== "clash.model-generation";
-    if (!isRunPlacement && readProjectGenerator(this.doc, revision.generatorId)?.headRevisionId !== revision.id)
-      throw new Error("The Generator head changed. Place a fork of the recorded revision instead.");
+    const revision =
+      run && readGeneratorRevision(this.doc, run.generatorRevision);
+    if (!run || !revision)
+      throw new Error("Read the Generator Run before placing it on Canvas.");
+    const isRunPlacement =
+      !placement.actionCardId &&
+      revision.definitionRef.pluginId !== "clash.model-generation";
+    if (
+      !isRunPlacement &&
+      readProjectGenerator(this.doc, revision.generatorId)?.headRevisionId !==
+        revision.id
+    )
+      throw new Error(
+        "The Generator head changed. Place a fork of the recorded revision instead.",
+      );
     const existing = this.readNode(placement.nodeId);
     if (isRunPlacement && existing && existing.data.actionRunId !== actionRunId)
       throw new Error("The Canvas operation already belongs to another Run.");
-    if (existing && (existing.type !== "action-badge" || existing.data.generatorId !== revision.generatorId || existing.data.actionCardId !== placement.actionCardId))
-      throw new Error("The Canvas placement already belongs to another Generator.");
+    if (
+      existing &&
+      (existing.type !== "action-badge" ||
+        existing.data.generatorId !== revision.generatorId ||
+        existing.data.actionCardId !== placement.actionCardId)
+    )
+      throw new Error(
+        "The Canvas placement already belongs to another Generator.",
+      );
     const outputs = run.outputContract;
-    if (!outputs.length || outputs.some(port => port.cardinality.maxItems !== 1))
-      throw new Error("This Canvas projection requires individually addressable outputs.");
+    if (
+      !outputs.length ||
+      outputs.some((port) => port.cardinality.maxItems !== 1)
+    )
+      throw new Error(
+        "This Canvas projection requires individually addressable outputs.",
+      );
     let changed = false;
     const inputs: string[] = [];
-    for (const ref of [...revision.persistentInputRefs, ...run.invocationInputRefs]) {
+    for (const ref of [
+      ...revision.persistentInputRefs,
+      ...run.invocationInputRefs,
+    ]) {
       if (!("kind" in ref.target) || ref.target.kind !== "media") continue;
       const asset = readProjectAsset(this.doc, ref.target.projectAssetId);
-      if (!asset || asset.lifecycle.state !== "active") throw new Error("A Generator input Asset is unavailable.");
-      let source = this.listNodes().find(node => node.type === asset.kind && node.data.assetId === asset.id);
+      if (!asset || asset.lifecycle.state !== "active")
+        throw new Error("A Generator input Asset is unavailable.");
+      let source = this.listNodes().find(
+        (node) => node.type === asset.kind && node.data.assetId === asset.id,
+      );
       if (!source) {
         const nodeId = `generator-input:${encodeURIComponent(this.canvasId)}:${encodeURIComponent(asset.id)}`;
-        const result = this.createNode(nodeId, asset.kind, {assetId:asset.id,status:"completed",label:asset.name ?? asset.metadata.originalName ?? "Reference"});
+        const result = this.createNode(nodeId, asset.kind, {
+          assetId: asset.id,
+          status: "completed",
+          label: asset.name ?? asset.metadata.originalName ?? "Reference",
+        });
         if (result.error) throw new Error(result.error);
         // Set intrinsic geometry before this input gains a downstream reference.
         if (asset.metadata.width && asset.metadata.height)
-          this.updateNodeRecord(nodeId, calculateScaledDimensions(asset.metadata.width, asset.metadata.height));
+          this.updateNodeRecord(
+            nodeId,
+            calculateScaledDimensions(
+              asset.metadata.width,
+              asset.metadata.height,
+            ),
+          );
         source = this.readNode(nodeId)!;
         changed = true;
       }
       if (!inputs.includes(source.id)) inputs.push(source.id);
     }
     if (!existing) {
-      const data = {generatorId:revision.generatorId, ...(placement.actionCardId ? {actionCardId:placement.actionCardId} : {}),
-        ...(isRunPlacement ? {actionRunId, generatorRevision:run.generatorRevision, generatorActionId:run.actionId} : {}),
-        label:placement.label ?? "Generator"};
-      if (inputs[0]) this.createLinkedNode({nodeId:placement.nodeId,nodeType:"action-badge",data,parentId:null,sourceNodeId:inputs[0]});
+      const data = {
+        generatorId: revision.generatorId,
+        ...(placement.actionCardId
+          ? { actionCardId: placement.actionCardId }
+          : {}),
+        ...(isRunPlacement
+          ? {
+              actionRunId,
+              generatorRevision: run.generatorRevision,
+              generatorActionId: run.actionId,
+            }
+          : {}),
+        label: placement.label ?? "Generator",
+      };
+      if (inputs[0])
+        this.createLinkedNode({
+          nodeId: placement.nodeId,
+          nodeType: "action-badge",
+          data,
+          parentId: null,
+          sourceNodeId: inputs[0],
+        });
       else {
-        const result = this.createNode(placement.nodeId,"action-badge",data);
+        const result = this.createNode(placement.nodeId, "action-badge", data);
         if (result.error) throw new Error(result.error);
       }
       changed = true;
     }
     for (const source of inputs) {
-      if (this.listEdges().some(edge=>edge.source===source && edge.target===placement.nodeId)) continue;
-      this.insertEdge(`${source}-${placement.nodeId}`,source,placement.nodeId);
+      if (
+        this.listEdges().some(
+          (edge) => edge.source === source && edge.target === placement.nodeId,
+        )
+      )
+        continue;
+      this.insertEdge(
+        `${source}-${placement.nodeId}`,
+        source,
+        placement.nodeId,
+      );
       changed = true;
     }
     for (const port of outputs) {
       const nodeId = `generator-output:${encodeURIComponent(this.canvasId)}:${encodeURIComponent(actionRunId)}:${encodeURIComponent(port.slot)}`;
       const output = this.readNode(nodeId);
       if (output) {
-        if (output.data.actionRunId !== actionRunId || output.data.generatorOutputSlot !== port.slot || !this.listEdges().some(edge=>edge.source===placement.nodeId && edge.target===nodeId))
-          throw new Error("The Canvas output placement belongs to another Run.");
+        if (
+          output.data.actionRunId !== actionRunId ||
+          output.data.generatorOutputSlot !== port.slot ||
+          !this.listEdges().some(
+            (edge) =>
+              edge.source === placement.nodeId && edge.target === nodeId,
+          )
+        )
+          throw new Error(
+            "The Canvas output placement belongs to another Run.",
+          );
         continue;
       }
-      this.createLinkedNode({nodeId,nodeType:port.assetType.kind === "media" ? port.assetType.mediaKind : "text",parentId:null,sourceNodeId:placement.nodeId,data:{
-        label:placement.label ?? (port.assetType.kind === "media" ? "Generated media" : port.slot), status:"generating", actionRunId, generatorOutputSlot:port.slot,
-        generatorRevision:run.generatorRevision, generatorActionId:run.actionId,
-        ...(port.assetType.kind === "document" ? {documentKind:port.assetType.documentKind} : {}),
-      }});
+      this.createLinkedNode({
+        nodeId,
+        nodeType:
+          port.assetType.kind === "media" ? port.assetType.mediaKind : "text",
+        parentId: null,
+        sourceNodeId: placement.nodeId,
+        data: {
+          label:
+            placement.label ??
+            (port.assetType.kind === "media" ? "Generated media" : port.slot),
+          status: "generating",
+          actionRunId,
+          generatorOutputSlot: port.slot,
+          generatorRevision: run.generatorRevision,
+          generatorActionId: run.actionId,
+          ...(port.assetType.kind === "document"
+            ? { documentKind: port.assetType.documentKind }
+            : {}),
+        },
+      });
       changed = true;
     }
     return this.refreshGeneratorRun(actionRunId) || changed;
@@ -898,20 +1068,60 @@ export class Canvas {
     if (!run) return false;
     let changed = false;
     for (const node of this.listNodes()) {
-      if (node.data.actionRunId !== actionRunId || typeof node.data.generatorOutputSlot !== "string") continue;
-      const output = readOutputCommit(this.doc,{actionRunId,outputSlot:node.data.generatorOutputSlot});
-      const assetId = output?.asset.kind === "media" ? output.asset.projectAssetId : undefined;
-      const documentRevision = output?.asset.kind === "document" ? output.asset : undefined;
-      const existingDocumentRevision = node.data.documentRevision === undefined ? null : canvasAssetRevision(node);
-      const sameDocument = assetRevisionKey(existingDocumentRevision) === assetRevisionKey(documentRevision);
-      const status = output ? "completed" : run.status === "failed" ? "failed" : "generating";
-      if (node.data.status === status && node.data.assetId === assetId && sameDocument) continue;
-      if (node.data.assetId && node.data.assetId !== assetId) throw new Error("A Canvas output cannot replace an already committed Asset.");
-      if (existingDocumentRevision && !sameDocument) throw new Error("A Canvas output cannot replace an already committed Document revision.");
+      if (
+        node.data.actionRunId !== actionRunId ||
+        typeof node.data.generatorOutputSlot !== "string"
+      )
+        continue;
+      const output = readOutputCommit(this.doc, {
+        actionRunId,
+        outputSlot: node.data.generatorOutputSlot,
+      });
+      const assetId =
+        output?.asset.kind === "media"
+          ? output.asset.projectAssetId
+          : undefined;
+      const documentRevision =
+        output?.asset.kind === "document" ? output.asset : undefined;
+      const existingDocumentRevision =
+        node.data.documentRevision === undefined
+          ? null
+          : canvasAssetRevision(node);
+      const sameDocument =
+        assetRevisionKey(existingDocumentRevision) ===
+        assetRevisionKey(documentRevision);
+      const status = output
+        ? "completed"
+        : run.status === "failed"
+          ? "failed"
+          : "generating";
+      if (
+        node.data.status === status &&
+        node.data.assetId === assetId &&
+        sameDocument
+      )
+        continue;
+      if (node.data.assetId && node.data.assetId !== assetId)
+        throw new Error(
+          "A Canvas output cannot replace an already committed Asset.",
+        );
+      if (existingDocumentRevision && !sameDocument)
+        throw new Error(
+          "A Canvas output cannot replace an already committed Document revision.",
+        );
       const asset = assetId ? readProjectAsset(this.doc, assetId) : undefined;
       this.updateNodeRecord(node.id, {
-        data: {status,...(assetId ? {assetId} : {}),...(documentRevision ? {documentRevision} : {})},
-        ...(asset?.metadata.width && asset.metadata.height ? calculateScaledDimensions(asset.metadata.width, asset.metadata.height) : {}),
+        data: {
+          status,
+          ...(assetId ? { assetId } : {}),
+          ...(documentRevision ? { documentRevision } : {}),
+        },
+        ...(asset?.metadata.width && asset.metadata.height
+          ? calculateScaledDimensions(
+              asset.metadata.width,
+              asset.metadata.height,
+            )
+          : {}),
       });
       changed = true;
     }
@@ -962,7 +1172,12 @@ export class Canvas {
     if (nodeType === "plugin-view") {
       const state = ExecutablePluginViewStateSchema.safeParse(data.state);
       if (!state.success) {
-        return { node_id: null, error: `Invalid View state: ${state.error.message}`, proposal: null, asset_id: null };
+        return {
+          node_id: null,
+          error: `Invalid View state: ${state.error.message}`,
+          proposal: null,
+          asset_id: null,
+        };
       }
     }
     const isGenerationNode =
@@ -1085,7 +1300,10 @@ export class Canvas {
     const result = autoInsertNode(
       nodeId,
       [...existingNodes, virtualNode],
-      [...listNodeOwnedEdges(this.doc), { source: sourceNodeId, target: nodeId }],
+      [
+        ...listNodeOwnedEdges(this.doc),
+        { source: sourceNodeId, target: nodeId },
+      ],
     );
 
     // The downstream node owns the relationship, so it must exist before
@@ -1239,31 +1457,85 @@ export class Canvas {
 
     // Native placements pin one immutable draft. Host admission validates its
     // Model Card and inputs; Canvas never recompiles the draft from view fields.
-    if (typeof nodeData.generatorId === "string" && typeof nodeData.generatorRevisionId === "string") {
+    if (
+      typeof nodeData.generatorId === "string" &&
+      typeof nodeData.generatorRevisionId === "string"
+    ) {
       const assetNodeId = generateId();
-      if (this.readNode(assetNodeId)) return { assetNodeId: "", assetNodeType: "", position: { x: 0, y: 0 }, error: `Node ${assetNodeId} already exists` };
-      const nativeAction = isCustomGen ? customActionDefinition?.generator : undefined;
-      if (isCustomGen && (!nativeAction || customActionDefinition?.id !== nodeData.actionCardId)) {
-        return { assetNodeId: "", assetNodeType: "", position: { x: 0, y: 0 }, error: "Read the Action Card's native Generator contract before executing it." };
+      if (this.readNode(assetNodeId))
+        return {
+          assetNodeId: "",
+          assetNodeType: "",
+          position: { x: 0, y: 0 },
+          error: `Node ${assetNodeId} already exists`,
+        };
+      const nativeAction = isCustomGen
+        ? customActionDefinition?.generator
+        : undefined;
+      if (
+        isCustomGen &&
+        (!nativeAction || customActionDefinition?.id !== nodeData.actionCardId)
+      ) {
+        return {
+          assetNodeId: "",
+          assetNodeType: "",
+          position: { x: 0, y: 0 },
+          error:
+            "Read the Action Card's native Generator contract before executing it.",
+        };
       }
       if (nativeAction) {
-        const revision = readGeneratorRevision(this.doc, { generatorId: nodeData.generatorId, generatorRevisionId: nodeData.generatorRevisionId });
+        const revision = readGeneratorRevision(this.doc, {
+          generatorId: nodeData.generatorId,
+          generatorRevisionId: nodeData.generatorRevisionId,
+        });
         const binding = customActionDefinition?.pluginBinding;
         const ref = revision?.definitionRef;
-        if (!binding || ref?.pluginId !== binding.pluginId || ref.definitionId !== nativeAction.definitionId || ref.version !== binding.version || ref.schemaHash !== binding.schemaHash) {
-          return { assetNodeId: "", assetNodeType: "", position: { x: 0, y: 0 }, error: "The Action Card changed. Prepare the native Generator draft before executing it." };
+        if (
+          !binding ||
+          ref?.pluginId !== binding.pluginId ||
+          ref.definitionId !== nativeAction.definitionId ||
+          ref.version !== binding.version ||
+          ref.schemaHash !== binding.schemaHash
+        ) {
+          return {
+            assetNodeId: "",
+            assetNodeType: "",
+            position: { x: 0, y: 0 },
+            error:
+              "The Action Card changed. Prepare the native Generator draft before executing it.",
+          };
         }
       }
-      const assetNodeType = isCustomGen ? customActionDefinition!.outputType : actionType.replace(/-gen$/, "");
+      const assetNodeType = isCustomGen
+        ? customActionDefinition!.outputType
+        : actionType.replace(/-gen$/, "");
       const linked = this.createLinkedNode({
-        nodeId: assetNodeId, nodeType: assetNodeType, parentId: node.parent_id, sourceNodeId: nodeId,
-        data: { status: "pending", label: nodeData.label ?? "Generated media",
-          generatorRevision: { generatorId: nodeData.generatorId, generatorRevisionId: nodeData.generatorRevisionId },
+        nodeId: assetNodeId,
+        nodeType: assetNodeType,
+        parentId: node.parent_id,
+        sourceNodeId: nodeId,
+        data: {
+          status: "pending",
+          label: nodeData.label ?? "Generated media",
+          generatorRevision: {
+            generatorId: nodeData.generatorId,
+            generatorRevisionId: nodeData.generatorRevisionId,
+          },
           ...(nativeAction ? { generatorActionId: nativeAction.actionId } : {}),
-          ...Object.fromEntries(["actorType", "actorUserId", "actorAgentId"].flatMap((key) => nodeData[key] === undefined ? [] : [[key, nodeData[key]]])),
+          ...Object.fromEntries(
+            ["actorType", "actorUserId", "actorAgentId"].flatMap((key) =>
+              nodeData[key] === undefined ? [] : [[key, nodeData[key]]],
+            ),
+          ),
         },
       });
-      return { assetNodeId, assetNodeType, position: linked.position, error: null };
+      return {
+        assetNodeId,
+        assetNodeType,
+        position: linked.position,
+        error: null,
+      };
     }
 
     // Extract prompt
@@ -1285,7 +1557,8 @@ export class Canvas {
               requestedModelIdForPromptCheck),
         )
       : undefined;
-    const cardRequiresPrompt = promptCheckModelCard?.input?.requiresPrompt ?? true;
+    const cardRequiresPrompt =
+      promptCheckModelCard?.input?.requiresPrompt ?? true;
     if (isBuiltInGen && cardRequiresPrompt && !prompt.trim()) {
       return {
         assetNodeId: "",
@@ -1645,24 +1918,24 @@ export class Canvas {
   // ── Private ──────────────────────────────────────────
 
   /**
-   * The binding plans a mutation changes, computed before it is applied. An
-   * Action whose inputs the mutation leaves as they are is not re-planned: a
-   * reference whose Asset became inactive concurrently (a merged trash) must
-   * not block an unrelated edit, nor a run's terminal failure projection.
+   * The binding plans a mutation changes, computed before it is applied. A
+   * plan is skipped only when the Action's STORED draft input bindings already
+   * equal it, so an unrelated edit (or a run's terminal failure projection) is
+   * not blocked by a reference whose Asset was trashed concurrently, while a
+   * binding that drifted from its node (e.g. after a merge) is still repaired.
    */
   private planActionAssetBindings(
     nodes: readonly NodeInfo[],
     edges: readonly CanvasEdgeInfo[],
     clearedActionIds: readonly string[] = [],
   ): Array<{ actionId: string; inputs: DraftActionAssetInput[] }> {
-    const current = new Map(
-      [...actionAssetInputPlans(this.listNodes(), this.listEdges())].map(
-        ([actionId, inputs]) => [actionId, JSON.stringify(inputs)],
-      ),
-    );
     const plans = actionAssetInputPlans(nodes, edges, clearedActionIds);
     return [...plans.entries()]
-      .filter(([actionId, inputs]) => current.get(actionId) !== JSON.stringify(inputs))
+      .filter(
+        ([actionId, inputs]) =>
+          storedDraftInputs(this.doc, actionId) !==
+          normalizedDraftInputs(inputs),
+      )
       .map(([actionId, inputs]) => ({ actionId, inputs }));
   }
 
@@ -1714,10 +1987,11 @@ export class Canvas {
     const versionBefore = this.doc.version();
     const layouts = this.doc.getMap(CANVAS_NODE_LAYOUTS);
     for (const [nodeId, pos] of updates) {
-      if (this.readNode(nodeId)) layouts.set(nodeId, {
-        ...(layouts.get(nodeId) as Record<string, unknown> | undefined),
-        position: pos,
-      });
+      if (this.readNode(nodeId))
+        layouts.set(nodeId, {
+          ...(layouts.get(nodeId) as Record<string, unknown> | undefined),
+          position: pos,
+        });
     }
     const update = this.doc.export({ mode: "update", from: versionBefore });
     this.broadcast(update);

@@ -47,8 +47,17 @@ export function createPluginOutputSessionRoutes() {
   app.onError((error, c) => {
     // The plugin sees the failed upload; the run then fails contract_violation
     // when it answers with an Asset this session never completed.
-    serverLog.error("plugin_output_session.failed", { error });
-    return c.json({ error: "Plugin output upload unavailable" }, 503);
+    serverLog.error("plugin_output_session.failed", {
+      code: "PLUGIN_OUTPUT_UPLOAD_FAILED",
+      error,
+    });
+    return c.json(
+      {
+        error: "Plugin output upload failed on the Host; retry the upload.",
+        code: "PLUGIN_OUTPUT_UPLOAD_FAILED",
+      },
+      503,
+    );
   });
   return app;
 }

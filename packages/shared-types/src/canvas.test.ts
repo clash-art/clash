@@ -19,6 +19,10 @@ import {
   getCustomActionId,
 } from "./canvas.js";
 import { Canvas } from "./canvas-ops.js";
+import {
+  listActionAssetBindingsForOwner,
+  unbindActionAssetBinding,
+} from "./action-asset-bindings.js";
 import { MODEL_CARDS, ModelCardSchema } from "./models.js";
 import {
   listActionAssetBindings,
@@ -249,23 +253,23 @@ describe("Canvas Project persistence", () => {
   it.each(directorStageOutputWrites)(
     "rejects generic Director Stage updates containing %s",
     (field, value) => {
-    const doc = new LoroDoc();
-    const canvas = new Canvas(doc, () => {}, "main");
-    canvas.insertNode(
-      "director-stage",
-      "director-stage",
-      { stageId: "stage-1", label: "Courtyard blocking" },
-      null,
-      { x: 0, y: 0 },
-    );
+      const doc = new LoroDoc();
+      const canvas = new Canvas(doc, () => {}, "main");
+      canvas.insertNode(
+        "director-stage",
+        "director-stage",
+        { stageId: "stage-1", label: "Courtyard blocking" },
+        null,
+        { x: 0, y: 0 },
+      );
 
-    expect(() => canvas.updateNode("director-stage", { [field]: value })).toThrow(
-      /Director Stage output/i,
-    );
-    expect(canvas.readNode("director-stage")?.data).toEqual({
-      stageId: "stage-1",
-      label: "Courtyard blocking",
-    });
+      expect(() =>
+        canvas.updateNode("director-stage", { [field]: value }),
+      ).toThrow(/Director Stage output/i);
+      expect(canvas.readNode("director-stage")?.data).toEqual({
+        stageId: "stage-1",
+        label: "Courtyard blocking",
+      });
     },
   );
 
@@ -531,13 +535,50 @@ describe("Canvas Action Asset binding authority", () => {
     ).toBe(true);
 
     // A run's failure projection and an unrelated edit still land.
-    expect(canvas.updateNode("action", { status: "failed", errorCode: "reference_unavailable" })).toBe(true);
+    expect(
+      canvas.updateNode("action", {
+        status: "failed",
+        errorCode: "reference_unavailable",
+      }),
+    ).toBe(true);
     expect(canvas.updateNode("other", { label: "renamed" })).toBe(true);
     expect(canvas.readNode("action")?.data).toMatchObject({ status: "failed" });
     // Introducing the inactive Asset anew is still refused.
     expect(() =>
-      canvas.updateNode("action", { referenceImageAssetIds: ["asset-clip", "asset-clip"] }),
+      canvas.updateNode("action", {
+        referenceImageAssetIds: ["asset-clip", "asset-clip"],
+      }),
     ).toThrow(/asset-clip.*not active/i);
+  });
+
+  it("still repairs a draft binding that drifted from its node on the next edit", () => {
+    const doc = new LoroDoc();
+    createProjectAsset(doc, canvasProjectAsset("asset-clip"));
+    markActionAssetBindingAuthority(doc);
+    const canvas = new Canvas(doc, () => {}, "main");
+    canvas.insertNode(
+      "action",
+      RF_NODE_TYPE.ActionBadge,
+      {
+        actionType: ACTION_TYPE.ImageGen,
+        modelId: "gpt-image-2",
+        referenceImageAssetIds: ["asset-clip"],
+      },
+      null,
+      { x: 0, y: 0 },
+    );
+    canvas.insertNode("other", RF_NODE_TYPE.Image, {}, null, { x: 200, y: 0 });
+    const owner = { kind: "draft" as const, actionId: "node:action" };
+    const [binding] = listActionAssetBindingsForOwner(doc, owner);
+    expect(binding).toBeDefined();
+    // Drift: the binding is gone while the node still references the Asset.
+    expect(unbindActionAssetBinding(doc, binding!.id).ok).toBe(true);
+    expect(listActionAssetBindingsForOwner(doc, owner)).toHaveLength(0);
+
+    expect(canvas.updateNode("other", { label: "renamed" })).toBe(true);
+    expect(
+      listActionAssetBindingsForOwner(doc, owner).map((b) => b.projectAssetId),
+    ).toEqual(["asset-clip"]);
   });
 });
 
