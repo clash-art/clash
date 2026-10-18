@@ -22,6 +22,10 @@ import {
   shouldShowCanvasMinimap,
 } from "./canvas/minimap";
 import { calculateRms, type StereoAudioLevels } from "./previewAudioMeter";
+import {
+  PLAYER_STALL_TIMEOUT_MS,
+  type PlayerTransportEvent,
+} from "./playerTransport";
 
 export type CanvasViewportCommand =
   | { id: number; type: "reset" }
@@ -46,6 +50,10 @@ interface InteractiveCanvasProps {
   onSeek?: (frame: number) => void;
   onFrameUpdate?: (frame: number) => void;
   onPlayingChange?: (playing: boolean) => void;
+  /** Player-reported transport facts (buffering, stalls, media errors). */
+  onTransportEvent?: (event: PlayerTransportEvent) => void;
+  /** Bumped by an explicit retry: remounts every media element once. */
+  mediaEpoch?: number;
   viewportCommand?: CanvasViewportCommand;
   onViewportZoomChange?: (zoom: number) => void;
   audioMeterEnabled?: boolean;
@@ -111,6 +119,8 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   onSeek: _onSeek,
   onFrameUpdate,
   onPlayingChange,
+  onTransportEvent,
+  mediaEpoch = 0,
   viewportCommand,
   onViewportZoomChange,
   audioMeterEnabled = false,
@@ -125,6 +135,20 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
   onFrameUpdateRef.current = onFrameUpdate;
   const onPlayingChangeRef = useRef(onPlayingChange);
   onPlayingChangeRef.current = onPlayingChange;
+  const onTransportEventRef = useRef(onTransportEvent);
+  onTransportEventRef.current = onTransportEvent;
+  // A terminal media failure stops the clock and becomes an explicit error;
+  // the Player would otherwise keep advancing over a black layer.
+  const handleMediaError = useCallback(
+    ({ src, message }: { src: string; message: string }) => {
+      onTransportEventRef.current?.({
+        type: "error",
+        message: `Could not play ${previewMediaErrorName(src)}: ${message}`,
+      });
+      playerRef.current?.pause();
+    },
+    [],
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const minimapRef = useRef<HTMLDivElement>(null);
   const selectionBoxRef = useRef<HTMLDivElement>(null);
@@ -341,8 +365,10 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
       selectedItemId,
       selectionBoxRef,
       itemsDomMapRef,
+      onMediaError: handleMediaError,
+      mediaEpoch,
     }),
-    [tracks, allNodesMap, selectedItemId],
+    [tracks, allNodesMap, selectedItemId, handleMediaError, mediaEpoch],
   );
 
   // The Player drives its own clock. Keep its element identity stable so the
@@ -410,9 +436,20 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
     lastPlayingStateRef.current = playing;
   }, [playing, currentFrame, durationInFrames]);
 
-  // 监听 Player 事件
+  // 监听 Player 事件. Every transport fact comes from the Player itself.
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Player buffering is reported on change, whether or not it is playing.
+  const bufferingRef = useRef(false);
+  const clearStallTimer = useCallback(() => {
+    if (stallTimerRef.current !== null) {
+      clearTimeout(stallTimerRef.current);
+      stallTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => clearStallTimer, [clearStallTimer]);
+
   useEffect(() => {
-    const player = playerRef.current as any;
+    const player = playerRef.current;
     if (!player) return;
 
     const handleFrame = () => {
@@ -424,18 +461,61 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
       onFrameUpdateRef.current?.(frame);
     };
 
+    // A stall only counts while the Player is asked to play. Buffering can
+    // start while paused (media mounted on insert) and only matter on play.
+    const startStallTimer = () => {
+      if (stallTimerRef.current !== null) return;
+      stallTimerRef.current = setTimeout(() => {
+        stallTimerRef.current = null;
+        onTransportEventRef.current?.({
+          type: "error",
+          message: `Media did not load within ${PLAYER_STALL_TIMEOUT_MS / 1000}s; playback was paused.`,
+        });
+        player.pause();
+      }, PLAYER_STALL_TIMEOUT_MS);
+    };
+
     const handlePlay = () => {
+      onTransportEventRef.current?.({ type: "play" });
       onPlayingChangeRef.current?.(true);
+      if (bufferingRef.current) startStallTimer();
     };
 
     const handlePause = () => {
+      clearStallTimer();
+      onTransportEventRef.current?.({ type: "pause" });
       onPlayingChangeRef.current?.(false);
     };
 
     const handleEnded = () => {
+      clearStallTimer();
       const endFrame = getTimelineEndDisplayFrame(durationInFrames);
       lastEmittedFrameRef.current = endFrame;
       onFrameUpdateRef.current?.(endFrame);
+      onTransportEventRef.current?.({ type: "ended" });
+      onPlayingChangeRef.current?.(false);
+    };
+
+    // The Player holds its clock while any media is buffering. Surface that,
+    // and turn a stall that never resolves into an explicit, paused error.
+    const handleWaiting = () => {
+      bufferingRef.current = true;
+      onTransportEventRef.current?.({ type: "waiting" });
+      if (player.isPlaying()) startStallTimer();
+    };
+
+    const handleResume = () => {
+      bufferingRef.current = false;
+      clearStallTimer();
+      onTransportEventRef.current?.({ type: "resume" });
+    };
+
+    const handleError = (event: { detail: { error: Error } }) => {
+      clearStallTimer();
+      onTransportEventRef.current?.({
+        type: "error",
+        message: event.detail.error?.message || "The preview failed to render.",
+      });
       onPlayingChangeRef.current?.(false);
     };
 
@@ -443,14 +523,20 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
     player.addEventListener("play", handlePlay);
     player.addEventListener("pause", handlePause);
     player.addEventListener("ended", handleEnded);
+    player.addEventListener("waiting", handleWaiting);
+    player.addEventListener("resume", handleResume);
+    player.addEventListener("error", handleError);
 
     return () => {
       player.removeEventListener("frameupdate", handleFrame);
       player.removeEventListener("play", handlePlay);
       player.removeEventListener("pause", handlePause);
       player.removeEventListener("ended", handleEnded);
+      player.removeEventListener("waiting", handleWaiting);
+      player.removeEventListener("resume", handleResume);
+      player.removeEventListener("error", handleError);
     };
-  }, [durationInFrames]);
+  }, [clearStallTimer, durationInFrames]);
 
   const lastViewportCommandIdRef = useRef(0);
   useEffect(() => {
@@ -1722,6 +1808,23 @@ const InteractiveCanvasInner: React.FC<InteractiveCanvasProps> = ({
     </div>
   );
 };
+
+/**
+ * A readable name for a failed media source. Signed or capability URLs end in
+ * opaque tokens, which are not shown; plain file names are.
+ */
+export function previewMediaErrorName(src: string): string {
+  const last = src.split(/[?#]/)[0]?.split("/").pop() ?? "";
+  let name = last;
+  try {
+    name = decodeURIComponent(last);
+  } catch {
+    // keep the raw segment
+  }
+  return name.length <= 80 && /^[^.]+(?:\.[^.]+)*\.[a-z0-9]{2,5}$/i.test(name) && !/^v\d+\.ey/i.test(name)
+    ? name
+    : "a media clip";
+}
 
 export const InteractiveCanvas = React.memo(InteractiveCanvasInner);
 

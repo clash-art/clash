@@ -2,6 +2,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
@@ -27,6 +28,11 @@ import {
   type PreviewAudioMeterStore,
   type StereoAudioLevels,
 } from "./previewAudioMeter";
+import {
+  initialPlayerTransportState,
+  playerTransportIsActive,
+  playerTransportReducer,
+} from "./playerTransport";
 
 const PREVIEW_STYLES = `
   ::view-transition-group(clash-canvas-preview),
@@ -181,8 +187,18 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
       fps,
       durationInFrames: timelineDuration,
     } = useEditorStaticState();
+    // `playing` is the editor's play intent and drives the Player. The button
+    // and status read `transport`, which only the Player's own events write.
     const { currentFrame, playing } = useEditorPlayback();
     const { currentFrameRef, playingRef } = useEditorPlaybackRefs();
+    const [transport, dispatchTransport] = useReducer(
+      playerTransportReducer,
+      initialPlayerTransportState,
+    );
+    const [mediaEpoch, setMediaEpoch] = useState(0);
+    const transportActive = playerTransportIsActive(transport.status);
+    const transportActiveRef = useRef(transportActive);
+    transportActiveRef.current = transportActive;
     // Stable handlers so the memoized InteractiveCanvas only re-renders for
     // props that actually changed.
     const handleUpdateItem = useCallback(
@@ -207,6 +223,16 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
       },
       [dispatch, playingRef],
     );
+    const togglePlayback = useCallback(() => {
+      if (transport.status === "error") {
+        // Retry: remount media so a failed source is fetched again, then play.
+        dispatchTransport({ type: "retry" });
+        setMediaEpoch((epoch) => epoch + 1);
+        dispatch({ type: "SET_PLAYING", payload: true });
+        return;
+      }
+      dispatch({ type: "SET_PLAYING", payload: !transportActiveRef.current });
+    }, [dispatch, transport.status]);
     const handleFrameUpdate = useCallback(
       (frame: number) => {
         const roundedFrame = Math.round(frame);
@@ -422,12 +448,36 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
             onSelectItem={handleSelectItem}
             playing={playing}
             onPlayingChange={handlePlayingChange}
+            onTransportEvent={dispatchTransport}
+            mediaEpoch={mediaEpoch}
             onFrameUpdate={handleFrameUpdate}
             onSeek={handleSeek}
           />
+          {transport.status === "buffering" ? (
+            <div
+              role="status"
+              data-preview-status-overlay="buffering"
+              style={styles.statusOverlay}
+            >
+              Buffering…
+            </div>
+          ) : null}
+          {transport.status === "error" ? (
+            <div
+              role="alert"
+              data-preview-status-overlay="error"
+              style={{ ...styles.statusOverlay, ...styles.statusOverlayError }}
+            >
+              {transport.error}
+            </div>
+          ) : null}
         </div>
 
-        <div data-preview-transport="" style={styles.transport}>
+        <div
+          data-preview-transport=""
+          data-preview-status={transport.status}
+          style={styles.transport}
+        >
           <div style={styles.timecodeGroup}>
             <output
               aria-label="Current timecode"
@@ -460,14 +510,27 @@ export const CanvasPreview: React.FC<CanvasPreviewProps> = React.memo(
           </div>
 
           <TimelineIconButton
-            aria-label={playing ? "Pause" : "Play"}
-            title={playing ? "Pause" : "Play"}
-            onClick={() =>
-              dispatch({ type: "SET_PLAYING", payload: !playingRef.current })
+            aria-label={
+              transport.status === "error"
+                ? "Retry playback"
+                : transportActive
+                  ? "Pause"
+                  : "Play"
             }
+            aria-busy={transport.status === "buffering" || undefined}
+            title={
+              transport.status === "error"
+                ? "Retry playback"
+                : transport.status === "buffering"
+                  ? "Buffering… (click to pause)"
+                  : transportActive
+                    ? "Pause"
+                    : "Play"
+            }
+            onClick={togglePlayback}
             style={styles.playButton}
           >
-            {playing ? (
+            {transportActive ? (
               <svg
                 width="14"
                 height="14"
@@ -662,6 +725,23 @@ const styles: Record<string, React.CSSProperties> = {
   audioMeterButtonActive: {
     backgroundColor: colors.bg.hover,
     color: colors.text.primary,
+  },
+  statusOverlay: {
+    position: "absolute",
+    left: "50%",
+    bottom: 16,
+    transform: "translateX(-50%)",
+    maxWidth: "80%",
+    padding: "6px 12px",
+    borderRadius: 8,
+    backgroundColor: "rgba(15, 15, 15, 0.78)",
+    color: "#ffffff",
+    fontSize: typography.fontSize.sm,
+    pointerEvents: "none",
+    textAlign: "center",
+  },
+  statusOverlayError: {
+    backgroundColor: "rgba(160, 32, 32, 0.9)",
   },
   playButton: {
     width: 32,

@@ -1196,15 +1196,14 @@ export const PropertiesPanel: React.FC<PropertiesPanelProps> = ({
             </div>
             <div className="mb-3">
               <label className={labelClassName}>Duration (frames)</label>
-              <RemotionInput
-                type="number"
-                value={durationInFrames}
-                onChange={(e) => dispatch({
-                  type: 'SET_DURATION',
-                  payload: parseInt(e.target.value) || 600,
-                })}
-                className={fieldClassName}
-              />
+              {/* Derived from the last clip end; edit clips to change it. */}
+              <div
+                className={readOnlyFieldClassName}
+                data-testid="composition-duration-frames"
+                title="Follows the end of the last clip"
+              >
+                {durationInFrames}
+              </div>
             </div>
             <div className="mb-3">
               <label className={labelClassName}>Frame Rate (FPS)</label>

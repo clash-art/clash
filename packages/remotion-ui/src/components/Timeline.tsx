@@ -25,6 +25,9 @@ import type {
 } from "./ui/dnd";
 import {
   canTrackAcceptItem,
+  copyTimelineItems,
+  planTimelinePaste,
+  type TimelineClipboard,
   normalizeEditorAsset,
   useEditorDispatch,
   useEditorHistory,
@@ -1644,6 +1647,66 @@ export const Timeline: React.FC<{
     ],
   );
 
+  // ==================== Copy / paste ====================
+  const clipboardRef = useRef<TimelineClipboard | null>(null);
+  const handleCopy = useCallback(() => {
+    if (!selectedItemId) return;
+    clipboardRef.current = copyTimelineItems(tracks, [selectedItemId]) ?? clipboardRef.current;
+  }, [selectedItemId, tracks]);
+  const handlePaste = useCallback(() => {
+    const clipboard = clipboardRef.current;
+    if (!clipboard) return;
+    let sequence = 0;
+    const stamp = Date.now().toString(36);
+    const plan = planTimelinePaste(
+      {
+        tracks,
+        primaryTrackId,
+        selectedItemId,
+        selectedTrackId,
+        zoom,
+        fps,
+        durationInFrames,
+        assets,
+        assetTranscripts,
+        compositionWidth,
+        compositionHeight,
+        currentFrame: currentFrameRef.current,
+        playing: playingRef.current,
+      },
+      clipboard,
+      {
+        playheadFrame: currentFrameRef.current,
+        createId: (kind) => `${kind}-paste-${stamp}-${(sequence += 1)}`,
+      },
+    );
+    if (plan.actions.length === 0) return;
+    beginHistoryGroup();
+    for (const action of plan.actions) dispatch(action);
+    dispatch({
+      type: "SELECT_ITEM",
+      payload: plan.pastedItemIds[plan.pastedItemIds.length - 1] ?? null,
+    });
+    endHistoryGroup();
+  }, [
+    assetTranscripts,
+    assets,
+    beginHistoryGroup,
+    compositionHeight,
+    compositionWidth,
+    currentFrameRef,
+    dispatch,
+    durationInFrames,
+    endHistoryGroup,
+    fps,
+    playingRef,
+    primaryTrackId,
+    selectedItemId,
+    selectedTrackId,
+    tracks,
+    zoom,
+  ]);
+
   // ==================== 键盘快捷键 ====================
   useKeyboardShortcuts(
     {
@@ -1669,8 +1732,8 @@ export const Timeline: React.FC<{
       },
       onZoomIn: handleZoomIn,
       onZoomOut: handleZoomOut,
-      onCopy: () => {},
-      onPaste: () => {},
+      onCopy: handleCopy,
+      onPaste: handlePaste,
       onDuplicate: () => {},
       onUndo: undo,
       onRedo: redo,

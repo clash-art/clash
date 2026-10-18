@@ -33,10 +33,22 @@ vi.mock("./InteractiveCanvas", () => ({
     onTransformEnd?: () => void;
     onUpdateItem?: (trackId: string, itemId: string, updates: unknown) => void;
     durationInFrames?: number;
-  }) => (
+    playing?: boolean;
+    mediaEpoch?: number;
+    onTransportEvent?: (event: { type: string; message?: string }) => void;
+    onPlayingChange?: (playing: boolean) => void;
+  }) => {
+    // Stand-in for the Remotion Player: it reports play/pause for the intent
+    // it receives, and the buttons below emit the Player's other events.
+    const { playing, onTransportEvent } = props;
+    React.useEffect(() => {
+      onTransportEvent?.({ type: playing ? "play" : "pause" });
+    }, [playing, onTransportEvent]);
+    return (
     <>
       <div
         data-testid="interactive-canvas"
+        data-media-epoch={props.mediaEpoch}
         data-duration={props.durationInFrames}
         data-runtime-node-ids={[...(props.allNodesMap?.keys() ?? [])].join(",")}
         data-viewport-command={
@@ -76,8 +88,25 @@ vi.mock("./InteractiveCanvas", () => ({
       >
         Simulate canvas drag
       </button>
+      <button type="button" onClick={() => props.onTransportEvent?.({ type: "waiting" })}>
+        Player waiting
+      </button>
+      <button type="button" onClick={() => props.onTransportEvent?.({ type: "resume" })}>
+        Player resume
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          // Like InteractiveCanvas: report the error, then the Player pauses.
+          props.onTransportEvent?.({ type: "error", message: "Could not play clip.mp4: 404" });
+          props.onPlayingChange?.(false);
+        }}
+      >
+        Player error
+      </button>
     </>
-  ),
+    );
+  },
 }));
 
 const PlaybackProbe = () => {
@@ -166,20 +195,33 @@ afterEach(() => {
 });
 
 describe("CanvasPreview transport", () => {
-  it("previews the authored composition duration, including empty tail frames and later duration edits", () => {
-    const DurationControl = () => {
+  it("shows one derived duration: the content end, in the timecode and the Player", () => {
+    const ExtendClip = () => {
       const dispatch = useEditorDispatch();
       return (
-        <button onClick={() => dispatch({ type: "SET_DURATION", payload: 60 })}>
-          Change duration
-        </button>
+        <>
+          <button
+            onClick={() =>
+              dispatch({
+                type: "UPDATE_ITEM",
+                payload: { trackId: "visual", itemId: "short", updates: { durationInFrames: 2640 } },
+              })
+            }
+          >
+            Extend clip
+          </button>
+          <button onClick={() => dispatch({ type: "SET_DURATION", payload: 60 })}>
+            Change duration
+          </button>
+        </>
       );
     };
     render(
       <EditorProvider
         initialState={{
           fps: 30,
-          durationInFrames: 180,
+          // A stale persisted duration must not win over the content.
+          durationInFrames: 1500,
           tracks: [
             {
               id: "visual",
@@ -198,23 +240,58 @@ describe("CanvasPreview transport", () => {
         }}
       >
         <CanvasPreview />
-        <DurationControl />
+        <ExtendClip />
       </EditorProvider>,
     );
-    expect(screen.getByLabelText("Duration timecode").textContent).toBe(
-      "00:00:06:00",
-    );
-    expect(
-      screen.getByTestId("interactive-canvas").getAttribute("data-duration"),
-    ).toBe("180");
+    const duration = () => screen.getByLabelText("Duration timecode").textContent;
+    const playerDuration = () =>
+      screen.getByTestId("interactive-canvas").getAttribute("data-duration");
+    expect(duration()).toBe("00:00:01:00");
+    expect(playerDuration()).toBe("30");
+
+    fireEvent.click(screen.getByText("Extend clip"));
+    expect(duration()).toBe("00:01:28:00");
+    expect(playerDuration()).toBe("2640");
+
     fireEvent.click(screen.getByText("Change duration"));
-    expect(screen.getByLabelText("Duration timecode").textContent).toBe(
-      "00:00:02:00",
-    );
-    expect(
-      screen.getByTestId("interactive-canvas").getAttribute("data-duration"),
-    ).toBe("60");
+    expect(duration()).toBe("00:01:28:00");
+    expect(playerDuration()).toBe("2640");
   });
+
+  it("never shows Pause while the Player is buffering or failed; every state is explicit", async () => {
+    renderPreview();
+    const transport = () =>
+      document.querySelector("[data-preview-transport]")!.getAttribute("data-preview-status");
+
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    await waitFor(() => expect(transport()).toBe("playing"));
+
+    fireEvent.click(screen.getByText("Player waiting"));
+    expect(transport()).toBe("buffering");
+    const overlay = (kind: string) =>
+      document.querySelector(`[data-preview-status-overlay="${kind}"]`);
+    expect(overlay("buffering")).not.toBeNull();
+    // Still pausable while buffering.
+    expect(screen.getByRole("button", { name: "Pause" }).getAttribute("aria-busy")).toBe("true");
+
+    fireEvent.click(screen.getByText("Player resume"));
+    expect(transport()).toBe("playing");
+    expect(overlay("buffering")).toBeNull();
+
+    fireEvent.click(screen.getByText("Player error"));
+    await waitFor(() => expect(transport()).toBe("error"));
+    expect(screen.getByRole("alert").textContent).toBe("Could not play clip.mp4: 404");
+    expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
+    await waitFor(() => expect(screen.getByLabelText("Playback state").textContent).toBe("0:false"));
+
+    // Retry remounts media once and plays again.
+    const epoch = screen.getByTestId("interactive-canvas").getAttribute("data-media-epoch");
+    fireEvent.click(screen.getByRole("button", { name: "Retry playback" }));
+    await waitFor(() => expect(transport()).toBe("playing"));
+    expect(screen.getByTestId("interactive-canvas").getAttribute("data-media-epoch")).not.toBe(epoch);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("passes live non-media runtime nodes into the shared VideoComposition resolver", () => {
     renderPreview({
       runtimeNodes: [
