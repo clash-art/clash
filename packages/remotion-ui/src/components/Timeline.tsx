@@ -79,7 +79,6 @@ import {
   getTimelineTrackHeights,
   getTimelineTracksHeight,
 } from "./timeline/trackGeometry";
-import { createBrollTrack } from "./timeline/brollTrackNaming";
 import { TIMELINE_NOTICE_EVENT } from "./timeline/timelineNotice";
 
 // 声明全局window属性
@@ -160,7 +159,6 @@ type TimelineHeaderControlsProps = {
   onTrimLeftSelected: (trackId: string, item: Item, frame: number) => void;
   onTrimRightSelected: (trackId: string, item: Item, frame: number) => void;
   onDeleteSelected: (trackId: string, itemId: string) => void;
-  onAddVideoTrack: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomToFit: () => void;
@@ -246,7 +244,6 @@ const TimelineHeaderControls: React.FC<TimelineHeaderControlsProps> =
         onTrimLeftSelected={onTrimLeftSelected}
         onTrimRightSelected={onTrimRightSelected}
         onDeleteSelected={onDeleteSelected}
-        onAddVideoTrack={props.onAddVideoTrack}
         onZoomIn={props.onZoomIn}
         onZoomOut={props.onZoomOut}
         onZoomToFit={props.onZoomToFit}
@@ -943,20 +940,6 @@ export const Timeline: React.FC<{
     },
     [dispatch],
   );
-
-  const handleAddVideoTrack = useCallback(() => {
-    const track = createBrollTrack({
-      id: `b-roll-${Date.now().toString(36)}`,
-      tracks,
-      primaryTrackId,
-    });
-    dispatch({
-      type: "ADD_TRACK",
-      payload: track,
-    });
-    dispatch({ type: "SELECT_TRACK", payload: track.id });
-    dispatch({ type: "SELECT_ITEM", payload: null });
-  }, [dispatch, primaryTrackId, tracks]);
 
   // ==================== 素材项操作 ====================
   const handleSelectItem = useCallback(
@@ -1760,7 +1743,6 @@ export const Timeline: React.FC<{
         onTrimLeftSelected={trimSelectedStartToPlayhead}
         onTrimRightSelected={trimSelectedEndToPlayhead}
         onDeleteSelected={handleDeleteItem}
-        onAddVideoTrack={handleAddVideoTrack}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
         onZoomToFit={handleZoomToFit}

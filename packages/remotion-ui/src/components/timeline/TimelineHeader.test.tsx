@@ -50,8 +50,7 @@ describe('TimelineHeader', () => {
     expect(screen.getByRole('slider', { name: 'Timeline zoom' })).toBeTruthy();
   });
 
-  it('exposes a visible control for adding another video track', () => {
-    const onAddVideoTrack = vi.fn();
+  it('does not offer a manual add-track control (tracks are created by dragging media in)', () => {
     render(
       <TimelineHeader
         zoom={1}
@@ -60,7 +59,6 @@ describe('TimelineHeader', () => {
         canRedo={false}
         onUndo={() => {}}
         onRedo={() => {}}
-        onAddVideoTrack={onAddVideoTrack}
         onZoomIn={() => {}}
         onZoomOut={() => {}}
         onToggleSnap={() => {}}
@@ -68,10 +66,8 @@ describe('TimelineHeader', () => {
       />,
     );
 
-    const addVideoTrack = screen.getByRole('button', { name: 'Add video track' });
-    expect(addVideoTrack.textContent).toContain('Video track');
-    addVideoTrack.click();
-    expect(onAddVideoTrack).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: 'Add video track' })).toBeNull();
+    expect(screen.queryByText('Video track')).toBeNull();
   });
 
   it('exposes working Undo and Redo controls with disabled state', () => {
