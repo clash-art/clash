@@ -1,0 +1,4 @@
+both open: true
+sign-out A: 200
+revoked still open after 4000 ms (readyState 1)
+control still open after 4000 ms (readyState 1)

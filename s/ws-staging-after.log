@@ -1,0 +1,8 @@
+both open: true
+sign-out A: 200
+revoked closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." after 149 ms
+control still open after 4000 ms (readyState 1)
+both open: true
+sign-out A: 200
+revoked closed 1008 "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked." after 163 ms
+control still open after 4000 ms (readyState 1)

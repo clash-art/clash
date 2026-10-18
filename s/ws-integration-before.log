@@ -1,0 +1,99 @@
+
+ RUN  v4.1.0 /workspace/wt-ws/apps/api-cf
+
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/cfworker-provider.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/client.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/sse.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/transport.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/auth.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/auth.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/auth-utils.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/server/auth/errors.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/@modelcontextprotocol+sdk@1.28.0_@cfworker+json-schema@4.1.1_zod@4.6.7/node_modules/@modelcontextprotocol/sdk/dist/esm/client/streamableHttp.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/index.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/cron.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/utils.js" points to missing source files
+Sourcemap for "/workspace/wt-ws/node_modules/.pnpm/cron-schedule@6.0.0/node_modules/cron-schedule/dist/cron-parser.js" points to missing source files
+stdout | src/integration/project-websocket-auth.integration.test.ts > rechecks a deleted D1 session on an admitted socket
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:53.485Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 0 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > rechecks a deleted D1 session on an admitted socket
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:53.491Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 1 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > rechecks a deleted D1 session on an admitted socket
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:53.495Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 0 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > rechecks a deleted D1 session on an admitted socket
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:53.497Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 0 clients","context":{}}
+
+console warning; message = An event handler returned a value of type "number" that will be ignored. Event handlers should not have a return value.
+stdout | src/integration/project-websocket-auth.integration.test.ts > rechecks a expired D1 session on an admitted socket
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:56.523Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 0 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > rechecks a expired D1 session on an admitted socket
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:56.531Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 1 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > does not deliver legacy raw broadcasts to a revoked idle observer
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:59.556Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 0 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > does not deliver legacy raw broadcasts to a revoked idle observer
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:59.563Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 1 clients","context":{}}
+
+stdout | src/integration/project-websocket-auth.integration.test.ts > does not deliver legacy raw broadcasts to a revoked idle observer
+{"schemaVersion":1,"timestamp":"2026-10-18T08:05:59.578Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 2 clients","context":{}}
+
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+A header value for "x-device-name" contains non-ASCII characters: "Clash Host · studio" (raw bytes: "\x43\x6c\x61\x73\x68\x20\x48\x6f\x73\x74\x20\xc2\xb7\x20\x73\x74\x75\x64\x69\x6f"). As a quirk to support Unicode, we are encoding values as UTF-8 in the header, but in a browser this would likely result in a TypeError exception. Consider encoding this string in ASCII for compatibility with browser implementations of the Fetch specification.
+stdout | src/integration/project-websocket-auth.integration.test.ts > expires an established JWT connection before its next protocol command
+{"schemaVersion":1,"timestamp":"2026-10-18T08:06:02.627Z","component":"api-cf","module":"project-room","level":"debug","event":"Presence: 1 clients","context":{}}
+
+ ❯ src/integration/project-websocket-auth.integration.test.ts (11 tests | 4 failed) 18282ms
+   × rechecks a deleted D1 session on an admitted socket 3030ms
+   × rechecks a expired D1 session on an admitted socket 3038ms
+   × does not deliver legacy raw broadcasts to a revoked idle observer 3046ms
+   × expires an established JWT connection before its next protocol command 4407ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/integration/project-websocket-auth.integration.test.ts > rechecks a deleted D1 session on an admitted socket
+ FAIL  src/integration/project-websocket-auth.integration.test.ts > rechecks a expired D1 session on an admitted socket
+ FAIL  src/integration/project-websocket-auth.integration.test.ts > does not deliver legacy raw broadcasts to a revoked idle observer
+ FAIL  src/integration/project-websocket-auth.integration.test.ts > expires an established JWT connection before its next protocol command
+Error: Revoked socket remained open
+ ❯ src/integration/project-websocket-auth.integration.test.ts:210:20
+    208|   return new Promise<CloseEvent>((resolve, reject) => {
+    209|     const timer = setTimeout(
+    210|       () => reject(new Error("Revoked socket remained open")),
+       |                    ^
+    211|       3000,
+    212|     );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+
+Vitest caught 1 unhandled error during the test run.
+This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+EnvironmentTeardownError: [vitest-worker]: Closing rpc while "onUserConsoleLog" was pending
+This error originated in "src/integration/project-websocket-auth.integration.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 7 passed (11)
+     Errors  1 error
+   Start at  04:05:40
+   Duration  27.06s (transform 4.63s, setup 7.98s, import 48ms, tests 18.28s, environment 0ms)
+
