@@ -229,6 +229,101 @@ it("runs shared generation phases and checkpoint work through real PG BullMQ wit
   }
 });
 
+it("recovers an exhausted run and projects deadline_exceeded", async () => {
+  const input = process.env.CLUSTER_POSTGRES_URL;
+  if (!input) throw Error("Use the disposable PostgreSQL runner");
+  const url = new URL(input);
+  if (!["localhost", "127.0.0.1"].includes(url.hostname))
+    throw Error("Loopback only");
+  const admin = new Pool({ connectionString: input });
+  const name = `deadline_${randomUUID().replaceAll("-", "")}`;
+  await admin.query(`CREATE DATABASE ${name}`);
+  url.pathname = `/${name}`;
+  const database = openPostgres({ connectionString: url.href });
+  let runtime: ReturnType<typeof createNodeTaskRuntime> | undefined;
+  try {
+    await migrateDatabase(database.db);
+    await migrateTaskQueue(url.href);
+    const journal = createPostgresRunJournal(database.db);
+    // Long enough for the dispatch flow and the recovery flow to exhaust and be revived.
+    const deadlineAt = Date.now() + 1500;
+    const projectedFailures: Array<{ code: string }> = [];
+    const realCoordinator = createCloudDurableRunCoordinator({
+      ownerId: "node",
+      journal,
+      provider: {
+        submit: async () => {
+          throw Error("provider unavailable");
+        },
+        poll: async () => {
+          throw Error("Unexpected poll");
+        },
+      },
+      outputStore: {
+        stage: async () => ({ key: "unused" }),
+      },
+      publisher: {
+        publish: async () => {},
+        publishFailure: async ({ failure }) => {
+          projectedFailures.push(failure);
+        },
+      },
+      retryPolicy: createBoundedRetryPolicy({
+        maxFailures: { submit: 2, poll: 2, stage: 2, publish: 2 },
+        baseDelayMs: 20,
+        maxDelayMs: 100,
+      }),
+    });
+    // The coordinator is unavailable until the deadline, so BullMQ exhausts
+    // its attempts. After the deadline the real engine must fail the run.
+    const coordinator = {
+      async coordinate(
+        command: Parameters<typeof realCoordinator.coordinate>[0],
+      ) {
+        if (command.type === "advance" && Date.now() < deadlineAt)
+          throw Error("coordinator unavailable");
+        return realCoordinator.coordinate(command);
+      },
+    };
+    const identity = { actionRunId: "deadline-run", outputSlot: "video" };
+    runtime = createNodeTaskRuntime({
+      connectionString: url.href,
+      db: database.db,
+      coordinator,
+      journal,
+      attempts: 1,
+      recoveryIntervalMs: 50,
+      onError: () => {},
+    });
+    await runtime.start();
+    await coordinator.coordinate({
+      type: "create",
+      ...identity,
+      executorInput: {},
+      deadlineAt,
+    });
+    await runtime.dispatchRuns();
+    await until(async () => {
+      const run = await journal.load(identity);
+      return run?.phase === "failed" && run.projectedAt !== undefined;
+    });
+    const run = await journal.load(identity);
+    expect(run).toMatchObject({
+      phase: "failed",
+      failure: { code: "deadline_exceeded" },
+    });
+    expect(run?.projectedAt).toBeTypeOf("number");
+    expect(projectedFailures.map((failure) => failure.code)).toEqual([
+      "deadline_exceeded",
+    ]);
+  } finally {
+    await runtime?.close();
+    await database.close();
+    await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);
+    await admin.end();
+  }
+});
+
 it("recovers a killed stage worker without replaying completed Provider work", async () => {
   const input = process.env.CLUSTER_POSTGRES_URL!;
   const url = new URL(input);

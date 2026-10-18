@@ -32,6 +32,15 @@ interface RunTask {
 }
 const key = (parts: unknown[]) =>
   createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+const LIVE_JOB_STATES = new Set([
+  "active",
+  "waiting",
+  "waiting-children",
+  "delayed",
+  "prioritized",
+]);
+const asError = (error: unknown, fallback: string): Error =>
+  error instanceof Error ? error : Error(fallback, { cause: error });
 
 /** Explicit deployment operation, never run by HTTP or worker startup. */
 export async function migrateTaskQueue(
@@ -74,11 +83,16 @@ export function createNodeTaskRuntime(options: {
   onError?: (error: Error) => void;
   lockDuration?: number;
   stalledInterval?: number;
+  /** Job attempts per flow step; defaults to the production value. */
+  attempts?: number;
+  /** Recovery sweep cadence; defaults to the production value. */
+  recoveryIntervalMs?: number;
 }) {
   if (Boolean(options.coordinator) !== Boolean(options.journal))
     throw Error("Coordinator and journal must be supplied together");
   const connection = { connectionString: options.connectionString, max: 5 };
   const flows = new FlowProducer({ connection }, createPostgresBackend);
+  const runs = new Queue(RUN_QUEUE, { connection }, createPostgresBackend);
   const snapshots = new Queue(
     CHECKPOINT_QUEUE,
     { connection },
@@ -94,16 +108,51 @@ export function createNodeTaskRuntime(options: {
         .child("task-runtime")
         .error("task_runtime.error", errorFacts(error)));
   flows.on("error", onError);
+  runs.on("error", onError);
   snapshots.on("error", onError);
   const jobOptions = {
-    attempts: 20,
+    attempts: options.attempts ?? 20,
     backoff: { type: "exponential", delay: 1000 },
     removeOnComplete: false,
     removeOnFail: false,
   };
+  const recoveryIntervalMs = options.recoveryIntervalMs ?? 15_000;
+  // A run has two BullMQ generations: the dispatch flow and one recovery
+  // flow. The recovery ids are stable per identity, so concurrent sweeps on
+  // several workers converge on the same jobs instead of stacking flows.
+  const jobIdFor = (
+    identity: DurableRunIdentity,
+    stage: Stage,
+    recovery = false,
+  ) =>
+    key(
+      recovery
+        ? [identity.actionRunId, identity.outputSlot, stage, "recovery"]
+        : [identity.actionRunId, identity.outputSlot, stage],
+    );
+  // One construction for initial dispatch and recovery.
+  const flowFor = (identity: DurableRunIdentity, recovery = false) => {
+    const node = (stage: Stage) => ({
+      name: stage,
+      queueName: RUN_QUEUE,
+      data: { identity, stage },
+      opts: {
+        ...jobOptions,
+        jobId: jobIdFor(identity, stage, recovery),
+        failParentOnFailure: true,
+      },
+    });
+    return {
+      ...node("publish"),
+      children: [{ ...node("stage"), children: [node("provider")] }],
+    };
+  };
+  const jobState = async (jobId: string) =>
+    (await (await runs.getJob(jobId))?.getState()) ?? "missing";
   let started = false;
   const stopping = new AbortController();
   let dispatchLoop: Promise<void> | undefined;
+  let recoveryLoop: Promise<void> | undefined;
   const checkpointPublisher: ReplicaNotificationPublisher = {
     async publish(event) {
       await snapshots.add("compact", event, {
@@ -130,20 +179,7 @@ export function createNodeTaskRuntime(options: {
             actionRunId: row.action_run_id,
             outputSlot: row.output_slot,
           };
-          const node = (stage: Stage) => ({
-            name: stage,
-            queueName: RUN_QUEUE,
-            data: { identity, stage },
-            opts: {
-              ...jobOptions,
-              jobId: key([identity.actionRunId, identity.outputSlot, stage]),
-              failParentOnFailure: true,
-            },
-          });
-          await flows.add({
-            ...node("publish"),
-            children: [{ ...node("stage"), children: [node("provider")] }],
-          });
+          await flows.add(flowFor(identity));
           await tx.query(
             "DELETE FROM cloud_run_dispatch WHERE action_run_id=$1 AND output_slot=$2",
             [identity.actionRunId, identity.outputSlot],
@@ -151,6 +187,54 @@ export function createNodeTaskRuntime(options: {
         }
         return rows.rows.length;
       });
+    },
+    async recoverRuns() {
+      if (!options.coordinator || !options.journal) return 0;
+      const journal = options.journal;
+      const due = await options.coordinator.coordinate({
+        type: "recoverable",
+      });
+      if (due.kind !== "recoverable") return 0;
+      let scheduled = 0;
+      for (const identity of due.identities) {
+        // One rejected identity must not starve the rows after it; the row
+        // stays due and the next sweep retries it.
+        try {
+          const run = await journal.load(identity);
+          if (!run || reached(run, "publish")) continue;
+          const recoveryJobId = jobIdFor(identity, "publish", true);
+          const [baseState, recoveryState] = await Promise.all([
+            jobState(jobIdFor(identity, "publish")),
+            jobState(recoveryJobId),
+          ]);
+          if (
+            LIVE_JOB_STATES.has(baseState) ||
+            LIVE_JOB_STATES.has(recoveryState)
+          )
+            continue;
+          if (recoveryState === "failed" || recoveryState === "completed") {
+            // Each stage only advances the shared engine until it reaches its
+            // phase, so reviving the publish job alone drives the run to a
+            // terminal state (deadline_exceeded once deadlineAt has passed).
+            try {
+              await (await runs.getJob(recoveryJobId))!.retry(recoveryState, {
+                resetAttemptsMade: true,
+                resetAttemptsStarted: true,
+              });
+            } catch (error) {
+              // Another worker's sweep revived it first: not a failure.
+              if (LIVE_JOB_STATES.has(await jobState(recoveryJobId))) continue;
+              throw error;
+            }
+          } else {
+            await flows.add(flowFor(identity, true));
+          }
+          scheduled += 1;
+        } catch (error) {
+          onError(asError(error, "Run recovery failed"));
+        }
+      }
+      return scheduled;
     },
     async start() {
       if (started) return;
@@ -194,7 +278,23 @@ export function createNodeTaskRuntime(options: {
           createPostgresBackend,
         );
         worker.on("error", onError);
-        worker.on("failed", (_job, error) => onError(error));
+        worker.on("failed", (job, error) => {
+          if (job) {
+            const attempts = job.opts.attempts ?? 1;
+            if (job.attemptsMade >= attempts)
+              apiNodeLog
+                .child("task-runtime")
+                .error("task_runtime.run_attempts_exhausted", {
+                  actionRunId: job.data.identity.actionRunId,
+                  outputSlot: job.data.identity.outputSlot,
+                  stage: job.data.stage,
+                  attemptsMade: job.attemptsMade,
+                  attempts,
+                  ...errorFacts(error),
+                });
+          }
+          onError(error);
+        });
         workers.push(worker);
       }
       const snapshotWorker = new Worker(
@@ -233,15 +333,13 @@ export function createNodeTaskRuntime(options: {
       snapshotWorker.on("failed", (_job, error) => onError(error));
       workers.push(snapshotWorker);
       await Promise.all(workers.map((w) => w.waitUntilReady()));
-      if (options.coordinator)
+      if (options.coordinator && options.journal) {
         dispatchLoop = (async () => {
           while (!stopping.signal.aborted) {
             try {
               await this.dispatchRuns();
             } catch (error) {
-              onError(
-                error instanceof Error ? error : Error("Run dispatch failed"),
-              );
+              onError(asError(error, "Run dispatch failed"));
             }
             try {
               await delay(1000, undefined, { signal: stopping.signal });
@@ -251,15 +349,35 @@ export function createNodeTaskRuntime(options: {
             }
           }
         })();
+        recoveryLoop = (async () => {
+          while (!stopping.signal.aborted) {
+            try {
+              await delay(recoveryIntervalMs, undefined, {
+                signal: stopping.signal,
+              });
+            } catch {
+              if (!stopping.signal.aborted)
+                throw Error("Recovery timer failed");
+              break;
+            }
+            try {
+              await this.recoverRuns();
+            } catch (error) {
+              onError(asError(error, "Run recovery sweep failed"));
+            }
+          }
+        })();
+      }
     },
     async close() {
       stopping.abort();
-      await dispatchLoop;
+      await Promise.all([dispatchLoop, recoveryLoop]);
       // Stop acquisition first; terminate CPU workers so a bounded shutdown can retry their jobs.
       await Promise.all(workers.map((w) => w.pause(true)));
       await Promise.all([...threads].map((t) => t.terminate()));
       await Promise.all(workers.map((w) => w.close()));
       await flows.close();
+      await runs.close();
       await snapshots.close();
     },
   };

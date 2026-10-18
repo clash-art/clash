@@ -51,7 +51,7 @@ export async function runOutboxWorker(options: {
   outbox: ReplicaOutbox;
   publisher: ReplicaNotificationPublisher;
   signal: AbortSignal;
-  onError?: () => void;
+  onError?: (error?: Error) => void;
   /** Metric label for this outbox; defaults to the notification queue. */
   queue?: OutboxQueue;
   claim?: { limit: number; leaseMs: number };
@@ -67,8 +67,12 @@ export async function runOutboxWorker(options: {
       recordOutboxDispatch(options.queue ?? "notification", result);
       pause = result.published === 0 || result.failed > 0 || result.stale > 0;
       if (result.failed > 0) options.onError?.();
-    } catch {
-      options.onError?.();
+    } catch (error) {
+      options.onError?.(
+        error instanceof Error
+          ? error
+          : Error("Outbox dispatch failed", { cause: error }),
+      );
     }
     if (pause && !options.signal.aborted) {
       try {
@@ -121,8 +125,11 @@ if (
           publisher: createPostgresNotificationPublisher(database.db),
           signal: stop.signal,
           // Queued work will retry.
-          onError: () =>
-            log.error("outbox.dispatch_failed", { queue: "notification" }),
+          onError: (error) =>
+            log.error("outbox.dispatch_failed", {
+              queue: "notification",
+              ...(error ? errorFacts(error) : {}),
+            }),
         }),
         runOutboxWorker({
           outbox: createPostgresOutbox(database.db, "checkpoint"),
@@ -131,8 +138,11 @@ if (
           queue: "checkpoint",
           claim: { limit: 1, leaseMs: 300000 },
           // Queued work and log are retained for retry.
-          onError: () =>
-            log.error("outbox.dispatch_failed", { queue: "checkpoint" }),
+          onError: (error) =>
+            log.error("outbox.dispatch_failed", {
+              queue: "checkpoint",
+              ...(error ? errorFacts(error) : {}),
+            }),
         }),
         runProjectAssetImportStagingSweep({
           assetDirectory,
