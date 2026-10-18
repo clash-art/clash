@@ -16,11 +16,12 @@ vi.mock("../../services/provider-accounts", async (importOriginal) => {
 
 import type { ModelUpstreamRoute } from "@clash/shared-types";
 import type { Env } from "../../config";
-import { transcribeWithTextGeneration } from "../../generation/adapters/text-gen";
 import {
   VOICE_INPUT_MAX_AUDIO_BYTES,
+  createHostedVoiceInputPorts,
   type VoiceInputModelEntry,
 } from "@clash/shared-runtime/cloud-project-host/voice-input";
+import { describeVoiceInputContract } from "@clash/shared-runtime/cloud-project-host/voice-input-contract";
 import { createVoiceInputRoutes } from "./voice-input";
 
 const route: ModelUpstreamRoute = {
@@ -54,24 +55,15 @@ function makeApp() {
   app.route(
     "/api/v1",
     createVoiceInputRoutes({
-      createPorts: () => ({
-        resolveVoiceInputSelection: async () => ({
-          enabled: true,
-          model: "gemini-3-flash",
+      createPorts: () =>
+        createHostedVoiceInputPorts("user-1", {
+          catalog: { list: async () => [entry] },
+          credentials: {
+            resolve: async () =>
+              (await mocks.getProviderCredentials()) as Record<string, string>,
+          },
+          usage: { append: async () => {} },
         }),
-        resolveModelEntry: async () => entry,
-        transcribeWithModel: async ({ modelId, audio, prompt, language }) => {
-          if (modelId !== entry.model.id) throw new Error("unexpected model");
-          return transcribeWithTextGeneration({
-            env: {} as Env,
-            userId: "user-1",
-            route,
-            audio,
-            prompt,
-            ...(language ? { language } : {}),
-          });
-        },
-      }),
     }),
   );
   return app;
@@ -195,6 +187,7 @@ describe("Cloudflare adapter voice input", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toEqual({
       error: "Audio upload exceeds the 20 MB limit.",
+      code: "VOICE_INPUT_AUDIO_TOO_LARGE",
     });
   });
 
@@ -228,4 +221,19 @@ describe("Cloudflare adapter voice input", () => {
 
     expect(response.status).toBe(401);
   });
+});
+
+describeVoiceInputContract("api-cf (shared HTTP contract)", () => {
+  return {
+    mount: (ports) => {
+      const app = new Hono<{ Bindings: Env }>();
+      app.route(
+        "/api/v1",
+        createVoiceInputRoutes({ createPorts: () => ports }),
+      );
+      return {
+        fetch: async (request) => app.request(request, undefined, env()),
+      };
+    },
+  };
 });

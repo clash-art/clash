@@ -238,6 +238,31 @@
       "import": "./src/cloud-project-host/voice-input.ts",
       "default": "./dist/cloud-project-host/voice-input.js"
     },
+    "./voice-input-routes": {
+      "types": "./src/voice-input-routes.ts",
+      "import": "./src/voice-input-routes.ts",
+      "default": "./dist/voice-input-routes.js"
+    },
+    "./cloud-project-host/voice-input-contract": {
+      "types": "./src/cloud-project-host/voice-input-contract.ts",
+      "import": "./src/cloud-project-host/voice-input-contract.ts",
+      "default": "./dist/cloud-project-host/voice-input-contract.js"
+    },
+    "./google-service-account-auth": {
+      "types": "./src/google-service-account-auth.ts",
+      "import": "./src/google-service-account-auth.ts",
+      "default": "./dist/google-service-account-auth.js"
+    },
+    "./provider-credentials": {
+      "types": "./src/provider-credentials.ts",
+      "import": "./src/provider-credentials.ts",
+      "default": "./dist/provider-credentials.js"
+    },
+    "./secret-envelope": {
+      "types": "./src/secret-envelope.ts",
+      "import": "./src/secret-envelope.ts",
+      "default": "./dist/secret-envelope.js"
+    },
     "./cloud-project-host/plugin-catalog": {
       "types": "./src/cloud-project-host/plugin-catalog.ts",
       "import": "./src/cloud-project-host/plugin-catalog.ts",
@@ -270,6 +295,7 @@
     "@clash/shared-types": "workspace:*",
     "@noble/hashes": "2.2.0",
     "ajv": "^8.20.0",
+    "hono": "^4.7.10",
     "loro-crdt": "1.16.3"
   },
   "devDependencies": {

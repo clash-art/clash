@@ -2,9 +2,15 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { PGlite } from "@electric-sql/pglite";
 import { serve } from "@hono/node-server";
-import { expect, it } from "vitest";
+import { Hono } from "hono";
+import { expect, it, vi } from "vitest";
+import { VOICE_INPUT_NOT_CONFIGURED_MESSAGE } from "@clash/shared-runtime/cloud-project-host/voice-input";
+import { describeVoiceInputContract } from "@clash/shared-runtime/cloud-project-host/voice-input-contract";
+import { encryptProviderCredentials } from "@clash/shared-runtime/provider-credentials";
 import { createNodeCloudApp } from "./app.ts";
 import { migrateDatabase } from "./migrations.ts";
+import { appendNodeProviderUsageEvent } from "./provider-settings.ts";
+import { createNodeVoiceInputRoutes } from "./voice-input.ts";
 
 it("admits through real HTTP using database tokens and rejects forged identity/revocation", async () => {
   const db = new PGlite();
@@ -95,7 +101,7 @@ it("admits through real HTTP using database tokens and rejects forged identity/r
   }
 });
 
-it("answers provider-route voice input with 501 on the Node adapter", async () => {
+it("serves provider-route voice input with shared readiness instead of 501", async () => {
   const db = new PGlite();
   try {
     await migrateDatabase(db);
@@ -116,21 +122,215 @@ it("answers provider-route voice input with 501 on the Node adapter", async () =
     });
     const headers = { authorization: `Bearer ${token}` };
 
-    for (const [method, path] of [
-      ["GET", "/api/v1/audio/voice-input"],
-      ["POST", "/api/v1/audio/transcriptions"],
-      ["POST", "/api/v1/audio/voice-input/warmup"],
-    ] as const) {
-      const response = await app.request(path, { method, headers });
-      expect(response.status).toBe(501);
-      expect(await response.json()).toMatchObject({
-        code: "VOICE_INPUT_UNAVAILABLE",
-        error: expect.stringContaining(
-          "no hosted text-generation runtime",
-        ),
-      });
-    }
+
+    const readiness = await app.request("/api/v1/audio/voice-input", {
+      headers,
+    });
+    expect(readiness.status).toBe(200);
+    expect(await readiness.json()).toMatchObject({
+      asr: {
+        enabled: true,
+        ready: false,
+        setup: { runtime: "provider-route", status: "needs-config" },
+      },
+    });
+
+    const warmup = await app.request("/api/v1/audio/voice-input/warmup", {
+      method: "POST",
+      headers,
+    });
+    expect(warmup.status).toBe(409);
+    expect(await warmup.json()).toEqual({
+      status: "needs-config",
+      runtime: "provider-route",
+      error:
+        "The selected voice input model is not configured. Open Settings > Models and configure a provider.",
+      code: "VOICE_INPUT_NOT_CONFIGURED",
+    });
+
+    const missing = await app.request("/api/v1/audio/transcriptions", {
+      method: "POST",
+      headers,
+    });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({
+      error: "Missing file",
+      code: "VOICE_INPUT_MISSING_FILE",
+    });
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(["voice-bytes"], "voice.webm", { type: "audio/webm" }),
+    );
+    const unconfigured = await app.request("/api/v1/audio/transcriptions", {
+      method: "POST",
+      headers,
+      body: form,
+    });
+    expect(unconfigured.status).toBe(409);
+    expect(await unconfigured.json()).toEqual({
+      error: VOICE_INPUT_NOT_CONFIGURED_MESSAGE,
+      code: "VOICE_INPUT_NOT_CONFIGURED",
+    });
   } finally {
     await db.close();
   }
+});
+
+it("transcribes through PostgreSQL provider settings and records submitted + completed usage", async () => {
+  const db = new PGlite();
+  const secret = "node-voice-secret";
+  try {
+    await migrateDatabase(db);
+    const token = "clsh_" + "d".repeat(40);
+    await db.query(
+      "INSERT INTO api_token (id,user_id,name,token_hash,token_prefix) VALUES ($1,$2,$3,$4,$5)",
+      [
+        "voice-configured-token",
+        "owner",
+        "voice-configured",
+        createHash("sha256").update(token).digest("hex"),
+        "clsh_dddd",
+      ],
+    );
+    const encrypted = await encryptProviderCredentials(
+      { apiKey: "node-gemini-key" },
+      secret,
+    );
+    await db.query(
+      `INSERT INTO provider_account
+         (id,user_id,provider_id,upstream_id,api_shape,enabled,priority,
+          configured_credentials,encrypted_credentials,created_at,updated_at)
+       VALUES ('provider','owner','official','google-ai-studio','google-ai-studio',1,10,$1,$2,1,1)`,
+      [JSON.stringify(["apiKey"]), encrypted],
+    );
+    const app = createNodeCloudApp({
+      db,
+      syncBaseUrl: "https://node.example.com",
+      providerSecretKey: secret,
+    });
+    const headers = { authorization: `Bearer ${token}` };
+
+    const readiness = await app.request("/api/v1/audio/voice-input", {
+      headers,
+    });
+    expect(readiness.status).toBe(200);
+    const readinessBody = (await readiness.json()) as {
+      asr: { model: string; provider: string; ready: boolean };
+    };
+    expect(readinessBody.asr).toMatchObject({
+      provider: "google-ai-studio",
+      ready: true,
+    });
+    const model = readinessBody.asr.model;
+
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(
+          JSON.stringify({
+            candidates: [
+              { content: { parts: [{ text: "  node transcript  " }] } },
+            ],
+          }),
+          { headers: { "content-type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = new FormData();
+    form.append(
+      "file",
+      new File(["voice-bytes"], "voice.webm", {
+        type: "audio/webm;codecs=opus",
+      }),
+    );
+    form.append("language", "English");
+    const response = await app.request("/api/v1/audio/transcriptions", {
+      method: "POST",
+      headers,
+      body: form,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kind: "clash.asr.timed-transcript",
+      text: "node transcript",
+      backendId: "official",
+      modelId: model,
+      language: "English",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain(":generateContent");
+    const body = JSON.parse(String(init?.body)) as {
+      contents: Array<{
+        parts: Array<{
+          text?: string;
+          inlineData?: { mimeType?: string; data?: string };
+        }>;
+      }>;
+    };
+    expect(body.contents[0]?.parts[0]?.text).toContain(
+      "Transcribe the attached audio verbatim in English.",
+    );
+    expect(body.contents[0]?.parts[1]?.inlineData?.mimeType).toBe("audio/webm");
+
+    const usageCount = async () => {
+      const result = await db.query(
+        "SELECT count(*)::int AS count FROM provider_usage_audit WHERE user_id='owner'",
+      );
+      return Number((result.rows[0] as { count: number | string }).count);
+    };
+    // submitted (before the Provider call) + completed.
+    const statuses = await db.query(
+      "SELECT status FROM provider_usage_audit WHERE user_id='owner' ORDER BY occurred_at, status DESC",
+    );
+    expect(statuses.rows.map((row) => (row as { status: string }).status).sort()).toEqual([
+      "completed",
+      "submitted",
+    ]);
+
+    // Re-appending the same audit event id must not add a row.
+    const event = {
+      id: "voice-input:retry",
+      userId: "owner",
+      providerId: "official",
+      modelId: "gemini-3-flash",
+      operation: "gemini-3-flash-preview",
+      taskId: "retry",
+      actorType: "user" as const,
+      actorUserId: "owner",
+      idempotencyKey: "voice-input:retry",
+      status: "completed" as const,
+      estimateComplete: false,
+      currency: "USD" as const,
+      pricingSource: "unavailable" as const,
+      billingBasis: {},
+      occurredAt: new Date().toISOString(),
+    };
+    await appendNodeProviderUsageEvent(db, event);
+    await appendNodeProviderUsageEvent(db, event);
+    expect(await usageCount()).toBe(3);
+  } finally {
+    vi.unstubAllGlobals();
+    await db.close();
+  }
+});
+
+describeVoiceInputContract("api-node (shared HTTP contract)", () => {
+  return {
+    mount: (ports) => {
+      const app = new Hono<{ Variables: { userId: string } }>();
+      app.use("*", async (c, next) => {
+        c.set("userId", c.req.header("x-user-id") ?? "");
+        await next();
+      });
+      app.route(
+        "/api/v1",
+        createNodeVoiceInputRoutes({ createPorts: () => ports }),
+      );
+      return { fetch: async (request) => app.request(request) };
+    },
+  };
 });

@@ -1498,6 +1498,9 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
+      hono:
+        specifier: ^4.7.10
+        version: 4.12.27
       loro-crdt:
         specifier: 1.16.3
         version: 1.16.3

@@ -23,8 +23,13 @@ function entry(
       },
     },
     selectedRoute: {
+      modelCode: "gemini-3-flash",
+      kind: "text",
+      providerId: "official",
       upstreamId: "google-ai-studio",
+      upstreamModel: "gemini-3-flash-preview",
       apiShape: "google-ai-studio",
+      priority: 10,
     },
     missingCredentials: [],
     tier: "available",

@@ -25,6 +25,78 @@ export interface ServiceAccountAuthCredentials {
   privateKey: string;
 }
 
+export interface GoogleServiceAccount extends ServiceAccountAuthCredentials {
+  project: string;
+  location?: string;
+}
+
+/** Parse the `serviceAccountKey` JSON a Google Cloud Agent Platform provider account stores. */
+export function googleServiceAccountFromCredentials(
+  credentials: Record<string, string>,
+): GoogleServiceAccount {
+  const raw = credentials.serviceAccountKey?.trim();
+  if (!raw) {
+    throw new Error(
+      "Google Cloud Agent Platform provider account is missing service account credentials.",
+    );
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error(
+      "Google Cloud Agent Platform credentials must be a service account JSON object.",
+    );
+  }
+  const clientEmail =
+    typeof parsed.clientEmail === "string"
+      ? parsed.clientEmail
+      : typeof parsed.client_email === "string"
+        ? parsed.client_email
+        : "";
+  const privateKey =
+    typeof parsed.privateKey === "string"
+      ? parsed.privateKey
+      : typeof parsed.private_key === "string"
+        ? parsed.private_key
+        : "";
+  const project =
+    typeof parsed.project === "string"
+      ? parsed.project
+      : typeof parsed.project_id === "string"
+        ? parsed.project_id
+        : "";
+  const location =
+    typeof parsed.location === "string" && parsed.location.trim()
+      ? parsed.location.trim()
+      : "global";
+  if (!clientEmail || !privateKey || !project) {
+    throw new Error(
+      "Google Cloud Agent Platform credentials must include clientEmail/privateKey/project.",
+    );
+  }
+  return { clientEmail, privateKey, project, location };
+}
+
+/** Vertex REST address for one publisher model action (`generateContent`, `predictLongRunning`, ...). */
+export function googleAgentPlatformModelUrl(
+  account: GoogleServiceAccount,
+  modelId: string,
+  action: string,
+): string {
+  const location = account.location ?? "global";
+  if (!account.project) {
+    throw new Error(
+      "Google Cloud Agent Platform provider account is missing project.",
+    );
+  }
+  const host =
+    location === "global"
+      ? "aiplatform.googleapis.com"
+      : `${location}-aiplatform.googleapis.com`;
+  return `https://${host}/v1/projects/${account.project}/locations/${location}/publishers/google/models/${modelId}:${action}`;
+}
+
 const tokenCache = new Map<string, CachedToken>();
 const inflight = new Map<string, Promise<CachedToken>>();
 
@@ -71,7 +143,10 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
 
 // ─── JWT sign + token exchange ────────────────────────────────
 
-async function mintJwt(clientEmail: string, privateKey: CryptoKey): Promise<string> {
+async function mintJwt(
+  clientEmail: string,
+  privateKey: CryptoKey,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   const header = { alg: "RS256", typ: "JWT" };
   const claim = {
@@ -106,9 +181,14 @@ async function exchangeJwtForToken(jwt: string): Promise<CachedToken> {
       `Vertex token exchange failed (${resp.status} ${resp.statusText}): ${text.slice(0, 300)}`,
     );
   }
-  const data = (await resp.json()) as { access_token?: string; expires_in?: number };
+  const data = (await resp.json()) as {
+    access_token?: string;
+    expires_in?: number;
+  };
   if (!data.access_token || !data.expires_in) {
-    throw new Error("Vertex token exchange returned no access_token/expires_in");
+    throw new Error(
+      "Vertex token exchange returned no access_token/expires_in",
+    );
   }
   return {
     accessToken: data.access_token,
@@ -118,7 +198,10 @@ async function exchangeJwtForToken(jwt: string): Promise<CachedToken> {
 
 // ─── Public: getAccessToken(env) ──────────────────────────────
 
-async function getVertexAccessTokenForRawCredentials(clientEmail: string, privateKey: string): Promise<string> {
+async function getVertexAccessTokenForRawCredentials(
+  clientEmail: string,
+  privateKey: string,
+): Promise<string> {
   if (!clientEmail || !privateKey) {
     throw new Error(
       "Agent Platform auth requires clientEmail and privateKey provider credentials",
@@ -154,8 +237,13 @@ async function getVertexAccessTokenForRawCredentials(clientEmail: string, privat
   return token.accessToken;
 }
 
-export async function getVertexAccessTokenForCredentials(credentials: ServiceAccountAuthCredentials): Promise<string> {
-  return getVertexAccessTokenForRawCredentials(credentials.clientEmail, credentials.privateKey);
+export async function getVertexAccessTokenForCredentials(
+  credentials: ServiceAccountAuthCredentials,
+): Promise<string> {
+  return getVertexAccessTokenForRawCredentials(
+    credentials.clientEmail,
+    credentials.privateKey,
+  );
 }
 
 /** Clear the cached token for a given client email. For tests / manual revoke. */

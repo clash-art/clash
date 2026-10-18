@@ -66,6 +66,30 @@ business contracts; PostgreSQL persists account, admission and task data.
 This enables real registration/login and owned Project listing through the Web
 frontend. It does not establish full Node editor, Asset or generation parity.
 
+## Voice input
+
+The Node adapter serves the shared Provider-route voice-input contract:
+`GET /api/v1/audio/voice-input`, `POST /api/v1/audio/voice-input/warmup` and
+`POST /api/v1/audio/transcriptions`. Readiness, catalog selection, the
+multipart/size limit and transcription run through
+`@clash/shared-runtime/cloud-project-host/voice-input`; Node supplies the
+PostgreSQL catalog, credential and usage-audit ports.
+
+Migration `0015_provider_settings.sql` adds `provider_account`,
+`model_card_config`, `model_card_provider_binding` and `provider_usage_audit`,
+mirroring the D1 tables the Cloudflare adapter reads. Provider credentials are
+AES-GCM envelopes keyed by `ACTION_SECRET_KEY` (the same secret-envelope scheme
+as Cloudflare); plaintext credentials are never stored or returned. Each transcription
+records a `submitted` usage event before the Provider is called and a
+`completed` or `failed` event after (`ON CONFLICT (id) DO NOTHING`). An audit
+write failure fails the request with `VOICE_INPUT_USAGE_AUDIT_FAILED`; it is never
+swallowed.
+
+Node has no provider-settings UI or account-creation route yet. Until rows are
+provisioned administratively, voice input answers the shared `not-configured`
+readiness (not 501), exactly like a hosted user with no Provider account.
+`host.voiceInput` is available and `host.localAudio` stays unavailable.
+
 ## Snapshot + append log
 
 Under `/api/v1/projects/:id/replica`:

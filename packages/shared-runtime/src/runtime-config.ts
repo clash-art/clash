@@ -125,8 +125,8 @@ export function defaultRuntimeCapabilities(
         // Served by the shared text-revisions module (Cloudflare adapter:
         // D1 + R2; Node adapter: Postgres + disk).
         textRevisions: "available",
-        // The Cloudflare adapter serves Voice input through the user's
-        // Provider accounts; Node answers the route with 501.
+        // Both hosted adapters serve the shared voice-input routes; readiness
+        // then depends on the signed-in user's Provider settings.
         voiceInput: "available",
         localAudio: "unavailable",
       },

@@ -12,7 +12,16 @@
  * it runs on the user's machine, so it stays in apps/local-api and the hosted
  * adapters answer that capability with 501.
  */
-import type { AsrTimedTranscript } from "@clash/shared-types";
+import type {
+  AsrTimedTranscript,
+  ModelUpstreamRoute,
+} from "@clash/shared-types";
+import { VoiceInputError } from "./voice-input-error.js";
+import {
+  transcribeWithProviderTextGeneration,
+  type ProviderCredentialsPort,
+  type ProviderUsageAuditPort,
+} from "../voice-input-provider.js";
 
 /** Maximum audio upload accepted by the Provider-route transcription endpoint. */
 export const VOICE_INPUT_MAX_AUDIO_BYTES = 20 * 1024 * 1024;
@@ -31,12 +40,6 @@ export interface VoiceInputSelection {
   model: string;
 }
 
-/** The subset of a model route readiness needs; adapters pass their own route. */
-export interface VoiceInputRoute {
-  upstreamId?: string;
-  apiShape?: string;
-}
-
 /**
  * The subset of a catalog entry readiness needs. `selectedRoute`,
  * `missingCredentials` and `tier` are the hosted catalog's readiness facts;
@@ -51,10 +54,10 @@ export interface VoiceInputModelEntry {
       inputMode: { audios?: unknown };
     };
   };
-  selectedRoute: VoiceInputRoute | null;
+  selectedRoute: ModelUpstreamRoute | null;
   missingCredentials: readonly string[];
   tier: "available" | "configured-provider" | "all";
-  routes?: readonly VoiceInputRoute[];
+  routes?: readonly ModelUpstreamRoute[];
 }
 
 export interface VoiceInputAudio {
@@ -90,6 +93,22 @@ export interface VoiceInputPorts {
   }): Promise<VoiceInputModelResult>;
 }
 
+/** Adapter port: every catalog entry available to the signed-in user. */
+export interface VoiceInputCatalogPort {
+  list(userId: string): Promise<readonly VoiceInputModelEntry[]>;
+}
+
+/**
+ * The hosted adapters' complete port set. Store/catalog construction belongs
+ * to each adapter; selection, readiness and the Provider call are shared.
+ */
+export interface VoiceInputHostedPorts {
+  catalog: VoiceInputCatalogPort;
+  credentials: ProviderCredentialsPort;
+  usage: ProviderUsageAuditPort;
+  fetch?: typeof fetch;
+}
+
 export interface VoiceInputReadinessSetup {
   provider: string;
   runtime: "provider-route" | "builtin-rpc";
@@ -111,15 +130,7 @@ export interface VoiceInputReadinessResponse {
 
 export type VoiceInputReadinessStatus = "disabled" | "ready" | "not-configured";
 
-export class VoiceInputError extends Error {
-  constructor(
-    message: string,
-    readonly status: 400 | 409 | 502,
-  ) {
-    super(message);
-    this.name = "VoiceInputError";
-  }
-}
+export { VoiceInputError, type VoiceInputErrorCode } from "./voice-input-error.js";
 
 function setup(
   provider: string,
@@ -259,7 +270,11 @@ export function buildVoiceInputTimedTranscript(input: {
 }): AsrTimedTranscript {
   const text = input.text.trim();
   if (!text) {
-    throw new VoiceInputError(VOICE_INPUT_EMPTY_TRANSCRIPT_MESSAGE, 502);
+    throw new VoiceInputError(
+      VOICE_INPUT_EMPTY_TRANSCRIPT_MESSAGE,
+      502,
+      "VOICE_INPUT_EMPTY_TRANSCRIPT",
+    );
   }
   const language = input.language?.trim();
   return {
@@ -300,7 +315,11 @@ export async function transcribeVoiceInputWithProvider(input: {
     input.selection ??
     (await input.ports.resolveVoiceInputSelection(input.userId));
   if (!selection.enabled) {
-    throw new VoiceInputError(VOICE_INPUT_DISABLED_MESSAGE, 409);
+    throw new VoiceInputError(
+      VOICE_INPUT_DISABLED_MESSAGE,
+      409,
+      "VOICE_INPUT_DISABLED",
+    );
   }
   const entry = await input.ports.resolveModelEntry(
     input.userId,
@@ -335,4 +354,72 @@ export async function transcribeVoiceInputWithProvider(input: {
     modelId: entry.model.id,
     language,
   });
+}
+
+/**
+ * Catalog-to-selection rule for hosted adapters: the first ready Provider
+ * route when one exists, otherwise the first audio-capable text model so
+ * readiness can say "not configured" instead of disappearing.
+ */
+export function chooseVoiceInputSelection(
+  entries: readonly VoiceInputModelEntry[],
+): VoiceInputSelection {
+  const candidates = entries.filter(
+    (entry) =>
+      voiceInputUsesProviderRoute(entry) &&
+      entry.selectedRoute?.apiShape !== "local-asr",
+  );
+  const chosen = candidates.find(isVoiceInputProviderReady) ?? candidates[0];
+  return chosen
+    ? { enabled: true, model: chosen.model.id }
+    : { enabled: false, model: "" };
+}
+
+/**
+ * Build the high-level ports from the hosted adapter's catalog, credential
+ * resolver, audit sink and fetch. Both hosted adapters mount the same route
+ * factory over these ports.
+ */
+export function createHostedVoiceInputPorts(
+  userId: string,
+  ports: VoiceInputHostedPorts,
+): VoiceInputPorts {
+  let catalogPromise: Promise<readonly VoiceInputModelEntry[]> | undefined;
+  const catalog = () => (catalogPromise ??= ports.catalog.list(userId));
+  const entryFor = async (modelId: string) =>
+    (await catalog()).find((entry) => entry.model.id === modelId) ?? null;
+  const transcriptionPorts = {
+    credentials: ports.credentials,
+    usage: ports.usage,
+    ...(ports.fetch ? { fetch: ports.fetch } : {}),
+  };
+
+  return {
+    async resolveVoiceInputSelection() {
+      return chooseVoiceInputSelection(await catalog());
+    },
+    async resolveModelEntry(_userId, modelId) {
+      return entryFor(modelId);
+    },
+    async transcribeWithModel({ modelId, audio, prompt, language }) {
+      const entry = await entryFor(modelId);
+      const route = entry?.selectedRoute;
+      if (!route) {
+        throw new VoiceInputError(VOICE_INPUT_NOT_CONFIGURED_MESSAGE, 409);
+      }
+      const result = await transcribeWithProviderTextGeneration({
+        userId,
+        route,
+        audio,
+        prompt,
+        ...(language ? { language } : {}),
+        ports: transcriptionPorts,
+      });
+      return {
+        text: result.text,
+        provider: result.provider,
+        model: result.model,
+      };
+    },
+  };
 }

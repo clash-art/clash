@@ -14,6 +14,8 @@
     "minimax-video.ts": "Hosted request/credential translation over the shared portable MiniMax executor; no blocking poll loop.",
     "settings-d1.ts": "D1-backed settings and historical installed-record reads/removal. Worker Action manifest installation returns structured 410 before any D1 access; real executable installation belongs to Local Host.",
     "cloud-plugin-packages.ts": "Bundled plugin packages (static JSON imports) and the executable projection surfaces of the hosted Worker. Lazy-only: never import from the startup graph.",
-    "cloud-plugin-catalog.ts": "Builds the catalog on first use after registering the generated precompiled Generator validators (workerd forbids Ajv runtime compilation)."
+    "cloud-plugin-catalog.ts": "Builds the catalog on first use after registering the generated precompiled Generator validators (workerd forbids Ajv runtime compilation).",
+    "provider-accounts.ts": "D1 provider accounts with AES-GCM credential envelopes shared through @clash/shared-runtime/provider-credentials; public rows expose only configured credential key names.",
+    "provider-usage.ts": "D1 append-only provider usage audit using INSERT OR IGNORE on the event id, so re-appending the same event is a no-op."
   }
 }

@@ -15,7 +15,7 @@ import {
   decryptSecretJson,
   encryptSecretJson,
   requireSecretEnvelopeKey,
-} from "./secret-envelope";
+} from "@clash/shared-runtime/secret-envelope";
 
 const PLUGIN_SECRET_SALT = "clash-plugin-endpoint-secret";
 const SCHEMA_HASH = /^sha256:[0-9a-f]{64}$/;
