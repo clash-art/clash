@@ -1554,7 +1554,7 @@ export class ProjectRoom extends DurableObject<Env> {
       try {
         const body = await request.json() as GenerationNodePublication & TimelineRenderNodePublication;
         const render = operation === "timeline-render-publication";
-        if (!body.taskId || !body.nodeId || !body.actorUserId || (render ? !body.render === !body.failure : !body.updates || typeof body.updates !== "object")) return Response.json({ error: "Invalid generation publication" }, { status: 400 });
+        if (!body.taskId || !body.nodeId || !body.actorUserId || (render ? !body.render === !body.failure : !body.updates || typeof body.updates !== "object")) return Response.json({ error: "Invalid generation publication", code: "GENERATION_PUBLICATION_INVALID" }, { status: 400 });
         await assertHostedGenerationAccess(this.env, { projectId, actorUserId: body.actorUserId } as never);
         // NodeProcessor calls admission while processing this room's import queue.
         // Its matching pendingTask is already installed locally; persist it before
@@ -1579,7 +1579,11 @@ export class ProjectRoom extends DurableObject<Env> {
         } });
         return Response.json({ ok: true });
       } catch (error) {
-        return Response.json({ error: error instanceof GenerationPublicationConflict ? error.message : "Generation publication failed" }, { status: error instanceof GenerationPublicationConflict ? 409 : 503 });
+        if (error instanceof GenerationPublicationConflict)
+          return Response.json({ error: error.message, code: "GENERATION_PUBLICATION_CONFLICT" }, { status: 409 });
+        const message = error instanceof Error && error.message ? error.message : String(error);
+        log.error(`${operation} failed:`, error);
+        return Response.json({ error: `${operation} failed in the Project room: ${message}`, code: "GENERATION_PUBLICATION_FAILED" }, { status: 503 });
       }
     }
 

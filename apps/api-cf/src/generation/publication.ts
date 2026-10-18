@@ -165,19 +165,8 @@ export async function publishHostedGeneration(
       },
     ),
   );
+  if (!response.ok) throw await projectRoomGenerationError(response, "publication");
   await response.body?.cancel();
-  if (
-    response.status === 409 ||
-    response.status === 403 ||
-    response.status === 404
-  )
-    throw new GenerationPublicationConflict(
-      `Project generation publication rejected: HTTP ${response.status}`,
-    );
-  if (!response.ok)
-    throw new Error(
-      `Project generation publication failed: HTTP ${response.status}`,
-    );
   if (publication.asset)
     await addAssetRef(env.DB, publication.asset.id!, params.projectId);
 }
@@ -221,6 +210,9 @@ export async function generationPublicationUpdate(
   const status = publication.failure ? Status.Failed : Status.Completed;
   const updates = {
     ...publication.updates,
+    // The run's failure is the node's failure; success clears any earlier one.
+    error: publication.failure?.message,
+    errorCode: publication.failure?.code,
     pendingTask: undefined,
     status,
     generationRunId: publication.taskId,
@@ -307,18 +299,36 @@ export async function claimHostedGenerationNode(
       },
     ),
   );
+  if (!response.ok) throw await projectRoomGenerationError(response, "admission");
   await response.body?.cancel();
-  if ([403, 404, 409].includes(response.status))
-    throw new GenerationPublicationConflict(
-      `Project generation admission rejected: HTTP ${response.status}`,
-    );
-  if (!response.ok)
-    throw Object.assign(
-      new Error(
-        `Project generation admission unavailable: HTTP ${response.status}`,
-      ),
-      { status: response.status },
-    );
+}
+
+/**
+ * The ProjectRoom's own coded error for a failed generation admission or
+ * publication, so the run's failure (and the node) says why, not just the
+ * HTTP status. 403/404/409 are a conflict: the node or Project moved on.
+ */
+async function projectRoomGenerationError(
+  response: Response,
+  operation: "admission" | "publication",
+): Promise<Error> {
+  const body = (await response.json().catch(() => null)) as {
+    error?: unknown;
+    code?: unknown;
+  } | null;
+  const code =
+    typeof body?.code === "string" && body.code
+      ? body.code
+      : "PROJECT_ROOM_RESPONSE_UNREADABLE";
+  const reason =
+    typeof body?.error === "string" && body.error
+      ? body.error
+      : "the Project room returned no error message";
+  const conflict = [403, 404, 409].includes(response.status);
+  const message = `Project generation ${operation} ${conflict ? "rejected" : "unavailable"} (HTTP ${response.status}, ${code}): ${reason}`;
+  return conflict
+    ? new GenerationPublicationConflict(message)
+    : Object.assign(new Error(message), { status: response.status, code });
 }
 
 export function generationAdmissionUpdate(
@@ -345,6 +355,7 @@ export function generationAdmissionUpdate(
     new Canvas(candidate, () => undefined).updateNode(publication.nodeId, {
       pendingTask: publication.taskId,
       status: Status.Generating,
+      error: undefined,
       errorMessage: undefined,
       errorCode: undefined,
     });

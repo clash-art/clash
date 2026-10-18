@@ -173,6 +173,15 @@ describe("Node Timeline render", () => {
     expect(
       (await db.query("SELECT action_run_id FROM cloud_run_dispatch")).rows,
     ).toEqual([{ action_run_id: actionRunId }]);
+    // A failure left on the claimed node (an earlier attempt) is cleared on success.
+    await withProjectDocument(db, "owner", "p", true, (doc) => {
+      const nodes = doc.getMap("nodes");
+      const claimed = nodes.get(renderNodeId) as { data: Record<string, unknown> };
+      nodes.set(renderNodeId, {
+        ...claimed,
+        data: { ...claimed.data, error: "Render timed out", errorCode: "deadline_exceeded" },
+      });
+    });
 
     const renders: Array<Record<string, any>> = [];
     const mediaReads: number[] = [];
@@ -238,6 +247,8 @@ describe("Node Timeline render", () => {
     const first = await published();
     expect(first.node).toMatchObject({ status: "completed", assetId: actionRunId });
     expect(first.node?.pendingTask ?? null).toBeNull();
+    expect(first.node?.error ?? null).toBeNull();
+    expect(first.node?.errorCode ?? null).toBeNull();
     expect(first.assets).toEqual(
       expect.arrayContaining([
         { id: actionRunId, provenance: { kind: "render", actionRunId } },
@@ -287,9 +298,14 @@ describe("Node Timeline render", () => {
       n++
     )
       await service.coordinator.coordinate({ type: "advance", identity });
-    expect((await service.journal.load(identity))?.phase).toBe("failed");
+    const run = await service.journal.load(identity);
+    expect(run?.phase).toBe("failed");
     const failed = await renderNode(body.renderNodeId);
-    expect(failed).toMatchObject({ status: "failed" });
+    expect(failed).toMatchObject({
+      status: "failed",
+      error: durablePublicFailure(run!.failure!).message,
+      errorCode: run!.failure!.code,
+    });
     expect(failed?.pendingTask ?? null).toBeNull();
     expect(
       await readProject((doc) =>

@@ -1545,7 +1545,7 @@ describe("durable executable Provider generation", () => {
         prompt: "A glass city",
         modelId: "mutated-video-model",
         error: "The replacement revision failed",
-        failureCode: "invalid_request",
+        errorCode: "invalid_request",
       }));
 
     const target = doc.getMap("nodes").get("node-1") as Record<string, any>;
@@ -1554,7 +1554,7 @@ describe("durable executable Provider generation", () => {
       prompt: "A glass city",
       modelId: "mutated-video-model",
       error: "The replacement revision failed",
-      failureCode: "invalid_request",
+      errorCode: "invalid_request",
     });
     expect(target.data.assetId).toBeUndefined();
     expect(readProjectAsset(doc, staged.projectAssetId)).not.toBeNull();
@@ -2289,6 +2289,12 @@ describe("durable model-gen node projection (Tripo H3.1 GLB completion)", () => 
     });
 
     await first.process({ doc, projectId: "project-1" });
+    // A failure left on the running node (an earlier attempt) is cleared on success.
+    const running = doc.getMap("nodes").get("node-1") as Record<string, any>;
+    doc.getMap("nodes").set("node-1", {
+      ...running,
+      data: { ...running.data, error: "Earlier attempt failed", errorCode: "deadline_exceeded" },
+    });
 
     const staged = await createLocalPluginAssetStagingStore({ dataDir }).stage({
       projectId: "project-1",
@@ -2329,6 +2335,8 @@ describe("durable model-gen node projection (Tripo H3.1 GLB completion)", () => 
       status: "completed",
       assetId: staged.projectAssetId,
     });
+    expect(target.data.error).toBeUndefined();
+    expect(target.data.errorCode).toBeUndefined();
     expect(readProjectAsset(doc, staged.projectAssetId)).not.toBeNull();
     const actionRunId = identityFromProviderTaskId(
       providerTaskId,
@@ -2375,8 +2383,9 @@ describe("durable model-gen node projection (Tripo H3.1 GLB completion)", () => 
     const target = doc.getMap("nodes").get("node-1") as Record<string, any>;
     expect(target.data).toMatchObject({
       status: "failed",
-      failureCode: "invalid_request",
+      errorCode: "invalid_request",
     });
     expect(typeof target.data.error).toBe("string");
+    expect(target.data).not.toHaveProperty("failureCode");
   });
 });

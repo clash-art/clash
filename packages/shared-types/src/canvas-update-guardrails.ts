@@ -34,6 +34,7 @@ const ACTION_CHECKPOINT_SEMANTIC_FIELDS = new Set([
   "customActionId",
   "customActionParams",
   "error",
+  "errorCode",
   "metadata",
   "model",
   "modelEndpoint",

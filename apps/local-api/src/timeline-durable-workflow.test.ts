@@ -851,7 +851,7 @@ describe("Local durable Timeline render workflow", () => {
     expect(doc.getMap("nodes").get("render-invalid-owner")).toMatchObject({
       data: {
         status: "failed",
-        failureCode: "TIMELINE_RENDER_INPUT_INVALID",
+        errorCode: "TIMELINE_RENDER_INPUT_INVALID",
       },
     });
   });
@@ -887,7 +887,7 @@ describe("Local durable Timeline render workflow", () => {
     expect(doc.getMap("nodes").get("render-1")).toMatchObject({
       data: {
         status: "failed",
-        failureCode: "provider_unavailable",
+        errorCode: "provider_unavailable",
         error:
           "Generation failed. See the owning Host for private diagnostics.",
       },

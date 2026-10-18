@@ -192,6 +192,8 @@ export const NodeDataSchema = z.object({
   modelParams: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
   referenceImageUrls: z.array(z.string()).optional(),
   error: z.string().optional(),
+  /** Durable-run/task failure code of a failed node (e.g. `deadline_exceeded`). */
+  errorCode: z.string().optional(),
   sourceNodeId: z.string().optional(),
   /** Custom action ID (e.g. "style-transfer") for custom:* action types */
   customActionId: z.string().optional(),

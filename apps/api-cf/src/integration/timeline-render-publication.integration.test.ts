@@ -14,6 +14,7 @@ import {
   readProjectAsset,
 } from "@clash/shared-types";
 import { projectProjectAsset } from "@clash/shared-runtime/cloud-project-host/project-assets";
+import { durablePublicFailure } from "@clash/shared-runtime/durable-run-engine";
 import type { Env } from "../config";
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
 import { publishHostedGeneration } from "../generation/publication";
@@ -230,6 +231,7 @@ describe("hosted Timeline render publication", () => {
     expect(listProjectAssets(doc, { projectId })).toEqual([]);
     const version = JSON.stringify(doc.oplogVersion().toJSON());
     const error = node.data.error;
+    const errorCode = node.data.errorCode;
     doc.free();
 
     // The render node's run, found through its journaled frozen params.
@@ -240,11 +242,13 @@ describe("hosted Timeline render publication", () => {
       .first<{ action_run_id: string }>();
     const run = await loadRun(row!.action_run_id);
     expect(run.phase).toBe("failed");
+    // The node carries the run's public failure code next to its message.
+    expect(errorCode).toBe(durablePublicFailure(run.failure!).code);
 
     // Neither a redelivered nor a stale run's failure rewrites the node.
     const params = frozenGeneration(run).params;
     const failure: HostedGenerationPublication = {
-      updates: { errorMessage: "late" },
+      updates: {},
       failure: { code: "publication_failed", message: "late" },
     };
     await publishHostedGeneration(bindings, params, failure);
@@ -255,7 +259,7 @@ describe("hosted Timeline render publication", () => {
     );
     const after = await snapshot(projectId);
     expect(JSON.stringify(after.oplogVersion().toJSON())).toBe(version);
-    expect(renderNode(after, nodeId)!.data.error).toBe(error);
+    expect(renderNode(after, nodeId)!.data).toMatchObject({ error, errorCode });
     after.free();
   });
 });

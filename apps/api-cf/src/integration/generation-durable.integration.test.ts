@@ -298,7 +298,7 @@ it("does not expose a stale task's prepared Asset in the Project catalog", async
       .first(),
   ).toBeNull();
   await publishHostedGeneration(bindings, params, {
-    updates: { errorMessage: "superseded" },
+    updates: {},
     failure: { code: "publication_failed", message: "superseded" },
   });
   const persisted = new LoroDoc();
