@@ -123,11 +123,29 @@ export interface UploadServicePorts {
 // ─── Shared helpers (moved from api-cf; layout unchanged) ───────────────────
 
 export class MultipartContentError extends Error {
+  readonly code?: string;
+
   constructor(
     readonly status: 400 | 403 | 409 | 410 | 501,
     message: string,
+    options?: { code?: string; cause?: unknown },
   ) {
-    super(message);
+    super(
+      message,
+      options?.cause === undefined ? undefined : { cause: options.cause },
+    );
+    this.code = options?.code;
+  }
+}
+
+/**
+ * The staged parts could not be assembled into the object (disk full, a part
+ * vanished or could not be read). The store removed its partial object.
+ */
+export class MultipartAssemblyError extends Error {
+  constructor(message: string, options: { cause: unknown }) {
+    super(message, options);
+    this.name = "MultipartAssemblyError";
   }
 }
 

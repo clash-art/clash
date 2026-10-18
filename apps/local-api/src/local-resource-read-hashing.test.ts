@@ -212,6 +212,12 @@ describe("local reads never re-hash immutable Asset bytes", () => {
     });
     expect(imported).toMatchObject({ id: "asset:chunked", status: "ready" });
     expect(fullHashPasses(ASSET_BYTES)).toBe(1);
+    // The assembly pass is the only hash and the commit adopts the object by
+    // rename: the assembled object is never read back.
+    expect(
+      observed.readStreams.filter((path) => path.includes("/objects/")),
+    ).toEqual([]);
+    expect(blobReads(f.digest)).toEqual([]);
 
     const media = await f.app.request(
       `${ORIGIN}/api/v1/projects/${f.projectId}/assets/asset%3Achunked/media`,

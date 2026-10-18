@@ -32,6 +32,7 @@ import {
   type AssetDeliveryStore,
 } from "@clash/asset-sdk/delivery";
 import {
+  MultipartAssemblyError,
   MultipartContentError,
   handleMultipartContent,
 } from "@clash/asset-sdk/upload-service";
@@ -55,6 +56,21 @@ export const PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED =
   "PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED";
 export const PROJECT_ASSET_IMPORT_STAGING_SWEEP_FAILED =
   "PROJECT_ASSET_IMPORT_STAGING_SWEEP_FAILED";
+/** The uploaded parts could not be assembled into the staged object. */
+export const PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED =
+  "PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED";
+/** A finalize failed for a reason the adapter did not classify. */
+export const PROJECT_ASSET_IMPORT_FAILED = "PROJECT_ASSET_IMPORT_FAILED";
+/** Finalize failure codes; each failure also deletes the session's staging. */
+export const PROJECT_ASSET_IMPORT_SESSION_INVALID =
+  "PROJECT_ASSET_IMPORT_SESSION_INVALID";
+export const PROJECT_ASSET_IMPORT_STAGING_NOT_FOUND =
+  "PROJECT_ASSET_IMPORT_STAGING_NOT_FOUND";
+export const PROJECT_ASSET_IMPORT_SIZE_MISMATCH =
+  "PROJECT_ASSET_IMPORT_SIZE_MISMATCH";
+/** Response header set when an import returned the existing Asset unchanged. */
+export const PROJECT_ASSET_IMPORT_REPLAY_HEADER =
+  "x-clash-asset-import-replayed";
 
 /** Abandoned staging is swept only after twice the session lifetime. */
 export const PROJECT_ASSET_IMPORT_STAGING_SWEEP_OLDER_THAN_MS =
@@ -88,11 +104,11 @@ export interface ProjectAssetImportStagingSweepResult {
 
 export interface ProjectAssetImportStagingPort {
   store: AssetDeliveryStore;
-  /** Delete staged bytes after a successful finalize. */
+  /** Delete staged bytes once a finalize has succeeded or failed. */
   delete(locator: string): Promise<void>;
   /**
-   * Report a failed post-commit delete. The caller does not fail the finalize:
-   * the Asset is committed, and the periodic sweep retries the object.
+   * Report a failed staging delete. It never changes the finalize result (a
+   * committed Asset stays committed); the periodic sweep retries the object.
    */
   onCleanupFailure?(locator: string, error: unknown): void;
 }
@@ -194,10 +210,20 @@ export interface ProjectAssetImportCommitInput {
   duplicateContent?: "allow" | "reject";
   metadataHints?: AssetImportMetadataHints;
   /**
+   * The staged object, for an adapter whose own staging store can adopt the
+   * bytes it assembled (with their digest) instead of reading them again.
+   */
+  stagingLocator: string;
+  /**
    * Re-open the staged bytes; the adapter's single-shot commit path consumes
    * them and computes their digest in that one pass.
    */
   openSource(): Promise<ReadableStream<Uint8Array>>;
+}
+
+/** The Project already holds these bytes under this id: nothing was imported. */
+export interface ProjectAssetImportReplay {
+  replayed: ResolvedAsset;
 }
 
 export interface ProjectAssetImportSessionPorts {
@@ -215,7 +241,9 @@ export interface ProjectAssetImportSessionPorts {
   /** Absolute same-app URL serving the multipart protocol for this session. */
   uploadUrl(sessionId: string): string;
   /** Reuse the adapter's existing single-shot import commit path. */
-  commit(input: ProjectAssetImportCommitInput): Promise<ResolvedAsset>;
+  commit(
+    input: ProjectAssetImportCommitInput,
+  ): Promise<ResolvedAsset | ProjectAssetImportReplay>;
   /** Existing Asset for an idempotent finalize retry after staging was deleted. */
   resolveCommitted(input: {
     projectId: string;
@@ -235,7 +263,9 @@ export type ProjectAssetImportSessionResult =
     };
 
 export type ProjectAssetImportFinalizeResult =
-  | { status: 201; body: ResolvedAsset }
+  | { status: 201; body: ResolvedAsset; replayed?: false }
+  /** A replay: the existing Asset, and nothing new was imported. */
+  | { status: 200; body: ResolvedAsset; replayed: true }
   | {
       status: 400 | 403 | 404 | 409;
       body: Record<string, unknown>;
@@ -267,8 +297,9 @@ function parseDuplicateContent(
 
 const importSessionError = (
   status: 403 | 404 | 409,
+  code: string,
   error: string,
-): ProjectAssetImportFinalizeResult => ({ status, body: { error } });
+): ProjectAssetImportFinalizeResult => ({ status, body: { error, code } });
 
 /**
  * `POST /assets/import-sessions`. The returned upload URL is served by the same
@@ -351,87 +382,23 @@ export async function createProjectAssetImportSession(
 }
 
 /**
- * `POST /assets/import-sessions/:sessionId/finalize`. Re-checks the token,
- * Project access and the staged size, commits through the adapter's
- * single-shot path (which hashes the bytes once), then deletes staging. A repeat after a
- * successful finalize returns the same Asset instead of a 404.
+ * Delete a session's staged object. A failed delete is reported and left to
+ * the sweep; it never changes the finalize result.
  */
-export async function finalizeProjectAssetImportSession(
-  input: { projectId: string; sessionId: string; ownerId: string },
-  ports: ProjectAssetImportSessionPorts,
-): Promise<ProjectAssetImportFinalizeResult> {
-  const claims = await ports.tokens.verify(input.sessionId);
-  if (
-    !claims ||
-    claims.projectId !== input.projectId ||
-    claims.ownerId !== input.ownerId
-  )
-    return importSessionError(403, "Invalid import session");
-  if (
-    !(await ports.access.canAccessProject({
-      projectId: claims.projectId,
-      ownerId: claims.ownerId,
-    }))
-  )
-    return importSessionError(404, "Project not found");
-
-  const staged = await ports.staging.store.head(claims.stagingLocator);
-  if (!staged) {
-    // Staging is deleted only after a successful commit, so an existing Asset
-    // means this is an idempotent retry of the same finalize.
-    const existing = await ports.resolveCommitted({
-      projectId: claims.projectId,
-      ownerId: claims.ownerId,
-      projectAssetId: claims.projectAssetId,
-    });
-    return existing
-      ? { status: 201, body: existing }
-      : importSessionError(404, "Import session staging not found");
-  }
-  if (staged.size !== claims.byteLength)
-    return importSessionError(
-      409,
-      "Import session byte length does not match",
-    );
-  // The commit path hashes the staged bytes once while it consumes them; a
-  // separate pass here would read the whole object a second time.
-  const asset = await ports.commit({
-    ownerId: claims.ownerId,
-    projectId: claims.projectId,
-    projectAssetId: claims.projectAssetId,
-    kind: claims.kind,
-    fileName: claims.fileName,
-    byteLength: claims.byteLength,
-    ...(claims.contentType === undefined
-      ? {}
-      : { contentType: claims.contentType }),
-    ...(claims.duplicateContent === undefined
-      ? {}
-      : { duplicateContent: claims.duplicateContent }),
-    ...(claims.metadataHints === undefined
-      ? {}
-      : { metadataHints: claims.metadataHints }),
-    async openSource() {
-      const object = await ports.staging.store.get(claims.stagingLocator);
-      if (!object)
-        throw new Error("Staged Project Asset bytes are missing");
-      return object.body;
-    },
-  });
-  // The Asset is committed; staging is transport-private from here on.
+async function deleteStaging(
+  staging: ProjectAssetImportStagingPort,
+  locator: string,
+): Promise<void> {
   try {
-    await ports.staging.delete(claims.stagingLocator);
+    await staging.delete(locator);
   } catch (error) {
     // The sweep is the retry path: the object stays listed and is removed by
-    // the next sweep. Keep the 201 because the user's import already succeeded.
-    const failure = new ProjectAssetImportStagingCleanupError(
-      claims.stagingLocator,
-      error,
-    );
-    const report = ports.staging.onCleanupFailure;
+    // the next sweep.
+    const failure = new ProjectAssetImportStagingCleanupError(locator, error);
+    const report = staging.onCleanupFailure;
     if (report) {
       try {
-        report(claims.stagingLocator, failure);
+        report(locator, failure);
       } catch (reportError) {
         console.error(
           `[${PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED}] ${failure.message}`,
@@ -444,7 +411,109 @@ export async function finalizeProjectAssetImportSession(
       );
     }
   }
-  return { status: 201, body: asset };
+}
+
+/**
+ * `POST /assets/import-sessions/:sessionId/finalize`. Re-checks the token,
+ * Project access and the staged size, commits through the adapter's
+ * single-shot path (which hashes the bytes at most once), then deletes
+ * staging. Staging is deleted on every outcome of a verified session, so a
+ * failed finalize leaves no object behind; the adapter's thrown commit error
+ * is rethrown for its own error mapping. A repeat after a successful finalize
+ * returns the same Asset instead of a 404.
+ */
+export async function finalizeProjectAssetImportSession(
+  input: { projectId: string; sessionId: string; ownerId: string },
+  ports: ProjectAssetImportSessionPorts,
+): Promise<ProjectAssetImportFinalizeResult> {
+  const claims = await ports.tokens.verify(input.sessionId);
+  if (
+    !claims ||
+    claims.projectId !== input.projectId ||
+    claims.ownerId !== input.ownerId
+  )
+    return importSessionError(
+      403,
+      PROJECT_ASSET_IMPORT_SESSION_INVALID,
+      "Invalid import session",
+    );
+  const locator = claims.stagingLocator;
+  let committed: ResolvedAsset | ProjectAssetImportReplay;
+  try {
+    if (
+      !(await ports.access.canAccessProject({
+        projectId: claims.projectId,
+        ownerId: claims.ownerId,
+      }))
+    ) {
+      await deleteStaging(ports.staging, locator);
+      return importSessionError(404, "PROJECT_NOT_FOUND", "Project not found");
+    }
+
+    const staged = await ports.staging.store.head(locator);
+    if (!staged) {
+      // Staging is deleted only after a finalize, so an existing Asset means
+      // this is an idempotent retry of the same finalize.
+      const existing = await ports.resolveCommitted({
+        projectId: claims.projectId,
+        ownerId: claims.ownerId,
+        projectAssetId: claims.projectAssetId,
+      });
+      return existing
+        ? { status: 201, body: existing }
+        : importSessionError(
+            404,
+            PROJECT_ASSET_IMPORT_STAGING_NOT_FOUND,
+            "Import session staging not found",
+          );
+    }
+    if (staged.size !== claims.byteLength) {
+      await deleteStaging(ports.staging, locator);
+      return importSessionError(
+        409,
+        PROJECT_ASSET_IMPORT_SIZE_MISMATCH,
+        "Import session byte length does not match",
+      );
+    }
+    // The commit path hashes the staged bytes at most once (an adapter that
+    // assembled them already knows their digest); a separate pass here would
+    // read the whole object again.
+    committed = await ports.commit({
+      ownerId: claims.ownerId,
+      projectId: claims.projectId,
+      projectAssetId: claims.projectAssetId,
+      kind: claims.kind,
+      fileName: claims.fileName,
+      byteLength: claims.byteLength,
+      ...(claims.contentType === undefined
+        ? {}
+        : { contentType: claims.contentType }),
+      ...(claims.duplicateContent === undefined
+        ? {}
+        : { duplicateContent: claims.duplicateContent }),
+      ...(claims.metadataHints === undefined
+        ? {}
+        : { metadataHints: claims.metadataHints }),
+      stagingLocator: locator,
+      async openSource() {
+        const object = await ports.staging.store.get(locator);
+        if (!object)
+          throw new Error("Staged Project Asset bytes are missing");
+        return object.body;
+      },
+    });
+  } catch (error) {
+    // A failed finalize cannot be completed by a retry of the same session;
+    // its staged bytes are deleted now rather than by the sweep.
+    await deleteStaging(ports.staging, locator);
+    throw error;
+  }
+  // Staging is transport-private from here on. A failed delete keeps the
+  // result: the user's import already succeeded.
+  await deleteStaging(ports.staging, locator);
+  return "replayed" in committed
+    ? { status: 200, body: committed.replayed, replayed: true }
+    : { status: 201, body: committed };
 }
 
 /**
@@ -508,8 +577,35 @@ export async function handleProjectAssetImportSessionContent(
         { error: error.message, code: error.code, maxBytes: error.maxBytes },
         { status: 413 },
       );
-    if (error instanceof MultipartContentError)
-      return Response.json({ error: error.message }, { status: error.status });
+    if (error instanceof MultipartContentError) {
+      const errno = (error.cause as { code?: unknown } | null | undefined)
+        ?.code;
+      return Response.json(
+        {
+          error: error.message,
+          ...(error.code ? { code: error.code } : {}),
+          ...(error.code && errno !== undefined
+            ? {
+                cause:
+                  typeof errno === "string" ? errno : errorMessage(error.cause),
+              }
+            : {}),
+        },
+        { status: error.status },
+      );
+    }
+    if (error instanceof MultipartAssemblyError) {
+      const errno = (error.cause as { code?: unknown } | null | undefined)
+        ?.code;
+      return Response.json(
+        {
+          error: error.message,
+          code: PROJECT_ASSET_IMPORT_ASSEMBLY_FAILED,
+          cause: typeof errno === "string" ? errno : errorMessage(error.cause),
+        },
+        { status: 500 },
+      );
+    }
     return Response.json(
       { error: "Project Asset import transport unavailable" },
       { status: 503 },

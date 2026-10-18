@@ -24,6 +24,7 @@ import {
 } from "@clash/shared-types";
 
 import {
+  assetPathForDelete,
   assetPathForRead,
   assetPathForWrite,
   normalizeLocalBlobStorageKey,
@@ -87,6 +88,13 @@ export interface LocalResourceStagingProjection {
 }
 
 export type LocalResourceByteSource = AsyncIterable<Uint8Array> | Readable;
+
+/** A structured event worth surfacing in the Host log (e.g. an EXDEV fallback). */
+export interface LocalResourceStoreEvent {
+  level: "info" | "error";
+  event: string;
+  fields: Record<string, unknown>;
+}
 
 /** The streamed bytes contradict what the transport declared; no staging receipt exists. */
 export class LocalResourceStreamMismatchError extends Error {
@@ -240,6 +248,20 @@ export interface LocalResourceStore {
     expectedDigest?: string;
     originalName?: string;
   }): Promise<LocalResourceStagingProjection>;
+  /**
+   * Takes ownership of a file already assembled elsewhere (with its digest
+   * computed in that assembly pass) without hashing or copying it: the file is
+   * renamed into the staging path and the same inode is sealed later. If the
+   * rename crosses filesystems (EXDEV) it is streamed instead and the fallback
+   * is reported through `onEvent`.
+   */
+  adoptAssembled(input: {
+    sourcePath: string;
+    digest: string;
+    byteLength: number;
+  }): Promise<LocalResourceStagingProjection>;
+  /** Drops a staging receipt and its file; a sealed original is unaffected. */
+  discardStaged(resourceId: string): Promise<void>;
   resolveStaged(
     resourceId: string,
   ): Promise<LocalResourceStagingProjection | undefined>;
@@ -453,6 +475,30 @@ async function writeAll(handle: FileHandle, chunk: Uint8Array): Promise<void> {
   }
 }
 
+/** Bounded copy for the cross-filesystem adoption fallback. */
+async function copyFileBounded(
+  sourcePath: string,
+  targetPath: string,
+): Promise<void> {
+  const handle = await open(targetPath, "w", 0o444);
+  let handleOpen = true;
+  try {
+    for await (const chunk of createReadStream(sourcePath)) {
+      if (!(chunk instanceof Uint8Array)) {
+        throw new Error("Local Resource copy stream returned a non-byte chunk.");
+      }
+      await writeAll(handle, chunk);
+    }
+    await handle.sync();
+    await handle.close();
+    handleOpen = false;
+  } catch (error) {
+    if (handleOpen) await handle.close().catch(() => undefined);
+    await unlink(targetPath).catch(() => undefined);
+    throw error;
+  }
+}
+
 function pathlessReadStream(path: string): Readable {
   return Readable.from(
     (async function* () {
@@ -516,6 +562,7 @@ function sameFacts(
 export function createLocalResourceStore(options: {
   dataDir: string;
   clashRoot?: string;
+  onEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalResourceStore {
   const databasePath = `${options.dataDir}/local.sqlite`;
 
@@ -1026,6 +1073,135 @@ export function createLocalResourceStore(options: {
       if (!normalized) return undefined;
       const row = await stagingRowFor(normalized);
       return row ? stagingProjection(row) : undefined;
+    },
+
+    async adoptAssembled(input) {
+      const digest = input.digest.trim().toLowerCase();
+      resourceIdForSha256(digest);
+      if (!Number.isSafeInteger(input.byteLength) || input.byteLength < 0) {
+        throw new Error(
+          "An assembled Resource byte length must be a non-negative safe integer.",
+        );
+      }
+      const resourceId = resourceIdForSha256(digest);
+      const existing = await stagingRowFor(resourceId);
+      if (existing) {
+        try {
+          return await stagingProjection(existing);
+        } catch (error) {
+          if (!(error instanceof LocalResourceError)) throw error;
+        }
+      }
+      const source = await stat(input.sourcePath).catch(
+        (error: NodeJS.ErrnoException) => {
+          throw new Error(
+            `Assembled Resource ${resourceId} has no file at ${input.sourcePath}${error.code ? ` (${error.code})` : ""}.`,
+            { cause: error },
+          );
+        },
+      );
+      if (!source.isFile() || source.size !== input.byteLength) {
+        throw new Error(
+          `Assembled Resource ${resourceId} is ${source.size} bytes; the assembly reported ${input.byteLength}.`,
+        );
+      }
+      const storageKey = `local-blobs/${digest}/staging`;
+      const path = await assetPathForWrite(
+        options.dataDir,
+        storageKey,
+        options.clashRoot,
+      );
+      let moved = false;
+      try {
+        try {
+          await rename(input.sourcePath, path);
+        } catch (error) {
+          const errno = errnoCode(error);
+          if (errno === "EXDEV") {
+            const started = Date.now();
+            await copyFileBounded(input.sourcePath, path);
+            options.onEvent?.({
+              level: "info",
+              event: "project_asset_import.exdev_fallback",
+              fields: {
+                resourceId,
+                bytes: input.byteLength,
+                ms: Date.now() - started,
+                reason: errno,
+              },
+            });
+          } else if (errno === "EEXIST" || errno === "EPERM") {
+            // Windows refuses to replace an existing target with rename.
+            await unlink(path).catch((removeError: NodeJS.ErrnoException) => {
+              if (removeError.code !== "ENOENT") throw removeError;
+            });
+            await rename(input.sourcePath, path);
+          } else {
+            throw error;
+          }
+        }
+        moved = true;
+        await chmod(path, 0o444);
+        await withDatabase((database) => {
+          database
+            .prepare(
+              `
+              INSERT OR IGNORE INTO local_resource_staging (
+                resource_id, digest_sha256, byte_length, storage_key, created_at
+              ) VALUES (?, ?, ?, ?, ?)
+            `,
+            )
+            .run(resourceId, digest, input.byteLength, storageKey, Date.now());
+        });
+        const stored = await stagingRowFor(resourceId);
+        if (
+          !stored ||
+          stored.digest !== digest ||
+          stored.byteLength !== input.byteLength ||
+          stored.storageKey !== storageKey
+        ) {
+          throw new Error(
+            `Local Resource staging receipt ${resourceId} was not indexed with the assembled facts.`,
+          );
+        }
+        return stagingProjection(stored);
+      } catch (error) {
+        // No receipt and no partially adopted file: the import session's
+        // staging delete and the finalize error still explain the failure.
+        if (moved) {
+          await unlink(path).catch(() => undefined);
+          await withDatabase((database) => {
+            database
+              .prepare(
+                "DELETE FROM local_resource_staging WHERE resource_id = ?",
+              )
+              .run(resourceId);
+          }).catch(() => undefined);
+        }
+        throw error;
+      }
+    },
+
+    async discardStaged(resourceIdInput) {
+      const resourceId = resourceIdInput.trim();
+      if (!resourceId) return;
+      const staged = await stagingRowFor(resourceId);
+      if (!staged) return;
+      // Receipt first: a crash in between leaves an unreferenced file, never a
+      // receipt without bytes.
+      await withDatabase((database) => {
+        database
+          .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
+          .run(staged.resourceId);
+      });
+      const path = await assetPathForDelete(
+        options.dataDir,
+        staged.storageKey,
+        options.clashRoot,
+      );
+      await unlink(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
     },
 
     async releaseStaged(resourceId) {

@@ -561,7 +561,8 @@ describe("Project-scoped ResolvedAsset routes", () => {
     const first = await request("multipart image");
     const second = await request("multipart image");
     expect(first.status).toBe(201);
-    expect(second.status).toBe(201);
+    // The same bytes under the same id are an explicit replay, not a new Asset.
+    expect(second.status).toBe(200);
     const expected = {
       id: "imported:multipart",
       kind: "image",
@@ -633,10 +634,12 @@ describe("Project-scoped ResolvedAsset routes", () => {
       "preassigned",
     );
 
-    // Replaying the id that already owns the bytes is not a duplicate.
-    expect(
-      (await request("asset:minted", { duplicateContent: "reject" })).status,
-    ).toBe(201);
+    // Replaying the id that already owns the bytes is not a duplicate: it
+    // returns the existing Asset as an explicit replay.
+    const replay = await request("asset:minted", {
+      duplicateContent: "reject",
+    });
+    expect(replay.status).toBe(200);
     // A second Asset over the same bytes stays possible when it is asked for.
     expect((await request("copy", { duplicateContent: "allow" })).status).toBe(
       201,

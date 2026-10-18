@@ -90,6 +90,8 @@ import {
   createProjectAssetImportSession,
   finalizeProjectAssetImportSession,
   handleProjectAssetImportSessionContent,
+  PROJECT_ASSET_IMPORT_FAILED,
+  PROJECT_ASSET_IMPORT_REPLAY_HEADER,
   PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
   type ProjectAssetImportSessionPorts,
 } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
@@ -1496,7 +1498,10 @@ function localResourceErrorResponse(error: LocalResourceError): Response {
   );
 }
 
-function localProjectAssetErrorResponse(error: unknown): Response {
+function localProjectAssetErrorResponse(
+  error: unknown,
+  options: { fallbackCode?: string } = {},
+): Response {
   if (error instanceof LocalResourceError) {
     return localResourceErrorResponse(error);
   }
@@ -1554,7 +1559,34 @@ function localProjectAssetErrorResponse(error: unknown): Response {
       status,
     );
   }
-  return json({ error: errorMessage(error) }, 500);
+  return json(
+    {
+      error: errorMessage(error),
+      ...(options.fallbackCode ? { code: options.fallbackCode } : {}),
+    },
+    500,
+  );
+}
+
+function projectAssetImportErrorResponse(error: unknown): Response {
+  const response = localProjectAssetErrorResponse(error, {
+    fallbackCode: PROJECT_ASSET_IMPORT_FAILED,
+  });
+  if (response.status >= 500) {
+    projectAssetImportLog.error("project_asset_import.failed", {
+      code:
+        error instanceof LocalResourceError
+          ? error.code
+          : error instanceof AssetSdkContractError
+            ? error.code
+            : error instanceof LocalProjectAssetMigrationError
+              ? error.code
+              : PROJECT_ASSET_IMPORT_FAILED,
+      status: response.status,
+      message: errorMessage(error),
+    });
+  }
+  return response;
 }
 
 function localGlobalAssetErrorResponse(error: unknown): Response {
@@ -3811,6 +3843,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       readReceiptVerifier: verifyLocalApiProjectAssetReadReceipt,
       assetInspection,
       assetRepresentations,
+      onResourceEvent: ({ level, event, fields }) => {
+        projectAssetImportLog[level](event, fields);
+      },
     });
     return projectAssetService;
   };
@@ -3871,22 +3906,41 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     uploadUrl: (sessionId) =>
       `${origin}/api/v1/projects/${encodeURIComponent(projectId)}/assets/import-sessions/${encodeURIComponent(sessionId)}/content`,
     async commit(input) {
-      return projectAssetServiceAt(origin).installOwned({
+      const service = projectAssetServiceAt(origin);
+      const base = {
         projectId: input.projectId,
         projectAssetId: input.projectAssetId,
         kind: input.kind,
+        name: input.fileName,
+        ...(input.contentType ? { contentType: input.contentType } : {}),
+        metadata: input.metadataHints ?? {},
+        provenance: { kind: "import" as const },
+        ...(input.duplicateContent
+          ? { duplicateContent: input.duplicateContent }
+          : {}),
+      };
+      const assembled = await importStaging.assembled(input.stagingLocator);
+      if (assembled) {
+        const result = await service.installOwnedResult({
+          ...base,
+          assembled: {
+            sourcePath: assembled.path,
+            digest: assembled.digest,
+            byteLength: assembled.size,
+          },
+        });
+        return result.replayed ? { replayed: result.asset } : result.asset;
+      }
+      // A Host restart loses the in-process assembly record; the staged object
+      // is still consumed and hashed once by the adapter.
+      const result = await service.installOwnedResult({
+        ...base,
         source: Readable.fromWeb(
           (await input.openSource()) as import("node:stream/web").ReadableStream,
         ),
         declaredByteLength: input.byteLength,
-        name: input.fileName,
-        ...(input.contentType ? { contentType: input.contentType } : {}),
-        metadata: input.metadataHints ?? {},
-        provenance: { kind: "import" },
-        ...(input.duplicateContent
-          ? { duplicateContent: input.duplicateContent }
-          : {}),
       });
+      return result.replayed ? { replayed: result.asset } : result.asset;
     },
     async resolveCommitted({ projectId: id, projectAssetId }) {
       return projectAssetServiceAt(origin).read(id, projectAssetId);
@@ -5050,7 +5104,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     try {
       // A user's filename/File.type is a format hint, not a byte assertion.
       // The mandatory Host probe seals the decoded MIME before publication.
-      const asset = await projectAssetServiceAt(requestOrigin(c)).installOwned({
+      const result = await projectAssetServiceAt(
+        requestOrigin(c),
+      ).installOwnedResult({
         projectId: c.req.param("projectId"),
         projectAssetId: projectAssetIdValue.trim(),
         ...(duplicateContent ? { duplicateContent } : {}),
@@ -5061,7 +5117,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         metadata: {},
         provenance: { kind: "import" },
       });
-      return c.json(asset, 201);
+      if (result.replayed)
+        c.header(PROJECT_ASSET_IMPORT_REPLAY_HEADER, "true");
+      return c.json(result.asset, result.replayed ? 200 : 201);
     } catch (error) {
       if (error instanceof LocalResourceStreamMismatchError) {
         return c.json(
@@ -5069,7 +5127,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           400,
         );
       }
-      return localProjectAssetErrorResponse(error);
+      return projectAssetImportErrorResponse(error);
     }
   });
 
@@ -5094,22 +5152,28 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     "/api/v1/projects/:projectId/assets/import-sessions/:sessionId/finalize",
     async (c) => {
       const projectId = c.req.param("projectId");
-      const result = await finalizeProjectAssetImportSession(
-        {
-          projectId,
-          sessionId: c.req.param("sessionId"),
-          ownerId: userId,
-        },
-        await importSessionPorts(projectId, requestOrigin(c)),
-      );
-      return c.json(result.body, result.status);
+      try {
+        const result = await finalizeProjectAssetImportSession(
+          {
+            projectId,
+            sessionId: c.req.param("sessionId"),
+            ownerId: userId,
+          },
+          await importSessionPorts(projectId, requestOrigin(c)),
+        );
+        if (result.status === 200)
+          c.header(PROJECT_ASSET_IMPORT_REPLAY_HEADER, "true");
+        return c.json(result.body, result.status);
+      } catch (error) {
+        return projectAssetImportErrorResponse(error);
+      }
     },
   );
   app.put(
     "/api/v1/projects/:projectId/assets/import-sessions/:sessionId/content",
     async (c) => {
       const projectId = c.req.param("projectId");
-      return handleProjectAssetImportSessionContent(
+      const response = await handleProjectAssetImportSessionContent(
         c.req.raw,
         {
           projectId,
@@ -5118,6 +5182,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         },
         await importSessionPorts(projectId, requestOrigin(c)),
       );
+      if (response.status >= 500) {
+        projectAssetImportLog.error("project_asset_import.content_failed", {
+          status: response.status,
+        });
+      }
+      return response;
     },
   );
 
