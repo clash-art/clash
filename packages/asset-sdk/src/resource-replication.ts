@@ -32,6 +32,8 @@ export interface ResourceReplicationResult {
 export type ResourceReplicationErrorCode =
   | "INVALID_RESOURCE"
   | "LOCAL_RESOURCE_MISSING"
+  | "LOCAL_RESOURCE_SIZE_MISMATCH"
+  | "LOCAL_RESOURCE_DIGEST_MISMATCH"
   | "UPLOAD_FAILED"
   | "REMOTE_NOT_FOUND"
   | "DOWNLOAD_FAILED"
@@ -99,20 +101,27 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return hex(new Uint8Array(digest));
 }
 
+/**
+ * Local bytes are verified here, once, before anything is uploaded: a Host
+ * does not re-hash its own immutable files on read.
+ */
 async function assertBytes(
   resource: Resource,
   bytes: Uint8Array,
+  origin: "local" | "remote",
 ): Promise<void> {
   if (bytes.byteLength !== resource.byteLength) {
     throw new ResourceReplicationError(
-      "INTEGRITY_MISMATCH",
+      origin === "local" ? "LOCAL_RESOURCE_SIZE_MISMATCH" : "INTEGRITY_MISMATCH",
       `Resource ${resource.id} has ${bytes.byteLength} bytes; expected ${resource.byteLength}.`,
     );
   }
   const actualDigest = await sha256(bytes);
   if (actualDigest !== resource.digest.value) {
     throw new ResourceReplicationError(
-      "INTEGRITY_MISMATCH",
+      origin === "local"
+        ? "LOCAL_RESOURCE_DIGEST_MISMATCH"
+        : "INTEGRITY_MISMATCH",
       `Resource ${resource.id} digest does not match its immutable facts.`,
     );
   }
@@ -163,7 +172,7 @@ export async function pushResource(
       `Local Resource ${resource.id} is not available for upload.`,
     );
   }
-  await assertBytes(resource, bytes);
+  await assertBytes(resource, bytes, "local");
 
   const delivery = await options.delivery.issueUploadUrl({
     resourceId: resource.id,
@@ -220,7 +229,7 @@ export async function pullResource(
   const existing = await options.local.read(resource.id);
   if (existing) {
     try {
-      await assertBytes(resource, existing);
+      await assertBytes(resource, existing, "local");
       return {
         status: "already-present",
         resourceId: resource.id,
@@ -251,7 +260,7 @@ export async function pullResource(
   if (declaredLength !== null)
     assertContentTransferSize(Number(declaredLength), options.maxBytes);
   const bytes = await readBoundedContent(response.body, options);
-  await assertBytes(resource, bytes);
+  await assertBytes(resource, bytes, "remote");
   await options.local.write({ resource, bytes });
   return {
     status: "downloaded",

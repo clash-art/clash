@@ -22,6 +22,7 @@ import {
   PROJECT_CLOUD_CONTENT_PART_BYTES,
   contentTransferMaxBytes,
   pushResource,
+  ResourceReplicationError,
   type AssetDeliveryPort,
   type AssetDeliveryUrl,
   type ResourceByteStore,
@@ -29,7 +30,10 @@ import {
 import { cloudContentUploadSession } from "./cloud-content-upload-sessions.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
-import { createLocalResourceStore } from "./local-resource-store.js";
+import {
+  createLocalResourceStore,
+  LocalResourceError,
+} from "./local-resource-store.js";
 import {
   cloudContentChunks,
   installCloudContentFile,
@@ -405,7 +409,23 @@ export function createLocalProjectCloudSync(
                       resource.digest.value,
                     ),
                   });
-                } else await pushResource(common);
+                } else {
+                  // pushResource verifies the bytes it read against the
+                  // Resource digest before it requests an upload URL.
+                  await pushResource(common).catch((error: unknown) => {
+                    if (
+                      error instanceof ResourceReplicationError &&
+                      (error.code === "LOCAL_RESOURCE_DIGEST_MISMATCH" ||
+                        error.code === "LOCAL_RESOURCE_SIZE_MISMATCH")
+                    )
+                      throw new LocalResourceError(
+                        error.code,
+                        `${error.message} Nothing was uploaded.`,
+                        { cause: error, resourceId: resource.id },
+                      );
+                    throw error;
+                  });
+                }
               }
             } else {
               const capability = await common.delivery.issueReadUrl({

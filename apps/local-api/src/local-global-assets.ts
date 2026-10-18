@@ -21,6 +21,7 @@ import { assetPathForRead } from "./local-asset-paths.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import {
   createLocalResourceStore,
+  LocalResourceError,
   stageLocalResourceInput,
   type LocalResourceProjection,
   type LocalResourceStageInput,
@@ -260,6 +261,9 @@ export function createLocalGlobalAssetService(options: {
           return {
             status: "failed" as const,
             error: error instanceof Error ? error.message : String(error),
+            ...(error instanceof LocalResourceError
+              ? { errorCode: error.code }
+              : {}),
           };
         }
       },

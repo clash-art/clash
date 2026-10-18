@@ -30,7 +30,10 @@ import { bodyLimit } from "hono/body-limit";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
-import { LocalResourceStreamMismatchError } from "./local-resource-store.js";
+import {
+  LocalResourceError,
+  LocalResourceStreamMismatchError,
+} from "./local-resource-store.js";
 import { serveImmutableFileProjection } from "./immutable-file-projection.js";
 import {
   handleProjectCommand,
@@ -1463,7 +1466,23 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
+/** Local bytes this Host cannot serve: missing is 404, anything else 503. */
+function localResourceErrorResponse(error: LocalResourceError): Response {
+  return json(
+    {
+      error: error.message,
+      code: error.code,
+      ...(error.resourceId ? { resourceId: error.resourceId } : {}),
+      ...(error.errno ? { errno: error.errno } : {}),
+    },
+    error.code === "LOCAL_RESOURCE_MISSING" ? 404 : 503,
+  );
+}
+
 function localProjectAssetErrorResponse(error: unknown): Response {
+  if (error instanceof LocalResourceError) {
+    return localResourceErrorResponse(error);
+  }
   if (error instanceof AssetSdkContractError) {
     const status =
       error.code === "PROJECT_ASSET_NOT_FOUND"
@@ -1522,6 +1541,9 @@ function localProjectAssetErrorResponse(error: unknown): Response {
 }
 
 function localGlobalAssetErrorResponse(error: unknown): Response {
+  if (error instanceof LocalResourceError) {
+    return localResourceErrorResponse(error);
+  }
   if (error instanceof AssetSdkContractError) {
     const status =
       error.code === "GLOBAL_ASSET_NOT_FOUND"
@@ -1862,7 +1884,10 @@ function toV1Project(
             (asset) =>
               asset.lifecycle.state === "active" &&
               (asset.kind === "image" || asset.kind === "video") &&
-              Boolean(asset.thumbnailUrl ?? asset.url),
+              // Bytes this Host cannot serve stay visible with their code
+              // instead of silently leaving the card empty.
+              (Boolean(asset.thumbnailUrl ?? asset.url) ||
+                asset.errorCode !== undefined),
           )
           .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0))
           .slice(0, 4);

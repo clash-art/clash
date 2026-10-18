@@ -3,7 +3,8 @@
  *
  * This does not add new error codes. It classifies the codes and signals that
  * the sync stack already produces (asset-sdk ResourceReplicationErrorCode and
- * AssetDeliveryErrorCode, api-cf HTTP statuses incl. MultipartContentError,
+ * AssetDeliveryErrorCode, LocalResourceErrorCode from a Host reading its own
+ * bytes, api-cf HTTP statuses incl. MultipartContentError,
  * ProjectRoom WebSocket close codes, and the Loro protocol's
  * update-rejected statuses), so every layer picks the same retry policy,
  * UI surface and log level.
@@ -60,6 +61,10 @@ const CODE_SEVERITY: Readonly<
   LOCAL_RESOURCE_MISSING: ["degraded", "none"],
   INVALID_RESOURCE: ["fatal", "none"],
   INTEGRITY_MISMATCH: ["fatal", "none"],
+  // LocalResourceErrorCode: this Host's own immutable bytes cannot be uploaded
+  LOCAL_RESOURCE_UNREADABLE: ["user_action_required", "none"],
+  LOCAL_RESOURCE_SIZE_MISMATCH: ["fatal", "none"],
+  LOCAL_RESOURCE_DIGEST_MISMATCH: ["fatal", "none"],
   // AssetDeliveryErrorCode
   INVALID_INPUT: ["fatal", "none"],
   FORBIDDEN: ["user_action_required", "reauthenticate"],

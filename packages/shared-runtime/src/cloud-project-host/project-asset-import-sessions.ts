@@ -21,8 +21,6 @@
  * import commit path. The session id is the HMAC token; it binds owner,
  * Project, Asset id, byte length and the private staging locator, and expires.
  */
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
 import { AssetKindSchema, type ResolvedAsset } from "@clash/shared-types";
 import {
   PROJECT_ASSET_IMPORT_MAX_BYTES,
@@ -193,11 +191,12 @@ export interface ProjectAssetImportCommitInput {
   fileName: string;
   contentType?: string;
   byteLength: number;
-  /** Lowercase hex SHA-256 of the staged bytes. */
-  digest: string;
   duplicateContent?: "allow" | "reject";
   metadataHints?: AssetImportMetadataHints;
-  /** Re-open the staged bytes; the adapter's single-shot commit path consumes it. */
+  /**
+   * Re-open the staged bytes; the adapter's single-shot commit path consumes
+   * them and computes their digest in that one pass.
+   */
   openSource(): Promise<ReadableStream<Uint8Array>>;
 }
 
@@ -264,27 +263,6 @@ function parseDuplicateContent(
 ): "allow" | "reject" | undefined | null {
   if (value === undefined || value === null || value === "") return undefined;
   return value === "allow" || value === "reject" ? value : null;
-}
-
-/** Read a staged object once and return its lowercase hex SHA-256. */
-async function stagedDigest(
-  store: AssetDeliveryStore,
-  locator: string,
-): Promise<string | null> {
-  const object = await store.get(locator);
-  if (!object) return null;
-  const hash = sha256.create();
-  const reader = object.body.getReader();
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      hash.update(next.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return bytesToHex(hash.digest());
 }
 
 const importSessionError = (
@@ -374,8 +352,8 @@ export async function createProjectAssetImportSession(
 
 /**
  * `POST /assets/import-sessions/:sessionId/finalize`. Re-checks the token,
- * Project access and the staged size, hashes the staged bytes, commits through
- * the adapter's single-shot path, then deletes staging. A repeat after a
+ * Project access and the staged size, commits through the adapter's
+ * single-shot path (which hashes the bytes once), then deletes staging. A repeat after a
  * successful finalize returns the same Asset instead of a 404.
  */
 export async function finalizeProjectAssetImportSession(
@@ -415,9 +393,8 @@ export async function finalizeProjectAssetImportSession(
       409,
       "Import session byte length does not match",
     );
-  const digest = await stagedDigest(ports.staging.store, claims.stagingLocator);
-  if (digest === null)
-    return importSessionError(404, "Import session staging not found");
+  // The commit path hashes the staged bytes once while it consumes them; a
+  // separate pass here would read the whole object a second time.
   const asset = await ports.commit({
     ownerId: claims.ownerId,
     projectId: claims.projectId,
@@ -425,7 +402,6 @@ export async function finalizeProjectAssetImportSession(
     kind: claims.kind,
     fileName: claims.fileName,
     byteLength: claims.byteLength,
-    digest,
     ...(claims.contentType === undefined
       ? {}
       : { contentType: claims.contentType }),

@@ -217,6 +217,21 @@ export const ActionAssetBindingSchema = z
   .strict();
 export type ActionAssetBinding = z.infer<typeof ActionAssetBindingSchema>;
 
+/**
+ * Why a Host cannot serve a Resource's local bytes. Local reads only stat the
+ * immutable file; the digest is checked once at import and again only when the
+ * bytes are uploaded to the cloud.
+ */
+export const LocalResourceErrorCodeSchema = z.enum([
+  "LOCAL_RESOURCE_MISSING",
+  "LOCAL_RESOURCE_UNREADABLE",
+  "LOCAL_RESOURCE_SIZE_MISMATCH",
+  "LOCAL_RESOURCE_DIGEST_MISMATCH",
+]);
+export type LocalResourceErrorCode = z.infer<
+  typeof LocalResourceErrorCodeSchema
+>;
+
 /** One read-only Asset view resolved by the current Host. URLs are projections, never identity. */
 export const ResolvedAssetSchema = z
   .object({
@@ -247,6 +262,8 @@ export const ResolvedAssetSchema = z
     proxyUrl: z.string().url().optional(),
     progress: z.number().min(0).max(1).optional(),
     error: z.string().trim().min(1).optional(),
+    /** Coded reason a failed Asset's local bytes cannot be served. */
+    errorCode: LocalResourceErrorCodeSchema.optional(),
   })
   .strict();
 export type ResolvedAsset = z.infer<typeof ResolvedAssetSchema>;

@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { constants, createReadStream } from "node:fs";
 import { createRequire } from "node:module";
 import {
+  access,
   chmod,
   link,
-  mkdir,
   open,
-  readFile,
   rename,
   stat,
   unlink,
@@ -20,6 +19,7 @@ import {
   AssetKindSchema,
   ResourceSchema,
   type AssetKind,
+  type LocalResourceErrorCode,
   type Resource,
 } from "@clash/shared-types";
 
@@ -94,6 +94,93 @@ export class LocalResourceStreamMismatchError extends Error {
     super(message);
     this.name = "LocalResourceStreamMismatchError";
   }
+}
+
+/**
+ * This Host cannot serve a Resource's immutable local bytes. Reads only stat
+ * the file: the digest is computed once while the bytes are imported and is
+ * checked again only when they are uploaded to the cloud.
+ */
+export class LocalResourceError extends Error {
+  readonly code: LocalResourceErrorCode;
+  readonly resourceId?: string;
+  /** Node errno code of the failed filesystem call, when there was one. */
+  readonly errno?: string;
+
+  constructor(
+    code: LocalResourceErrorCode,
+    message: string,
+    options?: ErrorOptions & { resourceId?: string; errno?: string },
+  ) {
+    super(`${code}: ${message}`, options);
+    this.name = "LocalResourceError";
+    this.code = code;
+    this.resourceId = options?.resourceId;
+    this.errno = options?.errno;
+  }
+}
+
+function errnoCode(error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function localResourceFileError(
+  resourceId: string,
+  error: unknown,
+): LocalResourceError {
+  const errno = errnoCode(error);
+  if (errno === "ENOENT") {
+    return new LocalResourceError(
+      "LOCAL_RESOURCE_MISSING",
+      `Local Resource ${resourceId} has no immutable bytes on this Host.`,
+      { cause: error, resourceId, errno },
+    );
+  }
+  return new LocalResourceError(
+    "LOCAL_RESOURCE_UNREADABLE",
+    `Local Resource ${resourceId} bytes cannot be read${errno ? ` (${errno})` : ""}.`,
+    { cause: error, resourceId, ...(errno ? { errno } : {}) },
+  );
+}
+
+/**
+ * Proves the immutable file is present, readable and of its registered length
+ * without reading its content.
+ */
+async function assertLocalResourceFile(input: {
+  resourceId: string;
+  byteLength: number;
+  path: () => Promise<string>;
+}): Promise<string> {
+  let path: string;
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    path = await input.path();
+    info = await stat(path);
+  } catch (error) {
+    throw localResourceFileError(input.resourceId, error);
+  }
+  if (!info.isFile()) {
+    throw new LocalResourceError(
+      "LOCAL_RESOURCE_UNREADABLE",
+      `Local Resource ${input.resourceId} bytes are not a regular file.`,
+      { resourceId: input.resourceId },
+    );
+  }
+  if (info.size !== input.byteLength) {
+    throw new LocalResourceError(
+      "LOCAL_RESOURCE_SIZE_MISMATCH",
+      `Local Resource ${input.resourceId} has ${info.size} bytes on disk; its registry facts say ${input.byteLength}.`,
+      { resourceId: input.resourceId },
+    );
+  }
+  try {
+    await access(path, constants.R_OK);
+  } catch (error) {
+    throw localResourceFileError(input.resourceId, error);
+  }
+  return path;
 }
 
 /** Caller-held bytes, or a byte source the Host hashes and writes chunk by chunk. */
@@ -185,6 +272,10 @@ export interface LocalResourceStore {
     contentType?: string;
     localBlobKey: string;
   }): Promise<LocalResourceProjection>;
+  /**
+   * Stats the immutable file without reading it; bytes this Host cannot serve
+   * throw a coded {@link LocalResourceError}.
+   */
   resolve(resourceId: string): Promise<LocalResourceProjection | undefined>;
   resolveStream(
     resourceId: string,
@@ -475,83 +566,18 @@ export function createLocalResourceStore(options: {
     });
   }
 
-  /**
-   * Immutable bytes already hashed by this process, keyed by path and the file
-   * identity that was hashed. A read re-hashes whenever the file was replaced
-   * or touched (device, inode, size, mtime or ctime changed), so tampering
-   * that goes through the filesystem is still caught (recently changed files
-   * are always re-hashed, see rememberVerifiedRead); an unchanged file is not
-   * re-read on every projection (the Dashboard listing hashed every image and
-   * video in every project, twice, on each request).
-   */
-  const verifiedReads = new Map<string, string>();
-  const verifiedReadKey = (
-    digest: string,
-    info: Awaited<ReturnType<typeof stat>>,
-  ) =>
-    [digest, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs].join(
-      "\0",
-    );
-  function verifiedReadIdentityMatches(
-    path: string,
-    digest: string,
-    info: Awaited<ReturnType<typeof stat>>,
-  ): boolean {
-    return verifiedReads.get(path) === verifiedReadKey(digest, info);
-  }
-  function rememberVerifiedRead(
-    path: string,
-    digest: string,
-    info: Awaited<ReturnType<typeof stat>>,
-  ): void {
-    // File timestamps are coarse (often several ms). Like Git's "racy clean"
-    // rule, a file changed within the last two seconds is never trusted by
-    // identity alone: a same-length rewrite could keep the same stat facts.
-    if (Date.now() - Math.max(Number(info.mtimeMs), Number(info.ctimeMs)) < 2_000) return;
-    verifiedReads.set(path, verifiedReadKey(digest, info));
-  }
+  const pathForRead = (storageKey: string) => () =>
+    assetPathForRead(options.dataDir, storageKey, options.clashRoot);
 
+  /** Stat only: the registered digest is the identity computed at import. */
   async function projection(
     row: LocalResourceRow,
   ): Promise<LocalResourceProjection> {
-    let path: string;
-    let info: Awaited<ReturnType<typeof stat>>;
-    try {
-      path = await assetPathForRead(
-        options.dataDir,
-        row.storageKey,
-        options.clashRoot,
-      );
-      info = await stat(path);
-    } catch (error) {
-      throw new Error(
-        `Local Resource ${row.resourceId} is corrupt: immutable bytes are missing.`,
-        {
-          cause: error,
-        },
-      );
-    }
-    if (!info.isFile() || info.size !== row.byteLength) {
-      throw new Error(
-        `Local Resource ${row.resourceId} is corrupt: byte length does not match its registry facts.`,
-      );
-    }
-    if (!verifiedReadIdentityMatches(path, row.digest, info)) {
-      try {
-        await verifyBytes({
-          path,
-          digest: row.digest,
-          byteLength: row.byteLength,
-        });
-      } catch (error) {
-        verifiedReads.delete(path);
-        throw new Error(
-          `Local Resource ${row.resourceId} is corrupt: bytes do not match its immutable digest.`,
-          { cause: error },
-        );
-      }
-      rememberVerifiedRead(path, row.digest, info);
-    }
+    const path = await assertLocalResourceFile({
+      resourceId: row.resourceId,
+      byteLength: row.byteLength,
+      path: pathForRead(row.storageKey),
+    });
     return {
       resource: resourceFromRow(row),
       createdAt: row.createdAt,
@@ -563,12 +589,11 @@ export function createLocalResourceStore(options: {
   async function stagingProjection(
     row: LocalResourceStagingRow,
   ): Promise<LocalResourceStagingProjection> {
-    const path = await assetPathForRead(
-      options.dataDir,
-      row.storageKey,
-      options.clashRoot,
-    );
-    await verifyBytes({ path, digest: row.digest, byteLength: row.byteLength });
+    const path = await assertLocalResourceFile({
+      resourceId: row.resourceId,
+      byteLength: row.byteLength,
+      path: pathForRead(row.storageKey),
+    });
     return {
       receipt: {
         resourceId: row.resourceId,
@@ -649,66 +674,34 @@ export function createLocalResourceStore(options: {
     });
   }
 
-  async function verifyBytes(input: {
-    path: string;
-    digest: string;
-    byteLength: number;
-  }): Promise<void> {
-    const digest = createHash("sha256");
-    let byteLength = 0;
-    for await (const chunk of createReadStream(input.path)) {
-      if (!(chunk instanceof Uint8Array)) {
-        throw new Error(
-          "Local Resource read stream returned a non-byte chunk.",
-        );
-      }
-      byteLength += chunk.byteLength;
-      digest.update(chunk);
-    }
-    if (byteLength !== input.byteLength) {
-      throw new Error(
-        "Local Resource byte length does not match the claimed immutable facts.",
-      );
-    }
-    if (digest.digest("hex") !== input.digest) {
-      throw new Error(
-        "Local Resource digest does not match the claimed immutable facts.",
-      );
-    }
-  }
-
+  /**
+   * Publishes the staged inode, whose digest was computed while it was
+   * written, at the sealed path. Any other file already there is replaced by
+   * that inode instead of being re-hashed.
+   */
   async function materializeStagedBytes(input: {
     sourcePath: string;
     targetPath: string;
-    digest: string;
-    byteLength: number;
   }): Promise<void> {
-    await link(input.sourcePath, input.targetPath).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code !== "EEXIST") throw error;
-      },
-    );
     try {
-      await verifyBytes({
-        path: input.targetPath,
-        digest: input.digest,
-        byteLength: input.byteLength,
-      });
-    } catch {
-      const temporaryPath = `${input.targetPath}.repair-${randomUUID()}`;
-      await link(input.sourcePath, temporaryPath);
-      try {
-        await rename(temporaryPath, input.targetPath);
-      } finally {
-        await unlink(temporaryPath).catch(() => undefined);
+      await link(input.sourcePath, input.targetPath);
+    } catch (error) {
+      if (errnoCode(error) !== "EEXIST") throw error;
+      const [source, target] = await Promise.all([
+        stat(input.sourcePath),
+        stat(input.targetPath).catch(() => undefined),
+      ]);
+      if (!target || target.dev !== source.dev || target.ino !== source.ino) {
+        const temporaryPath = `${input.targetPath}.repair-${randomUUID()}`;
+        await link(input.sourcePath, temporaryPath);
+        try {
+          await rename(temporaryPath, input.targetPath);
+        } finally {
+          await unlink(temporaryPath).catch(() => undefined);
+        }
       }
     }
     await chmod(input.targetPath, 0o444);
-    await verifyBytes({
-      path: input.targetPath,
-      digest: input.digest,
-      byteLength: input.byteLength,
-    });
   }
 
   async function sealResource(
@@ -764,7 +757,7 @@ export function createLocalResourceStore(options: {
       try {
         await projection(existing);
       } catch (error) {
-        if (!stagedRow) throw error;
+        if (!stagedRow || !(error instanceof LocalResourceError)) throw error;
         const staged = await stagingProjection(stagedRow);
         const path = await assetPathForWrite(
           options.dataDir,
@@ -774,8 +767,6 @@ export function createLocalResourceStore(options: {
         await materializeStagedBytes({
           sourcePath: staged.path,
           targetPath: path,
-          digest: existing.digest,
-          byteLength: existing.byteLength,
         });
       }
       if (factsVerified && !existing.factsVerified) {
@@ -815,8 +806,6 @@ export function createLocalResourceStore(options: {
     await materializeStagedBytes({
       sourcePath: staged.path,
       targetPath: path,
-      digest: stagedRow.digest,
-      byteLength: stagedRow.byteLength,
     });
     return persist(intended, storageKey, factsVerified);
   }
@@ -840,7 +829,8 @@ export function createLocalResourceStore(options: {
       if (existing) {
         try {
           return await stagingProjection(existing);
-        } catch {
+        } catch (error) {
+          if (!(error instanceof LocalResourceError)) throw error;
           // A retry that supplies the exact digest bytes can restore a staging
           // projection damaged outside the Host without publishing a Resource.
           const path = await assetPathForWrite(
@@ -854,7 +844,6 @@ export function createLocalResourceStore(options: {
             mode: 0o444,
           });
           try {
-            await verifyBytes({ path: temporaryPath, digest, byteLength });
             await rename(temporaryPath, path);
           } finally {
             await unlink(temporaryPath).catch(() => undefined);
@@ -873,16 +862,16 @@ export function createLocalResourceStore(options: {
       const temporaryPath = `${path}.staging-${randomUUID()}`;
       await writeFile(temporaryPath, input.bytes, { flag: "wx", mode: 0o444 });
       try {
-        await link(temporaryPath, path).catch(
-          (error: NodeJS.ErrnoException) => {
-            if (error.code !== "EEXIST") throw error;
-          },
-        );
+        await link(temporaryPath, path);
+      } catch (error) {
+        if (errnoCode(error) !== "EEXIST") throw error;
+        // An unreferenced file left at this path is replaced by the bytes
+        // just hashed rather than re-read.
+        await rename(temporaryPath, path);
       } finally {
         await unlink(temporaryPath).catch(() => undefined);
       }
       await chmod(path, 0o444);
-      await verifyBytes({ path, digest, byteLength });
       await withDatabase((database) => {
         database
           .prepare(
@@ -997,15 +986,12 @@ export function createLocalResourceStore(options: {
         try {
           await link(temporaryPath, path);
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-          try {
-            await verifyBytes({ path, digest, byteLength });
-          } catch {
-            await rename(temporaryPath, path);
-          }
+          if (errnoCode(error) !== "EEXIST") throw error;
+          // The bytes just hashed while streaming replace whatever file is
+          // already at this path; it is never re-read to decide.
+          await rename(temporaryPath, path);
         }
         await chmod(path, 0o444);
-        await verifyBytes({ path, digest, byteLength });
         await withDatabase((database) => {
           database
             .prepare(
@@ -1054,11 +1040,11 @@ export function createLocalResourceStore(options: {
       ) {
         return;
       }
-      // The staging file may be the last intact copy; only a sealed projection
-      // that still verifies may replace it.
+      // The staging file may be the last intact copy; only a sealed file that
+      // is present at its registered length may replace it.
       await projection(sealed);
       // Receipt first: a crash in between leaves an unreferenced file that the
-      // next stage of the same digest re-adopts, never a receipt without bytes.
+      // next stage of the same digest replaces, never a receipt without bytes.
       await withDatabase((database) => {
         database
           .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
@@ -1107,13 +1093,13 @@ export function createLocalResourceStore(options: {
         storageKey,
         options.clashRoot,
       );
-      await verifyBytes({
-        path,
-        digest: input.digest,
-        byteLength: input.byteLength,
-      });
-      const staged = await store.stage({
-        bytes: new Uint8Array(await readFile(path)),
+      // The one hash pass over the adopted bytes both checks the claimed digest
+      // and stages them.
+      const staged = await store.stageStream({
+        source: createReadStream(path),
+        declaredByteLength: input.byteLength,
+        maxByteLength: input.byteLength,
+        expectedDigest: input.digest,
       });
       const sealed = await sealResource(
         {

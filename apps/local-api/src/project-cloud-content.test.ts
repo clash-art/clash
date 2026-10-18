@@ -94,16 +94,24 @@ it("verifies files before multipart upload and reads exact bounded portions", as
   });
   expect(Buffer.concat(received)).toEqual(Buffer.from(input.value));
   expect(completed).toBe(true);
+  const offline = {
+    url: "https://cloud.invalid/body",
+    fetch: async () => {
+      throw new Error("must not reach network");
+    },
+  };
   await writeFile(input.path, "wrong");
   await expect(
-    uploadCloudContentFile({
-      ...input,
-      url: "https://cloud.invalid/body",
-      fetch: async () => {
-        throw new Error("must not reach network");
-      },
-    }),
-  ).rejects.toThrow(/integrity/);
+    uploadCloudContentFile({ ...input, ...offline }),
+  ).rejects.toMatchObject({ code: "LOCAL_RESOURCE_SIZE_MISMATCH" });
+  // Same length, different bytes: only this upload-time hash can tell.
+  await writeFile(
+    input.path,
+    input.value.map((byte) => byte ^ 1),
+  );
+  await expect(
+    uploadCloudContentFile({ ...input, ...offline }),
+  ).rejects.toMatchObject({ code: "LOCAL_RESOURCE_DIGEST_MISMATCH" });
 });
 
 it("removes partials orphaned by a killed Host but keeps fresh in-flight ones", async () => {

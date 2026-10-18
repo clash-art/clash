@@ -1173,7 +1173,7 @@ describe("local Global Asset library", () => {
     expect(video).not.toHaveProperty("thumbnailUrl");
   });
 
-  it("fails closed when equal-length Resource bytes no longer match their CAS digest", async () => {
+  it("reports Resource bytes whose length changed as LOCAL_RESOURCE_SIZE_MISMATCH", async () => {
     const { service } = await fixture();
     await service.importBytes({
       libraryId: "library-a",
@@ -1187,17 +1187,19 @@ describe("local Global Asset library", () => {
       "global:tampered",
     );
     await chmod(projection.path, 0o600);
-    await writeFile(projection.path, new TextEncoder().encode("tampered"));
+    await writeFile(projection.path, new TextEncoder().encode("truncated!"));
 
+    // Reads stat the file; the digest is only re-checked on cloud upload.
     await expect(
       service.read("library-a", "global:tampered"),
     ).resolves.toMatchObject({
       status: "failed",
-      error: expect.stringContaining("digest"),
+      errorCode: "LOCAL_RESOURCE_SIZE_MISMATCH",
+      error: expect.stringContaining("LOCAL_RESOURCE_SIZE_MISMATCH"),
     });
     await expect(
       service.openProjection("library-a", "global:tampered"),
-    ).rejects.toThrow(/digest/);
+    ).rejects.toMatchObject({ code: "LOCAL_RESOURCE_SIZE_MISMATCH" });
   });
 
   it("persists purge as a logical tombstone without physically reclaiming shared bytes", async () => {

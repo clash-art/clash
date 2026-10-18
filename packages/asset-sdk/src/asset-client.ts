@@ -7,6 +7,7 @@ import {
   type ActionAssetBinding,
   type ProjectAssetEntry,
   type ProjectAssetTrashIfUnreferencedResult,
+  type LocalResourceErrorCode,
   type ResolvedAsset,
   type Resource,
 } from "@clash/shared-types";
@@ -119,7 +120,7 @@ export type ResourceRegistryResolution =
     }
   | { status: "ready"; resource: Resource; createdAt?: number }
   | { status: "unavailable"; error?: string }
-  | { status: "failed"; error: string };
+  | { status: "failed"; error: string; errorCode?: LocalResourceErrorCode };
 
 export interface ResourceRegistryPort {
   /**
@@ -353,6 +354,9 @@ export async function resolveProjectAsset(
           ...base,
           status: registry.status,
           ...(registry.error === undefined ? {} : { error: registry.error }),
+          ...(registry.status === "failed" && registry.errorCode !== undefined
+            ? { errorCode: registry.errorCode }
+            : {}),
         },
         "RESOURCE_CONTRACT_VIOLATION",
       );

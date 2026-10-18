@@ -244,6 +244,9 @@ async function resolveGlobalAsset(
       ...base,
       status: registry.status,
       ...(registry.error === undefined ? {} : { error: registry.error }),
+      ...(registry.status === "failed" && registry.errorCode !== undefined
+        ? { errorCode: registry.errorCode }
+        : {}),
     });
   }
 

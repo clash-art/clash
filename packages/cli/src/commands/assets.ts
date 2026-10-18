@@ -84,6 +84,17 @@ export interface AssetReferencesResult {
 
 export type AssetRecordResult = ResolvedAsset;
 
+/** One human-readable line; a failed Asset carries the Host's coded reason. */
+export function assetStatusLine(asset: ResolvedAsset): string {
+  const line = `${asset.id} ${asset.kind} ${asset.status}`;
+  if (asset.status !== "failed") return line;
+  const reason =
+    asset.errorCode && !asset.error?.startsWith(`${asset.errorCode}:`)
+      ? `${asset.errorCode}: ${asset.error ?? ""}`.trim()
+      : asset.error;
+  return reason ? `${line} ${reason}` : line;
+}
+
 const projectImportIds = new WeakMap<object, string>();
 const globalImportIds = new WeakMap<object, string>();
 const globalTrashIds = new WeakMap<object, string>();
@@ -835,7 +846,7 @@ assetsCommand
         console.log("No Project Assets");
       } else {
         for (const asset of assets) {
-          console.log(`${asset.id} ${asset.kind} ${asset.status}`);
+          console.log(assetStatusLine(asset));
         }
       }
     } catch (error) {
@@ -866,7 +877,7 @@ assetsCommand
         if (isJsonMode(options)) {
           printJson(publicAssetResult(result));
         } else {
-          console.log(`${result.id} ${result.kind} ${result.status}`);
+          console.log(assetStatusLine(result));
         }
       } catch (error) {
         console.error(
@@ -1274,7 +1285,7 @@ personalGlobalAssetsCommand
         console.log("No personal Global Assets");
       } else {
         for (const asset of assets) {
-          console.log(`${asset.id} ${asset.kind} ${asset.status}`);
+          console.log(assetStatusLine(asset));
         }
       }
     } catch (error) {
@@ -1301,7 +1312,7 @@ personalGlobalAssetsCommand
       if (isJsonMode(options)) {
         printJson(publicAssetResult(result));
       } else {
-        console.log(`${result.id} ${result.kind} ${result.status}`);
+        console.log(assetStatusLine(result));
       }
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));

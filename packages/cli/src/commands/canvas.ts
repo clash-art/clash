@@ -16,7 +16,9 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import {
   DEFAULT_CANVAS_ID,
+  LocalResourceErrorCodeSchema,
   StoryboardViewStateSchema,
+  type LocalResourceErrorCode,
   type ProjectHostCommand,
   type ResolvedAsset,
 } from "@clash/shared-types";
@@ -381,9 +383,47 @@ function resolvedAssetExtension(asset: ResolvedAsset): string {
   return "";
 }
 
+/** The Host reported why it cannot serve an Asset's local bytes. */
+export class LocalResourceUnavailableError extends Error {
+  constructor(
+    readonly code: LocalResourceErrorCode,
+    message: string,
+  ) {
+    super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
+    this.name = "LocalResourceUnavailableError";
+  }
+}
+
+function localResourceFailure(
+  value: { errorCode?: unknown; code?: unknown; error?: unknown },
+  assetId: string,
+): LocalResourceUnavailableError | null {
+  const code = LocalResourceErrorCodeSchema.safeParse(
+    value.errorCode ?? value.code,
+  );
+  if (!code.success) return null;
+  return new LocalResourceUnavailableError(
+    code.data,
+    typeof value.error === "string"
+      ? value.error
+      : `Asset ${assetId} bytes are unavailable on the Host.`,
+  );
+}
+
+async function localResourceResponseFailure(
+  res: Response,
+  assetId: string,
+): Promise<LocalResourceUnavailableError | null> {
+  const body: unknown = await res.json().catch(() => null);
+  return body && typeof body === "object"
+    ? localResourceFailure(body as Record<string, unknown>, assetId)
+    : null;
+}
+
 /**
  * Asks a Host on this machine for the read-only store file behind one Project
- * Asset. A remote or older Host has no usable answer, which is not an error.
+ * Asset. A remote or older Host has no usable answer, which is not an error;
+ * bytes the Host cannot serve are.
  */
 export async function hostLocalAssetFile(
   assetId: string,
@@ -393,7 +433,11 @@ export async function hostLocalAssetFile(
   const res = await apiFetch(
     `/api/v1/projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/local-file`,
   );
-  if (!res.ok) return null;
+  if (!res.ok) {
+    const failure = await localResourceResponseFailure(res, assetId);
+    if (failure) throw failure;
+    return null;
+  }
   const body = (await res.json()) as { path?: unknown; byteLength?: unknown };
   return typeof body.path === "string" && typeof body.byteLength === "number"
     ? { path: body.path, byteLength: body.byteLength }
@@ -457,6 +501,10 @@ export async function resolveAssetFile(
       options.client ?? createCliProjectAssetHostClient()
     ).get({ projectId, assetId });
     const asset = observed.value;
+    if (asset.id === assetId && asset.status === "failed") {
+      const failure = localResourceFailure(asset, assetId);
+      if (failure) throw failure;
+    }
     if (asset.id !== assetId || asset.status !== "ready" || !asset.url) {
       return null;
     }
@@ -464,7 +512,10 @@ export async function resolveAssetFile(
     const name = `${safeId}${resolvedAssetExtension(asset)}`;
     const localPath = readableLocalAssetPath(
       await (options.localFile ?? hostLocalAssetFile)(assetId, projectId).catch(
-        () => null,
+        (error: unknown) => {
+          if (error instanceof LocalResourceUnavailableError) throw error;
+          return null;
+        },
       ),
     );
     if (localPath) return { path: localPath, name };
@@ -472,7 +523,12 @@ export async function resolveAssetFile(
     const filePath = join(cacheDir, name);
     const fullUrl = resolveAssetDownloadUrl(asset.url);
     const res = await (options.fetch ?? fetch)(fullUrl);
-    if (!res.ok || !res.body) return null;
+    if (!res.ok) {
+      const failure = await localResourceResponseFailure(res, assetId);
+      if (failure) throw failure;
+      return null;
+    }
+    if (!res.body) return null;
 
     // Streamed to a sibling name the cache lookup never matches, then renamed:
     // an interrupted download cannot be mistaken for the complete Asset.
@@ -488,7 +544,8 @@ export async function resolveAssetFile(
     }
     try { chmodSync(filePath, 0o444); } catch {}
     return { path: filePath, name };
-  } catch {
+  } catch (error) {
+    if (error instanceof LocalResourceUnavailableError) throw error;
     return null;
   }
 }
@@ -552,18 +609,32 @@ canvasCommand
     const assetId = typeof node.data?.assetId === "string" ? node.data.assetId : undefined;
     const isMedia = ["image", "video", "audio"].includes(node.type);
     let assetPath: string | null = null;
+    let assetError: LocalResourceUnavailableError | null = null;
     if (isMedia && assetId) {
-      assetPath = await downloadAssetById(assetId, projectId);
+      try {
+        assetPath = await downloadAssetById(assetId, projectId);
+      } catch (error) {
+        if (!(error instanceof LocalResourceUnavailableError)) throw error;
+        assetError = error;
+      }
     }
 
     if (isJsonMode(options)) {
-      printJson({ ...node, immutable: immutable === true, ...(assetPath ? { assetPath } : {}) });
+      printJson({
+        ...node,
+        immutable: immutable === true,
+        ...(assetPath ? { assetPath } : {}),
+        ...(assetError
+          ? { assetError: { code: assetError.code, message: assetError.message } }
+          : {}),
+      });
     } else {
       printNodeInfo({ ...node, immutable: immutable === true });
       if (assetPath) {
         console.log(`Asset:    ${assetPath}`);
         console.log(`\nTo view this ${node.type}, open or read the file at the path above.`);
       }
+      if (assetError) console.log(`Asset:    unavailable (${assetError.message})`);
     }
   });
 

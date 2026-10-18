@@ -12,8 +12,7 @@ import {
   sweepProjectAssetImportStaging,
   type ProjectAssetImportSessionPorts,
 } from "./project-asset-import-sessions.js";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
+import { utf8ToBytes } from "@noble/hashes/utils.js";
 
 const SESSION_START = Date.parse("2026-01-01T00:00:00.000Z");
 const asset = {
@@ -143,6 +142,7 @@ it("creates a signed session and finalizes staged bytes through the commit port"
     new Date(SESSION_START + PROJECT_ASSET_IMPORT_SESSION_TTL_MS).toISOString(),
   );
   f.staging.objects.set(claims.stagingLocator, utf8ToBytes("data"));
+  const get = vi.spyOn(f.ports.staging.store, "get");
   const finalized = await finalizeProjectAssetImportSession(
     { projectId: "p", sessionId: created.body.sessionId, ownerId: "owner-a" },
     f.ports,
@@ -156,8 +156,11 @@ it("creates a signed session and finalizes staged bytes through the commit port"
     kind: "video",
     fileName: "clip.mp4",
     byteLength: 4,
-    digest: bytesToHex(sha256(utf8ToBytes("data"))),
   });
+  // Finalize does not read the staged bytes itself: the commit path's
+  // openSource is their one read, and it computes the digest.
+  expect(get).not.toHaveBeenCalled();
+  expect(f.commit.mock.calls[0]![0]).not.toHaveProperty("digest");
   // Staging is transport-private once the Asset is committed.
   expect(f.staging.objects.has(claims.stagingLocator)).toBe(false);
 });

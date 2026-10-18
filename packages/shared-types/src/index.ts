@@ -1458,6 +1458,7 @@ export {
   ActionBindingOwnerSchema,
   ActionAssetBindingSchema,
   ResolvedAssetSchema,
+  LocalResourceErrorCodeSchema,
   assetReadToken,
   assetRefReadToken,
   type AssetKind,
@@ -1480,6 +1481,7 @@ export {
   type ActionBindingOwner,
   type ActionAssetBinding,
   type ResolvedAsset,
+  type LocalResourceErrorCode,
 } from "./assets.js";
 
 export {
