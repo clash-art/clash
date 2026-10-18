@@ -287,6 +287,25 @@ export function readActionAssetBinding(
   return binding;
 }
 
+/**
+ * The draft input bindings stored for one Action, read WITHOUT the active-target
+ * assertion. Only for comparing a planned replacement with what is stored; every
+ * write still validates its targets (replaceDraftActionAssetInputBindings).
+ */
+export function storedDraftActionAssetInputs(
+  doc: LoroDoc,
+  actionId: string,
+): DraftActionAssetInput[] {
+  const owner: ActionBindingOwner = { kind: "draft", actionId: actionId.trim() };
+  return listStoredBindings(doc)
+    .filter((binding) => binding.direction === "input" && sameBindingOwner(binding.owner, owner))
+    .map((binding) => ({
+      slot: binding.slot,
+      projectAssetId: binding.projectAssetId,
+      ...(binding.role ? { role: binding.role } : {}),
+    }));
+}
+
 export function listActionAssetBindings(doc: LoroDoc): ActionAssetBinding[] {
   const bindings = listStoredBindings(doc);
   for (const binding of bindings) assertActiveBindingTarget(doc, binding);

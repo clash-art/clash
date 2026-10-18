@@ -16,14 +16,22 @@ import {
   createRemotePluginExecution,
   type RemotePluginReference,
 } from "@clash/shared-runtime/executable-plugin-remote";
+import { issuePluginOutputCapabilities } from "@clash/shared-runtime/cloud-project-host/plugin-output-sessions";
+import { referenceUnavailableFailure } from "@clash/shared-runtime/cloud-project-host/project-asset-references";
 import type {
   ExecutablePluginReference,
   ExecutablePluginResult,
 } from "@clash/shared-types/executable-plugin";
 
 import type { Env } from "../../config";
-import { getAssetsByIds } from "../../services/assets";
-import { signAssetPath, SIGNED_URL_TTL } from "../../services/asset-signing";
+import {
+  cloudPluginOutputSessionPorts,
+  pluginOutputUploaded,
+} from "../../services/plugin-output-sessions";
+import {
+  createCloudProjectAssetReferenceResolver,
+  roomProjectAssetReader,
+} from "../../services/project-asset-references";
 import {
   resolveExecutableBinding,
   type ResolvedExecutableBinding,
@@ -40,24 +48,13 @@ export interface CloudActionInvokerOptions {
   userIdForProject?: (projectId: string) => Promise<string>;
 }
 
-function mediaBase(env: Env): string {
-  const base =
-    env.MEDIA_GATEWAY_URL ||
-    env.WORKER_PUBLIC_URL ||
-    (env.ENVIRONMENT === "development" ? "http://localhost:3000" : undefined);
-  if (!base) {
-    throw new Error(
-      "MEDIA_GATEWAY_URL or WORKER_PUBLIC_URL must be set — a remote plugin cannot fetch references without an absolute origin.",
-    );
-  }
-  return base.replace(/\/+$/, "");
-}
-
+/** Each pinned Project Asset becomes a short-lived signed URL, or the run fails `reference_unavailable`. */
 async function remoteReferences(
   env: Env,
+  request: ExecutablePluginActionRequest,
   userId: string,
-  references: readonly ExecutablePluginReference[],
 ): Promise<RemotePluginReference[]> {
+  const references = request.input.references;
   // A text-only Action has nothing to sign; it must not need a media origin.
   if (references.length === 0) return [];
   const assetReferences = references.filter(
@@ -71,54 +68,75 @@ async function remoteReferences(
       "A remote plugin reference must be a pinned media Asset; text and Document references are not part of the remote protocol.",
     );
   }
-  const records = await getAssetsByIds(
-    env.DB,
-    assetReferences.map((reference) => reference.asset.assetId),
-    userId,
-  );
-  const byId = new Map(records.map((record) => [record.id, record]));
-  const base = mediaBase(env);
-  const expiresAt = new Date(
-    (Math.floor(Date.now() / 1000) + SIGNED_URL_TTL) * 1000,
-  ).toISOString();
-  return Promise.all(
-    assetReferences.map(async (reference) => {
-      const asset = byId.get(reference.asset.assetId);
-      if (!asset) {
-        throw new Error(
-          `Remote plugin reference ${reference.slot}#${reference.index} is unavailable.`,
-        );
-      }
-      return {
-        slot: reference.slot,
-        index: reference.index,
-        url: `${base}${await signAssetPath(env, asset.srcR2Key, SIGNED_URL_TTL)}`,
-        expiresAt,
-      };
-    }),
-  );
+  const resolver = createCloudProjectAssetReferenceResolver(env, {
+    readAsset: roomProjectAssetReader(env),
+    libraryOwnerId: userId,
+  });
+  const signed: RemotePluginReference[] = [];
+  for (const reference of assetReferences) {
+    const resolved = await resolver.resolve({
+      projectId: request.projectId,
+      assetId: reference.asset.assetId,
+    });
+    if (!resolved.ok)
+      throw referenceUnavailableFailure(
+        `Remote plugin reference ${reference.slot}#${reference.index}`,
+        reference.asset.assetId,
+        resolved.reason,
+      );
+    signed.push({
+      slot: reference.slot,
+      index: reference.index,
+      url: resolved.reference.url,
+      expiresAt: resolved.reference.expiresAt,
+    });
+  }
+  return signed;
 }
 
+/**
+ * A media run also hands the plugin one output upload capability per accepted
+ * slot; they are built per invocation, like references, and never journaled.
+ */
 function remotePort(
   env: Env,
+  run: DurableRunIdentity,
   request: ExecutablePluginActionRequest,
   userId: string,
   binding: ResolvedExecutableBinding,
   options: CloudActionInvokerOptions,
 ): PluginExecutionPort {
-  if (!binding.remote) {
+  const remote = binding.remote;
+  if (!remote) {
     throw new Error(
       `Plugin ${binding.binding.pluginId} has no remote endpoint.`,
     );
   }
+  const mediaKind = request.outputMediaKind;
+  const mediaSlots = mediaKind ? (request.expectedOutputSlots ?? []) : [];
   return createRemotePluginExecution({
     fetch: options.fetch,
     now: options.now,
     target: async () => ({
-      endpoint: binding.remote!.endpoint,
-      secret: binding.remote!.signingSecret,
-      references: await remoteReferences(env, userId, request.input.references),
+      endpoint: remote.endpoint,
+      secret: remote.signingSecret,
+      references: await remoteReferences(env, request, userId),
+      ...(mediaKind && mediaSlots.length
+        ? {
+            outputs: await issuePluginOutputCapabilities(
+              {
+                run,
+                ownerId: userId,
+                projectId: request.projectId,
+                kind: mediaKind,
+                slots: mediaSlots,
+              },
+              cloudPluginOutputSessionPorts(env, options.now),
+            ),
+          }
+        : {}),
     }),
+    outputUploaded: () => pluginOutputUploaded(env, run),
   });
 }
 
@@ -186,7 +204,7 @@ export function createCloudActionInvoker(
     const port =
       resolved.kind === "in-process"
         ? await inProcessPort(env, request, userId)
-        : remotePort(env, request, userId, resolved, options);
+        : remotePort(env, run, request, userId, resolved, options);
     return port.invoke({
       run,
       invocation: executablePluginActionInvocation(request),

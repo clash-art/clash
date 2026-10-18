@@ -44,6 +44,7 @@ import {
   ACTION_ASSET_BINDING_AUTHORITY_VERSION,
   actionAssetBindingAuthorityVersion,
   replaceDraftActionAssetInputBindings,
+  storedDraftActionAssetInputs,
   type DraftActionAssetInput,
 } from "./action-asset-bindings.js";
 import {
@@ -262,6 +263,36 @@ function toLayoutNode(node: NodeInfo): LayoutNode {
     height: node.height ?? undefined,
     style: node.style ?? undefined,
   };
+}
+
+/** Each managed Action's projected inputs by binding owner id; `cleared` Actions plan none. */
+function actionAssetInputPlans(
+  nodes: readonly NodeInfo[],
+  edges: readonly CanvasEdgeInfo[],
+  cleared: readonly string[] = [],
+): Map<string, DraftActionAssetInput[]> {
+  const plans = new Map<string, DraftActionAssetInput[]>();
+  for (const actionId of cleared) plans.set(actionId, []);
+  for (const node of nodes) {
+    const inputs = canvasActionAssetInputs({ node, nodes, edges });
+    if (inputs === null) continue;
+    plans.set(`node:${node.id}`, inputs);
+  }
+  return plans;
+}
+
+/** Canonical form of draft inputs, for comparing a plan with what is stored. */
+function normalizedDraftInputs(inputs: readonly DraftActionAssetInput[]): string {
+  return JSON.stringify(
+    inputs
+      .map((input) => ({ slot: input.slot.trim(), projectAssetId: input.projectAssetId.trim(), role: input.role ?? null }))
+      .sort((left, right) => left.slot.localeCompare(right.slot)),
+  );
+}
+
+/** The Action's stored draft input bindings, in the same canonical form. */
+function storedDraftInputs(doc: LoroDoc, actionId: string): string {
+  return normalizedDraftInputs(storedDraftActionAssetInputs(doc, actionId));
 }
 
 // ─── Canvas Class ────────────────────────────────────────
@@ -1628,22 +1659,44 @@ export class Canvas {
 
   // ── Private ──────────────────────────────────────────
 
+  /**
+   * The binding plans a mutation changes, computed before it is applied. An
+   * Action whose inputs the mutation leaves as they are is not re-planned: a
+   * reference whose Asset became inactive concurrently (a merged trash) must
+   * not block an unrelated edit, nor a run's terminal failure projection.
+   */
+  /**
+   * The binding plans a mutation changes, computed before it is applied.
+   * A plan is applied when it differs from the Action's STORED draft bindings,
+   * so a binding that drifted from its node (a merge, an admission freeze) is
+   * repaired on the next edit. A plan this mutation leaves unchanged is skipped
+   * when one of its Assets is no longer active: a reference trashed concurrently
+   * must not block a run's failure projection or an unrelated edit. Introducing
+   * an inactive Asset anew is still validated and refused.
+   */
   private planActionAssetBindings(
     nodes: readonly NodeInfo[],
     edges: readonly CanvasEdgeInfo[],
     clearedActionIds: readonly string[] = [],
   ): Array<{ actionId: string; inputs: DraftActionAssetInput[] }> {
-    const plans = new Map<string, DraftActionAssetInput[]>();
-    for (const actionId of clearedActionIds) plans.set(actionId, []);
-    for (const node of nodes) {
-      const inputs = canvasActionAssetInputs({ node, nodes, edges });
-      if (inputs === null) continue;
-      plans.set(`node:${node.id}`, inputs);
-    }
-    return [...plans.entries()].map(([actionId, inputs]) => ({
-      actionId,
-      inputs,
-    }));
+    const current = new Map(
+      [...actionAssetInputPlans(this.listNodes(), this.listEdges())].map(
+        ([actionId, inputs]) => [actionId, normalizedDraftInputs(inputs)],
+      ),
+    );
+    const plans = actionAssetInputPlans(nodes, edges, clearedActionIds);
+    return [...plans.entries()]
+      .filter(([actionId, inputs]) => {
+        const planned = normalizedDraftInputs(inputs);
+        if (planned === storedDraftInputs(this.doc, actionId)) return false;
+        const unchanged = current.get(actionId) === planned;
+        return !(unchanged && inputs.some((input) => !this.isActiveAsset(input.projectAssetId)));
+      })
+      .map(([actionId, inputs]) => ({ actionId, inputs }));
+  }
+
+  private isActiveAsset(projectAssetId: string): boolean {
+    return readProjectAsset(this.doc, projectAssetId)?.lifecycle.state === "active";
   }
 
   private validateActionAssetBindingPlans(

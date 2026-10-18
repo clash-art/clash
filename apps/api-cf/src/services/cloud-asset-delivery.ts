@@ -21,7 +21,8 @@ export interface CloudAssetDeliveryOptions {
   uploadTtlSeconds?: number;
 }
 
-function standaloneOrigin(env: Env, configured?: string): string {
+/** The external origin signed Worker URLs are issued under. */
+export function standaloneOrigin(env: Env, configured?: string): string {
   const origin = configured ?? env.WORKER_PUBLIC_URL ?? env.MEDIA_GATEWAY_URL;
   if (!origin?.trim()) {
     throw new Error(

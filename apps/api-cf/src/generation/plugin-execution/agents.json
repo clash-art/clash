@@ -6,7 +6,7 @@
     "registry.ts": "Closed allowlist of Worker-safe first-party executor modules plus their manifest version/schema hash and declared idempotent exports. Dynamic import keeps plugin JSON out of startup.",
     "context.ts": "Invocation-scoped store/upload/asset/document/reference ports. Credentials come from the selected provider account and never enter the journal.",
     "action-context.ts": "Invocation-scoped bytes-only context for executable Actions: pinned Asset references resolve to verified bytes, and plugin outputs go through the same R2 broker the Durable Run stages from.",
-    "action-invoker.ts": "Action-port binding: resolve code first, fall back to the user's sealed remote endpoint, then invoke the shared port with durableRunIdempotencyKey(run). First-party ids never fall through to remote."
+    "action-invoker.ts": "Action-port binding: resolve code first, fall back to the user's sealed remote endpoint, then invoke the shared port with durableRunIdempotencyKey(run). First-party ids never fall through to remote. Remote references are Project Assets resolved through services/project-asset-references.ts (an unavailable one fails reference_unavailable before the plugin is called); a media run also gets one run-scoped output upload capability per accepted slot (services/plugin-output-sessions.ts). Both are built per invocation and never journaled."
   },
   "compatibility": [
     "Only first-party in-process and third-party remote bindings are implemented; the container binding stays typed for the render adapter.",

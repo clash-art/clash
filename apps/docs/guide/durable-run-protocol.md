@@ -425,6 +425,60 @@ declares `idempotentSubmit: true`, otherwise it fails after exactly one
 invocation. The `container` binding for `clash.remotion` remains a separate
 adapter; none of these change the journal, step graph, or publication key.
 
+A reference names a **Project Asset**, not a row in the hosted `assets`
+library. Each composition root binds one `ProjectAssetReferenceResolver`
+(`packages/shared-runtime/src/cloud-project-host/project-asset-references.ts`):
+Cloudflare reads the Asset from ProjectRoom and signs its committed Resource
+with the same capability the Web uses; api-node reads its Project document and
+signs with `signProjectMediaUrl`. A missing, trashed or not-yet-committed
+Asset fails the run with the non-retryable Host code `reference_unavailable`
+(the private message names slot, index and Asset id) before the plugin is
+called. Nothing is sent with a placeholder. The same resolver gives
+server-side Timeline render media its `src`. A clip that cannot be resolved
+fails the render node with the code; it is never rendered without `src`.
+
+A remote plugin cannot mint a Project Asset, and its answer is capped at
+1 MiB, so media bytes travel separately. For a media run, the body carries an
+additive `outputs` array with one upload capability per name in
+`expectedOutputSlots`:
+
+```ts
+type RemotePluginOutputCapability = {
+  slot: string;
+  asset: { assetId: string; uri: string; kind: AssetKind }; // answer with exactly this
+  upload: { beginUrl: string; expiresAt: string; maxBytes: number };
+};
+```
+
+`POST beginUrl {byteLength, contentType?, fileName?}` opens a session in the
+shared chunked import module (`project-asset-import-sessions.ts`). The result
+is `201 {sessionId, upload: {url}}`, and the bytes then go through the usual
+`PUT upload.url?upload=begin|part|complete` multipart protocol. The
+signed grant in the URL is the only authority. It binds owner, Project, kind
+and the durable run output. The Asset id and the private staging object are
+derived from `durableRunIdempotencyKey(run)`, so every attempt of one run
+targets the same Asset: a retry replaces the staging object and never creates
+a second Asset. Staging lives under the import prefix, so the abandoned-staging
+sweep also covers uploads that are never answered.
+
+The plugin then answers `{ kind: "asset", slot, asset: <capability.asset> }`.
+The Host accepts that answer only if this run's session for that exact
+slot/Asset completed. Anything else, whether an un-uploaded handle or a
+foreign Asset id, is a non-retryable `contract_violation` ("returned asset X
+that was not uploaded through this run's output session"). The plugin never
+finalizes. The Host's `stage` step seals the staged bytes as a Resource, and
+`publish` imports it as the run's Project Asset on the same fork as the node
+update, so the Asset and the node output land together exactly once. A
+republish is a no-op. Staging is deleted after publication; a failed delete
+is reported with `PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED` and is left for
+the sweep. Capabilities, like references, are built per invocation by
+`target()` and are never journaled. Older plugins that ignore `outputs` and
+answer with a value output are unaffected.
+
+A failed run projects `errorCode` alongside `errorMessage` onto its node.
+The message is the public projection (`durablePublicFailure`), never the
+private diagnostic text, which a plugin may have written.
+
 Cloudflare Action admission (`generation/executable-admission.ts`) freezes the
 Canvas node's exact `pluginBinding`, writes the D1 journal row under the
 `api-cf:executable` owner before scheduling the existing `GENERATION_WORKFLOW`,
@@ -490,7 +544,8 @@ type ProviderFailure = Readonly<{
     | "plugin_unavailable"
     | "deadline_exceeded"
     | "output_persistence_failed"
-    | "publication_failed";
+    | "publication_failed"
+    | "reference_unavailable";
   message: string;
   retryable: boolean;
   requestState: "rejected" | "unknown" | "accepted";

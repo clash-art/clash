@@ -266,6 +266,7 @@ Use one of these canonical `code` values. Put a provider's own code in `provider
 | `deadline_exceeded`         | The Host's overall run deadline expired                                   |
 | `output_persistence_failed` | Finished output could not be stored durably                               |
 | `publication_failed`        | Stored output could not be published or attached to its destination       |
+| `reference_unavailable`     | Host-only: a pinned Asset reference is missing, trashed or not committed  |
 
 A polling error does not erase known acceptance. Report a transient transport problem as a
 retryable failure with `requestState: "accepted"`; the host may retry the poll, but must not submit

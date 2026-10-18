@@ -1,5 +1,7 @@
 /**
- * Chunked Project Asset import for the Node hosts (local-api, api-node).
+ * Chunked Project Asset import for the Node hosts (local-api, api-node), and
+ * the session/multipart half of every host's run-scoped remote plugin output
+ * sessions (`plugin-output-sessions.ts`).
  *
  * Mirrors the Cloudflare transport contract the Asset SDK already drives:
  *
@@ -296,7 +298,10 @@ const importSessionError = (
  */
 export async function createProjectAssetImportSession(
   input: { projectId: string; ownerId: string; body: unknown },
-  ports: ProjectAssetImportSessionPorts,
+  ports: Pick<
+    ProjectAssetImportSessionPorts,
+    "clock" | "newId" | "tokens" | "access" | "uploadUrl"
+  >,
 ): Promise<ProjectAssetImportSessionResult> {
   if (!isRecord(input.body))
     return invalid("Invalid import session");
@@ -473,7 +478,7 @@ export async function finalizeProjectAssetImportSession(
 export async function handleProjectAssetImportSessionContent(
   request: Request,
   input: { projectId: string; sessionId: string; ownerId: string },
-  ports: ProjectAssetImportSessionPorts,
+  ports: Pick<ProjectAssetImportSessionPorts, "tokens" | "access" | "staging">,
 ): Promise<Response> {
   const claims = await ports.tokens.verify(input.sessionId);
   if (

@@ -949,6 +949,8 @@ export interface ExecutablePluginActionRequest {
   outputSlot?: string;
   /** Plugin-side slot names this run accepts, in preference order. */
   expectedOutputSlots?: string[];
+  /** Asset kind of the durable output when it is media; absent for text and Documents. */
+  outputMediaKind?: Exclude<ProviderKind, "text">;
   projectId: string;
   nodeId?: string;
   input: {
@@ -1020,6 +1022,8 @@ export function executableActionRequest(
       frozen,
       run.outputSlot,
     ),
+    // Admission pins a Generator media port to `kind` and a Document to text.
+    ...(frozen.kind === "text" ? {} : { outputMediaKind: frozen.kind }),
     projectId: frozen.projectId,
     ...(frozen.nodeId ? { nodeId: frozen.nodeId } : {}),
     input: frozen.input,

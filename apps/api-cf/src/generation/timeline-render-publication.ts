@@ -19,8 +19,11 @@ import type {
 } from "@clash/shared-runtime/cloud-project-host/project-assets";
 import { GenerationPublicationConflict } from "@clash/shared-runtime/hosted-generation";
 
-/** The staged output of a render run: its bytes already sealed as a Resource. */
-export interface TimelineRenderOutput {
+/**
+ * A run's staged media output, its bytes already sealed as a Resource, to be
+ * published as the run's Project Asset: a render, or a remote plugin output.
+ */
+export interface StagedProjectAsset {
   resource: Resource;
   name: string;
   metadata: Record<string, unknown>;
@@ -31,7 +34,7 @@ export interface TimelineRenderNodePublication {
   taskId: string;
   nodeId: string;
   actorUserId: string;
-  render?: TimelineRenderOutput;
+  render?: StagedProjectAsset;
   failure?: DurablePublicFailure;
 }
 
@@ -86,6 +89,7 @@ export async function timelineRenderPublicationUpdate(
           ...node.data,
           status: "failed",
           error: failure.message,
+          errorCode: failure.code,
           pendingTask: undefined,
           pendingTaskAt: undefined,
         },

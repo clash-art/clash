@@ -21,10 +21,10 @@ import type { LoroDoc } from "loro-crdt";
 import {
   completeTimelineRenderNode,
   projectTimelineRenderActionRunId,
-  readProjectAsset,
   ResourceSchema,
 } from "@clash/shared-types";
 import type { ExecutablePluginJsonValue } from "@clash/shared-types/executable-plugin";
+import { resolveTimelineMediaReferences } from "@clash/shared-runtime/cloud-project-host/project-asset-references";
 import type { DurableRunClock } from "@clash/shared-runtime/durable-run-engine";
 import type { GenerationParams } from "@clash/shared-runtime/generation-params";
 import {
@@ -44,8 +44,8 @@ import {
   type NodeGenerationPorts,
 } from "./generation.ts";
 import { storeMediaBytes } from "./media-store.ts";
-import { admitProjectMedia, readProjectResource } from "./project-assets.ts";
-import { signProjectMediaUrl } from "./project-media-url.ts";
+import { admitProjectMedia } from "./project-assets.ts";
+import { nodeProjectAssetReferences } from "./project-media-url.ts";
 import { withProjectDocument } from "./project-document.ts";
 
 /** What the render worker process needs; the API process only admits. */
@@ -65,8 +65,6 @@ interface StagedRender {
   name: string;
   metadata: Record<string, unknown>;
 }
-
-const MEDIA_ITEM_TYPES = new Set(["image", "video", "audio", "sticker"]);
 
 type NodeRecord = Record<string, unknown> & { data: Record<string, unknown> };
 
@@ -111,56 +109,31 @@ async function inProject<T>(
   }
 }
 
-/** Each media item's Project Asset becomes a fresh signed URL render-server can fetch. */
-async function withSignedMedia(
+/**
+ * Each media item's Project Asset becomes a fresh signed URL render-server can
+ * fetch, through the shared resolver; an unavailable Asset fails the run with
+ * `reference_unavailable` before anything is rendered.
+ */
+function withSignedMedia(
   db: PostgresTransactionPort,
   worker: NodeTimelineRenderWorkerOptions,
   params: GenerationParams,
 ): Promise<Record<string, unknown>> {
-  const timelineDsl = structuredClone(params.timelineDsl ?? {}) as {
-    tracks?: Array<{ id?: unknown; items?: Array<Record<string, unknown>> }>;
-  };
-  const tracks = Array.isArray(timelineDsl.tracks) ? timelineDsl.tracks : [];
   const now = worker.clock?.now() ?? Date.now();
-  await inProject(db, params, false, async (doc, tx) => {
-    for (const track of tracks)
-      for (const item of track.items ?? []) {
-        if (!MEDIA_ITEM_TYPES.has(String(item?.type))) continue;
-        if (typeof item.assetId !== "string") continue;
-        const entry = readProjectAsset(doc, item.assetId, {
-          projectId: params.projectId,
-        });
-        if (!entry || entry.lifecycle.state !== "active") {
-          delete item.src;
-          continue;
-        }
-        if (!(await readProjectResource(tx, params.projectId, entry.source.resourceId))) {
-          delete item.src;
-          continue;
-        }
-        item.src = await signProjectMediaUrl({
-          secret: worker.mediaSecret,
-          publicUrl: worker.publicUrl,
-          projectId: params.projectId,
-          assetId: entry.id,
-          now,
-        });
-      }
-  });
-  const missing = tracks.flatMap((track) =>
-    (track.items ?? [])
-      .filter(
-        (item) =>
-          MEDIA_ITEM_TYPES.has(String(item?.type)) &&
-          !(typeof item.src === "string" && item.src.trim()),
-      )
-      .map((item) => `${String(track.id ?? "track")}:${String(item.id ?? "item")}`),
+  return inProject(db, params, false, (doc, tx) =>
+    resolveTimelineMediaReferences(params.timelineDsl ?? {}, {
+      projectId: params.projectId,
+      references: nodeProjectAssetReferences({
+        doc,
+        tx,
+        secret: worker.mediaSecret,
+        publicUrl: worker.publicUrl,
+        now,
+      }),
+      assetIdOf: (item) =>
+        typeof item.assetId === "string" ? item.assetId : undefined,
+    }),
   );
-  if (missing.length)
-    throw new Error(
-      `Timeline render has media item(s) without src: ${missing.slice(0, 5).join(", ")}`,
-    );
-  return timelineDsl as Record<string, unknown>;
 }
 
 /**
@@ -291,6 +264,7 @@ export function nodeTimelineRenderPorts(
               ...node.data,
               status: "failed",
               error: failure.message,
+              errorCode: failure.code,
               pendingTask: undefined,
               pendingTaskAt: undefined,
             },

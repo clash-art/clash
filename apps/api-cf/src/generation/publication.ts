@@ -1,6 +1,10 @@
 import { Canvas } from "@clash/shared-types";
 import { LoroDoc } from "loro-crdt";
 import type { DurablePublicFailure } from "@clash/shared-runtime/durable-run-engine";
+import type {
+  ProjectAssetImportCommand,
+  ProjectAssetImportResult,
+} from "@clash/shared-runtime/cloud-project-host/project-assets";
 import type { Env } from "../config";
 import { Status } from "../domain/canvas";
 import {
@@ -10,8 +14,8 @@ import {
 } from "../services/assets";
 import type { GenerationParams } from "./params";
 import type {
+  StagedProjectAsset,
   TimelineRenderNodePublication,
-  TimelineRenderOutput,
 } from "./timeline-render-publication";
 
 import { GenerationPublicationConflict } from "@clash/shared-runtime/hosted-generation";
@@ -20,7 +24,12 @@ export interface HostedGenerationPublication {
   updates: Record<string, unknown>;
   asset?: CreateAssetParams;
   /** `video_render`: the sealed Resource to import as the run's Project Asset. */
-  render?: TimelineRenderOutput;
+  render?: StagedProjectAsset;
+  /**
+   * A remote plugin's uploaded output: imported as Project Asset
+   * `updates.assetId` in the same room transaction that completes the node.
+   */
+  projectAsset?: StagedProjectAsset;
   failure?: DurablePublicFailure;
 }
 export async function assertHostedGenerationAccess(
@@ -142,13 +151,16 @@ export async function publishHostedGeneration(
                   ? { failure: publication.failure }
                   : { render: publication.render }),
               } satisfies TimelineRenderNodePublication)
-            : {
+            : ({
                 ...identity,
                 updates: publication.updates,
                 ...(publication.failure
                   ? { failure: publication.failure }
                   : {}),
-              },
+                ...(publication.projectAsset
+                  ? { projectAsset: publication.projectAsset }
+                  : {}),
+              } satisfies GenerationNodePublication),
         ),
       },
     ),
@@ -176,13 +188,25 @@ export interface GenerationNodePublication {
   actorUserId: string;
   updates: Record<string, unknown>;
   failure?: DurablePublicFailure;
+  projectAsset?: StagedProjectAsset;
 }
 
-/** Build on a detached candidate. Caller serializes the task check with durable append. */
-export function generationPublicationUpdate(
+export type ProjectAssetImporter = (
+  candidate: LoroDoc,
+  command: ProjectAssetImportCommand,
+) => Promise<ProjectAssetImportResult>;
+
+/**
+ * Build on a detached candidate. Caller serializes the task check with durable
+ * append. A `projectAsset` is imported on the same candidate as the node
+ * update, so the Asset and its node output land together or not at all; a
+ * republished run is a no-op before any import.
+ */
+export async function generationPublicationUpdate(
   doc: LoroDoc,
   publication: GenerationNodePublication,
-): Uint8Array | null {
+  projectAssets?: { projectId: string; importAsset: ProjectAssetImporter },
+): Promise<Uint8Array | null> {
   const canvas = new Canvas(doc, () => undefined);
   const current = canvas.readNode(publication.nodeId);
   if (!current) {
@@ -219,10 +243,30 @@ export function generationPublicationUpdate(
     throw new GenerationPublicationConflict(
       "Generation output node belongs to a different task.",
     );
+  const asset = publication.failure ? undefined : publication.projectAsset;
+  const projectAssetId = publication.updates.assetId;
+  if (asset && (!projectAssets || typeof projectAssetId !== "string"))
+    throw new GenerationPublicationConflict(
+      "A Project Asset output must be published with its Asset id and importer.",
+    );
   const candidate = new LoroDoc();
   try {
     candidate.import(doc.export({ mode: "snapshot" }));
     const before = candidate.version();
+    if (asset && projectAssets) {
+      const imported = await projectAssets.importAsset(candidate, {
+        projectId: projectAssets.projectId,
+        projectAssetId: projectAssetId as string,
+        resource: asset.resource,
+        name: asset.name,
+        metadata: asset.metadata,
+        createdAt: asset.createdAt,
+        duplicateContent: "allow",
+        provenance: { kind: "generation", actionRunId: publication.taskId },
+      });
+      if (!imported.ok)
+        throw new GenerationPublicationConflict(String(imported.body.error));
+    }
     if (
       !new Canvas(candidate, () => undefined).updateNode(
         publication.nodeId,
@@ -302,6 +346,7 @@ export function generationAdmissionUpdate(
       pendingTask: publication.taskId,
       status: Status.Generating,
       errorMessage: undefined,
+      errorCode: undefined,
     });
     return candidate.export({ mode: "update", from: before });
   } finally {
