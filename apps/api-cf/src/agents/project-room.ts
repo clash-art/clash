@@ -67,27 +67,19 @@ import {
   reconcileProjectDirectorStageOwnership,
 } from "@clash/shared-types";
 
+/**
+ * How long one successful authorization check covers a socket. Revocation is
+ * enforced within this bounded window (#240): the first frame after it lapses
+ * is re-checked, and an alarm re-checks idle sockets when it lapses.
+ */
+const SOCKET_AUTHORIZATION_TTL_MS = 5_000;
 /** WebSocket close reasons are capped at 123 bytes; both stay well below. */
 const AUTHORIZATION_REVOKED_CLOSE_REASON =
   "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.";
 const AUTHORIZATION_UNAVAILABLE_CLOSE_REASON =
   "PROJECT_AUTHORIZATION_CHECK_UNAVAILABLE: Could not verify project access; reconnect.";
-
-/**
- * One revalidation of an identity proof. `startedSeq` is the room frame
- * counter when the authority read began; it is unset while the check waits
- * behind an in-flight one, and then it will start after every frame seen so far.
- */
-type AuthorizationCheck = {
-  startedSeq?: number;
-  settled: boolean;
-  result: Promise<boolean>;
-};
-
-/** A check may authorize a frame only if it started after that frame. */
-function checkCovers(check: AuthorizationCheck, seq: number): boolean {
-  return check.startedSeq === undefined || check.startedSeq >= seq;
-}
+/** DO storage key: when the 60 s task poll is next due (the alarm is shared). */
+const TASK_POLL_DUE_KEY = "taskPollDueAt";
 
 /** A credential is never valid past its own expiry, whatever a check said. */
 function credentialExpired(auth: AuthResult): boolean {
@@ -122,8 +114,6 @@ const AWARENESS_STALE_MS = 8_000;
 type LoroImportQueueItem = {
   applyGeneration?: () => Promise<void>;
   sender?: WebSocket;
-  /** Frame sequence of the sender's inbound frame that carried this update. */
-  senderSeq?: number;
   data: Uint8Array;
   eventId?: string;
   broadcast?: boolean;
@@ -183,30 +173,26 @@ export class ProjectRoom extends DurableObject<Env> {
   private clients: Map<WebSocket, ProjectClientInfo> = new Map();
   private protocolSessions = new Map<WebSocket, LoroProtocolServerSession>();
   /**
-   * Monotonic counter stamped on every inbound frame and outbound send or
-   * broadcast. Authorization freshness is measured against it, not wall time.
-   */
-  private frameSeq = 0;
-  /**
-   * Revalidation checks shared by every socket presenting the same identity
+   * Revalidation results shared by every socket presenting the same identity
    * proof (one user's windows, Hosts and agents). Without this each socket
-   * queried D1 per frame, so D1 load grew linearly with room size and became
-   * the first fan-out bottleneck (~130-150 sockets on staging). At most one
-   * check per identity is in flight and one is queued behind it, so frames
-   * arriving during a D1 round trip coalesce into the queued check.
+   * queried D1 every TTL, so D1 load grew linearly with room size and became
+   * the first fan-out bottleneck (~130-150 sockets on staging).
    */
   private sharedAuthorization = new Map<
     string,
-    { latest?: AuthorizationCheck; queued?: AuthorizationCheck }
+    { validUntil: number; result: Promise<boolean> }
   >();
   private socketAuthorization = new WeakMap<
     WebSocket,
-    { check: AuthorizationCheck; result: Promise<boolean> }
+    {
+      expiresAt: number;
+      inFlight?: Promise<boolean>;
+    }
   >();
   /** Sockets closed or revoked; a pending check must not authorize them. */
   private closedSockets = new WeakSet<WebSocket>();
-  /** Sequence of each socket's latest inbound frame, for its commit-time check. */
-  private inboundSeq = new WeakMap<WebSocket, number>();
+  /** Earliest pending authorization-recheck alarm this instance asked for. */
+  private authorizationRecheckAt = 0;
   private outbound = new Map<WebSocket, Promise<void>>();
 
   /** Throttle activity broadcasts: nodeId → last broadcast timestamp */
@@ -552,55 +538,76 @@ export class ProjectRoom extends DurableObject<Env> {
 
   /**
    * A hibernated connection carries identity evidence, never raw credentials.
-   * `seq` is the frame this check must authorize: only a check that started
-   * after the frame arrived or was produced may authorize it, so a revoked
-   * credential is refused on its very next frame (#240). Concurrent frames
-   * share one check per identity; a failed check is never reused.
+   * This ephemeral cache is rebuilt on wake. Inbound commits share it, so
+   * revocation is enforced within SOCKET_AUTHORIZATION_TTL_MS: the first frame
+   * after a check lapses is re-checked, and recheckIdleSockets() (alarm) closes
+   * an idle revoked socket when its check lapses. An expired credential is
+   * refused immediately, without D1.
    */
-  private authorizeSocket(
-    ws: WebSocket,
-    seq: number,
-  ): boolean | Promise<boolean> {
+  private authorizeSocket(ws: WebSocket): boolean | Promise<boolean> {
     if (this.closedSockets.has(ws)) return false;
+    const cached = this.socketAuthorization.get(ws);
+    if (cached?.inFlight) return cached.inFlight;
+
     const info = this.clientInfoFor(ws);
     if (info?.internal === true) return true;
-    const auth = info?.projectAuthorization;
-    if (
-      !auth ||
-      (this.projectId && auth.projectId !== this.projectId) ||
-      credentialExpired(auth)
-    ) {
+    if (info?.projectAuthorization && credentialExpired(info.projectAuthorization)) {
       this.closeSocket(ws, 1008, AUTHORIZATION_REVOKED_CLOSE_REASON);
       return false;
     }
-    const cached = this.socketAuthorization.get(ws);
-    if (cached && checkCovers(cached.check, seq)) return cached.result;
-
-    const check = this.revalidateShared(auth, seq);
+    if (cached && Date.now() < cached.expiresAt) return true;
     const entry = {
-      check,
-      result: check.result.then(
-        (authorized) => {
-          // A close/error during D1 must not authorize a frame.
-          if (this.closedSockets.has(ws)) return false;
-          if (!authorized)
-            this.closeSocket(ws, 1008, AUTHORIZATION_REVOKED_CLOSE_REASON);
-          return authorized;
-        },
-        (error) => {
-          // The check itself failed (D1 unavailable), so authorization is
-          // unknown. Dropping the frame silently would leave this peer missing
-          // CRDT updates with no signal. Close with 1013 (try again later)
-          // instead: the client treats it as transient, reconnects and
-          // re-syncs from its version vector, and resends unacked writes.
-          log.warn("Socket revalidation unavailable; closing for retry:", error);
-          this.closeSocket(ws, 1013, AUTHORIZATION_UNAVAILABLE_CLOSE_REASON);
-          return false;
-        },
-      ),
+      expiresAt: 0,
+      inFlight: undefined as Promise<boolean> | undefined,
     };
     this.socketAuthorization.set(ws, entry);
-    return entry.result;
+    let validUntil = Date.now() + SOCKET_AUTHORIZATION_TTL_MS;
+    entry.inFlight = (async () => {
+      let authorized: boolean;
+      try {
+        authorized = !!(
+          info?.projectAuthorization &&
+          (!this.projectId ||
+            info.projectAuthorization.projectId === this.projectId) &&
+          (await this.revalidateShared(info.projectAuthorization, (until) => {
+            validUntil = until;
+          }))
+        );
+      } catch (error) {
+        // The check itself failed (D1 unavailable), so authorization is
+        // unknown. Dropping the frame silently would leave this peer missing
+        // CRDT updates with no signal. Close with 1013 (try again later)
+        // instead: the client treats it as transient, reconnects and
+        // re-syncs from its version vector, and resends unacked writes.
+        log.warn("Socket revalidation unavailable; closing for retry:", error);
+        if (this.socketAuthorization.get(ws) === entry) {
+          this.closeSocket(ws, 1013, AUTHORIZATION_UNAVAILABLE_CLOSE_REASON);
+        }
+        return false;
+      }
+      // A close/error during D1 must not restore authorization or send a frame.
+      if (this.socketAuthorization.get(ws) !== entry || this.closedSockets.has(ws))
+        return false;
+      if (authorized) {
+        // Never trust a shared result longer than TTL after it was checked.
+        entry.expiresAt = Math.min(
+          validUntil,
+          Date.now() + SOCKET_AUTHORIZATION_TTL_MS,
+        );
+        // An idle socket sends no frame that would re-check it: recheck when
+        // this check lapses so a revoked socket never stays open.
+        void this.scheduleAuthorizationRecheck(entry.expiresAt);
+        return true;
+      }
+      this.closeSocket(ws, 1008, AUTHORIZATION_REVOKED_CLOSE_REASON);
+      return false;
+    })().finally(() => {
+      entry.inFlight = undefined;
+      if (!entry.expiresAt && this.socketAuthorization.get(ws) === entry) {
+        this.socketAuthorization.delete(ws);
+      }
+    });
+    return entry.inFlight;
   }
 
   private closeSocket(ws: WebSocket, code: number, reason: string): void {
@@ -616,69 +623,71 @@ export class ProjectRoom extends DurableObject<Env> {
     this.protocolSessions.delete(ws);
   }
 
-  /**
-   * Returns a check of `auth` that started after frame `seq`: the latest one
-   * when it qualifies, else the one queued behind the in-flight check, else a
-   * new one. A queued check reads its start sequence only when it runs.
-   */
-  private revalidateShared(auth: AuthResult, seq: number): AuthorizationCheck {
-    const key = JSON.stringify(auth);
-    let slot = this.sharedAuthorization.get(key);
-    if (!slot) {
-      if (this.sharedAuthorization.size > 1024) {
-        // Settled checks only save a D1 read for frames older than them.
-        for (const [k, v] of this.sharedAuthorization)
-          if (!v.queued && (!v.latest || v.latest.settled))
-            this.sharedAuthorization.delete(k);
-      }
-      slot = {};
-      this.sharedAuthorization.set(key, slot);
-    }
-    if (slot.latest && checkCovers(slot.latest, seq)) return slot.latest;
-    if (slot.queued) return slot.queued;
-
-    const owner = slot;
-    const check: AuthorizationCheck = {
-      settled: false,
-      result: Promise.resolve(false),
-    };
-    const run = () => {
-      check.startedSeq = this.frameSeq;
-      if (owner.queued === check) owner.queued = undefined;
-      owner.latest = check;
-      return revalidateProjectConnection(this.env, auth);
-    };
-    const inFlight =
-      owner.latest && !owner.latest.settled ? owner.latest.result : undefined;
-    if (inFlight) {
-      owner.queued = check;
-      check.result = inFlight.then(run, run);
-    } else {
-      check.result = run();
-    }
-    check.result.then(
-      () => {
-        check.settled = true;
-      },
-      () => {
-        // A failed check is not reused: the next frame retries it.
-        check.settled = true;
-        if (owner.latest === check) owner.latest = undefined;
-      },
-    );
-    return check;
+  /** Wake the room (alarm) no later than `at` to recheck idle sockets. */
+  private scheduleAuthorizationRecheck(at: number): Promise<void> {
+    if (this.authorizationRecheckAt > Date.now() && this.authorizationRecheckAt <= at)
+      return Promise.resolve();
+    this.authorizationRecheckAt = at;
+    return this.scheduleAlarmAtEarliest(at).catch((error) => {
+      // Without the alarm an idle revoked socket would wait for its next frame;
+      // forget the plan so the next successful check schedules it again.
+      this.authorizationRecheckAt = 0;
+      log.warn("Failed to schedule socket authorization recheck:", error);
+    });
   }
 
-  /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames.
-   * One broadcast passes the same `seq` to all of its recipients. */
-  private sendAuthorized(
-    ws: WebSocket,
-    data: string | Uint8Array,
-    seq = ++this.frameSeq,
-  ): void {
+  /**
+   * Alarm stage: re-check every socket whose check has lapsed. Live checks
+   * return without D1 and concurrent ones share one check per identity, so
+   * this costs at most one D1 read per identity per SOCKET_AUTHORIZATION_TTL_MS.
+   * Returns the earliest time a still-open socket's check lapses.
+   */
+  private async recheckIdleSockets(): Promise<number | undefined> {
+    this.authorizationRecheckAt = 0;
+    const sockets = this.ctx.getWebSockets();
+    await Promise.all(sockets.map((ws) => this.authorizeSocket(ws)));
+    let next: number | undefined;
+    for (const ws of sockets) {
+      const expiresAt = this.socketAuthorization.get(ws)?.expiresAt;
+      if (expiresAt && !this.closedSockets.has(ws))
+        next = next === undefined ? expiresAt : Math.min(next, expiresAt);
+    }
+    return next;
+  }
+
+  /** Serialize sends so asynchronous D1 checks cannot reorder protocol frames. */
+  private revalidateShared(
+    auth: AuthResult,
+    onValidUntil: (validUntil: number) => void,
+  ): Promise<boolean> {
+    const key = JSON.stringify(auth);
+    const now = Date.now();
+    let hit = this.sharedAuthorization.get(key);
+    if (!hit || now >= hit.validUntil) {
+      if (this.sharedAuthorization.size > 1024) {
+        for (const [k, v] of this.sharedAuthorization)
+          if (now >= v.validUntil) this.sharedAuthorization.delete(k);
+      }
+      const created = {
+        validUntil: now + SOCKET_AUTHORIZATION_TTL_MS,
+        result: revalidateProjectConnection(this.env, auth),
+      };
+      // A failed check is not cached: the next socket retries it.
+      created.result.catch(() => {
+        if (this.sharedAuthorization.get(key) === created)
+          this.sharedAuthorization.delete(key);
+      });
+      this.sharedAuthorization.set(key, created);
+      hit = created;
+    }
+    onValidUntil(hit.validUntil);
+    return hit.result;
+  }
+
+  private sendAuthorized(ws: WebSocket, data: string | Uint8Array): void {
     const pending = (this.outbound.get(ws) ?? Promise.resolve())
       .then(async () => {
-        const authorization = this.authorizeSocket(ws, seq);
+        const authorization = this.authorizeSocket(ws);
         if (
           (authorization === true ||
             (authorization !== false && (await authorization))) &&
@@ -717,7 +726,6 @@ export class ProjectRoom extends DurableObject<Env> {
         for (const [index, update] of updates.entries()) {
           await this.enqueueLoroImport({
             sender: ws,
-            senderSeq: this.inboundSeq.get(ws),
             data: update,
             eventId: `protocol:${batchId}:${index}`,
             broadcast: false,
@@ -736,9 +744,8 @@ export class ProjectRoom extends DurableObject<Env> {
     updates: Uint8Array[],
     sender?: WebSocket,
   ): void {
-    // Encode once per batch, not once per recipient; one frame sequence for all.
+    // Encode once per batch, not once per recipient.
     let frames: Uint8Array[] | undefined;
-    const seq = ++this.frameSeq;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === sender) continue;
       try {
@@ -749,10 +756,10 @@ export class ProjectRoom extends DurableObject<Env> {
             updates,
           );
           for (const frame of frames) {
-            this.sendAuthorized(ws, frame, seq);
+            this.sendAuthorized(ws, frame);
           }
         } else {
-          for (const update of updates) this.sendAuthorized(ws, update, seq);
+          for (const update of updates) this.sendAuthorized(ws, update);
         }
       } catch (error) {
         log.error("Failed to broadcast committed replica event:", error);
@@ -815,14 +822,13 @@ export class ProjectRoom extends DurableObject<Env> {
     // Serialize the shared list once; only selfClientId differs per socket.
     // Same JSON as JSON.stringify({ type, clients, selfClientId? }).
     const head = `{"type":"presence","clients":${JSON.stringify(clients)}`;
-    const seq = ++this.frameSeq;
     for (const ws of this.ctx.getWebSockets()) {
       const selfClientId = this.clients.get(ws)?.id;
       const msg = selfClientId
         ? `${head},"selfClientId":${JSON.stringify(selfClientId)}}`
         : `${head}}`;
       try {
-        this.sendAuthorized(ws, msg, seq);
+        this.sendAuthorized(ws, msg);
       } catch {
         // Connection may have closed
       }
@@ -863,11 +869,10 @@ export class ProjectRoom extends DurableObject<Env> {
     };
 
     const json = JSON.stringify(msg);
-    const seq = ++this.frameSeq;
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === sender) continue;
       try {
-        this.sendAuthorized(ws, json, seq);
+        this.sendAuthorized(ws, json);
       } catch {
         // Connection may have closed
       }
@@ -967,9 +972,7 @@ export class ProjectRoom extends DurableObject<Env> {
     ws: WebSocket,
     message: string | ArrayBuffer,
   ): Promise<void> {
-    const seq = ++this.frameSeq;
-    this.inboundSeq.set(ws, seq);
-    if (!(await this.authorizeSocket(ws, seq))) return;
+    if (!(await this.authorizeSocket(ws))) return;
     // After hibernation, in-memory state is lost — re-initialize if needed
     if (!this.projectId) {
       const storedId = await this.ctx.storage.get<string>("projectId");
@@ -999,7 +1002,6 @@ export class ProjectRoom extends DurableObject<Env> {
       }
       void this.enqueueLoroImport({
         sender: ws,
-        senderSeq: this.inboundSeq.get(ws),
         data: updates,
         runRealtimeEffects: true,
       }).catch((err) => {
@@ -1244,13 +1246,7 @@ export class ProjectRoom extends DurableObject<Env> {
             msg.resolve?.();
             continue;
           }
-          if (
-            msg.sender &&
-            !(await this.authorizeSocket(
-              msg.sender,
-              msg.senderSeq ?? ++this.frameSeq,
-            ))
-          ) {
+          if (msg.sender && !(await this.authorizeSocket(msg.sender))) {
             throw new Error("Project authorization revoked before commit");
           }
           const nodesMap = this.doc.getMap("nodes");
@@ -1443,35 +1439,52 @@ export class ProjectRoom extends DurableObject<Env> {
   // ─── Alarm (replaces schedule/cancelSchedule) ────────────────
 
   async alarm(): Promise<void> {
-    // After hibernation, in-memory state is lost — re-initialize if needed.
-    if (!this.projectId) {
-      const storedId = await this.ctx.storage.get<string>("projectId");
-      if (!storedId) return; // No project ever connected, nothing to do
-      if (!this.initPromise) {
-        this.initPromise = this.initRoom(storedId, {
-          enableTaskPolling: false,
-        });
-      }
-      await this.initPromise;
-    }
-
-    const tag = `[room proj=${this.projectId.slice(-6)}]`;
+    // The alarm is shared. It fires for the 60 s task poll, for requested
+    // checkpoints, and when a socket authorization check lapses (#240). The
+    // recheck needs no room state, so a recheck-only wake does not load the doc.
+    const recheckAt = await this.recheckIdleSockets();
     const checkpointTarget = await this.ctx.storage.get<number>(
       CHECKPOINT_REQUESTED_SEQ_KEY,
     );
-    if (checkpointTarget !== null) {
-      await this.runCompaction(tag);
-    }
+    let taskPollDueAt = await this.ctx.storage.get<number>(TASK_POLL_DUE_KEY);
+    const taskPollDue =
+      taskPollDueAt === undefined || Date.now() >= taskPollDueAt;
 
-    // Persistence is event-driven now — every doc commit (local via
-    // subscribeLocalUpdates, or imported via processMessageQueue) appends
-    // to the update log inside persistAndMaybeCompact. The alarm only
-    // runs task polling; it doesn't need to coordinate snapshot saves.
-    await this.taskPoll();
+    if (taskPollDue || checkpointTarget != null) {
+      // After hibernation, in-memory state is lost — re-initialize if needed.
+      if (!this.projectId) {
+        const storedId = await this.ctx.storage.get<string>("projectId");
+        if (!storedId) return; // No project ever connected, nothing to do
+        if (!this.initPromise) {
+          this.initPromise = this.initRoom(storedId, {
+            enableTaskPolling: false,
+          });
+        }
+        await this.initPromise;
+      }
+
+      const tag = `[room proj=${this.projectId.slice(-6)}]`;
+      // Same cadence as before the recheck shared this alarm: every 60 s
+      // slot, or sooner when a checkpoint was requested.
+      await this.runCompaction(tag);
+
+      // Persistence is event-driven now — every doc commit (local via
+      // subscribeLocalUpdates, or imported via processMessageQueue) appends
+      // to the update log inside persistAndMaybeCompact. The alarm only
+      // runs task polling; it doesn't need to coordinate snapshot saves.
+      if (taskPollDue) {
+        await this.taskPoll();
+        taskPollDueAt = Date.now() + TASK_POLL_INTERVAL_MS;
+        await this.ctx.storage.put(TASK_POLL_DUE_KEY, taskPollDueAt);
+      }
+    }
 
     // Re-schedule next alarm only if clients are connected.
     if (this.ctx.getWebSockets().length > 0) {
-      await this.scheduleAlarmAtEarliest(Date.now() + TASK_POLL_INTERVAL_MS);
+      if (taskPollDueAt !== undefined)
+        await this.scheduleAlarmAtEarliest(taskPollDueAt);
+      if (recheckAt !== undefined)
+        await this.scheduleAuthorizationRecheck(recheckAt);
     }
   }
 

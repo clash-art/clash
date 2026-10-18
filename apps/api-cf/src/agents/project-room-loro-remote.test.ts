@@ -325,51 +325,123 @@ describe("socket authorization cache", () => {
     fixture.ws.deserializeAttachment.mockReturnValue({
       projectAuthorization: { projectId: "project" },
     } as any);
-    return { ...fixture, room };
+    const schedule = vi.fn(async (_at: number) => {});
+    room.scheduleAlarmAtEarliest = schedule;
+    return { ...fixture, room, schedule };
   }
+  const REVOKED =
+    "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.";
 
-  it("coalesces frames queued before a check into it, and re-checks every later frame", async () => {
-    mocks.revalidate.mockReset().mockResolvedValue(true);
-    const { room, ws, flush } = fixture();
-    for (const frame of ["a", "b", "c"]) room.sendAuthorized(ws, frame);
-    await flush();
-    expect(mocks.revalidate).toHaveBeenCalledTimes(1);
-    expect(ws.send.mock.calls).toEqual([["a"], ["b"], ["c"]]);
-    // No time window: the next frame is authorized by a check that started after it.
-    room.sendAuthorized(ws, "d");
-    await flush();
-    expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+  it("accepts frames inside the window and refuses the first frame after it lapses with a coded close (#240)", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, flush } = fixture();
+      room.sendAuthorized(ws, "a");
+      await flush();
+      mocks.revalidate.mockResolvedValue(false); // revoked in D1 now
+      clock.mockReturnValue(14_999);
+      room.sendAuthorized(ws, "b"); // bounded window: still covered
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      clock.mockReturnValue(15_000);
+      room.sendAuthorized(ws, "c");
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+      expect(ws.send.mock.calls).toEqual([["a"], ["b"]]);
+      expect(ws.close).toHaveBeenCalledWith(1008, REVOKED);
+      expect(room.authorizeSocket(ws)).toBe(false);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
-  it("refuses the very next frame after revocation and closes with a coded reason (#240)", async () => {
-    mocks.revalidate.mockReset().mockResolvedValueOnce(true).mockResolvedValue(false);
-    const { room, ws, flush } = fixture();
-    room.sendAuthorized(ws, "allowed");
-    await flush();
-    room.sendAuthorized(ws, "after-revocation");
-    await flush();
-    expect(ws.send.mock.calls).toEqual([["allowed"]]);
-    expect(ws.close).toHaveBeenCalledWith(
-      1008,
-      "PROJECT_AUTHORIZATION_REVOKED: Your session expired or your access to this project was revoked.",
-    );
+  it("refuses an expired credential immediately, inside the window and without D1", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws } = fixture();
+      ws.deserializeAttachment.mockReturnValue({
+        projectAuthorization: {
+          projectId: "project",
+          authorization: { kind: "session", expiresAt: 11_000 },
+        },
+      } as any);
+      await expect(room.authorizeSocket(ws)).resolves.toBe(true);
+      clock.mockReturnValue(11_000);
+      expect(room.authorizeSocket(ws)).toBe(false);
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      expect(ws.close).toHaveBeenCalledWith(1008, REVOKED);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
-  it("refuses an expired credential without a revalidation", async () => {
-    mocks.revalidate.mockReset().mockResolvedValue(true);
-    const { room, ws, flush } = fixture();
-    ws.deserializeAttachment.mockReturnValue({
-      projectAuthorization: { projectId: "project", authorization: { kind: "jwt", expiresAt: Date.now() - 1 } },
-    } as any);
-    room.sendAuthorized(ws, "late");
-    await flush();
-    expect(mocks.revalidate).not.toHaveBeenCalled();
-    expect(ws.send).not.toHaveBeenCalled();
-    expect(ws.close).toHaveBeenCalledWith(1008, expect.stringMatching(/^PROJECT_AUTHORIZATION_REVOKED: /));
+  it("schedules a recheck when the window lapses, so an idle revoked socket is closed without any frame", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, schedule } = fixture();
+      await room.authorizeSocket(ws);
+      expect(schedule).toHaveBeenCalledWith(15_000);
+      // An alarm inside the window costs no D1 and reports the next lapse.
+      clock.mockReturnValue(12_000);
+      await expect(room.recheckIdleSockets()).resolves.toBe(15_000);
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      mocks.revalidate.mockResolvedValue(false);
+      clock.mockReturnValue(15_000);
+      await expect(room.recheckIdleSockets()).resolves.toBeUndefined();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+      expect(ws.close).toHaveBeenCalledWith(1008, REVOKED);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("a recheck-only alarm neither loads the room nor runs the task poll or compaction", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(15_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, data, schedule } = fixture();
+      data.set("taskPollDueAt", 70_000);
+      room.initRoom = vi.fn();
+      room.taskPoll = vi.fn();
+      room.runCompaction = vi.fn();
+      await room.alarm();
+      expect(room.initRoom).not.toHaveBeenCalled();
+      expect(room.taskPoll).not.toHaveBeenCalled();
+      expect(room.runCompaction).not.toHaveBeenCalled();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      expect(ws.close).not.toHaveBeenCalled();
+      // Both the 60 s task poll and the next authorization lapse stay scheduled.
+      expect(schedule).toHaveBeenCalledWith(70_000);
+      expect(schedule).toHaveBeenCalledWith(20_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("reuses successful authorization for frames until the five-second TTL expires", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
+      mocks.revalidate.mockReset().mockResolvedValue(true);
+      const { room, ws, flush } = fixture();
+      for (const frame of ["a", "b", "c"]) room.sendAuthorized(ws, frame);
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(1);
+      expect(ws.send.mock.calls).toEqual([["a"], ["b"], ["c"]]);
+      clock.mockReturnValue(15_000);
+      room.sendAuthorized(ws, "d");
+      await flush();
+      expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("shares one revalidation across sockets presenting the same proof", async () => {
-    {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    try {
       mocks.revalidate.mockReset().mockResolvedValue(true);
       const { room, ws, flush } = fixture();
       const others = Array.from({ length: 20 }, () => ({
@@ -382,10 +454,13 @@ describe("socket authorization cache", () => {
       await flush();
       expect(mocks.revalidate).toHaveBeenCalledTimes(1);
       for (const other of others) expect(other.send).toHaveBeenCalledWith("x");
-      // A later frame is never authorized by the earlier check.
+      // Still bounded by the TTL: a later send revalidates again.
+      clock.mockReturnValue(15_001);
       room.sendAuthorized(others[0], "y");
       await flush();
       expect(mocks.revalidate).toHaveBeenCalledTimes(2);
+    } finally {
+      clock.mockRestore();
     }
   });
 
@@ -404,9 +479,15 @@ describe("socket authorization cache", () => {
     );
     expect(room.socketAuthorization.has(ws)).toBe(false);
     expect(room.clients.has(ws)).toBe(false);
-    // Not cached as a failure: a new connection's check (D1 recovered) succeeds.
-    const next = fixture();
-    await expect(next.room.authorizeSocket(next.ws, ++next.room.frameSeq)).resolves.toBe(true);
+    // The closed socket stays refused, but the failure is not cached for the
+    // identity: the next socket with the same proof (D1 recovered) succeeds.
+    expect(await room.authorizeSocket(ws)).toBe(false);
+    const reconnected = {
+      send: vi.fn(),
+      close: vi.fn(),
+      deserializeAttachment: vi.fn(() => ({ projectAuthorization: { projectId: "project" } })),
+    };
+    await expect(room.authorizeSocket(reconnected)).resolves.toBe(true);
   });
 
   it("drops frames for a socket that closed while authorization was in flight", async () => {
@@ -444,9 +525,8 @@ describe("socket authorization cache", () => {
     room.sendAuthorized(ws, "a");
     room.sendAuthorized(ws, "b");
     await Promise.resolve();
-    // Inbound frames that arrived before the in-flight check started share it.
-    const first = room.authorizeSocket(ws, room.frameSeq);
-    expect(room.authorizeSocket(ws, room.frameSeq)).toBe(first);
+    const first = room.authorizeSocket(ws);
+    expect(room.authorizeSocket(ws)).toBe(first);
     expect(mocks.revalidate).toHaveBeenCalledTimes(1);
     resolve(true);
     await flush();
@@ -463,7 +543,7 @@ describe("socket authorization cache", () => {
         }),
     );
     const { room, ws } = fixture();
-    const authorization = room.authorizeSocket(ws, ++room.frameSeq);
+    const authorization = room.authorizeSocket(ws);
     room.broadcastPresence = vi.fn();
     room.flushAwarenessBroadcast = vi.fn();
     if (event === "close") await room.webSocketClose(ws, 1000, "closed");
