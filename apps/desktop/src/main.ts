@@ -9,6 +9,7 @@ import { createDesktopRuntimeController } from "./controller/runtime";
 import { createDesktopWindowController } from "./controller/windows";
 import { ownDesktopInstance } from "./single-instance";
 import { startDesktopWithRecovery } from "./startup-recovery";
+import { startMacGuiPathHydration } from "./shell-path";
 import { DEFAULT_JSONL_LOG_RETENTION } from "@clash/shared-runtime/observability";
 import { createDesktopFileLogSink, createDesktopLogger } from "./stdio-logger";
 import { createUpdateQuitGate } from "./update-quit";
@@ -19,7 +20,7 @@ let recoverOwnedWindow = () => undefined;
 const ownsDesktopInstance = ownDesktopInstance(app, () => recoverOwnedWindow());
 
 if (ownsDesktopInstance) {
-  const { dataDir, pathReady } = configureDesktopHost();
+  const { dataDir, state } = configureDesktopHost();
   const hostDiagnosticLogPath = join(app.getPath("logs"), "host-startup.log");
   const fileSink = createDesktopFileLogSink({
     directory: app.getPath("logs"),
@@ -33,11 +34,37 @@ if (ownsDesktopInstance) {
   app.on("will-quit", () => desktopLog.close());
   const startupPhase = createStartupPhaseRecorder(desktopLog);
   startupPhase("main.loaded");
+  // The login shell only enriches PATH for later tool/agent spawns. It must
+  // never gate the Host launch: the cached/fallback PATH is applied now and the
+  // hydrated PATH is handed to a running Host when it arrives.
+  const shellPath = startMacGuiPathHydration({
+    cachePath: join(state.userData, "shell-path.json"),
+    onWarning: (event, context) => desktopLog.event?.("warn", event, context),
+  });
   const runtimeController = createDesktopRuntimeController({
     moduleDir,
     hostDiagnosticLogPath,
     log: desktopLog,
     startupPhase,
+  });
+  void shellPath.pathReady.then(async (result) => {
+    startupPhase("path.ready", {
+      source: result.source,
+      timedOut: result.timedOut,
+      path: result.path,
+    });
+    if (result.source !== "login-shell") return;
+    try {
+      await runtimeController.updateAgentEnvironment(result.path);
+    } catch (error) {
+      desktopLog.event?.("warn", "DESKTOP_SHELL_PATH_APPLY_FAILED", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }).catch((error) => {
+    desktopLog.event?.("warn", "DESKTOP_SHELL_PATH_HYDRATION_FAILED", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
   const windowController = createDesktopWindowController({
     moduleDir,
@@ -62,8 +89,6 @@ if (ownsDesktopInstance) {
       windowController.registerHostBindings();
       const outcome = await startDesktopWithRecovery({
         start: async () => {
-          await pathReady;
-          startupPhase("path.ready");
           await runtimeController.initialize(dataDir);
           startupPhase("runtime.ready");
           await windowController.createWindow();

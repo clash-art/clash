@@ -10,13 +10,21 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createLocalDaemonBootstrap,
   launchDetachedLocalDaemon,
   resolveLocalDaemonRuntimeFingerprint,
+  resolveLocalDaemonRuntimeFingerprintAsync,
+  DEFAULT_READINESS_POLL_INTERVAL_MS,
+  DEFAULT_READINESS_POLL_MAX_INTERVAL_MS,
+  nextReadinessPollInterval,
   type LocalDaemonLaunchResult,
 } from "./local-daemon.js";
+import {
+  LOCAL_DAEMON_RUNTIME_MANIFEST_FILE,
+  writeLocalDaemonRuntimeManifest,
+} from "./local-daemon-manifest.js";
 import {
   LOCAL_HOST_DATA_SCHEMA_VERSION,
   LOCAL_HOST_PROTOCOL_VERSION,
@@ -603,5 +611,183 @@ describe("local daemon bootstrap", () => {
     await publish(runDir, second);
     expect((await bootstrap.ensureDaemon()).hostId).toBe(second.hostId);
     expect(probes).toBe(2);
+  });
+});
+
+describe("packaged runtime manifest fingerprint", () => {
+  async function runtimeTree(root: string, entry = "local-api.cjs") {
+    await mkdir(join(root, "bundled-plugins", "asset-edit"), {
+      recursive: true,
+    });
+    await mkdir(join(root, "project-ui", "_app"), { recursive: true });
+    await writeFile(join(root, entry), "module.exports = 'host entry';\n");
+    await writeFile(
+      join(root, "bundled-plugins", "asset-edit", "index.mjs"),
+      "export const adapter = 'old';\n",
+    );
+    await writeFile(join(root, "project-ui", "_app", "editor.js"), "old();\n");
+    return join(root, entry);
+  }
+
+  function expectManifestMismatch(fn: () => string, file: string): void {
+    let error: unknown;
+    try {
+      fn();
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      code: "LOCAL_DAEMON_RUNTIME_MANIFEST_MISMATCH",
+      file,
+    });
+  }
+
+  it("computes the same fingerprint synchronously, in the worker, and for a copied tree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-manifest-identity-"));
+    try {
+      const first = await runtimeTree(join(root, "first"));
+      await writeLocalDaemonRuntimeManifest({
+        runtimeDir: join(root, "first"),
+        entryFile: "local-api.cjs",
+      });
+      const second = await runtimeTree(join(root, "second"));
+      await writeLocalDaemonRuntimeManifest({
+        runtimeDir: join(root, "second"),
+        entryFile: "local-api.cjs",
+      });
+
+      const sync = resolveLocalDaemonRuntimeFingerprint(first);
+      expect(sync).toMatch(/^sha256:[a-f0-9]{64}$/);
+      await expect(
+        resolveLocalDaemonRuntimeFingerprintAsync(first),
+      ).resolves.toBe(sync);
+      expect(resolveLocalDaemonRuntimeFingerprint(second)).toBe(sync);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails with a coded mismatch naming the first missing, extra, or resized file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-manifest-mismatch-"));
+    try {
+      const runtime = join(root, "runtime");
+      const entry = await runtimeTree(runtime);
+      await writeLocalDaemonRuntimeManifest({ runtimeDir: runtime });
+      const bundle = join(
+        runtime,
+        "bundled-plugins",
+        "asset-edit",
+        "index.mjs",
+      );
+
+      await rm(bundle);
+      expectManifestMismatch(
+        () => resolveLocalDaemonRuntimeFingerprint(entry),
+        "bundled-plugins/asset-edit/index.mjs",
+      );
+
+      await writeFile(bundle, "export const adapter = 'old';\n");
+      const extra = join(runtime, "project-ui", "_app", "extra.js");
+      await writeFile(extra, "extra();\n");
+      expectManifestMismatch(
+        () => resolveLocalDaemonRuntimeFingerprint(entry),
+        "project-ui/_app/extra.js",
+      );
+      await rm(extra);
+
+      await writeFile(
+        join(runtime, "project-ui", "_app", "editor.js"),
+        "changed length();\n",
+      );
+      expectManifestMismatch(
+        () => resolveLocalDaemonRuntimeFingerprint(entry),
+        "project-ui/_app/editor.js",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an entry whose size no longer matches the manifest instead of returning a new fingerprint", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-manifest-entry-"));
+    try {
+      const entry = await runtimeTree(join(root, "runtime"));
+      await writeLocalDaemonRuntimeManifest({
+        runtimeDir: join(root, "runtime"),
+      });
+      await writeFile(
+        entry,
+        "module.exports = 'host entry with different length';\n",
+      );
+      expectManifestMismatch(
+        () => resolveLocalDaemonRuntimeFingerprint(entry),
+        "local-api.cjs",
+      );
+      await expect(
+        resolveLocalDaemonRuntimeFingerprintAsync(entry),
+      ).rejects.toMatchObject({
+        code: "LOCAL_DAEMON_RUNTIME_MANIFEST_MISMATCH",
+        file: "local-api.cjs",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the full-tree hash once when a source runtime has no manifest", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-manifest-missing-"));
+    vi.resetModules();
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, "warn").mockImplementation((message) => {
+      warnings.push(String(message));
+    });
+    try {
+      const entry = await runtimeTree(join(root, "runtime"));
+      await writeFile(
+        join(root, "runtime", "bundled-plugins", "asset-edit", "zzz.mjs"),
+        "export const tail = true;\n",
+      );
+      await mkdir(join(root, "runtime", "project-ui", "_app", "nested"), {
+        recursive: true,
+      });
+      await writeFile(
+        join(root, "runtime", "project-ui", "_app", "nested", "deeper.js"),
+        "deeper();\n",
+      );
+      const mod = await import("./local-daemon.js");
+      const first = mod.resolveLocalDaemonRuntimeFingerprint(entry);
+      const second = mod.resolveLocalDaemonRuntimeFingerprint(entry);
+      expect(second).toBe(first);
+      await expect(
+        mod.resolveLocalDaemonRuntimeFingerprintAsync(entry),
+      ).resolves.toBe(first);
+      expect(
+        warnings.filter((message) =>
+          message.includes(LOCAL_DAEMON_RUNTIME_MANIFEST_FILE),
+        ),
+      ).toHaveLength(1);
+      await writeFile(
+        join(root, "runtime", "project-ui", "_app", "editor.js"),
+        "changed();\n",
+      );
+      expect(mod.resolveLocalDaemonRuntimeFingerprint(entry)).not.toBe(first);
+      await expect(
+        mod.resolveLocalDaemonRuntimeFingerprintAsync(entry),
+      ).resolves.not.toBe(first);
+    } finally {
+      spy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("starts readiness polls at 10-15 ms and backs off to 50 ms", () => {
+    expect(DEFAULT_READINESS_POLL_INTERVAL_MS).toBeGreaterThanOrEqual(10);
+    expect(DEFAULT_READINESS_POLL_INTERVAL_MS).toBeLessThanOrEqual(15);
+    expect(DEFAULT_READINESS_POLL_MAX_INTERVAL_MS).toBe(50);
+    const intervals = [DEFAULT_READINESS_POLL_INTERVAL_MS];
+    while (intervals.at(-1)! < DEFAULT_READINESS_POLL_MAX_INTERVAL_MS) {
+      intervals.push(nextReadinessPollInterval(intervals.at(-1)!));
+    }
+    expect(intervals.slice(0, 6)).toEqual([12, 18, 27, 41, 50]);
   });
 });
