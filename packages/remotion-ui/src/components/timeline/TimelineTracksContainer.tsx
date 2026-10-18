@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, Fragment } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import {
   findAssetForItem,
@@ -20,7 +20,12 @@ import { indexItemNeighbors } from './itemNeighbors';
 import { currentDraggedAsset, currentAssetDragOffset } from '../AssetPanel';
 import { resolveAssetDropPayload } from './assetDropPayload';
 import { calculateResizeSnap } from './utils/snapCalculator';
-import { getTrackHeightForTrack } from './trackGeometry';
+import {
+  getTimelineTrackLaneElements,
+  getTrackHeightForTrack,
+  getTrackStackElement,
+  toTrackStackY,
+} from './trackGeometry';
 import { getContinuousTransitionBoundaries } from '../../library/applyTimelineLibraryItem';
 import { PrimaryTranscriptWordbar } from './PrimaryTranscriptWordbar';
 import {
@@ -578,7 +583,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     }, { root: observedViewport, rootMargin: '200px 0px' });
     // Keep lane shells mounted: their authored heights remain the source of
     // scroll and drop geometry, while distant clip controls can be released.
-    observedViewport.querySelectorAll('[data-timeline-track-id]').forEach(lane => observer.observe(lane));
+    getTimelineTrackLaneElements(observedViewport).forEach(lane => observer.observe(lane));
     return () => { active = false; observer.disconnect(); };
   }, [observedViewport, displayTrackIdsKey]);
 
@@ -619,12 +624,19 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     return 44;
   }, [assets]);
 
+  // Whether the lanes viewport is scrolled to its bottom (see the
+  // bottom-anchor effect below). Starts pinned.
+  const pinnedToBottomRef = useRef(true);
+
   // 同步垂直滚动（标签面板 ↔ 轨道视口）
   // Sync vertical scroll between labels and tracks; report horizontal scroll to parent.
   const handleViewportScroll = useCallback(() => {
     if (viewportRef.current && labelsRef.current) {
       const scrollTop = viewportRef.current.scrollTop;
       labelsRef.current.scrollTop = scrollTop;
+      const viewport = viewportRef.current;
+      pinnedToBottomRef.current =
+        viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1;
 
       // Sync horizontal scroll to consumers (ruler, playhead, etc.)
       const scrollLeft = viewportRef.current.scrollLeft;
@@ -648,6 +660,59 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [measureScrollbars, durationInFrames, pixelsPerFrame, viewportWidth]);
+
+  // Bottom-anchored lanes: when the stack is taller than the viewport, keep
+  // its bottom edge (primary + audio lanes) visible by default. It scrolls to
+  // the bottom on mount, when tracks appear from an empty timeline, on the
+  // transition from fitting to overflowing, and while the view was already
+  // pinned to the bottom (stick-to-bottom). If the user scrolled up, layout
+  // changes leave their position alone.
+  const previousTrackCountRef = useRef(tracks.length);
+  const wasOverflowingRef = useRef(false);
+  const didInitialOverflowScrollRef = useRef(false);
+
+  const scrollToTrackStackBottom = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTop = viewport.scrollHeight;
+    pinnedToBottomRef.current = true;
+    // Programmatic scrollTop changes do not fire scroll events, so mirror the
+    // position onto the label rail explicitly.
+    if (labelsRef.current) labelsRef.current.scrollTop = viewport.scrollTop;
+  }, []);
+
+  const anchorTrackStackOnOverflow = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const overflowing = viewport.scrollHeight > viewport.clientHeight + 1;
+    const appearedFromEmpty = previousTrackCountRef.current === 0 && tracks.length > 0;
+    const becameOverflowing = overflowing && !wasOverflowingRef.current;
+    if (
+      (!didInitialOverflowScrollRef.current && overflowing)
+      || appearedFromEmpty
+      || becameOverflowing
+      || (overflowing && pinnedToBottomRef.current)
+    ) {
+      scrollToTrackStackBottom();
+    }
+    didInitialOverflowScrollRef.current = true;
+    wasOverflowingRef.current = overflowing;
+    previousTrackCountRef.current = tracks.length;
+  }, [scrollToTrackStackBottom, tracks.length]);
+
+  useLayoutEffect(() => {
+    anchorTrackStackOnOverflow();
+  }, [anchorTrackStackOnOverflow, displayTracks.length, showTranscriptTimeline]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => anchorTrackStackOnOverflow());
+    observer.observe(viewport);
+    const stack = getTrackStackElement(viewport);
+    if (stack) observer.observe(stack);
+    return () => observer.disconnect();
+  }, [anchorTrackStackOnOverflow, observedViewport]);
 
   // 拖放处理
   const handleContainerDragEnter = useCallback((e: React.DragEvent) => {
@@ -713,8 +778,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
     
     // Only handle asset drops here (item drops are handled by TimelineItem)
     if (dragType !== 'item' && !window.currentDraggedItem) {
-      const rect = viewportRef.current.getBoundingClientRect();
-      const y = e.clientY - rect.top + viewportRef.current.scrollTop;
+      const y = toTrackStackY(viewportRef.current, e.clientY);
       const targetTrack = getPresentationTrackBandAtY(y)?.targetTrack;
 
       if (targetTrack) {
@@ -740,8 +804,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
       return 0;
     }
 
-    const rect = viewportRef.current.getBoundingClientRect();
-    const y = e.clientY - rect.top + viewportRef.current.scrollTop;
+    const y = toTrackStackY(viewportRef.current, e.clientY);
     const band = getPresentationTrackBandAtY(y);
     if (!band) {
       setInsertPosition(y < 0 ? 0 : tracks.length);
@@ -1050,11 +1113,23 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             // 隐藏滚动条但保持可滚动
             scrollbarWidth: 'none',
             msOverflowStyle: 'none',
+            // Explicit height so the inner minHeight:100% resolves against the
+            // panel's content box (which excludes paddingBottom above).
+            height: '100%',
           }}
           onScroll={handleLabelsScroll}
         >
           <style>{TRACK_LABELS_SCROLLBAR_CSS}</style>
 
+          <div
+            style={{
+              minHeight: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'flex-end',
+              boxSizing: 'border-box',
+            }}
+          >
           {tracks.length === 0 ? (
             <div
               aria-hidden="true"
@@ -1063,7 +1138,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
               }}
             />
           ) : (
-            <>
+            <div data-timeline-label-stack="" style={{ flexShrink: 0 }}>
             {displayTracks.map((track, index) => {
               const isPrimary = track.id === primaryTrackId;
               const trackLabel = getTimelineTrackLabel(track, isPrimary, primaryTrackId);
@@ -1102,14 +1177,20 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             {showTranscriptTimeline ? (
               <GlobalTranscriptTrackLabel showTop={displayTracks.length === 0} />
             ) : null}
-            </>
+            </div>
           )}
+          </div>
         </div>
       )}
 
       {/* 右侧轨道视口 */}
       <ScrollViewport
         containerStyle={{ flex: 1 }}
+        // The content wrapper only has min-height:100%, which a child's
+        // percentage min-height cannot resolve against. Make it a flex column
+        // so the lanes content can grow to the full viewport height and pack
+        // the track stack to the bottom.
+        contentStyle={{ display: 'flex', flexDirection: 'column' }}
         data-timeline-editing-canvas=""
         ref={setViewportElement}
         className="tracks-viewport bg-transparent"
@@ -1129,7 +1210,11 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             position: 'relative',
             minWidth: totalWidth,
             minHeight: '100%',
+            flexGrow: 1,
             background: colors.bg.primary,
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'flex-end',
           }}
           onClick={(e) => {
             // 点击轨道视口的空白区域时取消选中
@@ -1170,6 +1255,9 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                 color: colors.text.tertiary,
                 gap: spacing.sm,
                 pointerEvents: 'none', // 让拖放事件穿透到父元素
+                // The content column is bottom-anchored; keep the empty state
+                // where it was (at the top) instead of pushing it down.
+                marginBottom: 'auto',
               }}
             >
               <div style={{ width: 24, height: 2, borderRadius: 999, background: colors.accent.primary, opacity: 0.72, marginBottom: spacing.sm }} />
@@ -1180,7 +1268,14 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             </div>
           ) : (
             // 轨道列表 - 只渲染轨道内容区，不包括标签
-            displayTracks.map((track, index) => {
+            <div
+              data-timeline-track-stack=""
+              style={{
+                position: 'relative',
+                flexShrink: 0,
+              }}
+            >
+            {displayTracks.map((track, index) => {
               const isPrimary = track.id === primaryTrackId;
               const trackHeight = getPresentationTrackHeight(track);
               const trackIndex = tracks.findIndex((candidate) => candidate.id === track.id);
@@ -1197,6 +1292,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                 {/* 插入指示器 - 轨道上方 */}
                 {effectiveInsertPosition === insertBeforeIndex && (
                   <div
+                    data-timeline-insert-indicator={effectiveInsertPosition}
                     style={{
                       position: 'relative',
                       height: 2,
@@ -1287,7 +1383,9 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                     style={{
                       position: 'absolute',
                       top: 0,
-                      bottom: -1,
+                      // Not -1: with the stack bottom-anchored, a 1px overhang
+                      // on the last lane creates a phantom vertical scroll.
+                      bottom: 0,
                       left: -(contentInsetLeftPx ?? 0),
                       width: contentInsetLeftPx ?? 0,
                       boxSizing: 'border-box',
@@ -1558,10 +1656,8 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                 )}
               </Fragment>
               );
-            })
-          )}
-
-          {showTranscriptTimeline ? (
+            })}
+            {showTranscriptTimeline ? (
             <div
               data-track-lane=""
               data-global-transcript-lane=""
@@ -1594,7 +1690,9 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
                 </span>
               )}
             </div>
-          ) : null}
+            ) : null}
+            </div>
+          )}
 
           {/* 垂直吸附指示线（对齐到其他素材边缘时显示） */}
           {dragPreview?.snapGuideFrame != null && (
@@ -1677,6 +1775,15 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
         onScroll={handleLabelsScroll}
       >
         <style>{TRACK_LABELS_SCROLLBAR_CSS}</style>
+        <div
+          style={{
+            minHeight: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'flex-end',
+            boxSizing: 'border-box',
+          }}
+        >
         {tracks.length === 0 ? (
           <div
             aria-hidden="true"
@@ -1685,7 +1792,7 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
             }}
           />
         ) : (
-          <>
+          <div data-timeline-label-stack="" style={{ flexShrink: 0 }}>
           {displayTracks.map((track, index) => {
             const isPrimary = track.id === primaryTrackId;
             const trackLabel = getTimelineTrackLabel(track, isPrimary, primaryTrackId);
@@ -1724,8 +1831,9 @@ export const TimelineTracksContainer: React.FC<TimelineTracksContainerProps> = (
           {showTranscriptTimeline ? (
             <GlobalTranscriptTrackLabel showTop={displayTracks.length === 0} />
           ) : null}
-          </>
+          </div>
         )}
+        </div>
       </div>
     );
 

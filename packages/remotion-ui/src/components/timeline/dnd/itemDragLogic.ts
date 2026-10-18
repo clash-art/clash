@@ -181,7 +181,7 @@ export function resolveNonOverlapInTrack(
 export function buildPreview(
   args: {
     leftWithinTracksPx: number;
-    itemTopY: number; // Already adjusted with scrollTop in caller
+    itemTopY: number; // Already converted to bottom-anchored track-stack coordinates by the caller
     itemHeightPx: number;
     prevItemTopY?: number;
     pixelsPerFrame: number;
