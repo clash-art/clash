@@ -147,7 +147,18 @@ function warmBrowser(): void {
   if (!clashBrowserWarmupEnabled(process.env)) return;
   const timer = setTimeout(() => {
     if (stopping) return;
-    void ensureClashBrowser({ signal: browserWarmup.signal }).then(
+    void ensureClashBrowser({
+      signal: browserWarmup.signal,
+      onCacheRejected: (rejection) => {
+        observability.event("warn", "browser.cache_rejected", {
+          code: rejection.code,
+          expectedVersion: rejection.expectedVersion,
+          actualVersion: rejection.actualVersion,
+          cacheDir: rejection.cacheDir,
+          detail: rejection.detail,
+        });
+      },
+    }).then(
       (browser) => {
         observability.event("info", "browser.ready", {
           source: browser.source,

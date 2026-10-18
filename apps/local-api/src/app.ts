@@ -700,6 +700,13 @@ export interface LocalAcpAttachSessionParams extends LocalAcpCreateSessionParams
   sessionId: string;
 }
 
+export type LocalAcpCatalogFreshness = {
+  status: "fresh" | "stale" | "refreshing" | "offline";
+  fetchedAt: string | null;
+  checkedAt: string | null;
+  error?: { code: "ACP_REGISTRY_UNREACHABLE"; message: string };
+};
+
 export interface LocalAcpAdapter {
   warmup?(): Promise<void> | void;
   reconcileConfiguration?(): Promise<void> | void;
@@ -707,7 +714,10 @@ export interface LocalAcpAdapter {
   listRuntimes(opts?: {
     probe?: boolean | "auth" | "config" | "none";
     refresh?: boolean;
-  }): Promise<{ runtimes: LocalAcpRuntime[] }>;
+  }): Promise<{
+    runtimes: LocalAcpRuntime[];
+    catalogFreshness?: LocalAcpCatalogFreshness;
+  }>;
   updateRunPreferences?(update: {
     agent_id: string;
     config_values?: Record<string, string | boolean>;
@@ -732,7 +742,10 @@ export interface LocalAcpAdapter {
     checkUpdates?: boolean;
     probe?: boolean | "auth" | "config" | "none";
     refresh?: boolean;
-  }): Promise<{ harnesses: LocalAcpHarness[] }>;
+  }): Promise<{
+    harnesses: LocalAcpHarness[];
+    catalogFreshness?: LocalAcpCatalogFreshness;
+  }>;
   updateHarnesses?(
     enabledIds: string[],
   ): Promise<{ harnesses: LocalAcpHarness[] }>;
@@ -8478,7 +8491,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   app.all("/fal/*", (c) => handleFalMockHttpRequest(falMock, c.req.raw));
   app.get("/api/v1/runtimes", async (c) => {
     if (!options.localAcp) return json({ runtimes: [] });
-    if (c.req.query("readiness") !== "snapshot") {
+    // Serve the cached catalog immediately; startup warm-up refreshes it in the background.
+    // `readiness=wait` is the explicit opt-in for callers that want the full warm-up barrier.
+    if (c.req.query("readiness") === "wait") {
       await options.localAcpReady;
     }
     const rawProbe = c.req.query("probe");
@@ -8501,7 +8516,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         readToken: localHarnessesReceiptReadToken(result),
       });
     }
-    await options.localAcpReady;
+    if (c.req.query("readiness") === "wait") {
+      await options.localAcpReady;
+    }
     const rawProbe = c.req.query("probe");
     const probe =
       rawProbe === "1" || rawProbe === "true"

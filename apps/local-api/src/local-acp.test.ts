@@ -16,6 +16,7 @@ import type {
   SessionPermissionBroker,
 } from "./runtime/host/lib/session-manager.js";
 import { readAgentRuntime } from "./runtime/host/lib/session-cwd.js";
+import { _resetRegistryCache } from "./runtime/host/acp/registry.js";
 import {
   createLocalAcpAdapter as createLocalAcpAdapterImpl,
   createLocalHarnessConfigStore,
@@ -2333,6 +2334,62 @@ describe("local ACP adapter", () => {
       ).not.toHaveProperty("updateAvailable");
     } finally {
       await rm(harnessDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves cached runtimes and harnesses while the registry refresh is unreachable", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-acp-offline-catalog-"));
+    const cachePath = join(dataDir, "acp-registry-cache.json");
+    await writeFile(
+      cachePath,
+      JSON.stringify({
+        fetchedAt: Date.now() - 2 * 60 * 60 * 1000,
+        data: { version: "1.0.0", agents: [] },
+      }),
+    );
+    _resetRegistryCache();
+    let rejectRegistry!: (error: Error) => void;
+    const fetchMock = vi.fn((input: unknown) => {
+      const url = String(input);
+      if (url.includes("cdn.agentclientprotocol.com")) {
+        return new Promise<Response>((_resolve, reject) => {
+          rejectRegistry = reject;
+        });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const adapter = createLocalAcpAdapter({
+        registryCachePath: cachePath,
+        detectAgents: async () => [],
+        harnessConfig: createLocalHarnessConfigStore(dataDir),
+        probeAgentSessionConfig: async () => ({}),
+      });
+      const warmup = adapter.warmup();
+
+      const runtimesStarted = performance.now();
+      const runtimes = await adapter.listRuntimes();
+      expect(performance.now() - runtimesStarted).toBeLessThan(500);
+      expect(runtimes.catalogFreshness?.status).not.toBe("offline");
+
+      const harnessesStarted = performance.now();
+      const harnesses = await adapter.listHarnesses();
+      expect(performance.now() - harnessesStarted).toBeLessThan(500);
+      expect(harnesses.catalogFreshness).toBeDefined();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      rejectRegistry(new Error("simulated unreachable registry"));
+      await warmup;
+      const after = await adapter.listRuntimes();
+      expect(after.catalogFreshness).toMatchObject({
+        status: "offline",
+        error: { code: "ACP_REGISTRY_UNREACHABLE" },
+      });
+    } finally {
+      vi.unstubAllGlobals();
+      _resetRegistryCache();
+      await rm(dataDir, { recursive: true, force: true });
     }
   });
 

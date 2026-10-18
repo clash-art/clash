@@ -55,6 +55,7 @@ import type {
 import type {
   LocalAcpAdapter,
   LocalAcpAttachSessionParams,
+  LocalAcpCatalogFreshness,
   LocalAcpCreateSessionParams,
   LocalAcpResumeSession,
   LocalAcpSessionEvent,
@@ -71,6 +72,9 @@ import { createSqliteLocalConfigStore } from "./local-config-store.js";
 import { createClashUserConfigStore } from "./user-config.js";
 
 export const DESKTOP_LOCAL_RUNTIME_ID = "desktop-local";
+
+/** Mirrors the official ACP registry's own cache TTL (`@openma/common` registry-fetch). */
+const ACP_REGISTRY_TTL_MS = 60 * 60 * 1000;
 
 export type SessionManagerOut = ManagerOut;
 export type SessionSender = (msg: SessionManagerOut) => void;
@@ -1730,7 +1734,13 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   private detectedAgentsPromiseProbesConfigOptions = false;
   private detectedAgentsPromiseProbeScope: DetectedAgentProbeScope | null =
     null;
-  private registryLoadPromise: Promise<void> | null = null;
+  private registryCacheLoad: Promise<void> | null = null;
+  private registryRefreshPromise: Promise<void> | null = null;
+  private catalogState: LocalAcpCatalogFreshness = {
+    status: "stale",
+    fetchedAt: null,
+    checkedAt: null,
+  };
   private readonly confirmedCapabilities = new Map<
     string,
     LocalAcpConfirmedCapabilities
@@ -1952,20 +1962,123 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     await this.legacyMigrationPromise;
   }
 
-  private async ensureRegistryLoaded(forceRefresh = false): Promise<void> {
+  private async readRegistryCacheFetchedAt(): Promise<number | null> {
+    if (!this.registryCachePath) return null;
+    try {
+      const parsed = JSON.parse(
+        await readFile(this.registryCachePath, "utf8"),
+      ) as { fetchedAt?: unknown };
+      return typeof parsed.fetchedAt === "number" ? parsed.fetchedAt : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async setCatalogFreshnessFromCache(): Promise<void> {
+    const fetchedAt = await this.readRegistryCacheFetchedAt();
+    const now = this.nowMilliseconds();
+    this.catalogState = {
+      status:
+        fetchedAt !== null && now - fetchedAt < ACP_REGISTRY_TTL_MS
+          ? "fresh"
+          : "stale",
+      fetchedAt: fetchedAt === null ? null : new Date(fetchedAt).toISOString(),
+      checkedAt: new Date(now).toISOString(),
+    };
+  }
+
+  /** Load the on-disk registry (or Remotion's static overlay) without waiting on the network. */
+  private async ensureRegistryLoaded(
+    options: { cacheOnly?: boolean } = {},
+  ): Promise<void> {
     if (!this.registryCachePath) return;
-    if (forceRefresh) this.registryLoadPromise = null;
-    this.registryLoadPromise ??= loadRegistry({
+    if (!options.cacheOnly) {
+      await this.refreshRegistryCatalog();
+      return;
+    }
+    this.registryCacheLoad ??= loadRegistry({
       cachePath: this.registryCachePath,
-      ...(forceRefresh ? { forceRefresh: true } : {}),
-    }).then(() => undefined);
-    await this.registryLoadPromise;
+      cacheOnly: true,
+    })
+      .then(() => undefined, () => undefined)
+      .then(() => this.setCatalogFreshnessFromCache());
+    await this.registryCacheLoad;
+  }
+
+  /**
+   * Refresh the official catalog and record whether it actually reached the network.
+   *
+   * `loadRegistry` intentionally swallows a failed fetch and keeps a stale cache, so the cache's
+   * `fetchedAt` before/after is the signal: unchanged and older than the TTL means offline.
+   */
+  private async refreshRegistryCatalog(): Promise<void> {
+    if (!this.registryCachePath) return;
+    if (this.registryRefreshPromise) return this.registryRefreshPromise;
+    const before = await this.readRegistryCacheFetchedAt();
+    const refreshing = this.nowMilliseconds();
+    this.catalogState = {
+      status: "refreshing",
+      fetchedAt:
+        before === null ? null : new Date(before).toISOString(),
+      checkedAt: new Date(refreshing).toISOString(),
+    };
+    this.registryRefreshPromise = (async () => {
+      let thrown: unknown;
+      try {
+        await loadRegistry({
+          cachePath: this.registryCachePath!,
+          forceRefresh: true,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+      const after = await this.readRegistryCacheFetchedAt();
+      const now = this.nowMilliseconds();
+      const fresh = after !== null && now - after < ACP_REGISTRY_TTL_MS;
+      if (fresh) {
+        this.catalogState = {
+          status: "fresh",
+          fetchedAt: new Date(after).toISOString(),
+          checkedAt: new Date(now).toISOString(),
+        };
+      } else {
+        const detail =
+          thrown instanceof Error
+            ? thrown.message
+            : after === null
+              ? "no registry cache is available"
+              : "the registry cache was not refreshed";
+        this.catalogState = {
+          status: "offline",
+          fetchedAt: after === null ? null : new Date(after).toISOString(),
+          checkedAt: new Date(now).toISOString(),
+          error: {
+            code: "ACP_REGISTRY_UNREACHABLE",
+            message: `ACP registry refresh failed: ${detail}. Serving the cached catalog.`,
+          },
+        };
+      }
+    })().finally(() => {
+      this.registryRefreshPromise = null;
+    });
+    return this.registryRefreshPromise;
+  }
+
+  private catalogFreshness(): LocalAcpCatalogFreshness {
+    return {
+      ...this.catalogState,
+      ...(this.catalogState.error
+        ? { error: { ...this.catalogState.error } }
+        : {}),
+    };
   }
 
   async warmup(): Promise<void> {
+    // Cache first so a request that arrives during startup already has the catalog.
+    await this.ensureRegistryLoaded({ cacheOnly: true });
     await this.ensureLegacyShimMigration();
-    await this.ensureRegistryLoaded();
     await this.ensureCapabilityCacheLoaded();
+    await this.refreshRegistryCatalog();
     const agents = await this.refreshDetectedAgents({
       probeAuth: true,
       probeConfigOptions: true,
@@ -1992,7 +2105,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       previousAgents.map((agent) => [agent.id, agent]),
     );
     const previousEnabled = this.lastReconciledEnabledIds;
-    await this.ensureRegistryLoaded(true);
+    await this.refreshRegistryCatalog();
     const agents = await this.detectAgentsWithProbes({
       probeAuth: false,
       probeConfigOptions: false,
@@ -2044,7 +2157,6 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     this.detectedAgentsCacheProbesAuth = false;
     this.detectedAgentsCacheProbesConfigOptions = false;
     this.detectedAgentsCacheProbeScope = null;
-    this.registryLoadPromise = null;
     return this.getDetectedAgents(opts);
   }
 
@@ -2059,7 +2171,6 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       this.detectedAgentsCacheProbesAuth = false;
       this.detectedAgentsCacheProbesConfigOptions = false;
       this.detectedAgentsCacheProbeScope = null;
-      this.registryLoadPromise = null;
     }
     const scopeSatisfiesRequest = (scope: DetectedAgentProbeScope | null) =>
       !probeAuth || probeScope === "enabled" || scope === "installed";
@@ -2224,7 +2335,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   }
 
   private async fullAgentCatalog(): Promise<ClashKnownAgentEntry[]> {
-    await this.ensureRegistryLoaded();
+    await this.ensureRegistryLoaded({ cacheOnly: true });
     const base =
       this.agentCatalog.length > 0
         ? this.agentCatalog
@@ -2236,11 +2347,11 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   }
 
   private async detectConfiguredAgents(): Promise<DetectedAcpAgent[]> {
+    await this.ensureRegistryLoaded({ cacheOnly: true });
     const agents = await this.detectAgents();
     const fullCatalog = await this.fullAgentCatalog();
     const env = { ...process.env, ...this.spawnEnv } as NodeJS.ProcessEnv;
     const knownIds = new Set(agents.map((agent) => agent.id));
-    await this.ensureRegistryLoaded();
     const installedProbe = await Promise.all(
       fullCatalog.map(async (entry) => ({
         id: entry.id,
@@ -2395,7 +2506,7 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         opts.probe !== false &&
         opts.probe !== "none");
     if (checksForUpdates) {
-      await this.ensureRegistryLoaded(true);
+      await this.refreshRegistryCatalog();
     }
     const agents = await this.getDetectedAgents({
       probeAuth,
@@ -2458,10 +2569,16 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   }
 
   async listHarnesses(opts: LocalAcpHarnessListOptions = {}) {
+    // The legacy migration calls loadRegistry() without a path; seed the process cache from disk
+    // first so it never reaches the network before the background refresh does.
+    await this.ensureRegistryLoaded({ cacheOnly: true });
     await this.ensureLegacyShimMigration();
     const harnesses = await this.buildHarnesses(opts);
     return {
       harnesses,
+      ...(this.registryCachePath
+        ? { catalogFreshness: this.catalogFreshness() }
+        : {}),
       ...(this.migrationNotices.length > 0
         ? { migration_notices: [...this.migrationNotices] }
         : {}),
@@ -2626,6 +2743,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
   }
 
   async listRuntimes(opts: LocalAcpRuntimeListOptions = {}) {
+    if (opts.refresh === true) {
+      await this.refreshRegistryCatalog();
+    }
     const probeAuth =
       opts.probe === true || opts.probe === "auth" || opts.probe === "config";
     const probeConfigOptions = opts.probe === true || opts.probe === "config";
@@ -2672,6 +2792,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
           created_at: now,
         },
       ],
+      ...(this.registryCachePath
+        ? { catalogFreshness: this.catalogFreshness() }
+        : {}),
     };
   }
 

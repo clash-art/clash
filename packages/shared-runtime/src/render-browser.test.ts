@@ -8,8 +8,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clashBrowserEnvironment,
@@ -18,8 +19,10 @@ import {
   findMissingBrowserLibraries,
   resolveClashBrowserCacheDir,
   resolveClashBrowserCacheRoot,
+  readRemotionBrowserPin,
   resolveClashBrowserExecutable,
   resolveClashBrowserGlOverride,
+  type ClashBrowserCacheRejection,
   type ClashBrowserDownloadRequest,
 } from "./render-browser.js";
 
@@ -36,7 +39,11 @@ afterEach(() => {
 });
 
 // Stand-in for Remotion's pin: the module only ever forwards it, so any version string works.
-const remotion = { testedVersion: "1.2.3.4", rendererEntry: "/unused.js" };
+const remotion = {
+  testedVersion: "1.2.3.4",
+  cacheVersion: "1.2.3.4-remotion-v3",
+  rendererEntry: "/unused.js",
+};
 const VERSION_FILE = join(
   "node_modules",
   ".remotion",
@@ -176,7 +183,7 @@ describe("ensureClashBrowser", () => {
       return {
         executablePath: installFakeBrowser(
           request.cacheDir,
-          remotion.testedVersion,
+          remotion.cacheVersion,
         ),
       };
     });
@@ -206,7 +213,7 @@ describe("ensureClashBrowser", () => {
     const download = async (request: ClashBrowserDownloadRequest) => ({
       executablePath: installFakeBrowser(
         request.cacheDir,
-        remotion.testedVersion,
+        remotion.cacheVersion,
       ),
     });
     const browser = await ensureClashBrowser({ env, remotion, download });
@@ -222,12 +229,88 @@ describe("ensureClashBrowser", () => {
     ).toBeUndefined();
   });
 
+  it("accepts the real cache layout with a VERSION written by the installed Remotion", () => {
+    const requireFromHere = createRequire(import.meta.url);
+    // The package's exports map hides dist/ subpaths, so resolve the internal file by path.
+    const fetcher = requireFromHere(
+      join(
+        dirname(requireFromHere.resolve("@remotion/renderer/package.json")),
+        "dist/browser/BrowserFetcher.js",
+      ),
+    ) as {
+      getExpectedVersion(options: {
+        version: null;
+        chromeMode: "headless-shell";
+        platform: string;
+      }): string;
+      getPlatform(): string;
+    };
+    // The exact value BrowserFetcher writes into <cache>/node_modules/.remotion/.../VERSION.
+    const recordedVersion = fetcher.getExpectedVersion({
+      version: null,
+      chromeMode: "headless-shell",
+      platform: fetcher.getPlatform(),
+    });
+    expect(readRemotionBrowserPin().cacheVersion).toBe(recordedVersion);
+    expect(recordedVersion).not.toBe(readRemotionBrowserPin().testedVersion);
+
+    const env = { CLASH_BROWSER_CACHE_DIR: temporaryDirectory() };
+    const cacheDir = resolveClashBrowserCacheDir({ env });
+    const executable = join(
+      cacheDir,
+      "node_modules/.remotion/chrome-headless-shell/linux64/chrome-headless-shell-linux64/chrome-headless-shell",
+    );
+    mkdirSync(dirname(executable), { recursive: true });
+    writeFileSync(executable, "");
+    writeFileSync(join(cacheDir, VERSION_FILE), recordedVersion);
+    writeFileSync(
+      join(cacheDir, "browser.json"),
+      JSON.stringify({ executable: relative(cacheDir, executable) }),
+    );
+
+    expect(resolveClashBrowserExecutable({ env })).toMatchObject({
+      executablePath: executable,
+      cacheDir,
+      source: "cache",
+    });
+  });
+
+  it("reports one coded reason and replaces a cache VERSION Remotion did not write", async () => {
+    const env = { CLASH_BROWSER_CACHE_DIR: temporaryDirectory() };
+    const download = vi.fn(async (request: ClashBrowserDownloadRequest) => ({
+      executablePath: installFakeBrowser(
+        request.cacheDir,
+        remotion.cacheVersion,
+      ),
+    }));
+    const browser = await ensureClashBrowser({ env, remotion, download });
+    writeFileSync(join(browser.cacheDir!, VERSION_FILE), "0.0.0.1");
+    const rejections: ClashBrowserCacheRejection[] = [];
+
+    const repaired = await ensureClashBrowser({
+      env,
+      remotion,
+      download,
+      onCacheRejected: (rejection) => rejections.push(rejection),
+    });
+
+    expect(rejections).toEqual([
+      expect.objectContaining({
+        code: "RENDER_BROWSER_CACHE_VERSION_MISMATCH",
+        expectedVersion: remotion.cacheVersion,
+        actualVersion: "0.0.0.1",
+      }),
+    ]);
+    expect(download).toHaveBeenCalledTimes(2);
+    expect(repaired.executablePath).toBe(browser.executablePath);
+  });
+
   it("forgets a cached browser whose executable was deleted", async () => {
     const env = { CLASH_BROWSER_CACHE_DIR: temporaryDirectory() };
     const download = async (request: ClashBrowserDownloadRequest) => ({
       executablePath: installFakeBrowser(
         request.cacheDir,
-        remotion.testedVersion,
+        remotion.cacheVersion,
       ),
     });
     const browser = await ensureClashBrowser({ env, remotion, download });
@@ -242,7 +325,7 @@ describe("ensureClashBrowser", () => {
       return {
         executablePath: installFakeBrowser(
           request.cacheDir,
-          remotion.testedVersion,
+          remotion.cacheVersion,
         ),
       };
     });
@@ -287,7 +370,7 @@ describe("ensureClashBrowser", () => {
     const download = vi.fn(async (request: ClashBrowserDownloadRequest) => {
       reported = installFakeBrowser(
         realpathSync(request.cacheDir),
-        remotion.testedVersion,
+        remotion.cacheVersion,
       );
       return { executablePath: reported };
     });
@@ -375,7 +458,7 @@ describe("default child-process download", () => {
         const { onProgress, version } = options.onBrowserDownload({ chromeMode: options.chromeMode });
         onProgress({ percent: 1, downloadedBytes: 10, totalSizeInBytes: 10, alreadyAvailable: false });
         fs.writeFileSync(executable, JSON.stringify({ chromeMode: options.chromeMode, version }));
-        fs.writeFileSync(path.join(root, "VERSION"), ${JSON.stringify(remotion.testedVersion)});
+        fs.writeFileSync(path.join(root, "VERSION"), ${JSON.stringify(remotion.cacheVersion)});
         return { type: "local-puppeteer-browser", path: executable };
       };
     `);
@@ -410,7 +493,7 @@ describe("default child-process download", () => {
         const executable = path.join(root, "fake-platform", "chrome-headless-shell");
         fs.mkdirSync(path.dirname(executable), { recursive: true });
         fs.writeFileSync(executable, "");
-        fs.writeFileSync(path.join(root, "VERSION"), ${JSON.stringify(remotion.testedVersion)});
+        fs.writeFileSync(path.join(root, "VERSION"), ${JSON.stringify(remotion.cacheVersion)});
         return { type: "local-puppeteer-browser", path: executable };
       };
     `);
