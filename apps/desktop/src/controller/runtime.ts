@@ -6,7 +6,7 @@ import { app } from "electron";
 import {
   createLocalDaemonBootstrap,
   launchDetachedLocalDaemon,
-  resolveLocalDaemonRuntimeFingerprint,
+  resolveLocalDaemonRuntimeFingerprintAsync,
 } from "@clash/shared-runtime/local-daemon";
 import {
   clashHomeForLocalDataDir,
@@ -52,10 +52,36 @@ export function createDesktopRuntimeController({
   startupPhase?: DesktopStartupPhase;
 }) {
   let runtime: DesktopRuntime | null = null;
+  let localHostEndpoint: string | undefined;
+  let pendingAgentEnvironmentPath: string | undefined;
 
   function current(): DesktopRuntime {
     if (!runtime) throw new Error("Desktop runtime is not initialized");
     return runtime;
+  }
+
+  async function updateAgentEnvironment(path: string): Promise<void> {
+    pendingAgentEnvironmentPath = path;
+    if (!runtime || !localHostEndpoint) return;
+    const response = await fetch(
+      new URL("/api/v1/local/agent-environment", localHostEndpoint),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ PATH: path }),
+        signal: AbortSignal.timeout(2_000),
+      },
+    );
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `Host rejected the hydrated PATH with HTTP ${response.status}` +
+          (detail ? `: ${detail}` : ""),
+      );
+    }
+    if (pendingAgentEnvironmentPath === path) {
+      pendingAgentEnvironmentPath = undefined;
+    }
   }
 
   async function configureAcpHarnessEnvironment(
@@ -108,6 +134,7 @@ export function createDesktopRuntimeController({
   async function initialize(dataDir: string): Promise<DesktopRuntime> {
     let apiPort = DEFAULT_DESKTOP_API_PORT;
     let apiBaseUrl = process.env.CLASH_API_BASE_URL;
+    localHostEndpoint = undefined;
     await configureAcpHarnessEnvironment(dataDir);
     startupPhase("runtime.harness_env_configured");
 
@@ -123,7 +150,7 @@ export function createDesktopRuntimeController({
         process.env.CLASH_DESKTOP_SOURCE_HOST_WATCH,
       );
       const runtimeFingerprint =
-        resolveLocalDaemonRuntimeFingerprint(hostEntryPath);
+        await resolveLocalDaemonRuntimeFingerprintAsync(hostEntryPath);
       const hostStartupTimeoutMs = resolveDesktopHostStartupTimeoutMs(
         process.env.CLASH_DESKTOP_HOST_STARTUP_TIMEOUT_MS,
       );
@@ -198,6 +225,7 @@ export function createDesktopRuntimeController({
         const host = await daemon.ensureDaemon();
         startupPhase("host.ready", { startedBy: host.startedBy });
         apiBaseUrl = host.endpoint;
+        localHostEndpoint = host.endpoint;
         log.info(
           `[desktop] using detached Clash host ${host.hostId} at ${host.endpoint} (pid ${host.pid}, started by ${host.startedBy})`,
         );
@@ -221,11 +249,18 @@ export function createDesktopRuntimeController({
       }),
     });
     process.env.CLASH_DESKTOP_RUNTIME = JSON.stringify(runtime);
+    const pendingPath = pendingAgentEnvironmentPath;
+    if (pendingPath) {
+      await updateAgentEnvironment(pendingPath).catch((error) => {
+        log.warn("[desktop] failed to hand the hydrated PATH to the Host", error);
+      });
+    }
     return runtime;
   }
 
   return {
     initialize,
     current,
+    updateAgentEnvironment,
   };
 }

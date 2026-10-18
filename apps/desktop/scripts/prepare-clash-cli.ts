@@ -14,6 +14,7 @@ import {
   resolveNpmInvocation,
 } from "../../../scripts/packaged-runtime-binaries.ts";
 import { writeRuntimeDependencyIdentity } from "../../../scripts/runtime-dependency-identity.ts";
+import { LOCAL_DAEMON_RUNTIME_MANIFEST_FILE } from "../../../packages/shared-runtime/src/local-daemon-manifest.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(__dirname, "..");
@@ -140,6 +141,15 @@ export async function prepareClashCli({
     dereference: true,
     force: true,
   });
+  try {
+    await access(path.join(outputDir, LOCAL_DAEMON_RUNTIME_MANIFEST_FILE));
+  } catch (error) {
+    throw new Error(
+      `The staged Clash runtime is missing ${LOCAL_DAEMON_RUNTIME_MANIFEST_FILE}; ` +
+        "rebuild it with `pnpm prepare:desktop-pack` before packaging.",
+      { cause: error },
+    );
+  }
   await stageBuiltinClashPlugin(runtimeRoot, outputDir);
   await writeFile(
     path.join(outputDir, "runtime-manifest.json"),

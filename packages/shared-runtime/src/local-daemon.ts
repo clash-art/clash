@@ -6,13 +6,15 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
+  statSync,
 } from "node:fs";
-import { mkdir, open, readFile, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   LOCAL_HOST_PROTOCOL_VERSION,
   isCompatibleHost,
@@ -25,6 +27,10 @@ import {
   resolveDaemonNodeRuntime,
   type DaemonNodeRuntime,
 } from "./local-daemon-runtime.js";
+import {
+  LOCAL_DAEMON_RUNTIME_MANIFEST_FILE,
+  type LocalDaemonRuntimeManifest,
+} from "./local-daemon-manifest.js";
 import type { ClashRuntimeProfile } from "./local-paths.js";
 
 /**
@@ -32,6 +38,18 @@ import type { ClashRuntimeProfile } from "./local-paths.js";
  * never be started on a runtime the stores were not verified against.
  */
 export const DAEMON_SUPPORTED_NODE_RANGE = ">=24.18.0 <25";
+
+/** First Host readiness probe interval. Discovery is written about 2 ms after listen. */
+export const DEFAULT_READINESS_POLL_INTERVAL_MS = 12;
+/** Backoff ceiling; a slow Host should not be polled every 12 ms forever. */
+export const DEFAULT_READINESS_POLL_MAX_INTERVAL_MS = 50;
+
+export function nextReadinessPollInterval(
+  currentMs: number,
+  maxMs: number = DEFAULT_READINESS_POLL_MAX_INTERVAL_MS,
+): number {
+  return Math.min(maxMs, Math.max(currentMs + 1, Math.round(currentMs * 1.5)));
+}
 
 export interface LocalDaemonLaunchResult {
   pid: number;
@@ -90,22 +108,158 @@ export interface LocalDaemonBootstrapOptions {
    */
   unhealthyRecoveryTimeoutMs?: number;
   lockTimeoutMs?: number;
+  /** Base delay for startup-lock and unhealthy-recovery polling. */
   pollIntervalMs?: number;
+  /** Readiness begins at 10-15 ms (default 12) and backs off to the ceiling. */
+  readinessPollIntervalMs?: number;
+  readinessPollMaxIntervalMs?: number;
 }
 
+/**
+ * Runtime identity for the packaged Host.
+ *
+ * The shipped tree carries `local-daemon-runtime.manifest.json` (built by
+ * `writeLocalDaemonRuntimeManifest`). In that case the launcher reads the small
+ * manifest, checks the entry and payload file set/sizes, and uses the build-time
+ * tree digest, instead of re-hashing 121 MB on every launch.
+ *
+ * A source checkout / older multi-file runtime has no manifest. That case
+ * falls back to the previous full-tree hash and logs once; it is deliberately
+ * not silent because the cost and the trust model differ.
+ */
 export function resolveLocalDaemonRuntimeFingerprint(
   entryPath: string,
 ): string {
-  const hash = createHash("sha256").update(readFileSync(entryPath));
-  // Both packagers materialize dependencies and compute their content identity.
-  // A same-path dependency-only upgrade must retire cached module registrations.
-  const dependencyIdentity = join(dirname(entryPath), "runtime-dependencies.sha256");
+  if (
+    existsSync(join(dirname(entryPath), LOCAL_DAEMON_RUNTIME_MANIFEST_FILE))
+  ) {
+    return computeLocalDaemonRuntimeFingerprintFromManifest(
+      entryPath,
+      LOCAL_DAEMON_RUNTIME_MANIFEST_FILE,
+    );
+  }
+  warnMissingRuntimeManifest(entryPath);
+  return resolveFullRuntimeFingerprint(entryPath);
+}
+
+let warnedMissingRuntimeManifest = false;
+
+function warnMissingRuntimeManifest(entryPath: string): void {
+  if (warnedMissingRuntimeManifest) return;
+  warnedMissingRuntimeManifest = true;
+  console.warn(
+    `[local-daemon] ${LOCAL_DAEMON_RUNTIME_MANIFEST_FILE} is missing beside ${entryPath}; ` +
+      "falling back to hashing the full runtime tree. Run the package build to generate the manifest.",
+  );
+}
+
+interface RuntimeTreeFile {
+  relative: string;
+  path: string;
+}
+
+function isMissingPayloadRoot(error: unknown, payloadRoot: string): boolean {
+  return (
+    isMissingFile(error) &&
+    (error as NodeJS.ErrnoException).path === payloadRoot
+  );
+}
+
+/** Orders files the way the sync walk does: sorted siblings, depth first. */
+function compareRuntimeTreeFiles(
+  a: RuntimeTreeFile,
+  b: RuntimeTreeFile,
+): number {
+  const left = a.relative.split("/");
+  const right = b.relative.split("/");
+  const shared = Math.min(left.length, right.length);
+  for (let index = 0; index < shared; index += 1) {
+    if (left[index] !== right[index]) {
+      return left[index].localeCompare(right[index]);
+    }
+  }
+  return left.length - right.length;
+}
+
+/**
+ * Bounds the number of concurrent fs/promises calls. The Host runtime has a few
+ * hundred files; the walk itself is bookkeeping on the calling thread while the
+ * reads/stats execute on the libuv threadpool.
+ */
+const RUNTIME_TREE_IO_CONCURRENCY = 16;
+
+function createIoLimiter(
+  limit: number,
+): <T>(task: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  return async function run<T>(task: () => Promise<T>): Promise<T> {
+    if (active >= limit) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    }
+    active += 1;
+    try {
+      return await task();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  };
+}
+
+function createFullRuntimeFingerprintHash(
+  entryBytes: Buffer,
+  dependencies: Buffer | null,
+) {
+  const hash = createHash("sha256").update(entryBytes);
+  if (dependencies !== null) {
+    // Both packagers materialize dependencies and compute their content identity.
+    // A same-path dependency-only upgrade must retire cached module registrations.
+    hash.update("\0runtime-dependencies\0").update(dependencies);
+  }
+  return {
+    update(relative: string, bytes: Buffer): void {
+      hash.update(`\0${relative}\0`).update(bytes);
+    },
+    digest(): string {
+      return `sha256:${hash.digest("hex")}`;
+    },
+  };
+}
+
+function readRuntimeDependenciesSync(entryPath: string): Buffer | null {
+  const dependencyIdentity = join(
+    dirname(entryPath),
+    "runtime-dependencies.sha256",
+  );
   try {
-    const identity = readFileSync(dependencyIdentity);
-    hash.update("\0runtime-dependencies\0").update(identity);
+    return readFileSync(dependencyIdentity);
   } catch (error) {
     if (!isMissingFile(error)) throw error;
+    return null;
   }
+}
+
+async function readRuntimeDependenciesAsync(
+  entryPath: string,
+): Promise<Buffer | null> {
+  const dependencyIdentity = join(
+    dirname(entryPath),
+    "runtime-dependencies.sha256",
+  );
+  try {
+    return await readFile(dependencyIdentity);
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+    return null;
+  }
+}
+
+function resolveFullRuntimeFingerprint(entryPath: string): string {
+  const hash = createFullRuntimeFingerprintHash(
+    readFileSync(entryPath),
+    readRuntimeDependenciesSync(entryPath),
+  );
   // Bundled PluginModules are imported into the long-lived Host. Updating only
   // their adjacent payload must retire the Host too, or Node keeps the old module.
   const visit = (directory: string, prefix: string): void => {
@@ -117,7 +271,7 @@ export function resolveLocalDaemonRuntimeFingerprint(
       const path = join(directory, entry.name);
       if (entry.isDirectory()) visit(path, relative);
       else if (entry.isFile()) {
-        hash.update(`\0${relative}\0`).update(readFileSync(path));
+        hash.update(relative, readFileSync(path));
       } else {
         throw new Error(
           `Bundled runtime payload must be a regular file: ${path}`,
@@ -133,12 +287,445 @@ export function resolveLocalDaemonRuntimeFingerprint(
       visit(payloadRoot, name);
     } catch (error) {
       // Source entrypoints and older standalone distributions have no payload dir.
-      if (!(isMissingFile(error) && (error as NodeJS.ErrnoException).path === payloadRoot)) throw error;
+      if (!isMissingPayloadRoot(error, payloadRoot)) throw error;
     }
   }
-  return `sha256:${hash.digest("hex")}`;
+  return hash.digest();
 }
 
+async function resolveFullRuntimeFingerprintAsync(
+  entryPath: string,
+): Promise<string> {
+  const hash = createFullRuntimeFingerprintHash(
+    await readFile(entryPath),
+    await readRuntimeDependenciesAsync(entryPath),
+  );
+  for (const name of ["bundled-plugins", "project-ui"]) {
+    const payloadRoot = join(dirname(entryPath), name);
+    let files: RuntimeTreeFile[];
+    try {
+      files = await collectRuntimeTreeFilesAsync(payloadRoot, name);
+    } catch (error) {
+      // Source entrypoints and older standalone distributions have no payload dir.
+      if (!isMissingPayloadRoot(error, payloadRoot)) throw error;
+      continue;
+    }
+    files.sort(compareRuntimeTreeFiles);
+    for (
+      let index = 0;
+      index < files.length;
+      index += RUNTIME_TREE_IO_CONCURRENCY
+    ) {
+      const chunk = files.slice(index, index + RUNTIME_TREE_IO_CONCURRENCY);
+      const contents = await Promise.all(
+        chunk.map((file) => readFile(file.path)),
+      );
+      for (let offset = 0; offset < chunk.length; offset += 1) {
+        hash.update(chunk[offset].relative, contents[offset]);
+      }
+    }
+  }
+  return hash.digest();
+}
+
+/**
+ * Lists regular files depth-first with sorted siblings, matching the sync walk's
+ * order so both variants feed the digest the same `relative` sequence.
+ */
+async function collectRuntimeTreeFilesAsync(
+  directory: string,
+  prefix: string,
+): Promise<RuntimeTreeFile[]> {
+  const limit = createIoLimiter(RUNTIME_TREE_IO_CONCURRENCY);
+  const files: RuntimeTreeFile[] = [];
+  const walk = async (
+    current: string,
+    currentPrefix: string,
+  ): Promise<void> => {
+    const entries = await limit(() =>
+      readdir(current, { withFileTypes: true }),
+    );
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    await Promise.all(
+      entries.map(async (entry) => {
+        const relative = `${currentPrefix}/${entry.name}`;
+        const path = join(current, entry.name);
+        if (entry.isDirectory()) {
+          await walk(path, relative);
+        } else if (entry.isFile()) {
+          files.push({ relative, path });
+        } else {
+          throw new Error(
+            `Bundled runtime payload must be a regular file: ${path}`,
+          );
+        }
+      }),
+    );
+  };
+  await walk(directory, prefix);
+  return files;
+}
+
+/**
+ * Async version used by Desktop. Every filesystem call on the launch path is
+ * `node:fs/promises`, so the readdir/stat/read work runs on the libuv threadpool
+ * and the Electron main thread only does bounded bookkeeping between awaits. A
+ * source runtime without a manifest still takes the explicit, logged full-hash
+ * fallback, asynchronously.
+ */
+export async function resolveLocalDaemonRuntimeFingerprintAsync(
+  entryPath: string,
+): Promise<string> {
+  const manifestPath = join(
+    dirname(entryPath),
+    LOCAL_DAEMON_RUNTIME_MANIFEST_FILE,
+  );
+  let raw: string;
+  try {
+    raw = await readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (isMissingFile(error)) {
+      warnMissingRuntimeManifest(entryPath);
+      return resolveFullRuntimeFingerprintAsync(entryPath);
+    }
+    throw runtimeManifestMismatch(
+      manifestPath,
+      manifestPath,
+      `manifest is unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  return computeLocalDaemonRuntimeFingerprintFromManifestAsync(
+    entryPath,
+    manifestPath,
+    raw,
+  );
+}
+
+/**
+ * Applies the launch-path manifest check and computes the identity. The entry
+ * bundle's recorded sha256 is part of `treeDigest`; the runtime check validates
+ * the file set and sizes only (the documented cheap check), so it never reads
+ * the 7.7 MB entry or the 121 MB payload again.
+ */
+function computeLocalDaemonRuntimeFingerprintFromManifest(
+  entryPath: string,
+  manifestFile: string,
+): string {
+  const manifestPath = join(dirname(entryPath), manifestFile);
+  const raw = readRuntimeManifestSync(manifestPath);
+  const parsed = parseRuntimeManifest(manifestPath, raw, entryPath);
+  const actual = collectRuntimeManifestActualSync(
+    entryPath,
+    manifestPath,
+    parsed,
+  );
+  return finalizeRuntimeManifestFingerprint(
+    manifestPath,
+    parsed,
+    actual,
+    readRuntimeDependenciesSync(entryPath),
+  );
+}
+
+async function computeLocalDaemonRuntimeFingerprintFromManifestAsync(
+  entryPath: string,
+  manifestPath: string,
+  raw: string,
+): Promise<string> {
+  const parsed = parseRuntimeManifest(manifestPath, raw, entryPath);
+  const [actual, dependencies] = await Promise.all([
+    collectRuntimeManifestActualAsync(entryPath, manifestPath, parsed),
+    readRuntimeDependenciesAsync(entryPath),
+  ]);
+  return finalizeRuntimeManifestFingerprint(
+    manifestPath,
+    parsed,
+    actual,
+    dependencies,
+  );
+}
+
+function readRuntimeManifestSync(manifestPath: string): string {
+  try {
+    return readFileSync(manifestPath, "utf8");
+  } catch (error) {
+    throw runtimeManifestMismatch(
+      manifestPath,
+      manifestPath,
+      `manifest is unreadable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function collectRuntimeManifestActualSync(
+  entryPath: string,
+  manifestPath: string,
+  parsed: ParsedRuntimeManifest,
+): Map<string, number> {
+  const actual = new Map<string, number>();
+  const walk = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const relative = `${prefix}/${entry.name}`;
+      const full = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(full, relative);
+      } else if (entry.isFile()) {
+        actual.set(relative, statSync(full).size);
+      } else {
+        throw runtimeManifestMismatch(
+          manifestPath,
+          relative,
+          "payload entry is not a regular file",
+        );
+      }
+    }
+  };
+  actual.set(parsed.entryName, statSync(entryPath).size);
+  for (const root of parsed.manifest.roots) {
+    assertSafeManifestRoot(manifestPath, root);
+    const rootPath = join(dirname(entryPath), root);
+    let info;
+    try {
+      info = statSync(rootPath);
+    } catch {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        root,
+        "payload directory is missing",
+      );
+    }
+    if (!info.isDirectory()) {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        root,
+        "payload root is not a directory",
+      );
+    }
+    walk(rootPath, root);
+  }
+  return actual;
+}
+
+async function collectRuntimeManifestActualAsync(
+  entryPath: string,
+  manifestPath: string,
+  parsed: ParsedRuntimeManifest,
+): Promise<Map<string, number>> {
+  const limit = createIoLimiter(RUNTIME_TREE_IO_CONCURRENCY);
+  const actual = new Map<string, number>();
+  const walk = async (directory: string, prefix: string): Promise<void> => {
+    const entries = await limit(() =>
+      readdir(directory, { withFileTypes: true }),
+    );
+    await Promise.all(
+      entries.map(async (entry) => {
+        const relative = `${prefix}/${entry.name}`;
+        const full = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          await walk(full, relative);
+        } else if (entry.isFile()) {
+          actual.set(relative, (await limit(() => stat(full))).size);
+        } else {
+          throw runtimeManifestMismatch(
+            manifestPath,
+            relative,
+            "payload entry is not a regular file",
+          );
+        }
+      }),
+    );
+  };
+  actual.set(parsed.entryName, (await limit(() => stat(entryPath))).size);
+  for (const root of parsed.manifest.roots) {
+    assertSafeManifestRoot(manifestPath, root);
+    const rootPath = join(dirname(entryPath), root);
+    let info;
+    try {
+      info = await limit(() => stat(rootPath));
+    } catch {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        root,
+        "payload directory is missing",
+      );
+    }
+    if (!info.isDirectory()) {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        root,
+        "payload root is not a directory",
+      );
+    }
+    await walk(rootPath, root);
+  }
+  return actual;
+}
+
+function finalizeRuntimeManifestFingerprint(
+  manifestPath: string,
+  parsed: ParsedRuntimeManifest,
+  actual: Map<string, number>,
+  dependencies: Buffer | null,
+): string {
+  compareRuntimeManifestFiles(manifestPath, parsed, actual);
+  return computeRuntimeManifestFingerprint(parsed.manifest, dependencies);
+}
+
+interface ParsedRuntimeManifest {
+  manifest: LocalDaemonRuntimeManifest;
+  entryName: string;
+  expected: Map<string, { size: number }>;
+}
+
+function runtimeManifestMismatch(
+  manifestPath: string,
+  file: string,
+  detail: string,
+): Error & { code: string; file: string } {
+  const error = new Error(
+    `Local daemon runtime tree does not match ${manifestPath}: ${detail} (${file})`,
+  ) as Error & { code: string; file: string };
+  error.code = "LOCAL_DAEMON_RUNTIME_MANIFEST_MISMATCH";
+  error.file = file;
+  return error;
+}
+
+function parseRuntimeManifest(
+  manifestPath: string,
+  raw: string,
+  entryPath: string,
+): ParsedRuntimeManifest {
+  let manifest: LocalDaemonRuntimeManifest;
+  try {
+    manifest = JSON.parse(raw);
+  } catch (error) {
+    throw runtimeManifestMismatch(
+      manifestPath,
+      manifestPath,
+      `manifest is unreadable or invalid JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (
+    !manifest ||
+    manifest.schemaVersion !== 1 ||
+    typeof manifest.entry !== "string" ||
+    typeof manifest.treeDigest !== "string" ||
+    !/^[a-f0-9]{64}$/.test(manifest.treeDigest) ||
+    !Array.isArray(manifest.roots) ||
+    !manifest.roots.every((root) => typeof root === "string") ||
+    !Array.isArray(manifest.files)
+  ) {
+    throw runtimeManifestMismatch(
+      manifestPath,
+      manifestPath,
+      "manifest has an unsupported shape",
+    );
+  }
+  const entryName = basename(entryPath);
+  if (manifest.entry !== entryName) {
+    throw runtimeManifestMismatch(
+      manifestPath,
+      entryName,
+      `manifest describes entry ${manifest.entry}`,
+    );
+  }
+  const expected = new Map<string, { size: number }>();
+  for (const file of manifest.files) {
+    if (
+      !file ||
+      typeof file.path !== "string" ||
+      typeof file.size !== "number" ||
+      typeof file.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(file.sha256) ||
+      file.path.startsWith("/") ||
+      file.path.split("/").includes("..")
+    ) {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        manifestPath,
+        "manifest contains an invalid file record",
+      );
+    }
+    if (expected.has(file.path)) {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        file.path,
+        "manifest lists the file twice",
+      );
+    }
+    expected.set(file.path, { size: file.size });
+  }
+  if (!expected.has(entryName)) {
+    throw runtimeManifestMismatch(
+      manifestPath,
+      entryName,
+      "entry is not listed in the manifest",
+    );
+  }
+  return { manifest, entryName, expected };
+}
+
+function assertSafeManifestRoot(manifestPath: string, root: string): void {
+  if (
+    root.length === 0 ||
+    root.startsWith("/") ||
+    root.split("/").includes("..")
+  ) {
+    throw runtimeManifestMismatch(
+      manifestPath,
+      root,
+      "manifest root is not a safe relative directory",
+    );
+  }
+}
+
+function compareRuntimeManifestFiles(
+  manifestPath: string,
+  parsed: ParsedRuntimeManifest,
+  actual: Map<string, number>,
+): void {
+  for (const file of parsed.manifest.files) {
+    const size = actual.get(file.path);
+    if (size === undefined) {
+      throw runtimeManifestMismatch(manifestPath, file.path, "file is missing");
+    }
+    if (size !== file.size) {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        file.path,
+        `size is ${size} bytes, manifest says ${file.size}`,
+      );
+    }
+  }
+  for (const file of [...actual.keys()].sort()) {
+    if (!parsed.expected.has(file)) {
+      throw runtimeManifestMismatch(
+        manifestPath,
+        file,
+        "file is not listed in the manifest",
+      );
+    }
+  }
+}
+
+function computeRuntimeManifestFingerprint(
+  manifest: LocalDaemonRuntimeManifest,
+  dependencies: Buffer | null,
+): string {
+  const identity = createHash("sha256");
+  identity.update("local-daemon-runtime-manifest-v1\0");
+  identity.update(manifest.treeDigest);
+  if (dependencies !== null) {
+    identity.update("\0runtime-dependencies\0").update(dependencies);
+  }
+  return `sha256:${identity.digest("hex")}`;
+}
 function isMissingFile(error: unknown): boolean {
   return Boolean(
     error &&
@@ -276,7 +863,9 @@ async function startupDiagnostics(path: string | undefined): Promise<string> {
   if (!path) return "";
   const output = await readFile(path, "utf8").catch(() => "");
   const tail = output.trimEnd().split("\n").slice(-40).join("\n");
-  return tail ? `:\n${tail}\n(startup output: ${path})` : ` (no startup output in ${path})`;
+  return tail
+    ? `:\n${tail}\n(startup output: ${path})`
+    : ` (no startup output in ${path})`;
 }
 
 function delay(ms: number): Promise<void> {
@@ -478,6 +1067,11 @@ export function createLocalDaemonBootstrap(
   const unhealthyRecoveryTimeoutMs = options.unhealthyRecoveryTimeoutMs ?? 0;
   const lockTimeoutMs = options.lockTimeoutMs ?? 15_000;
   const pollIntervalMs = options.pollIntervalMs ?? 50;
+  const readinessPollMaxIntervalMs =
+    options.readinessPollMaxIntervalMs ??
+    DEFAULT_READINESS_POLL_MAX_INTERVAL_MS;
+  const readinessPollIntervalMs =
+    options.readinessPollIntervalMs ?? DEFAULT_READINESS_POLL_INTERVAL_MS;
   const inspectDaemon = () =>
     inspectLocalDaemon({
       runDir: options.runDir,
@@ -553,6 +1147,7 @@ export function createLocalDaemonBootstrap(
       }
       launched = await options.launch();
       const deadline = Date.now() + startupTimeoutMs;
+      let readinessIntervalMs = readinessPollIntervalMs;
       while (Date.now() < deadline) {
         const ready = await inspectDaemon();
         if (ready.status === "healthy") return ready.record;
@@ -567,7 +1162,11 @@ export function createLocalDaemonBootstrap(
               (await startupDiagnostics(launched.diagnosticLogPath)),
           );
         }
-        await delay(pollIntervalMs);
+        await delay(readinessIntervalMs);
+        readinessIntervalMs = nextReadinessPollInterval(
+          readinessIntervalMs,
+          readinessPollMaxIntervalMs,
+        );
       }
       throw new Error("Timed out waiting for Clash daemon readiness");
     } catch (error) {

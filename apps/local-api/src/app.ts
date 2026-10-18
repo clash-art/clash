@@ -22,7 +22,7 @@ import {
 } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { extname, join, resolve } from "node:path";
+import { delimiter, extname, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Hono, type Context } from "hono";
@@ -739,6 +739,8 @@ export interface LocalAcpAdapter {
     sessionId: string,
   ): Promise<{ events: LocalAcpSessionEvent[] } | null>;
   setSessionEventStore?(store: LocalAcpSessionEventStore): void;
+  /** Update the environment used by every subsequent agent/tool spawn. */
+  updateSpawnEnv?(env: Record<string, string | undefined>): void;
   getSessionRuntimeStatus?(
     sessionId: string,
   ): Promise<LocalAcpSessionRuntimeStatus | null>;
@@ -4704,6 +4706,42 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       user: { id: userId, name: "Local User", email: "local@clash.local" },
     }),
   );
+  // Desktop hydrates the macOS GUI PATH after the Host has already launched.
+  // This loopback-only control updates subsequent agent/tool spawns; an absent
+  // ACP adapter is not an error because no agent is enabled.
+  app.post("/api/v1/local/agent-environment", async (c) => {
+    if (!isLoopbackRemoteAddress(socketRemoteAddress(c.env))) {
+      return c.json(
+        {
+          error: "agent environment updates are limited to this machine",
+          code: "LOCAL_AGENT_ENVIRONMENT_LOOPBACK_ONLY",
+        },
+        403,
+      );
+    }
+    const raw = (await c.req.json().catch(() => undefined)) as
+      | { PATH?: unknown }
+      | undefined;
+    const path = typeof raw?.PATH === "string" ? raw.PATH : undefined;
+    if (!path || path.trim().length === 0 || path.includes("\0")) {
+      return c.json(
+        {
+          error: "PATH must be a non-empty string",
+          code: "LOCAL_AGENT_ENVIRONMENT_INVALID",
+        },
+        400,
+      );
+    }
+    // Agent spawns also need the Host's `agent-bin` shim directory, exactly as
+    // createLocalAgentToolEnv provides it at listen time.
+    const spawnPath = [join(resolve(options.dataDir), "agent-bin"), path]
+      .filter(Boolean)
+      .join(delimiter);
+    process.env.PATH = spawnPath;
+    options.localAcp?.updateSpawnEnv?.({ PATH: spawnPath });
+    return c.json({ ok: true, PATH: path, spawnPath });
+  });
+
   app.get("/api/v1/me", (c) => c.json({ id: userId }));
 
   app.get("/api/v1/generator-definitions", async (c) => {

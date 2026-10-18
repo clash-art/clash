@@ -8,6 +8,7 @@ import {
 } from "../../../apps/local-api/src/bundled-plugins.js";
 import { assertDependencyDistIsFresh } from "./host-runtime-freshness.js";
 import { assertRendererInputsAreFresh } from "../../../scripts/project-renderer-freshness.ts";
+import { writeLocalDaemonRuntimeManifest } from "../../../packages/shared-runtime/src/local-daemon-manifest.ts";
 
 const pluginRoot = resolve(import.meta.dirname, "..");
 const repoRoot = resolve(pluginRoot, "../..");
@@ -243,3 +244,11 @@ async function assertBundledPayloadImportsResolve(root: string): Promise<void> {
     );
   }
 }
+
+// The launcher verifies this manifest instead of re-hashing the 121 MB tree on
+// every desktop launch / CLI host-ensure. It must be written after every file
+// it covers (entry, bundled plugins, project renderer) is final.
+const runtimeManifest = await writeLocalDaemonRuntimeManifest({ runtimeDir });
+console.log(
+  `[build-host-runtime] wrote ${runtimeManifest.files.length}-file runtime manifest (${runtimeManifest.treeDigest.slice(0, 12)}...)`,
+);
