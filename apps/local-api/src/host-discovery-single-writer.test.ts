@@ -47,7 +47,11 @@ describe("host discovery has one live writer", () => {
   it("refuses to displace a record whose process is still alive", async () => {
     await writeHostDiscovery(record(4242, 49321), { runDir, pidExists: () => true });
     await expect(
-      writeHostDiscovery(record(4343, 55799), { runDir, pidExists: () => true }),
+      writeHostDiscovery(record(4343, 55799), {
+        runDir,
+        pidExists: () => true,
+        probeHost: async () => ({ live: true }),
+      }),
     ).rejects.toThrow(/already/i);
 
     const stored = JSON.parse(await readFile(getHostDiscoveryPath(runDir), "utf8"));

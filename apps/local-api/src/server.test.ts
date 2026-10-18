@@ -27,7 +27,10 @@ import {
   projectAssetAuthorityVersion,
   readProjectDocumentAsset,
 } from "@clash/shared-types";
-import { readHostDiscovery } from "./host-discovery";
+import {
+  createHostDiscoveryRecord,
+  readHostDiscovery,
+} from "./host-discovery";
 import {
   createConfiguredLocalAcpAdapter,
   bootstrapLocalDurableRunRecovery,
@@ -1848,6 +1851,128 @@ describe("local API server configuration", () => {
     await expect(readHostDiscovery({ runDir })).resolves.toEqual({
       status: "inactive",
     });
+  });
+
+  it("replaces a discovery record whose live pid belongs to an unrelated process", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-api-data-"));
+    const runDir = await mkdtemp(join(tmpdir(), "clash-local-api-run-"));
+    const stale = createHostDiscoveryRecord({
+      hostId: "stale-reused-pid",
+      endpoint: "http://127.0.0.1:1",
+      pid: process.ppid,
+      launchMode: "desktop",
+      startedBy: "desktop",
+    });
+    await writeFile(
+      join(runDir, "host.json"),
+      `${JSON.stringify(stale, null, 2)}\n`,
+      "utf8",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let records: Array<{
+      event?: string;
+      context?: Record<string, unknown>;
+    }> = [];
+    let server: Awaited<ReturnType<typeof startLocalApiServer>> | undefined;
+    try {
+      server = await withLocalDataDir(dataDir, () =>
+        startLocalApiServer({
+          dataDir,
+          port: 0,
+          remotePersistence: null,
+          agentRuntime: "disabled",
+          discovery: {
+            enabled: true,
+            runDir,
+            launchMode: "desktop",
+            startedBy: "desktop",
+          },
+        }),
+      );
+
+      const discovered = await readHostDiscovery({ runDir });
+      expect(discovered.status).toBe("active");
+      if (discovered.status !== "active")
+        throw new Error("expected the replacement record");
+      expect(discovered.record.hostId).not.toBe("stale-reused-pid");
+      expect(discovered.record.pid).toBe(process.pid);
+      records = warn.mock.calls.map(
+        ([line]) => JSON.parse(String(line)) as {
+          event?: string;
+          context?: Record<string, unknown>;
+        },
+      );
+    } finally {
+      if (server) {
+        await new Promise<void>((resolve, reject) => {
+          server!.close((error?: Error) => (error ? reject(error) : resolve()));
+        });
+      }
+      warn.mockRestore();
+      await rm(runDir, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
+
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "host.discovery_stale_record",
+        context: expect.objectContaining({
+          code: "HOST_DISCOVERY_STALE_RECORD",
+          pid: process.ppid,
+          endpoint: expect.stringContaining("http://127.0.0.1:1"),
+        }),
+      }),
+    );
+  });
+
+  it("logs a coded discovery cleanup failure when the record cannot be removed", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "clash-local-api-data-"));
+    const runDir = await mkdtemp(join(tmpdir(), "clash-local-api-run-"));
+    const server = await withLocalDataDir(dataDir, () =>
+      startLocalApiServer({
+        dataDir,
+        port: 0,
+        remotePersistence: null,
+        agentRuntime: "disabled",
+        discovery: {
+          enabled: true,
+          runDir,
+          launchMode: "desktop",
+          startedBy: "desktop",
+        },
+      }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let records: Array<{
+      event?: string;
+      context?: Record<string, unknown>;
+    }> = [];
+    try {
+      await chmod(runDir, 0o500);
+      await new Promise<void>((resolve, reject) => {
+        server.close((error?: Error) => (error ? reject(error) : resolve()));
+      });
+      records = warn.mock.calls.map(
+        ([line]) => JSON.parse(String(line)) as {
+          event?: string;
+          context?: Record<string, unknown>;
+        },
+      );
+    } finally {
+      await chmod(runDir, 0o700);
+      warn.mockRestore();
+      await rm(runDir, { recursive: true, force: true });
+      await rm(dataDir, { recursive: true, force: true });
+    }
+
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        event: "host.discovery_cleanup_failed",
+        context: expect.objectContaining({
+          code: "HOST_DISCOVERY_CLEANUP_FAILED",
+        }),
+      }),
+    );
   });
 
   it("keeps a supervised source-watch lease discoverable across child restarts", async () => {

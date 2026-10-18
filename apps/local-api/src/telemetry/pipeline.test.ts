@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SpanStatusCode } from "@opentelemetry/api";
 import {
   InMemorySpanExporter,
+  type ReadableSpan,
   type SpanExporter,
 } from "@opentelemetry/sdk-trace-node";
 import type { OtlpProtocol } from "@clash/shared-types";
@@ -115,5 +116,93 @@ describe("createHostTelemetry", () => {
     await telemetry.applyExport(resolveTelemetryExport({}, {}));
     expect(telemetry.exporting).toBe(false);
     await telemetry.shutdown();
+  });
+
+  it("flushes queued spans on shutdown and reports them pending until then", async () => {
+    const exported: ReadableSpan[] = [];
+    const telemetry = createHostTelemetry({
+      emitLog: () => {},
+      register: false,
+      createExporter: () => ({
+        export(spans, resultCallback) {
+          exported.push(...spans);
+          resultCallback({ code: 0 });
+        },
+        shutdown: async () => {},
+      }),
+    });
+    const tracer = telemetry.provider.getTracer("clash.test");
+    await telemetry.applyExport(enabled());
+    tracer.startSpan("queued_on_shutdown").end();
+    expect(telemetry.pendingSpans).toBe(1);
+
+    await telemetry.shutdown();
+
+    expect(telemetry.pendingSpans).toBe(0);
+    expect(exported.map((span) => span.name)).toEqual([
+      "queued_on_shutdown",
+    ]);
+  });
+
+  it("keeps chaining export changes after a failed swap", async () => {
+    const exported: string[] = [];
+    let failNextExporter = true;
+    const telemetry = createHostTelemetry({
+      emitLog: () => {},
+      register: false,
+      createExporter: () => {
+        if (failNextExporter) {
+          failNextExporter = false;
+          throw new Error("exporter construction failed");
+        }
+        return {
+          export(spans, resultCallback) {
+            exported.push(...spans.map((span) => span.name));
+            resultCallback({ code: 0 });
+          },
+          shutdown: async () => {},
+        };
+      },
+    });
+
+    await expect(telemetry.applyExport(enabled())).rejects.toThrow(
+      "exporter construction failed",
+    );
+    expect(telemetry.exporting).toBe(false);
+
+    // The rejection must not poison the swap chain: disabling still applies...
+    await telemetry.applyExport(resolveTelemetryExport({}, {}));
+    expect(telemetry.exporting).toBe(false);
+
+    // ...and a following enable works and flushes its own span.
+    await telemetry.applyExport(enabled());
+    expect(telemetry.exporting).toBe(true);
+    telemetry.provider.getTracer("clash.test").startSpan("after_failed_swap").end();
+
+    await telemetry.shutdown();
+
+    expect(exported).toContain("after_failed_swap");
+  });
+
+  it("rejects shutdown when the exporter rejects the final flush", async () => {
+    const telemetry = createHostTelemetry({
+      emitLog: () => {},
+      register: false,
+      createExporter: () => ({
+        export(_spans, resultCallback) {
+          resultCallback({
+            code: 1,
+            error: new Error("collector rejected the batch"),
+          });
+        },
+        shutdown: async () => {},
+      }),
+    });
+    await telemetry.applyExport(enabled());
+    telemetry.provider.getTracer("clash.test").startSpan("lost.turn").end();
+
+    await expect(telemetry.shutdown()).rejects.toThrow(
+      "collector rejected the batch",
+    );
   });
 });
