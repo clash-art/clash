@@ -1,4 +1,9 @@
-import { env, evictDurableObject, runInDurableObject } from "cloudflare:test";
+import {
+  env,
+  evictDurableObject,
+  runDurableObjectAlarm,
+  runInDurableObject,
+} from "cloudflare:test";
 import { SignJWT } from "jose";
 import { LoroDoc } from "loro-crdt";
 import {
@@ -549,16 +554,32 @@ it("expires an established JWT connection before its next protocol command", asy
   expect(event.reason).toBe(REVOKED_REASON);
 });
 
-it("closes an idle revoked socket within the authorization window, without any frame", async () => {
+it("rechecks an idle revoked socket on the existing 60 s alarm tick and schedules no extra alarm", async () => {
   const f = await fixture();
   const { sessionId, cookie } = await sessionCookie(f.userId, Date.now() + 60_000);
   const connected = await connect(f, { cookie });
   await env.DB.prepare("DELETE FROM sessions WHERE id = ?").bind(sessionId).run();
-  const revokedAt = Date.now();
-  const event = await waitForClose(connected.socket, AUTHORIZATION_WINDOW_MS + 3000);
+  const alarm = () =>
+    runInDurableObject(f.room, (_instance, state) => state.storage.getAlarm());
+  // No near-term authorization wake: only the 60 s task poll alarm, if any.
+  const scheduled = await alarm();
+  if (scheduled !== null)
+    expect(scheduled).toBeGreaterThanOrEqual(Date.now() + 50_000);
+  let closeEvent: CloseEvent | undefined;
+  connected.socket.addEventListener("close", (event) => {
+    closeEvent = event;
+  });
+  // The window lapses with no frame and no wake: the socket stays open.
+  await sleep(AUTHORIZATION_WINDOW_MS + 1000);
+  expect(closeEvent).toBeUndefined();
+  expect(await alarm()).toBe(scheduled);
+  // The existing alarm tick (which must exist while a socket is connected)
+  // rechecks the idle socket and closes it.
+  const closed = waitForClose(connected.socket);
+  expect(await runDurableObjectAlarm(f.room)).toBe(true);
+  const event = await closed;
   expect(event.code).toBe(1008);
   expect(event.reason).toBe(REVOKED_REASON);
-  expect(Date.now() - revokedAt).toBeLessThan(AUTHORIZATION_WINDOW_MS + 2000);
 });
 
 it("re-derives a stale credential label from the user record on Host reconnect", async () => {
