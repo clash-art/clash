@@ -13,6 +13,7 @@ import {
   exchangeAuthorizationCode,
   OAuthTokenError,
   oauthStatesMatch,
+  vendorErrorCode,
 } from "@clash/shared-runtime/provider-oauth-flow";
 
 import { serverLog } from "../logger";
@@ -25,7 +26,7 @@ import {
   decryptSecretJson,
   encryptSecretJson,
   requireSecretEnvelopeKey,
-} from "./secret-envelope";
+} from "@clash/shared-runtime/secret-envelope";
 
 export interface ProviderOAuthRecord {
   id: string;
@@ -437,11 +438,6 @@ async function failRow(
     .run();
 }
 
-/** A vendor's `error` parameter is attacker-controllable text; keep only a short RFC 6749 token. */
-function safeVendorCode(value: string): string | undefined {
-  return /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : undefined;
-}
-
 /**
  * Finish a web redirect flow for the signed-in user.
  *
@@ -520,7 +516,7 @@ export async function completeWebProviderOAuthCallback(
   };
 
   if (input.vendorError !== undefined) {
-    const vendorCode = safeVendorCode(input.vendorError);
+    const vendorCode = vendorErrorCode(input.vendorError);
     return vendorCode === "access_denied"
       ? fail("PROVIDER_OAUTH_DENIED")
       : fail("PROVIDER_OAUTH_VENDOR_ERROR", vendorCode);

@@ -1221,11 +1221,19 @@ export default function SettingsClient({
         });
       },
     );
-    void listPluginProviders()
-      .then((providerRows) => {
+    void listPluginProviders().then(
+      (providerRows) => {
         if (!cancelled) setPluginProviders(providerRows);
-      })
-      .catch(() => undefined);
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        feedback.notify({
+          variant: "error",
+          title: "Could not load plugin providers",
+          message: displayErrorMessage(err),
+        });
+      },
+    );
     return () => {
       cancelled = true;
     };

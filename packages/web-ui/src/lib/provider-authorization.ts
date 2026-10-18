@@ -126,10 +126,13 @@ export function withoutProviderOAuthReturn(
   return next;
 }
 
+/** The message for a failed return, always followed by its code so support can match it. */
 export function providerOAuthReturnMessage(
   result: Extract<ProviderOAuthReturn, { status: "error" }>,
 ): string {
-  return result.code === "UNKNOWN"
-    ? "The provider authorization did not finish. Start the connection again."
-    : PROVIDER_OAUTH_ERROR_MESSAGES[result.code];
+  const message =
+    result.code === "UNKNOWN"
+      ? "The provider authorization did not finish. Start the connection again."
+      : PROVIDER_OAUTH_ERROR_MESSAGES[result.code];
+  return `${message} [${result.code === "UNKNOWN" ? "PROVIDER_OAUTH_UNKNOWN" : result.code}]`;
 }

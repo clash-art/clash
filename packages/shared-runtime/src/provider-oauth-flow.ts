@@ -139,8 +139,11 @@ export async function refreshAccessToken(
   return { ...token, refreshToken: token.refreshToken ?? input.refreshToken };
 }
 
-/** RFC 6749 error codes are `[\x20-\x21\x23-\x5B\x5D-\x7E]+`; keep only a short, printable token. */
-function vendorErrorCode(value: unknown): string | undefined {
+/**
+ * RFC 6749 error codes are `[\x20-\x21\x23-\x5B\x5D-\x7E]+`; keep only a short, printable token.
+ * Vendor-supplied (token body or redirect `error` parameter), so never trusted as free text.
+ */
+export function vendorErrorCode(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return /^[A-Za-z0-9_.-]{1,64}$/.test(trimmed) ? trimmed : undefined;

@@ -108,7 +108,7 @@ describe("settings return", () => {
     );
     expect(result).toEqual({ providerId: "acme", status: "error", code: "PROVIDER_OAUTH_STATE_EXPIRED" });
     expect(providerOAuthReturnMessage(result as Extract<typeof result, { status: "error" }>))
-      .toBe(PROVIDER_OAUTH_ERROR_MESSAGES.PROVIDER_OAUTH_STATE_EXPIRED);
+      .toBe(`${PROVIDER_OAUTH_ERROR_MESSAGES.PROVIDER_OAUTH_STATE_EXPIRED} [PROVIDER_OAUTH_STATE_EXPIRED]`);
   });
 
   it("reads an error return that names no provider, such as a lost session", () => {
@@ -120,7 +120,7 @@ describe("settings return", () => {
     const result = readProviderOAuthReturn(new URLSearchParams("providerOAuth=acme&status=error&code=NOPE"));
     expect(result).toEqual({ providerId: "acme", status: "error", code: "UNKNOWN" });
     expect(providerOAuthReturnMessage(result as Extract<typeof result, { status: "error" }>))
-      .toMatch(/did not finish/);
+      .toMatch(/did not finish.*\[PROVIDER_OAUTH_UNKNOWN\]$/);
   });
 
   it("ignores an address that is not a provider return", () => {

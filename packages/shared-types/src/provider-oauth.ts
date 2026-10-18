@@ -26,6 +26,10 @@ export const PROVIDER_OAUTH_ERROR_MESSAGES = {
     "This authorization finishes when the provider redirects back to Clash; there is nothing to complete by hand.",
   PROVIDER_OAUTH_REQUIRES_DESKTOP:
     "This sign-in needs the Clash desktop app on your computer.",
+  PROVIDER_OAUTH_BAD_REQUEST:
+    "The authorization request was not valid JSON.",
+  PROVIDER_OAUTH_SERVER_ERROR:
+    "Clash hit a server error while finishing the authorization. Start the connection again.",
 } as const;
 
 export type ProviderOAuthErrorCode = keyof typeof PROVIDER_OAUTH_ERROR_MESSAGES;

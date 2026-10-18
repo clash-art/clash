@@ -480,3 +480,41 @@ describe("callback through the full api-cf app", () => {
     expect(new URL(signedIn.headers.get("location")!).searchParams.get("status")).toBe("authorized");
   });
 });
+
+describe("no ambiguous outcomes (review)", () => {
+  it("refuses a start body that is not a JSON object instead of ignoring it", async () => {
+    const h = harness();
+    for (const body of ["{not json", "[1]"]) {
+      const response = await h.app.request("/api/v1/provider-oauth/acme/start", {
+        method: "POST",
+        headers: { "x-user-id": "user-a", "content-type": "application/json" },
+        body,
+      }, h.env);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: "PROVIDER_OAUTH_BAD_REQUEST" });
+    }
+    expect(h.row("user-a")).toBeUndefined();
+  });
+
+  it("redirects a storage failure during the callback with PROVIDER_OAUTH_SERVER_ERROR, never a raw 500", async () => {
+    const h = harness();
+    const { state } = await startedState(h, "user-a");
+    const calls = vendor(grant);
+    (h.env as unknown as { DB: unknown }).DB = {
+      prepare() {
+        throw new Error("D1 unavailable");
+      },
+    };
+
+    const result = await h.callback("user-a", { code: "vendor-code", state });
+    expectErrorRedirect(result, "PROVIDER_OAUTH_SERVER_ERROR");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("lists no plugin Provider declarations: hosted builds bundle none", async () => {
+    const h = harness();
+    const response = await h.app.request("/api/v1/plugin-providers", { headers: { "x-user-id": "user-a" } }, h.env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ providers: [] });
+  });
+});

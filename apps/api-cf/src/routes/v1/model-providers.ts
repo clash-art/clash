@@ -18,7 +18,7 @@ import {
   type ModelUpstreamRoute,
   type UserModelCardConfig,
 } from "@clash/shared-types";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../../config";
 import {
   deleteModelCardConfig,
@@ -49,6 +49,7 @@ import {
   ProviderOAuthConfigError,
 } from "../../services/provider-oauth-config";
 import { publicOrigin } from "../../services/public-origin";
+import { serverLog } from "../../logger";
 import { hostedBaseModelCards } from "../../generation/hosted-model-cards";
 
 export const modelProviderRoutes = new Hono<{ Bindings: Env }>();
@@ -431,15 +432,43 @@ modelProviderRoutes.get("/provider-oauth/callback", async (c) => {
     c.redirect(providerOAuthReturnUrl(origin, result), 302);
   const userId = c.req.header("x-user-id");
   if (!userId) return redirect({ status: "error", code: "PROVIDER_OAUTH_UNAUTHENTICATED" });
-  const result = await completeWebProviderOAuthCallback(c.env, {
-    userId,
-    state: stringField(c.req.query("state")),
-    code: stringField(c.req.query("code")),
-    vendorError: c.req.query("error"),
-    resolveProvider: (providerId) => hostedOAuthProvider(c.env.PROVIDER_OAUTH_PROVIDERS, providerId),
-  });
-  return redirect(result);
+  try {
+    const result = await completeWebProviderOAuthCallback(c.env, {
+      userId,
+      state: stringField(c.req.query("state")),
+      code: stringField(c.req.query("code")),
+      vendorError: c.req.query("error"),
+      resolveProvider: (providerId) => hostedOAuthProvider(c.env.PROVIDER_OAUTH_PROVIDERS, providerId),
+    });
+    return redirect(result);
+  } catch (error) {
+    // A storage failure mid-callback must still land the user on settings with a code; a raw 500
+    // page after leaving the vendor is the ambiguous state this route exists to avoid.
+    serverLog.child("provider-oauth").error("provider_oauth.callback_server_error", { error });
+    return redirect({ status: "error", code: "PROVIDER_OAUTH_SERVER_ERROR" });
+  }
 });
+
+/** An absent body is `{}`; a present body that is not a JSON object is refused, never ignored. */
+async function optionalJsonObject(c: Context<{ Bindings: Env }>): Promise<Record<string, unknown> | null> {
+  const text = await c.req.text();
+  if (!text.trim()) return {};
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Provider declarations this deployment loads from plugins. Hosted builds bundle none (OAuth
+ * clients come from PROVIDER_OAUTH_PROVIDERS instead), so the truthful answer is an empty list --
+ * not a 404 the settings screen would have to guess about.
+ */
+modelProviderRoutes.get("/plugin-providers", (c) => c.json({ providers: [] }));
 
 modelProviderRoutes.post("/provider-oauth/:providerId/start", async (c) => {
   const userId = c.req.header("x-user-id");
@@ -462,7 +491,8 @@ modelProviderRoutes.post("/provider-oauth/:providerId/start", async (c) => {
       "ACTION_SECRET_KEY is not configured, so a pending authorization cannot be sealed.",
     ), 503);
   }
-  const body = (await c.req.json().catch(() => ({}))) as { accountId?: unknown; accountLabel?: unknown };
+  const body = await optionalJsonObject(c);
+  if (!body) return c.json(oauthError("PROVIDER_OAUTH_BAD_REQUEST"), 400);
   const record = await startWebProviderOAuth(c.env, {
     userId,
     provider,
@@ -478,7 +508,8 @@ modelProviderRoutes.post("/provider-oauth/:providerId/complete", async (c) => {
   if (!userId) return c.json({ error: "Unauthorized" }, 401);
   const providerId = parseProviderOAuthId(c.req.param("providerId"));
   if (!providerId) return c.json(oauthError("PROVIDER_OAUTH_UNSUPPORTED", "Unsupported OAuth provider"), 404);
-  const body = (await c.req.json().catch(() => ({}))) as { accountId?: unknown };
+  const body = await optionalJsonObject(c);
+  if (!body) return c.json(oauthError("PROVIDER_OAUTH_BAD_REQUEST"), 400);
   const record = await findProviderOAuthRecord(c.env.DB, userId, providerId, stringField(body.accountId));
   if (record?.callbackType === "web") {
     return c.json(oauthError(

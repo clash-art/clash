@@ -6308,7 +6308,7 @@ describe("SettingsClient model routing", () => {
       status: "error" as const,
       code: "PROVIDER_OAUTH_DENIED" as const,
       title: "Could not connect hilo-hub",
-      message: PROVIDER_OAUTH_ERROR_MESSAGES.PROVIDER_OAUTH_DENIED,
+      message: `${PROVIDER_OAUTH_ERROR_MESSAGES.PROVIDER_OAUTH_DENIED} [PROVIDER_OAUTH_DENIED]`,
       row: {
         status: "error" as const,
         errorCode: "PROVIDER_OAUTH_DENIED",
