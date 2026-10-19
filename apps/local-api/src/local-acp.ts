@@ -2997,7 +2997,11 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
           event,
         });
       }
-      if (persisted) void persisted.catch(() => undefined);
+      if (persisted) {
+        void persisted.catch((error) =>
+          this.reportSessionEventPersistFailure(entry, error),
+        );
+      }
     };
     entry = {
       id: sessionId,
@@ -3410,7 +3414,18 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     this.sendPromptQueueUpdate(entry);
     const runPrompt = async () => {
       if (opts.persistUserPrompt) {
-        await (this.appendUserPrompt(entry, turnId, text) ?? Promise.resolve());
+        try {
+          await (this.appendUserPrompt(entry, turnId, text) ??
+            Promise.resolve());
+        } catch (error) {
+          this.reportSessionEventPersistFailure(entry, error, turnId);
+          entry.scheduledPromptCount = Math.max(
+            0,
+            entry.scheduledPromptCount - 1,
+          );
+          this.sendPromptQueueUpdate(entry);
+          return;
+        }
       }
       entry.activePromptTurnId = turnId;
       this.sendPromptQueueUpdate(entry);
@@ -3424,8 +3439,12 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await (this.persistTurnError(entry, turnId, message) ??
-          Promise.resolve());
+        try {
+          await (this.persistTurnError(entry, turnId, message) ??
+            Promise.resolve());
+        } catch (persistError) {
+          this.reportSessionEventPersistFailure(entry, persistError, turnId);
+        }
         this.sendToSession(entry, {
           type: "session.error",
           session_id: entry.id,
@@ -3476,7 +3495,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
     entry.queuedPrompts = entry.queuedPrompts.filter(
       (prompt) => prompt.turnId !== turnId,
     );
-    this.appendUserPrompt(entry, turnId, text);
+    this.appendUserPrompt(entry, turnId, text)?.catch((error) =>
+      this.reportSessionEventPersistFailure(entry, error, turnId),
+    );
     entry.scheduledPromptCount += 1;
     this.sendPromptQueueUpdate(entry);
 
@@ -3491,8 +3512,12 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await (this.persistTurnError(entry, turnId, message) ??
-          Promise.resolve());
+        try {
+          await (this.persistTurnError(entry, turnId, message) ??
+            Promise.resolve());
+        } catch (persistError) {
+          this.reportSessionEventPersistFailure(entry, persistError, turnId);
+        }
         this.sendToSession(entry, {
           type: "session.error",
           session_id: entry.id,
@@ -3520,7 +3545,9 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       this.queuePrompt(entry, turnId, text);
       return;
     }
-    this.appendUserPrompt(entry, turnId, text);
+    this.appendUserPrompt(entry, turnId, text)?.catch((error) =>
+      this.reportSessionEventPersistFailure(entry, error, turnId),
+    );
     return this.schedulePrompt(entry, turnId, text);
   }
 
@@ -3631,6 +3658,28 @@ export class LocalAcpRuntimeAdapter implements LocalAcpAdapter {
       });
     }
     return null;
+  }
+
+  private reportSessionEventPersistFailure(
+    entry: LocalAcpSession,
+    error: unknown,
+    turnId?: string | null,
+  ): void {
+    const code =
+      error &&
+      typeof error === "object" &&
+      typeof (error as { code?: unknown }).code === "string"
+        ? (error as { code: string }).code
+        : "SESSION_EVENT_PERSIST_FAILED";
+    this.sendToSession(entry, {
+      type: "session.error",
+      session_id: entry.id,
+      ...(turnId ? { turn_id: turnId } : {}),
+      code,
+      message: `The session transcript could not be saved (${code}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    });
   }
 
   private sendToSession(entry: LocalAcpSession, msg: unknown): void {

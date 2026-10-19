@@ -1255,10 +1255,11 @@ function createDb(dataDir: string, onProjectChanged?: (projectId: string) => Pro
   async function appendSessionEvent(
     sessionId: string,
     event: Omit<LocalAcpSessionEvent, "seq">,
+    options: Parameters<typeof metadataStore.appendSessionEvent>[2] = {},
   ): Promise<void> {
     const task = writeQueue
       .catch(() => undefined)
-      .then(() => metadataStore.appendSessionEvent(sessionId, event));
+      .then(() => metadataStore.appendSessionEvent(sessionId, event, options));
     writeQueue = task.then(
       () => undefined,
       () => undefined,
@@ -1353,32 +1354,33 @@ function createLocalSessionEventStore(
 ): LocalAcpSessionEventStore {
   return {
     async appendEvent(sessionId, event) {
-      await db.appendSessionEvent(sessionId, event);
-      await db.update((state) => {
-        const session = state.sessions.find(
-          (candidate) => candidate.id === sessionId,
-        );
-        if (!session) return;
-        const data =
-          event.data &&
-          typeof event.data === "object" &&
-          !Array.isArray(event.data)
-            ? (event.data as Record<string, unknown>)
-            : {};
-        if (event.type === "user_prompt" && typeof data.text === "string") {
-          const text = visibleUserPromptText(data.text);
-          if (
-            text &&
-            (!session.title ||
-              session.title === DEFAULT_RUNTIME_SESSION_TITLE ||
-              (!!session.agentTemplateId &&
-                session.title === agentTemplateTitle(session.agentTemplateId)))
-          ) {
-            session.title = truncateRuntimeSessionTitle(text);
+      await db.appendSessionEvent(sessionId, event, {
+        updateSession: (session) => {
+          const data =
+            event.data &&
+            typeof event.data === "object" &&
+            !Array.isArray(event.data)
+              ? (event.data as Record<string, unknown>)
+              : {};
+          const patch: {
+            title?: string;
+            status?: "error";
+          } = {};
+          if (event.type === "user_prompt" && typeof data.text === "string") {
+            const text = visibleUserPromptText(data.text);
+            if (
+              text &&
+              (!session.title ||
+                session.title === DEFAULT_RUNTIME_SESSION_TITLE ||
+                (!!session.agentTemplateId &&
+                  session.title === agentTemplateTitle(session.agentTemplateId)))
+            ) {
+              patch.title = truncateRuntimeSessionTitle(text);
+            }
           }
-        }
-        if (event.type === "turn_failed") session.status = "error";
-        session.updatedAt = nowIso();
+          if (event.type === "turn_failed") patch.status = "error";
+          return patch;
+        },
       });
     },
     async listSessionEvents(sessionId) {
@@ -9718,11 +9720,18 @@ const ForkPointBodySchema = z.object({
     } catch (error) {
       const message = formatLocalAcpSessionError(error);
       if (localSessionId) {
-        await sessionEventStore.appendEvent(localSessionId, {
-          type: "turn_failed",
-          data: { message },
-          ts: Date.now(),
-        });
+        try {
+          await sessionEventStore.appendEvent(localSessionId, {
+            type: "turn_failed",
+            data: { message },
+            ts: Date.now(),
+          });
+        } catch (eventError) {
+          console.error(
+            "[local-api] could not persist the ACP session failure event:",
+            errorMessage(eventError),
+          );
+        }
       }
       console.error("[local-api] local ACP session create failed:", message);
       const envelope = {
