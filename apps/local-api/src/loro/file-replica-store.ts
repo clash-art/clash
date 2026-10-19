@@ -79,6 +79,15 @@ function isMissingFile(error: unknown): boolean {
   );
 }
 
+function isExistingFile(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "EEXIST"
+  );
+}
+
 function canvasThumbnailRevision(value: string): string {
   const revision = value.trim();
   if (!/^[a-f0-9]{64}$/u.test(revision)) {
@@ -249,7 +258,9 @@ export class FileReplicaStore {
     }
     const cursor = Number(raw.trim());
     if (!Number.isSafeInteger(cursor) || cursor < 0) {
-      throw new Error(`Project ${projectId} has a corrupt replica checkpoint cursor.`);
+      throw new Error(
+        `Project ${projectId} has a corrupt replica checkpoint cursor.`,
+      );
     }
     return cursor;
   }
@@ -276,7 +287,10 @@ export class FileReplicaStore {
         } finally {
           await handle.close();
         }
-        await rename(temporaryPath, this.replicaCheckpointCursorPath(projectId));
+        await rename(
+          temporaryPath,
+          this.replicaCheckpointCursorPath(projectId),
+        );
         await this.syncDirectory(dir);
       } finally {
         await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -609,21 +623,34 @@ export class FileReplicaStore {
     const dir = this.loroDir(projectId);
     const logPath = this.updateLogPath(projectId);
     await mkdir(dir, { recursive: true });
-    try {
-      const handle = await open(logPath, "a", 0o600);
+    const truncateExisting = async (): Promise<void> => {
+      // "r+" requests FILE_WRITE_DATA as well as FILE_READ_DATA on Windows;
+      // "a" only grants FILE_APPEND_DATA, so ftruncate there fails with EPERM.
+      // Keeping the same inode also avoids splitting concurrent readers.
+      const handle = await open(logPath, "r+", 0o600);
       try {
         await handle.truncate(0);
         await handle.sync();
       } finally {
         await handle.close();
       }
+    };
+    try {
+      await truncateExisting();
     } catch (error) {
       if (!isMissingFile(error)) throw error;
-      const handle = await open(logPath, "w", 0o600);
       try {
-        await handle.sync();
-      } finally {
-        await handle.close();
+        const handle = await open(logPath, "wx", 0o600);
+        try {
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      } catch (createError) {
+        if (!isExistingFile(createError)) throw createError;
+        // Another writer won the create race between ENOENT and "wx"; the
+        // file now exists, so retry the write-capable truncate exactly once.
+        await truncateExisting();
       }
       await this.syncDirectory(dir);
     }

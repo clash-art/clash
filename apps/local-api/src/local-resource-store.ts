@@ -605,7 +605,13 @@ async function copyFileBounded(
   sourcePath: string,
   targetPath: string,
 ): Promise<void> {
-  const handle = await open(targetPath, "w", 0o444);
+  // An unreferenced staging file left by a crash may still be 0o444, which is
+  // the read-only attribute on Windows; clear it before opening for write.
+  // ENOENT is the normal first-publication case.
+  await chmod(targetPath, 0o600).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+  const handle = await open(targetPath, "w", 0o600);
   let handleOpen = true;
   try {
     for await (const chunk of createReadStream(sourcePath)) {
