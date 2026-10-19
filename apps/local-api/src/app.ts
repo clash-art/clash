@@ -346,8 +346,10 @@ import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { readThroughProjectCanvasPreviewEntry } from "./project-canvas-preview-cache.js";
 import {
   createProjectCanvasThumbnailCache,
+  ProjectCanvasThumbnailError,
   PROJECT_CANVAS_THUMBNAIL_HEIGHT,
   PROJECT_CANVAS_THUMBNAIL_WIDTH,
+  type ProjectCanvasThumbnailFailure,
   type ProjectCanvasThumbnailInput,
 } from "./project-canvas-thumbnail.js";
 import {
@@ -2112,6 +2114,14 @@ export function localProjectSyncMetadata(project: LocalProject): ProjectMetadata
   };
 }
 
+function etagMatches(header: string | undefined, etag: string): boolean {
+  if (!header) return false;
+  return header.split(",").some((raw) => {
+    const value = raw.trim();
+    return value === "*" || value === etag || value === `W/${etag}`;
+  });
+}
+
 function toV1Project(
   project: LocalProject,
   assets: ResolvedAsset[],
@@ -2119,6 +2129,7 @@ function toV1Project(
   coverAssetId: string | null = null,
   canvasPreview: ProjectCanvasPreview | null = null,
   canvasThumbnail: V1ProjectCanvasThumbnail | null = null,
+  canvasThumbnailFailure?: ProjectCanvasThumbnailFailure,
 ) {
   const projectedAssets =
     assetMode === "all"
@@ -2143,6 +2154,7 @@ function toV1Project(
     coverAssetId,
     canvasPreview,
     canvasThumbnail,
+    ...(canvasThumbnailFailure ? { canvasThumbnailFailure } : {}),
     assets: assetMode === "preview" && canvasThumbnail ? [] : projectedAssets,
     assetCount: assets.length,
     created_at: isoToEpochSeconds(project.createdAt),
@@ -5793,6 +5805,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           source.resource.id,
         );
         if (!projection) {
+          const failure = await assetRepresentations.failure?.(
+            source.resource.id,
+            "thumbnail",
+          );
+          if (failure) {
+            return c.json(
+              {
+                error: failure.message,
+                code: failure.code,
+                ...(failure.retryAt === undefined
+                  ? {}
+                  : { retryAt: failure.retryAt }),
+              },
+              503,
+            );
+          }
           return c.json({ error: "Asset thumbnail is not available" }, 404);
         }
         return await serveImmutableFileProjection({
@@ -5862,6 +5890,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           "waveform",
         );
         if (!representation || representation.role !== "waveform") {
+          const failure = await assetRepresentations.failure?.(
+            source.resource.id,
+            "waveform",
+          );
+          if (failure) {
+            return c.json(
+              {
+                error: failure.message,
+                code: failure.code,
+                ...(failure.retryAt === undefined
+                  ? {}
+                  : { retryAt: failure.retryAt }),
+              },
+              503,
+            );
+          }
           return c.json({ error: "Asset waveform is not available" }, 404);
         }
         c.header("cache-control", "private, max-age=31536000, immutable");
@@ -6168,6 +6212,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           source.resource.id,
         );
         if (!projection) {
+          const failure = await assetRepresentations.failure?.(
+            source.resource.id,
+            "thumbnail",
+          );
+          if (failure) {
+            return c.json(
+              {
+                error: failure.message,
+                code: failure.code,
+                ...(failure.retryAt === undefined
+                  ? {}
+                  : { retryAt: failure.retryAt }),
+              },
+              503,
+            );
+          }
           return c.json({ error: "Asset thumbnail is not available" }, 404);
         }
         return await serveImmutableFileProjection({
@@ -6201,6 +6261,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           "waveform",
         );
         if (!representation || representation.role !== "waveform") {
+          const failure = await assetRepresentations.failure?.(
+            source.resource.id,
+            "waveform",
+          );
+          if (failure) {
+            return c.json(
+              {
+                error: failure.message,
+                code: failure.code,
+                ...(failure.retryAt === undefined
+                  ? {}
+                  : { retryAt: failure.retryAt }),
+              },
+              503,
+            );
+          }
           return c.json({ error: "Asset waveform is not available" }, 404);
         }
         c.header("cache-control", "private, max-age=31536000, immutable");
@@ -10118,12 +10194,36 @@ const ForkPointBodySchema = z.object({
     if (!findActiveProject(state, projectId)) {
       return c.json({ error: "Project not found" }, 404);
     }
+    const etag = `"${revision}"`;
+    const cacheControl = "public, max-age=31536000, immutable";
+    if (etagMatches(c.req.header("if-none-match"), etag)) {
+      return new Response(null, {
+        status: 304,
+        headers: { etag, "cache-control": cacheControl },
+      });
+    }
     try {
       const entry = await projectCanvasPreviewEntryFor(projectId);
       let bytes = await replicaStore.readCanvasThumbnail(projectId, revision);
       if (!bytes) {
         if (!entry.preview.bounds || entry.preview.nodes.length === 0) {
           return c.json({ error: "Main canvas is empty" }, 404);
+        }
+        const failure = projectCanvasThumbnailCache.failureFor(
+          projectId,
+          revision,
+        );
+        if (failure) {
+          return c.json(
+            {
+              error: failure.message,
+              code: failure.code,
+              ...(failure.retryAt === undefined
+                ? {}
+                : { retryAt: failure.retryAt }),
+            },
+            503,
+          );
         }
         let input = recentProjectCanvasThumbnailInputs
           .get(projectId)
@@ -10145,15 +10245,25 @@ const ForkPointBodySchema = z.object({
         }
         bytes = await projectCanvasThumbnailCache.get(input);
       }
-      return new Response(Uint8Array.from(bytes).buffer, {
+      return new Response(bytes as unknown as BodyInit, {
         headers: {
           "content-type": "image/webp",
           "content-length": String(bytes.byteLength),
-          "cache-control": "public, max-age=31536000, immutable",
-          etag: `"${revision}"`,
+          "cache-control": cacheControl,
+          etag,
         },
       });
     } catch (error) {
+      if (error instanceof ProjectCanvasThumbnailError) {
+        return c.json(
+          {
+            error: error.message,
+            code: error.code,
+            ...(error.retryAt === undefined ? {} : { retryAt: error.retryAt }),
+          },
+          503,
+        );
+      }
       return localProjectAssetErrorResponse(error);
     }
   });
@@ -10192,15 +10302,18 @@ const ForkPointBodySchema = z.object({
               canvasPreviewEntry,
               service,
             );
-            const canvasThumbnail = projectCanvasThumbnailProjection(
-              requestOrigin(c),
+            const thumbnailFailure = projectCanvasThumbnailCache.failureFor(
               project.id,
-              canvasPreviewEntry,
               thumbnailState.sourceVersion,
             );
-            if (canvasThumbnail) {
-              projectCanvasThumbnailCache.schedule(thumbnailState.input);
-            }
+            const canvasThumbnail = thumbnailFailure
+              ? null
+              : projectCanvasThumbnailProjection(
+                  requestOrigin(c),
+                  project.id,
+                  canvasPreviewEntry,
+                  thumbnailState.sourceVersion,
+                );
             return toV1Project(
               project,
               assets,
@@ -10208,6 +10321,7 @@ const ForkPointBodySchema = z.object({
               coverAssetId,
               canvasPreviewEntry.preview,
               canvasThumbnail,
+              thumbnailFailure,
             );
             } catch (error) {
               // A project's recovery failure must not hide other projects or
@@ -10618,15 +10732,18 @@ const ForkPointBodySchema = z.object({
         canvasPreviewEntry,
         service,
       );
-      const canvasThumbnail = projectCanvasThumbnailProjection(
-        requestOrigin(c),
+      const thumbnailFailure = projectCanvasThumbnailCache.failureFor(
         project.id,
-        canvasPreviewEntry,
         thumbnailState.sourceVersion,
       );
-      if (canvasThumbnail) {
-        projectCanvasThumbnailCache.schedule(thumbnailState.input);
-      }
+      const canvasThumbnail = thumbnailFailure
+        ? null
+        : projectCanvasThumbnailProjection(
+            requestOrigin(c),
+            project.id,
+            canvasPreviewEntry,
+            thumbnailState.sourceVersion,
+          );
       return c.json(
         toV1Project(
           project,
@@ -10635,6 +10752,7 @@ const ForkPointBodySchema = z.object({
           coverAssetId,
           canvasPreviewEntry.preview,
           canvasThumbnail,
+          thumbnailFailure,
         ),
       );
     } catch (error) {

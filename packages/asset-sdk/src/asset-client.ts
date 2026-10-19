@@ -8,6 +8,7 @@ import {
   type ProjectAssetEntry,
   type ProjectAssetTrashIfUnreferencedResult,
   type LocalResourceErrorCode,
+  type AssetRepresentationFailure,
   type ResolvedAsset,
   type Resource,
 } from "@clash/shared-types";
@@ -141,6 +142,8 @@ export type ResourceProjectionResolution =
       thumbnailUrl?: string;
       waveformUrl?: string;
       proxyUrl?: string;
+      /** Coded state of a derivation the Host could not produce. */
+      representationFailure?: AssetRepresentationFailure;
     }
   | { status: "downloading"; progress?: number }
   | { status: "unavailable"; error?: string }
@@ -400,6 +403,11 @@ export async function resolveProjectAsset(
               ...(projection.proxyUrl === undefined
                 ? {}
                 : { proxyUrl: projection.proxyUrl }),
+              ...(projection.representationFailure === undefined
+                ? {}
+                : {
+                    representationFailure: projection.representationFailure,
+                  }),
             },
             "PROJECTION_CONTRACT_VIOLATION",
           );

@@ -2,6 +2,7 @@ import type { OverlayOptions } from "sharp";
 
 import type { ProjectCanvasPreviewNode } from "@clash/shared-types";
 
+import { createBoundedWorkQueue } from "./bounded-work-queue.js";
 import { loadSharp } from "./local-image-codec.js";
 import type {
   CachedProjectCanvasPreview,
@@ -11,6 +12,31 @@ import type {
 export const PROJECT_CANVAS_THUMBNAIL_WIDTH = 640;
 export const PROJECT_CANVAS_THUMBNAIL_HEIGHT = 360;
 // The Project revision is the cache identity; browser-card dimensions stay fixed.
+
+export const PROJECT_CANVAS_THUMBNAIL_MAX_CONCURRENT = 2;
+const THUMBNAIL_RETRY_BASE_MS = 1_000;
+const THUMBNAIL_RETRY_MAX_MS = 5 * 60_000;
+const THUMBNAIL_MAX_ATTEMPTS = 5;
+
+export interface ProjectCanvasThumbnailFailure {
+  code: "REPRESENTATION_FAILED";
+  message: string;
+  retryAt?: number;
+  attempts: number;
+}
+
+/** A thumbnail that cannot be rendered; the route turns this into a coded 503. */
+export class ProjectCanvasThumbnailError extends Error {
+  readonly code = "REPRESENTATION_FAILED" as const;
+
+  constructor(
+    message: string,
+    readonly retryAt?: number,
+  ) {
+    super(message);
+    this.name = "ProjectCanvasThumbnailError";
+  }
+}
 
 export interface ProjectCanvasThumbnailMedia {
   kind: "image";
@@ -41,38 +67,110 @@ type ProjectCanvasThumbnailRenderer = (
   input: ProjectCanvasThumbnailInput,
 ) => Promise<Uint8Array>;
 
+function retryDelayMs(attempts: number): number {
+  return Math.min(
+    THUMBNAIL_RETRY_MAX_MS,
+    THUMBNAIL_RETRY_BASE_MS * 2 ** Math.min(Math.max(attempts - 1, 0), 10),
+  );
+}
+
 export class ProjectCanvasThumbnailCache {
   private readonly inFlight = new Map<string, Promise<Uint8Array>>();
+  private readonly failures = new Map<
+    string,
+    { attempts: number; retryAt?: number; message: string }
+  >();
   private readonly store: ProjectCanvasThumbnailStore;
   private readonly render: ProjectCanvasThumbnailRenderer;
+  private readonly queue: ReturnType<typeof createBoundedWorkQueue>;
+  private readonly now: () => number;
 
   constructor(options: {
     store: ProjectCanvasThumbnailStore;
     render?: ProjectCanvasThumbnailRenderer;
+    maxConcurrent?: number;
+    now?: () => number;
   }) {
     this.store = options.store;
     this.render = options.render ?? renderProjectCanvasThumbnail;
+    this.now = options.now ?? Date.now;
+    const maxConcurrent =
+      options.maxConcurrent ?? PROJECT_CANVAS_THUMBNAIL_MAX_CONCURRENT;
+    if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) {
+      throw new TypeError(
+        "Project canvas thumbnail concurrency must be a positive integer.",
+      );
+    }
+    this.queue = createBoundedWorkQueue({ concurrency: maxConcurrent });
+  }
+
+  /** The known failure for one immutable revision, if it is still current. */
+  failureFor(
+    projectId: string,
+    sourceVersion: string,
+  ): ProjectCanvasThumbnailFailure | undefined {
+    const key = this.key(projectId, sourceVersion);
+    const failure = this.failures.get(key);
+    if (!failure) return undefined;
+    if (failure.retryAt !== undefined && failure.retryAt <= this.now()) {
+      this.failures.delete(key);
+      return undefined;
+    }
+    return {
+      code: "REPRESENTATION_FAILED",
+      message: failure.message,
+      attempts: failure.attempts,
+      ...(failure.retryAt === undefined ? {} : { retryAt: failure.retryAt }),
+    };
   }
 
   get(input: ProjectCanvasThumbnailInput): Promise<Uint8Array> {
-    const key = `${encodeURIComponent(input.projectId)}:${input.entry.sourceVersion}`;
+    const key = this.key(input.projectId, input.entry.sourceVersion);
     const active = this.inFlight.get(key);
     if (active) return active;
+    const failure = this.failureFor(input.projectId, input.entry.sourceVersion);
+    if (failure) {
+      return Promise.reject(
+        new ProjectCanvasThumbnailError(failure.message, failure.retryAt),
+      );
+    }
 
-    const run = this.readOrRender(input).finally(() => {
-      if (this.inFlight.get(key) === run) this.inFlight.delete(key);
-    });
+    const run = this.queue
+      .enqueue("foreground", () => this.readOrRender(input))
+      .catch((error: unknown) => {
+        const recorded = this.recordFailure(key, error);
+        throw new ProjectCanvasThumbnailError(
+          recorded.message,
+          recorded.retryAt,
+        );
+      })
+      .then((bytes) => {
+        this.failures.delete(key);
+        return bytes;
+      })
+      .finally(() => {
+        if (this.inFlight.get(key) === run) this.inFlight.delete(key);
+      });
     this.inFlight.set(key, run);
     return run;
   }
 
-  schedule(input: ProjectCanvasThumbnailInput): void {
-    void this.get(input).catch((error) => {
-      console.error(
-        `[local-api] failed to derive Main canvas thumbnail for ${input.projectId}`,
-        error,
-      );
-    });
+  private key(projectId: string, sourceVersion: string): string {
+    return `${encodeURIComponent(projectId)}:${sourceVersion}`;
+  }
+
+  private recordFailure(
+    key: string,
+    error: unknown,
+  ): { message: string; retryAt?: number } {
+    const attempts = (this.failures.get(key)?.attempts ?? 0) + 1;
+    const message = error instanceof Error ? error.message : String(error);
+    const retryAt =
+      attempts >= THUMBNAIL_MAX_ATTEMPTS
+        ? undefined
+        : this.now() + retryDelayMs(attempts);
+    this.failures.set(key, { attempts, message, retryAt });
+    return { message, retryAt };
   }
 
   private async readOrRender(

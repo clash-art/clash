@@ -1090,7 +1090,7 @@ describe("Local Project Asset service", () => {
     ).rejects.toMatchObject({ code: "PROJECT_ASSET_NOT_FOUND" });
   });
 
-  it("reuses original image media for thumbnails and leaves video derivation to presentation clients", async () => {
+  it("reuses original image media for thumbnails and advertises missing video/audio derivations", async () => {
     const { service } = await fixture();
     const image = await service.installOwned({
       projectId: "project-preview",
@@ -1118,8 +1118,17 @@ describe("Local Project Asset service", () => {
     });
 
     expect(image.thumbnailUrl).toBe(image.url);
-    expect(video).not.toHaveProperty("thumbnailUrl");
+    // Missing derivations with no failure stay addressable so the card request
+    // can derive them on demand.
+    expect(video.thumbnailUrl).toBe(
+      "http://127.0.0.1:49152/api/v1/projects/project-preview/assets/video-preview/thumbnail",
+    );
+    expect(video).not.toHaveProperty("proxyUrl");
+    expect(video).not.toHaveProperty("representationFailure");
     expect(audio).not.toHaveProperty("thumbnailUrl");
+    expect(audio.waveformUrl).toBe(
+      "http://127.0.0.1:49152/api/v1/projects/project-preview/assets/audio-preview/waveform",
+    );
   });
 
   it("resolves a Host-private staged Resource without writing Loro", async () => {

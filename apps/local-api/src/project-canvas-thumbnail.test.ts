@@ -7,12 +7,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ProjectCanvasThumbnailCache,
+  ProjectCanvasThumbnailError,
   renderProjectCanvasThumbnail,
 } from "./project-canvas-thumbnail";
 
 function previewEntry(sourceVersion: string): CachedProjectCanvasPreview {
   return {
     sourceVersion,
+    docVersion: "d".repeat(64),
     generatedAt: "2026-08-27T00:00:00.000Z",
     preview: {
       canvasId: "main",
@@ -135,5 +137,82 @@ describe("ProjectCanvasThumbnailCache", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
+  });
+
+  it("runs at most two renders at a time", async () => {
+    const store = {
+      readCanvasThumbnail: vi.fn(async () => null),
+      writeCanvasThumbnail: vi.fn(async () => undefined),
+    };
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maximum = 0;
+    const render = vi.fn(async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return new Uint8Array([82, 73, 70, 70]);
+    });
+    const cache = new ProjectCanvasThumbnailCache({ store, render });
+    const inputs = ["a", "b", "c"].map((value) => ({
+      projectId: `project-${value}`,
+      entry: previewEntry(value.repeat(64)),
+      resolveMedia: vi.fn(async () => null),
+    }));
+
+    const pending = inputs.map((input) => cache.get(input));
+    await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(2));
+    expect(maximum).toBe(2);
+
+    releases.shift()?.();
+    await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(3));
+    releases.shift()?.();
+    releases.shift()?.();
+    await Promise.all(pending);
+    expect(maximum).toBe(2);
+  });
+
+  it("records a coded failure and backs off before retrying", async () => {
+    let now = 1_000;
+    const store = {
+      readCanvasThumbnail: vi.fn(async () => null),
+      writeCanvasThumbnail: vi.fn(async () => undefined),
+    };
+    const render = vi.fn(async () => {
+      throw new Error("sharp pipeline failed");
+    });
+    const cache = new ProjectCanvasThumbnailCache({
+      store,
+      render,
+      now: () => now,
+    });
+    const entry = previewEntry("a".repeat(64));
+    const input = {
+      projectId: "project-1",
+      entry,
+      resolveMedia: vi.fn(async () => null),
+    };
+
+    await expect(cache.get(input)).rejects.toBeInstanceOf(
+      ProjectCanvasThumbnailError,
+    );
+    expect(render).toHaveBeenCalledOnce();
+    expect(cache.failureFor("project-1", entry.sourceVersion)).toMatchObject({
+      code: "REPRESENTATION_FAILED",
+      attempts: 1,
+      retryAt: 2_000,
+    });
+
+    await expect(cache.get(input)).rejects.toMatchObject({
+      code: "REPRESENTATION_FAILED",
+    });
+    expect(render).toHaveBeenCalledOnce();
+
+    now = 2_000;
+    await expect(cache.get(input)).rejects.toMatchObject({
+      code: "REPRESENTATION_FAILED",
+    });
+    expect(render).toHaveBeenCalledTimes(2);
   });
 });

@@ -1817,7 +1817,7 @@ export class LocalLoroRoom {
           projectCanvasPreviewCacheEntryFromDoc(this.doc),
         );
         const cached = await this.store.readCanvasPreview(this.projectId);
-        if (cached?.sourceVersion === entry.sourceVersion) return;
+        if (cached?.docVersion === entry.docVersion) return;
         await this.store.writeCanvasPreview(this.projectId, entry);
       })
       .catch((error) => {

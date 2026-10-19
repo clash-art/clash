@@ -200,6 +200,151 @@ describe("Local Asset representation durable runs", () => {
     );
     await restarted.close();
   });
+  it("bounds concurrent derivations and never exceeds the configured workers", async () => {
+    const dataDir = await mkdtemp(
+      join(tmpdir(), "clash-representation-queue-"),
+    );
+    temporaryDirectories.push(dataDir);
+    const resources = createLocalResourceStore({ dataDir });
+    const sources = await Promise.all(
+      ["a", "b", "c", "d"].map((value) =>
+        resources.install({
+          kind: "audio",
+          contentType: "audio/wav",
+          bytes: new TextEncoder().encode(`immutable test audio ${value}`),
+        }),
+      ),
+    );
+    const gates: Array<() => void> = [];
+    let active = 0;
+    let maximum = 0;
+    const recipeRunner: LocalAssetRepresentationRecipeRunner = async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      active -= 1;
+      return {
+        kind: "waveform",
+        role: "waveform",
+        peaks: new Array(128).fill(0.5),
+      };
+    };
+    const service = createLocalAssetRepresentationService({
+      dataDir,
+      assetInspection: createLocalAssetInspectionService({ dataDir }),
+      recipeRunner,
+      maxConcurrent: 2,
+    });
+
+    const pending = sources.map((source) => service.ensure(source.resource.id));
+    await vi.waitFor(() => expect(gates.length).toBe(2));
+    expect(maximum).toBe(2);
+    // Release each started derivation; the queue starts the next one and can
+    // never run more than two at once.
+    for (let index = 0; index < pending.length; index += 1) {
+      await vi.waitFor(() => expect(gates.length).toBeGreaterThan(0));
+      gates.shift()?.();
+    }
+    await Promise.all(pending);
+    expect(maximum).toBe(2);
+    await service.close();
+  });
+
+  it("exposes a coded failure and retries only after the backoff window", async () => {
+    const { dataDir, source, assetInspection } = await fixture();
+    let now = 1_000;
+    const recipeRunner = vi.fn(async () => {
+      throw new Error("corrupt audio container");
+    });
+    const service = createLocalAssetRepresentationService({
+      dataDir,
+      assetInspection,
+      now: () => now,
+      recipeRunner,
+    });
+
+    await expect(service.ensure(source.resource.id)).resolves.toEqual([]);
+    expect(recipeRunner).toHaveBeenCalledTimes(1);
+    await expect(
+      service.failure?.(source.resource.id, "waveform"),
+    ).resolves.toMatchObject({
+      code: "REPRESENTATION_FAILED",
+      message: "corrupt audio container",
+      attempts: 1,
+    });
+
+    await expect(service.ensure(source.resource.id)).resolves.toEqual([]);
+    expect(recipeRunner).toHaveBeenCalledTimes(1);
+
+    now += 1_001;
+    await expect(service.ensure(source.resource.id)).resolves.toEqual([]);
+    expect(recipeRunner).toHaveBeenCalledTimes(2);
+    await service.close();
+  });
+
+  it("records an interrupted encode with a bounded retry and does not restart it early", async () => {
+    const { dataDir, source, assetInspection } = await fixture();
+    let now = 1_000;
+    let started = false;
+    const interruptedRunner: LocalAssetRepresentationRecipeRunner = ({
+      signal,
+    }) =>
+      new Promise((_resolve, reject) => {
+        started = true;
+        signal.addEventListener(
+          "abort",
+          () => reject(new Error("Host stopped")),
+          { once: true },
+        );
+      });
+    const first = createLocalAssetRepresentationService({
+      dataDir,
+      assetInspection,
+      ownerId: "local-api:test-interrupted",
+      now: () => now,
+      recipeRunner: interruptedRunner,
+    });
+
+    const pending = first.ensure(source.resource.id);
+    await vi.waitFor(() => expect(started).toBe(true));
+    await first.close();
+    await expect(pending).resolves.toEqual([]);
+    const interrupted = await first.failure?.(source.resource.id, "waveform");
+    expect(interrupted).toMatchObject({
+      code: "REPRESENTATION_INTERRUPTED",
+      attempts: expect.any(Number),
+      retryAt: expect.any(Number),
+    });
+    expect(interrupted?.retryAt).toBeGreaterThan(now);
+
+    const recoveredRunner = vi.fn(async () => ({
+      kind: "waveform" as const,
+      role: "waveform" as const,
+      peaks: new Array(128).fill(0.75),
+    }));
+    const restarted = createLocalAssetRepresentationService({
+      dataDir,
+      assetInspection,
+      ownerId: "local-api:test-interrupted",
+      now: () => now,
+      recipeRunner: recoveredRunner,
+    });
+    await restarted.start();
+    expect(recoveredRunner).not.toHaveBeenCalled();
+
+    now = interrupted!.retryAt!;
+    await restarted.start();
+    expect(recoveredRunner).toHaveBeenCalledTimes(1);
+    await expect(
+      restarted.read(source.resource.id, "waveform"),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        role: "waveform",
+        peaks: new Array(128).fill(0.75),
+      }),
+    );
+    await restarted.close();
+  });
 });
 
 describe("Video playback proxy decision", () => {
