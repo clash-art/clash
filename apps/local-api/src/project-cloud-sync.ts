@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { Readable } from "node:stream";
 import {
   createProjectCloudSyncCoordinator,
@@ -12,6 +13,7 @@ import {
 import { projectSyncContent } from "@clash/shared-types/project-sync-content";
 import {
   ResourceSchema,
+  type ProjectCloudAdmission,
   type ProjectMetadata,
   type Resource,
 } from "@clash/shared-types";
@@ -56,6 +58,10 @@ export interface LocalProjectCloudSyncOptions {
   remote(projectId: string): Promise<RemoteLoroPersistence | undefined>;
   metadata: {
     list(): Promise<string[]>;
+    /** One scoped admission query; the Host wires this to SQLite. */
+    listAdmissions?(
+      localReplicaId: string,
+    ): Promise<ProjectCloudAdmission[]>;
     read(projectId: string): Promise<ProjectMetadata | null>;
     write(metadata: ProjectMetadata): Promise<void>;
     isProvisional?(projectId: string): Promise<boolean>;
@@ -63,7 +69,18 @@ export interface LocalProjectCloudSyncOptions {
   token(baseUrl: string, userId: string): Promise<string | undefined>;
   inspection: Pick<LocalAssetInspectionService, "finalize">;
   fetch?: typeof globalThis.fetch;
+  /** Floor for the automatic admission scan; only armed while a syncable Project exists. */
   retryMs?: number;
+  /** Extra random delay above the floor, so a fleet does not poll in lockstep. */
+  retryJitterMs?: number;
+  /** Maximum Project syncs running at once (default 2). */
+  maxConcurrent?: number;
+  /** First automatic retry delay for a transient failure (default 60 s). */
+  retryBackoffBaseMs?: number;
+  /** Backoff ceiling for a transient failure (default 30 min). */
+  retryBackoffMaxMs?: number;
+  /** Injectable network-availability probe; defaults to an up non-loopback interface. */
+  online?: () => boolean;
   maxBytes?: number;
   /** Per sync attempt budget; larger media deployments may raise it. */
   networkTimeoutMs?: number;
@@ -545,25 +562,163 @@ export function createLocalProjectCloudSync(
     });
   }
 
+  const retryMs = options.retryMs ?? 300_000;
+  const retryJitterMs = Math.max(0, options.retryJitterMs ?? retryMs);
+  const maxConcurrent = Math.max(1, options.maxConcurrent ?? 2);
+  const retryBackoffBaseMs = options.retryBackoffBaseMs ?? 60_000;
+  const retryBackoffMaxMs = options.retryBackoffMaxMs ?? 30 * 60_000;
+  const retryStates = new Map<string, { attempt: number; nextAt: number }>();
+  const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const waiters: Array<() => void> = [];
+  let active = 0;
+
+  function networkAvailable(): boolean {
+    if (options.online) return options.online();
+    return Object.values(networkInterfaces()).some((addresses) =>
+      addresses?.some(
+        (address) =>
+          address.internal === false &&
+          (address.family === "IPv4" || address.family === "IPv6"),
+      ),
+    );
+  }
+  async function acquire(): Promise<void> {
+    if (active < maxConcurrent) {
+      active += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => waiters.push(resolve));
+    active += 1;
+  }
+  function release(): void {
+    active -= 1;
+    waiters.shift()?.();
+  }
+  function armRetryTimer(): void {
+    if (timer || closed) return;
+    // A jittered floor, not a fixed interval: every Host with an admitted
+    // Project polls for remote catch-up, and they must not stampede together.
+    const delay = retryMs + Math.round(Math.random() * retryJitterMs);
+    timer = setTimeout(() => {
+      timer = undefined;
+      void retry({ catchUp: true }).catch((error) => {
+        console.error("[project-cloud-sync] retry", error);
+        // The scan failed before it could decide eligibility; keep polling.
+        if (!closed) armRetryTimer();
+      });
+    }, delay);
+    timer.unref?.();
+  }
+  function stopRetryTimer(): void {
+    if (!timer) return;
+    clearTimeout(timer);
+    timer = undefined;
+  }
+  function clearProjectRetry(projectId: string): void {
+    const pending = retryTimers.get(projectId);
+    if (pending) clearTimeout(pending);
+    retryTimers.delete(projectId);
+  }
+  async function candidateAdmissions(): Promise<ProjectCloudAdmission[]> {
+    const replicaId = await getLocalReplicaId(options.dataDir);
+    if (options.metadata.listAdmissions)
+      return options.metadata.listAdmissions(replicaId);
+    // Test/embedded callers may only provide the legacy list; keep their
+    // behaviour without making the production Host load the whole snapshot.
+    const admissions: ProjectCloudAdmission[] = [];
+    for (const projectId of await options.metadata.list()) {
+      const admission = await store.getProjectCloudAdmission(
+        projectId,
+        replicaId,
+      );
+      if (admission && admission.status !== "local-only")
+        admissions.push(admission);
+    }
+    return admissions;
+  }
+  async function scheduleBackoff(projectId: string): Promise<void> {
+    const replicaId = await getLocalReplicaId(options.dataDir);
+    const state = await store.getProjectCloudSyncState(projectId, replicaId);
+    // Any admitted Project that was just synced (admission, mutation, retry)
+    // must leave the catch-up poll armed, including a run that ended ready.
+    if (
+      state &&
+      state.admission.status !== "local-only" &&
+      !isActionRequiredSyncFailure(state.admission)
+    )
+      armRetryTimer();
+    if (
+      !state ||
+      state.admission.status === "local-only" ||
+      state.admission.status !== "failed" ||
+      isActionRequiredSyncFailure(state.admission)
+    ) {
+      retryStates.delete(projectId);
+      clearProjectRetry(projectId);
+      return;
+    }
+    // A failure is already persisted as coded status/lastError; backoff only
+    // decides when the next automatic attempt starts.
+    const attempt = (retryStates.get(projectId)?.attempt ?? 0) + 1;
+    const base = Math.min(
+      retryBackoffMaxMs,
+      retryBackoffBaseMs * 2 ** Math.min(attempt - 1, 8),
+    );
+    const delay = Math.max(0, Math.round(base * (0.5 + Math.random())));
+    retryStates.set(projectId, { attempt, nextAt: Date.now() + delay });
+    clearProjectRetry(projectId);
+    const pending = setTimeout(() => {
+      retryTimers.delete(projectId);
+      if (closed) return;
+      if (!networkAvailable()) {
+        void retry().catch((error) =>
+          console.error("[project-cloud-sync] retry", error),
+        );
+        return;
+      }
+      void schedule(projectId);
+    }, delay);
+    pending.unref?.();
+    retryTimers.set(projectId, pending);
+  }
+
   function schedule(projectId: string): Promise<void> {
     if (closed) return Promise.resolve();
     queued.add(projectId);
     const existing = runs.get(projectId);
     if (existing) return existing;
-    const task = Promise.resolve()
-      .then(async () => {
+    const task = (async () => {
+      await acquire();
+      try {
         while (!closed && queued.delete(projectId)) await runOnce(projectId);
-      })
+      } finally {
+        release();
+      }
+    })()
       .catch((error) => {
         console.error(`[project-cloud-sync] ${projectId}`, error);
       })
+      .then(async () => {
+        if (!closed) await scheduleBackoff(projectId);
+      })
+      .catch((error) => {
+        console.error(
+          `[project-cloud-sync] ${projectId} retry scheduling`,
+          error,
+        );
+      })
       .finally(() => {
         runs.delete(projectId);
+        // A trigger that arrived while the last run/backoff was settling must
+        // not be lost: start a fresh task now that this Project has no run.
+        if (!closed && queued.has(projectId)) void schedule(projectId);
       });
     runs.set(projectId, task);
     return task;
   }
   async function invalidate(projectId: string) {
+    retryStates.delete(projectId);
+    clearProjectRetry(projectId);
     const replicaId = await getLocalReplicaId(options.dataDir);
     for (;;) {
       const state = await store.getProjectCloudSyncState(projectId, replicaId);
@@ -578,41 +733,59 @@ export function createLocalProjectCloudSync(
       )
         break;
     }
+    armRetryTimer();
     void schedule(projectId);
   }
-  async function retry() {
-    for (const projectId of await options.metadata.list()) {
-      const replicaId = await getLocalReplicaId(options.dataDir);
-      const admission = await store.getProjectCloudAdmission(
-        projectId,
-        replicaId,
-      );
-      // Auth/disk/size failures cannot fix themselves; the user's Retry sync
-      // (invalidate) resumes them. Retrying every 30 s would only loop.
-      if (
-        admission &&
+  async function retry(
+    trigger: { catchUp?: boolean } = {},
+  ): Promise<number> {
+    if (closed) return 0;
+    const admissions = (await candidateAdmissions()).filter(
+      (admission) =>
         admission.status !== "local-only" &&
-        !isActionRequiredSyncFailure(admission)
-      )
-        void schedule(projectId);
+        // Auth/disk/size failures cannot fix themselves; the user's Retry sync
+        // (invalidate) resumes them.
+        !isActionRequiredSyncFailure(admission),
+    );
+    if (admissions.length === 0) {
+      stopRetryTimer();
+      return 0;
     }
+    // Any syncable admission keeps the timer armed. A ready Project is neither
+    // retried from a local trigger (invalidate already schedules it) nor at
+    // boot, but the catch-up tick must re-pull it: a snapshot/metadata change
+    // made on another device is otherwise invisible until a local mutation.
+    armRetryTimer();
+    if (!networkAvailable()) return 0;
+    const now = Date.now();
+    let scheduled = 0;
+    for (const admission of admissions) {
+      if (admission.status === "ready") {
+        if (!trigger.catchUp) continue;
+      } else {
+        const state = retryStates.get(admission.projectId);
+        if (state && state.nextAt > now) continue;
+      }
+      scheduled += 1;
+      void schedule(admission.projectId);
+    }
+    return scheduled;
   }
   return {
     schedule,
     invalidate,
     async start() {
+      // In the Host this runs after host.listening; it must never gate local
+      // requests. No timer is armed while every Project is local-only.
       await retry();
-      timer = setInterval(() => {
-        void retry().catch((error) =>
-          console.error("[project-cloud-sync] retry", error),
-        );
-      }, options.retryMs ?? 30_000);
-      timer.unref?.();
     },
     async close() {
       closed = true;
       shutdown.abort(new Error("Project sync Host stopped"));
-      if (timer) clearInterval(timer);
+      stopRetryTimer();
+      for (const projectId of [...retryTimers.keys()])
+        clearProjectRetry(projectId);
+      retryStates.clear();
       await Promise.all(runs.values());
     },
   };

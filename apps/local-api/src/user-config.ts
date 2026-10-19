@@ -276,6 +276,31 @@ async function readText(path: string): Promise<string | null> {
   }
 }
 
+/** Parsed config reuse keyed by file identity; any write/rename changes it. */
+const configRootCache = new Map<
+  string,
+  { identity: string; root: Record<string, unknown> }
+>();
+const credentialsCache = new Map<
+  string,
+  { identity: string; value: Record<string, unknown> }
+>();
+
+async function fileIdentity(path: string): Promise<string | null> {
+  try {
+    const info = await stat(path);
+    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function invalidateConfigCache(path: string): void {
+  configRootCache.delete(path);
+  credentialsCache.delete(path);
+}
+
 async function atomicWrite(path: string, contents: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -454,18 +479,29 @@ export function createClashUserConfigStore(
 
     async getSection<T>(name: string) {
       await ensureRootMigrated();
-      const source = await readText(configPath);
-      if (!source) return null;
-      const document = parseDocument(source);
-      if (document.errors.length > 0) {
-        throw new Error(
-          `Cannot read config.yaml: ${document.errors[0]?.message ?? "invalid YAML"}`,
-        );
+      const identity = await fileIdentity(configPath);
+      if (!identity) {
+        configRootCache.delete(configPath);
+        return null;
       }
-      const root = document.toJS() as unknown;
-      validateClashUserConfig(root);
+      let root: Record<string, unknown>;
+      const cached = configRootCache.get(configPath);
+      if (cached?.identity === identity) root = cached.root;
+      else {
+        const source = await readText(configPath);
+        if (!source) return null;
+        const document = parseDocument(source);
+        if (document.errors.length > 0) {
+          throw new Error(
+            `Cannot read config.yaml: ${document.errors[0]?.message ?? "invalid YAML"}`,
+          );
+        }
+        root = document.toJS() as Record<string, unknown>;
+        validateClashUserConfig(root);
+        configRootCache.set(configPath, { identity, root });
+      }
       if (!(name in root)) return null;
-      return root[name] as T;
+      return structuredClone(root[name]) as T;
     },
 
     async setSection(name, value) {
@@ -477,6 +513,7 @@ export function createClashUserConfigStore(
             configPath,
             serializeYamlSection(source, name, value),
           );
+          invalidateConfigCache(configPath);
         });
       });
     },
@@ -493,17 +530,27 @@ export function createClashUserConfigStore(
           const value = update(root[name]);
           validateClashUserConfig({ ...root, [name]: value });
           await atomicWrite(configPath, serializeYamlSection(source, name, value));
+          invalidateConfigCache(configPath);
         });
       });
     },
 
     async getCredentials() {
       await ensureRootMigrated();
+      const identity = await fileIdentity(credentialsPath);
+      if (!identity) {
+        credentialsCache.delete(credentialsPath);
+        return {};
+      }
+      const cached = credentialsCache.get(credentialsPath);
+      if (cached?.identity === identity) return { ...cached.value };
       const source = await readText(credentialsPath);
       if (!source) return {};
       try {
         const parsed = JSON.parse(source) as unknown;
-        return isRecord(parsed) ? parsed : {};
+        const value = isRecord(parsed) ? parsed : {};
+        credentialsCache.set(credentialsPath, { identity, value });
+        return { ...value };
       } catch {
         throw new Error("Cannot read credentials.json: invalid JSON");
       }
@@ -517,6 +564,7 @@ export function createClashUserConfigStore(
             credentialsPath,
             await serializeCredentials(credentialsPath, update),
           );
+          invalidateConfigCache(credentialsPath);
         });
       });
     },

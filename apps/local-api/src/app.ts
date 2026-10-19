@@ -86,6 +86,7 @@ import {
   createBoundedRetryPolicy,
   defaultRuntimeCapabilities,
   durableRunIdempotencyKey,
+  projectCloudSyncFailureMessage,
   visibleUserPromptText,
   type DurableRunRecord,
   type ProjectRecoveryPolicy,
@@ -1314,6 +1315,26 @@ function createDb(dataDir: string, onProjectChanged?: (projectId: string) => Pro
     return metadataStore.getLatestProjectCloudAdmission(projectId);
   }
 
+  async function getProjectCloudSyncState(
+    projectId: string,
+    localReplicaId: string,
+  ) {
+    await writeQueue.catch(() => undefined);
+    return metadataStore.getProjectCloudSyncState(projectId, localReplicaId);
+  }
+
+  async function compareAndSetProjectCloudAdmission(
+    expected: Parameters<
+      typeof metadataStore.compareAndSetProjectCloudAdmission
+    >[0],
+    next: Parameters<
+      typeof metadataStore.compareAndSetProjectCloudAdmission
+    >[1],
+  ) {
+    await writeQueue.catch(() => undefined);
+    return metadataStore.compareAndSetProjectCloudAdmission(expected, next);
+  }
+
   async function upsertProjectCloudAdmission(
     admission: Parameters<
       typeof metadataStore.upsertProjectCloudAdmission
@@ -1345,6 +1366,8 @@ function createDb(dataDir: string, onProjectChanged?: (projectId: string) => Pro
     deleteSessionEvents,
     getProjectCloudAdmission,
     getLatestProjectCloudAdmission,
+    getProjectCloudSyncState,
+    compareAndSetProjectCloudAdmission,
     upsertProjectCloudAdmission,
   };
 }
@@ -4452,14 +4475,27 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         });
       },
     },
+    onError: async (projectId, error) => {
+      // The mirror is a cloud plane, so a failure belongs on the per-Project
+      // cloud admission the UI already reads; never leave it log-only.
+      const replicaId = await localReplicaId();
+      for (;;) {
+        const state = await db.getProjectCloudSyncState(projectId, replicaId);
+        if (!state || state.admission.status === "local-only") return;
+        if (
+          await db.compareAndSetProjectCloudAdmission(state, {
+            ...state.admission,
+            status: "failed",
+            updatedAt: new Date().toISOString(),
+            lastError: projectCloudSyncFailureMessage(error),
+          })
+        )
+          return;
+      }
+    },
   });
-  const syncProjectMetadataInBackground = (projectId: string) => {
-    void projectMetadataReplication.sync(projectId).catch((error) => {
-      console.error(
-        `[local-api] failed to mirror Project metadata for ${projectId}`,
-        error,
-      );
-    });
+  const scheduleProjectMetadataSync = (projectId: string) => {
+    projectMetadataReplication.schedule(projectId);
   };
   const publicAssetStorage =
     options.publicAssetStorage ??
@@ -10074,9 +10110,8 @@ const ForkPointBodySchema = z.object({
           : archived === "include"
             ? state.projects
             : activeProjects(state);
-      for (const project of visibleProjects) {
-        syncProjectMetadataInBackground(project.id);
-      }
+      // Listing is a pure local read: metadata mirrors run only for a real
+      // mutation, never because a Dashboard refreshed.
       return c.json({
         projects: await Promise.all(
           visibleProjects.map(async (project) => {
@@ -10210,7 +10245,7 @@ const ForkPointBodySchema = z.object({
         reason: "v1 project create",
       }),
     );
-    syncProjectMetadataInBackground(project.id);
+    scheduleProjectMetadataSync(project.id);
     return c.json(
       {
         id: project.id,
@@ -10228,7 +10263,6 @@ const ForkPointBodySchema = z.object({
     const state = await db.load();
     const project = findActiveProject(state, projectId, userId);
     if (!project) return c.json({ error: "not found" }, 404);
-    syncProjectMetadataInBackground(project.id);
     return c.json(await readProjectStatus(projectId));
   });
 
@@ -10327,7 +10361,7 @@ const ForkPointBodySchema = z.object({
       // Metadata is a separate product plane from the Loro byte stream. Kick
       // its idempotent mirror as part of admission so a freshly admitted
       // Project is visible remotely even before its next ordinary mutation.
-      syncProjectMetadataInBackground(projectId);
+      scheduleProjectMetadataSync(projectId);
       return c.json(ProjectCloudAdmissionResponseSchema.parse(response), 201);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -10500,7 +10534,6 @@ const ForkPointBodySchema = z.object({
       ? state.projects.find((candidate) => candidate.id === projectId)
       : findActiveProject(state, projectId);
     if (!project) return c.json({ error: "Project not found" }, 404);
-    syncProjectMetadataInBackground(project.id);
     // A deleted Project read is a recovery-control-plane operation. Do not
     // materialize legacy media or require its bytes merely to obtain the
     // current read proof for restore/purge; missing old blobs must not make a
@@ -10624,7 +10657,7 @@ const ForkPointBodySchema = z.object({
           reason: "project update",
         }),
       );
-      syncProjectMetadataInBackground(projectId);
+      scheduleProjectMetadataSync(projectId);
     }
     return c.json(result.body, result.status);
   });
@@ -12169,7 +12202,7 @@ const ForkPointBodySchema = z.object({
             reason: "project soft delete",
           }),
         );
-        syncProjectMetadataInBackground(projectId);
+        scheduleProjectMetadataSync(projectId);
       }
     }
     return c.json(result.body, result.status);
@@ -12250,7 +12283,7 @@ const ForkPointBodySchema = z.object({
             reason: "project restore",
           }),
         );
-        syncProjectMetadataInBackground(projectId);
+        scheduleProjectMetadataSync(projectId);
       }
     }
     return c.json(result.body, result.status);

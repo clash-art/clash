@@ -25,12 +25,59 @@ export interface LocalProjectMetadataReplicationOptions {
     "getPublicConfig" | "resolveRemotePersistence" | "getProjectCloudAdmission"
   >;
   local: LocalProjectMetadataStore;
+  /** Coalesce mutation-driven mirrors; one remote sync per quiet period. */
+  debounceMs?: number;
+  /** Persist a coded per-Project failure; never leave a log-only drift. */
+  onError?(projectId: string, error: unknown): void | Promise<void>;
 }
 
 export function createLocalProjectMetadataReplication(
   options: LocalProjectMetadataReplicationOptions,
 ) {
   const inFlight = new Map<string, Promise<LocalProjectMetadataSyncResult>>();
+  const pending = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let draining: Promise<void> | undefined;
+
+  function arm(): void {
+    if (timer || draining) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      void drain();
+    }, options.debounceMs ?? 300);
+    timer.unref?.();
+  }
+
+  async function drain(): Promise<void> {
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    if (draining) return draining;
+    const projectIds = [...pending];
+    pending.clear();
+    if (projectIds.length === 0) return;
+    draining = (async () => {
+      for (const projectId of projectIds) {
+        try {
+          await sync(projectId);
+        } catch (error) {
+          try {
+            await options.onError?.(projectId, error);
+          } catch (hookError) {
+            console.error(
+              `[local-api] failed to record Project metadata sync failure for ${projectId}`,
+              hookError,
+            );
+          }
+        }
+      }
+    })().finally(() => {
+      draining = undefined;
+      if (pending.size > 0) arm();
+    });
+    return draining;
+  }
 
   async function run(
     projectId: string,
@@ -48,8 +95,7 @@ export function createLocalProjectMetadataReplication(
       );
       if (
         !admission ||
-        admission.status === "local-only" ||
-        admission.status === "failed"
+        admission.status === "local-only"
       ) {
         return { status: "disabled" };
       }
@@ -80,20 +126,37 @@ export function createLocalProjectMetadataReplication(
     }).sync();
   }
 
+  function sync(
+    projectId: string,
+  ): Promise<LocalProjectMetadataSyncResult> {
+    const existing = inFlight.get(projectId);
+    if (existing) return existing;
+    const current = run(projectId).finally(() => {
+      if (inFlight.get(projectId) === current) inFlight.delete(projectId);
+    });
+    inFlight.set(projectId, current);
+    return current;
+  }
+
   return {
-    sync(projectId: string): Promise<LocalProjectMetadataSyncResult> {
-      const existing = inFlight.get(projectId);
-      if (existing) return existing;
-      const current = run(projectId).finally(() => {
-        if (inFlight.get(projectId) === current) inFlight.delete(projectId);
-      });
-      inFlight.set(projectId, current);
-      return current;
+    sync,
+    /** Mutation trigger: coalesce a burst into one remote sync per Project. */
+    schedule(projectId: string): void {
+      pending.add(projectId);
+      arm();
     },
     /** Settles once every sync started so far has finished, whatever its outcome. */
     async idle(): Promise<void> {
-      while (inFlight.size > 0) {
-        await Promise.allSettled([...inFlight.values()]);
+      for (;;) {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        await drain();
+        while (inFlight.size > 0) {
+          await Promise.allSettled([...inFlight.values()]);
+        }
+        if (pending.size === 0 && !draining && !timer) return;
       }
     },
   };

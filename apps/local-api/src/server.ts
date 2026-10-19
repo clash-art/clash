@@ -2,6 +2,7 @@ import { createCloudLogin } from "./cloud-login.js";
 import { createCloudAccounts } from "./cloud-accounts.js";
 import { createHostPluginScopes } from "./host-plugin-scope.js";
 import { createLocalProjectCloudSync } from "./project-cloud-sync.js";
+import { getLocalReplicaId } from "./local-replica-identity.js";
 import { localProjectSyncMetadata } from "./app.js";
 import { registerProjectRenderer } from "./project-renderer.js";
 import { createStructuredLogger } from "@clash/shared-runtime/logging";
@@ -2192,6 +2193,7 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     metadata: {
       // Deleted Projects stay listed: their tombstone still replicates, which is how a remote restore arrives.
       list: async () => (await cloudSyncMetadata.load()).projects.map(project => project.id),
+      listAdmissions: localReplicaId => cloudSyncMetadata.listProjectCloudAdmissions(localReplicaId),
       read: async projectId => {
         const project = (await cloudSyncMetadata.load()).projects.find(project => project.id === projectId);
         return project ? localProjectSyncMetadata(project) : null;
@@ -2201,7 +2203,6 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
     },
     token: (baseUrl,userId) => cloudAccounts.resolveToken(baseUrl,{env:process.env,expectedUserId:userId}),
   });
-  await projectCloudSync.start();
   let resolveListening!: (server: ReturnType<typeof serve>) => void;
   let rejectListening!: (error: unknown) => void;
   let settled = false;
@@ -2227,6 +2228,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         }),
       );
       hostLog.info("host.listening", { port: info.port, profile: discoveryProfile, hostId: pendingDiscoveryHostId });
+      // Cloud admission scan and any admitted Project sync start only after
+      // the local Host is listening; local requests never wait for the cloud.
+      void projectCloudSync?.start().catch((error) => {
+        hostLog.warn("host.project_cloud_sync_start_failed", { error });
+      });
       // Optional-provider probe: after listen, never before. Requests that need it share this
       // single flight; the Host stays reachable while the child process is still running.
       void codexImagegen.start().then((result) => {
