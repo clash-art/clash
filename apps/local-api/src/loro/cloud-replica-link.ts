@@ -229,7 +229,8 @@ export class LoroCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
 
     socket.on("open", () => {
       clearHandshakeTimer();
-      this.retry = 0;
+      // Backoff resets only on a completed join (onJoined), so a server that
+      // accepts and immediately drops the socket still backs off.
       this.emitState({ state: "connected" });
       session.join();
     });
