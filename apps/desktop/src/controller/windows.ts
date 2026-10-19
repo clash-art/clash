@@ -1,6 +1,6 @@
 import { createLogRecord, parseLogRecord } from "@clash/shared-runtime/logging";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, normalize, relative } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import {
   app,
@@ -9,6 +9,7 @@ import {
   ipcMain,
   Menu,
   nativeTheme,
+  net,
   protocol,
   shell,
 } from "electron";
@@ -18,10 +19,16 @@ import type {
 } from "electron";
 
 import {
-  directorVideoBytes,
+  directorVideoSourceUrl,
+  exportDirectorVideoToFile,
   safeDirectorVideoExportName,
   type DesktopDirectorVideoExportRequest,
 } from "../director-video-export";
+import {
+  codedError,
+  desktopIpcResult,
+  type DesktopIpcResult,
+} from "../desktop-ipc";
 import {
   detectNleAvailability,
   materializeNleHandoff,
@@ -29,6 +36,7 @@ import {
   type DesktopNleHandoffRequest,
 } from "../nle-handoff";
 import { resolveWebDistDir } from "../paths";
+import { readWebAsset } from "../web-asset-protocol";
 import {
   authorizeProviderInWindow,
   type ProviderOAuthAuthorizationRequest,
@@ -50,33 +58,6 @@ import {
   isProjectBrowserUrl,
   PROJECT_BROWSER_OPEN_TAB_CHANNEL,
 } from "../project-browser-events";
-
-function contentTypeForPath(path: string): string {
-  if (path.endsWith(".html")) return "text/html";
-  if (path.endsWith(".js")) return "text/javascript";
-  if (path.endsWith(".css")) return "text/css";
-  if (path.endsWith(".wasm")) return "application/wasm";
-  if (path.endsWith(".svg")) return "image/svg+xml";
-  if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
-  return "application/octet-stream";
-}
-
-async function readWebAsset(distDir: string, pathname: string): Promise<Response> {
-  const cleanPath = pathname === "/" ? "/index.html" : pathname;
-  const candidate = normalize(join(distDir, cleanPath));
-  const rel = relative(distDir, candidate);
-  const safeCandidate = rel.startsWith("..") || rel === ".." ? join(distDir, "index.html") : candidate;
-
-  try {
-    const bytes = await readFile(safeCandidate);
-    return new Response(bytes, { headers: { "content-type": contentTypeForPath(safeCandidate) } });
-  } catch {
-    const index = join(distDir, "index.html");
-    const bytes = await readFile(index);
-    return new Response(bytes, { headers: { "content-type": "text/html" } });
-  }
-}
 
 export function createDesktopWindowController({
   moduleDir,
@@ -301,10 +282,7 @@ export function createDesktopWindowController({
       moduleDir,
       resourcesPath: process.resourcesPath,
     });
-    protocol.handle("clash", async (request) => {
-      const url = new URL(request.url);
-      return readWebAsset(distDir, url.pathname);
-    });
+    protocol.handle("clash", async (request) => readWebAsset(distDir, request));
   }
 
   function registerProjectBrowserWindowRouting(): void {
@@ -349,6 +327,19 @@ export function createDesktopWindowController({
   }
 
   function registerWindowIpc(): void {
+    const handleIpc = async <T>(
+      label: string,
+      run: () => Promise<T> | T,
+    ): Promise<DesktopIpcResult<T>> => {
+      const result = await desktopIpcResult(run);
+      if (!result.ok) {
+        log.error(
+          `[desktop:ipc] ${label} failed ${result.error.code}: ${result.error.message}`,
+        );
+      }
+      return result;
+    };
+
     ipcMain.handle("clash:new-window", async () => {
       const window = await createWindow();
       return { windowId: window.id, windowCount: windowRegistry.count() };
@@ -379,32 +370,60 @@ export function createDesktopWindowController({
       });
       return authorizeProviderInWindow(authorizationWindow, request);
     });
-    ipcMain.handle("clash:export-director-video", async (_event, request: DesktopDirectorVideoExportRequest) => {
-      const forcedPath = process.env.CLASH_DIRECTOR_E2E_VIDEO_EXPORT_PATH;
-      const save = forcedPath
-        ? { canceled: false, filePath: forcedPath }
-        : await dialog.showSaveDialog({
-            title: "Export Director camera video",
-            defaultPath: join(
-              app.getPath("videos"),
-              safeDirectorVideoExportName(request.stageName, request.cameraName),
-            ),
-            filters: [{ name: "WebM video", extensions: ["webm"] }],
-            properties: ["createDirectory", "showOverwriteConfirmation"],
-          });
-      if (save.canceled || !save.filePath) return { canceled: true };
-      await mkdir(dirname(save.filePath), { recursive: true });
-      await writeFile(save.filePath, directorVideoBytes(request.bytes));
-      return { canceled: false, outputPath: save.filePath };
-    });
-    ipcMain.handle("clash:open-in-nle", async (_event, request: DesktopNleHandoffRequest) => {
-      const documentPath = await materializeNleHandoff(
-        join(dirname(dataDir), "nle-handoffs"),
-        request,
-      );
-      await openNleDocument(request.target, documentPath);
-      return { documentPath };
-    });
+    ipcMain.handle("clash:export-director-video", async (_event, request: DesktopDirectorVideoExportRequest) => (
+      handleIpc("director video export", async () => {
+        if (
+          !request ||
+          typeof request.stageName !== "string" ||
+          typeof request.cameraName !== "string"
+        ) {
+          throw codedError(
+            "DIRECTOR_VIDEO_EXPORT_REQUEST_INVALID",
+            "Director video export requires a Stage and camera name.",
+          );
+        }
+        directorVideoSourceUrl(request.sourceUrl);
+        const forcedPath = process.env.CLASH_DIRECTOR_E2E_VIDEO_EXPORT_PATH;
+        const save = forcedPath
+          ? { canceled: false, filePath: forcedPath }
+          : await dialog.showSaveDialog({
+              title: "Export Director camera video",
+              defaultPath: join(
+                app.getPath("videos"),
+                safeDirectorVideoExportName(request.stageName, request.cameraName),
+              ),
+              filters: [{ name: "WebM video", extensions: ["webm"] }],
+              properties: ["createDirectory", "showOverwriteConfirmation"],
+            });
+        if (save.canceled || !save.filePath) return { canceled: true as const };
+        await mkdir(dirname(save.filePath), { recursive: true });
+        let hostOrigin: string | undefined;
+        try {
+          hostOrigin = new URL(currentRuntime().apiBaseUrl).origin;
+        } catch {
+          hostOrigin = undefined;
+        }
+        const result = await exportDirectorVideoToFile(
+          { targetPath: save.filePath, sourceUrl: request.sourceUrl },
+          {
+            fetchImpl: net.fetch,
+            ...(hostOrigin ? { localFileOrigin: hostOrigin } : {}),
+          },
+        );
+        return { canceled: false as const, outputPath: result.outputPath };
+      })
+    ));
+    ipcMain.handle("clash:open-in-nle", async (_event, request: DesktopNleHandoffRequest) => (
+      handleIpc("open in NLE", async () => {
+        const documentPath = await materializeNleHandoff(
+          join(dirname(dataDir), "nle-handoffs"),
+          request,
+          { fetch: net.fetch },
+        );
+        await openNleDocument(request.target, documentPath);
+        return { documentPath };
+      })
+    ));
   }
 
   function registerHostBindings(): void {

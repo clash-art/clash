@@ -1,9 +1,13 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+
+import { CodedError, codedError } from './desktop-ipc';
+import { writeUrlToFile, type TransferFetch } from './file-transfer';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,33 +118,77 @@ function isRemoteSource(source: string): boolean {
   return /^https?:\/\//i.test(source);
 }
 
+export const NLE_HANDOFF_DOWNLOAD_TIMEOUT_MS = 30_000;
+
+export type MaterializeNleHandoffOptions = {
+  fetch?: TransferFetch;
+  downloadTimeoutMs?: number;
+};
+
+async function downloadRemoteAsset(
+  source: string,
+  targetPath: string,
+  options: MaterializeNleHandoffOptions,
+): Promise<void> {
+  await writeUrlToFile(source, targetPath, {
+    timeoutMs: options.downloadTimeoutMs ?? NLE_HANDOFF_DOWNLOAD_TIMEOUT_MS,
+    fetchImpl: options.fetch,
+    code: 'NLE_HANDOFF_DOWNLOAD_FAILED',
+    label: 'handoff media',
+  });
+}
+
 export async function materializeNleHandoff(
   rootDir: string,
   request: DesktopNleHandoffRequest,
-  fetchAsset: (source: string) => Promise<ArrayBuffer> = async (source) => {
-    const response = await fetch(source);
-    if (!response.ok) throw new Error(`Could not download handoff media (${response.status})`);
-    return response.arrayBuffer();
-  },
+  options: MaterializeNleHandoffOptions = {},
 ): Promise<string> {
   const handoffName = safeHandoffName(request.timelineName, request.revisionId);
   const handoffDir = join(rootDir, handoffName);
-  const mediaDir = join(handoffDir, 'media');
-  await mkdir(mediaDir, { recursive: true });
+  const tempDir = join(rootDir, `.${handoffName}.${randomUUID()}.partial`);
+  const tempMediaDir = join(tempDir, 'media');
+  const finalMediaDir = join(handoffDir, 'media');
+  const documentName = `${handoffName}.${request.extension}`;
+  try {
+    await mkdir(tempMediaDir, { recursive: true });
 
-  const materialized: Array<{ token: string; path: string }> = [];
-  for (const [index, asset] of request.assets.entries()) {
-    const uniqueFilename = `${String(index + 1).padStart(3, '0')}-${asset.filename}`;
-    const path = materializedAssetPath(mediaDir, asset.source, uniqueFilename);
-    if (isRemoteSource(asset.source)) {
-      await writeFile(path, Buffer.from(await fetchAsset(asset.source)));
+    const materialized: Array<{ token: string; path: string }> = [];
+    for (const [index, asset] of request.assets.entries()) {
+      const uniqueFilename = `${String(index + 1).padStart(3, '0')}-${asset.filename}`;
+      const tempPath = materializedAssetPath(
+        tempMediaDir,
+        asset.source,
+        uniqueFilename,
+      );
+      const finalPath = materializedAssetPath(
+        finalMediaDir,
+        asset.source,
+        uniqueFilename,
+      );
+      if (isRemoteSource(asset.source)) {
+        await downloadRemoteAsset(asset.source, tempPath, options);
+      }
+      materialized.push({ token: asset.token, path: finalPath });
     }
-    materialized.push({ token: asset.token, path });
-  }
 
-  const documentPath = join(handoffDir, `${handoffName}.${request.extension}`);
-  await writeFile(documentPath, replaceAssetTokens(request.content, materialized), 'utf8');
-  return documentPath;
+    const documentPath = join(tempDir, documentName);
+    await writeFile(
+      documentPath,
+      replaceAssetTokens(request.content, materialized),
+      'utf8',
+    );
+    await rm(handoffDir, { recursive: true, force: true });
+    await rename(tempDir, handoffDir);
+    return join(handoffDir, documentName);
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    if (error instanceof CodedError) throw error;
+    throw codedError(
+      'NLE_HANDOFF_FAILED',
+      'Could not prepare the NLE handoff.',
+      error,
+    );
+  }
 }
 
 export async function openNleDocument(target: DesktopNleTarget, documentPath: string): Promise<void> {

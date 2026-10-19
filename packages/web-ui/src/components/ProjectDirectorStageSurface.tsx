@@ -2004,6 +2004,7 @@ export function ProjectDirectorStageSurface({
   const [modelLibraryQuery, setModelLibraryQuery] = useState("");
   const [captureStatus, setCaptureStatus] = useState<"idle" | "capturing" | "error">("idle");
   const [videoExportStatus, setVideoExportStatus] = useState<"idle" | "exporting" | "error">("idle");
+  const [videoExportError, setVideoExportError] = useState("");
   const [uploadedPanoramas, setUploadedPanoramas] = useState<DirectorStageUploadedPanorama[]>([]);
   const [showPanoramaBackground, setShowPanoramaBackground] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(true);
@@ -2447,6 +2448,7 @@ export function ProjectDirectorStageSurface({
   const exportDirectorVideo = async (mode: DirectorStageVideoExportMode) => {
     const viewport = viewportRef.current;
     if (!viewportReady || !viewport || !onExportVideo || videoExportStatus === "exporting") return;
+    setVideoExportError("");
     const exportPlan = createDirectorVideoExportPlan({
       state,
       aspectRatio,
@@ -2529,6 +2531,9 @@ export function ProjectDirectorStageSurface({
       setVideoExportStatus("idle");
     } catch (error) {
       console.error("[Director Stage] camera video export failed", error);
+      setVideoExportError(
+        error instanceof Error ? error.message : "Director video export failed.",
+      );
       setVideoExportStatus("error");
     }
   };
@@ -4720,6 +4725,16 @@ export function ProjectDirectorStageSurface({
       aria-label={`${stage.name} Director Stage`}
       className="absolute inset-0 z-10 min-h-0 overflow-hidden bg-warm-page"
     >
+      {videoExportError ? (
+        <div
+          role="alert"
+          data-director-video-export-error=""
+          title={videoExportError}
+          className="pointer-events-none absolute left-1/2 top-2 z-30 max-w-[min(36rem,80%)] -translate-x-1/2 truncate rounded-md border border-[var(--clash-director-danger)] bg-[var(--clash-director-panel)] px-2.5 py-1 text-[10px] text-[var(--clash-director-danger)] shadow-sm"
+        >
+          {videoExportError}
+        </div>
+      ) : null}
       <div
         className="absolute inset-y-0 left-0 min-w-0 overflow-hidden motion-reduce:transition-none"
         style={{ right: rightInset, transition: "right 240ms cubic-bezier(0.22, 1, 0.36, 1)" }}
