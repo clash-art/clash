@@ -309,6 +309,8 @@ describe("desktop startup test suite", () => {
     const preload = readText("src/preload.ts");
 
     expect(main).toContain('ipcMain.handle("clash:export-director-video"');
+    expect(main).not.toContain("directorVideoBytes");
+    expect(main).toContain("exportDirectorVideoToFile");
     expect(main).toContain("safeDirectorVideoExportName");
     expect(main).toContain(
       'filters: [{ name: "WebM video", extensions: ["webm"] }]',

@@ -137,6 +137,8 @@ import {
   ProjectActionRunSchema,
 } from "@clash/shared-types";
 import { parseGeneratorDraftProjection } from "../lib/generatorDraftEditor";
+import { requestDirectorVideoExport } from "../lib/directorVideoExportClient";
+import { DesktopIpcError } from "../lib/desktopIpc";
 import { saveStoryboardViewState } from "../lib/storyboardViewState";
 import { ImageEditorProvider } from "./ImageEditorContext";
 import { VideoClipperProvider } from "./VideoClipperContext";
@@ -6308,6 +6310,7 @@ export default function ProjectEditor({
         render: DirectorStageVideoExportInput["renders"][number];
         camera: DirectorStageVideoExportInput["state"]["cameras"][number];
         assetId: string;
+        sourceUrl: string | undefined;
         referenceStills: Array<{
           assetId: string;
           cameraId: string;
@@ -6377,6 +6380,7 @@ export default function ProjectEditor({
           render,
           camera,
           assetId: asset.id,
+          sourceUrl: asset.url,
           referenceStills,
         });
       }
@@ -6575,14 +6579,20 @@ export default function ProjectEditor({
       const preview = renderedAssets[0]!;
       const desktop = globalThis.__CLASH_DESKTOP__;
       if (desktop?.exportDirectorVideo) {
-        await desktop.exportDirectorVideo({
-          stageName: stage.name,
-          cameraName: preview.camera.name,
-          bytes: await preview.render.blob.arrayBuffer(),
-          aspectRatio: preview.render.aspectRatio,
-          durationSeconds: preview.render.durationSeconds,
-          fps: input.fps,
-        });
+        if (!preview.sourceUrl) {
+          throw new DesktopIpcError(
+            "DIRECTOR_VIDEO_EXPORT_SOURCE_INVALID",
+            "The camera video is not available from the local Host.",
+          );
+        }
+        await requestDirectorVideoExport(
+          { exportDirectorVideo: desktop.exportDirectorVideo },
+          {
+            stageName: stage.name,
+            cameraName: preview.camera.name,
+            sourceUrl: preview.sourceUrl,
+          },
+        );
         return;
       }
 

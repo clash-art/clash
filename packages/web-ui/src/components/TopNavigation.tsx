@@ -35,6 +35,7 @@ import { BrandAsset } from "./BrandAsset";
 import { AgentMotion } from "./copilot/AgentMotion";
 import { ProductNavIcon, type ProductNavIconKind } from "./ProductNavIcon";
 import { isDesktopRuntime } from "../lib/runtimeConfig";
+import type { DesktopIpcResult } from "../lib/desktopIpc";
 import {
   activateDesktopPath,
   closeDesktopTab,
@@ -64,10 +65,16 @@ declare global {
         }) => Promise<{ cancelled: boolean; callbackUrl?: string }>;
         openExternal?: (url: string) => Promise<void>;
         getNleAvailability?: () => Promise<NleAvailability[]>;
-        exportDirectorVideo?: (
+        exportDirectorVideo?: (request: {
+          stageName: string;
+          cameraName: string;
+          sourceUrl: string;
+        }) => Promise<
+          DesktopIpcResult<{ canceled: boolean; outputPath?: string }>
+        >;
+        openInNle?: (
           request: unknown,
-        ) => Promise<{ canceled: boolean; outputPath?: string }>;
-        openInNle?: (request: unknown) => Promise<{ documentPath: string }>;
+        ) => Promise<DesktopIpcResult<{ documentPath: string }>>;
       }
     | undefined;
 }

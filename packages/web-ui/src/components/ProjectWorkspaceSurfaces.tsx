@@ -60,6 +60,7 @@ import {
 import { IconButton } from "./ui/icon-button";
 import { Button } from "./ui/button";
 import { runtimeApiUrl } from "../lib/runtimeConfig";
+import { unwrapDesktopIpcResult } from "../lib/desktopIpc";
 import { hydrateTimelineTracksForNle } from "../lib/nleHandoff";
 
 export { ProjectDirectorStageSurface } from "./ProjectDirectorStageSurface";
@@ -907,14 +908,16 @@ export function ProjectTimelineEditorSurface({
         revisionId,
         timeline: handoffTimeline,
       });
-      await desktop.openInNle({
-        target,
-        timelineName: timeline.name,
-        revisionId,
-        extension: handoff.extension,
-        content: handoff.content,
-        assets: handoff.assets,
-      });
+      unwrapDesktopIpcResult(
+        await desktop.openInNle({
+          target,
+          timelineName: timeline.name,
+          revisionId,
+          extension: handoff.extension,
+          content: handoff.content,
+          assets: handoff.assets,
+        }),
+      );
     },
     [
       mediaInputs,
