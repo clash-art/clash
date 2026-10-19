@@ -67,6 +67,37 @@ describe("project cloud sync coordinator", () => {
   });
 });
 
+describe("Project sync step codes", () => {
+  it("persists which plane fell behind when the step throws an uncoded error", async () => {
+    let state = { ...base };
+    let version = 0;
+    const coordinator = createProjectCloudSyncCoordinator({
+      state: {
+        read: async () => ({ admission: state, version }),
+        compareAndSet: async (expected, next) => {
+          if (version !== expected.version) return null;
+          state = next;
+          return { admission: state, version: ++version };
+        },
+      },
+      steps: {
+        syncLoro: async () => undefined,
+        syncMetadata: async () => {
+          throw new Error("fetch failed");
+        },
+        syncResources: async () => undefined,
+      },
+    });
+    await expect(coordinator.run()).resolves.toMatchObject({
+      status: "failed",
+      error: "PROJECT_METADATA_SYNC_FAILED: fetch failed",
+    });
+    expect(state.lastError).toBe(
+      "PROJECT_METADATA_SYNC_FAILED: fetch failed",
+    );
+  });
+});
+
 describe("Project sync concurrency", () => {
   it("does not restore readiness after admission is revoked during Resource upload", async () => {
     let state = { ...base };

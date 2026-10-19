@@ -92,6 +92,7 @@ import {
   createBoundedRetryPolicy,
   defaultRuntimeCapabilities,
   durableRunIdempotencyKey,
+  PROJECT_METADATA_SYNC_FAILED,
   projectCloudSyncFailureMessage,
   visibleUserPromptText,
   type DurableRunRecord,
@@ -4577,10 +4578,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             ...state.admission,
             status: "failed",
             updatedAt: new Date().toISOString(),
-            lastError: projectCloudSyncFailureMessage(error),
+            lastError: projectCloudSyncFailureMessage(
+              error,
+              PROJECT_METADATA_SYNC_FAILED,
+            ),
           })
-        )
+        ) {
+          // Replay through the coordinator so its persisted lastError and
+          // jittered backoff own the retry, not this one-shot mirror.
+          void options.ensureProjectSync?.(projectId).catch((syncError) => {
+            console.error(
+              `[local-api] failed to schedule Project retry for ${projectId}`,
+              syncError,
+            );
+          });
           return;
+        }
       }
     },
   });

@@ -2192,6 +2192,9 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       modelCards: async () => loadLocalModelCards(options.dataDir, "local-user", await listPluginCards(), await listPluginModelBindings()),
     }),
     async projectId => { await projectCloudSync?.invalidate(projectId); },
+    async (projectId, error) => {
+      await projectCloudSync?.reportMirrorFailure(projectId, error);
+    },
   );
   const cloudSyncMetadata = createLocalMetadataStore(options.dataDir);
   projectCloudSync = createLocalProjectCloudSync({

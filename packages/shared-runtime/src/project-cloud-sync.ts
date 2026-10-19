@@ -7,6 +7,16 @@ import {
 /** Prefix of a failed admission's lastError that needs the user before retrying. */
 export const SYNC_ACTION_REQUIRED_PREFIX = "Action required: ";
 
+/**
+ * Stable codes carried by a failed cloud sync's `lastError`. They name the
+ * plane that fell behind (Loro stream, Project metadata, immutable Resources)
+ * so a caller can distinguish a cloud drift from an unrelated local failure.
+ */
+export const PROJECT_CLOUD_MIRROR_FAILED = "PROJECT_CLOUD_MIRROR_FAILED";
+export const PROJECT_METADATA_SYNC_FAILED = "PROJECT_METADATA_SYNC_FAILED";
+export const PROJECT_CLOUD_RESOURCE_SYNC_FAILED =
+  "PROJECT_CLOUD_RESOURCE_SYNC_FAILED";
+
 export function isActionRequiredSyncFailure(
   admission: Pick<ProjectCloudAdmission, "status" | "lastError">,
 ): boolean {
@@ -16,23 +26,37 @@ export function isActionRequiredSyncFailure(
   );
 }
 
-/** Map a sync step failure to the lastError shown next to "Retry sync". */
-export function projectCloudSyncFailureMessage(error: unknown): string {
+/**
+ * Map a sync step failure to the lastError shown next to "Retry sync".
+ *
+ * `fallbackCode` names the failing plane when the error has no code of its
+ * own; a coded error keeps its more specific code. The code always leads the
+ * message so the persisted, user-visible state is self-describing.
+ */
+export function projectCloudSyncFailureMessage(
+  error: unknown,
+  fallbackCode?: string,
+): string {
   const raw = error instanceof Error ? error.message : String(error);
-  const code = (error as { code?: unknown } | null)?.code;
+  const errorCode = (error as { code?: unknown } | null)?.code;
   const status = (error as { status?: unknown } | null)?.status;
+  const code =
+    typeof errorCode === "string" && errorCode.trim()
+      ? errorCode
+      : fallbackCode;
+  const labeled = code ? `${code}: ${raw}` : raw;
   const { severity, action } = classifySyncError({
-    code: typeof code === "string" ? code : undefined,
+    code: typeof errorCode === "string" ? errorCode : undefined,
     httpStatus: typeof status === "number" ? status : undefined,
   });
-  if (severity !== "user_action_required") return raw;
+  if (severity !== "user_action_required") return labeled;
   if (action === "free_disk")
-    return `${SYNC_ACTION_REQUIRED_PREFIX}this computer is out of disk space. Free some space, then choose Retry sync. (${raw})`;
+    return `${SYNC_ACTION_REQUIRED_PREFIX}this computer is out of disk space. Free some space, then choose Retry sync. (${labeled})`;
   if (action === "reauthenticate")
-    return `${SYNC_ACTION_REQUIRED_PREFIX}cloud sign-in expired or access was revoked. Sign in again, then choose Retry sync. (${raw})`;
+    return `${SYNC_ACTION_REQUIRED_PREFIX}cloud sign-in expired or access was revoked. Sign in again, then choose Retry sync. (${labeled})`;
   if (action === "reduce_size")
-    return `${SYNC_ACTION_REQUIRED_PREFIX}a file or project field is too large for cloud sync. Reduce it, then choose Retry sync. (${raw})`;
-  return `${SYNC_ACTION_REQUIRED_PREFIX}${raw}`;
+    return `${SYNC_ACTION_REQUIRED_PREFIX}a file or project field is too large for cloud sync. Reduce it, then choose Retry sync. (${labeled})`;
+  return `${SYNC_ACTION_REQUIRED_PREFIX}${labeled}`;
 }
 
 export interface ProjectCloudSyncObservation {
@@ -108,18 +132,29 @@ export function createProjectCloudSyncCoordinator(options: {
       const latest = await options.state.read();
       return latest.version === syncing.version;
     };
+    let failingCode: string | undefined;
     try {
       for (const step of [
-        options.steps.syncLoro,
-        options.steps.syncMetadata,
-        options.steps.syncResources,
+        {
+          code: PROJECT_CLOUD_MIRROR_FAILED,
+          run: options.steps.syncLoro,
+        },
+        {
+          code: PROJECT_METADATA_SYNC_FAILED,
+          run: options.steps.syncMetadata,
+        },
+        {
+          code: PROJECT_CLOUD_RESOURCE_SYNC_FAILED,
+          run: options.steps.syncResources,
+        },
       ]) {
         if (!(await stillCurrent()))
           return {
             status: (await options.state.read()).admission.status,
             changed: false,
           };
-        await step();
+        failingCode = step.code;
+        await step.run();
       }
       const committed = await options.state.compareAndSet(
         syncing,
@@ -130,7 +165,7 @@ export function createProjectCloudSyncCoordinator(options: {
         changed: !!committed,
       };
     } catch (error) {
-      const message = projectCloudSyncFailureMessage(error);
+      const message = projectCloudSyncFailureMessage(error, failingCode);
       const committed = await options.state.compareAndSet(
         syncing,
         withStatus(syncing.admission, "failed", now().toISOString(), message),
