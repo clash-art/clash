@@ -18,6 +18,7 @@ import { IconButton } from "./ui/icon-button";
 import { Card } from "./ui/card";
 import { Tooltip } from "./ui/tooltip";
 import { assetPreviewMedia } from "../features/assets/media-url";
+import type { ProjectCardError } from "../lib/types";
 import type { DashboardProjectDragData } from "./dashboardComposerDnd";
 import type { ProjectReference } from "./dashboardComposerReferences";
 
@@ -29,6 +30,7 @@ export interface ProjectWithAssets {
   assets?: ResolvedAsset[];
   canvasPreview?: ProjectCanvasPreview | null;
   canvasThumbnail?: ProjectCanvasThumbnail | null;
+  error?: ProjectCardError;
 }
 
 export interface ProjectCardProps {
@@ -439,6 +441,9 @@ export default function ProjectCard({
     )
     .sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0))
     .slice(0, 4);
+  const inspectionFailure = allAssets.find(
+    (asset) => asset.inspectionError,
+  )?.inspectionError;
   const canvasPreview = project.canvasPreview;
   const canvasThumbnail = project.canvasThumbnail;
   const hasCanvasPreview = Boolean(
@@ -502,6 +507,23 @@ export default function ProjectCard({
             {project.name || "Untitled"}
           </h3>
           <p className="mt-1 text-xs text-content-muted">{formattedDate}</p>
+          {project.error ? (
+            <p
+              role="alert"
+              title={project.error.message}
+              className="mt-1 line-clamp-2 text-xs text-red-600"
+            >
+              {project.error.code}: {project.error.message}
+            </p>
+          ) : inspectionFailure ? (
+            <p
+              role="status"
+              title={inspectionFailure.message}
+              className="mt-1 truncate text-xs text-amber-700"
+            >
+              Media facts unavailable ({inspectionFailure.code})
+            </p>
+          ) : null}
         </div>
       </Link>
 

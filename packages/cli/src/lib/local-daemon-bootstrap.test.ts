@@ -62,3 +62,28 @@ test("CLI honors an explicit API URL without starting the local daemon", async (
   assert.equal(launches, 0);
   assert.equal(env.CLASH_API_URL, "https://clash.example.test");
 });
+
+test("CLI does not retire a Host that advertises no runtime fingerprint", async () => {
+  const clashHome = await mkdtemp(join(tmpdir(), "clash-cli-daemon-unknown-"));
+  const runDir = join(clashHome, "run");
+  const env: NodeJS.ProcessEnv = { CLASH_HOME: clashHome, CLASH_PROFILE: "prod" };
+  await mkdir(runDir, { recursive: true });
+  // Desktop-style launch from an older build: no fingerprint was recorded.
+  await writeFile(join(runDir, "host.json"), JSON.stringify(active), "utf8");
+  let launches = 0;
+
+  const record = await ensureCliLocalDaemon({
+    env,
+    daemonEntryPath: "/opt/clash/local-api.cjs",
+    cliEntryPath: "/opt/clash/clash-cli.cjs",
+    runtimeFingerprint: "sha256:new",
+    probeHost: async () => ({ healthy: true, attachedClients: 1 }),
+    launch: async () => {
+      launches += 1;
+      return { pid: process.pid };
+    },
+  });
+
+  assert.equal(launches, 0);
+  assert.equal(record?.hostId, active.hostId);
+});

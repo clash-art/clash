@@ -20,6 +20,7 @@ import {
   DEFAULT_READINESS_POLL_MAX_INTERVAL_MS,
   nextReadinessPollInterval,
   type LocalDaemonLaunchResult,
+  type LocalDaemonRetirement,
 } from "./local-daemon.js";
 import {
   LOCAL_DAEMON_RUNTIME_MANIFEST_FILE,
@@ -381,7 +382,10 @@ describe("local daemon bootstrap", () => {
 
   it("gracefully replaces a healthy daemon running a different runtime artifact", async () => {
     const runDir = await mkdtemp(join(tmpdir(), "clash-daemon-replace-"));
-    const active = record({ runtimeFingerprint: "sha256:old" });
+    const active = record({
+      startedBy: "plugin",
+      runtimeFingerprint: "sha256:old",
+    });
     const replacement = record({
       hostId: "daemon-replacement",
       runtimeFingerprint: "sha256:new",
@@ -393,6 +397,7 @@ describe("local daemon bootstrap", () => {
       runDir,
       profile: "prod",
       runtimeFingerprint: "sha256:new",
+      startedBy: "plugin",
       probe: async () => true,
       retire: async (candidate) => {
         expect(candidate).toEqual(active);
@@ -409,6 +414,184 @@ describe("local daemon bootstrap", () => {
     await expect(bootstrap.ensureDaemon()).resolves.toEqual(replacement);
     expect(retires).toBe(1);
     expect(launches).toBe(1);
+  });
+
+  it("treats a Host that advertises no fingerprint as unknown, not obsolete", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "clash-daemon-unknown-"));
+    const active = record();
+    await publish(runDir, active);
+    let retires = 0;
+    let launches = 0;
+    const bootstrap = createLocalDaemonBootstrap({
+      runDir,
+      profile: "prod",
+      runtimeFingerprint: "sha256:new",
+      startedBy: "cli",
+      probe: async () => ({ healthy: true, attachedClients: 0 }),
+      retire: async () => {
+        retires += 1;
+      },
+      launch: async () => {
+        launches += 1;
+        return { pid: 999_999 };
+      },
+    });
+
+    try {
+      await expect(bootstrap.ensureDaemon()).resolves.toEqual(active);
+      expect(retires).toBe(0);
+      expect(launches).toBe(0);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it("logs and reports every replacement with the code, pids and both fingerprints", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "clash-daemon-retire-log-"));
+    const active = record({
+      startedBy: "plugin",
+      runtimeFingerprint: "sha256:old",
+    });
+    const replacement = record({
+      hostId: "daemon-replacement",
+      runtimeFingerprint: "sha256:new",
+    });
+    await publish(runDir, active);
+    const warnings: string[] = [];
+    const spy = vi.spyOn(console, "warn").mockImplementation((message) => {
+      warnings.push(String(message));
+    });
+    const events: LocalDaemonRetirement[] = [];
+    const bootstrap = createLocalDaemonBootstrap({
+      runDir,
+      profile: "prod",
+      runtimeFingerprint: "sha256:new",
+      startedBy: "cli",
+      probe: async () => ({ healthy: true, attachedClients: 0 }),
+      onRetired: (event) => events.push(event),
+      retire: async () => {
+        await rm(join(runDir, "host.json"));
+      },
+      launch: async () => {
+        await publish(runDir, replacement);
+        return { pid: replacement.pid };
+      },
+    });
+
+    try {
+      await expect(bootstrap.ensureDaemon()).resolves.toEqual(replacement);
+    } finally {
+      spy.mockRestore();
+      await rm(runDir, { recursive: true, force: true });
+    }
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        code: "LOCAL_DAEMON_RUNTIME_SUPERSEDED",
+        reason: "runtime_fingerprint_mismatch",
+        pid: active.pid,
+        clientPid: process.pid,
+        oldFingerprint: "sha256:old",
+        newFingerprint: "sha256:new",
+        attachedClients: 0,
+      }),
+    ]);
+    expect(
+      warnings.some(
+        (line) =>
+          line.includes("local_daemon.retired") &&
+          line.includes("LOCAL_DAEMON_RUNTIME_SUPERSEDED") &&
+          line.includes(`"pid":${active.pid}`) &&
+          line.includes("sha256:old") &&
+          line.includes("sha256:new"),
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses to replace a desktop-started Host that still has attached clients", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "clash-daemon-desktop-"));
+    const active = record({
+      startedBy: "desktop",
+      runtimeFingerprint: "sha256:old",
+    });
+    await publish(runDir, active);
+    let retires = 0;
+    let launches = 0;
+    const bootstrap = createLocalDaemonBootstrap({
+      runDir,
+      profile: "prod",
+      runtimeFingerprint: "sha256:new",
+      startedBy: "cli",
+      probe: async () => ({ healthy: true, attachedClients: 2 }),
+      retire: async () => {
+        retires += 1;
+      },
+      launch: async () => {
+        launches += 1;
+        return { pid: 999_999 };
+      },
+    });
+
+    try {
+      await expect(bootstrap.ensureDaemon()).rejects.toMatchObject({
+        code: "LOCAL_DAEMON_RUNTIME_MISMATCH",
+        detail: {
+          pid: active.pid,
+          startedBy: "desktop",
+          oldFingerprint: "sha256:old",
+          newFingerprint: "sha256:new",
+          attachedClients: 2,
+        },
+      });
+      expect(retires).toBe(0);
+      expect(launches).toBe(0);
+      expect(
+        (await readFile(join(runDir, "host.json"), "utf8")).length,
+      ).toBeGreaterThan(0);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces a desktop-started Host with clients only under the explicit flag", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "clash-daemon-desktop-ok-"));
+    const active = record({
+      startedBy: "desktop",
+      runtimeFingerprint: "sha256:old",
+    });
+    const replacement = record({
+      hostId: "daemon-replacement",
+      runtimeFingerprint: "sha256:new",
+    });
+    await publish(runDir, active);
+    const events: LocalDaemonRetirement[] = [];
+    const bootstrap = createLocalDaemonBootstrap({
+      runDir,
+      profile: "prod",
+      runtimeFingerprint: "sha256:new",
+      startedBy: "cli",
+      replaceForeignHost: true,
+      probe: async () => ({ healthy: true, attachedClients: 2 }),
+      onRetired: (event) => events.push(event),
+      retire: async () => {
+        await rm(join(runDir, "host.json"));
+      },
+      launch: async () => {
+        await publish(runDir, replacement);
+        return { pid: replacement.pid };
+      },
+    });
+
+    try {
+      await expect(bootstrap.ensureDaemon()).resolves.toEqual(replacement);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      code: "LOCAL_DAEMON_RUNTIME_SUPERSEDED",
+      attachedClients: 2,
+    });
   });
 
   it("actively launches when discovery is stale and waits for healthy readiness", async () => {

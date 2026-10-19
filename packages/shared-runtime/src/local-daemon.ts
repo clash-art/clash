@@ -93,15 +93,49 @@ export interface LocalDaemonBootstrap {
   close(): Promise<void>;
 }
 
+/** A health probe may also report clients the Host says are still attached. */
+export interface LocalDaemonProbeState {
+  healthy: boolean;
+  attachedClients?: number;
+}
+
+export type LocalDaemonProbeResult = boolean | LocalDaemonProbeState;
+
+/** One replacement of a healthy Host that advertises a different runtime. */
+export interface LocalDaemonRetirement {
+  code: "LOCAL_DAEMON_RUNTIME_SUPERSEDED";
+  reason: "runtime_fingerprint_mismatch";
+  /** The superseded Host. */
+  pid: number;
+  /** The client that replaced it. */
+  clientPid: number;
+  startedBy: LocalHostDiscoveryRecord["startedBy"];
+  oldFingerprint?: string;
+  newFingerprint?: string;
+  attachedClients?: number;
+}
+
 export interface LocalDaemonBootstrapOptions {
   runDir: string;
   profile: ClashRuntimeProfile;
   pidExists?: (pid: number) => boolean;
-  probe?: (record: LocalHostDiscoveryRecord) => Promise<boolean>;
+  probe?: (
+    record: LocalHostDiscoveryRecord,
+  ) => Promise<LocalDaemonProbeResult>;
   launch: () => Promise<LocalDaemonLaunchResult>;
   /** Replace a healthy host when it advertises a different executable artifact. */
   runtimeFingerprint?: string;
   retire?: (record: LocalHostDiscoveryRecord) => Promise<void>;
+  /** Which launcher this client is; used to identify a Host it did not start. */
+  startedBy?: LocalHostDiscoveryRecord["startedBy"];
+  /**
+   * Explicit opt-in to replace a Host another launcher started while it still
+   * has attached clients. Without it the bootstrap fails with
+   * LOCAL_DAEMON_RUNTIME_MISMATCH.
+   */
+  replaceForeignHost?: boolean;
+  /** Structured retirement notice, emitted after the log line. */
+  onRetired?: (event: LocalDaemonRetirement) => void;
   startupTimeoutMs?: number;
   /**
    * How long to wait for an already-running daemon to recover its health
@@ -891,12 +925,12 @@ function delay(ms: number): Promise<void> {
 
 async function defaultHealthProbe(
   record: LocalHostDiscoveryRecord,
-): Promise<boolean> {
+): Promise<LocalDaemonProbeState> {
   try {
     const response = await fetch(new URL("/health", record.endpoint), {
       signal: AbortSignal.timeout(1_000),
     });
-    if (!response.ok) return false;
+    if (!response.ok) return { healthy: false };
     const body = (await response.json()) as {
       ok?: unknown;
       mode?: unknown;
@@ -906,26 +940,38 @@ async function defaultHealthProbe(
         profile?: unknown;
         protocolVersion?: unknown;
         runtimeFingerprint?: unknown;
+        attachedClients?: unknown;
       };
     };
-    return (
-      body.ok === true &&
-      body.mode === "local" &&
-      body.host?.hostId === record.hostId &&
-      body.host.pid === record.pid &&
-      body.host.profile === (record.profile ?? "prod") &&
-      body.host.protocolVersion === record.protocolVersion &&
-      body.host.runtimeFingerprint === record.runtimeFingerprint
-    );
+    const attachedClients = body.host?.attachedClients;
+    return {
+      healthy:
+        body.ok === true &&
+        body.mode === "local" &&
+        body.host?.hostId === record.hostId &&
+        body.host.pid === record.pid &&
+        body.host.profile === (record.profile ?? "prod") &&
+        body.host.protocolVersion === record.protocolVersion &&
+        body.host.runtimeFingerprint === record.runtimeFingerprint,
+      ...(typeof attachedClients === "number" &&
+      Number.isInteger(attachedClients) &&
+      attachedClients >= 0
+        ? { attachedClients }
+        : {}),
+    };
   } catch {
-    return false;
+    return { healthy: false };
   }
 }
 
 type LocalDaemonInspection =
   | { status: "absent" }
   | { status: "healthy"; record: LocalHostDiscoveryRecord }
-  | { status: "obsolete"; record: LocalHostDiscoveryRecord }
+  | {
+      status: "obsolete";
+      record: LocalHostDiscoveryRecord;
+      attachedClients?: number;
+    }
   | { status: "unhealthy"; record: LocalHostDiscoveryRecord };
 
 function isLoopbackEndpoint(endpoint: string): boolean {
@@ -947,7 +993,9 @@ async function inspectLocalDaemon(options: {
   runDir: string;
   profile: ClashRuntimeProfile;
   pidExists: (pid: number) => boolean;
-  probe: (record: LocalHostDiscoveryRecord) => Promise<boolean>;
+  probe: (
+    record: LocalHostDiscoveryRecord,
+  ) => Promise<LocalDaemonProbeResult>;
   runtimeFingerprint?: string;
 }): Promise<LocalDaemonInspection> {
   let value: unknown;
@@ -969,16 +1017,59 @@ async function inspectLocalDaemon(options: {
   ) {
     return { status: "unhealthy", record: value };
   }
-  if (!(await options.probe(value))) {
+  const probe = await options.probe(value);
+  const healthy = typeof probe === "boolean" ? probe : probe.healthy;
+  const attachedClients =
+    typeof probe === "boolean" ? undefined : probe.attachedClients;
+  if (!healthy) {
     return { status: "unhealthy", record: value };
   }
+  // A missing advertised fingerprint is "unknown", not obsolete: an older or
+  // desktop-style launch may not have recorded one. Retiring it on absence
+  // would kill a Host this client cannot prove is stale.
   if (
-    options.runtimeFingerprint &&
+    options.runtimeFingerprint !== undefined &&
+    value.runtimeFingerprint !== undefined &&
     value.runtimeFingerprint !== options.runtimeFingerprint
   ) {
-    return { status: "obsolete", record: value };
+    return {
+      status: "obsolete",
+      record: value,
+      ...(attachedClients === undefined ? {} : { attachedClients }),
+    };
   }
   return { status: "healthy", record: value };
+}
+
+export class LocalDaemonRuntimeMismatchError extends Error {
+  readonly code = "LOCAL_DAEMON_RUNTIME_MISMATCH" as const;
+
+  constructor(
+    readonly detail: {
+      pid: number;
+      startedBy: LocalHostDiscoveryRecord["startedBy"];
+      oldFingerprint?: string;
+      newFingerprint?: string;
+      attachedClients?: number;
+    },
+  ) {
+    const clients =
+      detail.attachedClients === undefined
+        ? "an unknown number of attached clients"
+        : `${detail.attachedClients} attached client${detail.attachedClients === 1 ? "" : "s"}`;
+    super(
+      `[LOCAL_DAEMON_RUNTIME_MISMATCH] Clash Host ${detail.pid} was started by ${detail.startedBy} ` +
+        `with runtime ${detail.oldFingerprint ?? "(unknown)"} and still has ${clients}; ` +
+        `this client runs ${detail.newFingerprint ?? "(unknown)"}. The Host was left running. ` +
+        "Restart the application that started it, or pass --replace-host to replace it explicitly.",
+    );
+    this.name = "LocalDaemonRuntimeMismatchError";
+  }
+}
+
+function logLocalDaemonRetirement(event: LocalDaemonRetirement): void {
+  // One structured line so every replacement is attributable after the fact.
+  console.warn(`[local-daemon] local_daemon.retired ${JSON.stringify(event)}`);
 }
 
 async function retireLocalDaemon(
@@ -1116,6 +1207,53 @@ export function createLocalDaemonBootstrap(
     return latest;
   };
 
+  const replaceObsoleteDaemon = async (
+    inspection: Extract<LocalDaemonInspection, { status: "obsolete" }>,
+  ): Promise<void> => {
+    const record = inspection.record;
+    const attachedClients = inspection.attachedClients;
+    // A Host another launcher started is not ours to replace while its clients
+    // may still be using it. Unknown client counts are treated as attached.
+    if (
+      record.startedBy !== options.startedBy &&
+      !options.replaceForeignHost &&
+      (attachedClients === undefined || attachedClients > 0)
+    ) {
+      throw new LocalDaemonRuntimeMismatchError({
+        pid: record.pid,
+        startedBy: record.startedBy,
+        ...(record.runtimeFingerprint === undefined
+          ? {}
+          : { oldFingerprint: record.runtimeFingerprint }),
+        ...(options.runtimeFingerprint === undefined
+          ? {}
+          : { newFingerprint: options.runtimeFingerprint }),
+        ...(attachedClients === undefined ? {} : { attachedClients }),
+      });
+    }
+    const event: LocalDaemonRetirement = {
+      code: "LOCAL_DAEMON_RUNTIME_SUPERSEDED",
+      reason: "runtime_fingerprint_mismatch",
+      pid: record.pid,
+      clientPid: process.pid,
+      startedBy: record.startedBy,
+      ...(record.runtimeFingerprint === undefined
+        ? {}
+        : { oldFingerprint: record.runtimeFingerprint }),
+      ...(options.runtimeFingerprint === undefined
+        ? {}
+        : { newFingerprint: options.runtimeFingerprint }),
+      ...(attachedClients === undefined ? {} : { attachedClients }),
+    };
+    await (
+      options.retire ?? ((candidate) => retireLocalDaemon(candidate, pidExists))
+    )(record);
+    // Log only after the old process is actually gone; a failed replacement
+    // still throws and must not claim a retirement that did not happen.
+    logLocalDaemonRetirement(event);
+    options.onRetired?.(event);
+  };
+
   const establish = async (): Promise<LocalHostDiscoveryRecord> => {
     if (closed) throw new Error("Clash daemon bootstrap is closed");
     let active = await inspectDaemon();
@@ -1146,9 +1284,7 @@ export function createLocalDaemonBootstrap(
       }
       if (activeAfterLock.status === "healthy") return activeAfterLock.record;
       if (activeAfterLock.status === "obsolete") {
-        await (
-          options.retire ?? ((record) => retireLocalDaemon(record, pidExists))
-        )(activeAfterLock.record);
+        await replaceObsoleteDaemon(activeAfterLock);
         const afterRetire = await inspectDaemon();
         if (afterRetire.status !== "absent") {
           throw new Error(

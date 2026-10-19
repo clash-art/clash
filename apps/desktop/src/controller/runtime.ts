@@ -158,6 +158,10 @@ export function createDesktopRuntimeController({
         runDir,
         profile: resolveClashProfile(process.env),
         runtimeFingerprint,
+        startedBy: "desktop",
+        // Desktop owns Host lifecycle on this machine; every replacement is
+        // still logged with both fingerprints by the shared bootstrap.
+        replaceForeignHost: true,
         startupTimeoutMs: hostStartupTimeoutMs,
         // Source-watch restarts briefly leave the stable supervisor alive while
         // its HTTP child is replaced. Reuse that writer once it is healthy.

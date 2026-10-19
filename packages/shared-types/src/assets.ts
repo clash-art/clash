@@ -278,6 +278,19 @@ export type AssetRepresentationFailure = z.infer<
   typeof AssetRepresentationFailureSchema
 >;
 
+/** A Host byte-probe that could not produce media facts for otherwise readable bytes. */
+export let AssetInspectionFailureSchema = lazySchema(() => (
+  z
+    .object({
+      code: z.enum(["ASSET_INSPECTION_FAILED"]),
+      message: z.string().trim().min(1),
+    })
+    .strict()
+), (real) => { AssetInspectionFailureSchema = real; });
+export type AssetInspectionFailure = z.infer<
+  typeof AssetInspectionFailureSchema
+>;
+
 /** One read-only Asset view resolved by the current Host. URLs are projections, never identity. */
 export let ResolvedAssetSchema = lazySchema(() => (
 z
@@ -316,6 +329,11 @@ z
      * waveform, proxy). The original bytes remain readable.
      */
     representationFailure: AssetRepresentationFailureSchema.optional(),
+    /**
+     * Coded reason byte-probe facts (dimensions, duration, codec) are
+     * unavailable for Asset bytes that remain readable.
+     */
+    inspectionError: AssetInspectionFailureSchema.optional(),
   })
   .strict()
 ), (real) => { ResolvedAssetSchema = real; });
