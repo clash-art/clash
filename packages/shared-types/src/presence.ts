@@ -161,11 +161,30 @@ export interface ProjectLoadErrorMessage {
   nodeId?: string;
 }
 
+/**
+ * Host → client: how the local Project room currently relates to its cloud replica.
+ *
+ * The local replica always opens and accepts edits. `unavailable` and
+ * `import-failed` mean the cloud may be ahead of what this client sees; they are
+ * non-fatal and clear when a later background merge succeeds.
+ */
+export interface ProjectRemoteStateMessage {
+  type: "project.remote-state";
+  projectId: string;
+  state: "synced" | "unavailable" | "import-failed";
+  /** Coded reason; absent when `state` is `synced`. */
+  code?: "PROJECT_REMOTE_UNAVAILABLE" | "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED";
+  message?: string;
+  /** When the next automatic attempt is due, as an ISO timestamp. */
+  retryAt?: string;
+}
+
 export type SidebandMessage =
   | PresenceMessage
   | ActivityMessage
   | AwarenessBroadcastMessage
-  | ProjectLoadErrorMessage;
+  | ProjectLoadErrorMessage
+  | ProjectRemoteStateMessage;
 
 /**
  * Type guard: check if a parsed JSON message is a valid sideband message.
@@ -177,6 +196,19 @@ export function isSidebandMessage(msg: unknown): msg is SidebandMessage {
     const error = msg as Record<string, unknown>;
     return typeof error.projectId === "string" && (error.code === "PROJECT_UPGRADE_FAILED" || error.code === "SESSION_EXPIRED")
       && typeof error.message === "string" && (error.nodeId === undefined || typeof error.nodeId === "string");
+  }
+  if (t === "project.remote-state") {
+    const remote = msg as Record<string, unknown>;
+    const state = remote.state;
+    return (
+      typeof remote.projectId === "string" &&
+      (state === "synced" || state === "unavailable" || state === "import-failed") &&
+      (remote.code === undefined ||
+        remote.code === "PROJECT_REMOTE_UNAVAILABLE" ||
+        remote.code === "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED") &&
+      (remote.message === undefined || typeof remote.message === "string") &&
+      (remote.retryAt === undefined || typeof remote.retryAt === "string")
+    );
   }
   return t === "presence" || t === "activity" || t === "awareness.broadcast";
 }

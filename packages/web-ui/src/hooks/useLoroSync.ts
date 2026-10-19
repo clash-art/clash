@@ -17,6 +17,7 @@ import type {
   ActivityMessage,
   AwarenessBroadcastMessage,
   ProjectLoadErrorMessage,
+  ProjectRemoteStateMessage,
 } from "@clash/shared-types";
 import { classifyLoroUpdateRejection, classifySyncError } from "@clash/shared-types";
 import {
@@ -132,6 +133,11 @@ export interface UseLoroSyncReturn {
   connected: boolean;
   syncRejected: boolean;
   projectLoadError: ProjectLoadErrorMessage | undefined;
+  /**
+   * Set when the local room is usable but its cloud replica is unavailable or
+   * could not be imported. Cleared by the Host after a later successful merge.
+   */
+  remoteState: ProjectRemoteStateMessage | undefined;
   retryProjectLoad: () => void;
   recoveryDraft: SyncRecoveryDraft | undefined;
   prepareSyncRecovery: () => Promise<void>;
@@ -569,6 +575,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
   const [connected, setConnected] = useState(false);
   const [syncRejected, setSyncRejected] = useState(false);
   const [projectLoadError, setProjectLoadError] = useState<ProjectLoadErrorMessage>();
+  const [remoteState, setRemoteState] = useState<ProjectRemoteStateMessage>();
   const projectLoadFailedRef = useRef(false);
   const [recoveryDraft, setRecoveryDraft] = useState<SyncRecoveryDraft>();
   const recoveryPreparedRef = useRef(false);
@@ -912,6 +919,9 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
 
     disconnect();
 
+    // The Host re-sends any current remote-stale state when the next peer joins.
+    setRemoteState(undefined);
+
     if (syncTransport === "streams") {
       const session = createLoroStreamSession({
         doc,
@@ -1024,6 +1034,11 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
               setConnected(false);
               if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
               ws.close();
+            } else if (
+              msg.type === "project.remote-state" &&
+              msg.projectId === projectId
+            ) {
+              setRemoteState(msg.state === "synced" ? undefined : msg);
             } else if (
               msg.type === "presence" &&
               callbacksRef.current.onPresenceChange
@@ -2141,6 +2156,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       connected,
       syncRejected,
       projectLoadError,
+      remoteState,
       retryProjectLoad,
       recoveryDraft,
       prepareSyncRecovery,
@@ -2207,6 +2223,7 @@ export function useLoroSync(options: LoroSyncOptions): UseLoroSyncReturn {
       connected,
       syncRejected,
       projectLoadError,
+      remoteState,
       retryProjectLoad,
       recoveryDraft,
       prepareSyncRecovery,

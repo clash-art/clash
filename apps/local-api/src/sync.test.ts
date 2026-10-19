@@ -25,6 +25,10 @@ import {
   encode,
   type ProtocolMessage,
 } from "loro-protocol";
+import {
+  LoroProtocolServerSession,
+  type HexString,
+} from "@clash/replica/loro-protocol";
 
 import { createMockExternalAigcService } from "./local-aigc.js";
 import {
@@ -70,10 +74,12 @@ import {
   createRemoteLoroPersistenceFromEnv,
   LocalLoroRoom,
   LocalLoroRoomHub,
+  type RemoteLoroPersistence,
 } from "./sync";
 import { createLocalWorkflowProcessor } from "./local-processor";
 import { createLocalMetadataStore } from "./local-metadata-store";
 import { FileReplicaStore } from "./loro/file-replica-store";
+import { LoroCloudReplicaLink } from "./loro/cloud-replica-link";
 import { createLocalResourceStore } from "./local-resource-store";
 import { createLocalPluginAssetStagingStore } from "./local-plugin-asset-staging";
 import { createSqliteDurableRunJournal } from "./durable-run-journal";
@@ -3028,6 +3034,16 @@ describe("LocalLoroRoom", () => {
         resolvePluginBinding: async () => binding,
       }),
     });
+    // Open returns before the deferred Project Asset materialization pass.
+    await vi.waitFor(() => {
+      const opened = new LoroDoc();
+      opened.import(room.snapshot());
+      try {
+        expect(opened.getMap("projectAssets").size).toBeGreaterThan(0);
+      } finally {
+        opened.free();
+      }
+    });
     const peer = room.addPeer(() => {});
     const clientDoc = LoroDoc.fromSnapshot(room.snapshot());
     const timelineState = {
@@ -3510,7 +3526,7 @@ describe("LocalLoroRoom", () => {
       },
       workflowProcessor: null,
     });
-    expect(link.start).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(link.start).toHaveBeenCalledTimes(1));
 
     const local = new LoroDoc();
     local
@@ -3623,7 +3639,7 @@ describe("LocalLoroRoom", () => {
     );
   });
 
-  it("imports remote snapshots on open and writes the merged state locally", async () => {
+  it("imports a remote snapshot after open and writes the merged state locally", async () => {
     const remoteDoc = new LoroDoc();
     remoteDoc
       .getMap("nodes")
@@ -3639,21 +3655,535 @@ describe("LocalLoroRoom", () => {
       },
     });
 
-    const opened = new LoroDoc();
-    opened.import(room.snapshot());
-    expect((opened.getMap("nodes").get("node-cloud") as any).data.label).toBe(
-      "Cloud",
-    );
-
+    await vi.waitFor(() => {
+      const opened = new LoroDoc();
+      opened.import(room.snapshot());
+      expect(
+        (opened.getMap("nodes").get("node-cloud") as any)?.data.label,
+      ).toBe("Cloud");
+    });
+    // The late merge is durable without reopening the room for a client.
     const reopened = await LocalLoroRoom.open({
       dataDir,
       projectId: "project/hybrid",
+      workflowProcessor: null,
     });
     const persisted = new LoroDoc();
     persisted.import(reopened.snapshot());
     expect(
       (persisted.getMap("nodes").get("node-cloud") as any).data.label,
     ).toBe("Cloud");
+  });
+
+  it("serves the local replica while a cloud snapshot is still in flight and merges it when it arrives", async () => {
+    const remoteDoc = new LoroDoc();
+    remoteDoc
+      .getMap("nodes")
+      .set("node-cloud-late", { type: "text", data: { label: "Cloud late" } });
+    let resolveSnapshot!: (bytes: Uint8Array | null) => void;
+    const loadSnapshot = vi.fn(
+      (_projectId: string, _signal?: AbortSignal) =>
+        new Promise<Uint8Array | null>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    );
+    const startedAt = performance.now();
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-late",
+      remotePersistence: {
+        loadSnapshot,
+        appendUpdate: vi.fn(async () => {}),
+      },
+      workflowProcessor: null,
+      remoteSnapshotTimeoutMs: 60_000,
+    });
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+
+    const peerUpdates: Uint8Array[] = [];
+    room.addPeer((update) => peerUpdates.push(update));
+    await vi.waitFor(() => expect(loadSnapshot).toHaveBeenCalledTimes(1));
+    // The Host passed a bound to the remote fetch instead of awaiting it forever.
+    expect(loadSnapshot.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal);
+
+    resolveSnapshot(remoteDoc.export({ mode: "snapshot" }));
+    await vi.waitFor(() => {
+      const opened = new LoroDoc();
+      opened.import(room.snapshot());
+      expect(
+        (opened.getMap("nodes").get("node-cloud-late") as any)?.data.label,
+      ).toBe("Cloud late");
+    });
+    // The already-connected peer received the merge, so no reopen is needed.
+    await vi.waitFor(() => expect(peerUpdates.length).toBeGreaterThan(0));
+  });
+
+  it("reports a coded remote-unavailable state and clears it after a later merge", async () => {
+    const remoteDoc = new LoroDoc();
+    remoteDoc
+      .getMap("nodes")
+      .set("node-cloud-retry", { type: "text", data: { label: "Cloud retry" } });
+    let attempts = 0;
+    const loadSnapshot = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("blackholed cloud endpoint");
+      return remoteDoc.export({ mode: "snapshot" });
+    });
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-retry",
+      remotePersistence: {
+        loadSnapshot,
+        appendUpdate: vi.fn(async () => {}),
+      },
+      workflowProcessor: null,
+      remoteSnapshotRetryBaseMs: 20,
+      remoteSnapshotRetryMaxMs: 40,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId: "project/cloud-retry",
+          state: "unavailable",
+          code: "PROJECT_REMOTE_UNAVAILABLE",
+          retryAt: expect.any(String),
+        }),
+      ),
+    );
+    await vi.waitFor(
+      () =>
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            type: "project.remote-state",
+            projectId: "project/cloud-retry",
+            state: "synced",
+          }),
+        ),
+      { timeout: 2_000 },
+    );
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    const opened = new LoroDoc();
+    opened.import(room.snapshot());
+    expect(
+      (opened.getMap("nodes").get("node-cloud-retry") as any).data.label,
+    ).toBe("Cloud retry");
+  });
+
+  it("reports a coded import failure when cloud bytes cannot be merged", async () => {
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-corrupt",
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => new Uint8Array([1, 2, 3])),
+        appendUpdate: vi.fn(async () => {}),
+      },
+      workflowProcessor: null,
+      remoteSnapshotRetryBaseMs: 60_000,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId: "project/cloud-corrupt",
+          state: "import-failed",
+          code: "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED",
+          retryAt: expect.any(String),
+        }),
+      ),
+    );
+    // The local room stayed usable after the failed import.
+    expect(room.snapshot().byteLength).toBeGreaterThan(0);
+  });
+
+  it("opens without waiting for a due provider run and publishes its result after open", async () => {
+    const projectId = "project/deferred-provider-run";
+    const seeding = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      workflowProcessor: null,
+    });
+    await seeding.mutateProject((doc) => {
+      doc.getMap("nodes").set("deferred-node", {
+        id: "deferred-node",
+        type: "image",
+        position: { x: 0, y: 0 },
+        data: { status: "pending", prompt: "slow provider" },
+      });
+      return { value: undefined };
+    });
+    await seeding.close();
+
+    let releaseProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const process = vi.fn(async ({ doc }: { doc: LoroDoc }) => {
+      await providerGate;
+      doc.getMap("nodes").set("deferred-node", {
+        id: "deferred-node",
+        type: "image",
+        position: { x: 0, y: 0 },
+        data: { status: "completed", assetId: "asset:deferred" },
+      });
+      return true;
+    });
+    const startedAt = performance.now();
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      workflowProcessor: { process },
+    });
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+
+    const peerUpdates: Uint8Array[] = [];
+    room.addPeer((update) => peerUpdates.push(update));
+    await vi.waitFor(() => expect(process).toHaveBeenCalledTimes(1));
+    releaseProvider();
+    await vi.waitFor(() => expect(peerUpdates.length).toBeGreaterThan(0));
+    const finalDoc = new LoroDoc();
+    finalDoc.import(room.snapshot());
+    expect(
+      (finalDoc.getMap("nodes").get("deferred-node") as any).data,
+    ).toMatchObject({ status: "completed", assetId: "asset:deferred" });
+  });
+
+  it("defers remote source resolution past project open", async () => {
+    const resolveRemote = vi.fn(async () => undefined);
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/local-open",
+      remotePersistence: resolveRemote,
+      workflowProcessor: null,
+    });
+    // Opening is not allowed to pay config/admission/token work.
+    expect(resolveRemote).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(resolveRemote).toHaveBeenCalledTimes(1));
+  });
+
+  it("bounds a remote resolver that never settles, retries, and ignores its late result", async () => {
+    const remoteDoc = new LoroDoc();
+    remoteDoc
+      .getMap("nodes")
+      .set("node-cloud-after-timeout", {
+        type: "text",
+        data: { label: "Cloud after timeout" },
+      });
+    const firstLoadSnapshot = vi.fn(async () => null);
+    const firstCreateLink = vi.fn();
+    let resolveFirst!: (value: RemoteLoroPersistence | undefined) => void;
+    let attempts = 0;
+    const resolveRemote = vi.fn(
+      (): Promise<RemoteLoroPersistence | undefined> => {
+        attempts += 1;
+        if (attempts === 1) {
+          return new Promise<RemoteLoroPersistence | undefined>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        return Promise.resolve({
+          appendUpdate: vi.fn(async () => {}),
+          loadSnapshot: async () => remoteDoc.export({ mode: "snapshot" }),
+        });
+      },
+    );
+    const startedAt = Date.now();
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-resolve-timeout",
+      remotePersistence: resolveRemote,
+      workflowProcessor: null,
+      remoteSnapshotTimeoutMs: 40,
+      remoteSnapshotRetryBaseMs: 20,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+
+    await vi.waitFor(
+      () =>
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            type: "project.remote-state",
+            projectId: "project/cloud-resolve-timeout",
+            state: "unavailable",
+            code: "PROJECT_REMOTE_UNAVAILABLE",
+            retryAt: expect.any(String),
+          }),
+        ),
+      { timeout: 1_000 },
+    );
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    const unavailable = messages.find(
+      (message) => message.state === "unavailable",
+    );
+    expect(String(unavailable?.message)).toContain("timed out");
+    expect(
+      Date.parse(String(unavailable?.retryAt)),
+    ).toBeGreaterThan(Date.now());
+
+    // The resolver settled after the bound. Its link and snapshot must be
+    // dropped instead of being attached against another attempt's signal.
+    resolveFirst({
+      appendUpdate: vi.fn(async () => {}),
+      createLink: firstCreateLink,
+      loadSnapshot: firstLoadSnapshot,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(firstCreateLink).not.toHaveBeenCalled();
+    expect(firstLoadSnapshot).not.toHaveBeenCalled();
+
+    await vi.waitFor(
+      () =>
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            type: "project.remote-state",
+            projectId: "project/cloud-resolve-timeout",
+            state: "synced",
+          }),
+        ),
+      { timeout: 3_000 },
+    );
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    const final = LoroDoc.fromSnapshot(room.snapshot());
+    try {
+      expect(
+        (final.getMap("nodes").get("node-cloud-after-timeout") as any)?.data
+          .label,
+      ).toBe("Cloud after timeout");
+    } finally {
+      final.free();
+    }
+    await room.close();
+  });
+
+  it("bounds a snapshot fetch that ignores the abort signal", async () => {
+    const loadSnapshot = vi.fn(
+      (_projectId: string, _signal?: AbortSignal) =>
+        new Promise<Uint8Array | null>(() => {}),
+    );
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-snapshot-timeout",
+      remotePersistence: {
+        loadSnapshot,
+        appendUpdate: vi.fn(async () => {}),
+      },
+      workflowProcessor: null,
+      remoteSnapshotTimeoutMs: 40,
+      remoteSnapshotRetryBaseMs: 60_000,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await vi.waitFor(
+      () =>
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            type: "project.remote-state",
+            projectId: "project/cloud-snapshot-timeout",
+            state: "unavailable",
+            code: "PROJECT_REMOTE_UNAVAILABLE",
+            retryAt: expect.any(String),
+          }),
+        ),
+      { timeout: 1_000 },
+    );
+    expect(
+      String(
+        messages.find((message) => message.type === "project.remote-state")
+          ?.message,
+      ),
+    ).toContain("timed out");
+    expect(loadSnapshot.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal);
+    await room.close();
+  });
+
+  it("publishes an edit made after open but before the deferred cloud link attaches", async () => {
+    const projectId = "project/cloud-pre-attach-edit";
+    const cloudDoc = new LoroDoc();
+    let clientSocket: LoopbackSocket | undefined;
+    let server!: LoroProtocolServerSession;
+    class LoopbackSocket {
+      readyState = 1;
+      private readonly listeners = new Map<
+        string,
+        Array<(...args: any[]) => void>
+      >();
+      on(event: string, listener: (...args: any[]) => void): this {
+        const current = this.listeners.get(event) ?? [];
+        current.push(listener);
+        this.listeners.set(event, current);
+        return this;
+      }
+      emit(event: string, ...args: any[]): void {
+        for (const listener of this.listeners.get(event) ?? []) {
+          listener(...args);
+        }
+      }
+      send(data: Uint8Array): void {
+        void server.receive(data);
+      }
+      close(): void {
+        this.readyState = 3;
+        this.emit("close", 1_000);
+      }
+    }
+    server = new LoroProtocolServerSession({
+      roomId: projectId,
+      doc: () => cloudDoc,
+      commit: async (_batchId, updates) => {
+        cloudDoc.importBatch(updates);
+      },
+      // Deliver server frames on a later turn: the server sets its joined flag
+      // after awaiting send, while a synchronous loopback would reenter with
+      // the client's catch-up update first.
+      send: (frame) => {
+        setTimeout(() => clientSocket?.emit("message", frame, true), 0);
+      },
+    });
+
+    let releaseResolve!: (value: RemoteLoroPersistence) => void;
+    const gate = new Promise<RemoteLoroPersistence>((resolve) => {
+      releaseResolve = resolve;
+    });
+    let resolveCalls = 0;
+    const resolveRemote = vi.fn(() => {
+      resolveCalls += 1;
+      // Only the background attempt waits on the gate. The edit's mirror path
+      // must not attach the link first, so it resolves to nothing.
+      return resolveCalls === 1
+        ? gate
+        : Promise.resolve<RemoteLoroPersistence | undefined>(undefined);
+    });
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      remotePersistence: resolveRemote,
+      workflowProcessor: null,
+      remoteSnapshotTimeoutMs: 60_000,
+    });
+    expect(resolveRemote).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(resolveRemote).toHaveBeenCalledTimes(1));
+
+    await room.mutateProject((doc) => {
+      doc.getMap("nodes").set("pre-attach-edit", {
+        type: "text",
+        data: { label: "Before attach" },
+      });
+      return { value: undefined };
+    });
+
+    releaseResolve({
+      appendUpdate: vi.fn(async () => {}),
+      createLink: ({ projectId: linkedProjectId, doc, commit }) =>
+        new LoroCloudReplicaLink({
+          baseUrl: "https://cloud.example",
+          projectId: linkedProjectId,
+          doc,
+          commit: (batchId: HexString, updates) => commit(batchId, updates),
+          createSocket: () => {
+            const socket = new LoopbackSocket();
+            clientSocket = socket;
+            queueMicrotask(() => socket.emit("open"));
+            return socket;
+          },
+        }),
+      loadSnapshot: async () => null,
+    });
+
+    await vi.waitFor(() => {
+      expect(
+        (cloudDoc.getMap("nodes").get("pre-attach-edit") as any)?.data.label,
+      ).toBe("Before attach");
+    });
+    await room.close();
+    expect(clientSocket?.readyState).toBe(3);
+  });
+
+  it("clears a deferred remote attempt when the room closes before it starts", async () => {
+    const loadSnapshot = vi.fn(async () => null);
+    const createLink = vi.fn();
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-close-before-start",
+      remotePersistence: {
+        loadSnapshot,
+        appendUpdate: vi.fn(async () => {}),
+        createLink,
+      },
+      workflowProcessor: null,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await room.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(loadSnapshot).not.toHaveBeenCalled();
+    expect(createLink).not.toHaveBeenCalled();
+    expect(
+      messages.filter((message) => message.type === "project.remote-state"),
+    ).toEqual([]);
+    const internals = room as unknown as {
+      remoteSyncTimer?: unknown;
+      remoteLink?: unknown;
+      remoteSyncInFlight?: boolean;
+    };
+    expect(internals.remoteSyncTimer).toBeUndefined();
+    expect(internals.remoteLink).toBeUndefined();
+    expect(internals.remoteSyncInFlight).toBe(false);
+  });
+
+  it("ignores a remote resolve that arrives after close", async () => {
+    let resolveRemote!: (value: RemoteLoroPersistence | undefined) => void;
+    const resolveSource = vi.fn(
+      () =>
+        new Promise<RemoteLoroPersistence | undefined>((resolve) => {
+          resolveRemote = resolve;
+        }),
+    );
+    const createLink = vi.fn();
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/cloud-close-late-resolve",
+      remotePersistence: resolveSource,
+      workflowProcessor: null,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await vi.waitFor(() => expect(resolveSource).toHaveBeenCalledTimes(1));
+    await room.close();
+
+    resolveRemote({
+      appendUpdate: vi.fn(async () => {}),
+      createLink,
+      loadSnapshot: async () => null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(createLink).not.toHaveBeenCalled();
+    expect(
+      messages.filter((message) => message.type === "project.remote-state"),
+    ).toEqual([]);
+    const internals = room as unknown as {
+      remoteLink?: unknown;
+      remoteSyncInFlight?: boolean;
+    };
+    expect(internals.remoteLink).toBeUndefined();
+    expect(internals.remoteSyncInFlight).toBe(false);
   });
 
   it("keeps an appended checkpoint committed when threshold compaction fails and retries later", async () => {

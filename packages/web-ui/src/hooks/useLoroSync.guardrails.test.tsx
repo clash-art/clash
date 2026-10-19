@@ -280,6 +280,36 @@ describe("useLoroSync guardrails", () => {
     } finally { vi.useRealTimers(); unmount(); }
   });
 
+  it("surfaces and clears a coded remote-stale state without pausing the local room", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const { result, unmount } = renderHook(() => useLoroSync({ projectId: "remote-state" }));
+    try {
+      await waitFor(() => expect(result.current.connected).toBe(true));
+      const socket = FakeWebSocket.instances.at(-1)!;
+      const unavailable = {
+        type: "project.remote-state",
+        projectId: "remote-state",
+        state: "unavailable",
+        code: "PROJECT_REMOTE_UNAVAILABLE",
+        message: "Cloud state is unavailable; showing the local revision.",
+        retryAt: new Date(Date.now() + 30_000).toISOString(),
+      };
+      await act(async () => { await socket.onmessage?.({ data: JSON.stringify(unavailable) }); });
+      expect(result.current.remoteState).toEqual(unavailable);
+      // A remote-stale notice never blocks local editing or the socket.
+      expect(result.current.connected).toBe(true);
+      await act(async () => {
+        await socket.onmessage?.({ data: JSON.stringify({ ...unavailable, projectId: "other" }) });
+      });
+      expect(result.current.remoteState).toEqual(unavailable);
+      await act(async () => {
+        await socket.onmessage?.({ data: JSON.stringify({ type: "project.remote-state", projectId: "remote-state", state: "synced" }) });
+      });
+      expect(result.current.remoteState).toBeUndefined();
+      expect(result.current.connected).toBe(true);
+    } finally { unmount(); }
+  });
+
   it.each([false, true])("reports a rejected sync and keeps its local draft without reconnecting it (leave during recovery=%s)", async (leave) => {
     vi.stubGlobal("indexedDB", new IDBFactory());
     const onMutation = vi.fn();
