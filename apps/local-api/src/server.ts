@@ -262,13 +262,18 @@ export interface LocalApiServerOptions {
 export async function bootstrapLocalDurableRunRecovery(options: {
   dataDir: string;
   ownerId: string;
-  roomHub: Pick<LocalLoroRoomHub, "room">;
+  roomHub: Pick<LocalLoroRoomHub, "withRoom">;
 }): Promise<string[]> {
   const projectIds = await createSqliteDurableRunJournal(
     options.dataDir,
   ).listOwnedProjectIds(options.ownerId);
+  // Opening is the whole operation: use the hub's retry path so an idle
+  // eviction that wins the acquisition cannot turn startup recovery into a
+  // stale room handle. Nothing is held after the call.
   await Promise.all(
-    projectIds.map((projectId) => options.roomHub.room(projectId)),
+    projectIds.map((projectId) =>
+      options.roomHub.withRoom(projectId, async () => undefined),
+    ),
   );
   return projectIds;
 }

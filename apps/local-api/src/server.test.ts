@@ -817,9 +817,9 @@ describe("local API server configuration", () => {
           dataDir,
           ownerId: "local-api",
           roomHub: {
-            async room(projectId) {
+            async withRoom(projectId, operation) {
               opened.push(projectId);
-              return {} as never;
+              return operation({} as never);
             },
           },
         }),

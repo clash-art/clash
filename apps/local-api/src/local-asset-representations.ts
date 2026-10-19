@@ -43,6 +43,7 @@ import {
   type LocalResourceStoreEvent,
 } from "./local-resource-store.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
+import { preparedStatement } from "./local-prepared-statements.js";
 import {
   createBoundedWorkQueue,
   WorkQueueClosedError,
@@ -142,6 +143,16 @@ export interface LocalAssetRepresentationService {
   ensure(sourceResourceId: string): Promise<LocalAssetRepresentation[]>;
   read(
     sourceResourceId: string,
+    role: LocalAssetRepresentationRole,
+  ): Promise<LocalAssetRepresentation | undefined>;
+  /**
+   * Reads a representation when the caller already knows the immutable source
+   * kind, avoiding a redundant Resource lookup. The recipe table is keyed by
+   * kind, not by the row this Host would resolve.
+   */
+  readForKind?(
+    sourceResourceId: string,
+    sourceKind: AssetKind,
     role: LocalAssetRepresentationRole,
   ): Promise<LocalAssetRepresentation | undefined>;
   /** Coded state of the last failed or interrupted derivation for one role. */
@@ -1023,15 +1034,15 @@ export function createLocalAssetRepresentationService(options: {
     recipe: LocalAssetRepresentationRecipe,
   ): Promise<LocalAssetRepresentation | undefined> {
     return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `
+      const row = preparedStatement(
+        database,
+        `
           SELECT result_json
           FROM local_asset_representations
           WHERE source_resource_id = ? AND recipe = ? AND role <> 'failure'
         `,
-        )
-        .get(sourceResourceId, recipeKey(recipe));
+        (sql) => database.prepare(sql),
+      ).get(sourceResourceId, recipeKey(recipe));
       if (!row) return undefined;
       if (typeof row.result_json !== "string") {
         throw new Error("Local Asset representation row is corrupt.");
@@ -1742,6 +1753,13 @@ export function createLocalAssetRepresentationService(options: {
             ...backgroundRecipesFor(source.resource.kind),
           ].find((candidate) => candidate.role === role)
         : undefined;
+      return recipe ? readRecipe(sourceResourceId, recipe) : undefined;
+    },
+    async readForKind(sourceResourceId, sourceKind, role) {
+      const recipe = [
+        ...recipesFor(sourceKind),
+        ...backgroundRecipesFor(sourceKind),
+      ].find((candidate) => candidate.role === role);
       return recipe ? readRecipe(sourceResourceId, recipe) : undefined;
     },
     async openThumbnail(sourceResourceId) {

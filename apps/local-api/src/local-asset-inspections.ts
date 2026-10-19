@@ -27,6 +27,7 @@ import {
   withMediaProcessDeadline,
 } from "./local-media-process.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
+import { preparedStatement } from "./local-prepared-statements.js";
 export { localFfprobePath } from "./local-media-binaries.js";
 
 interface SqliteRunResult {
@@ -1190,15 +1191,15 @@ export function createLocalAssetInspectionService(options: {
     sourceResourceId: string,
   ): Promise<InspectionRow | undefined> {
     return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `
+      const row = preparedStatement(
+        database,
+        `
           SELECT source_resource_id, recipe, facts_json
           FROM local_asset_inspections
           WHERE source_resource_id = ? AND recipe = ?
         `,
-        )
-        .get(sourceResourceId, LOCAL_ASSET_INSPECTION_RECIPE);
+        (sql) => database.prepare(sql),
+      ).get(sourceResourceId, LOCAL_ASSET_INSPECTION_RECIPE);
       return row ? parseInspectionRow(row) : undefined;
     });
   }

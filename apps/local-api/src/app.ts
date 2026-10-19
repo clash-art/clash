@@ -11,7 +11,10 @@ import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from 
 import { LOCAL_OTLP_TRACES_PATH, readGeneratorRevision } from "@clash/shared-types";
 import { mutateLocalCanvasGeneratorEdges } from "./local-canvas-generator-edges.js";
 import { commitProjectMutation } from "@clash/shared-types";
-import { migrateLegacyCanvasGeneratorDrafts } from "./local-canvas-generator-migration.js";
+import {
+  hasLegacyCanvasGeneratorDrafts,
+  migrateLegacyCanvasGeneratorDrafts,
+} from "./local-canvas-generator-migration.js";
 import { migrateLegacyProjectTimelines } from "./local-timeline-migration.js";
 import type { AcpForkPoint } from "@openma/common/acp-runtime";
 import { HostInstallScopeSchema, type HostInstallScope } from "@clash/shared-types";
@@ -346,6 +349,12 @@ import {
 } from "./loopback-client.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { readThroughProjectCanvasPreviewEntry } from "./project-canvas-preview-cache.js";
+import {
+  projectCardPreviewEntries,
+  withProjectCardReplicaStamp,
+  type ProjectCardSummary,
+  type StoredProjectCardSummary,
+} from "./project-card-summary.js";
 import {
   createProjectCanvasThumbnailCache,
   ProjectCanvasThumbnailError,
@@ -1352,6 +1361,24 @@ function createDb(dataDir: string, onProjectChanged?: (projectId: string) => Pro
     return metadataStore.compareAndSetProjectCloudAdmission(expected, next);
   }
 
+  async function readProjectCardSummaries() {
+    await writeQueue.catch(() => undefined);
+    return metadataStore.readProjectCardSummaries();
+  }
+
+  async function saveProjectCardSummaries(
+    summaries: Parameters<typeof metadataStore.saveProjectCardSummaries>[0],
+  ): Promise<void> {
+    const task = writeQueue
+      .catch(() => undefined)
+      .then(() => metadataStore.saveProjectCardSummaries(summaries));
+    writeQueue = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+
   async function upsertProjectCloudAdmission(
     admission: Parameters<
       typeof metadataStore.upsertProjectCloudAdmission
@@ -1386,6 +1413,8 @@ function createDb(dataDir: string, onProjectChanged?: (projectId: string) => Pro
     getProjectCloudSyncState,
     compareAndSetProjectCloudAdmission,
     upsertProjectCloudAdmission,
+    readProjectCardSummaries,
+    saveProjectCardSummaries,
   };
 }
 
@@ -2133,7 +2162,8 @@ function etagMatches(header: string | undefined, etag: string): boolean {
 }
 
 interface V1ProjectCardError {
-  code: "PROJECT_UPGRADE_FAILED";
+  /** PROJECT_UPGRADE_FAILED for a failed upgrade; otherwise the failure's own code. */
+  code: string;
   message: string;
   nodeId?: string;
 }
@@ -2147,6 +2177,7 @@ function toV1Project(
   canvasThumbnail: V1ProjectCanvasThumbnail | null = null,
   canvasThumbnailFailure?: ProjectCanvasThumbnailFailure,
   error?: V1ProjectCardError,
+  assetCount = assets.length,
 ) {
   const projectedAssets =
     assetMode === "all"
@@ -2174,12 +2205,32 @@ function toV1Project(
     ...(canvasThumbnailFailure ? { canvasThumbnailFailure } : {}),
     ...(error ? { error } : {}),
     assets: assetMode === "preview" && canvasThumbnail ? [] : projectedAssets,
-    assetCount: assets.length,
+    assetCount,
     created_at: isoToEpochSeconds(project.createdAt),
     updated_at: isoToEpochSeconds(project.updatedAt),
     ...(isDeletedProject(project) ? { deletedAt: project.deletedAt } : {}),
     readToken: projectReceiptReadToken(project),
   };
+}
+
+function projectCardErrorPayload(error: unknown): V1ProjectCardError {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof LocalProjectUpgradeError) {
+    return {
+      code: error.detail.code,
+      message: error.detail.message,
+      ...(error.detail.nodeId ? { nodeId: error.detail.nodeId } : {}),
+    };
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return { code: (error as { code: string }).code, message };
+  }
+  return { code: "PROJECT_CARD_UNAVAILABLE", message };
 }
 
 function localApiProjectReadReceipt(readToken: string): string {
@@ -4338,6 +4389,74 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       sourceVersion,
       input,
     };
+  };
+  /**
+   * Dashboard variant of `projectCanvasThumbnailState`: the card summary
+   * already carries each preview Asset's immutable source Resource, so the
+   * revision can be computed without opening a Project room or projection.
+   */
+  const projectCanvasThumbnailStateFromCard = async (
+    projectId: string,
+    summary: ProjectCardSummary,
+    service: ReturnType<typeof projectAssetServiceAt>,
+  ) => {
+    const entry = summary.preview;
+    const revision = createHash("sha256")
+      .update("clash.main-canvas-thumbnail.v1\0")
+      .update(entry.sourceVersion);
+    const entriesById = new Map(
+      summary.entries.map((asset) => [asset.id, asset]),
+    );
+    const assetIds = [
+      ...new Set(
+        entry.preview.nodes.flatMap((node) =>
+          node.assetId && (node.type === "image" || node.type === "video")
+            ? [node.assetId]
+            : [],
+        ),
+      ),
+    ].sort();
+    for (const assetId of assetIds) {
+      revision.update("\0asset\0").update(assetId);
+      const cardEntry = entriesById.get(assetId);
+      if (!cardEntry || cardEntry.lifecycle.state !== "active") {
+        revision.update("\0unavailable");
+        continue;
+      }
+      revision.update("\0source\0").update(cardEntry.source.resourceId);
+      try {
+        const representation = assetRepresentations.readForKind
+          ? await assetRepresentations.readForKind(
+              cardEntry.source.resourceId,
+              cardEntry.kind,
+              "thumbnail",
+            )
+          : await assetRepresentations.read(
+              cardEntry.source.resourceId,
+              "thumbnail",
+            );
+        if (representation?.role === "thumbnail") {
+          revision
+            .update("\0ready\0")
+            .update(representation.recipe)
+            .update("\0")
+            .update(representation.resourceId);
+        } else {
+          revision.update("\0pending");
+        }
+      } catch {
+        revision.update("\0unavailable");
+      }
+    }
+    const sourceVersion = revision.digest("hex");
+    const input = rememberProjectCanvasThumbnailInput(
+      projectCanvasThumbnailInput(
+        projectId,
+        { ...entry, sourceVersion },
+        service,
+      ),
+    );
+    return { sourceVersion, input, preview: entry.preview };
   };
   const projectCanvasThumbnailProjection = (
     origin: string,
@@ -10334,6 +10453,19 @@ const ForkPointBodySchema = z.object({
     }
   });
 
+  // Parsed card summaries are immutable for one durable replica stamp. Keep
+  // them for the process so a warm list does not re-parse 30 JSON rows.
+  const projectCardSummaryMemory = new Map<string, ProjectCardSummary>();
+  // Resolution is a pure read of immutable Resource facts plus the current
+  // representation rows. The key includes both identities, so a warm list
+  // reuses the four card Assets only while the replica and their derivations
+  // are unchanged.
+  const projectCardAssetsMemory = new Map<
+    string,
+    { key: string; at: number; assets: ResolvedAsset[] }
+  >();
+  const PROJECT_CARD_ASSETS_CACHE_MS = 30_000;
+
   app.get("/api/v1/projects", async (c) => {
     const state = await db.load();
     const archived = c.req.query("archived") ?? "active";
@@ -10351,21 +10483,86 @@ const ForkPointBodySchema = z.object({
           : archived === "include"
             ? state.projects
             : activeProjects(state);
+      const currentStamps = new Map<string, string>();
+      await Promise.all(
+        visibleProjects.map(async (project) => {
+          currentStamps.set(
+            project.id,
+            await replicaStore.replicaStamp(project.id),
+          );
+        }),
+      );
+      if (
+        visibleProjects.some(
+          (project) =>
+            projectCardSummaryMemory.get(project.id)?.replicaStamp !==
+            currentStamps.get(project.id),
+        )
+      ) {
+        const storedSummaries = await db.readProjectCardSummaries();
+        for (const item of storedSummaries) {
+          projectCardSummaryMemory.set(item.projectId, item.summary);
+        }
+      }
+      const pendingSummaries: StoredProjectCardSummary[] = [];
       // Listing is a pure local read: metadata mirrors run only for a real
-      // mutation, never because a Dashboard refreshed.
-      return c.json({
-        projects: await Promise.all(
-          visibleProjects.map(async (project) => {
-            try {
-            const [assets, coverAssetId, canvasPreviewEntry] =
-              await Promise.all([
-                service.list(project.id),
-                service.readProjectCover(project.id),
-                projectCanvasPreviewEntryFor(project.id),
-              ]);
-            const thumbnailState = await projectCanvasThumbnailState(
+      // mutation, never because a Dashboard refreshed. The card is a derived
+      // SQLite row; a missing/stale row recovers one document directly and
+      // never joins or hydrates a live Loro room.
+      const cards = await Promise.all(
+        visibleProjects.map(async (project) => {
+          try {
+            const replicaStamp = currentStamps.get(project.id) ?? "";
+            let summary = projectCardSummaryMemory.get(project.id);
+            if (!summary || summary.replicaStamp !== replicaStamp) {
+              let content;
+              let needsUpgrade = false;
+              let doc = await replicaStore.recover(project.id);
+              try {
+                content = await service.buildProjectCardSummary(
+                  project.id,
+                  doc,
+                  state,
+                );
+                // Legacy Project Assets and legacy canvas drafts still need
+                // the one-way upgrade before their card can be read from a
+                // plain recovered document. This is the only path that
+                // materializes (and therefore opens a room); it runs once per
+                // legacy Project, not per list. A failed upgrade surfaces as
+                // the card's coded error instead of a silently incomplete card.
+                needsUpgrade =
+                  !content.assetAuthorityCurrent ||
+                  hasLegacyCanvasGeneratorDrafts(doc);
+              } finally {
+                doc.free();
+              }
+              if (needsUpgrade) {
+                await service.materialize(project.id);
+                doc = await replicaStore.recover(project.id);
+                try {
+                  content = await service.buildProjectCardSummary(
+                    project.id,
+                    doc,
+                    state,
+                  );
+                } finally {
+                  doc.free();
+                }
+              }
+              summary = withProjectCardReplicaStamp(
+                content,
+                await replicaStore.replicaStamp(project.id),
+              );
+              projectCardSummaryMemory.set(project.id, summary);
+              pendingSummaries.push({
+                projectId: project.id,
+                replicaStamp: summary.replicaStamp,
+                summary,
+              });
+            }
+            const thumbnailState = await projectCanvasThumbnailStateFromCard(
               project.id,
-              canvasPreviewEntry,
+              summary,
               service,
             );
             const thumbnailFailure = projectCanvasThumbnailCache.failureFor(
@@ -10377,44 +10574,63 @@ const ForkPointBodySchema = z.object({
               : projectCanvasThumbnailProjection(
                   requestOrigin(c),
                   project.id,
-                  canvasPreviewEntry,
+                  summary.preview,
                   thumbnailState.sourceVersion,
                 );
+            const assetsKey = [
+              summary.replicaStamp,
+              thumbnailState.sourceVersion,
+              requestOrigin(c),
+            ].join("\0");
+            const rememberedAssets = projectCardAssetsMemory.get(project.id);
+            const assets =
+              rememberedAssets?.key === assetsKey &&
+              Date.now() - rememberedAssets.at < PROJECT_CARD_ASSETS_CACHE_MS
+                ? rememberedAssets.assets
+                : await service.resolveCardEntries(
+                    project.id,
+                    projectCardPreviewEntries(summary.entries),
+                  );
+            projectCardAssetsMemory.set(project.id, {
+              key: assetsKey,
+              at: Date.now(),
+              assets,
+            });
             return toV1Project(
               project,
               assets,
               "preview",
-              coverAssetId,
-              canvasPreviewEntry.preview,
+              summary.coverAssetId,
+              summary.preview.preview,
               canvasThumbnail,
               thumbnailFailure,
+              undefined,
+              summary.assetCount,
             );
-            } catch (error) {
-              // A project's recovery failure must not hide other projects or
-              // prevent navigation to its existing recovery workflow. The card
-              // carries the coded failure so the loss of preview/asset data is
-              // never silent.
-              if (!(error instanceof LocalProjectUpgradeError)) throw error;
-              return toV1Project(
-                project,
-                [],
-                "preview",
-                null,
-                null,
-                null,
-                undefined,
-                {
-                  code: "PROJECT_UPGRADE_FAILED",
-                  message: error.detail.message,
-                  ...(error.detail.nodeId
-                    ? { nodeId: error.detail.nodeId }
-                    : {}),
-                },
-              );
-            }
-          }),
-        ),
-      });
+          } catch (error) {
+            // One Project's recovery failure must not hide other Projects or
+            // prevent navigation to its existing recovery workflow. The card
+            // carries the coded reason instead of silently losing its Assets.
+            return {
+              ...toV1Project(project, []),
+              error: projectCardErrorPayload(error),
+            };
+          }
+        }),
+      );
+      if (pendingSummaries.length > 0) {
+        try {
+          await db.saveProjectCardSummaries(pendingSummaries);
+        } catch (error) {
+          // The card was built successfully; only its derived cache row could
+          // not be stored. The next list rebuilds it from the same document.
+          console.error(
+            "[local-api] failed to persist Project card summaries",
+            error,
+          );
+        }
+      }
+      return c.json({ projects: cards });
     } catch (error) {
       return localProjectAssetErrorResponse(error);
     }
