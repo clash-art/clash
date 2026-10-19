@@ -14,6 +14,11 @@
  */
 
 export {
+  isLazyValueInitialized,
+  lazyValueConstructionCount,
+} from "./lazy-schema.js";
+
+export {
   ActionRunSchema,
   ActionRunModelRouteSchema,
   ActionRunModelSelectionSchema,

@@ -1,8 +1,10 @@
+import { lazySchema } from "./lazy-schema.js";
 import type { DirectorStageState } from "./director-stage.js";
 import { z } from "zod";
 import { DocumentAssetRevisionRefSchema } from "./generator-v2.js";
 
-export const DirectorCodeComponentRegistrySchema = z.array(
+export let DirectorCodeComponentRegistrySchema = lazySchema(() => (
+z.array(
   z
     .object({
     id: z.string().trim().min(1),
@@ -10,7 +12,8 @@ export const DirectorCodeComponentRegistrySchema = z.array(
       source: DocumentAssetRevisionRefSchema,
     })
     .strict(),
-);
+)
+), (real) => { DirectorCodeComponentRegistrySchema = real; });
 
 /** This slot and source interpretation belong to the Director plugin protocol. */
 export const DIRECTOR_CODE_INPUT_SLOT = "stage:code";

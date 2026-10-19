@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 /**
@@ -6,7 +7,8 @@ import { z } from "zod";
  * to reconstruct a `ProjectTimeline` — its name, its ownership, and its DSL —
  * lives here; nothing else is native Generator state.
  */
-export const ProjectTimelineEnvelopeSchema = z
+export let ProjectTimelineEnvelopeSchema = lazySchema(() => (
+z
   .object({
     name: z.string().trim().min(1),
     owner: z.union([
@@ -21,7 +23,8 @@ export const ProjectTimelineEnvelopeSchema = z
     ]),
     state: z.record(z.string(), z.unknown()),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectTimelineEnvelopeSchema = real; });
 
 export type ProjectTimelineEnvelope = z.infer<
   typeof ProjectTimelineEnvelopeSchema

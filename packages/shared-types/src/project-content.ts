@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import {
   AssetRevisionRefSchema,
@@ -47,7 +48,8 @@ function kindCandidates(value: unknown): string[] {
   return distance <= bound ? nearest : [];
 }
 
-export const ProjectContentKindSchema = z.enum(projectContentKinds, {
+export let ProjectContentKindSchema = lazySchema(() => (
+z.enum(projectContentKinds, {
   error: (issue) => {
     const candidates = kindCandidates(issue.input);
     const suggestion = candidates.map((kind) => `"${kind}"`).join(" or ");
@@ -57,8 +59,10 @@ export const ProjectContentKindSchema = z.enum(projectContentKinds, {
         : "";
     return `Invalid content kind${received}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Valid kinds: ${projectContentKinds.join(", ")}.`;
   },
-});
-export const ProjectContentQuerySchema = z
+})
+), (real) => { ProjectContentKindSchema = real; });
+export let ProjectContentQuerySchema = lazySchema(() => (
+z
   .object({
     query: z.string().trim().max(2000).optional(),
     kinds: z.array(ProjectContentKindSchema).min(1).optional(),
@@ -66,9 +70,11 @@ export const ProjectContentQuerySchema = z
     limit: z.number().int().min(1).max(200).optional(),
     cursor: z.string().min(1).max(2048).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectContentQuerySchema = real; });
 
-export const ProjectContentMatchSchema = z.discriminatedUnion("field", [
+export let ProjectContentMatchSchema = lazySchema(() => (
+z.discriminatedUnion("field", [
   z.object({ field: z.literal("name"), text: z.string() }).strict(),
   z
     .object({
@@ -95,10 +101,12 @@ export const ProjectContentMatchSchema = z.discriminatedUnion("field", [
         .optional(),
     })
     .strict(),
-]);
+])
+), (real) => { ProjectContentMatchSchema = real; });
 
 /** A browsable object reference, not a second filesystem or storage identity. */
-export const ProjectContentItemSchema = z
+export let ProjectContentItemSchema = lazySchema(() => (
+z
   .object({
     ref: AssetRevisionRefSchema,
     name: z.string(),
@@ -114,9 +122,11 @@ export const ProjectContentItemSchema = z
       .strict(),
     matches: z.array(ProjectContentMatchSchema),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectContentItemSchema = real; });
 
-export const ProjectContentResultSchema = z
+export let ProjectContentResultSchema = lazySchema(() => (
+z
   .object({
     items: z.array(ProjectContentItemSchema),
     /** Matching object counts before kind filtering and result truncation. */
@@ -134,7 +144,8 @@ export const ProjectContentResultSchema = z
     nextCursor: z.string().nullable().optional(),
     matchMode: z.literal("literal-text").nullable(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectContentResultSchema = real; });
 
 export type ProjectContentQuery = z.infer<typeof ProjectContentQuerySchema>;
 export type ProjectContentItem = z.infer<typeof ProjectContentItemSchema>;

@@ -2,6 +2,7 @@ import Ajv from "ajv";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { directorStageJsonSchema } from "./director-stage.js";
+import { lazySchema } from "./lazy-schema.js";
 import { projectGeneratorRequestContract } from "./generator-requests.js";
 import { TIMELINE_DSL_DEFINITION } from "./timeline-dsl-schema.js";
 import { TIMELINE_OPERATION_CATALOG } from "./timeline-operation-annotations.js";
@@ -111,6 +112,34 @@ describe("zodToDraft7JsonSchema", () => {
     const validate = new Ajv({ strict: false }).compile(schema);
     expect(validate({ root: { children: [{ children: [] }] } })).toBe(true);
     expect(validate({ root: { children: [{ children: "no" }] } })).toBe(false);
+  });
+
+  it("projects nested lazy schemas exactly like their eager equivalents", () => {
+    const eager = z
+      .object({
+        id: z.string().describe("Stable id"),
+        count: z.number().int().optional().describe("Optional count"),
+        nested: z.array(z.object({ label: z.string().describe("Label") })),
+      })
+      .strict()
+      .describe("Lazy parity");
+    const id = lazySchema(() => z.string().describe("Stable id"));
+    const count = lazySchema(() =>
+      z.number().int().optional().describe("Optional count"),
+    );
+    const label = lazySchema(() => z.string().describe("Label"));
+    const nested = lazySchema(() => z.array(z.object({ label })));
+    const lazy = lazySchema(() =>
+      z
+        .object({ id, count, nested })
+        .strict()
+        .describe("Lazy parity"),
+    );
+
+    expect(zodToDraft7JsonSchema(lazy)).toEqual(zodToDraft7JsonSchema(eager));
+    expect(zodToDraft7JsonSchema(lazy, { name: "Parity" })).toEqual(
+      zodToDraft7JsonSchema(eager, { name: "Parity" }),
+    );
   });
 });
 

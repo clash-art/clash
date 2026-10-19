@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from 'zod';
 
 /**
@@ -20,9 +21,11 @@ export const GOOGLE_PLATFORMS = {
 export type GooglePlatform = keyof typeof GOOGLE_PLATFORMS;
 
 
-export const GooglePlatformSchema = z.enum(
+export let GooglePlatformSchema = lazySchema(() => (
+z.enum(
   Object.keys(GOOGLE_PLATFORMS) as [GooglePlatform, ...GooglePlatform[]],
-);
+)
+), (real) => { GooglePlatformSchema = real; });
 
 export interface GoogleApiBaseUrlOptions {
   /** A proxy or gateway in front of Google. Wins over the platform's own host. */

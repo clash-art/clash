@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import {
@@ -5,25 +6,34 @@ import {
   GeneratorInputRefSchema,
 } from "./generator-v2.js";
 
-const idSchema = z.string().trim().min(1);
-const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+let idSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { idSchema = real; });
+let sha256Schema = lazySchema(() => (
+z.string().regex(/^sha256:[a-f0-9]{64}$/)
+), (real) => { sha256Schema = real; });
 
-export const DocumentAssetMutabilitySchema = z.enum(["immutable", "versioned"]);
+export let DocumentAssetMutabilitySchema = lazySchema(() => (
+z.enum(["immutable", "versioned"])
+), (real) => { DocumentAssetMutabilitySchema = real; });
 export type DocumentAssetMutability = z.infer<
   typeof DocumentAssetMutabilitySchema
 >;
 
 /** Immutable, storage-free address of one typed document body. */
-export const DocumentBodyRefSchema = z
+export let DocumentBodyRefSchema = lazySchema(() => (
+z
   .object({
     digest: sha256Schema,
     byteLength: z.number().int().nonnegative(),
     contentType: z.string().trim().min(1),
   })
-  .strict();
+  .strict()
+), (real) => { DocumentBodyRefSchema = real; });
 export type DocumentBodyRef = z.infer<typeof DocumentBodyRefSchema>;
 
-export const DocumentRevisionProducerSchema = z.discriminatedUnion("kind", [
+export let DocumentRevisionProducerSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("action-run"),
@@ -47,7 +57,8 @@ export const DocumentRevisionProducerSchema = z.discriminatedUnion("kind", [
       source: idSchema,
     })
     .strict(),
-]);
+])
+), (real) => { DocumentRevisionProducerSchema = real; });
 export type DocumentRevisionProducer = z.infer<
   typeof DocumentRevisionProducerSchema
 >;
@@ -58,7 +69,8 @@ export type DocumentRevisionSourceRef = z.infer<
 >;
 
 /** Every revision and body is immutable; mutability describes only how its stable head advances. */
-export const DocumentAssetRevisionSchema = z
+export let DocumentAssetRevisionSchema = lazySchema(() => (
+z
   .object({
     id: idSchema,
     documentAssetId: idSchema,
@@ -81,29 +93,35 @@ export const DocumentAssetRevisionSchema = z
           "Same-Document ancestry belongs in parentRevisionId, not forkedFrom.",
       });
     }
-  });
+  })
+), (real) => { DocumentAssetRevisionSchema = real; });
 export type DocumentAssetRevision = z.infer<typeof DocumentAssetRevisionSchema>;
 
 /** Persisted mutable identity; kind and policy are derived from the immutable head revision. */
-export const ProjectDocumentAssetHeadSchema = z
+export let ProjectDocumentAssetHeadSchema = lazySchema(() => (
+z
   .object({
     id: idSchema,
     headRevisionId: idSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ProjectDocumentAssetHeadSchema = real; });
 export type ProjectDocumentAssetHead = z.infer<
   typeof ProjectDocumentAssetHeadSchema
 >;
 
-export const ProjectDocumentAssetSchema = ProjectDocumentAssetHeadSchema.extend(
+export let ProjectDocumentAssetSchema = lazySchema(() => (
+ProjectDocumentAssetHeadSchema.extend(
   {
     documentKind: idSchema,
     mutability: DocumentAssetMutabilitySchema,
   },
-).strict();
+).strict()
+), (real) => { ProjectDocumentAssetSchema = real; });
 export type ProjectDocumentAsset = z.infer<typeof ProjectDocumentAssetSchema>;
 
-export const DocumentAttachmentTargetSchema = z.discriminatedUnion("kind", [
+export let DocumentAttachmentTargetSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("project-asset"),
@@ -123,18 +141,21 @@ export const DocumentAttachmentTargetSchema = z.discriminatedUnion("kind", [
       actionRunId: idSchema,
     })
     .strict(),
-]);
+])
+), (real) => { DocumentAttachmentTargetSchema = real; });
 export type DocumentAttachmentTarget = z.infer<
   typeof DocumentAttachmentTargetSchema
 >;
 
 /** A relation, not the payload: it always pins one immutable Document revision. */
-export const DocumentAttachmentSchema = z
+export let DocumentAttachmentSchema = lazySchema(() => (
+z
   .object({
     id: idSchema,
     target: DocumentAttachmentTargetSchema,
     slot: idSchema,
     document: DocumentAssetRevisionRefSchema,
   })
-  .strict();
+  .strict()
+), (real) => { DocumentAttachmentSchema = real; });
 export type DocumentAttachment = z.infer<typeof DocumentAttachmentSchema>;

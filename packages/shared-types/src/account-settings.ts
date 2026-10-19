@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from 'zod';
 
 /**
@@ -9,13 +10,16 @@ import { z } from 'zod';
  * rejects a value outside it. A default living in the request path would be invisible to the person
  * making the choice, and the form would need a second copy to pre-select anything.
  */
-export const AccountSettingOptionSchema = z.object({
+export let AccountSettingOptionSchema = lazySchema(() => (
+z.object({
   value: z.string().trim().min(1),
   /** What the person choosing reads. Names the service, not our identifier for it. */
   label: z.string().trim().min(1),
-}).strict();
+}).strict()
+), (real) => { AccountSettingOptionSchema = real; });
 
-export const AccountSettingSchema = z.object({
+export let AccountSettingSchema = lazySchema(() => (
+z.object({
   key: z.string().trim().min(1),
   label: z.string().trim().min(1),
   /** A closed set makes this a choice; without it the setting is free text. */
@@ -34,7 +38,8 @@ export const AccountSettingSchema = z.object({
         + 'would be stored, pass validation, and then match nothing downstream.',
     });
   }
-});
+})
+), (real) => { AccountSettingSchema = real; });
 
 export type AccountSetting = z.infer<typeof AccountSettingSchema>;
 

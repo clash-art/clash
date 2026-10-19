@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 /**
  * @file agent-annotation.ts
  * @description Transient, agent-addressable review annotations shared by creative surfaces and chat.
@@ -11,7 +12,8 @@
 
 import { z } from "zod";
 
-export const AgentAnnotationSurfaceSchema = z.enum([
+export let AgentAnnotationSurfaceSchema = lazySchema(() => (
+z.enum([
   "canvas",
   "timeline",
   "director-stage",
@@ -19,22 +21,28 @@ export const AgentAnnotationSurfaceSchema = z.enum([
   "asset",
   // A page or element selected in the desktop project's in-app browser.
   "browser",
-]);
+])
+), (real) => { AgentAnnotationSurfaceSchema = real; });
 
-const AgentAnnotationBrowserRectSchema = z.object({
+let AgentAnnotationBrowserRectSchema = lazySchema(() => (
+z.object({
   x: z.number().finite().min(0),
   y: z.number().finite().min(0),
   width: z.number().finite().positive(),
   height: z.number().finite().positive(),
-});
+})
+), (real) => { AgentAnnotationBrowserRectSchema = real; });
 
-const AgentAnnotationBrowserViewportSchema = z.object({
+let AgentAnnotationBrowserViewportSchema = lazySchema(() => (
+z.object({
   width: z.number().finite().positive(),
   height: z.number().finite().positive(),
   devicePixelRatio: z.number().finite().positive(),
-});
+})
+), (real) => { AgentAnnotationBrowserViewportSchema = real; });
 
-export const AgentAnnotationBrowserContextSchema = z.discriminatedUnion(
+export let AgentAnnotationBrowserContextSchema = lazySchema(() => (
+z.discriminatedUnion(
   "kind",
   [
     z.object({
@@ -63,24 +71,30 @@ export const AgentAnnotationBrowserContextSchema = z.discriminatedUnion(
       viewport: AgentAnnotationBrowserViewportSchema,
     }),
   ],
-);
+)
+), (real) => { AgentAnnotationBrowserContextSchema = real; });
 
-export const AgentAnnotationVisualRectSchema = z.object({
+export let AgentAnnotationVisualRectSchema = lazySchema(() => (
+z.object({
   x: z.number().finite().min(0).max(1),
   y: z.number().finite().min(0).max(1),
   width: z.number().finite().positive().max(1),
   height: z.number().finite().positive().max(1),
-});
+})
+), (real) => { AgentAnnotationVisualRectSchema = real; });
 
-export const AgentAnnotationSelectionSchema = z.object({
+export let AgentAnnotationSelectionSchema = lazySchema(() => (
+z.object({
   kind: z.literal("text-quote"),
   exact: z.string().trim().min(1).max(4_000),
   prefix: z.string().max(256).optional(),
   suffix: z.string().max(256).optional(),
   visualRects: z.array(AgentAnnotationVisualRectSchema).max(32).optional(),
-});
+})
+), (real) => { AgentAnnotationSelectionSchema = real; });
 
-export const AgentAnnotationTargetSchema = z.object({
+export let AgentAnnotationTargetSchema = lazySchema(() => (
+z.object({
   projectId: z.string().trim().min(1),
   surface: AgentAnnotationSurfaceSchema,
   surfaceId: z.string().trim().min(1),
@@ -97,20 +111,25 @@ export const AgentAnnotationTargetSchema = z.object({
   browser: AgentAnnotationBrowserContextSchema.optional(),
   /** Asset backing the annotated object, when it has one — lets chat surfaces show a media preview. */
   previewAssetId: z.string().trim().min(1).optional(),
-});
+})
+), (real) => { AgentAnnotationTargetSchema = real; });
 
-export const AgentAnnotationDraftSchema = z.object({
+export let AgentAnnotationDraftSchema = lazySchema(() => (
+z.object({
   id: z.string().trim().min(1),
   kind: z.literal("agent-annotation"),
   note: z.string().max(4_000),
   target: AgentAnnotationTargetSchema,
-});
+})
+), (real) => { AgentAnnotationDraftSchema = real; });
 
-export const AgentAnnotationPromptPayloadSchema = z.object({
+export let AgentAnnotationPromptPayloadSchema = lazySchema(() => (
+z.object({
   version: z.literal(1),
   kind: z.literal("clash-agent-annotations"),
   annotations: z.array(AgentAnnotationDraftSchema).min(1),
-});
+})
+), (real) => { AgentAnnotationPromptPayloadSchema = real; });
 
 export type AgentAnnotationSurface = z.infer<
   typeof AgentAnnotationSurfaceSchema

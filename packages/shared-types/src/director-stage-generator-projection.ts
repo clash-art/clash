@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { DIRECTOR_CODE_INPUT_SLOT, directorCodeRegistryError } from "./director-code.js";
 
@@ -15,7 +16,8 @@ import type {
 } from "./generator-v2.js";
 import type { ExecutablePluginJsonValue } from "./plugin-json-value.js";
 
-const EnvelopeSchema = z
+let EnvelopeSchema = lazySchema(() => (
+z
   .object({
     name: z.string(),
     owner: z.union([
@@ -30,7 +32,8 @@ const EnvelopeSchema = z
     ]),
     state: DirectorStageStateSchema,
   })
-  .strict();
+  .strict()
+), (real) => { EnvelopeSchema = real; });
 
 export type DirectorStageProjectionWriteResult =
   | {

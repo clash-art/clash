@@ -1,30 +1,41 @@
+import { lazySchema } from "../lazy-schema.js";
 import { z } from "zod";
 import { AssetKindSchema } from "../assets.js";
 
-export const ActionFamilySchema = z.enum(["generate", "edit", "custom"]);
+export let ActionFamilySchema = lazySchema(() => (
+z.enum(["generate", "edit", "custom"])
+), (real) => { ActionFamilySchema = real; });
 export type ActionFamily = z.infer<typeof ActionFamilySchema>;
 
-export const ActionOperationSpecSchema = z.object({
+export let ActionOperationSpecSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   outputKind: AssetKindSchema,
-});
+})
+), (real) => { ActionOperationSpecSchema = real; });
 export type ActionOperationSpec = z.infer<typeof ActionOperationSpecSchema>;
 
 /** Serializable discovery contract. Runtime functions never live in a spec. */
-export const ActionSpecSchema = z.object({
+export let ActionSpecSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   version: z.string().min(1),
   name: z.string().min(1),
   family: ActionFamilySchema,
   inputKinds: z.array(AssetKindSchema).min(1),
   operations: z.array(ActionOperationSpecSchema).min(1),
-});
+})
+), (real) => { ActionSpecSchema = real; });
 export type ActionSpec = z.infer<typeof ActionSpecSchema>;
 
-export const ActionInvocationModeSchema = z.enum(["explicit", "implicit"]);
+export let ActionInvocationModeSchema = lazySchema(() => (
+z.enum(["explicit", "implicit"])
+), (real) => { ActionInvocationModeSchema = real; });
 export type ActionInvocationMode = z.infer<typeof ActionInvocationModeSchema>;
 
-export const ActionSurfaceSchema = z.enum(["canvas", "asset-preview"]);
+export let ActionSurfaceSchema = lazySchema(() => (
+z.enum(["canvas", "asset-preview"])
+), (real) => { ActionSurfaceSchema = real; });
 export type ActionSurface = z.infer<typeof ActionSurfaceSchema>;
 
 export const ACTION_INVOCATION_MODE = {

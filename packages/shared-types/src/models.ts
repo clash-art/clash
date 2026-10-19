@@ -1,3 +1,4 @@
+import { lazySchema, lazyValue } from "./lazy-schema.js";
 import { z } from 'zod';
 
 import { AigcActionKindSchema, type AigcActionKind } from "./actions.js";
@@ -320,20 +321,27 @@ export const GEMINI_TTS_VOICES = [
   { label: 'Sulafat - Warm', value: 'Sulafat' },
 ] as const;
 
-export const ModelParameterTypeSchema = z.enum(['select', 'slider', 'number', 'text', 'boolean']);
+export let ModelParameterTypeSchema = lazySchema(() => (
+z.enum(['select', 'slider', 'number', 'text', 'boolean'])
+), (real) => { ModelParameterTypeSchema = real; });
 export type ModelParameterType = z.infer<typeof ModelParameterTypeSchema>;
 
 /**
  * Provider configuration for models
  */
-export const BuiltinProviderSchema = z.enum(['local', 'official', 'fal', 'pika', 'replicate', 'kling', 'minimax', 'volcengine-modelark', 'elevenlabs', 'suno', 'mock', 'custom']);
-export const ProviderSchema = z.string().trim().regex(
+export let BuiltinProviderSchema = lazySchema(() => (
+z.enum(['local', 'official', 'fal', 'pika', 'replicate', 'kling', 'minimax', 'volcengine-modelark', 'elevenlabs', 'suno', 'mock', 'custom'])
+), (real) => { BuiltinProviderSchema = real; });
+export let ProviderSchema = lazySchema(() => (
+z.string().trim().regex(
   /^[a-z0-9][a-z0-9._-]*$/,
   'Provider ids must be lowercase plugin-safe identifiers.',
-);
+)
+), (real) => { ProviderSchema = real; });
 export type Provider = z.infer<typeof ProviderSchema>;
 
-export const ReferenceBindingSchema = z.discriminatedUnion('type', [
+export let ReferenceBindingSchema = lazySchema(() => (
+z.discriminatedUnion('type', [
   z.object({
     /** Provider receives the prompt and reference collections as separate fields. */
     type: z.literal('grouped-references'),
@@ -357,17 +365,21 @@ export const ReferenceBindingSchema = z.discriminatedUnion('type', [
       audio: z.string().min(1).optional(),
     }).optional(),
   }),
-]);
+])
+), (real) => { ReferenceBindingSchema = real; });
 export type ReferenceBinding = z.infer<typeof ReferenceBindingSchema>;
 
-export const ModelProviderConfigSchema = z.object({
+export let ModelProviderConfigSchema = lazySchema(() => (
+z.object({
   model_id: z.string(),
   provider: ProviderSchema,
   default: z.boolean().default(false),
-});
+})
+), (real) => { ModelProviderConfigSchema = real; });
 export type ModelProviderConfig = z.infer<typeof ModelProviderConfigSchema>;
 
-export const ModelParameterSchema = z.object({
+export let ModelParameterSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   label: z.string(),
   type: ModelParameterTypeSchema,
@@ -392,7 +404,8 @@ export const ModelParameterSchema = z.object({
   step: z.number().optional(),
   placeholder: z.string().optional(),
   defaultValue: z.union([z.string(), z.number(), z.boolean()]).optional(),
-});
+})
+), (real) => { ModelParameterSchema = real; });
 export type ModelParameter = z.infer<typeof ModelParameterSchema>;
 
 export function acceptsCustomModelParameterValue(
@@ -427,7 +440,8 @@ export function acceptsCustomModelParameterValue(
  * last frame optional. No real-world model breaks that pattern; if one
  * shows up, add a config field on the {} then.
  */
-const ReferenceMediaConstraintsSchema = z.object({
+let ReferenceMediaConstraintsSchema = lazySchema(() => (
+z.object({
   mimeTypes: z.array(z.string().min(1)).optional(),
   fileExtensions: z.array(z.string().min(1)).optional(),
   maxBytes: z.number().int().positive().optional(),
@@ -447,9 +461,11 @@ const ReferenceMediaConstraintsSchema = z.object({
   maxFrameRate: z.number().positive().optional(),
   videoCodecs: z.array(z.string().min(1)).optional(),
   audioCodecs: z.array(z.string().min(1)).optional(),
-});
+})
+), (real) => { ReferenceMediaConstraintsSchema = real; });
 
-const ReferenceMediaConditionSchema = z.object({
+let ReferenceMediaConditionSchema = lazySchema(() => (
+z.object({
   field: z
     .string()
     .regex(
@@ -457,9 +473,11 @@ const ReferenceMediaConditionSchema = z.object({
       "Reference media conditions must target modelParams.<id>.",
     ),
   equals: z.union([z.string(), z.number(), z.boolean()]),
-});
+})
+), (real) => { ReferenceMediaConditionSchema = real; });
 
-const ConditionalRefSpecSchema = z
+let ConditionalRefSpecSchema = lazySchema(() => (
+z
   .object({
     when: z.array(ReferenceMediaConditionSchema).min(1),
     min: z.number().int().nonnegative().optional(),
@@ -478,9 +496,11 @@ const ConditionalRefSpecSchema = z
           "A conditional reference rule must override bounds or media constraints.",
       });
     }
-  });
+  })
+), (real) => { ConditionalRefSpecSchema = real; });
 
-const RefSpecSchema = z.object({
+let RefSpecSchema = lazySchema(() => (
+z.object({
   max: z.number().int().positive(),
   min: z.number().int().nonnegative().optional(),
   /** When this modality is present, at least one of these companion
@@ -491,9 +511,11 @@ const RefSpecSchema = z.object({
   /** Parameter-conditioned refinements for one input mode (for example,
    * Seedance edit mode tightens the video count, duration, and pixel floor). */
   conditional: z.array(ConditionalRefSpecSchema).optional(),
-});
+})
+), (real) => { RefSpecSchema = real; });
 
-export const ModelInputModeSchema = z.object({
+export let ModelInputModeSchema = lazySchema(() => (
+z.object({
   images: RefSpecSchema.optional(),
   videos: RefSpecSchema.optional(),
   audios: RefSpecSchema.optional(),
@@ -509,13 +531,15 @@ export const ModelInputModeSchema = z.object({
   maxEmbeddedRequestBytes: z.number().int().positive().optional(),
   /** First / last frame reference pair. Start frame is required, end frame optional. */
   startEnd: z.object({ constraints: ReferenceMediaConstraintsSchema.optional() }).optional(),
-});
+})
+), (real) => { ModelInputModeSchema = real; });
 export type ModelInputMode = z.infer<typeof ModelInputModeSchema>;
 
 /** Optional Canvas presentation for model-specific input semantics. The
  * presentation belongs to this Model Card; it does not group cards or create
  * a second workflow-selection layer. */
-export const ModelInputPresentationSchema = z.discriminatedUnion('type', [
+export let ModelInputPresentationSchema = lazySchema(() => (
+z.discriminatedUnion('type', [
   z.object({
     type: z.literal('keyframes'),
     /** Provider frame positions are explicit; the Canvas may seed evenly
@@ -526,10 +550,12 @@ export const ModelInputPresentationSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('video-continuation'),
   }),
-]);
+])
+), (real) => { ModelInputPresentationSchema = real; });
 export type ModelInputPresentation = z.infer<typeof ModelInputPresentationSchema>;
 
-export const ModelInputRuleSchema = z.object({
+export let ModelInputRuleSchema = lazySchema(() => (
+z.object({
   requiresPrompt: z.boolean().default(true),
   inputMode: ModelInputModeSchema.default({}),
   /** Modalities that can be @-mentioned inline in the prompt editor.
@@ -539,12 +565,14 @@ export const ModelInputRuleSchema = z.object({
   referenceBinding: ReferenceBindingSchema.optional(),
   /** Specialized input surface owned by this Model Card. */
   presentation: ModelInputPresentationSchema.optional(),
-});
+})
+), (real) => { ModelInputRuleSchema = real; });
 export type ModelInputRule = z.infer<typeof ModelInputRuleSchema>;
 
 /** Declarative translation for music models whose provider APIs disagree on
  * whether lyrics live in `prompt` or in a dedicated model parameter. */
-export const MusicInputMappingSchema = z.object({
+export let MusicInputMappingSchema = lazySchema(() => (
+z.object({
   lyricsTarget: z.enum(['prompt', 'modelParam']),
   lyricsParam: z.string().min(1).optional(),
   descriptionParam: z.string().min(1).optional(),
@@ -559,16 +587,22 @@ export const MusicInputMappingSchema = z.object({
       message: 'lyricsParam is required when lyricsTarget is modelParam.',
     });
   }
-});
+})
+), (real) => { MusicInputMappingSchema = real; });
 export type MusicInputMapping = z.infer<typeof MusicInputMappingSchema>;
 
-const ModelConstraintValueSchema = z.union([z.string(), z.number(), z.boolean()]);
-const ModelConstraintFieldSchema = z.string().refine(
+let ModelConstraintValueSchema = lazySchema(() => (
+z.union([z.string(), z.number(), z.boolean()])
+), (real) => { ModelConstraintValueSchema = real; });
+let ModelConstraintFieldSchema = lazySchema(() => (
+z.string().refine(
   (field) => field === 'prompt' || field === 'lyrics' || field.startsWith('modelParams.'),
   'Constraint fields must be prompt, lyrics, or modelParams.<id>.',
-);
+)
+), (real) => { ModelConstraintFieldSchema = real; });
 
-export const ModelConstraintRuleSchema = z.discriminatedUnion('type', [
+export let ModelConstraintRuleSchema = lazySchema(() => (
+z.discriminatedUnion('type', [
   z.object({
     type: z.literal('required'),
     field: ModelConstraintFieldSchema,
@@ -591,34 +625,42 @@ export const ModelConstraintRuleSchema = z.discriminatedUnion('type', [
     inactiveValue: ModelConstraintValueSchema,
     message: z.string().min(1).optional(),
   }),
-]);
+])
+), (real) => { ModelConstraintRuleSchema = real; });
 export type ModelConstraintRule = z.infer<typeof ModelConstraintRuleSchema>;
 
-export const ProviderCredentialRequirementsSchema = z.object({
+export let ProviderCredentialRequirementsSchema = lazySchema(() => (
+z.object({
   /** Every entry is an all-of credential set; satisfying any one set enables the route. */
   anyOf: z.array(z.array(z.string().min(1)).min(1)).min(1),
   /** When true, one account must not configure more than one alternative set. */
   exclusive: z.boolean().optional(),
-});
+})
+), (real) => { ProviderCredentialRequirementsSchema = real; });
 export type ProviderCredentialRequirements = z.infer<typeof ProviderCredentialRequirementsSchema>;
 
 /** Provider-wire spelling changes applied only after a concrete implementation
  * route has been selected. These do not change the shared product contract or
  * transcode the referenced bytes. */
-export const ProviderInputAdaptationSchema = z.object({
+export let ProviderInputAdaptationSchema = lazySchema(() => (
+z.object({
   audio: z
     .object({
       mimeAliases: z.record(z.string().min(1), z.string().min(1)),
     })
     .optional(),
-});
+})
+), (real) => { ProviderInputAdaptationSchema = real; });
 export type ProviderInputAdaptation = z.infer<typeof ProviderInputAdaptationSchema>;
 
 /** How an exact Provider binding or Action executor can receive one Asset input from the Host. */
-export const ProviderAssetRepresentationSchema = z.enum(['provider-url', 'executor-url', 'bytes']);
+export let ProviderAssetRepresentationSchema = lazySchema(() => (
+z.enum(['provider-url', 'executor-url', 'bytes'])
+), (real) => { ProviderAssetRepresentationSchema = real; });
 export type ProviderAssetRepresentation = z.infer<typeof ProviderAssetRepresentationSchema>;
 
-export const ProviderAssetInputSchema = z.object({
+export let ProviderAssetInputSchema = lazySchema(() => (
+z.object({
   match: z.object({
     kinds: z.array(AssetKindSchema).min(1).optional(),
     slots: z.array(z.string().trim().min(1)).min(1).optional(),
@@ -632,19 +674,23 @@ export const ProviderAssetInputSchema = z.object({
   }),
   representations: z.array(ProviderAssetRepresentationSchema).min(1),
   mediaTypes: z.array(z.string().trim().min(1)).min(1).optional(),
-}).strict();
+}).strict()
+), (real) => { ProviderAssetInputSchema = real; });
 export type ProviderAssetInput = z.infer<typeof ProviderAssetInputSchema>;
 
-export const ModelCardConsumerSchema = z
+export let ModelCardConsumerSchema = lazySchema(() => (
+z
   .object({
     pluginId: z.string().trim().min(1),
     definitionId: z.string().trim().min(1).optional(),
     actionId: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ModelCardConsumerSchema = real; });
 export type ModelCardConsumer = z.infer<typeof ModelCardConsumerSchema>;
 
-export const ModelCardVisibilitySchema = z.discriminatedUnion('scope', [
+export let ModelCardVisibilitySchema = lazySchema(() => (
+z.discriminatedUnion('scope', [
     z.object({ scope: z.literal('public') }).strict(),
     z
       .object({
@@ -652,10 +698,12 @@ export const ModelCardVisibilitySchema = z.discriminatedUnion('scope', [
         consumers: z.array(ModelCardConsumerSchema).min(1),
       })
       .strict(),
-  ]).optional();
+  ]).optional()
+), (real) => { ModelCardVisibilitySchema = real; });
 export type ModelCardVisibility = z.infer<typeof ModelCardVisibilitySchema>;
 
-export const ModelProviderImplementationSchema = z
+export let ModelProviderImplementationSchema = lazySchema(() => (
+z
   .object({
     providerId: ProviderSchema,
     accountId: z.string().optional(),
@@ -714,10 +762,12 @@ export const ModelProviderImplementationSchema = z
         message: 'executorExportId is required when executorPluginId is configured.',
       });
     }
-  });
+  })
+), (real) => { ModelProviderImplementationSchema = real; });
 export type ModelProviderImplementation = z.infer<typeof ModelProviderImplementationSchema>;
 
-export const ModelCardSchema = z
+export let ModelCardSchema = lazySchema(() => (
+z
   .object({
     id: z.string(),
     aliases: z.array(z.string()).default([]),
@@ -1057,7 +1107,8 @@ export const ModelCardSchema = z
         message: 'defaultProvider must be one of availableProviders.',
       });
     }
-  });
+  })
+), (real) => { ModelCardSchema = real; });
 export type ModelCard = z.infer<typeof ModelCardSchema>;
 
 const EMBEDDED_ASPECT_RATIO_PATTERN = /(\d+)\s*[:x×]\s*(\d+)/i;
@@ -6252,24 +6303,42 @@ const MODEL_CARD_DEFINITIONS_WITH_PROVIDER_IMPLEMENTATIONS = MODEL_CARD_DEFINITI
     : {}),
 }));
 
-export const MODEL_CARDS: ModelCard[] = z.array(ModelCardSchema).parse(MODEL_CARD_DEFINITIONS_WITH_PROVIDER_IMPLEMENTATIONS);
+export let MODEL_CARDS: ModelCard[] = lazyValue(
+  () => z.array(ModelCardSchema).parse(MODEL_CARD_DEFINITIONS_WITH_PROVIDER_IMPLEMENTATIONS),
+  [],
+  (real) => { MODEL_CARDS = real; });
 
-const MODEL_IDS = new Set(MODEL_CARDS.map((model) => model.id));
-const MODEL_ALIAS_TO_ID = new Map<string, string>();
-for (const model of MODEL_CARDS) {
-  for (const alias of model.aliases) {
-    MODEL_ALIAS_TO_ID.set(alias, model.id);
+interface ModelIdIndex {
+  readonly ids: Set<string>;
+  readonly aliasToId: Map<string, string>;
+}
+
+let modelIdIndexCache: ModelIdIndex | undefined;
+
+function modelIdIndex(): ModelIdIndex {
+  if (!modelIdIndexCache) {
+    const ids = new Set<string>();
+    const aliasToId = new Map<string, string>();
+    for (const model of MODEL_CARDS) {
+      ids.add(model.id);
+      for (const alias of model.aliases) {
+        aliasToId.set(alias, model.id);
+      }
+    }
+    modelIdIndexCache = { ids, aliasToId };
   }
+  return modelIdIndexCache;
 }
 
 export function normalizeModelId(modelId: string | null | undefined): string | null {
   const trimmed = typeof modelId === 'string' ? modelId.trim() : '';
   if (!trimmed) return null;
-  if (MODEL_IDS.has(trimmed)) return trimmed;
-  return MODEL_ALIAS_TO_ID.get(trimmed) ?? null;
+  const index = modelIdIndex();
+  if (index.ids.has(trimmed)) return trimmed;
+  return index.aliasToId.get(trimmed) ?? null;
 }
 
-export const MOCK_MODEL_CARDS: ModelCard[] = z.array(ModelCardSchema).parse([
+export let MOCK_MODEL_CARDS: ModelCard[] = lazyValue(() => z.array(ModelCardSchema).parse([
   {
     id: 'mock-image-model',
     name: 'Mock Image Model',
@@ -6314,4 +6383,4 @@ export const MOCK_MODEL_CARDS: ModelCard[] = z.array(ModelCardSchema).parse([
       },
     ],
   },
-]);
+]), [], (real) => { MOCK_MODEL_CARDS = real; });

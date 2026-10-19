@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import {
@@ -64,13 +65,15 @@ const itemVariantSchemas = TIMELINE_DSL_ITEM_TYPES.map((type) => {
   return z.object({ ...baseShape, ...variantShape }).passthrough();
 });
 
-const TimelineDslItemVariantSchema = z.discriminatedUnion(
+let TimelineDslItemVariantSchema = lazySchema(() => (
+z.discriminatedUnion(
   "type",
   itemVariantSchemas as unknown as [
     z.core.$ZodTypeDiscriminable,
     ...z.core.$ZodTypeDiscriminable[],
   ],
-);
+)
+), (real) => { TimelineDslItemVariantSchema = real; });
 
 const itemFieldOwners = new Map<string, Set<TimelineDslItemType>>();
 for (const type of TIMELINE_DSL_ITEM_TYPES) {
@@ -220,7 +223,8 @@ export function timelineMaskKeyframeSemanticIssues(item: {
   return issues;
 }
 
-export const TimelineDslItemSchema = TimelineDslItemVariantSchema.superRefine(
+export let TimelineDslItemSchema = lazySchema(() => (
+TimelineDslItemVariantSchema.superRefine(
   (item, ctx) => {
     const typedItem = item as Record<string, unknown> & {
       type: TimelineDslItemType;
@@ -258,26 +262,32 @@ export const TimelineDslItemSchema = TimelineDslItemVariantSchema.superRefine(
       });
     }
   },
-).describe("TimelineDslItem");
+).describe("TimelineDslItem")
+), (real) => { TimelineDslItemSchema = real; });
 
-export const TimelineDslTrackSchema = z
+export let TimelineDslTrackSchema = lazySchema(() => (
+z
   .object(
     timelineDslAnnotatedObjectShape(TIMELINE_DSL_FIELD_ANNOTATIONS.track, {
       overrides: { items: z.array(TimelineDslItemSchema) },
     }),
   )
   .passthrough()
-  .describe("TimelineDslTrack");
+  .describe("TimelineDslTrack")
+), (real) => { TimelineDslTrackSchema = real; });
 
-const TimelineDslSchemaBase = z
+let TimelineDslSchemaBase = lazySchema(() => (
+z
   .object(
     timelineDslAnnotatedObjectShape(TIMELINE_DSL_FIELD_ANNOTATIONS.root, {
       overrides: { tracks: z.array(TimelineDslTrackSchema) },
     }),
   )
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineDslSchemaBase = real; });
 
-export const TimelineDslSchema = TimelineDslSchemaBase.superRefine(
+export let TimelineDslSchema = lazySchema(() => (
+TimelineDslSchemaBase.superRefine(
   (timeline, context) => {
     if (Object.prototype.hasOwnProperty.call(timeline, "mediaAssetRefs")) {
       context.addIssue({
@@ -297,7 +307,8 @@ export const TimelineDslSchema = TimelineDslSchemaBase.superRefine(
       });
     }
   },
-).describe("TimelineDsl");
+).describe("TimelineDsl")
+), (real) => { TimelineDslSchema = real; });
 
 export type TimelineDslValidationIssue = {
   ruleId: string;

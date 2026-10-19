@@ -1,11 +1,17 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import { AssetKindSchema } from "./assets.js";
 
-const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
-const idSchema = z.string().trim().min(1);
+let sha256Schema = lazySchema(() => (
+z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+), (real) => { sha256Schema = real; });
+let idSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { idSchema = real; });
 
-export const MediaAnalysisCategorySchema = z.enum([
+export let MediaAnalysisCategorySchema = lazySchema(() => (
+z.enum([
   "description",
   "tags",
   "subjects",
@@ -14,18 +20,21 @@ export const MediaAnalysisCategorySchema = z.enum([
   "style",
   "ocr",
   "audio-semantics",
-]);
+])
+), (real) => { MediaAnalysisCategorySchema = real; });
 export type MediaAnalysisCategory = z.infer<
   typeof MediaAnalysisCategorySchema
 >;
 
-const sourceSchema = z
+let sourceSchema = lazySchema(() => (
+z
   .object({
     projectAssetId: idSchema,
     resourceHash: sha256Schema,
     kind: AssetKindSchema.exclude(["model"]),
   })
-  .strict();
+  .strict()
+), (real) => { sourceSchema = real; });
 
 function analysisBody<C extends MediaAnalysisCategory, R extends z.ZodType>(
   category: C,
@@ -50,15 +59,20 @@ function analysisBody<C extends MediaAnalysisCategory, R extends z.ZodType>(
     .strict();
 }
 
-const description = analysisBody(
+let description = lazySchema(() => (
+analysisBody(
   "description",
   z.object({ text: idSchema, language: idSchema.optional() }).strict(),
-);
-const tags = analysisBody(
+)
+), (real) => { description = real; });
+let tags = lazySchema(() => (
+analysisBody(
   "tags",
   z.object({ tags: z.array(idSchema) }).strict(),
-);
-const subjects = analysisBody(
+)
+), (real) => { tags = real; });
+let subjects = lazySchema(() => (
+analysisBody(
   "subjects",
   z
     .object({
@@ -73,8 +87,10 @@ const subjects = analysisBody(
       ),
     })
     .strict(),
-);
-const actionsEvents = analysisBody(
+)
+), (real) => { subjects = real; });
+let actionsEvents = lazySchema(() => (
+analysisBody(
   "actions-events",
   z
     .object({
@@ -90,8 +106,10 @@ const actionsEvents = analysisBody(
       ),
     })
     .strict(),
-);
-const sceneShot = analysisBody(
+)
+), (real) => { actionsEvents = real; });
+let sceneShot = lazySchema(() => (
+analysisBody(
   "scene-shot",
   z
     .object({
@@ -107,8 +125,10 @@ const sceneShot = analysisBody(
       ),
     })
     .strict(),
-);
-const style = analysisBody(
+)
+), (real) => { sceneShot = real; });
+let style = lazySchema(() => (
+analysisBody(
   "style",
   z
     .object({
@@ -117,8 +137,10 @@ const style = analysisBody(
       composition: z.array(idSchema).optional(),
     })
     .strict(),
-);
-const ocr = analysisBody(
+)
+), (real) => { style = real; });
+let ocr = lazySchema(() => (
+analysisBody(
   "ocr",
   z
     .object({
@@ -134,8 +156,10 @@ const ocr = analysisBody(
       ),
     })
     .strict(),
-);
-const audioSemantics = analysisBody(
+)
+), (real) => { ocr = real; });
+let audioSemantics = lazySchema(() => (
+analysisBody(
   "audio-semantics",
   z
     .object({
@@ -145,7 +169,8 @@ const audioSemantics = analysisBody(
       sounds: z.array(idSchema).optional(),
     })
     .strict(),
-);
+)
+), (real) => { audioSemantics = real; });
 
 export const MediaAnalysisDocumentSchemas = {
   description,

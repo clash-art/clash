@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import {
   DocumentRevisionProducerSchema,
@@ -5,15 +6,20 @@ import {
 } from "./document-assets.js";
 import { DocumentAssetRevisionRefSchema } from "./generator-v2.js";
 
-const text = z.string().trim().min(1);
+let text = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { text = real; });
 
 /** A record of work already done. Detail is inert text, never executable input. */
-export const MediaOperationTraceSchema = z
+export let MediaOperationTraceSchema = lazySchema(() => (
+z
   .object({ title: text, detail: text })
-  .strict();
+  .strict()
+), (real) => { MediaOperationTraceSchema = real; });
 export type MediaOperationTrace = z.infer<typeof MediaOperationTraceSchema>;
 
-const observation = z
+let observation = lazySchema(() => (
+z
   .object({
     text,
     startMs: z.number().int().nonnegative().optional(),
@@ -32,28 +38,34 @@ const observation = z
           "An observation range requires both source times and endMs greater than startMs.",
       });
     }
-  });
+  })
+), (real) => { observation = real; });
 
 /** Actor attribution is held by the Document revision; optional tools describe external work honestly. */
-export const MediaObservationSchema = z
+export let MediaObservationSchema = lazySchema(() => (
+z
   .object({
     summary: text,
     tool: text.optional(),
     model: text.optional(),
     observations: z.array(observation).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { MediaObservationSchema = real; });
 export type MediaObservation = z.infer<typeof MediaObservationSchema>;
 
-export const AssetEvidenceQuerySchema = z
+export let AssetEvidenceQuerySchema = lazySchema(() => (
+z
   .object({
     query: z.string().trim().max(2000).optional(),
     assetId: text.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { AssetEvidenceQuerySchema = real; });
 export type AssetEvidenceQuery = z.infer<typeof AssetEvidenceQuerySchema>;
 
-export const AssetEvidenceMatchSchema = z
+export let AssetEvidenceMatchSchema = lazySchema(() => (
+z
   .object({
     projectAssetId: text,
     attachmentId: text,
@@ -65,14 +77,17 @@ export const AssetEvidenceMatchSchema = z
     startMs: z.number().int().nonnegative().optional(),
     endMs: z.number().int().positive().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { AssetEvidenceMatchSchema = real; });
 export type AssetEvidenceMatch = z.infer<typeof AssetEvidenceMatchSchema>;
-export const AssetEvidenceSearchResultSchema = z
+export let AssetEvidenceSearchResultSchema = lazySchema(() => (
+z
   .object({
     matches: z.array(AssetEvidenceMatchSchema),
     truncated: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { AssetEvidenceSearchResultSchema = real; });
 export type AssetEvidenceSearchResult = z.infer<
   typeof AssetEvidenceSearchResultSchema
 >;

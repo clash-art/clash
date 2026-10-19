@@ -1,17 +1,27 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
-const id = z.string().trim().min(1);
-const actorClientType = z.enum(["browser", "cli", "mcp", "agent"]).optional();
+let id = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { id = real; });
+let actorClientType = lazySchema(() => (
+z.enum(["browser", "cli", "mcp", "agent"]).optional()
+), (real) => { actorClientType = real; });
 const observed = {
   actorClientType,
   observedVersion: id.optional(),
   ifMatch: id.optional(),
 };
-const position = z.object({ x: z.number().finite(), y: z.number().finite() });
-const primitiveParameter = z.union([z.string(), z.number().finite(), z.boolean()]);
+let position = lazySchema(() => (
+z.object({ x: z.number().finite(), y: z.number().finite() })
+), (real) => { position = real; });
+let primitiveParameter = lazySchema(() => (
+z.union([z.string(), z.number().finite(), z.boolean()])
+), (real) => { primitiveParameter = real; });
 const command = <T extends string>(action: T, shape: z.ZodRawShape = {}) =>
   z.object({ action: z.literal(action), ...shape }).passthrough();
-const addCommand = z.object({
+let addCommand = lazySchema(() => (
+z.object({
   action: z.literal("add"),
   canvasId: id.optional(),
   type: z.enum([
@@ -38,9 +48,11 @@ const addCommand = z.object({
   params: z.record(id, primitiveParameter).optional(),
   actorClientType,
   actorAgentId: id.optional(),
-}).strict();
+}).strict()
+), (real) => { addCommand = real; });
 
-export const ProjectHostCommandSchema = z.discriminatedUnion("action", [
+export let ProjectHostCommandSchema = lazySchema(() => (
+z.discriminatedUnion("action", [
   command("list_canvases"),
   command("create_canvas", { canvasId: id, name: id }),
   command("rename_canvas", { canvasId: id, name: id, ...observed }),
@@ -191,6 +203,7 @@ export const ProjectHostCommandSchema = z.discriminatedUnion("action", [
   }),
   command("ensure_edge", { canvasId: id.optional(), source: id, target: id }),
   command("ping"),
-]);
+])
+), (real) => { ProjectHostCommandSchema = real; });
 
 export type ProjectHostCommand = z.infer<typeof ProjectHostCommandSchema>;

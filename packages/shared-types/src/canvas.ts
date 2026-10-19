@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 /**
  * Canvas Types - Zod schemas for canvas nodes and edges
  * 
@@ -56,10 +57,12 @@ import {
 } from './executable-plugin.js';
 
 // === Position ===
-export const PositionSchema = z.object({
+export let PositionSchema = lazySchema(() => (
+z.object({
   x: z.number(),
   y: z.number(),
-});
+})
+), (real) => { PositionSchema = real; });
 export type Position = z.infer<typeof PositionSchema>;
 
 // === ReactFlow Node Types ===
@@ -131,17 +134,20 @@ export const AGENT_NODE_TYPE_MAP = {
 } as const;
 
 // === Node Status ===
-export const NodeStatusSchema = z.enum([
+export let NodeStatusSchema = lazySchema(() => (
+z.enum([
   'idle',
   'pending',
   'generating',
   'completed',
   'failed',
-]);
+])
+), (real) => { NodeStatusSchema = real; });
 export type NodeStatus = z.infer<typeof NodeStatusSchema>;
 
 // === Node Data ===
-export const NodeDataSchema = z.object({
+export let NodeDataSchema = lazySchema(() => (
+z.object({
   label: z.string().optional(),
   content: z.string().optional(),
   /** Stable component export id for a remotion-component Canvas node. */
@@ -234,21 +240,25 @@ export const NodeDataSchema = z.object({
       tags: z.array(z.string()).optional(),
     }).optional(),
   }).passthrough().optional(),
-}).passthrough(); // Allow additional fields
+}).passthrough()
+), (real) => { NodeDataSchema = real; }); // Allow additional fields
 
 export type NodeData = z.infer<typeof NodeDataSchema>;
 
-export const UpstreamRefSchema = z.object({
+export let UpstreamRefSchema = lazySchema(() => (
+z.object({
   nodeId: z.string(),
   edgeId: z.string(),
   type: z.string().default('default'),
   sourceHandle: z.string().optional(),
   targetHandle: z.string().optional(),
-});
+})
+), (real) => { UpstreamRefSchema = real; });
 export type UpstreamRef = z.infer<typeof UpstreamRefSchema>;
 
 // === Canvas Node ===
-export const CanvasNodeSchema = z.object({
+export let CanvasNodeSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   canvasId: z.string(),
   type: z.string(),
@@ -257,22 +267,26 @@ export const CanvasNodeSchema = z.object({
   upstream: z.array(UpstreamRefSchema).default([]),
   parentId: z.string().optional(),
   extent: z.literal('parent').optional(),
-});
+})
+), (real) => { CanvasNodeSchema = real; });
 export type CanvasNode = z.infer<typeof CanvasNodeSchema>;
 
 // === Canvas Edge ===
-export const CanvasEdgeSchema = z.object({
+export let CanvasEdgeSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   source: z.string(),
   target: z.string(),
   type: z.string().default('default'),
   sourceHandle: z.string().optional(),
   targetHandle: z.string().optional(),
-});
+})
+), (real) => { CanvasEdgeSchema = real; });
 export type CanvasEdge = z.infer<typeof CanvasEdgeSchema>;
 
 // === Loro Document State ===
-export const LoroDocumentStateSchema = z.object({
+export let LoroDocumentStateSchema = lazySchema(() => (
+z.object({
   canvases: z.record(z.string(), z.object({
     id: z.string(),
     name: z.string(),
@@ -280,7 +294,8 @@ export const LoroDocumentStateSchema = z.object({
   })),
   nodes: z.record(z.string(), CanvasNodeSchema),
   tasks: z.record(z.string(), z.any()),
-});
+})
+), (real) => { LoroDocumentStateSchema = real; });
 export type LoroDocumentState = z.infer<typeof LoroDocumentStateSchema>;
 
 // === Generation Pre-validation ===
@@ -916,12 +931,14 @@ export const AssetStatus = {
 export const CustomActionParameterSchema = ModelParameterSchema;
 export type CustomActionParameter = z.infer<typeof CustomActionParameterSchema>;
 
-export const CustomActionSecretSchema = z.object({
+export let CustomActionSecretSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   label: z.string(),
   description: z.string().optional(),
   required: z.boolean().default(true),
-});
+})
+), (real) => { CustomActionSecretSchema = real; });
 export type CustomActionSecret = z.infer<typeof CustomActionSecretSchema>;
 
 export const ACTION_PROVIDER_IDS = [
@@ -1057,17 +1074,22 @@ function providerLabel(provider: string): string {
     .join(' ');
 }
 
-export const ActionProviderIdSchema = z.preprocess(
+export let ActionProviderIdSchema = lazySchema(() => (
+z.preprocess(
   (value) => normalizeActionProviderId(value) ?? value,
   z.enum(ACTION_PROVIDER_IDS),
-);
+)
+), (real) => { ActionProviderIdSchema = real; });
 
-export const ActionProviderRefSchema = z.preprocess(
+export let ActionProviderRefSchema = lazySchema(() => (
+z.preprocess(
   (value) => normalizeActionProviderRef(value) ?? value,
   z.string().min(1),
-);
+)
+), (real) => { ActionProviderRefSchema = real; });
 
-export const CustomActionModelSchema = z.object({
+export let CustomActionModelSchema = lazySchema(() => (
+z.object({
   /** Provider-facing model id, e.g. `fal-ai/flux-pro` or `gpt-image-1`. */
   id: z.string(),
   /** Common MaaS / official provider preset, or a user-defined provider id. */
@@ -1080,7 +1102,8 @@ export const CustomActionModelSchema = z.object({
   baseUrl: z.string().optional(),
   /** Optional provider endpoint/path for action handlers that route multiple models. */
   endpoint: z.string().optional(),
-}).passthrough();
+}).passthrough()
+), (real) => { CustomActionModelSchema = real; });
 export type CustomActionModel = z.infer<typeof CustomActionModelSchema>;
 
 export function mergeActionProviderSecrets<T extends { model?: CustomActionModel; secrets?: CustomActionSecret[] }>(
@@ -1104,7 +1127,8 @@ export function mergeActionProviderSecrets<T extends { model?: CustomActionModel
   return { ...def, secrets };
 }
 
-const CustomActionDefinitionBaseSchema = z.object({
+let CustomActionDefinitionBaseSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   name: z.string(),
   description: z.string().optional(),
@@ -1162,8 +1186,10 @@ const CustomActionDefinitionBaseSchema = z.object({
    * per-project spawning.
    */
   attachedProjects: z.array(z.string()).default(["*"]),
-});
-export const CustomActionDefinitionSchema = CustomActionDefinitionBaseSchema.transform((def) => {
+})
+), (real) => { CustomActionDefinitionBaseSchema = real; });
+export let CustomActionDefinitionSchema = lazySchema(() => (
+CustomActionDefinitionBaseSchema.transform((def) => {
   const input = def.input ?? ModelInputRuleSchema.parse({
     requiresPrompt: def.promptModalities.includes('text'),
     inputMode: Object.fromEntries(
@@ -1181,7 +1207,8 @@ export const CustomActionDefinitionSchema = CustomActionDefinitionBaseSchema.tra
     input,
     promptModalities: input.promptModalities,
   });
-});
+})
+), (real) => { CustomActionDefinitionSchema = real; });
 export type CustomActionDefinition = z.output<typeof CustomActionDefinitionSchema>;
 
 export function customActionDefaultParams(
@@ -1206,24 +1233,29 @@ export function getCustomActionId(actionType: string): string {
 
 // ─── Loro-compatible Schemas ──────────────────────────────
 
-export const NodeInfoSchema = z.object({
+export let NodeInfoSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   type: z.string(),
   position: z.object({ x: z.number(), y: z.number() }),
   data: z.record(z.string(), z.unknown()),
   parent_id: z.string().nullish(),
-});
+})
+), (real) => { NodeInfoSchema = real; });
 
-export const EdgeInfoSchema = z.object({
+export let EdgeInfoSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   source: z.string(),
   target: z.string(),
   source_handle: z.string().nullish(),
   target_handle: z.string().nullish(),
-});
+})
+), (real) => { EdgeInfoSchema = real; });
 export type EdgeInfo = z.infer<typeof EdgeInfoSchema>;
 
-export const ProjectContextSchema = z.object({
+export let ProjectContextSchema = lazySchema(() => (
+z.object({
   nodes: z.array(z.object({
     id: z.string(),
     type: z.string(),
@@ -1237,5 +1269,6 @@ export const ProjectContextSchema = z.object({
     target: z.string(),
     type: z.string().nullish(),
   })),
-});
+})
+), (real) => { ProjectContextSchema = real; });
 export type ProjectContext = z.infer<typeof ProjectContextSchema>;

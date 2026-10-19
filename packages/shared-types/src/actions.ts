@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 /**
@@ -34,6 +35,8 @@ import { z } from "zod";
  */
 export const AIGC_ACTION_KINDS = ["image", "video", "audio", "text", "model"] as const;
 
-export const AigcActionKindSchema = z.enum(AIGC_ACTION_KINDS);
+export let AigcActionKindSchema = lazySchema(() => (
+z.enum(AIGC_ACTION_KINDS)
+), (real) => { AigcActionKindSchema = real; });
 
 export type AigcActionKind = z.infer<typeof AigcActionKindSchema>;

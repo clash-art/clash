@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 /**
  * Canonical product Asset contracts.
  *
@@ -10,15 +11,20 @@
 import { z } from "zod";
 import { agentReadToken } from "./agent-read-proof.js";
 
-export const AssetKindSchema = z.enum(["image", "video", "audio", "model"]);
+export let AssetKindSchema = lazySchema(() => (
+z.enum(["image", "video", "audio", "model"])
+), (real) => { AssetKindSchema = real; });
 export type AssetKind = z.infer<typeof AssetKindSchema>;
 
 /** Stable identity for immutable media bytes. It is never a path, URL, or object-store key. */
-export const ResourceIdSchema = z.string().trim().min(1);
+export let ResourceIdSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { ResourceIdSchema = real; });
 export type ResourceId = z.infer<typeof ResourceIdSchema>;
 
 /** Immutable content identity and verification facts, independent from every storage adapter. */
-export const ResourceSchema = z
+export let ResourceSchema = lazySchema(() => (
+z
   .object({
     id: ResourceIdSchema,
     kind: AssetKindSchema,
@@ -31,11 +37,13 @@ export const ResourceSchema = z
     byteLength: z.number().int().nonnegative(),
     contentType: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ResourceSchema = real; });
 export type Resource = z.infer<typeof ResourceSchema>;
 
 /** Descriptive product metadata safe to replicate in Project Loro. */
-export const ProjectAssetMetadataSchema = z
+export let ProjectAssetMetadataSchema = lazySchema(() => (
+z
   .object({
     width: z.number().int().nonnegative().optional(),
     height: z.number().int().nonnegative().optional(),
@@ -61,30 +69,36 @@ export const ProjectAssetMetadataSchema = z
      *  never becomes a `rig` kind of its own -- static and rigged 3-D assets are both `model`. */
     flexibility: z.number().min(0).max(1).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectAssetMetadataSchema = real; });
 export type ProjectAssetMetadata = z.infer<typeof ProjectAssetMetadataSchema>;
 
 /** Metadata accepted for every new Asset publication. Legacy derived caches remain read-only. */
-export const ProjectAssetPublicationMetadataSchema =
-  ProjectAssetMetadataSchema.omit({ waveform: true });
+export let ProjectAssetPublicationMetadataSchema =
+  lazySchema(() => (
+ProjectAssetMetadataSchema.omit({ waveform: true })
+), (real) => { ProjectAssetPublicationMetadataSchema = real; });
 export type ProjectAssetPublicationMetadata = z.infer<
   typeof ProjectAssetPublicationMetadataSchema
 >;
 
-export const ProjectAssetProvenanceSchema = z
+export let ProjectAssetProvenanceSchema = lazySchema(() => (
+z
   .object({
     kind: z.enum(["import", "generation", "edit", "render", "admission"]),
     actionRunId: z.string().trim().min(1).optional(),
     model: z.string().trim().min(1).optional(),
     prompt: z.string().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectAssetProvenanceSchema = real; });
 export type ProjectAssetProvenance = z.infer<
   typeof ProjectAssetProvenanceSchema
 >;
 
 /** Storage-free identity of the collection entry from which a Resource was admitted. */
-export const ProjectAssetLinkedOriginSchema = z.discriminatedUnion("scope", [
+export let ProjectAssetLinkedOriginSchema = lazySchema(() => (
+z.discriminatedUnion("scope", [
   z
     .object({
       scope: z.literal("global"),
@@ -106,12 +120,14 @@ export const ProjectAssetLinkedOriginSchema = z.discriminatedUnion("scope", [
       entryId: z.string().trim().min(1),
     })
     .strict(),
-]);
+])
+), (real) => { ProjectAssetLinkedOriginSchema = real; });
 export type ProjectAssetLinkedOrigin = z.infer<
   typeof ProjectAssetLinkedOriginSchema
 >;
 
-export const ProjectAssetSourceSchema = z.discriminatedUnion("kind", [
+export let ProjectAssetSourceSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("owned"),
@@ -125,10 +141,12 @@ export const ProjectAssetSourceSchema = z.discriminatedUnion("kind", [
       origin: ProjectAssetLinkedOriginSchema,
     })
     .strict(),
-]);
+])
+), (real) => { ProjectAssetSourceSchema = real; });
 export type ProjectAssetSource = z.infer<typeof ProjectAssetSourceSchema>;
 
-export const ProjectAssetLifecycleSchema = z.discriminatedUnion("state", [
+export let ProjectAssetLifecycleSchema = lazySchema(() => (
+z.discriminatedUnion("state", [
   z.object({ state: z.literal("active") }).strict(),
   z
     .object({
@@ -146,11 +164,13 @@ export const ProjectAssetLifecycleSchema = z.discriminatedUnion("state", [
       purgedAt: z.string().trim().min(1),
     })
     .strict(),
-]);
+])
+), (real) => { ProjectAssetLifecycleSchema = real; });
 export type ProjectAssetLifecycle = z.infer<typeof ProjectAssetLifecycleSchema>;
 
 /** The only synchronized media identity inside a Project. */
-export const ProjectAssetEntrySchema = z
+export let ProjectAssetEntrySchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1),
     kind: AssetKindSchema,
@@ -162,11 +182,13 @@ export const ProjectAssetEntrySchema = z
     metadata: ProjectAssetMetadataSchema,
     provenance: ProjectAssetProvenanceSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectAssetEntrySchema = real; });
 export type ProjectAssetEntry = z.infer<typeof ProjectAssetEntrySchema>;
 
 /** Reusable library membership over an immutable Resource, independent from every Project. */
-export const GlobalAssetEntrySchema = z
+export let GlobalAssetEntrySchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1),
     kind: AssetKindSchema,
@@ -176,10 +198,12 @@ export const GlobalAssetEntrySchema = z
     metadata: ProjectAssetMetadataSchema,
     provenance: ProjectAssetProvenanceSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { GlobalAssetEntrySchema = real; });
 export type GlobalAssetEntry = z.infer<typeof GlobalAssetEntrySchema>;
 
-export const ActionBindingOwnerSchema = z.discriminatedUnion("kind", [
+export let ActionBindingOwnerSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("draft"),
@@ -201,11 +225,13 @@ export const ActionBindingOwnerSchema = z.discriminatedUnion("kind", [
       actionRunId: z.string().trim().min(1),
     })
     .strict(),
-]);
+])
+), (real) => { ActionBindingOwnerSchema = real; });
 export type ActionBindingOwner = z.infer<typeof ActionBindingOwnerSchema>;
 
 /** The only authoritative media usage reference inside a Project. */
-export const ActionAssetBindingSchema = z
+export let ActionAssetBindingSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1),
     owner: ActionBindingOwnerSchema,
@@ -214,7 +240,8 @@ export const ActionAssetBindingSchema = z
     projectAssetId: z.string().trim().min(1),
     role: z.enum(["primary", "reference", "source"]).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ActionAssetBindingSchema = real; });
 export type ActionAssetBinding = z.infer<typeof ActionAssetBindingSchema>;
 
 /**
@@ -222,18 +249,21 @@ export type ActionAssetBinding = z.infer<typeof ActionAssetBindingSchema>;
  * immutable file; the digest is checked once at import and again only when the
  * bytes are uploaded to the cloud.
  */
-export const LocalResourceErrorCodeSchema = z.enum([
+export let LocalResourceErrorCodeSchema = lazySchema(() => (
+z.enum([
   "LOCAL_RESOURCE_MISSING",
   "LOCAL_RESOURCE_UNREADABLE",
   "LOCAL_RESOURCE_SIZE_MISMATCH",
   "LOCAL_RESOURCE_DIGEST_MISMATCH",
-]);
+])
+), (real) => { LocalResourceErrorCodeSchema = real; });
 export type LocalResourceErrorCode = z.infer<
   typeof LocalResourceErrorCodeSchema
 >;
 
 /** One read-only Asset view resolved by the current Host. URLs are projections, never identity. */
-export const ResolvedAssetSchema = z
+export let ResolvedAssetSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1),
     kind: AssetKindSchema,
@@ -265,7 +295,8 @@ export const ResolvedAssetSchema = z
     /** Coded reason a failed Asset's local bytes cannot be served. */
     errorCode: LocalResourceErrorCodeSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ResolvedAssetSchema = real; });
 export type ResolvedAsset = z.infer<typeof ResolvedAssetSchema>;
 
 /**
@@ -281,7 +312,8 @@ export type ResolvedAsset = z.infer<typeof ResolvedAssetSchema>;
  * Host stores derived peaks in its private representation registry and exposes
  * them only through an authorized `ResolvedAsset.waveformUrl` projection.
  */
-export const AssetMetadataSchema = z.object({
+export let AssetMetadataSchema = lazySchema(() => (
+z.object({
   width: z.number().int().optional(),
   height: z.number().int().optional(),
   rotationDegrees: z.number().finite().min(0).lt(360).optional(),
@@ -312,7 +344,8 @@ export const AssetMetadataSchema = z.object({
   editOrigin: z.enum(["canvas-node", "asset-preview"]).optional(),
   /** Validated ActionInvocation envelope that produced this immutable output. */
   actionInvocation: z.unknown().optional(),
-});
+})
+), (real) => { AssetMetadataSchema = real; });
 export type AssetMetadata = z.infer<typeof AssetMetadataSchema>;
 
 /**
@@ -330,14 +363,17 @@ export type AssetMetadata = z.infer<typeof AssetMetadataSchema>;
  * Stored as JSON on `assets.sources`. NULL = lineage not recorded
  * (uploads, pre-existing rows). Not a query predicate.
  */
-export const AssetSourceSchema = z.object({
+export let AssetSourceSchema = lazySchema(() => (
+z.object({
   assetId: z.string(),
   role: z.enum(["edit-source", "reference", "primary"]),
-});
+})
+), (real) => { AssetSourceSchema = real; });
 export type AssetSource = z.infer<typeof AssetSourceSchema>;
 
 /** Legacy hosted/storage row. New product readers return `ResolvedAsset` instead. */
-export const AssetSchema = z.object({
+export let AssetSchema = lazySchema(() => (
+z.object({
   id: z.string(),
   userId: z.string(),
   kind: AssetKindSchema,
@@ -354,7 +390,8 @@ export const AssetSchema = z.object({
   signedCoverUrlExp: z.number().optional(),
   createdAt: z.number(),
   updatedAt: z.number(),
-});
+})
+), (real) => { AssetSchema = real; });
 export type Asset = z.infer<typeof AssetSchema>;
 
 export type AssetReadProofLike = Pick<
@@ -391,11 +428,13 @@ export function assetReadToken(asset: AssetReadProofLike): string {
   });
 }
 
-export const AssetRefRowSchema = z.object({
+export let AssetRefRowSchema = lazySchema(() => (
+z.object({
   assetId: z.string(),
   projectId: z.string(),
   importedAt: z.number(),
-});
+})
+), (real) => { AssetRefRowSchema = real; });
 export type AssetRefRow = z.infer<typeof AssetRefRowSchema>;
 
 export type AssetRefReadProofLike = Pick<

@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import type {
@@ -45,12 +46,14 @@ export type CredentialSourceControl = "field" | "button-window" | "button-action
  * a field with a fixed menu -- the region and service settings that used to be host
  * columns -- and renders as one.
  */
-export const CredentialSourceKindSchema = z.enum([
+export let CredentialSourceKindSchema = lazySchema(() => (
+z.enum([
   "field",
   "choice",
   "button",
   "display-code",
-]);
+])
+), (real) => { CredentialSourceKindSchema = real; });
 export type CredentialSourceKind = z.infer<typeof CredentialSourceKindSchema>;
 
 export interface CredentialSource {

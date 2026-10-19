@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from 'zod';
 
 /**
@@ -14,15 +15,18 @@ import { z } from 'zod';
  * the nearest supported ratio would be a silent substitution, which is the failure this codebase
  * spent the day removing.
  */
-export const AspectRatioSchema = z.object({
+export let AspectRatioSchema = lazySchema(() => (
+z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
-}).strict();
+}).strict()
+), (real) => { AspectRatioSchema = real; });
 
 export type AspectRatio = z.infer<typeof AspectRatioSchema>;
 
 /** A written positive integer ratio, normalized to its smallest terms. */
-export const AspectRatioStringSchema = z.string().trim().transform((value, ctx) => {
+export let AspectRatioStringSchema = lazySchema(() => (
+z.string().trim().transform((value, ctx) => {
   const ratio = parseAspectRatio(value);
   if (!ratio) {
     ctx.addIssue({
@@ -32,7 +36,8 @@ export const AspectRatioStringSchema = z.string().trim().transform((value, ctx) 
     return z.NEVER;
   }
   return aspectRatioLabel(ratio);
-});
+})
+), (real) => { AspectRatioStringSchema = real; });
 
 function greatestCommonDivisor(a: number, b: number): number {
   return b === 0 ? a : greatestCommonDivisor(b, a % b);

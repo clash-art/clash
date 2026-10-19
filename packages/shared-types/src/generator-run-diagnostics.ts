@@ -1,8 +1,10 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { ExecutablePluginFailureCodeSchema } from "./executable-plugin.js";
 
 /** Host read diagnostics only. Never persisted in the Project Run request/outcome. */
-export const GeneratorRunDiagnosticsSchema = z
+export let GeneratorRunDiagnosticsSchema = lazySchema(() => (
+z
   .object({
     failures: z.array(
       z
@@ -23,7 +25,8 @@ export const GeneratorRunDiagnosticsSchema = z
         .strict(),
     ),
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorRunDiagnosticsSchema = real; });
 export type GeneratorRunDiagnostics = z.infer<
   typeof GeneratorRunDiagnosticsSchema
 >;

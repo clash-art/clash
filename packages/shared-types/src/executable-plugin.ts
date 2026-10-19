@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { pluginCapabilities } from "./plugin-capabilities.js";
 import { z } from "zod";
 
@@ -85,16 +86,19 @@ export function isSafePluginRelativePath(value: string): boolean {
   );
 }
 
-export const PluginRelativePathSchema = z
+export let PluginRelativePathSchema = lazySchema(() => (
+z
   .string()
   .trim()
   .min(1)
   .refine(
     isSafePluginRelativePath,
     "Plugin paths must be relative and cannot contain dot segments.",
-  );
+  )
+), (real) => { PluginRelativePathSchema = real; });
 
-export const ExecutablePluginRuntimeSchema = z.discriminatedUnion("kind", [
+export let ExecutablePluginRuntimeSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("local"),
     transport: z.literal("stdio"),
@@ -135,7 +139,8 @@ export const ExecutablePluginRuntimeSchema = z.discriminatedUnion("kind", [
     endpoint: z.string().url(),
     resources: z.never().optional(),
   }),
-]);
+])
+), (real) => { ExecutablePluginRuntimeSchema = real; });
 
 /**
  * The interpreter for a local plugin.
@@ -156,47 +161,58 @@ export function resolvePluginLanguage(runtime: {
   return entrypoint.toLowerCase().endsWith(".py") ? "python" : "node";
 }
 
-export const ExecutablePluginCardExportSchema = z
+export let ExecutablePluginCardExportSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     kind: z.enum(["model-card", "action-card"]),
     path: PluginRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginCardExportSchema = real; });
 
-export const ExecutablePluginProviderExportSchema = z
+export let ExecutablePluginProviderExportSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     kind: z.literal("provider"),
     path: PluginRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginProviderExportSchema = real; });
 
-export const ExecutablePluginModelBindingExportSchema = z
+export let ExecutablePluginModelBindingExportSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     kind: z.literal("model-provider-binding"),
     path: PluginRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginModelBindingExportSchema = real; });
 
-export const ExecutablePluginGeneratorExportSchema = z
+export let ExecutablePluginGeneratorExportSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     kind: z.literal("generator"),
     path: PluginRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginGeneratorExportSchema = real; });
 
-export const ExecutablePluginViewExportSchema = z
+export let ExecutablePluginViewExportSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     kind: z.literal("view"),
     path: PluginRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginViewExportSchema = real; });
 
-export const ExecutableActionPresentationSchema = z.discriminatedUnion("type", [
+export let ExecutableActionPresentationSchema = lazySchema(() => (
+z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("form"),
@@ -215,7 +231,8 @@ export const ExecutableActionPresentationSchema = z.discriminatedUnion("type", [
       resourceUri: z.string().regex(/^ui:\/\/[a-z0-9][a-z0-9._/-]*$/),
     })
     .strict(),
-]);
+])
+), (real) => { ExecutableActionPresentationSchema = real; });
 
 /** A text form input consumes a plain-text Document, not an arbitrary typed record. */
 export function executableActionCardInputAcceptsType(
@@ -229,7 +246,8 @@ export function executableActionCardInputAcceptsType(
     : type.kind === "media" && type.mediaKind === modality;
 }
 
-export const ExecutableActionCardGeneratorSchema = z
+export let ExecutableActionCardGeneratorSchema = lazySchema(() => (
+z
   .object({
     definitionId: z.string().trim().min(1),
     actionId: z.string().trim().min(1),
@@ -243,9 +261,11 @@ export const ExecutableActionCardGeneratorSchema = z
       .strict()
       .default({}),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableActionCardGeneratorSchema = real; });
 
-export const ExecutableActionCardSchema = z
+export let ExecutableActionCardSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     name: z.string().trim().min(1),
@@ -391,9 +411,11 @@ export const ExecutableActionCardSchema = z
         );
       }
     }
-  });
+  })
+), (real) => { ExecutableActionCardSchema = real; });
 
-export const ExecutablePluginCardDocumentSchema = z
+export let ExecutablePluginCardDocumentSchema = lazySchema(() => (
+z
   .discriminatedUnion("kind", [
     z
       .object({
@@ -421,21 +443,25 @@ export const ExecutablePluginCardDocumentSchema = z
           "Plugin model Cards cannot select a Provider account; the Host selects it at runtime.",
       });
     });
-  });
+  })
+), (real) => { ExecutablePluginCardDocumentSchema = real; });
 
-export const ExecutablePluginGeneratorDocumentSchema = z
+export let ExecutablePluginGeneratorDocumentSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.generator/v1"),
     kind: z.literal("generator"),
     spec: GeneratorDefinitionSpecSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginGeneratorDocumentSchema = real; });
 export type ExecutablePluginGeneratorDocument = z.infer<
   typeof ExecutablePluginGeneratorDocumentSchema
 >;
 
 /** A persisted occurrence of an immutable Project Asset consumed by a plugin View. */
-export const PluginViewResourceSchema = z
+export let PluginViewResourceSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1).describe("Stable reference occurrence id within its collection, not an Asset or Canvas node id."),
     projectAssetId: z.string().trim().min(1).describe("Consumed immutable Project Asset. All persisted occurrences are references, including unselected candidates."),
@@ -452,14 +478,16 @@ export const PluginViewResourceSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+), (real) => { PluginViewResourceSchema = real; });
 export type PluginViewResource = z.infer<typeof PluginViewResourceSchema>;
 
 /** Existing Storyboard names remain source-compatible; there is one resource contract. */
 export const StoryboardViewResourceSchema = PluginViewResourceSchema;
 export type StoryboardViewResource = PluginViewResource;
 
-export const StoryboardViewDescriptionPartSchema = z.discriminatedUnion(
+export let StoryboardViewDescriptionPartSchema = lazySchema(() => (
+z.discriminatedUnion(
   "type",
   [
     z.object({ type: z.literal("text"), text: z.string() }).strict(),
@@ -470,10 +498,12 @@ export const StoryboardViewDescriptionPartSchema = z.discriminatedUnion(
       })
       .strict(),
   ],
-);
+)
+), (real) => { StoryboardViewDescriptionPartSchema = real; });
 
 /** A pending output is a reference to a durable run, never a provisional Asset. */
-export const PendingGeneratorOutputSchema = z
+export let PendingGeneratorOutputSchema = lazySchema(() => (
+z
   .object({
     generatorId: z.string().trim().min(1),
     generatorRevisionId: z.string().trim().min(1),
@@ -482,12 +512,14 @@ export const PendingGeneratorOutputSchema = z
     mediaKind: z.enum(["image", "video", "audio", "model"]),
     modelName: z.string().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { PendingGeneratorOutputSchema = real; });
 export type PendingGeneratorOutput = z.infer<
   typeof PendingGeneratorOutputSchema
 >;
 
-export const StoryboardViewMaterialSchema = z
+export let StoryboardViewMaterialSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1),
     label: z.string().trim().min(1).optional(),
@@ -535,23 +567,30 @@ export const StoryboardViewMaterialSchema = z
         });
       }
     });
-  });
+  })
+), (real) => { StoryboardViewMaterialSchema = real; });
 export type StoryboardViewMaterial = z.infer<
   typeof StoryboardViewMaterialSchema
 >;
 
-const StoryboardViewItemBaseSchema = z.object({
+let StoryboardViewItemBaseSchema = lazySchema(() => (
+z.object({
   id: z.string().trim().min(1),
   label: z.string().trim().min(1).optional(),
   description: z.array(StoryboardViewDescriptionPartSchema).default([]),
   details: z.string().optional(),
   materials: z.array(StoryboardViewMaterialSchema).default([]),
-});
+})
+), (real) => { StoryboardViewItemBaseSchema = real; });
 
-export const StoryboardViewItemSchema = StoryboardViewItemBaseSchema.strict();
-export const StoryboardViewShotSchema = StoryboardViewItemBaseSchema.extend({
+export let StoryboardViewItemSchema = lazySchema(() => (
+StoryboardViewItemBaseSchema.strict()
+), (real) => { StoryboardViewItemSchema = real; });
+export let StoryboardViewShotSchema = lazySchema(() => (
+StoryboardViewItemBaseSchema.extend({
   durationSeconds: z.number().finite().positive().optional(),
-}).strict();
+}).strict()
+), (real) => { StoryboardViewShotSchema = real; });
 export type StoryboardViewItem = z.infer<typeof StoryboardViewItemSchema>;
 export type StoryboardViewShot = z.infer<typeof StoryboardViewShotSchema>;
 
@@ -559,14 +598,16 @@ export type StoryboardViewShot = z.infer<typeof StoryboardViewShotSchema>;
  * Trace-backed Storyboard projection. It is draft structure only: generation is performed by an
  * installed native Generator and its Output Commit is attached as a resource candidate.
  */
-export const StoryboardViewStateSchema = z
+export let StoryboardViewStateSchema = lazySchema(() => (
+z
   .object({
     keyElements: z.array(StoryboardViewItemSchema),
     shots: z.array(StoryboardViewShotSchema),
     audioLayers: z.array(StoryboardViewItemSchema),
     uncategorized: z.array(StoryboardViewResourceSchema),
   })
-  .strict();
+  .strict()
+), (real) => { StoryboardViewStateSchema = real; });
 export type StoryboardViewState = z.infer<typeof StoryboardViewStateSchema>;
 
 /** clash.view/v1 currently supports the native Storyboard state contract only. */
@@ -612,7 +653,8 @@ export function listPluginViewAssetReferences(
   return references;
 }
 
-export const ExecutablePluginViewDocumentSchema = z
+export let ExecutablePluginViewDocumentSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.view/v1"),
     kind: z.literal("view"),
@@ -626,24 +668,28 @@ export const ExecutablePluginViewDocumentSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginViewDocumentSchema = real; });
 export type ExecutablePluginViewDocument = z.infer<
   typeof ExecutablePluginViewDocumentSchema
 >;
 
-export const ExecutablePluginViewReferenceSchema = z
+export let ExecutablePluginViewReferenceSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     definitionId: z.string().trim().regex(PLUGIN_ID_PATTERN),
     version: z.string().trim().regex(SEMVER_PATTERN),
     schemaHash: z.string().regex(SHA256_PATTERN),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginViewReferenceSchema = real; });
 export type ExecutablePluginViewReference = z.infer<
   typeof ExecutablePluginViewReferenceSchema
 >;
 
-export const ExecutablePluginProviderDefinitionSchema = z
+export let ExecutablePluginProviderDefinitionSchema = lazySchema(() => (
+z
   .object({
     /**
      * What this provider needs to authenticate, and how to draw it.
@@ -679,17 +725,21 @@ export const ExecutablePluginProviderDefinitionSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginProviderDefinitionSchema = real; });
 
-export const ExecutablePluginProviderDocumentSchema = z
+export let ExecutablePluginProviderDocumentSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.provider/v1"),
     kind: z.literal("provider"),
     spec: ExecutablePluginProviderDefinitionSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginProviderDocumentSchema = real; });
 
-export const ExecutablePluginModelBindingSpecSchema = z
+export let ExecutablePluginModelBindingSpecSchema = lazySchema(() => (
+z
   .intersection(
     z.object({
       id: z.string().trim().regex(PLUGIN_ID_PATTERN),
@@ -705,7 +755,8 @@ export const ExecutablePluginModelBindingSpecSchema = z
       message:
         "Plugin model bindings cannot select a Provider account; the Host selects it at runtime.",
     });
-  });
+  })
+), (real) => { ExecutablePluginModelBindingSpecSchema = real; });
 
 /**
  * The two facts a binding actually carries.
@@ -713,7 +764,8 @@ export const ExecutablePluginModelBindingSpecSchema = z
  * Everything else about a route -- provider id, upstream, api shape, executor,
  * credentials, priority -- belongs to the provider document that owns the binding.
  */
-export const ExecutablePluginModelBindingInputSchema = z
+export let ExecutablePluginModelBindingInputSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN).optional(),
     modelId: z
@@ -743,7 +795,8 @@ export const ExecutablePluginModelBindingInputSchema = z
       message:
         "Plugin model bindings cannot select a Provider account; the Host selects it at runtime.",
     });
-  });
+  })
+), (real) => { ExecutablePluginModelBindingInputSchema = real; });
 
 /**
  * Fill a binding's route from the provider that owns it.
@@ -804,13 +857,15 @@ export function resolveModelBindingFromProvider(
   return resolved;
 }
 
-export const ExecutablePluginModelBindingDocumentSchema = z
+export let ExecutablePluginModelBindingDocumentSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.binding/v1"),
     kind: z.literal("model-provider-binding"),
     spec: ExecutablePluginModelBindingSpecSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginModelBindingDocumentSchema = real; });
 
 /**
  * The operations an entry point answers.
@@ -825,10 +880,13 @@ export const ExecutablePluginModelBindingDocumentSchema = z
  */
 export const PLUGIN_ENTRY_OPERATIONS = ["submit", "poll", "callback"] as const;
 
-export const PluginEntryOperationSchema = z.enum(PLUGIN_ENTRY_OPERATIONS);
+export let PluginEntryOperationSchema = lazySchema(() => (
+z.enum(PLUGIN_ENTRY_OPERATIONS)
+), (real) => { PluginEntryOperationSchema = real; });
 export type PluginEntryOperation = z.infer<typeof PluginEntryOperationSchema>;
 
-export const ExecutablePluginFunctionExportSchema = z
+export let ExecutablePluginFunctionExportSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
     kind: z.enum(["action", "provider-projector", "provider-executor"]),
@@ -877,10 +935,12 @@ export const ExecutablePluginFunctionExportSchema = z
           "fall back on the work is lost.",
       });
     }
-  });
+  })
+), (real) => { ExecutablePluginFunctionExportSchema = real; });
 
 /** Activated Card plus the exact package provenance that supplied it. */
-export const ExecutablePluginCardRegistrationSchema = z
+export let ExecutablePluginCardRegistrationSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     version: z.string().trim().regex(SEMVER_PATTERN),
@@ -888,47 +948,58 @@ export const ExecutablePluginCardRegistrationSchema = z
     runtime: ExecutablePluginRuntimeSchema,
     document: ExecutablePluginCardDocumentSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginCardRegistrationSchema = real; });
 
-const ExecutablePluginArtifactRegistrationBaseSchema = z.object({
+let ExecutablePluginArtifactRegistrationBaseSchema = lazySchema(() => (
+z.object({
   pluginId: pluginIdSchema,
   version: z.string().trim().regex(SEMVER_PATTERN),
   schemaHash: z.string().regex(SHA256_PATTERN),
   runtime: ExecutablePluginRuntimeSchema,
-});
+})
+), (real) => { ExecutablePluginArtifactRegistrationBaseSchema = real; });
 
-export const ExecutablePluginProviderRegistrationSchema =
-  ExecutablePluginArtifactRegistrationBaseSchema.extend({
+export let ExecutablePluginProviderRegistrationSchema =
+  lazySchema(() => (
+ExecutablePluginArtifactRegistrationBaseSchema.extend({
     document: ExecutablePluginProviderDocumentSchema,
-  }).strict();
+  }).strict()
+), (real) => { ExecutablePluginProviderRegistrationSchema = real; });
 
-export const ExecutablePluginModelBindingRegistrationSchema =
-  ExecutablePluginArtifactRegistrationBaseSchema.extend({
+export let ExecutablePluginModelBindingRegistrationSchema =
+  lazySchema(() => (
+ExecutablePluginArtifactRegistrationBaseSchema.extend({
     document: ExecutablePluginModelBindingDocumentSchema,
-  }).strict();
+  }).strict()
+), (real) => { ExecutablePluginModelBindingRegistrationSchema = real; });
 
 /** Generator registrations carry semantic package provenance, never a Host execution realm. */
-export const ExecutablePluginGeneratorRegistrationSchema = z
+export let ExecutablePluginGeneratorRegistrationSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     version: z.string().trim().regex(SEMVER_PATTERN),
     schemaHash: z.string().regex(SHA256_PATTERN),
     document: ExecutablePluginGeneratorDocumentSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginGeneratorRegistrationSchema = real; });
 export type ExecutablePluginGeneratorRegistration = z.infer<
   typeof ExecutablePluginGeneratorRegistrationSchema
 >;
 
 /** View registrations are declarative UI/data contracts and carry no executable runtime. */
-export const ExecutablePluginViewRegistrationSchema = z
+export let ExecutablePluginViewRegistrationSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     version: z.string().trim().regex(SEMVER_PATTERN),
     schemaHash: z.string().regex(SHA256_PATTERN),
     document: ExecutablePluginViewDocumentSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginViewRegistrationSchema = real; });
 export type ExecutablePluginViewRegistration = z.infer<
   typeof ExecutablePluginViewRegistrationSchema
 >;
@@ -1086,41 +1157,50 @@ export function composeExecutablePluginModelCards(
 }
 
 /** Immutable reference stored with Canvas nodes and task invocations. */
-export const ExecutablePluginBindingSchema = z
+export let ExecutablePluginBindingSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     version: z.string().trim().regex(SEMVER_PATTERN),
     exportId: z.string().trim().regex(PLUGIN_ID_PATTERN),
     schemaHash: z.string().regex(SHA256_PATTERN),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginBindingSchema = real; });
 
-const ExecutablePluginAssetHandleObjectSchema = z
+let ExecutablePluginAssetHandleObjectSchema = lazySchema(() => (
+z
   .object({
     assetId: z.string().trim().min(1),
     uri: z.string().regex(/^clash-asset:\/\/.+/),
     kind: AssetKindSchema,
     mediaType: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginAssetHandleObjectSchema = real; });
 
 export const ExecutablePluginAssetHandleSchema =
   ExecutablePluginAssetHandleObjectSchema;
 
-const ExecutablePluginReferenceBaseSchema = z.object({
+let ExecutablePluginReferenceBaseSchema = lazySchema(() => (
+z.object({
   slot: z.string().trim().min(1),
   index: z.number().int().nonnegative(),
-});
+})
+), (real) => { ExecutablePluginReferenceBaseSchema = real; });
 
 /** The exact immutable media input accepted by the first-party speech Host tool. */
-export const ExecutableSpeechTranscriptionReferenceSchema =
-  ExecutablePluginReferenceBaseSchema.extend({
+export let ExecutableSpeechTranscriptionReferenceSchema =
+  lazySchema(() => (
+ExecutablePluginReferenceBaseSchema.extend({
     asset: ExecutablePluginAssetHandleObjectSchema.extend({
       kind: z.enum(["audio", "video"]),
     }).strict(),
-  }).strict();
+  }).strict()
+), (real) => { ExecutableSpeechTranscriptionReferenceSchema = real; });
 
-export const ExecutablePluginReferenceSchema = z.union([
+export let ExecutablePluginReferenceSchema = lazySchema(() => (
+z.union([
   ExecutablePluginReferenceBaseSchema.extend({
     asset: ExecutablePluginAssetHandleSchema,
   }).strict(),
@@ -1142,15 +1222,17 @@ export const ExecutablePluginReferenceSchema = z.union([
       })
       .strict(),
   }).strict(),
-]);
+])
+), (real) => { ExecutablePluginReferenceSchema = real; });
 
 /**
  * Asset delivery v0 broker result for `asset.resolve`; SDKs decode bytes before plugin business
  * code sees it. Provider-reachable and execution-realm URLs are separate forms rather than a
  * forgeable `url + reach` compatibility dialect.
  */
-export const ExecutablePluginBrokerResolvedReferenceSchema =
-  z.discriminatedUnion("form", [
+export let ExecutablePluginBrokerResolvedReferenceSchema =
+  lazySchema(() => (
+z.discriminatedUnion("form", [
     z
       .object({
         form: z.literal("provider-url"),
@@ -1191,9 +1273,11 @@ export const ExecutablePluginBrokerResolvedReferenceSchema =
         body: ExecutablePluginJsonValueSchema,
       })
       .strict(),
-  ]);
+  ])
+), (real) => { ExecutablePluginBrokerResolvedReferenceSchema = real; });
 
-export const ExecutablePluginInvocationSchema = z
+export let ExecutablePluginInvocationSchema = lazySchema(() => (
+z
   .object({
     protocol: z.literal("clash.plugin.invoke/v1"),
     invocationId: z.string().trim().min(1),
@@ -1338,9 +1422,11 @@ export const ExecutablePluginInvocationSchema = z
           "A future callback address may be supplied only when work is submitted.",
       });
     }
-  });
+  })
+), (real) => { ExecutablePluginInvocationSchema = real; });
 
-export const ExecutablePluginOutputSchema = z.union([
+export let ExecutablePluginOutputSchema = lazySchema(() => (
+z.union([
   z
     .object({
       slot: z.string().trim().min(1),
@@ -1375,10 +1461,12 @@ export const ExecutablePluginOutputSchema = z.union([
         .strict(),
     })
     .strict(),
-]);
+])
+), (real) => { ExecutablePluginOutputSchema = real; });
 
 /** Stable Host-level failure categories; raw upstream spellings belong in `providerCode`. */
-export const ExecutablePluginFailureCodeSchema = z.enum([
+export let ExecutablePluginFailureCodeSchema = lazySchema(() => (
+z.enum([
   "invalid_request",
   "authentication_failed",
   "permission_denied",
@@ -1401,10 +1489,12 @@ export const ExecutablePluginFailureCodeSchema = z.enum([
   "publication_failed",
   /** A pinned Asset reference is missing, trashed or not yet committed; nothing was sent. */
   "reference_unavailable",
-]);
+])
+), (real) => { ExecutablePluginFailureCodeSchema = real; });
 
 /** Structured failure facts shared by runtime results and declarative contract expectations. */
-export const ExecutablePluginFailureErrorSchema = z
+export let ExecutablePluginFailureErrorSchema = lazySchema(() => (
+z
   .object({
     /** Stable Clash category. Provider-specific spellings belong in `providerCode`. */
     code: ExecutablePluginFailureCodeSchema,
@@ -1415,9 +1505,11 @@ export const ExecutablePluginFailureErrorSchema = z
     providerCode: z.string().trim().min(1).optional(),
     details: ExecutablePluginJsonValueSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginFailureErrorSchema = real; });
 
-export const ExecutablePluginResultSchema = z.discriminatedUnion("status", [
+export let ExecutablePluginResultSchema = lazySchema(() => (
+z.discriminatedUnion("status", [
   z
     .object({
       protocol: z.literal("clash.plugin.result/v1"),
@@ -1463,17 +1555,21 @@ export const ExecutablePluginResultSchema = z.discriminatedUnion("status", [
       error: ExecutablePluginFailureErrorSchema,
     })
     .strict(),
-]);
+])
+), (real) => { ExecutablePluginResultSchema = real; });
 
-export const ExecutableMediaAnalysisReferenceSchema =
-  ExecutablePluginReferenceBaseSchema.extend({
+export let ExecutableMediaAnalysisReferenceSchema =
+  lazySchema(() => (
+ExecutablePluginReferenceBaseSchema.extend({
     asset: ExecutablePluginAssetHandleObjectSchema.extend({
       kind: z.enum(["image", "video", "audio"]),
     }).strict(),
-  }).strict();
+  }).strict()
+), (real) => { ExecutableMediaAnalysisReferenceSchema = real; });
 
 /** Credential-free request from the media-analysis plugin to Host routing. */
-export const ExecutableMediaAnalysisOperationSchema = z
+export let ExecutableMediaAnalysisOperationSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("media.analyze"),
     reference: ExecutableMediaAnalysisReferenceSchema,
@@ -1483,9 +1579,11 @@ export const ExecutableMediaAnalysisOperationSchema = z
     promptVersion: z.string().trim().min(1),
     responseFormat: z.enum(["json", "text"]).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableMediaAnalysisOperationSchema = real; });
 
-export const ExecutableMediaAnalysisResultSchema = z.discriminatedUnion(
+export let ExecutableMediaAnalysisResultSchema = lazySchema(() => (
+z.discriminatedUnion(
   "status",
   [
     z
@@ -1505,22 +1603,26 @@ export const ExecutableMediaAnalysisResultSchema = z.discriminatedUnion(
       })
       .strict(),
   ],
-);
+)
+), (real) => { ExecutableMediaAnalysisResultSchema = real; });
 
 /** The exact immutable video input accepted by the generic video-enhance Host tool. */
-export const ExecutableVideoEnhanceReferenceSchema =
-  ExecutablePluginReferenceBaseSchema.extend({
+export let ExecutableVideoEnhanceReferenceSchema =
+  lazySchema(() => (
+ExecutablePluginReferenceBaseSchema.extend({
     asset: ExecutablePluginAssetHandleObjectSchema.extend({
       kind: z.literal("video"),
     }).strict(),
-  }).strict();
+  }).strict()
+), (real) => { ExecutableVideoEnhanceReferenceSchema = real; });
 
 /**
  * Credential-free request from the generic video-enhance plugin to Host routing. The Host
  * dispatches this to whichever Provider implementation the frozen `route` names; this plugin
  * never recognizes a Provider by name.
  */
-export const ExecutableVideoEnhanceOperationSchema = z
+export let ExecutableVideoEnhanceOperationSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("video.enhance"),
     reference: ExecutableVideoEnhanceReferenceSchema,
@@ -1529,9 +1631,11 @@ export const ExecutableVideoEnhanceOperationSchema = z
     /** Present only when resuming Host-owned asynchronous enhancement work. */
     poll: ExecutablePluginJsonValueSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableVideoEnhanceOperationSchema = real; });
 
-export const ExecutableVideoEnhanceResultSchema = z.discriminatedUnion(
+export let ExecutableVideoEnhanceResultSchema = lazySchema(() => (
+z.discriminatedUnion(
   "status",
   [
     z
@@ -1558,10 +1662,12 @@ export const ExecutableVideoEnhanceResultSchema = z.discriminatedUnion(
       })
       .strict(),
   ],
-);
+)
+), (real) => { ExecutableVideoEnhanceResultSchema = real; });
 
 /** Credential-free request from an ASR plugin to the Host-owned speech runtime. */
-export const ExecutableSpeechTranscriptionOperationSchema = z
+export let ExecutableSpeechTranscriptionOperationSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("speech.transcribe"),
     reference: ExecutableSpeechTranscriptionReferenceSchema,
@@ -1570,9 +1676,11 @@ export const ExecutableSpeechTranscriptionOperationSchema = z
     /** Present only when resuming Host-owned asynchronous speech work. */
     poll: ExecutablePluginJsonValueSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableSpeechTranscriptionOperationSchema = real; });
 
-export const ExecutableSpeechTranscriptionResultSchema = z.discriminatedUnion(
+export let ExecutableSpeechTranscriptionResultSchema = lazySchema(() => (
+z.discriminatedUnion(
   "status",
   [
     z
@@ -1589,9 +1697,11 @@ export const ExecutableSpeechTranscriptionResultSchema = z.discriminatedUnion(
       })
       .strict(),
   ],
-);
+)
+), (real) => { ExecutableSpeechTranscriptionResultSchema = real; });
 
-export const ExecutableDirectorStageCaptureOperationSchema = z
+export let ExecutableDirectorStageCaptureOperationSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("director.stage.capture-frame"),
     /** Exact source Document bodies resolved from the frozen Director inputs. */
@@ -1623,19 +1733,23 @@ export const ExecutableDirectorStageCaptureOperationSchema = z
     aspectRatio: z.enum(["16:9", "9:16", "4:3", "3:4", "1:1"]),
     longEdge: z.number().int().min(256).max(4096),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableDirectorStageCaptureOperationSchema = real; });
 
-export const ExecutableDirectorStageCaptureResultSchema = z
+export let ExecutableDirectorStageCaptureResultSchema = lazySchema(() => (
+z
   .object({
     mediaType: z.literal("image/png"),
     width: z.number().int().positive(),
     height: z.number().int().positive(),
     bytesBase64: z.string().min(1),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableDirectorStageCaptureResultSchema = real; });
 
 /** Runs text through a configured local agent; Project scope comes from the invocation. */
-export const ExecutableAgentTextOperationSchema = z
+export let ExecutableAgentTextOperationSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("agent.text.generate"),
     prompt: z
@@ -1648,11 +1762,13 @@ export const ExecutableAgentTextOperationSchema = z
     modelId: z.string().trim().min(1).optional(),
     systemPrompt: z.string().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableAgentTextOperationSchema = real; });
 export type ExecutableAgentTextOperation = z.infer<
   typeof ExecutableAgentTextOperationSchema
 >;
-export const ExecutableAgentTextResultSchema = z
+export let ExecutableAgentTextResultSchema = lazySchema(() => (
+z
   .object({
     text: z
       .string()
@@ -1661,12 +1777,14 @@ export const ExecutableAgentTextResultSchema = z
         "Agent text requires a non-empty result.",
       ),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutableAgentTextResultSchema = real; });
 export type ExecutableAgentTextResult = z.infer<
   typeof ExecutableAgentTextResultSchema
 >;
 
-export const ExecutablePluginBrokerOperationSchema = z.union([
+export let ExecutablePluginBrokerOperationSchema = lazySchema(() => (
+z.union([
   ExecutableAgentTextOperationSchema,
   ExecutableDirectorStageCaptureOperationSchema,
   z
@@ -1821,18 +1939,22 @@ export const ExecutablePluginBrokerOperationSchema = z.union([
   ExecutableSpeechTranscriptionOperationSchema,
   ExecutableMediaAnalysisOperationSchema,
   ExecutableVideoEnhanceOperationSchema,
-]);
+])
+), (real) => { ExecutablePluginBrokerOperationSchema = real; });
 
-export const ExecutablePluginBrokerRequestSchema = z
+export let ExecutablePluginBrokerRequestSchema = lazySchema(() => (
+z
   .object({
     protocol: z.literal("clash.plugin.broker-request/v1"),
     requestId: z.string().trim().min(1),
     invocationId: z.string().trim().min(1),
     operation: ExecutablePluginBrokerOperationSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginBrokerRequestSchema = real; });
 
-export const ExecutablePluginBrokerResponseSchema = z.discriminatedUnion(
+export let ExecutablePluginBrokerResponseSchema = lazySchema(() => (
+z.discriminatedUnion(
   "status",
   [
     z
@@ -1857,9 +1979,11 @@ export const ExecutablePluginBrokerResponseSchema = z.discriminatedUnion(
       })
       .strict(),
   ],
-);
+)
+), (real) => { ExecutablePluginBrokerResponseSchema = real; });
 
-const ExecutablePluginContractBrokerFixtureSchema = z
+let ExecutablePluginContractBrokerFixtureSchema = lazySchema(() => (
+z
   .object({
     operation: ExecutablePluginBrokerOperationSchema,
     response: z.discriminatedUnion("status", [
@@ -1882,14 +2006,16 @@ const ExecutablePluginContractBrokerFixtureSchema = z
         .strict(),
     ]),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginContractBrokerFixtureSchema = real; });
 
 /**
  * A deterministic, declarative executable-plugin contract test. Broker
  * fixtures are inert test data: running a contract test never grants access to
  * a real credential, asset, network destination, or external write.
  */
-export const ExecutablePluginContractTestDocumentSchema = z
+export let ExecutablePluginContractTestDocumentSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.plugin.contract-test/v1"),
     id: z.string().trim().regex(PLUGIN_ID_PATTERN),
@@ -1950,7 +2076,8 @@ export const ExecutablePluginContractTestDocumentSchema = z
     ]),
     timeoutMs: z.number().int().positive().max(120_000).default(10_000),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginContractTestDocumentSchema = real; });
 
 /**
  * Where a plugin should PUT a result it holds as bytes, or undefined when no target exists.
@@ -1977,7 +2104,8 @@ export function uploadTargetForRuntime(
   return undefined;
 }
 
-export const ExecutablePluginContributionsSchema = z
+export let ExecutablePluginContributionsSchema = lazySchema(() => (
+z
   .object({
     cards: z.array(ExecutablePluginCardExportSchema).default([]),
     providers: z.array(ExecutablePluginProviderExportSchema).default([]),
@@ -2000,9 +2128,11 @@ export const ExecutablePluginContributionsSchema = z
       )
       .default([]),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginContributionsSchema = real; });
 
-export const ExecutablePluginManifestSchema = z
+export let ExecutablePluginManifestSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.plugin/v1"),
     /** `publisher.name`, like clash.google. The version travels beside it, never inside it. */
@@ -2076,7 +2206,8 @@ export const ExecutablePluginManifestSchema = z
       }
       contractTestPaths.add(path);
     }
-  });
+  })
+), (real) => { ExecutablePluginManifestSchema = real; });
 
 /**
  * The host dependency surface shared by local stdio and hosted HTTP runtimes.
@@ -2171,7 +2302,8 @@ export function executablePluginDependencyError(
 }
 
 /** Kernel-owned proof that one exact plugin directory passed activation. */
-export const ExecutablePluginActivationReceiptSchema = z
+export let ExecutablePluginActivationReceiptSchema = lazySchema(() => (
+z
   .object({
     apiVersion: z.literal("clash.plugin.activation/v1"),
     pluginId: pluginIdSchema,
@@ -2180,7 +2312,8 @@ export const ExecutablePluginActivationReceiptSchema = z
     contentHash: z.string().regex(SHA256_PATTERN),
     activatedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+), (real) => { ExecutablePluginActivationReceiptSchema = real; });
 
 export interface ValidatedExecutablePluginPackage {
   manifest: ExecutablePluginManifest;

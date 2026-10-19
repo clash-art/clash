@@ -1,3 +1,4 @@
+import { lazySchema, lazyValue } from "./lazy-schema.js";
 import { z } from "zod";
 import { isModelGenerationOutputType } from "./model-output-contract.js";
 
@@ -6,73 +7,95 @@ import { ExecutablePluginJsonValueSchema } from "./plugin-json-value.js";
 import { pluginIdSchema } from "./plugin-namespace.js";
 import { ProviderAssetInputSchema } from "./models.js";
 
-const nonEmptyIdSchema = z.string().trim().min(1);
-const prefixedSha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const jsonObjectSchema = z.record(z.string(), ExecutablePluginJsonValueSchema);
+let nonEmptyIdSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { nonEmptyIdSchema = real; });
+let prefixedSha256Schema = lazySchema(() => (
+z.string().regex(/^sha256:[a-f0-9]{64}$/)
+), (real) => { prefixedSha256Schema = real; });
+let jsonObjectSchema = lazySchema(() => (
+z.record(z.string(), ExecutablePluginJsonValueSchema)
+), (real) => { jsonObjectSchema = real; });
 const GeneratorMediaKindSchema = AssetKindSchema;
 
-export const GeneratorEditPolicySchema = z.enum([
+export let GeneratorEditPolicySchema = lazySchema(() => (
+z.enum([
   "advance-head",
   "fork-when-materialized",
-]);
+])
+), (real) => { GeneratorEditPolicySchema = real; });
 export type GeneratorEditPolicy = z.infer<typeof GeneratorEditPolicySchema>;
 
-export const MediaAssetRevisionRefSchema = z
+export let MediaAssetRevisionRefSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("media"),
     projectAssetId: nonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { MediaAssetRevisionRefSchema = real; });
 export type MediaAssetRevisionRef = z.infer<typeof MediaAssetRevisionRefSchema>;
 
-export const DocumentAssetRevisionRefSchema = z
+export let DocumentAssetRevisionRefSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("document"),
     documentAssetId: nonEmptyIdSchema,
     revisionId: nonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { DocumentAssetRevisionRefSchema = real; });
 export type DocumentAssetRevisionRef = z.infer<
   typeof DocumentAssetRevisionRefSchema
 >;
 
-export const AssetRevisionRefSchema = z.discriminatedUnion("kind", [
+export let AssetRevisionRefSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   MediaAssetRevisionRefSchema,
   DocumentAssetRevisionRefSchema,
-]);
+])
+), (real) => { AssetRevisionRefSchema = real; });
 export type AssetRevisionRef = z.infer<typeof AssetRevisionRefSchema>;
 
-export const GeneratorRevisionRefSchema = z
+export let GeneratorRevisionRefSchema = lazySchema(() => (
+z
   .object({
     generatorId: nonEmptyIdSchema,
     generatorRevisionId: nonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorRevisionRefSchema = real; });
 export type GeneratorRevisionRef = z.infer<typeof GeneratorRevisionRefSchema>;
 
-export const GeneratorInputTargetSchema = z.union([
+export let GeneratorInputTargetSchema = lazySchema(() => (
+z.union([
   AssetRevisionRefSchema,
   GeneratorRevisionRefSchema,
-]);
+])
+), (real) => { GeneratorInputTargetSchema = real; });
 export type GeneratorInputTarget = z.infer<typeof GeneratorInputTargetSchema>;
 
-export const GeneratorInputRefSchema = z
+export let GeneratorInputRefSchema = lazySchema(() => (
+z
   .object({
     slot: nonEmptyIdSchema,
     itemKey: nonEmptyIdSchema.optional(),
     target: GeneratorInputTargetSchema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorInputRefSchema = real; });
 export type GeneratorInputRef = z.infer<typeof GeneratorInputRefSchema>;
 
-export const GeneratorDefinitionRefSchema = z
+export let GeneratorDefinitionRefSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     definitionId: nonEmptyIdSchema,
     version: nonEmptyIdSchema,
     schemaHash: prefixedSha256Schema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorDefinitionRefSchema = real; });
 export type GeneratorDefinitionRef = z.infer<
   typeof GeneratorDefinitionRefSchema
 >;
@@ -82,44 +105,53 @@ export type GeneratorDefinitionRef = z.infer<
  * selection, process ids, and retry state are Host-private Task facts and are
  * deliberately absent.
  */
-export const GeneratorExecutorRefSchema = z
+export let GeneratorExecutorRefSchema = lazySchema(() => (
+z
   .object({
     pluginId: pluginIdSchema,
     version: nonEmptyIdSchema,
     exportId: nonEmptyIdSchema,
     schemaHash: prefixedSha256Schema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorExecutorRefSchema = real; });
 export type GeneratorExecutorRef = z.infer<typeof GeneratorExecutorRefSchema>;
 
-export const GeneratorMediaAssetTypeSchema = z
+export let GeneratorMediaAssetTypeSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("media"),
     mediaKind: AssetKindSchema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorMediaAssetTypeSchema = real; });
 export type GeneratorMediaAssetType = z.infer<
   typeof GeneratorMediaAssetTypeSchema
 >;
 
-export const GeneratorDocumentAssetTypeSchema = z
+export let GeneratorDocumentAssetTypeSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("document"),
     documentKind: nonEmptyIdSchema,
     schemaVersion: z.number().int().positive(),
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorDocumentAssetTypeSchema = real; });
 export type GeneratorDocumentAssetType = z.infer<
   typeof GeneratorDocumentAssetTypeSchema
 >;
 
-export const GeneratorAssetTypeSchema = z.discriminatedUnion("kind", [
+export let GeneratorAssetTypeSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   GeneratorMediaAssetTypeSchema,
   GeneratorDocumentAssetTypeSchema,
-]);
+])
+), (real) => { GeneratorAssetTypeSchema = real; });
 export type GeneratorAssetType = z.infer<typeof GeneratorAssetTypeSchema>;
 
-export const GeneratorInputCardinalitySchema = z
+export let GeneratorInputCardinalitySchema = lazySchema(() => (
+z
   .object({
     minItems: z.number().int().nonnegative(),
     maxItems: z.number().int().positive().nullable(),
@@ -133,7 +165,8 @@ export const GeneratorInputCardinalitySchema = z
         message: "maxItems must be greater than or equal to minItems.",
       });
     }
-  });
+  })
+), (real) => { GeneratorInputCardinalitySchema = real; });
 export type GeneratorInputCardinality = z.infer<
   typeof GeneratorInputCardinalitySchema
 >;
@@ -142,31 +175,37 @@ export const GeneratorActionInputCardinalitySchema =
   GeneratorInputCardinalitySchema;
 export type GeneratorActionInputCardinality = GeneratorInputCardinality;
 
-export const GeneratorFamilyInputTypeSchema = z
+export let GeneratorFamilyInputTypeSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("generator"),
     pluginId: pluginIdSchema,
     definitionId: nonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorFamilyInputTypeSchema = real; });
 export type GeneratorFamilyInputType = z.infer<
   typeof GeneratorFamilyInputTypeSchema
 >;
 
-export const GeneratorInputTypeSchema = z.discriminatedUnion("kind", [
+export let GeneratorInputTypeSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   GeneratorMediaAssetTypeSchema,
   GeneratorDocumentAssetTypeSchema,
   GeneratorFamilyInputTypeSchema,
-]);
+])
+), (real) => { GeneratorInputTypeSchema = real; });
 export type GeneratorInputType = z.infer<typeof GeneratorInputTypeSchema>;
 
-export const GeneratorInputPortSchema = z
+export let GeneratorInputPortSchema = lazySchema(() => (
+z
   .object({
     slot: nonEmptyIdSchema,
     accepts: z.array(GeneratorInputTypeSchema).min(1),
     cardinality: GeneratorInputCardinalitySchema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorInputPortSchema = real; });
 export type GeneratorInputPort = z.infer<typeof GeneratorInputPortSchema>;
 
 export const GeneratorActionInputPortSchema = GeneratorInputPortSchema;
@@ -176,7 +215,8 @@ export const GeneratorActionOutputCardinalitySchema =
   GeneratorInputCardinalitySchema;
 export type GeneratorActionOutputCardinality = GeneratorInputCardinality;
 
-export const GeneratorActionOutputPortSchema = z
+export let GeneratorActionOutputPortSchema = lazySchema(() => (
+z
   .object({
     slot: nonEmptyIdSchema,
     assetType: GeneratorAssetTypeSchema,
@@ -189,12 +229,14 @@ export const GeneratorActionOutputPortSchema = z
     promptParameter: nonEmptyIdSchema.optional(),
     promptVersion: nonEmptyIdSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorActionOutputPortSchema = real; });
 export type GeneratorActionOutputPort = z.infer<
   typeof GeneratorActionOutputPortSchema
 >;
 
-export const GeneratorActionOutputContractSchema = z
+export let GeneratorActionOutputContractSchema = lazySchema(() => (
+z
   .array(GeneratorActionOutputPortSchema)
   .min(1)
   .superRefine((outputs, context) => {
@@ -221,12 +263,14 @@ export const GeneratorActionOutputContractSchema = z
         });
       }
     });
-  });
+  })
+), (real) => { GeneratorActionOutputContractSchema = real; });
 export type GeneratorActionOutputContract = z.infer<
   typeof GeneratorActionOutputContractSchema
 >;
 
-export const GeneratorActionDefinitionSchema = z
+export let GeneratorActionDefinitionSchema = lazySchema(() => (
+z
   .object({
     id: nonEmptyIdSchema,
     executorExportId: nonEmptyIdSchema.optional(),
@@ -276,7 +320,8 @@ export const GeneratorActionDefinitionSchema = z
         message: `Model consumer source slot ${modelConsumer.sourceInputSlot} is not declared.`,
       });
     }
-  });
+  })
+), (real) => { GeneratorActionDefinitionSchema = real; });
 export type GeneratorActionDefinition = z.infer<
   typeof GeneratorActionDefinitionSchema
 >;
@@ -296,14 +341,17 @@ export const GENERATOR_PROJECTION_SURFACE_IDS = [
   "clash.director-stage",
 ] as const;
 
-export const GeneratorProjectionSurfaceIdSchema = z.enum(
+export let GeneratorProjectionSurfaceIdSchema = lazySchema(() => (
+z.enum(
   GENERATOR_PROJECTION_SURFACE_IDS,
-);
+)
+), (real) => { GeneratorProjectionSurfaceIdSchema = real; });
 export type GeneratorProjectionSurfaceId = z.infer<
   typeof GeneratorProjectionSurfaceIdSchema
 >;
 
-export const GeneratorProjectionSurfaceSchema = z
+export let GeneratorProjectionSurfaceSchema = lazySchema(() => (
+z
   .object({
     id: GeneratorProjectionSurfaceIdSchema,
     /** Generator state key holding the legacy editable document. */
@@ -313,19 +361,20 @@ export const GeneratorProjectionSurfaceSchema = z
     /** Action the legacy render/capture entrypoint submits. */
     primaryActionId: nonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { GeneratorProjectionSurfaceSchema = real; });
 export type GeneratorProjectionSurface = z.infer<
   typeof GeneratorProjectionSurfaceSchema
 >;
 
-const generatorDefinitionSpecShape = {
+let generatorDefinitionSpecShape = lazyValue(() => ({
   definitionId: nonEmptyIdSchema,
   stateSchema: jsonObjectSchema,
   editPolicy: GeneratorEditPolicySchema,
   persistentInputs: z.array(GeneratorInputPortSchema),
   actions: z.array(GeneratorActionDefinitionSchema).min(1),
   projectionSurface: GeneratorProjectionSurfaceSchema.optional(),
-} as const;
+} as const), {}, (real) => { generatorDefinitionSpecShape = real; });
 
 function validateGeneratorDefinitionSpec(
   input: {
@@ -378,15 +427,18 @@ function validateGeneratorDefinitionSpec(
 }
 
 /** Plugin-authored semantic definition before the Host injects package provenance. */
-export const GeneratorDefinitionSpecSchema = z
+export let GeneratorDefinitionSpecSchema = lazySchema(() => (
+z
   .object(generatorDefinitionSpecShape)
   .strict()
-  .superRefine(validateGeneratorDefinitionSpec);
+  .superRefine(validateGeneratorDefinitionSpec)
+), (real) => { GeneratorDefinitionSpecSchema = real; });
 export type GeneratorDefinitionSpec = z.infer<
   typeof GeneratorDefinitionSpecSchema
 >;
 
-export const GeneratorDefinitionSchema = GeneratorDefinitionRefSchema.extend({
+export let GeneratorDefinitionSchema = lazySchema(() => (
+GeneratorDefinitionRefSchema.extend({
   stateSchema: generatorDefinitionSpecShape.stateSchema,
   editPolicy: generatorDefinitionSpecShape.editPolicy,
   persistentInputs: generatorDefinitionSpecShape.persistentInputs,
@@ -394,7 +446,8 @@ export const GeneratorDefinitionSchema = GeneratorDefinitionRefSchema.extend({
   projectionSurface: generatorDefinitionSpecShape.projectionSurface,
 })
   .strict()
-  .superRefine(validateGeneratorDefinitionSpec);
+  .superRefine(validateGeneratorDefinitionSpec)
+), (real) => { GeneratorDefinitionSchema = real; });
 export type GeneratorDefinition = z.infer<typeof GeneratorDefinitionSchema>;
 
 export type ResolveGeneratorProjectionDefinitionResult =
@@ -437,21 +490,26 @@ export function resolveGeneratorProjectionDefinition(
 }
 
 /** Persisted mutable Project identity. The definition is derived from its immutable head revision. */
-export const ProjectGeneratorHeadSchema = z
+export let ProjectGeneratorHeadSchema = lazySchema(() => (
+z
   .object({
     id: nonEmptyIdSchema,
     headRevisionId: nonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ProjectGeneratorHeadSchema = real; });
 export type ProjectGeneratorHead = z.infer<typeof ProjectGeneratorHeadSchema>;
 
 /** Read projection joining the persisted head with its immutable revision definition. */
-export const ProjectGeneratorSchema = ProjectGeneratorHeadSchema.extend({
+export let ProjectGeneratorSchema = lazySchema(() => (
+ProjectGeneratorHeadSchema.extend({
   definitionRef: GeneratorDefinitionRefSchema,
-}).strict();
+}).strict()
+), (real) => { ProjectGeneratorSchema = real; });
 export type ProjectGenerator = z.infer<typeof ProjectGeneratorSchema>;
 
-export const GeneratorRevisionSchema = z
+export let GeneratorRevisionSchema = lazySchema(() => (
+z
   .object({
     id: nonEmptyIdSchema,
     generatorId: nonEmptyIdSchema,
@@ -471,15 +529,18 @@ export const GeneratorRevisionSchema = z
           "Same-Generator ancestry belongs in parentRevisionId, not forkedFrom.",
       });
     }
-  });
+  })
+), (real) => { GeneratorRevisionSchema = real; });
 export type GeneratorRevision = z.infer<typeof GeneratorRevisionSchema>;
 
-export const ActionRunStatusSchema = z.enum([
+export let ActionRunStatusSchema = lazySchema(() => (
+z.enum([
   "pending",
   "running",
   "succeeded",
   "failed",
-]);
+])
+), (real) => { ActionRunStatusSchema = real; });
 export type ActionRunStatus = z.infer<typeof ActionRunStatusSchema>;
 
 /**
@@ -488,7 +549,8 @@ export type ActionRunStatus = z.infer<typeof ActionRunStatusSchema>;
  * Settings validation, execution, and lineage cannot silently diverge.
  * Settings itself still persists only the Card id.
  */
-export const ActionRunModelRouteSchema = z
+export let ActionRunModelRouteSchema = lazySchema(() => (
+z
   .object({
     providerId: nonEmptyIdSchema.optional(),
     accountId: nonEmptyIdSchema.optional(),
@@ -533,22 +595,26 @@ export const ActionRunModelRouteSchema = z
         path: ["executorBinding", "exportId"],
       });
     }
-  });
+  })
+), (real) => { ActionRunModelRouteSchema = real; });
 export type ActionRunModelRoute = z.infer<typeof ActionRunModelRouteSchema>;
 
 /** Host-resolved Card selection frozen with the semantic Run authority. */
-export const ActionRunModelSelectionSchema = z
+export let ActionRunModelSelectionSchema = lazySchema(() => (
+z
   .object({
     semanticShape: z.string().trim().regex(/^[a-z][a-z0-9_]*$/),
     modelId: nonEmptyIdSchema,
     route: ActionRunModelRouteSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ActionRunModelSelectionSchema = real; });
 export type ActionRunModelSelection = z.infer<
   typeof ActionRunModelSelectionSchema
 >;
 
-export const ActionRunRequestSchema = z
+export let ActionRunRequestSchema = lazySchema(() => (
+z
   .object({
     actionRunId: nonEmptyIdSchema,
     generatorRevision: GeneratorRevisionRefSchema,
@@ -560,33 +626,40 @@ export const ActionRunRequestSchema = z
     invocationInputRefs: z.array(GeneratorInputRefSchema),
     outputContract: GeneratorActionOutputContractSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ActionRunRequestSchema = real; });
 export type ActionRunRequest = z.infer<typeof ActionRunRequestSchema>;
 
-export const ActionRunOutcomeSchema = z
+export let ActionRunOutcomeSchema = lazySchema(() => (
+z
   .object({
     actionRunId: nonEmptyIdSchema,
     status: z.enum(["succeeded", "failed"]),
   })
-  .strict();
+  .strict()
+), (real) => { ActionRunOutcomeSchema = real; });
 export type ActionRunOutcome = z.infer<typeof ActionRunOutcomeSchema>;
 
 /** Read projection joining an immutable Run request with its coarse public state. */
-export const ProjectActionRunSchema = ActionRunRequestSchema.extend({
+export let ProjectActionRunSchema = lazySchema(() => (
+ActionRunRequestSchema.extend({
   status: ActionRunStatusSchema,
-}).strict();
+}).strict()
+), (real) => { ProjectActionRunSchema = real; });
 export type ProjectActionRun = z.infer<typeof ProjectActionRunSchema>;
 
 /** @deprecated Compatibility alias; persist ActionRunRequest and ActionRunOutcome instead. */
 export const ActionRunSchema = ProjectActionRunSchema;
 export type ActionRun = ProjectActionRun;
 
-export const OutputCommitSchema = z
+export let OutputCommitSchema = lazySchema(() => (
+z
   .object({
     actionRunId: nonEmptyIdSchema,
     outputSlot: nonEmptyIdSchema,
     itemKey: nonEmptyIdSchema.optional(),
     asset: AssetRevisionRefSchema,
   })
-  .strict();
+  .strict()
+), (real) => { OutputCommitSchema = real; });
 export type OutputCommit = z.infer<typeof OutputCommitSchema>;

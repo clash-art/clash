@@ -1,19 +1,25 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
-const DirectorReferenceAspectRatioSchema = z.enum([
+let DirectorReferenceAspectRatioSchema = lazySchema(() => (
+z.enum([
   "16:9",
   "9:16",
   "4:3",
   "3:4",
   "1:1",
-]);
-const DirectorReferenceVector3Schema = z.tuple([
+])
+), (real) => { DirectorReferenceAspectRatioSchema = real; });
+let DirectorReferenceVector3Schema = lazySchema(() => (
+z.tuple([
   z.number(),
   z.number(),
   z.number(),
-]);
+])
+), (real) => { DirectorReferenceVector3Schema = real; });
 
-export const DirectorReferenceCameraOpticsSchema = z.object({
+export let DirectorReferenceCameraOpticsSchema = lazySchema(() => (
+z.object({
   projection: z.enum(["perspective", "orthographic"]),
   focalLengthMm: z.number().positive(),
   sensorWidthMm: z.number().positive(),
@@ -24,9 +30,11 @@ export const DirectorReferenceCameraOpticsSchema = z.object({
   iso: z.number().positive(),
   nearClipM: z.number().positive(),
   farClipM: z.number().positive(),
-});
+})
+), (real) => { DirectorReferenceCameraOpticsSchema = real; });
 
-export const DirectorReferenceCameraSchema = z.object({
+export let DirectorReferenceCameraSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   position: DirectorReferenceVector3Schema,
@@ -36,9 +44,11 @@ export const DirectorReferenceCameraSchema = z.object({
   targetObjectIds: z.array(z.string().min(1)).optional(),
   targetOffset: DirectorReferenceVector3Schema.optional(),
   optics: DirectorReferenceCameraOpticsSchema.optional(),
-});
+})
+), (real) => { DirectorReferenceCameraSchema = real; });
 
-export const DirectorReferenceShotSchema = z.object({
+export let DirectorReferenceShotSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   cameraId: z.string().min(1),
@@ -53,9 +63,11 @@ export const DirectorReferenceShotSchema = z.object({
     preset: z.string().min(1),
     easing: z.enum(["linear", "ease-in", "ease-out", "ease-in-out"]),
   }).optional(),
-});
+})
+), (real) => { DirectorReferenceShotSchema = real; });
 
-export const DirectorReferenceStillSchema = z.object({
+export let DirectorReferenceStillSchema = lazySchema(() => (
+z.object({
   assetId: z.string().min(1),
   cameraId: z.string().min(1),
   shotId: z.string().min(1),
@@ -63,14 +75,18 @@ export const DirectorReferenceStillSchema = z.object({
   stageRevisionId: z.string().min(1),
   timeSeconds: z.number().nonnegative().optional(),
   sequenceTimeSeconds: z.number().nonnegative().optional(),
-});
+})
+), (real) => { DirectorReferenceStillSchema = real; });
 
-export const DirectorReferenceVideoSchema = z.object({
+export let DirectorReferenceVideoSchema = lazySchema(() => (
+z.object({
   assetId: z.string().min(1),
   mimeType: z.string().min(1),
-});
+})
+), (real) => { DirectorReferenceVideoSchema = real; });
 
-export const DirectorReferencePacketSchema = z.object({
+export let DirectorReferencePacketSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   stageId: z.string().min(1),
   stageRevisionId: z.string().min(1),
@@ -91,7 +107,8 @@ export const DirectorReferencePacketSchema = z.object({
   shotSpec: z.object({
     shots: z.array(DirectorReferenceShotSchema),
   }),
-});
+})
+), (real) => { DirectorReferencePacketSchema = real; });
 
 export type DirectorReferenceShot = z.infer<typeof DirectorReferenceShotSchema>;
 export type DirectorReferenceCamera = z.infer<typeof DirectorReferenceCameraSchema>;
