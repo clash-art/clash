@@ -61,7 +61,10 @@ import {
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
 import { createFileReplicaPorts } from "./loro/replica-ports.js";
-import { LoroCloudReplicaLink } from "./loro/cloud-replica-link.js";
+import {
+  LoroCloudReplicaLink,
+  type CloudReplicaLinkState,
+} from "./loro/cloud-replica-link.js";
 import type { LocalWorkflowProcessor } from "./local-processor.js";
 import { projectCanvasPreviewCacheEntryFromDoc } from "./project-canvas-preview-cache.js";
 
@@ -105,6 +108,8 @@ export interface RemoteLoroPersistence {
     projectId: string;
     doc(): LoroDoc;
     commit(batchId: string, updates: Uint8Array[]): Promise<void>;
+    /** Optional transport-state observer implemented by the WebSocket link. */
+    onState?(state: CloudReplicaLinkState): void;
   }): ReplicaLinkPort<Uint8Array>;
 }
 
@@ -543,13 +548,14 @@ export function createHttpRemoteLoroPersistence(
       }
       await assertRemoteOk(response, "metadata save");
     },
-    createLink({ projectId, doc, commit }) {
+    createLink({ projectId, doc, commit, onState }) {
       return new LoroCloudReplicaLink({
         baseUrl: options.baseUrl,
         projectId,
         token: options.token,
         doc,
         commit,
+        onState,
       });
     },
   };
@@ -744,6 +750,11 @@ export class LocalLoroRoom {
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private remoteLink: ReplicaLinkPort<Uint8Array> | undefined;
+  /** Snapshot catch-up state, independent of the transport link. */
+  private snapshotState: ProjectRemoteStateMessage | undefined;
+  /** Last transport state reported by the cloud replica link. */
+  private cloudLinkState: CloudReplicaLinkState | undefined;
+  /** Combined state published to peers: the worse of snapshot and link. */
   private remoteState: ProjectRemoteStateMessage | undefined;
   private remoteSyncTimer: ReturnType<typeof setTimeout> | undefined;
   private remoteSyncAbort: AbortController | undefined;
@@ -944,7 +955,7 @@ export class LocalLoroRoom {
       this.remoteSnapshotRetryMaxMs,
       Math.max(retryDelay + 1, retryDelay * 2),
     );
-    this.remoteState = {
+    this.snapshotState = {
       type: "project.remote-state",
       projectId: this.projectId,
       state,
@@ -956,7 +967,7 @@ export class LocalLoroRoom {
       retryAt: new Date(Date.now() + retryDelay).toISOString(),
     };
     console.warn(`[local-sync] ${code}`, error);
-    this.broadcastJson({ ...this.remoteState });
+    this.publishRemoteState();
     this.startRemoteSnapshotSync(retryDelay);
   }
 
@@ -966,13 +977,61 @@ export class LocalLoroRoom {
       clearTimeout(this.remoteSyncTimer);
       this.remoteSyncTimer = undefined;
     }
-    if (!this.remoteState) return;
-    this.remoteState = undefined;
-    this.broadcastJson({
-      type: "project.remote-state",
-      projectId: this.projectId,
-      state: "synced",
-    });
+    this.snapshotState = undefined;
+    this.publishRemoteState();
+  }
+
+  /**
+   * Combine snapshot catch-up and transport health into one remote state.
+   *
+   * `import-failed` outranks `unavailable`: a connected link must never hide
+   * unreadable cloud bytes. Between two `unavailable` states the link wins
+   * because it carries the current transport code and next attempt time.
+   */
+  private combinedRemoteState(): ProjectRemoteStateMessage | undefined {
+    const snapshot = this.snapshotState;
+    const link = this.cloudLinkState;
+    const transport: ProjectRemoteStateMessage | undefined =
+      link && (link.state === "retrying" || link.state === "stopped")
+        ? {
+            type: "project.remote-state",
+            projectId: this.projectId,
+            state: "unavailable",
+            code: link.code ?? "CLOUD_LINK_UNREACHABLE",
+            message: `Cloud sync is unavailable; showing the local revision. Edits are saved locally.${link.message ? ` ${link.message.replace(/\s+/gu, " ").trim().slice(0, 500)}` : ""}`,
+            retryAt: link.retryAt,
+          }
+        : undefined;
+    if (!snapshot) return transport;
+    if (!transport) return snapshot;
+    return snapshot.state === "import-failed" ? snapshot : transport;
+  }
+
+  private publishRemoteState(): void {
+    if (this.closed) return;
+    const next = this.combinedRemoteState();
+    const previous = this.remoteState;
+    if (
+      next === previous ||
+      (next &&
+        previous &&
+        next.state === previous.state &&
+        next.code === previous.code &&
+        next.message === previous.message &&
+        next.retryAt === previous.retryAt)
+    ) {
+      return;
+    }
+    this.remoteState = next;
+    if (next) {
+      this.broadcastJson({ ...next });
+    } else {
+      this.broadcastJson({
+        type: "project.remote-state",
+        projectId: this.projectId,
+        state: "synced",
+      });
+    }
   }
 
   snapshot(): Uint8Array {
@@ -1144,7 +1203,7 @@ export class LocalLoroRoom {
     });
     if (options?.sendInitialSnapshot !== false) send(this.snapshot());
     // A client that connects while the cloud is unreachable must see the same
-    // stale-remote state as peers that were already attached.
+    // combined stale-remote state as peers that were already attached.
     if (this.remoteState)
       options?.sendJson?.({ ...this.remoteState });
     this.broadcastPresence();
@@ -2057,13 +2116,26 @@ export class LocalLoroRoom {
       projectId: this.projectId,
       doc: () => this.doc,
       commit: (batchId, updates) => this.receiveCloudUpdates(batchId, updates),
+      onState: (state) => this.reportCloudLinkState(state),
     });
     this.remoteLink = link;
     void Promise.resolve(link.start()).catch((error) => {
       if (this.remoteLink === link) this.remoteLink = undefined;
+      const message = error instanceof Error ? error.message : String(error);
+      this.reportCloudLinkState({
+        state: "stopped",
+        code: "CLOUD_LINK_START_FAILED",
+        message,
+      });
       console.error("[local-sync] failed to start cloud replica link", error);
     });
     return link;
+  }
+
+  private reportCloudLinkState(state: CloudReplicaLinkState): void {
+    if (this.closed) return;
+    this.cloudLinkState = state;
+    this.publishRemoteState();
   }
 
   private broadcastPresence(): void {

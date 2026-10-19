@@ -4,6 +4,7 @@ import { createReplicaStreamClient } from "@clash/replica/replica-stream-client"
 import { classifySyncError } from "@clash/shared-types";
 import {
   CloudReplicaLinkActionRequiredError,
+  type CloudReplicaLinkState,
   type LoroCloudReplicaLinkOptions,
 } from "./cloud-replica-link.js";
 
@@ -27,6 +28,7 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
   start() {
     if (!this.stopped) return;
     this.stopped = false;
+    this.state({ state: "connecting" });
     this.connect();
   }
   publish(update: Uint8Array) {
@@ -46,6 +48,10 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
     clearTimeout(this.retry);
     await this.client?.close();
     this.client = undefined;
+    this.state({ state: "stopped" });
+  }
+  private state(state: CloudReplicaLinkState): void {
+    this.options.onState?.(state);
   }
   private id(bytes: Uint8Array) {
     return createHash("sha256").update(bytes).digest("hex");
@@ -68,6 +74,11 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
         classification,
         `Cloud replica ${status}${typeof code === "string" ? ` ${code}` : ""}: ${error instanceof Error ? error.message : String(error)}`,
       );
+      this.state({
+        state: "stopped",
+        code: "CLOUD_LINK_ACTION_REQUIRED",
+        message: blocked.message,
+      });
       this.options.onError?.(blocked);
       this.options.onDisconnected?.();
       this.options.onActionRequired?.(classification, blocked);
@@ -77,6 +88,12 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       error instanceof Error ? error : Error(String(error)),
     );
     this.options.onDisconnected?.();
+    this.state({
+      state: "retrying",
+      code: "CLOUD_LINK_UNREACHABLE",
+      message: error instanceof Error ? error.message : String(error),
+      retryAt: new Date(Date.now() + 1000).toISOString(),
+    });
     const old = this.client;
     this.client = undefined;
     void old?.close();
@@ -111,6 +128,7 @@ export class CursorCloudReplicaLink implements ReplicaLinkPort<Uint8Array> {
       },
       onReady: () => {
         if (this.client !== client || this.stopped) return;
+        this.state({ state: "connected" });
         void client
           .append(this.id(local), local)
           .then(() => {

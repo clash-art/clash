@@ -13,6 +13,14 @@ export function ProjectRemoteStateNotice({
 }) {
   if (!state || state.state === "synced") return null;
   const retryAt = state.retryAt ? new Date(state.retryAt) : undefined;
+  const title =
+    state.state === "import-failed"
+      ? "Cloud changes could not be loaded"
+      : state.code === "CLOUD_LINK_ACTION_REQUIRED"
+        ? "Cloud sync needs your attention"
+        : state.code?.startsWith("CLOUD_LINK_")
+          ? "Cloud sync is unavailable"
+          : "Cloud state is unavailable";
   return (
     <div
       role="status"
@@ -28,11 +36,7 @@ export function ProjectRemoteStateNotice({
         className="mt-0.5 shrink-0 text-amber-600"
       />
       <div className="min-w-0 space-y-1">
-        <p className="font-medium">
-          {state.state === "import-failed"
-            ? "Cloud changes could not be loaded"
-            : "Cloud state is unavailable"}
-        </p>
+        <p className="font-medium">{title}</p>
         <p className="text-xs leading-relaxed">
           Showing the revision saved on this device. Your edits are saved
           locally.

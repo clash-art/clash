@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { createLocalApiApp } from "./app";
-import { ensureAgentCwd } from "./runtime/host/lib/session-cwd";
+import {
+  ensureAgentCwd,
+  writeProjectWorkspaceMarker,
+} from "./runtime/host/lib/session-cwd";
 
-it("prepares the hosted agent workspace during project creation before any session exists", async () => {
+it("commits the project row first and materializes the full agent workspace on the first session", async () => {
   const root = await mkdtemp(join(tmpdir(), "clash-project-workspace-"));
   const previous = process.env.CLASH_HOME;
   process.env.CLASH_HOME = root;
@@ -13,10 +16,8 @@ it("prepares the hosted agent workspace during project creation before any sessi
     const app = createLocalApiApp({
       dataDir: join(root, "local-api"),
       userId: "local-user",
-      prepareProjectWorkspace: (id) =>
-        ensureAgentCwd("clash", id, { harnessId: "codex-acp" }).then(
-          () => undefined,
-        ),
+      writeProjectWorkspaceMarker: (id) =>
+        writeProjectWorkspaceMarker(id).then(() => undefined),
     });
     const result = await app.request("/api/v1/projects", {
       method: "POST",
@@ -26,6 +27,22 @@ it("prepares the hosted agent workspace during project creation before any sessi
     expect(result.status).toBe(201);
     const { id } = (await result.json()) as { id: string };
     const cwd = join(root, "projects", id);
+    // Create writes only the identity marker; the agent layout is lazy.
+    expect(await readFile(join(cwd, ".clash/project.toml"), "utf8")).toContain(
+      `project_id = "${id}"`,
+    );
+    await expect(stat(join(cwd, "AGENTS.md"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(stat(join(cwd, "sessions"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(stat(join(cwd, ".agents/skills"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    // The first agent session pays for the full layout and Skill links.
+    await ensureAgentCwd("clash", id, { harnessId: "codex-acp" });
     expect(await readFile(join(cwd, "AGENTS.md"), "utf8")).not.toBe("");
     expect(await readlink(join(cwd, "CLAUDE.md"))).toBe("AGENTS.md");
     expect((await stat(join(cwd, "sessions"))).isDirectory()).toBe(true);
@@ -40,7 +57,7 @@ it("prepares the hosted agent workspace during project creation before any sessi
   }
 });
 
-it("does not publish a project when workspace preparation fails", async () => {
+it("does not publish a project when the post-commit marker fails", async () => {
   const root = await mkdtemp(
     join(tmpdir(), "clash-project-workspace-failure-"),
   );
@@ -48,7 +65,7 @@ it("does not publish a project when workspace preparation fails", async () => {
     const app = createLocalApiApp({
       dataDir: root,
       userId: "local-user",
-      prepareProjectWorkspace: async () => {
+      writeProjectWorkspaceMarker: async () => {
         throw new Error("Workspace is unavailable");
       },
     });
@@ -59,6 +76,9 @@ it("does not publish a project when workspace preparation fails", async () => {
       body: JSON.stringify({ name: "Cannot prepare" }),
     });
     expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      code: "PROJECT_WORKSPACE_PREPARE_FAILED",
+    });
     expect(await (await app.request("/api/v1/projects")).json()).toEqual(
       before,
     );

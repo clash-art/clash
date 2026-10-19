@@ -132,6 +132,24 @@ describe("SessionManager lifecycle", () => {
     mocks.resolveAgentMcpServers.mockResolvedValue([bundledClashMcp]);
   });
 
+  it("reports workspace preparation failure as a coded session error", async () => {
+    const { ensureAgentCwd } = await import("./session-cwd.js");
+    vi.mocked(ensureAgentCwd).mockRejectedValueOnce(
+      new Error("Project workspace preparation failed (agent workspace)"),
+    );
+    const sent: any[] = [];
+    const manager = new SessionManager((message) => sent.push(message));
+    await manager.start(sessionParams("workspace-prepare-failure"));
+    expect(sent).toContainEqual(
+      expect.objectContaining({
+        type: "session.error",
+        session_id: "workspace-prepare-failure",
+        code: "PROJECT_WORKSPACE_PREPARE_FAILED",
+        message: expect.stringContaining("Project workspace preparation failed"),
+      }),
+    );
+  });
+
   it("sends only the authored prompt, including after compaction and host resume", async () => {
     const prompts: unknown[] = [];
     mocks.runtimeStart.mockResolvedValue(

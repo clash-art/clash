@@ -33,6 +33,7 @@ import { bodyLimit } from "hono/body-limit";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
+import { PROJECT_WORKSPACE_PREPARE_FAILED } from "./workspace-prepare-error.js";
 import {
   LocalResourceError,
   LocalResourceImportSourceError,
@@ -403,6 +404,12 @@ export interface ProviderOAuthDriver {
 
 export interface LocalApiOptions {
   prepareProjectWorkspace?: (projectId: string) => Promise<void>;
+  /**
+   * Write the minimal project identity marker after the Project row commits.
+   * The full agent workspace layout is materialized lazily on the first
+   * session. A failure is rolled back with PROJECT_WORKSPACE_PREPARE_FAILED.
+   */
+  writeProjectWorkspaceMarker?: (projectId: string) => Promise<void>;
   /** Process log-sink health; a degraded sink is visible at `/health`. */
   logSinkHealth?: () => LogSinkHealth;
   dataDir: string;
@@ -3953,6 +3960,42 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       resolveOptions: async () => [],
     });
   const db = createDb(options.dataDir, options.onProjectChanged);
+  /**
+   * Project identity commits before any workspace filesystem work. If the
+   * minimal marker cannot be written, remove the just-created row so the
+   * caller gets one coded failure and no project without a workspace.
+   */
+  const writeCommittedProjectWorkspace = async (
+    projectId: string,
+  ): Promise<
+    { code: string; error: string; rollbackError?: string } | undefined
+  > => {
+    try {
+      await options.writeProjectWorkspaceMarker?.(projectId);
+      return undefined;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      let rollbackError: string | undefined;
+      try {
+        await db.update((state) => {
+          const index = state.projects.findIndex(
+            (project) => project.id === projectId,
+          );
+          if (index >= 0) state.projects.splice(index, 1);
+        });
+      } catch (rollbackFailure) {
+        rollbackError =
+          rollbackFailure instanceof Error
+            ? rollbackFailure.message
+            : String(rollbackFailure);
+      }
+      return {
+        code: PROJECT_WORKSPACE_PREPARE_FAILED,
+        error: message,
+        ...(rollbackError ? { rollbackError } : {}),
+      };
+    }
+  };
   const sessionEventStore = createLocalSessionEventStore(db);
   options.localAcp?.setSessionEventStore?.(sessionEventStore);
   let importedPluginStore:
@@ -10352,7 +10395,6 @@ const ForkPointBodySchema = z.object({
         if (existing.ownerId !== userId || !isActiveProject(existing)) return { conflict: true } as const;
         return { project: existing, created: false } as const;
       }
-      await options.prepareProjectWorkspace?.(id);
       const timestamp = nowIso();
       const project: LocalProject = {
         id, ownerId: userId, name, description: null,
@@ -10369,6 +10411,8 @@ const ForkPointBodySchema = z.object({
       error: "This project is archived or belongs to another owner. Initialization cannot restore or replace it.",
     }, 409);
     if (result.created) {
+      const workspaceFailure = await writeCommittedProjectWorkspace(id);
+      if (workspaceFailure) return c.json(workspaceFailure, 500);
       await db.appendMutationAudit(mutationAuditRecord({
         mutation: hostMutationSucceeded(
           { operation: "project_create", entity: { kind: "project", id } },
@@ -10391,7 +10435,6 @@ const ForkPointBodySchema = z.object({
     if (!name) return c.json({ error: "name is required" }, 400);
 
     const projectId = crypto.randomUUID();
-    await options.prepareProjectWorkspace?.(projectId);
     const project = await db.update((state) => {
       const createdAt = nowIso();
       const next: LocalProject = {
@@ -10406,6 +10449,8 @@ const ForkPointBodySchema = z.object({
       state.projects.unshift(next);
       return next;
     });
+    const workspaceFailure = await writeCommittedProjectWorkspace(project.id);
+    if (workspaceFailure) return c.json(workspaceFailure, 500);
     const readToken = projectReceiptReadToken(project);
     const mutation = hostMutationSucceeded(
       {

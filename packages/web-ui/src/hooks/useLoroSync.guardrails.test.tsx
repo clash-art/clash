@@ -298,10 +298,22 @@ describe("useLoroSync guardrails", () => {
       expect(result.current.remoteState).toEqual(unavailable);
       // A remote-stale notice never blocks local editing or the socket.
       expect(result.current.connected).toBe(true);
+      const linkDown = {
+        ...unavailable,
+        code: "CLOUD_LINK_UNREACHABLE",
+        retryAt: new Date(Date.now() + 12_000).toISOString(),
+      };
+      await act(async () => { await socket.onmessage?.({ data: JSON.stringify(linkDown) }); });
+      expect(result.current.remoteState).toEqual(linkDown);
+      // Unknown codes are not accepted as a coded remote state.
+      await act(async () => {
+        await socket.onmessage?.({ data: JSON.stringify({ ...unavailable, code: "NOT_A_REMOTE_CODE" }) });
+      });
+      expect(result.current.remoteState).toEqual(linkDown);
       await act(async () => {
         await socket.onmessage?.({ data: JSON.stringify({ ...unavailable, projectId: "other" }) });
       });
-      expect(result.current.remoteState).toEqual(unavailable);
+      expect(result.current.remoteState).toEqual(linkDown);
       await act(async () => {
         await socket.onmessage?.({ data: JSON.stringify({ type: "project.remote-state", projectId: "remote-state", state: "synced" }) });
       });
