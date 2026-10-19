@@ -426,7 +426,10 @@ we follow the stricter practice.
   Claude Code, esbuild and sharp do) once a package name exists.
 
 **Desktop (existing):** download the dmg, NSIS installer or AppImage from the
-release. Only macOS arm64 updates itself: electron-updater reads
+release. The rolling desktop-preview release and the (still disabled) stable
+workflow both publish the Linux x64 AppImage
+`Clash-Desktop-Linux-x64.AppImage`, and both fail if it is missing. Only macOS
+arm64 updates itself: electron-updater reads
 `preview-mac.yml` or `latest-mac.yml` through a `generic` feed pointed at the
 GitHub release directory and downloads the zip differentially using blockmaps
 (PR #27). electron-builder's docs advise against calling `setFeedURL`; Clash
