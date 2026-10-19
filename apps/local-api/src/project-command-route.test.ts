@@ -26,6 +26,7 @@ import { createLocalApiApp } from "./app.js";
 import type { LocalProjectAssetReplica } from "./local-project-assets.js";
 import { LocalLoroRoomHub } from "./sync.js";
 import { createSqliteDurableRunJournal } from "./durable-run-journal.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 async function timelineGeneratorRegistrations(): Promise<
   ExecutablePluginGeneratorRegistration[]
@@ -449,6 +450,9 @@ describe("project host command route", () => {
   });
 
   afterEach(async () => {
+    // Drain the SQLite worker before removing the data dir so a queued
+    // statement cannot recreate local.sqlite mid-rm.
+    await closeLocalSqliteClient();
     await rm(dataDir, { recursive: true, force: true });
   });
 

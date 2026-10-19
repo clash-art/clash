@@ -77,6 +77,12 @@ export default defineConfig({
   },
   test: {
     environment: "node",
+    // Drain and close the process-wide SQLite worker before every suite's own
+    // afterEach removes its temporary data dir. "list" keeps hook registration
+    // order for teardown, so this file hook runs before the suite cleanups
+    // (the default "stack" order would run it after them).
+    setupFiles: ["./vitest.setup.ts"],
+    sequence: { hooks: "list" },
     // Only source suites are authoritative. Without this, the compiled copies
     // under dist/ are collected too: every suite runs twice and the stale copy
     // fails against current fixtures while being unmaintainable.

@@ -54,7 +54,7 @@ function identity(record: DurableRunRecord): DurableRunIdentity {
 
 function openRawDatabase(dataDir: string) {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): {
         run(...params: unknown[]): unknown;
         all(...params: unknown[]): Record<string, unknown>[];
@@ -63,7 +63,7 @@ function openRawDatabase(dataDir: string) {
       close(): void;
     };
   };
-  return new DatabaseSync(join(dataDir, "local.sqlite"));
+  return new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
 }
 
 afterEach(async () => {

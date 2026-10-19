@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
-import { createRequire } from "node:module";
 import {
   access,
   chmod,
@@ -34,24 +33,10 @@ import {
   normalizeLocalBlobStorageKey,
 } from "./local-asset-paths.js";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
-import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
-import { preparedStatement } from "./local-prepared-statements.js";
-
-interface SqliteRunResult {
-  changes: number | bigint;
-}
-
-interface SqliteStatement {
-  run(...params: unknown[]): SqliteRunResult;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-  all(...params: unknown[]): Record<string, unknown>[];
-}
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
+import {
+  createLocalSqliteConnection,
+  type LocalSqliteDatabase,
+} from "./local-sqlite-connection.js";
 
 interface LocalResourceRow {
   resourceId: string;
@@ -445,59 +430,6 @@ export function resourceIdForSha256(digest: string): string {
   return `sha256:${digest}`;
 }
 
-const nodeRequire = createRequire(import.meta.url);
-
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const database = new DatabaseSync(path);
-  database.exec(`
-    PRAGMA busy_timeout = 5000;
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS local_resources (
-      resource_id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL,
-      digest_sha256 TEXT NOT NULL,
-      byte_length INTEGER NOT NULL,
-      content_type TEXT,
-      storage_key TEXT NOT NULL,
-      facts_verified INTEGER NOT NULL DEFAULT 0 CHECK (facts_verified IN (0, 1)),
-      created_at INTEGER NOT NULL
-    );
-    DROP INDEX IF EXISTS local_resources_digest;
-    CREATE INDEX IF NOT EXISTS local_resources_digest_lookup
-      ON local_resources (digest_sha256);
-    CREATE TABLE IF NOT EXISTS local_resource_staging (
-      resource_id TEXT PRIMARY KEY,
-      digest_sha256 TEXT NOT NULL,
-      byte_length INTEGER NOT NULL,
-      storage_key TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-  `);
-  const resourcesTable = database
-    .prepare(
-      `
-      SELECT sql
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'local_resources'
-    `,
-    )
-    .get();
-  if (
-    typeof resourcesTable?.sql !== "string" ||
-    !/\bfacts_verified\b/i.test(resourcesTable.sql)
-  ) {
-    database.exec(`
-      ALTER TABLE local_resources
-        ADD COLUMN facts_verified INTEGER NOT NULL DEFAULT 0
-        CHECK (facts_verified IN (0, 1));
-    `);
-  }
-  return database;
-}
-
 function parseStagingRow(
   row: Record<string, unknown>,
 ): LocalResourceStagingRow {
@@ -698,33 +630,27 @@ export function createLocalResourceStore(options: {
   clashRoot?: string;
   onEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalResourceStore {
-  const databasePath = `${options.dataDir}/local.sqlite`;
+  const connection = createLocalSqliteConnection({ dataDir: options.dataDir });
 
-  const connection = createLocalSqliteConnection({
-    dataDir: options.dataDir,
-    path: databasePath,
-    open: openDatabase,
-  });
-
+  /** Every task here is one statement: no session lease is needed. */
   async function withDatabase<T>(
-    task: (database: SqliteDatabase) => T,
+    task: (database: LocalSqliteDatabase) => Promise<T>,
   ): Promise<T> {
-    return connection.use(task);
+    return task(connection.db);
   }
 
   async function rowFor(
     resourceId: string,
   ): Promise<LocalResourceRow | undefined> {
-    return withDatabase((database) => {
-      const row = preparedStatement(
-        database,
-        `
+    return withDatabase(async (database) => {
+      const row = await database
+        .prepare(
+          `
           SELECT resource_id, kind, digest_sha256, byte_length,
                  content_type, storage_key, facts_verified, created_at
           FROM local_resources
           WHERE resource_id = ?
         `,
-        (sql) => database.prepare(sql),
       ).get(resourceId);
       return row ? parseRow(row) : undefined;
     });
@@ -733,15 +659,14 @@ export function createLocalResourceStore(options: {
   async function stagingRowFor(
     resourceId: string,
   ): Promise<LocalResourceStagingRow | undefined> {
-    return withDatabase((database) => {
-      const row = preparedStatement(
-        database,
-        `
+    return withDatabase(async (database) => {
+      const row = await database
+        .prepare(
+          `
           SELECT resource_id, digest_sha256, byte_length, storage_key
           FROM local_resource_staging
           WHERE resource_id = ?
         `,
-        (sql) => database.prepare(sql),
       ).get(resourceId);
       return row ? parseStagingRow(row) : undefined;
     });
@@ -794,8 +719,8 @@ export function createLocalResourceStore(options: {
     storageKey: string,
     factsVerified: boolean,
   ): Promise<LocalResourceProjection> {
-    await withDatabase((database) => {
-      database
+    await withDatabase(async (database) => {
+      await database
         .prepare(
           `
           INSERT OR IGNORE INTO local_resources (
@@ -842,8 +767,8 @@ export function createLocalResourceStore(options: {
   async function promoteVerifiedFacts(
     intended: LocalResourceFacts,
   ): Promise<void> {
-    await withDatabase((database) => {
-      database
+    await withDatabase(async (database) => {
+      await database
         .prepare(
           `
           UPDATE local_resources
@@ -1022,8 +947,8 @@ export function createLocalResourceStore(options: {
       }
       linkedPath = path;
       await chmod(path, 0o444);
-      await withDatabase((database) => {
-        database
+      await withDatabase(async (database) => {
+        await database
           .prepare(
             `
             INSERT OR IGNORE INTO local_resource_staging (
@@ -1056,8 +981,8 @@ export function createLocalResourceStore(options: {
       // its receipt; otherwise the bytes leak with nothing pointing at them.
       if (linkedPath) {
         await unlink(linkedPath).catch(() => undefined);
-        await withDatabase((database) => {
-          database
+        await withDatabase(async (database) => {
+          await database
             .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
             .run(resourceId);
         }).catch(() => undefined);
@@ -1152,8 +1077,8 @@ export function createLocalResourceStore(options: {
         }
         linked = true;
         await chmod(path, 0o444);
-        await withDatabase((database) => {
-          database
+        await withDatabase(async (database) => {
+          await database
             .prepare(
               `
             INSERT OR IGNORE INTO local_resource_staging (
@@ -1176,8 +1101,8 @@ export function createLocalResourceStore(options: {
         // them. The caller rethrows the original coded error.
         if (linked) {
           await unlink(path).catch(() => undefined);
-          await withDatabase((database) => {
-            database
+          await withDatabase(async (database) => {
+            await database
               .prepare(
                 "DELETE FROM local_resource_staging WHERE resource_id = ?",
               )
@@ -1536,8 +1461,8 @@ export function createLocalResourceStore(options: {
         }
         moved = true;
         await chmod(path, 0o444);
-        await withDatabase((database) => {
-          database
+        await withDatabase(async (database) => {
+          await database
             .prepare(
               `
               INSERT OR IGNORE INTO local_resource_staging (
@@ -1564,8 +1489,8 @@ export function createLocalResourceStore(options: {
         // staging delete and the finalize error still explain the failure.
         if (moved) {
           await unlink(path).catch(() => undefined);
-          await withDatabase((database) => {
-            database
+          await withDatabase(async (database) => {
+            await database
               .prepare(
                 "DELETE FROM local_resource_staging WHERE resource_id = ?",
               )
@@ -1583,8 +1508,8 @@ export function createLocalResourceStore(options: {
       if (!staged) return;
       // Receipt first: a crash in between leaves an unreferenced file, never a
       // receipt without bytes.
-      await withDatabase((database) => {
-        database
+      await withDatabase(async (database) => {
+        await database
           .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
           .run(staged.resourceId);
       });
@@ -1615,8 +1540,8 @@ export function createLocalResourceStore(options: {
       await projection(sealed);
       // Receipt first: a crash in between leaves an unreferenced file that the
       // next stage of the same digest replaces, never a receipt without bytes.
-      await withDatabase((database) => {
-        database
+      await withDatabase(async (database) => {
+        await database
           .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
           .run(staged.resourceId);
       });
@@ -1754,11 +1679,7 @@ export async function sweepLocalResourceStaging(options: {
   }
   const now = options.now ?? Date.now();
   const cutoff = now - options.olderThanMs;
-  const connection = createLocalSqliteConnection({
-    dataDir: options.dataDir,
-    path: `${options.dataDir}/local.sqlite`,
-    open: openDatabase,
-  });
+  const connection = createLocalSqliteConnection({ dataDir: options.dataDir });
   const removed: LocalResourceStagingSweepRemoval[] = [];
   const failed: LocalResourceStagingSweepFailure[] = [];
   let scanned = 0;
@@ -1769,8 +1690,8 @@ export async function sweepLocalResourceStaging(options: {
   );
 
   const stagingRows = async () =>
-    connection.use((database) =>
-      database
+    connection.use(async (database) =>
+      await database
         .prepare(
           `
           SELECT resource_id, digest_sha256, byte_length, storage_key, created_at
@@ -1804,187 +1725,183 @@ export async function sweepLocalResourceStaging(options: {
     }
   };
 
-  try {
-    const rows = await stagingRows();
-    for (const row of rows) {
-      scanned += 1;
-      const resourceId =
-        typeof row.resource_id === "string" ? row.resource_id : undefined;
-      const digest =
-        typeof row.digest_sha256 === "string" ? row.digest_sha256 : undefined;
-      const storageKey =
-        typeof row.storage_key === "string" ? row.storage_key : undefined;
-      const createdAt =
-        typeof row.created_at === "number" ? row.created_at : undefined;
-      if (!resourceId || !digest || !storageKey || createdAt === undefined) {
-        failed.push({
-          ...(resourceId ? { resourceId } : {}),
-          ...(storageKey ? { storageKey } : {}),
-          message: "Local Resource staging row is corrupt.",
-        });
-        continue;
-      }
-      if (createdAt > cutoff) continue;
-      try {
-        const path = await assetPathForDelete(
-          options.dataDir,
-          storageKey,
-          options.clashRoot,
-        );
-        const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code === "ENOENT") return undefined;
-          throw error;
-        });
-        // A receipt can be older than a file that a concurrent retry just
-        // replaced at the same content address. Only sweep a file that is also
-        // past the safe age.
-        if (file && file.mtimeMs > cutoff) continue;
-        const sealed = await connection.use((database) =>
-          database
-            .prepare(
-              "SELECT storage_key, byte_length FROM local_resources WHERE digest_sha256 = ? LIMIT 1",
-            )
-            .get(digest),
-        );
-        if (sealed) {
-          const sealedStorageKey =
-            typeof sealed.storage_key === "string" ? sealed.storage_key : "";
-          // A corrupt/legacy sealed row can point at the staging name itself.
-          // Unlinking it would delete the only copy of the sealed bytes.
-          if (sealedStorageKey === storageKey) {
-            throw new Error(
-              `Sealed Resource ${digest} is registered at its staging storage key ${storageKey}; refusing to unlink the staging path.`,
-            );
-          }
-          // The staging name can be the last intact copy of these bytes. Keep
-          // it unless the sealed original is present at its registered length.
-          await assertSealedOriginalPresent({
-            digest,
-            storageKey: sealedStorageKey,
-            byteLength:
-              typeof sealed.byte_length === "number" ? sealed.byte_length : -1,
-            keep: "staging bytes",
-          });
-        }
-        await connection.use((database) => {
-          database
-            .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
-            .run(resourceId);
-        });
-        if (file) {
-          await unlink(path);
-        }
-        removed.push({
-          resourceId,
-          storageKey,
-          reason: file ? (sealed ? "sealed" : "unreferenced") : "missing_file",
-        });
-      } catch (error) {
-        failed.push({
-          resourceId,
-          storageKey,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
+  const rows = await stagingRows();
+  for (const row of rows) {
+    scanned += 1;
+    const resourceId =
+      typeof row.resource_id === "string" ? row.resource_id : undefined;
+    const digest =
+      typeof row.digest_sha256 === "string" ? row.digest_sha256 : undefined;
+    const storageKey =
+      typeof row.storage_key === "string" ? row.storage_key : undefined;
+    const createdAt =
+      typeof row.created_at === "number" ? row.created_at : undefined;
+    if (!resourceId || !digest || !storageKey || createdAt === undefined) {
+      failed.push({
+        ...(resourceId ? { resourceId } : {}),
+        ...(storageKey ? { storageKey } : {}),
+        message: "Local Resource staging row is corrupt.",
+      });
+      continue;
     }
+    if (createdAt > cutoff) continue;
+    try {
+      const path = await assetPathForDelete(
+        options.dataDir,
+        storageKey,
+        options.clashRoot,
+      );
+      const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      // A receipt can be older than a file that a concurrent retry just
+      // replaced at the same content address. Only sweep a file that is also
+      // past the safe age.
+      if (file && file.mtimeMs > cutoff) continue;
+      const sealed = await connection.use(async (database) =>
+        await database
+          .prepare(
+            "SELECT storage_key, byte_length FROM local_resources WHERE digest_sha256 = ? LIMIT 1",
+          )
+          .get(digest),
+      );
+      if (sealed) {
+        const sealedStorageKey =
+          typeof sealed.storage_key === "string" ? sealed.storage_key : "";
+        // A corrupt/legacy sealed row can point at the staging name itself.
+        // Unlinking it would delete the only copy of the sealed bytes.
+        if (sealedStorageKey === storageKey) {
+          throw new Error(
+            `Sealed Resource ${digest} is registered at its staging storage key ${storageKey}; refusing to unlink the staging path.`,
+          );
+        }
+        // The staging name can be the last intact copy of these bytes. Keep
+        // it unless the sealed original is present at its registered length.
+        await assertSealedOriginalPresent({
+          digest,
+          storageKey: sealedStorageKey,
+          byteLength:
+            typeof sealed.byte_length === "number" ? sealed.byte_length : -1,
+          keep: "staging bytes",
+        });
+      }
+      await connection.use(async (database) => {
+        await database
+          .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
+          .run(resourceId);
+      });
+      if (file) {
+        await unlink(path);
+      }
+      removed.push({
+        resourceId,
+        storageKey,
+        reason: file ? (sealed ? "sealed" : "unreferenced") : "missing_file",
+      });
+    } catch (error) {
+      failed.push({
+        resourceId,
+        storageKey,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 
-    // A crash between deleting a receipt and unlinking its file leaves a
-    // `local-blobs/<digest>/staging` name with no row. Only the staging name is
-    // removed; a sealed `original.*` is a different directory entry and is
-    // never touched.
-    const digestDirectories = await readdir(blobsRoot, {
-      withFileTypes: true,
-    }).catch((error: NodeJS.ErrnoException) => {
+  // A crash between deleting a receipt and unlinking its file leaves a
+  // `local-blobs/<digest>/staging` name with no row. Only the staging name is
+  // removed; a sealed `original.*` is a different directory entry and is
+  // never touched.
+  const digestDirectories = await readdir(blobsRoot, {
+    withFileTypes: true,
+  }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of digestDirectories) {
+    if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
+    scanned += 1;
+    const storageKey = `local-blobs/${entry.name}/staging`;
+    const path = join(blobsRoot, entry.name, "staging");
+    try {
+      const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!file || file.mtimeMs > cutoff) continue;
+      const row = await connection.use(async (database) =>
+        await database
+          .prepare(
+            "SELECT resource_id FROM local_resource_staging WHERE storage_key = ? LIMIT 1",
+          )
+          .get(storageKey),
+      );
+      if (row) continue;
+      const sealed = await connection.use(async (database) =>
+        await database
+          .prepare(
+            "SELECT storage_key, byte_length FROM local_resources WHERE digest_sha256 = ? LIMIT 1",
+          )
+          .get(entry.name),
+      );
+      if (sealed) {
+        const sealedStorageKey =
+          typeof sealed.storage_key === "string" ? sealed.storage_key : "";
+        // Same defensive rule as the receipt loop: never treat the staging
+        // name as redundant when it is the sealed Resource's storage.
+        if (sealedStorageKey === storageKey) {
+          throw new Error(
+            `Sealed Resource ${entry.name} is registered at its staging storage key ${storageKey}; refusing to unlink the staging path.`,
+          );
+        }
+        await assertSealedOriginalPresent({
+          digest: entry.name,
+          storageKey: sealedStorageKey,
+          byteLength:
+            typeof sealed.byte_length === "number" ? sealed.byte_length : -1,
+          keep: "staging file",
+        });
+      }
+      await unlink(path);
+      removed.push({
+        storageKey,
+        reason: "orphan_file",
+      });
+    } catch (error) {
+      failed.push({
+        storageKey,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  // Streamed imports write a temporary name before their content address is
+  // known. A crash can leave one behind with no receipt at all.
+  const streamRoot = join(blobsRoot, "stream-staging");
+  const streamTemporaries = await readdir(streamRoot).catch(
+    (error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return [];
       throw error;
-    });
-    for (const entry of digestDirectories) {
-      if (!entry.isDirectory() || !/^[a-f0-9]{64}$/.test(entry.name)) continue;
-      scanned += 1;
-      const storageKey = `local-blobs/${entry.name}/staging`;
-      const path = join(blobsRoot, entry.name, "staging");
-      try {
-        const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code === "ENOENT") return undefined;
-          throw error;
-        });
-        if (!file || file.mtimeMs > cutoff) continue;
-        const row = await connection.use((database) =>
-          database
-            .prepare(
-              "SELECT resource_id FROM local_resource_staging WHERE storage_key = ? LIMIT 1",
-            )
-            .get(storageKey),
-        );
-        if (row) continue;
-        const sealed = await connection.use((database) =>
-          database
-            .prepare(
-              "SELECT storage_key, byte_length FROM local_resources WHERE digest_sha256 = ? LIMIT 1",
-            )
-            .get(entry.name),
-        );
-        if (sealed) {
-          const sealedStorageKey =
-            typeof sealed.storage_key === "string" ? sealed.storage_key : "";
-          // Same defensive rule as the receipt loop: never treat the staging
-          // name as redundant when it is the sealed Resource's storage.
-          if (sealedStorageKey === storageKey) {
-            throw new Error(
-              `Sealed Resource ${entry.name} is registered at its staging storage key ${storageKey}; refusing to unlink the staging path.`,
-            );
-          }
-          await assertSealedOriginalPresent({
-            digest: entry.name,
-            storageKey: sealedStorageKey,
-            byteLength:
-              typeof sealed.byte_length === "number" ? sealed.byte_length : -1,
-            keep: "staging file",
-          });
-        }
-        await unlink(path);
-        removed.push({
-          storageKey,
-          reason: "orphan_file",
-        });
-      } catch (error) {
-        failed.push({
-          storageKey,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    // Streamed imports write a temporary name before their content address is
-    // known. A crash can leave one behind with no receipt at all.
-    const streamRoot = join(blobsRoot, "stream-staging");
-    const streamTemporaries = await readdir(streamRoot).catch(
-      (error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return [];
+    },
+  );
+  for (const name of streamTemporaries) {
+    const storageKey = `local-blobs/stream-staging/${name}`;
+    const path = join(streamRoot, name);
+    scanned += 1;
+    try {
+      const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
         throw error;
-      },
-    );
-    for (const name of streamTemporaries) {
-      const storageKey = `local-blobs/stream-staging/${name}`;
-      const path = join(streamRoot, name);
-      scanned += 1;
-      try {
-        const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
-          if (error.code === "ENOENT") return undefined;
-          throw error;
-        });
-        if (!file || file.mtimeMs > cutoff) continue;
-        await unlink(path);
-        removed.push({ storageKey, reason: "stream_temp" });
-      } catch (error) {
-        failed.push({
-          storageKey,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
+      });
+      if (!file || file.mtimeMs > cutoff) continue;
+      await unlink(path);
+      removed.push({ storageKey, reason: "stream_temp" });
+    } catch (error) {
+      failed.push({
+        storageKey,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
-  } finally {
-    await connection.close();
   }
 
   return { scanned, removed, failed };

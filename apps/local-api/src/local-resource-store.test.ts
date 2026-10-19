@@ -35,12 +35,12 @@ function ageStagingRow(
   createdAt: number,
 ): void {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     database
       .prepare(
@@ -54,12 +54,12 @@ function ageStagingRow(
 
 function stagingRowCount(dataDir: string): number {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = database
       .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
@@ -76,12 +76,12 @@ function setSealedStorageKey(
   storageKey: string,
 ): void {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     database
       .prepare(

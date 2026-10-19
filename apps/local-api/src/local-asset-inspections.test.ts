@@ -19,6 +19,7 @@ import {
   createLocalAssetInspectionService,
 } from "./local-asset-inspections.js";
 import { createLocalResourceStore } from "./local-resource-store.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 const temporaryDirectories: string[] = [];
 const nodeRequire = createRequire(import.meta.url);
@@ -1829,7 +1830,7 @@ describe("Local Asset inspection", () => {
   it("keeps the backend representation registry intact when inspection opens", async () => {
     const { dataDir, resources } = await fixture();
     const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         exec(sql: string): void;
         prepare(sql: string): {
           get(...params: unknown[]): Record<string, unknown> | undefined;
@@ -1837,7 +1838,7 @@ describe("Local Asset inspection", () => {
         close(): void;
       };
     };
-    const legacy = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const legacy = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     legacy.exec(`
       CREATE TABLE local_asset_representations (
         source_resource_id TEXT NOT NULL,
@@ -1868,7 +1869,7 @@ describe("Local Asset inspection", () => {
       knownFacts: { width: 1, height: 1, contentType: "image/png" },
     });
 
-    const inspected = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const inspected = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       expect(
         inspected
@@ -1890,7 +1891,7 @@ describe("Local Asset inspection", () => {
       contentType: "video/mp4",
     });
     const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         exec(sql: string): void;
         prepare(sql: string): {
           run(...params: unknown[]): void;
@@ -1898,8 +1899,12 @@ describe("Local Asset inspection", () => {
         close(): void;
       };
     };
-    const legacyDatabase = new DatabaseSync(join(dataDir, "local.sqlite"));
+    // A pre-recipe data dir: close the Host SQLite worker so the next call
+    // reopens and migrates the legacy table, as a Host restart does.
+    await closeLocalSqliteClient();
+    const legacyDatabase = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     legacyDatabase.exec(`
+      DROP TABLE local_asset_inspections;
       CREATE TABLE local_asset_inspections (
         source_resource_id TEXT PRIMARY KEY,
         facts_json TEXT NOT NULL,
@@ -1964,13 +1969,13 @@ describe("Local Asset inspection", () => {
       contentType: "video/mp4",
     });
     const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         exec(sql: string): void;
         prepare(sql: string): { run(...params: unknown[]): void };
         close(): void;
       };
     };
-    const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     database.exec(`
       CREATE TABLE IF NOT EXISTS local_asset_inspections (
         source_resource_id TEXT NOT NULL,

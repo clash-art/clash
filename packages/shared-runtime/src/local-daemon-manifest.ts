@@ -15,6 +15,16 @@ export const LOCAL_DAEMON_RUNTIME_MANIFEST_FILE =
 
 export const LOCAL_DAEMON_RUNTIME_MANIFEST_SCHEMA_VERSION = 1;
 
+/**
+ * Directories beside the entry that the Host loads at runtime. `host-workers`
+ * holds worker-thread entries (the SQLite worker) that the entry bundle spawns.
+ */
+export const LOCAL_DAEMON_RUNTIME_PAYLOAD_ROOTS = [
+  "bundled-plugins",
+  "host-workers",
+  "project-ui",
+] as const;
+
 export interface LocalDaemonRuntimeManifestFile {
   /** POSIX-relative to the runtime directory; `local-api.cjs` is the entry. */
   path: string;
@@ -60,7 +70,7 @@ export async function writeLocalDaemonRuntimeManifest(
 ): Promise<LocalDaemonRuntimeManifest> {
   const runtimeDir = options.runtimeDir;
   const entryFile = options.entryFile ?? "local-api.cjs";
-  const payloadRoots = options.payloadRoots ?? ["bundled-plugins", "project-ui"];
+  const payloadRoots = options.payloadRoots ?? LOCAL_DAEMON_RUNTIME_PAYLOAD_ROOTS;
   const entryPath = join(runtimeDir, entryFile);
   await stat(entryPath);
 

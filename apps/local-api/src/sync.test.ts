@@ -94,7 +94,7 @@ let dataDir = "";
 function openSqlite() {
   const require = createRequire(import.meta.url);
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): {
         get(...params: unknown[]): Record<string, unknown> | undefined;
         all(...params: unknown[]): Array<Record<string, unknown>>;
@@ -102,7 +102,7 @@ function openSqlite() {
       close(): void;
     };
   };
-  return new DatabaseSync(join(dataDir, "local.sqlite"));
+  return new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
 }
 
 function testAssetInspection(

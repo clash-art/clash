@@ -35,12 +35,12 @@ function downgradeResourceToPrePromotionRow(
   resourceId: string,
 ): void {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     database
       .prepare(

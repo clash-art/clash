@@ -13,6 +13,7 @@ import {
   type LocalDocumentProjectAuthority,
 } from "./local-document-product.js";
 import { createLocalApiApp } from "./app.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 import { createAssetEvidenceClient } from "@clash/shared-runtime/asset-evidence-client";
 import { createAssetSearchClient } from "@clash/shared-runtime/asset-search-client";
 import { createActionsCommand } from "../../../packages/cli/src/commands/actions";
@@ -20,6 +21,9 @@ import { registerActionTools } from "../../../packages/shared-mcp/src/action-too
 
 const directories: string[] = [];
 afterEach(async () => {
+  // An app's startup staging sweep can still be queued in the SQLite worker,
+  // which would recreate local.sqlite mid-removal: drain and close it first.
+  await closeLocalSqliteClient();
   await Promise.all(
     directories
       .splice(0)

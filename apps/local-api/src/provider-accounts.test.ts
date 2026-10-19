@@ -15,12 +15,12 @@ async function tempProviderDir(): Promise<string> {
 
 function readSqlitePragma(dataDir: string, pragma: string): string | number | undefined {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(): Record<string, string | number> | undefined };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = db.prepare(`PRAGMA ${pragma}`).get();
     return row ? Object.values(row)[0] : undefined;
@@ -31,12 +31,12 @@ function readSqlitePragma(dataDir: string, pragma: string): string | number | un
 
 function readMigrationMarker(dataDir: string, id: string): boolean {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(value: string): Record<string, unknown> | undefined };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     return Boolean(db.prepare("SELECT id FROM local_migration WHERE id = ?").get(id));
   } finally {
@@ -46,12 +46,12 @@ function readMigrationMarker(dataDir: string, id: string): boolean {
 
 function createPartialProviderSqlite(dataDir: string): void {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       exec(sql: string): void;
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     db.exec(`
       CREATE TABLE local_migration (id TEXT PRIMARY KEY NOT NULL);

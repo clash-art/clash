@@ -97,6 +97,12 @@ test("bundled CLI and peer plugin MCP share one persistent Clash daemon", async 
     assert.equal(firstRecord.profile, "prod");
     assert.equal(processExists(firstRecord.pid), true);
     assert.equal(await isHealthy(firstRecord.endpoint), true);
+    // The packaged Host spawns its SQLite worker from runtime/host-workers;
+    // an unshipped or broken worker reports SQLITE_WORKER_OPEN_FAILED here.
+    const health = (await (await fetch(new URL("/health", firstRecord.endpoint))).json()) as {
+      sqlite?: unknown;
+    };
+    assert.equal(health.sqlite, undefined);
     const created = JSON.parse(
       (
         await execFileAsync(

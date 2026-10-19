@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import {
   mkdtemp,
@@ -27,19 +28,28 @@ afterEach(async () => {
   );
 });
 
+/**
+ * The SQLite worker creates and migrates `local.sqlite` on the Host's first
+ * request, so a request rejected before touching storage can leave no
+ * database or table yet: none staged.
+ */
 function stagingRowCount(dataDir: string): number {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  if (!existsSync(join(dataDir, "local.sqlite"))) return 0;
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = database
       .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
       .get() as { count: number };
     return row.count;
+  } catch (error) {
+    if (/no such table: local_resource_staging/.test(String(error))) return 0;
+    throw error;
   } finally {
     database.close();
   }

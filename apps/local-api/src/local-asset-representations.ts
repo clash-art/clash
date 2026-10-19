@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
 
@@ -42,8 +41,10 @@ import {
   type LocalResourceStore,
   type LocalResourceStoreEvent,
 } from "./local-resource-store.js";
-import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
-import { preparedStatement } from "./local-prepared-statements.js";
+import {
+  createLocalSqliteConnection,
+  type LocalSqliteRunResult,
+} from "./local-sqlite-connection.js";
 import {
   createBoundedWorkQueue,
   WorkQueueClosedError,
@@ -173,22 +174,6 @@ export interface LocalAssetRepresentationService {
   close(): Promise<void>;
 }
 
-interface SqliteRunResult {
-  changes: number | bigint;
-}
-
-interface SqliteStatement {
-  run(...params: unknown[]): SqliteRunResult;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-  all(...params: unknown[]): Record<string, unknown>[];
-}
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
-
 const IMAGE_THUMBNAIL_RECIPE: LocalAssetRepresentationRecipe = {
   id: "image-thumbnail",
   version: 1,
@@ -263,7 +248,6 @@ const PROXY_SUBMIT_TIMEOUT_MS = 6 * 60 * 60_000;
  */
 const INTERRUPTED_RETRY_BASE_MS = 30_000;
 const REPRESENTATION_RETRY_MAX_MS = 5 * 60_000;
-const nodeRequire = createRequire(import.meta.url);
 
 function interruptedRetryDelayMs(attempts: number): number {
   return Math.min(
@@ -561,88 +545,7 @@ function parseRepresentationFailure(
   };
 }
 
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const database = new DatabaseSync(path);
-  database.exec(`
-    PRAGMA busy_timeout = 5000;
-    PRAGMA journal_mode = WAL;
-  `);
-  const existing = database
-    .prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'local_asset_representations'",
-    )
-    .get();
-  if (
-    existing &&
-    typeof existing.sql === "string" &&
-    !/\bresult_json\b/i.test(existing.sql)
-  ) {
-    const rows = database
-      .prepare(
-        "SELECT source_resource_id, recipe, representation_resource_id, created_at FROM local_asset_representations",
-      )
-      .all();
-    database.exec(`
-      BEGIN IMMEDIATE;
-      ALTER TABLE local_asset_representations RENAME TO local_asset_representations_legacy;
-      CREATE TABLE local_asset_representations (
-        source_resource_id TEXT NOT NULL,
-        recipe TEXT NOT NULL,
-        role TEXT NOT NULL,
-        result_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (source_resource_id, recipe)
-      );
-      COMMIT;
-    `);
-    const insert = database.prepare(`
-      INSERT INTO local_asset_representations (
-        source_resource_id, recipe, role, result_json, created_at
-      ) VALUES (?, ?, 'thumbnail', ?, ?)
-    `);
-    for (const row of rows) {
-      if (
-        typeof row.source_resource_id === "string" &&
-        typeof row.recipe === "string" &&
-        typeof row.representation_resource_id === "string" &&
-        typeof row.created_at === "number"
-      ) {
-        insert.run(
-          row.source_resource_id,
-          row.recipe,
-          JSON.stringify({
-            role: "thumbnail",
-            recipe: row.recipe,
-            resourceId: row.representation_resource_id,
-          }),
-          row.created_at,
-        );
-      }
-    }
-    database.exec("DROP TABLE local_asset_representations_legacy");
-  } else {
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS local_asset_representations (
-        source_resource_id TEXT NOT NULL,
-        recipe TEXT NOT NULL,
-        role TEXT NOT NULL,
-        result_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (source_resource_id, recipe)
-      );
-    `);
-  }
-  database.exec(`
-    CREATE INDEX IF NOT EXISTS local_asset_representations_role
-      ON local_asset_representations (source_resource_id, role, created_at);
-  `);
-  return database;
-}
-
-function changes(result: SqliteRunResult): number {
+function changes(result: LocalSqliteRunResult): number {
   return typeof result.changes === "bigint"
     ? Number(result.changes)
     : result.changes;
@@ -973,7 +876,6 @@ export function createLocalAssetRepresentationService(options: {
   /** Structured events for Host-private maintenance failures. */
   onResourceEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalAssetRepresentationService {
-  const databasePath = `${options.dataDir}/local.sqlite`;
   const ownerId = options.ownerId ?? DEFAULT_OWNER_ID;
   const now = options.now ?? Date.now;
   const configuredTimeouts = options.mediaProcessTimeoutsMs ?? {};
@@ -1017,38 +919,26 @@ export function createLocalAssetRepresentationService(options: {
   let wakeTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
 
-  const connection = createLocalSqliteConnection({
-    dataDir: options.dataDir,
-    path: databasePath,
-    open: openDatabase,
-  });
-
-  async function withDatabase<T>(
-    task: (database: SqliteDatabase) => T,
-  ): Promise<T> {
-    return connection.use(task);
-  }
+  const connection = createLocalSqliteConnection({ dataDir: options.dataDir });
 
   async function readRecipe(
     sourceResourceId: string,
     recipe: LocalAssetRepresentationRecipe,
   ): Promise<LocalAssetRepresentation | undefined> {
-    return withDatabase((database) => {
-      const row = preparedStatement(
-        database,
+    const row = await connection.db
+      .prepare(
         `
-          SELECT result_json
-          FROM local_asset_representations
-          WHERE source_resource_id = ? AND recipe = ? AND role <> 'failure'
-        `,
-        (sql) => database.prepare(sql),
-      ).get(sourceResourceId, recipeKey(recipe));
-      if (!row) return undefined;
-      if (typeof row.result_json !== "string") {
-        throw new Error("Local Asset representation row is corrupt.");
-      }
-      return parseRepresentation(JSON.parse(row.result_json));
-    });
+        SELECT result_json
+        FROM local_asset_representations
+        WHERE source_resource_id = ? AND recipe = ? AND role <> 'failure'
+      `,
+      )
+      .get(sourceResourceId, recipeKey(recipe));
+    if (!row) return undefined;
+    if (typeof row.result_json !== "string") {
+      throw new Error("Local Asset representation row is corrupt.");
+    }
+    return parseRepresentation(JSON.parse(row.result_json));
   }
 
   /**
@@ -1061,22 +951,20 @@ export function createLocalAssetRepresentationService(options: {
     sourceResourceId: string,
     recipe: LocalAssetRepresentationRecipe,
   ): Promise<LocalAssetRepresentationFailure | undefined> {
-    return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `
-          SELECT result_json
-          FROM local_asset_representations
-          WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
-        `,
-        )
-        .get(sourceResourceId, recipeKey(recipe));
-      if (!row) return undefined;
-      if (typeof row.result_json !== "string") {
-        throw new Error("Local Asset representation failure row is corrupt.");
-      }
-      return parseRepresentationFailure(JSON.parse(row.result_json));
-    });
+    const row = await connection.db
+      .prepare(
+        `
+        SELECT result_json
+        FROM local_asset_representations
+        WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
+      `,
+      )
+      .get(sourceResourceId, recipeKey(recipe));
+    if (!row) return undefined;
+    if (typeof row.result_json !== "string") {
+      throw new Error("Local Asset representation failure row is corrupt.");
+    }
+    return parseRepresentationFailure(JSON.parse(row.result_json));
   }
 
   async function recordFailure(input: {
@@ -1085,42 +973,38 @@ export function createLocalAssetRepresentationService(options: {
     failure: LocalAssetRepresentationFailure;
   }): Promise<void> {
     const failure = parseRepresentationFailure(input.failure);
-    await withDatabase((database) => {
-      database
-        .prepare(
-          `
-          INSERT INTO local_asset_representations (
-            source_resource_id, recipe, role, result_json, created_at
-          ) VALUES (?, ?, 'failure', ?, ?)
-          ON CONFLICT(source_resource_id, recipe) DO UPDATE SET
-            result_json = excluded.result_json,
-            created_at = excluded.created_at
-          WHERE local_asset_representations.role = 'failure'
-        `,
-        )
-        .run(
-          input.sourceResourceId,
-          recipeKey(input.recipe),
-          JSON.stringify(failure),
-          now(),
-        );
-    });
+    await connection.db
+      .prepare(
+        `
+        INSERT INTO local_asset_representations (
+          source_resource_id, recipe, role, result_json, created_at
+        ) VALUES (?, ?, 'failure', ?, ?)
+        ON CONFLICT(source_resource_id, recipe) DO UPDATE SET
+          result_json = excluded.result_json,
+          created_at = excluded.created_at
+        WHERE local_asset_representations.role = 'failure'
+      `,
+      )
+      .run(
+        input.sourceResourceId,
+        recipeKey(input.recipe),
+        JSON.stringify(failure),
+        now(),
+      );
   }
 
   async function clearFailure(
     sourceResourceId: string,
     recipe: LocalAssetRepresentationRecipe,
   ): Promise<void> {
-    await withDatabase((database) => {
-      database
-        .prepare(
-          `
-          DELETE FROM local_asset_representations
-          WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
-        `,
-        )
-        .run(sourceResourceId, recipeKey(recipe));
-    });
+    await connection.db
+      .prepare(
+        `
+        DELETE FROM local_asset_representations
+        WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
+      `,
+      )
+      .run(sourceResourceId, recipeKey(recipe));
   }
 
   /**
@@ -1152,34 +1036,44 @@ export function createLocalAssetRepresentationService(options: {
     const recipe = recipeKey(input.recipe);
     const result = parseRepresentation(input.result);
     const resultJson = JSON.stringify(result);
-    await withDatabase((database) => {
-      // A successful retry replaces the coded failure row for the same recipe.
-      database
-        .prepare(
-          `
-          DELETE FROM local_asset_representations
-          WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
-        `,
-        )
-        .run(input.sourceResourceId, recipe);
-      const inserted = database
-        .prepare(
-          `
-          INSERT OR IGNORE INTO local_asset_representations (
-            source_resource_id, recipe, role, result_json, created_at
-          ) VALUES (?, ?, ?, ?, ?)
-        `,
-        )
-        .run(input.sourceResourceId, recipe, result.role, resultJson, now());
-      const winner = database
-        .prepare(
-          `
-          SELECT role, result_json
-          FROM local_asset_representations
-          WHERE source_resource_id = ? AND recipe = ?
-        `,
-        )
-        .get(input.sourceResourceId, recipe);
+    await connection.use(async (database) => {
+      // A successful retry replaces the coded failure row for the same recipe;
+      // the delete and the insert commit together.
+      await database.exec("BEGIN IMMEDIATE");
+      let inserted: LocalSqliteRunResult;
+      let winner: Record<string, unknown> | undefined;
+      try {
+        await database
+          .prepare(
+            `
+            DELETE FROM local_asset_representations
+            WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
+          `,
+          )
+          .run(input.sourceResourceId, recipe);
+        inserted = await database
+          .prepare(
+            `
+            INSERT OR IGNORE INTO local_asset_representations (
+              source_resource_id, recipe, role, result_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+          `,
+          )
+          .run(input.sourceResourceId, recipe, result.role, resultJson, now());
+        winner = await database
+          .prepare(
+            `
+            SELECT role, result_json
+            FROM local_asset_representations
+            WHERE source_resource_id = ? AND recipe = ?
+          `,
+          )
+          .get(input.sourceResourceId, recipe);
+        await database.exec("COMMIT");
+      } catch (error) {
+        await database.exec("ROLLBACK");
+        throw error;
+      }
       if (
         !winner ||
         winner.role !== result.role ||

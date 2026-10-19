@@ -450,7 +450,7 @@ describe("personal Global Asset routes", () => {
     );
 
     const { DatabaseSync } = await import("node:sqlite");
-    const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       expect(
         database

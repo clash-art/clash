@@ -94,6 +94,7 @@ test("the public npm package is the single Clash distribution", async () => {
     mcp: "./runtime/index.js",
     cli: "./runtime/clash-cli.cjs",
     localApi: "./runtime/local-api.cjs",
+    sqliteWorker: "./runtime/host-workers/sqlite-worker.cjs",
     agents: "./runtime/agents",
   });
   assert.equal(packageJson.publishConfig?.access, "public");

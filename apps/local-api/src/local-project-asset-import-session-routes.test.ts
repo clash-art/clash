@@ -225,12 +225,12 @@ async function objectFiles(f: Fixture): Promise<string[]> {
 
 function localResourceCount(f: Fixture): number {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(): { count?: unknown }; run(): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(f.dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(f.dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = database
       .prepare("SELECT COUNT(*) AS count FROM local_resources")
