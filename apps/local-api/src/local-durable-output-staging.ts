@@ -1,7 +1,5 @@
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
-import { chmod, mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 
 import {
   AssetKindSchema,
@@ -15,21 +13,6 @@ import {
   type LocalResourceStagingProjection,
 } from "./local-resource-store.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
-
-interface SqliteRunResult {
-  changes: number | bigint;
-}
-
-interface SqliteStatement {
-  run(...params: unknown[]): SqliteRunResult;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-}
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
 
 export interface LocalDurableStagedOutput {
   projectId: string;
@@ -69,8 +52,6 @@ export interface LocalDurableOutputStagingStore {
 
 type StoredOutput = Omit<LocalDurableStagedOutput, "projection">;
 
-const nodeRequire = createRequire(import.meta.url);
-
 function required(value: string, label: string): string {
   const normalized = value.trim();
   if (!normalized) throw new Error(`${label} must not be empty.`);
@@ -94,46 +75,6 @@ function projectAssetId(input: {
     .update(input.outputSlot)
     .digest("hex");
   return `local-output:${digest}`;
-}
-
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const database = new DatabaseSync(path);
-  database.exec(`
-    PRAGMA busy_timeout = 5000;
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS local_durable_output_staging (
-      project_id TEXT NOT NULL,
-      action_run_id TEXT NOT NULL,
-      output_slot TEXT NOT NULL,
-      project_asset_id TEXT NOT NULL,
-      resource_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      content_type TEXT NOT NULL,
-      byte_length INTEGER NOT NULL,
-      metadata_json TEXT NOT NULL,
-      result_json TEXT,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, action_run_id, output_slot)
-    );
-  `);
-  for (const [column, declaration] of [
-    ["content_type", "TEXT"],
-    ["byte_length", "INTEGER"],
-  ] as const) {
-    try {
-      database.prepare(
-        `SELECT ${column} FROM local_durable_output_staging LIMIT 1`,
-      );
-    } catch {
-      database.exec(
-        `ALTER TABLE local_durable_output_staging ADD COLUMN ${column} ${declaration}`,
-      );
-    }
-  }
-  return database;
 }
 
 function parseRow(row: Record<string, unknown>): StoredOutput {
@@ -211,38 +152,25 @@ function parseRow(row: Record<string, unknown>): StoredOutput {
 export function createLocalDurableOutputStagingStore(options: {
   dataDir: string;
 }): LocalDurableOutputStagingStore {
-  const databasePath = join(options.dataDir, "local.sqlite");
   const resources = createLocalResourceStore({ dataDir: options.dataDir });
 
-  const connection = createLocalSqliteConnection({
-    dataDir: options.dataDir,
-    path: databasePath,
-    open: openDatabase,
-  });
-
-  async function withDatabase<T>(
-    task: (database: SqliteDatabase) => T,
-  ): Promise<T> {
-    return connection.use(task);
-  }
+  const database = createLocalSqliteConnection({ dataDir: options.dataDir }).db;
 
   async function load(input: {
     projectId: string;
     actionRunId: string;
     outputSlot: string;
   }): Promise<StoredOutput | undefined> {
-    return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `SELECT project_id, action_run_id, output_slot, project_asset_id,
-                  resource_id, kind, content_type, byte_length,
-                  metadata_json, result_json
-             FROM local_durable_output_staging
-            WHERE project_id = ? AND action_run_id = ? AND output_slot = ?`,
-        )
-        .get(input.projectId, input.actionRunId, input.outputSlot);
-      return row ? parseRow(row) : undefined;
-    });
+    const row = await database
+      .prepare(
+        `SELECT project_id, action_run_id, output_slot, project_asset_id,
+                resource_id, kind, content_type, byte_length,
+                metadata_json, result_json
+           FROM local_durable_output_staging
+          WHERE project_id = ? AND action_run_id = ? AND output_slot = ?`,
+      )
+      .get(input.projectId, input.actionRunId, input.outputSlot);
+    return row ? parseRow(row) : undefined;
   }
 
   async function resolveStored(
@@ -330,29 +258,27 @@ export function createLocalDurableOutputStagingStore(options: {
         metadata,
         ...(input.result ? { result: input.result } : {}),
       };
-      await withDatabase((database) => {
-        database
-          .prepare(
-            `INSERT OR IGNORE INTO local_durable_output_staging (
-               project_id, action_run_id, output_slot, project_asset_id,
-               resource_id, kind, content_type, byte_length,
-               metadata_json, result_json, created_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          )
-          .run(
-            intended.projectId,
-            intended.actionRunId,
-            intended.outputSlot,
-            intended.projectAssetId,
-            intended.resourceId,
-            intended.kind,
-            intended.contentType,
-            intended.byteLength,
-            JSON.stringify(intended.metadata),
-            intended.result ? JSON.stringify(intended.result) : null,
-            Date.now(),
-          );
-      });
+      await database
+        .prepare(
+          `INSERT OR IGNORE INTO local_durable_output_staging (
+             project_id, action_run_id, output_slot, project_asset_id,
+             resource_id, kind, content_type, byte_length,
+             metadata_json, result_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          intended.projectId,
+          intended.actionRunId,
+          intended.outputSlot,
+          intended.projectAssetId,
+          intended.resourceId,
+          intended.kind,
+          intended.contentType,
+          intended.byteLength,
+          JSON.stringify(intended.metadata),
+          intended.result ? JSON.stringify(intended.result) : null,
+          Date.now(),
+        );
       const winner = await load(identity);
       if (!winner)
         throw new Error("Durable output staging receipt was not recorded.");

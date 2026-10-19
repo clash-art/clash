@@ -5,6 +5,7 @@ import { cloudOrigin } from "./cloud-accounts.js";
 import { LocalProjectUpgradeError } from "./local-project-upgrade.js";
 import { PluginRuntimeUnavailableError } from "./plugin-runtime-unavailable.js";
 import { HostLazyModuleLoadError } from "./host-lazy-module.js";
+import { LocalSqliteError, localSqliteClient } from "./local-sqlite-connection.js";
 import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./local-marketplace.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
@@ -4751,6 +4752,26 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     if (error instanceof HostLazyModuleLoadError) {
       return c.json({ error: error.message, code: error.code, module: error.module }, 503);
     }
+    if (error instanceof LocalSqliteError) {
+      // Worker/transport failures and SQLITE_BUSY are availability errors; a
+      // constraint or SQL error is a Host fault. Either way the code is visible.
+      const unavailable =
+        error.code.startsWith("SQLITE_WORKER_") ||
+        error.code === "SQLITE_WRITE_OUTCOME_UNKNOWN" ||
+        error.code === "SQLITE_REQUEST_TIMEOUT" ||
+        error.code === "SQLITE_DATABASE_REMOVED" ||
+        error.code === "SQLITE_BUSY" ||
+        error.code === "SQLITE_LOCKED";
+      console.error(error);
+      return c.json(
+        {
+          error: error.message,
+          code: error.code,
+          ...(error.stage ? { stage: error.stage } : {}),
+        },
+        unavailable ? 503 : 500,
+      );
+    }
     // Hono's default boundary semantics for route-thrown HTTP errors and unexpected failures.
     if (error instanceof HTTPException) return error.getResponse();
     console.error(error);
@@ -5179,10 +5200,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     // to recognise this Host. A Project failure is a coded degraded field, never
     // a liveness failure that would let a second Host start.
     const project = options.projectHealth?.();
+    const sqlite = localSqliteClient().health(options.dataDir);
     return c.json({
       ok: true,
       mode: "local",
       ...(options.hostIdentity ? { host: options.hostIdentity } : {}),
+      ...(sqlite.ok ? {} : { sqlite }),
       ...(logSink
         ? {
             logSink: logSink.status,

@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createLocalDurableOutputStagingStore } from "./local-durable-output-staging.js";
 import { createLocalResourceStore } from "./local-resource-store.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 const cleanups: string[] = [];
 const nodeRequire = createRequire(import.meta.url);
@@ -64,11 +65,15 @@ async function legacySealedReceipt(input?: {
         }),
   };
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => TestDatabase;
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => TestDatabase;
   };
-  const database = new DatabaseSync(join(result.dataDir, "local.sqlite"));
+  // A pre-cutover data dir: close the Host SQLite worker so the next store
+  // call reopens and migrates the legacy table, as a Host restart does.
+  await closeLocalSqliteClient();
+  const database = new DatabaseSync(join(result.dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     database.exec(`
+      DROP TABLE local_durable_output_staging;
       CREATE TABLE local_durable_output_staging (
         project_id TEXT NOT NULL,
         action_run_id TEXT NOT NULL,

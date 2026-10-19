@@ -10,6 +10,7 @@ import {
   pluginOutputProjectAssetId,
 } from "./local-plugin-asset-staging";
 import { createLocalResourceStore } from "./local-resource-store.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 const cleanups: string[] = [];
 const nodeRequire = createRequire(import.meta.url);
@@ -59,11 +60,15 @@ async function legacySealedReceipt(input?: {
   };
   const projectAssetId = pluginOutputProjectAssetId(identity);
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => TestDatabase;
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => TestDatabase;
   };
-  const database = new DatabaseSync(join(fixture.dataDir, "local.sqlite"));
+  // A pre-cutover data dir: close the Host SQLite worker so the next store
+  // call reopens and migrates the legacy table, as a Host restart does.
+  await closeLocalSqliteClient();
+  const database = new DatabaseSync(join(fixture.dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     database.exec(`
+      DROP TABLE local_plugin_asset_staging;
       CREATE TABLE local_plugin_asset_staging (
         project_id TEXT NOT NULL,
         project_asset_id TEXT NOT NULL,
@@ -107,7 +112,7 @@ async function legacySealedReceipt(input?: {
   }
 
   if (input?.byteLength !== undefined) {
-    const database = new DatabaseSync(join(fixture.dataDir, "local.sqlite"));
+    const database = new DatabaseSync(join(fixture.dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       database.exec(
         "ALTER TABLE local_plugin_asset_staging ADD COLUMN byte_length INTEGER",

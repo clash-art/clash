@@ -1,5 +1,4 @@
 import type { ProjectCloudSyncObservation } from "@clash/shared-runtime/project-cloud-sync";
-import { createRequire } from "node:module";
 import { chmod, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -14,25 +13,15 @@ import {
   type TextAppliedRevision,
 } from "@clash/shared-types";
 import type { Asset, AssetKind, AssetRefRow } from "@clash/shared-types/assets";
-import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
+import {
+  createLocalSqliteConnection,
+  type LocalSqliteDatabase as SqliteDatabase,
+  type LocalSqliteParam as SqlitePrimitive,
+} from "./local-sqlite-connection.js";
 import {
   parseProjectCardSummary,
   type StoredProjectCardSummary,
 } from "./project-card-summary.js";
-
-type SqlitePrimitive = string | number | Uint8Array | null;
-
-type SqliteStatement = {
-  run(...params: SqlitePrimitive[]): unknown;
-  get(...params: SqlitePrimitive[]): Record<string, unknown> | undefined;
-  all(...params: SqlitePrimitive[]): Array<Record<string, unknown>>;
-};
-
-type SqliteDatabase = {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-};
 
 export interface LocalMetadataProjectAsset {
   id: string;
@@ -248,480 +237,8 @@ const EMPTY_METADATA_DB: LocalMetadataDb = {
 const METADATA_MIGRATION_ID = "metadata-sqlite-v1";
 const LEGACY_PERSONAL_GLOBAL_ASSET_MIGRATION_ID =
   "legacy-personal-global-assets-v1";
-const require = createRequire(import.meta.url);
-
-// `createRequire` rather than a bare `require`: this package is ESM (`"type": "module"`), and a
-// bare `require` in a file that also uses `import` leaves the module kind ambiguous. Node and tsx
-// both refuse it -- `tsx` reports ERR_AMBIGUOUS_MODULE_SYNTAX and will not load the file at all,
-// which is why a throwaway script that imported this module could not be run.
-//
-// Still lazy, which is the point: `node:sqlite` is loaded on the first call below, not at import
-// time. It is an experimental built-in, so paying for it only when a database is actually opened
-// keeps the cost off every consumer that merely imports this module.
-const nodeRequire = createRequire(import.meta.url);
-
 function sqlitePath(dataDir: string): string {
   return join(dataDir, "local.sqlite");
-}
-
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const db = new DatabaseSync(path);
-  configureDatabase(db);
-  return db;
-}
-
-function configureDatabase(db: SqliteDatabase): void {
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA busy_timeout = 5000;
-    PRAGMA foreign_keys = ON;
-  `);
-}
-
-function applySchema(db: SqliteDatabase): void {
-  db.exec(`
-    BEGIN IMMEDIATE;
-    CREATE TABLE IF NOT EXISTS local_migration (
-      id TEXT PRIMARY KEY NOT NULL,
-      completed_at INTEGER NOT NULL,
-      source_path TEXT NOT NULL,
-      source_sha256 TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS project (
-      id TEXT PRIMARY KEY NOT NULL,
-      owner_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      metadata_provisional INTEGER NOT NULL DEFAULT 0
-    );
-
-    CREATE TABLE IF NOT EXISTS project_preview_asset (
-      project_id TEXT NOT NULL,
-      asset_id TEXT NOT NULL,
-      url TEXT NOT NULL,
-      type TEXT NOT NULL,
-      storage_key TEXT NOT NULL,
-      created_at TEXT,
-      position INTEGER NOT NULL,
-      PRIMARY KEY (project_id, asset_id, position)
-    );
-
-    -- Additive derived Dashboard card cache. It can always be rebuilt from
-    -- Project Loro; no Project, Asset, or user data depends on this table.
-    CREATE TABLE IF NOT EXISTS project_card_summary (
-      project_id TEXT PRIMARY KEY NOT NULL,
-      replica_stamp TEXT NOT NULL,
-      summary_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS asset_metadata_index (
-      asset_id TEXT NOT NULL,
-      metadata_kind TEXT NOT NULL,
-      project_id TEXT,
-      schema_version INTEGER,
-      content_hash TEXT,
-      body_hash TEXT,
-      producer TEXT NOT NULL,
-      summary_json TEXT,
-      identity_json TEXT NOT NULL,
-      recorded_at INTEGER NOT NULL,
-      PRIMARY KEY (asset_id, metadata_kind)
-    );
-
-    CREATE TABLE IF NOT EXISTS metadata_attachment_index (
-      target_key TEXT NOT NULL,
-      target_kind TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      target_json TEXT NOT NULL,
-      metadata_kind TEXT NOT NULL,
-      schema_version INTEGER,
-      content_hash TEXT,
-      body_hash TEXT,
-      producer TEXT NOT NULL,
-      summary_json TEXT,
-      identity_json TEXT NOT NULL,
-      recorded_at INTEGER NOT NULL,
-      PRIMARY KEY (target_key, metadata_kind)
-    );
-    CREATE INDEX IF NOT EXISTS metadata_attachment_project_kind_idx
-      ON metadata_attachment_index (project_id, target_kind, metadata_kind);
-
-    CREATE TABLE IF NOT EXISTS local_config (
-      key TEXT PRIMARY KEY NOT NULL,
-      value_json TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS project_cloud_admission (
-      project_id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      local_replica_id TEXT NOT NULL,
-      sync_base_url TEXT NOT NULL,
-      status TEXT NOT NULL,
-      capabilities_json TEXT NOT NULL,
-      admitted_at TEXT,
-      updated_at TEXT NOT NULL,
-      last_error TEXT,
-      last_synced_version BLOB,
-      PRIMARY KEY (project_id, local_replica_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS assets (
-      id TEXT PRIMARY KEY NOT NULL,
-      user_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      src_r2_key TEXT NOT NULL,
-      cover_r2_key TEXT,
-      metadata TEXT,
-      source_model TEXT,
-      source_prompt TEXT,
-      source_task_id TEXT,
-      sources TEXT,
-      signed_url TEXT,
-      signed_url_exp INTEGER,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      project_id TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS asset_refs (
-      asset_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      imported_at INTEGER NOT NULL,
-      PRIMARY KEY (asset_id, project_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS asset_library_refs (
-      asset_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      added_at INTEGER NOT NULL,
-      PRIMARY KEY (asset_id, user_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS global_asset_entry (
-      library_id TEXT NOT NULL,
-      id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      resource_id TEXT NOT NULL,
-      lifecycle_state TEXT NOT NULL,
-      delete_operation_id TEXT,
-      deleted_at TEXT,
-      purge_after TEXT,
-      purged_at TEXT,
-      name TEXT,
-      metadata_json TEXT NOT NULL,
-      provenance_json TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      PRIMARY KEY (library_id, id)
-    );
-
-    CREATE TABLE IF NOT EXISTS asset_node_refs (
-      asset_id TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      node_id TEXT NOT NULL,
-      node_type TEXT NOT NULL,
-      field_path TEXT NOT NULL,
-      reference_role TEXT NOT NULL DEFAULT 'asset',
-      observed_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, node_id, field_path, asset_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS text_revisions (
-      revision_id TEXT PRIMARY KEY NOT NULL,
-      text_id TEXT NOT NULL,
-      parent_revision_id TEXT,
-      project_id TEXT NOT NULL,
-      node_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      hash_algorithm TEXT NOT NULL,
-      source_file_path TEXT NOT NULL,
-      source_file_hash TEXT NOT NULL,
-      actor_json TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS workspace_import_receipt (
-      bundle_digest TEXT PRIMARY KEY NOT NULL,
-      project_id TEXT NOT NULL UNIQUE,
-      imported_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS runtime_session (
-      id TEXT PRIMARY KEY NOT NULL,
-      project_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      type TEXT NOT NULL,
-      runtime_id TEXT,
-      agent_id TEXT,
-      agent_template_id TEXT,
-      permission_mode TEXT,
-      acp_session_id TEXT,
-      status TEXT,
-      archived_at TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS agent_member (
-      id TEXT PRIMARY KEY NOT NULL,
-      user_id TEXT NOT NULL,
-      template_id TEXT NOT NULL,
-      runtime_id TEXT NOT NULL,
-      agent_id TEXT,
-      display_name TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS chat_message (
-      session_id TEXT NOT NULL,
-      id TEXT NOT NULL,
-      sender_kind TEXT NOT NULL,
-      sender_id TEXT NOT NULL,
-      turn_id TEXT,
-      events_json TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (session_id, id)
-    );
-
-    CREATE TABLE IF NOT EXISTS session_event (
-      seq INTEGER PRIMARY KEY AUTOINCREMENT,
-      session_id TEXT NOT NULL,
-      type TEXT NOT NULL,
-      data TEXT NOT NULL,
-      ts INTEGER NOT NULL
-    );
-
-	    CREATE TABLE IF NOT EXISTS mutation_audit (
-      id TEXT PRIMARY KEY NOT NULL,
-      created_at INTEGER NOT NULL,
-      operation TEXT NOT NULL,
-      entity_kind TEXT NOT NULL,
-      entity_id TEXT NOT NULL,
-      actor_client_type TEXT,
-      accepted INTEGER NOT NULL,
-      reason TEXT,
-      result_entity_id TEXT,
-      error TEXT,
-	      mutation_json TEXT NOT NULL
-	    );
-
-    CREATE TABLE IF NOT EXISTS plugin_broker_audit (
-      id TEXT PRIMARY KEY NOT NULL,
-      occurred_at TEXT NOT NULL,
-      plugin_id TEXT NOT NULL,
-      plugin_version TEXT NOT NULL,
-      project_id TEXT NOT NULL,
-      invocation_id TEXT NOT NULL,
-      request_id TEXT NOT NULL,
-      operation TEXT NOT NULL,
-      target TEXT NOT NULL,
-      status TEXT NOT NULL,
-      error TEXT
-    );
-    COMMIT;
-  `);
-  ensureLocalMetadataColumns(db);
-  db.exec(`
-    BEGIN IMMEDIATE;
-    CREATE INDEX IF NOT EXISTS project_owner_idx ON project(owner_id, updated_at);
-    CREATE INDEX IF NOT EXISTS project_cloud_admission_project_idx
-      ON project_cloud_admission(project_id, updated_at);
-    CREATE INDEX IF NOT EXISTS assets_user_idx ON assets(user_id, created_at);
-    CREATE INDEX IF NOT EXISTS assets_task_idx ON assets(source_task_id);
-    CREATE INDEX IF NOT EXISTS assets_project_idx ON assets(project_id, created_at);
-    CREATE INDEX IF NOT EXISTS asset_refs_project_idx ON asset_refs(project_id, imported_at);
-    CREATE INDEX IF NOT EXISTS global_asset_entry_library_idx
-      ON global_asset_entry(library_id, updated_at DESC, id);
-    CREATE INDEX IF NOT EXISTS asset_node_refs_asset_idx ON asset_node_refs(asset_id, project_id);
-    CREATE INDEX IF NOT EXISTS asset_node_refs_project_idx ON asset_node_refs(project_id, node_id);
-    CREATE INDEX IF NOT EXISTS text_revisions_project_node_idx ON text_revisions(project_id, node_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS text_revisions_text_idx ON text_revisions(text_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS runtime_session_project_idx ON runtime_session(project_id, updated_at);
-    CREATE INDEX IF NOT EXISTS agent_member_user_idx ON agent_member(user_id, created_at);
-	    CREATE INDEX IF NOT EXISTS chat_message_session_idx ON chat_message(session_id, created_at);
-	    CREATE INDEX IF NOT EXISTS session_event_session_idx ON session_event(session_id, seq);
-	    CREATE INDEX IF NOT EXISTS mutation_audit_created_idx ON mutation_audit(created_at DESC, id DESC);
-    CREATE INDEX IF NOT EXISTS mutation_audit_operation_idx ON mutation_audit(operation, created_at DESC);
-    CREATE INDEX IF NOT EXISTS mutation_audit_entity_idx ON mutation_audit(entity_kind, entity_id, created_at DESC);
-    CREATE INDEX IF NOT EXISTS plugin_broker_audit_plugin_idx ON plugin_broker_audit(plugin_id, occurred_at DESC);
-    CREATE INDEX IF NOT EXISTS plugin_broker_audit_invocation_idx ON plugin_broker_audit(invocation_id, occurred_at DESC);
-    COMMIT;
-  `);
-}
-
-function ensureLocalMetadataColumns(db: SqliteDatabase): void {
-  ensureSqliteColumn(db, "project_cloud_admission", "state_version INTEGER NOT NULL DEFAULT 0");
-  ensureSqliteColumn(db, "project_cloud_admission", "last_synced_version BLOB");
-  for (const column of [
-    "completed_at INTEGER NOT NULL DEFAULT 0",
-    "source_path TEXT NOT NULL DEFAULT ''",
-    "source_sha256 TEXT NOT NULL DEFAULT ''",
-  ]) {
-    ensureSqliteColumn(db, "local_migration", column);
-  }
-  for (const column of [
-    "owner_id TEXT NOT NULL DEFAULT ''",
-    "name TEXT NOT NULL DEFAULT ''",
-    "description TEXT",
-    "created_at TEXT NOT NULL DEFAULT ''",
-    "updated_at TEXT NOT NULL DEFAULT ''",
-    "deleted_at TEXT",
-    "metadata_provisional INTEGER NOT NULL DEFAULT 0",
-  ]) {
-    ensureSqliteColumn(db, "project", column);
-  }
-  for (const column of [
-    "asset_id TEXT NOT NULL DEFAULT ''",
-    "url TEXT NOT NULL DEFAULT ''",
-    "type TEXT NOT NULL DEFAULT 'image'",
-    "storage_key TEXT NOT NULL DEFAULT ''",
-    "created_at TEXT",
-    "position INTEGER NOT NULL DEFAULT 0",
-  ]) {
-    ensureSqliteColumn(db, "project_preview_asset", column);
-  }
-  for (const column of [
-    "value_json TEXT NOT NULL DEFAULT '{}'",
-    "updated_at TEXT NOT NULL DEFAULT ''",
-  ]) {
-    ensureSqliteColumn(db, "local_config", column);
-  }
-  for (const column of [
-    "user_id TEXT NOT NULL DEFAULT ''",
-    "kind TEXT NOT NULL DEFAULT 'image'",
-    "src_r2_key TEXT NOT NULL DEFAULT ''",
-    "cover_r2_key TEXT",
-    "metadata TEXT",
-    "source_model TEXT",
-    "source_prompt TEXT",
-    "source_task_id TEXT",
-    "sources TEXT",
-    "signed_url TEXT",
-    "signed_url_exp INTEGER",
-    "created_at INTEGER NOT NULL DEFAULT 0",
-    "updated_at INTEGER NOT NULL DEFAULT 0",
-    "project_id TEXT",
-  ]) {
-    ensureSqliteColumn(db, "assets", column);
-  }
-  ensureSqliteColumn(
-    db,
-    "asset_refs",
-    "imported_at INTEGER NOT NULL DEFAULT 0",
-  );
-  for (const column of [
-    "project_id TEXT NOT NULL DEFAULT ''",
-    "node_id TEXT NOT NULL DEFAULT ''",
-    "node_type TEXT NOT NULL DEFAULT ''",
-    "field_path TEXT NOT NULL DEFAULT ''",
-    "reference_role TEXT NOT NULL DEFAULT 'asset'",
-    "observed_at INTEGER NOT NULL DEFAULT 0",
-  ]) {
-    ensureSqliteColumn(db, "asset_node_refs", column);
-  }
-  for (const column of [
-    "text_id TEXT NOT NULL DEFAULT ''",
-    "parent_revision_id TEXT",
-    "project_id TEXT NOT NULL DEFAULT ''",
-    "node_id TEXT NOT NULL DEFAULT ''",
-    "created_at TEXT NOT NULL DEFAULT ''",
-    "content_hash TEXT NOT NULL DEFAULT ''",
-    "hash_algorithm TEXT NOT NULL DEFAULT 'sha256-64'",
-    "source_file_path TEXT NOT NULL DEFAULT ''",
-    "source_file_hash TEXT NOT NULL DEFAULT ''",
-    "actor_json TEXT",
-  ]) {
-    ensureSqliteColumn(db, "text_revisions", column);
-  }
-  for (const column of [
-    "project_id TEXT NOT NULL DEFAULT ''",
-    "title TEXT NOT NULL DEFAULT ''",
-    "type TEXT NOT NULL DEFAULT 'runtime'",
-    "runtime_id TEXT",
-    "agent_id TEXT",
-    "agent_template_id TEXT",
-    "permission_mode TEXT",
-    "acp_session_id TEXT",
-    "status TEXT",
-    "archived_at TEXT",
-    "created_at TEXT NOT NULL DEFAULT ''",
-    "updated_at TEXT NOT NULL DEFAULT ''",
-  ]) {
-    ensureSqliteColumn(db, "runtime_session", column);
-  }
-  for (const column of [
-    "user_id TEXT NOT NULL DEFAULT ''",
-    "template_id TEXT NOT NULL DEFAULT ''",
-    "runtime_id TEXT NOT NULL DEFAULT ''",
-    "agent_id TEXT",
-    "display_name TEXT NOT NULL DEFAULT ''",
-    "created_at INTEGER NOT NULL DEFAULT 0",
-  ]) {
-    ensureSqliteColumn(db, "agent_member", column);
-  }
-  for (const column of [
-    "sender_kind TEXT NOT NULL DEFAULT ''",
-    "sender_id TEXT NOT NULL DEFAULT ''",
-    "turn_id TEXT",
-    "events_json TEXT NOT NULL DEFAULT '[]'",
-    "created_at INTEGER NOT NULL DEFAULT 0",
-  ]) {
-    ensureSqliteColumn(db, "chat_message", column);
-  }
-  for (const column of [
-    "created_at INTEGER NOT NULL DEFAULT 0",
-    "operation TEXT NOT NULL DEFAULT ''",
-    "entity_kind TEXT NOT NULL DEFAULT ''",
-    "entity_id TEXT NOT NULL DEFAULT ''",
-    "actor_client_type TEXT",
-    "accepted INTEGER NOT NULL DEFAULT 0",
-    "reason TEXT",
-    "result_entity_id TEXT",
-    "error TEXT",
-    "mutation_json TEXT NOT NULL DEFAULT '{}'",
-  ]) {
-    ensureSqliteColumn(db, "mutation_audit", column);
-  }
-  dropSqliteColumnIfPresent(db, "mutation_audit", "forced");
-  dropSqliteColumnIfPresent(
-    db,
-    "workspace_import_receipt",
-    "source_workspace_id",
-  );
-}
-
-function ensureSqliteColumn(
-  db: SqliteDatabase,
-  table: string,
-  columnDefinition: string,
-): void {
-  try {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDefinition}`);
-  } catch {
-    // Column already exists, or the existing table is too incompatible for safe repair.
-  }
-}
-
-function dropSqliteColumnIfPresent(
-  db: SqliteDatabase,
-  table: string,
-  column: string,
-): void {
-  const exists = db
-    .prepare(`PRAGMA table_info(${table})`)
-    .all()
-    .some((row) => rowString(row, "name") === column);
-  if (exists) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -951,8 +468,8 @@ function sameGlobalAssetEntry(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function hasRows(db: SqliteDatabase): boolean {
-  const row = db
+async function hasRows(db: SqliteDatabase): Promise<boolean> {
+  const row = await db
     .prepare(
       `
     SELECT
@@ -971,22 +488,22 @@ function hasRows(db: SqliteDatabase): boolean {
   return rowNumber(row ?? {}, "count") > 0;
 }
 
-function hasMigrationMarker(
+async function hasMigrationMarker(
   db: SqliteDatabase,
   id: string = METADATA_MIGRATION_ID,
-): boolean {
+): Promise<boolean> {
   return Boolean(
-    db.prepare("SELECT id FROM local_migration WHERE id = ?").get(id),
+    await db.prepare("SELECT id FROM local_migration WHERE id = ?").get(id),
   );
 }
 
-function markMigration(
+async function markMigration(
   db: SqliteDatabase,
   dataDir: string,
   sourceSha256: string,
   id: string = METADATA_MIGRATION_ID,
-): void {
-  db.prepare(
+): Promise<void> {
+  await db.prepare(
     `
     INSERT OR REPLACE INTO local_migration (id, completed_at, source_path, source_sha256)
     VALUES (?, ?, ?, ?)
@@ -1006,22 +523,17 @@ export function createLocalMetadataStore(dataDir: string) {
     }
   }
 
-  const connection = createLocalSqliteConnection({
-    dataDir,
-    path,
-    open: openDatabase,
-    prepare: applySchema,
-  });
+  const connection = createLocalSqliteConnection({ dataDir });
 
-  async function withDb<T>(task: (db: SqliteDatabase) => T): Promise<T> {
+  async function withDb<T>(task: (db: SqliteDatabase) => Promise<T>): Promise<T> {
     return connection.use(task);
   }
 
-  function insertMutationAudit(
+  async function insertMutationAudit(
     db: SqliteDatabase,
     record: LocalMutationAuditRecord,
-  ): void {
-    db.prepare(
+  ): Promise<void> {
+    await db.prepare(
       `
       INSERT INTO mutation_audit (
         id, created_at, operation, entity_kind, entity_id, actor_client_type,
@@ -1049,14 +561,14 @@ export function createLocalMetadataStore(dataDir: string) {
     options: LocalMetadataSessionEventAppendOptions = {},
   ): Promise<void> {
     try {
-      await withDb((db) => {
-        db.exec("BEGIN IMMEDIATE");
+      await withDb(async (db) => {
+        await db.exec("BEGIN IMMEDIATE");
         try {
-          db.prepare(
+          await db.prepare(
             `INSERT INTO session_event (session_id, type, data, ts) VALUES (?, ?, ?, ?)`,
           ).run(sessionId, event.type, JSON.stringify(event.data), event.ts);
           if (options.updateSession) {
-            const row = db
+            const row = await db
               .prepare(
                 `SELECT title, agent_template_id FROM runtime_session WHERE id = ?`,
               )
@@ -1089,17 +601,17 @@ export function createLocalMetadataStore(dataDir: string) {
                 values.push(patch.status);
               }
               values.push(sessionId);
-              db.prepare(
+              await db.prepare(
                 `UPDATE runtime_session
                     SET ${assignments.join(", ")}
                   WHERE id = ?`,
               ).run(...values);
             }
           }
-          db.exec("COMMIT");
+          await db.exec("COMMIT");
         } catch (error) {
           try {
-            db.exec("ROLLBACK");
+            await db.exec("ROLLBACK");
           } catch {
             // Keep the original failure; a rolled-back transaction is gone.
           }
@@ -1115,12 +627,12 @@ export function createLocalMetadataStore(dataDir: string) {
   async function listSessionEvents(sessionId: string): Promise<
     Array<{ seq: number; type: string; data: unknown; ts: number }>
   > {
-    return withDb((db) =>
-      db
+    return withDb(async (db) =>
+      (await db
         .prepare(
           `SELECT seq, type, data, ts FROM session_event WHERE session_id = ? ORDER BY seq ASC`,
         )
-        .all(sessionId)
+        .all(sessionId))
         .map((row) => ({
           seq: rowNumber(row, "seq"),
           type: rowString(row, "type"),
@@ -1135,16 +647,16 @@ export function createLocalMetadataStore(dataDir: string) {
     nextSessionId: string,
   ): Promise<void> {
     if (previousSessionId === nextSessionId) return;
-    await withDb((db) => {
-      db.prepare(
+    await withDb(async (db) => {
+      await db.prepare(
         `UPDATE session_event SET session_id = ? WHERE session_id = ?`,
       ).run(nextSessionId, previousSessionId);
     });
   }
 
   async function deleteSessionEvents(sessionId: string): Promise<void> {
-    await withDb((db) => {
-      db.prepare(`DELETE FROM session_event WHERE session_id = ?`).run(
+    await withDb(async (db) => {
+      await db.prepare(`DELETE FROM session_event WHERE session_id = ?`).run(
         sessionId,
       );
     });
@@ -1152,11 +664,11 @@ export function createLocalMetadataStore(dataDir: string) {
 
   async function load(): Promise<LocalMetadataDb> {
     if (!(await exists())) return structuredClone(EMPTY_METADATA_DB);
-    const loaded = await withDb<LocalMetadataDb | null>((db) => {
-      if (!hasMigrationMarker(db) && !hasRows(db)) {
+    const loaded = await withDb<LocalMetadataDb | null>(async (db) => {
+      if (!(await hasMigrationMarker(db)) && !(await hasRows(db))) {
         return null;
       }
-      const previewRows = db
+      const previewRows = await db
         .prepare(
           `
         SELECT project_id, asset_id, url, type, storage_key, created_at, position
@@ -1179,7 +691,7 @@ export function createLocalMetadataStore(dataDir: string) {
         previewsByProject.set(projectId, values);
       }
 
-      const projects = db
+      const projects = (await db
         .prepare(
           `
         SELECT id, owner_id, name, description, created_at, updated_at, deleted_at,
@@ -1188,7 +700,7 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY updated_at DESC, created_at DESC
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           id: rowString(row, "id"),
           ownerId: rowString(row, "owner_id"),
@@ -1203,7 +715,7 @@ export function createLocalMetadataStore(dataDir: string) {
           assets: previewsByProject.get(rowString(row, "id")) ?? [],
         }));
 
-      const assets = db
+      const assets = (await db
         .prepare(
           `
         SELECT id, user_id, kind, src_r2_key, cover_r2_key, metadata,
@@ -1213,7 +725,7 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY created_at DESC, id
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           id: rowString(row, "id"),
           userId: rowString(row, "user_id"),
@@ -1234,7 +746,7 @@ export function createLocalMetadataStore(dataDir: string) {
             : {}),
         })) as Array<Asset & { projectId?: string }>;
 
-      const assetRefs = db
+      const assetRefs = (await db
         .prepare(
           `
         SELECT asset_id, project_id, imported_at
@@ -1242,14 +754,14 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY imported_at DESC, asset_id
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           assetId: rowString(row, "asset_id"),
           projectId: rowString(row, "project_id"),
           importedAt: rowNumber(row, "imported_at"),
         }));
 
-      const libraryAssetRefs = db
+      const libraryAssetRefs = (await db
         .prepare(
           `
         SELECT asset_id, user_id, added_at
@@ -1257,14 +769,14 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY added_at DESC, asset_id
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           assetId: rowString(row, "asset_id"),
           userId: rowString(row, "user_id"),
           addedAt: rowNumber(row, "added_at"),
         }));
 
-      const assetNodeRefs = db
+      const assetNodeRefs = (await db
         .prepare(
           `
         SELECT asset_id, project_id, node_id, node_type, field_path, reference_role, observed_at
@@ -1272,7 +784,7 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY project_id, node_id, field_path, asset_id
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           assetId: rowString(row, "asset_id"),
           projectId: rowString(row, "project_id"),
@@ -1283,7 +795,7 @@ export function createLocalMetadataStore(dataDir: string) {
           observedAt: rowNumber(row, "observed_at"),
         }));
 
-      const sessions = db
+      const sessions = (await db
         .prepare(
           `
         SELECT id, project_id, title, type, runtime_id, agent_id,
@@ -1293,7 +805,7 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY updated_at DESC, created_at DESC
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           id: rowString(row, "id"),
           projectId: rowString(row, "project_id"),
@@ -1329,7 +841,7 @@ export function createLocalMetadataStore(dataDir: string) {
           updatedAt: rowString(row, "updated_at"),
         }));
 
-      const agentMembers = db
+      const agentMembers = (await db
         .prepare(
           `
         SELECT id, user_id, template_id, runtime_id, agent_id, display_name, created_at
@@ -1337,7 +849,7 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY created_at ASC, id
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           id: rowString(row, "id"),
           user_id: rowString(row, "user_id"),
@@ -1348,7 +860,7 @@ export function createLocalMetadataStore(dataDir: string) {
           created_at: rowNumber(row, "created_at"),
         }));
 
-      const sessionMessages = db
+      const sessionMessages = (await db
         .prepare(
           `
         SELECT session_id, id, sender_kind, sender_id, turn_id, events_json, created_at
@@ -1356,7 +868,7 @@ export function createLocalMetadataStore(dataDir: string) {
          ORDER BY session_id, created_at ASC, id
       `,
         )
-        .all()
+        .all())
         .map((row) => ({
           session_id: rowString(row, "session_id"),
           id: rowString(row, "id"),
@@ -1388,20 +900,27 @@ export function createLocalMetadataStore(dataDir: string) {
     metadata: LocalMetadataDb,
     options: LocalMetadataSaveOptions = {},
   ): Promise<void> {
-    await withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    await withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
+      // The lease runs these in order inside the transaction; issuing them
+      // without awaiting each one makes the rewrite a few batched round trips
+      // instead of one per row. Every outcome is awaited before COMMIT.
+      const writes: Promise<unknown>[] = [];
+      const write = (pending: Promise<unknown>) => {
+        writes.push(pending);
+      };
       try {
-        db.prepare("DELETE FROM chat_message").run();
-        db.prepare("DELETE FROM agent_member").run();
-        db.prepare("DELETE FROM runtime_session").run();
+        write(db.prepare("DELETE FROM chat_message").run());
+        write(db.prepare("DELETE FROM agent_member").run());
+        write(db.prepare("DELETE FROM runtime_session").run());
         if (options.replaceLegacyAssetMigrationInput) {
-          db.prepare("DELETE FROM asset_node_refs").run();
-          db.prepare("DELETE FROM asset_refs").run();
-          db.prepare("DELETE FROM asset_library_refs").run();
-          db.prepare("DELETE FROM assets").run();
+          write(db.prepare("DELETE FROM asset_node_refs").run());
+          write(db.prepare("DELETE FROM asset_refs").run());
+          write(db.prepare("DELETE FROM asset_library_refs").run());
+          write(db.prepare("DELETE FROM assets").run());
         }
-        db.prepare("DELETE FROM project_preview_asset").run();
-        db.prepare("DELETE FROM project").run();
+        write(db.prepare("DELETE FROM project_preview_asset").run());
+        write(db.prepare("DELETE FROM project").run());
 
         const insertProject = db.prepare(`
           INSERT INTO project (id, owner_id, name, description, created_at, updated_at, deleted_at, metadata_provisional)
@@ -1412,7 +931,7 @@ export function createLocalMetadataStore(dataDir: string) {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
         for (const project of metadata.projects) {
-          insertProject.run(
+          write(insertProject.run(
             project.id,
             project.ownerId,
             project.name,
@@ -1421,9 +940,9 @@ export function createLocalMetadataStore(dataDir: string) {
             project.updatedAt,
             project.deletedAt ?? null,
             project.metadataProvisional === true ? 1 : 0,
-          );
-          project.assets.forEach((asset, index) => {
-            insertPreview.run(
+          ));
+          for (const [index, asset] of project.assets.entries()) {
+            write(insertPreview.run(
               project.id,
               asset.id,
               asset.url,
@@ -1431,8 +950,8 @@ export function createLocalMetadataStore(dataDir: string) {
               asset.storageKey,
               asset.createdAt,
               index,
-            );
-          });
+            ));
+          }
         }
 
         if (options.replaceLegacyAssetMigrationInput) {
@@ -1444,7 +963,7 @@ export function createLocalMetadataStore(dataDir: string) {
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `);
           for (const asset of metadata.assets) {
-            insertAsset.run(
+            write(insertAsset.run(
               asset.id,
               asset.userId,
               asset.kind,
@@ -1460,7 +979,7 @@ export function createLocalMetadataStore(dataDir: string) {
               asset.createdAt,
               asset.updatedAt,
               asset.projectId ?? null,
-            );
+            ));
           }
 
           const insertAssetRef = db.prepare(`
@@ -1468,7 +987,7 @@ export function createLocalMetadataStore(dataDir: string) {
             VALUES (?, ?, ?)
           `);
           for (const ref of metadata.assetRefs) {
-            insertAssetRef.run(ref.assetId, ref.projectId, ref.importedAt);
+            write(insertAssetRef.run(ref.assetId, ref.projectId, ref.importedAt));
           }
 
           const insertLibraryAssetRef = db.prepare(`
@@ -1476,7 +995,7 @@ export function createLocalMetadataStore(dataDir: string) {
             VALUES (?, ?, ?)
           `);
           for (const ref of metadata.libraryAssetRefs ?? []) {
-            insertLibraryAssetRef.run(ref.assetId, ref.userId, ref.addedAt);
+            write(insertLibraryAssetRef.run(ref.assetId, ref.userId, ref.addedAt));
           }
 
           const insertAssetNodeRef = db.prepare(`
@@ -1485,7 +1004,7 @@ export function createLocalMetadataStore(dataDir: string) {
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
           `);
           for (const ref of metadata.assetNodeRefs) {
-            insertAssetNodeRef.run(
+            write(insertAssetNodeRef.run(
               ref.assetId,
               ref.projectId,
               ref.nodeId,
@@ -1493,7 +1012,7 @@ export function createLocalMetadataStore(dataDir: string) {
               ref.fieldPath,
               ref.referenceRole,
               ref.observedAt,
-            );
+            ));
           }
         }
 
@@ -1504,7 +1023,7 @@ export function createLocalMetadataStore(dataDir: string) {
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const session of metadata.sessions) {
-          insertSession.run(
+          write(insertSession.run(
             session.id,
             session.projectId,
             session.title,
@@ -1518,7 +1037,7 @@ export function createLocalMetadataStore(dataDir: string) {
             session.archivedAt ?? null,
             session.createdAt,
             session.updatedAt,
-          );
+          ));
         }
 
         const insertAgentMember = db.prepare(`
@@ -1526,7 +1045,7 @@ export function createLocalMetadataStore(dataDir: string) {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
         for (const member of metadata.agentMembers) {
-          insertAgentMember.run(
+          write(insertAgentMember.run(
             member.id,
             member.user_id,
             member.template_id,
@@ -1534,7 +1053,7 @@ export function createLocalMetadataStore(dataDir: string) {
             member.agent_id,
             member.display_name,
             member.created_at,
-          );
+          ));
         }
 
         const insertMessage = db.prepare(`
@@ -1542,7 +1061,7 @@ export function createLocalMetadataStore(dataDir: string) {
           VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
         for (const message of metadata.sessionMessages) {
-          insertMessage.run(
+          write(insertMessage.run(
             message.session_id,
             message.id,
             message.sender_kind,
@@ -1550,23 +1069,26 @@ export function createLocalMetadataStore(dataDir: string) {
             message.turn_id,
             JSON.stringify(message.events),
             message.created_at,
-          );
+          ));
         }
 
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await Promise.all(writes);
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
       } catch (error) {
-        db.exec("ROLLBACK");
+        // Settle every issued statement first; ROLLBACK runs after them anyway.
+        await Promise.allSettled(writes);
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
   }
 
-  function globalAssetRow(
+  async function globalAssetRow(
     db: SqliteDatabase,
     libraryId: string,
     id: string,
-  ): Record<string, unknown> | undefined {
+  ): Promise<Record<string, unknown> | undefined> {
     return db
       .prepare(
         `
@@ -1592,8 +1114,8 @@ export function createLocalMetadataStore(dataDir: string) {
   ): Promise<GlobalAssetEntry | null> {
     const libraryId = normalizedGlobalIdentity(libraryIdInput, "libraryId");
     const id = normalizedGlobalIdentity(idInput, "globalAssetId");
-    return withDb((db) => {
-      const row = globalAssetRow(db, libraryId, id);
+    return withDb(async (db) => {
+      const row = await globalAssetRow(db, libraryId, id);
       return row ? globalAssetEntryFromRow(row) : null;
     });
   }
@@ -1602,8 +1124,8 @@ export function createLocalMetadataStore(dataDir: string) {
     libraryIdInput: string,
   ): Promise<GlobalAssetEntry[]> {
     const libraryId = normalizedGlobalIdentity(libraryIdInput, "libraryId");
-    return withDb((db) =>
-      db
+    return withDb(async (db) =>
+      (await db
         .prepare(
           `
       SELECT library_id, id, kind, resource_id, lifecycle_state,
@@ -1614,7 +1136,7 @@ export function createLocalMetadataStore(dataDir: string) {
        ORDER BY id
     `,
         )
-        .all(libraryId)
+        .all(libraryId))
         .map(globalAssetEntryFromRow),
     );
   }
@@ -1628,10 +1150,10 @@ export function createLocalMetadataStore(dataDir: string) {
     if (entry.lifecycle.state !== "active") {
       throw new Error("A new Global Asset must be active.");
     }
-    return withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    return withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        const existingRow = globalAssetRow(db, libraryId, entry.id);
+        const existingRow = await globalAssetRow(db, libraryId, entry.id);
         if (existingRow) {
           const existing = globalAssetEntryFromRow(existingRow);
           if (!sameGlobalAssetEntry(existing, entry)) {
@@ -1639,11 +1161,11 @@ export function createLocalMetadataStore(dataDir: string) {
               `Global Asset ${entry.id} already exists with different facts in library ${libraryId}.`,
             );
           }
-          db.exec("COMMIT");
+          await db.exec("COMMIT");
           return existing;
         }
         const now = Date.now();
-        db.prepare(
+        await db.prepare(
           `
           INSERT INTO global_asset_entry (
             library_id, id, kind, resource_id, lifecycle_state,
@@ -1661,11 +1183,11 @@ export function createLocalMetadataStore(dataDir: string) {
           now,
           now,
         );
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
         return entry;
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -1691,15 +1213,15 @@ export function createLocalMetadataStore(dataDir: string) {
     const entries = [...entriesById.values()].sort((left, right) =>
       left.id.localeCompare(right.id),
     );
-    await withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    await withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        if (hasMigrationMarker(db, LEGACY_PERSONAL_GLOBAL_ASSET_MIGRATION_ID)) {
-          db.exec("COMMIT");
+        if (await hasMigrationMarker(db, LEGACY_PERSONAL_GLOBAL_ASSET_MIGRATION_ID)) {
+          await db.exec("COMMIT");
           return;
         }
         for (const entry of entries) {
-          const existingRow = globalAssetRow(db, "personal", entry.id);
+          const existingRow = await globalAssetRow(db, "personal", entry.id);
           if (!existingRow) continue;
           const existing = globalAssetEntryFromRow(existingRow);
           if (!sameGlobalAssetEntry(existing, entry)) {
@@ -1718,8 +1240,8 @@ export function createLocalMetadataStore(dataDir: string) {
         `,
         );
         for (const entry of entries) {
-          if (globalAssetRow(db, "personal", entry.id)) continue;
-          insert.run(
+          if (await globalAssetRow(db, "personal", entry.id)) continue;
+          await insert.run(
             entry.id,
             entry.kind,
             entry.resourceId,
@@ -1730,22 +1252,22 @@ export function createLocalMetadataStore(dataDir: string) {
             now,
           );
         }
-        markMigration(
+        await markMigration(
           db,
           dataDir,
           "",
           LEGACY_PERSONAL_GLOBAL_ASSET_MIGRATION_ID,
         );
-        db.exec("COMMIT");
+        await db.exec("COMMIT");
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
   }
 
   async function legacyPersonalGlobalAssetMigrationCompleted(): Promise<boolean> {
-    return withDb((db) =>
+    return withDb(async (db) =>
       hasMigrationMarker(db, LEGACY_PERSONAL_GLOBAL_ASSET_MIGRATION_ID),
     );
   }
@@ -1767,10 +1289,10 @@ export function createLocalMetadataStore(dataDir: string) {
     );
     const deletedAt = normalizedGlobalIdentity(input.deletedAt, "deletedAt");
     const purgeAfter = normalizedGlobalIdentity(input.purgeAfter, "purgeAfter");
-    return withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    return withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        const row = globalAssetRow(db, libraryId, id);
+        const row = await globalAssetRow(db, libraryId, id);
         if (!row)
           throw new Error(
             `Global Asset ${id} was not found in library ${libraryId}.`,
@@ -1791,10 +1313,10 @@ export function createLocalMetadataStore(dataDir: string) {
               `Global Asset ${id} is already trashed by another operation.`,
             );
           }
-          db.exec("COMMIT");
+          await db.exec("COMMIT");
           return current;
         }
-        db.prepare(
+        await db.prepare(
           `
           UPDATE global_asset_entry
              SET lifecycle_state = 'trashed', delete_operation_id = ?,
@@ -1810,11 +1332,11 @@ export function createLocalMetadataStore(dataDir: string) {
           libraryId,
           id,
         );
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
         return { ...current, lifecycle };
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -1830,10 +1352,10 @@ export function createLocalMetadataStore(dataDir: string) {
       input.deleteOperationId,
       "deleteOperationId",
     );
-    return withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    return withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        const row = globalAssetRow(db, libraryId, id);
+        const row = await globalAssetRow(db, libraryId, id);
         if (!row)
           throw new Error(
             `Global Asset ${id} was not found in library ${libraryId}.`,
@@ -1846,7 +1368,7 @@ export function createLocalMetadataStore(dataDir: string) {
           if (
             rowOptionalString(row, "delete_operation_id") === deleteOperationId
           ) {
-            db.exec("COMMIT");
+            await db.exec("COMMIT");
             return current;
           }
           throw new Error(
@@ -1858,7 +1380,7 @@ export function createLocalMetadataStore(dataDir: string) {
             `Global Asset ${id} is trashed by another operation.`,
           );
         }
-        db.prepare(
+        await db.prepare(
           `
           UPDATE global_asset_entry
              SET lifecycle_state = 'active',
@@ -1868,11 +1390,11 @@ export function createLocalMetadataStore(dataDir: string) {
              AND lifecycle_state = 'trashed' AND delete_operation_id = ?
         `,
         ).run(Date.now(), libraryId, id, deleteOperationId);
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
         return { ...current, lifecycle: { state: "active" } };
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -1889,10 +1411,10 @@ export function createLocalMetadataStore(dataDir: string) {
       "deleteOperationId",
     );
     const purgedAt = normalizedGlobalIdentity(input.purgedAt, "purgedAt");
-    return withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    return withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        const row = globalAssetRow(db, libraryId, id);
+        const row = await globalAssetRow(db, libraryId, id);
         if (!row)
           throw new Error(
             `Global Asset ${id} was not found in library ${libraryId}.`,
@@ -1907,7 +1429,7 @@ export function createLocalMetadataStore(dataDir: string) {
               `Global Asset ${id} was purged by another operation.`,
             );
           }
-          db.exec("COMMIT");
+          await db.exec("COMMIT");
           return current;
         }
         if (
@@ -1924,7 +1446,7 @@ export function createLocalMetadataStore(dataDir: string) {
           deletedAt: current.lifecycle.deletedAt,
           purgedAt,
         };
-        db.prepare(
+        await db.prepare(
           `
           UPDATE global_asset_entry
              SET lifecycle_state = 'purged', purge_after = NULL,
@@ -1932,11 +1454,11 @@ export function createLocalMetadataStore(dataDir: string) {
            WHERE library_id = ? AND id = ?
         `,
         ).run(purgedAt, Date.now(), libraryId, id);
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
         return { ...current, lifecycle };
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -1945,14 +1467,14 @@ export function createLocalMetadataStore(dataDir: string) {
   async function appendMutationAudit(
     record: LocalMutationAuditRecord,
   ): Promise<void> {
-    await withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    await withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        insertMutationAudit(db, record);
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await insertMutationAudit(db, record);
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -1973,8 +1495,8 @@ export function createLocalMetadataStore(dataDir: string) {
     }
     params.push(mutationAuditLimit(filter.limit));
     const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-    return withDb((db) =>
-      db
+    return withDb(async (db) =>
+      (await db
         .prepare(
           `
       SELECT id, created_at, operation, entity_kind, entity_id, actor_client_type,
@@ -1985,7 +1507,7 @@ export function createLocalMetadataStore(dataDir: string) {
        LIMIT ?
     `,
         )
-        .all(...params)
+        .all(...params))
         .map((row) => ({
           id: rowString(row, "id"),
           createdAt: rowNumber(row, "created_at"),
@@ -2007,10 +1529,10 @@ export function createLocalMetadataStore(dataDir: string) {
   async function appendPluginBrokerAudit(
     record: LocalPluginBrokerAuditRecord,
   ): Promise<void> {
-    await withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    await withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        db.prepare(
+        await db.prepare(
           `
           INSERT INTO plugin_broker_audit (
             id, occurred_at, plugin_id, plugin_version, project_id,
@@ -2030,10 +1552,10 @@ export function createLocalMetadataStore(dataDir: string) {
           record.status,
           record.error ?? null,
         );
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -2054,8 +1576,8 @@ export function createLocalMetadataStore(dataDir: string) {
     }
     params.push(mutationAuditLimit(filter.limit));
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    return withDb((db) =>
-      db
+    return withDb(async (db) =>
+      (await db
         .prepare(
           `
       SELECT id, occurred_at, plugin_id, plugin_version, project_id,
@@ -2066,7 +1588,7 @@ export function createLocalMetadataStore(dataDir: string) {
        LIMIT ?
     `,
         )
-        .all(...params)
+        .all(...params))
         .map((row) => ({
           id: rowString(row, "id"),
           occurredAt: rowString(row, "occurred_at"),
@@ -2090,10 +1612,10 @@ export function createLocalMetadataStore(dataDir: string) {
     revision: TextAppliedRevision,
     auditRecord?: LocalMutationAuditRecord,
   ): Promise<TextAppliedRevision> {
-    await withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    await withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        const existing = db
+        const existing = await db
           .prepare(
             `
           SELECT revision_id, text_id, parent_revision_id, project_id, node_id,
@@ -2112,7 +1634,7 @@ export function createLocalMetadataStore(dataDir: string) {
             `Text revision ${revision.revisionId} already exists with different metadata`,
           );
         }
-        db.prepare(
+        await db.prepare(
           `
           INSERT OR REPLACE INTO text_revisions (
             revision_id, text_id, parent_revision_id, project_id, node_id,
@@ -2133,11 +1655,11 @@ export function createLocalMetadataStore(dataDir: string) {
           revision.sourceFileHash,
           jsonOrNull(revision.actor),
         );
-        if (auditRecord) insertMutationAudit(db, auditRecord);
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        if (auditRecord) await insertMutationAudit(db, auditRecord);
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -2154,8 +1676,8 @@ export function createLocalMetadataStore(dataDir: string) {
       params.push(filter.nodeId.trim());
     }
     params.push(textRevisionLimit(filter.limit));
-    return withDb((db) =>
-      db
+    return withDb(async (db) =>
+      (await db
         .prepare(
           `
       SELECT revision_id, text_id, parent_revision_id, project_id, node_id,
@@ -2167,7 +1689,7 @@ export function createLocalMetadataStore(dataDir: string) {
        LIMIT ?
     `,
         )
-        .all(...params)
+        .all(...params))
         .map(textRevisionFromRow),
     );
   }
@@ -2186,8 +1708,8 @@ export function createLocalMetadataStore(dataDir: string) {
     const projectId = projectIdInput.trim();
     if (!projectId)
       throw new Error("Workspace text export requires a Project id");
-    return withDb((db) =>
-      db
+    return withDb(async (db) =>
+      (await db
         .prepare(
           `
       SELECT revision_id, text_id, parent_revision_id, project_id, node_id,
@@ -2198,7 +1720,7 @@ export function createLocalMetadataStore(dataDir: string) {
        ORDER BY revision_id COLLATE BINARY ASC
     `,
         )
-        .all(projectId)
+        .all(projectId))
         .map((row) => workspaceTextRevisionFromRow(row, projectId)),
     );
   }
@@ -2254,10 +1776,10 @@ export function createLocalMetadataStore(dataDir: string) {
         project.id,
       );
     });
-    return withDb((db) => {
-      db.exec("BEGIN IMMEDIATE");
+    return withDb(async (db) => {
+      await db.exec("BEGIN IMMEDIATE");
       try {
-        const receipt = db
+        const receipt = await db
           .prepare(
             `SELECT bundle_digest, project_id
                FROM workspace_import_receipt
@@ -2270,19 +1792,19 @@ export function createLocalMetadataStore(dataDir: string) {
               "Workspace bundle digest is already committed to another Project",
             );
           }
-          db.exec("COMMIT");
+          await db.exec("COMMIT");
           return {
             projectId: project.id,
             bundleDigest: digest,
             committed: false,
           };
         }
-        if (db.prepare("SELECT id FROM project WHERE id = ?").get(project.id)) {
+        if (await db.prepare("SELECT id FROM project WHERE id = ?").get(project.id)) {
           throw new Error(`Project ${project.id} already exists on this Host`);
         }
         for (const revision of revisions) {
           if (
-            db
+            await db
               .prepare(
                 "SELECT revision_id FROM text_revisions WHERE revision_id = ?",
               )
@@ -2293,7 +1815,7 @@ export function createLocalMetadataStore(dataDir: string) {
             );
           }
         }
-        db.prepare(
+        await db.prepare(
           `INSERT INTO project (
              id, owner_id, name, description, created_at, updated_at, deleted_at
            ) VALUES (?, ?, ?, ?, ?, ?, NULL)`,
@@ -2313,7 +1835,7 @@ export function createLocalMetadataStore(dataDir: string) {
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const revision of revisions) {
-          insertRevision.run(
+          await insertRevision.run(
             revision.revisionId,
             revision.textId,
             revision.parentRevisionId ?? null,
@@ -2327,20 +1849,20 @@ export function createLocalMetadataStore(dataDir: string) {
             jsonOrNull(revision.actor),
           );
         }
-        db.prepare(
+        await db.prepare(
           `INSERT INTO workspace_import_receipt (
              bundle_digest, project_id, imported_at
            ) VALUES (?, ?, ?)`,
         ).run(digest, project.id, input.importedAt);
-        markMigration(db, dataDir, "");
-        db.exec("COMMIT");
+        await markMigration(db, dataDir, "");
+        await db.exec("COMMIT");
         return {
           projectId: project.id,
           bundleDigest: digest,
           committed: true,
         };
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -2356,8 +1878,8 @@ export function createLocalMetadataStore(dataDir: string) {
   > {
     const bundleDigest = bundleDigestInput.trim();
     if (!/^[a-f0-9]{64}$/u.test(bundleDigest)) return undefined;
-    return withDb((db) => {
-      const row = db
+    return withDb(async (db) => {
+      const row = await db
         .prepare(
           `SELECT bundle_digest, project_id, imported_at
              FROM workspace_import_receipt
@@ -2377,8 +1899,8 @@ export function createLocalMetadataStore(dataDir: string) {
     projectId: string,
     revisionId: string,
   ): Promise<TextAppliedRevision | null> {
-    const row = await withDb((db) =>
-      db
+    const row = await withDb(async (db) =>
+      await db
         .prepare(
           `
       SELECT revision_id, text_id, parent_revision_id, project_id, node_id,
@@ -2410,8 +1932,8 @@ export function createLocalMetadataStore(dataDir: string) {
   }): Promise<void> {
     const target = MetadataAttachmentTargetSchema.parse(record.target);
     const targetKey = metadataAttachmentTargetKey(target);
-    await withDb((db) => {
-      db.prepare(
+    await withDb(async (db) => {
+      await db.prepare(
         `
       INSERT INTO metadata_attachment_index (
         target_key, target_kind, project_id, target_json, metadata_kind,
@@ -2455,7 +1977,7 @@ export function createLocalMetadataStore(dataDir: string) {
       projectId?: string;
     } = {},
   ): Promise<Array<Record<string, unknown>>> {
-    return withDb((db) => {
+    return withDb(async (db) => {
       const conditions: string[] = [];
       const params: SqlitePrimitive[] = [];
       if (filter.target) {
@@ -2474,7 +1996,7 @@ export function createLocalMetadataStore(dataDir: string) {
         conditions.push("project_id = ?");
         params.push(filter.projectId);
       }
-      const rows = db
+      const rows = await db
         .prepare(
           `
       SELECT target_json, metadata_kind, schema_version, content_hash,
@@ -2510,9 +2032,9 @@ export function createLocalMetadataStore(dataDir: string) {
   async function listLegacyAssetMetadataIndex(
     filter: { assetId?: string } = {},
   ): Promise<Array<Record<string, unknown>>> {
-    return withDb((db) => {
+    return withDb(async (db) => {
       const rows = filter.assetId
-        ? db
+        ? await db
             .prepare(
               `SELECT asset_id, metadata_kind, project_id, producer,
                       identity_json, recorded_at
@@ -2521,7 +2043,7 @@ export function createLocalMetadataStore(dataDir: string) {
                 ORDER BY asset_id, metadata_kind`,
             )
             .all(filter.assetId)
-        : db
+        : await db
             .prepare(
               `SELECT asset_id, metadata_kind, project_id, producer,
                       identity_json, recorded_at
@@ -2557,10 +2079,8 @@ export function createLocalMetadataStore(dataDir: string) {
   }
 
   async function getProjectCloudSyncState(projectId: string, localReplicaId: string): Promise<ProjectCloudSyncObservation | null> {
-    return withDb((db) => {
-      const row = db.prepare("SELECT * FROM project_cloud_admission WHERE project_id = ? AND local_replica_id = ?").get(projectId, localReplicaId);
-      return row ? { admission: cloudAdmissionFromRow(row), version: Number(row.state_version) } : null;
-    });
+    const row = await connection.db.prepare("SELECT * FROM project_cloud_admission WHERE project_id = ? AND local_replica_id = ?").get(projectId, localReplicaId);
+    return row ? { admission: cloudAdmissionFromRow(row), version: Number(row.state_version) } : null;
   }
 
   /**
@@ -2573,8 +2093,8 @@ export function createLocalMetadataStore(dataDir: string) {
     projectId: string,
     localReplicaId: string,
   ): Promise<Uint8Array | null> {
-    return withDb((db) => {
-      const row = db
+    return withDb(async (db) => {
+      const row = await db
         .prepare(
           `SELECT last_synced_version FROM project_cloud_admission
             WHERE project_id = ? AND local_replica_id = ? LIMIT 1`,
@@ -2592,11 +2112,13 @@ export function createLocalMetadataStore(dataDir: string) {
     localReplicaId: string,
     version: Uint8Array | null,
   ): Promise<void> {
-    await withDb((db) => {
-      db.prepare(
-        `UPDATE project_cloud_admission SET last_synced_version = ?
-          WHERE project_id = ? AND local_replica_id = ?`,
-      ).run(version, projectId, localReplicaId);
+    await withDb(async (db) => {
+      await db
+        .prepare(
+          `UPDATE project_cloud_admission SET last_synced_version = ?
+            WHERE project_id = ? AND local_replica_id = ?`,
+        )
+        .run(version, projectId, localReplicaId);
     });
   }
 
@@ -2604,8 +2126,8 @@ export function createLocalMetadataStore(dataDir: string) {
     projectId: string,
     localReplicaId: string,
   ): Promise<ProjectCloudAdmission | null> {
-    return withDb((db) => {
-      const row = db
+    return withDb(async (db) => {
+      const row = await db
         .prepare(
           `SELECT project_id, tenant_id, user_id, local_replica_id, sync_base_url,
                   status, capabilities_json, admitted_at, updated_at, last_error
@@ -2622,8 +2144,8 @@ export function createLocalMetadataStore(dataDir: string) {
   async function listProjectCloudAdmissions(
     localReplicaId: string,
   ): Promise<ProjectCloudAdmission[]> {
-    return withDb((db) => {
-      const rows = db
+    return withDb(async (db) => {
+      const rows = await db
         .prepare(
           `SELECT project_id, tenant_id, user_id, local_replica_id, sync_base_url,
                   status, capabilities_json, admitted_at, updated_at, last_error
@@ -2639,8 +2161,8 @@ export function createLocalMetadataStore(dataDir: string) {
   async function getLatestProjectCloudAdmission(
     projectId: string,
   ): Promise<ProjectCloudAdmission | null> {
-    return withDb((db) => {
-      const row = db
+    return withDb(async (db) => {
+      const row = await db
         .prepare(
           `SELECT project_id, tenant_id, user_id, local_replica_id, sync_base_url,
                   status, capabilities_json, admitted_at, updated_at, last_error
@@ -2658,8 +2180,8 @@ export function createLocalMetadataStore(dataDir: string) {
     admission: ProjectCloudAdmission,
   ): Promise<void> {
     const parsed = ProjectCloudAdmissionSchema.parse(admission);
-    await withDb((db) => {
-      db.prepare(
+    await withDb(async (db) => {
+      await db.prepare(
         `INSERT INTO project_cloud_admission
            (project_id, tenant_id, user_id, local_replica_id, sync_base_url,
             status, capabilities_json, admitted_at, updated_at, last_error)
@@ -2696,22 +2218,20 @@ export function createLocalMetadataStore(dataDir: string) {
     const before = expected.admission;
     const after = ProjectCloudAdmissionSchema.parse(next);
     if (before.projectId !== after.projectId || before.localReplicaId !== after.localReplicaId) throw new Error("Cloud admission identity cannot change during CAS");
-    return withDb((db) => {
-      const row = db.prepare(`UPDATE project_cloud_admission SET
-        status = ?, admitted_at = ?, updated_at = ?, last_error = ?, state_version = state_version + 1
-        WHERE project_id = ? AND local_replica_id = ? AND state_version = ? RETURNING *`).get(
-        after.status, after.admittedAt, after.updatedAt, after.lastError,
-        before.projectId, before.localReplicaId, expected.version,
-      );
-      return row ? { admission: cloudAdmissionFromRow(row), version: Number(row.state_version) } : null;
-    });
+    const row = await connection.db.prepare(`UPDATE project_cloud_admission SET
+      status = ?, admitted_at = ?, updated_at = ?, last_error = ?, state_version = state_version + 1
+      WHERE project_id = ? AND local_replica_id = ? AND state_version = ? RETURNING *`).get(
+      after.status, after.admittedAt, after.updatedAt, after.lastError,
+      before.projectId, before.localReplicaId, expected.version,
+    );
+    return row ? { admission: cloudAdmissionFromRow(row), version: Number(row.state_version) } : null;
   }
 
   async function readProjectCardSummaries(): Promise<
     StoredProjectCardSummary[]
   > {
-    return withDb((db) => {
-      const rows = db
+    return withDb(async (db) => {
+      const rows = await db
         .prepare(
           "SELECT project_id, replica_stamp, summary_json FROM project_card_summary",
         )
@@ -2740,7 +2260,7 @@ export function createLocalMetadataStore(dataDir: string) {
     summaries: readonly StoredProjectCardSummary[],
   ): Promise<void> {
     if (summaries.length === 0) return;
-    await withDb((db) => {
+    await withDb(async (db) => {
       const insert = db.prepare(
         `INSERT INTO project_card_summary (
            project_id, replica_stamp, summary_json, updated_at
@@ -2750,19 +2270,19 @@ export function createLocalMetadataStore(dataDir: string) {
            summary_json = excluded.summary_json,
            updated_at = excluded.updated_at`,
       );
-      db.exec("BEGIN IMMEDIATE");
+      await db.exec("BEGIN IMMEDIATE");
       try {
         for (const item of summaries) {
-          insert.run(
+          await insert.run(
             item.projectId,
             item.replicaStamp,
             JSON.stringify(item.summary),
             Date.now(),
           );
         }
-        db.exec("COMMIT");
+        await db.exec("COMMIT");
       } catch (error) {
-        db.exec("ROLLBACK");
+        await db.exec("ROLLBACK");
         throw error;
       }
     });
@@ -2802,8 +2322,8 @@ export function createLocalMetadataStore(dataDir: string) {
     listProjectCloudAdmissions,
     upsertProjectCloudAdmission,
     async applyProjectSyncMetadata(metadata: import("@clash/shared-types").ProjectMetadata) {
-      await withDb(db => {
-        db.prepare("UPDATE project SET name = ?, description = ?, created_at = ?, updated_at = ?, deleted_at = ?, metadata_provisional = 0 WHERE id = ?")
+      await withDb(async (db) => {
+        await db.prepare("UPDATE project SET name = ?, description = ?, created_at = ?, updated_at = ?, deleted_at = ?, metadata_provisional = 0 WHERE id = ?")
           .run(metadata.name, metadata.description, metadata.createdAt, metadata.updatedAt, metadata.deletedAt, metadata.projectId);
       });
     },

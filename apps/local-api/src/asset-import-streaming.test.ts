@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import {
   mkdir,
@@ -23,19 +24,29 @@ import { managedLocalApiApps } from "./local-api-app.test-fixtures.js";
 
 const nodeRequire = createRequire(import.meta.url);
 
+/**
+ * The SQLite worker migrates `local.sqlite` on the Host's first request, so a
+ * request rejected before touching storage can leave no table: none staged.
+ */
 function stagingRowCount(dataDir: string): number {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  if (!existsSync(join(dataDir, "local.sqlite"))) return 0;
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), {
+    timeout: 5_000,
+  });
   try {
     const row = database
       .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
       .get() as { count: number };
     return row.count;
+  } catch (error) {
+    if (/no such table: local_resource_staging/.test(String(error))) return 0;
+    throw error;
   } finally {
     database.close();
   }
@@ -58,12 +69,12 @@ function representationRowCount(
   sourceResourceId: string,
 ): number {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { get(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = database
       .prepare(
@@ -563,7 +574,7 @@ describe("Local Resource staging sweep on Host start", () => {
         await mkdir(join(clashRoot, "assets", "blobs"), { recursive: true });
         await mkdir(dataDir, { recursive: true });
         const { DatabaseSync } = nodeRequire("node:sqlite") as {
-          DatabaseSync: new (path: string) => {
+          DatabaseSync: new (path: string, options?: { timeout?: number }) => {
             exec(sql: string): void;
             prepare(sql: string): {
               run(...params: unknown[]): unknown;
@@ -571,7 +582,7 @@ describe("Local Resource staging sweep on Host start", () => {
             close(): void;
           };
         };
-        const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+        const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
         try {
           database.exec(`
           CREATE TABLE IF NOT EXISTS local_resource_staging (

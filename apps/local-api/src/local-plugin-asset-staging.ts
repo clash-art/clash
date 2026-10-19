@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 
 import { AssetKindSchema, type AssetKind } from "@clash/shared-types";
 
@@ -9,21 +8,6 @@ import {
   type LocalResourceStagingProjection,
 } from "./local-resource-store.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
-
-interface SqliteRunResult {
-  changes: number | bigint;
-}
-
-interface SqliteStatement {
-  run(...params: unknown[]): SqliteRunResult;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-}
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
 
 interface StagingRow {
   projectId: string;
@@ -69,55 +53,6 @@ export interface LocalPluginAssetStagingStore {
     projectId: string;
     projectAssetId: string;
   }): Promise<LocalPluginStagedAsset | undefined>;
-}
-
-const nodeRequire = createRequire(import.meta.url);
-
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const database = new DatabaseSync(path);
-  database.exec(`
-    PRAGMA busy_timeout = 5000;
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS local_plugin_asset_staging (
-      project_id TEXT NOT NULL,
-      project_asset_id TEXT NOT NULL,
-      resource_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      byte_length INTEGER NOT NULL,
-      task_id TEXT NOT NULL,
-      slot TEXT NOT NULL,
-      plugin_id TEXT NOT NULL,
-      plugin_version TEXT NOT NULL,
-      invocation_id TEXT NOT NULL,
-      media_type TEXT,
-      created_at INTEGER NOT NULL,
-      PRIMARY KEY (project_id, project_asset_id)
-    );
-    CREATE INDEX IF NOT EXISTS local_plugin_asset_staging_resource
-      ON local_plugin_asset_staging (resource_id);
-  `);
-  try {
-    database.prepare(
-      "SELECT byte_length FROM local_plugin_asset_staging LIMIT 1",
-    );
-  } catch {
-    database.exec(
-      "ALTER TABLE local_plugin_asset_staging ADD COLUMN byte_length INTEGER",
-    );
-  }
-  try {
-    database.prepare(
-      "SELECT account_id FROM local_plugin_asset_staging LIMIT 1",
-    );
-  } catch {
-    database.exec(
-      "ALTER TABLE local_plugin_asset_staging ADD COLUMN account_id TEXT",
-    );
-  }
-  return database;
 }
 
 function required(value: string, label: string): string {
@@ -206,42 +141,29 @@ export function createLocalPluginAssetStagingStore(options: {
   dataDir: string;
   clashRoot?: string;
 }): LocalPluginAssetStagingStore {
-  const databasePath = `${options.dataDir}/local.sqlite`;
   const resources = createLocalResourceStore({
     dataDir: options.dataDir,
     ...(options.clashRoot ? { clashRoot: options.clashRoot } : {}),
   });
 
-  const connection = createLocalSqliteConnection({
-    dataDir: options.dataDir,
-    path: databasePath,
-    open: openDatabase,
-  });
-
-  async function withDatabase<T>(
-    task: (database: SqliteDatabase) => T,
-  ): Promise<T> {
-    return connection.use(task);
-  }
+  const database = createLocalSqliteConnection({ dataDir: options.dataDir }).db;
 
   async function load(input: {
     projectId: string;
     projectAssetId: string;
   }): Promise<StagingRow | undefined> {
-    return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `
-        SELECT project_id, project_asset_id, resource_id, kind, task_id, slot,
-               byte_length, plugin_id, plugin_version, invocation_id,
-               media_type, account_id, created_at
-        FROM local_plugin_asset_staging
-        WHERE project_id = ? AND project_asset_id = ?
-      `,
-        )
-        .get(input.projectId, input.projectAssetId);
-      return row ? parseRow(row) : undefined;
-    });
+    const row = await database
+      .prepare(
+        `
+      SELECT project_id, project_asset_id, resource_id, kind, task_id, slot,
+             byte_length, plugin_id, plugin_version, invocation_id,
+             media_type, account_id, created_at
+      FROM local_plugin_asset_staging
+      WHERE project_id = ? AND project_asset_id = ?
+    `,
+      )
+      .get(input.projectId, input.projectAssetId);
+    return row ? parseRow(row) : undefined;
   }
 
   async function resolved(row: StagingRow): Promise<LocalPluginStagedAsset> {
@@ -352,33 +274,31 @@ export function createLocalPluginAssetStagingStore(options: {
         ...(input.accountId?.trim() ? { accountId: input.accountId.trim() } : {}),
         createdAt: Date.now(),
       };
-      await withDatabase((database) => {
-        database
-          .prepare(
-            `
-          INSERT OR IGNORE INTO local_plugin_asset_staging (
-            project_id, project_asset_id, resource_id, kind, task_id, slot,
-            byte_length, plugin_id, plugin_version, invocation_id,
-            media_type, account_id, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-          )
-          .run(
-            intended.projectId,
-            intended.projectAssetId,
-            intended.resourceId,
-            intended.kind,
-            intended.taskId,
-            intended.slot,
-            intended.byteLength,
-            intended.pluginId,
-            intended.pluginVersion,
-            intended.invocationId,
-            intended.mediaType ?? null,
-            intended.accountId ?? null,
-            intended.createdAt,
-          );
-      });
+      await database
+        .prepare(
+          `
+        INSERT OR IGNORE INTO local_plugin_asset_staging (
+          project_id, project_asset_id, resource_id, kind, task_id, slot,
+          byte_length, plugin_id, plugin_version, invocation_id,
+          media_type, account_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        )
+        .run(
+          intended.projectId,
+          intended.projectAssetId,
+          intended.resourceId,
+          intended.kind,
+          intended.taskId,
+          intended.slot,
+          intended.byteLength,
+          intended.pluginId,
+          intended.pluginVersion,
+          intended.invocationId,
+          intended.mediaType ?? null,
+          intended.accountId ?? null,
+          intended.createdAt,
+        );
       const stored = await load({ projectId, projectAssetId });
       if (!stored)
         throw new Error(

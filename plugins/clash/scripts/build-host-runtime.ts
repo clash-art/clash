@@ -90,6 +90,20 @@ const hostBuild = await build({
 });
 assertLazyHostDependenciesStayLazy(hostBuild.metafile, "src/local-api-entry.ts");
 
+// The SQLite worker owns every Host connection to local.sqlite; local-api.cjs
+// spawns it from `host-workers/` (a manifest payload root) beside itself.
+const hostWorkersDir = resolve(runtimeDir, "host-workers");
+await rm(hostWorkersDir, { recursive: true, force: true });
+await build({
+  entryPoints: [resolve(repoRoot, "apps/local-api/src/local-sqlite-worker.ts")],
+  outfile: resolve(hostWorkersDir, "sqlite-worker.cjs"),
+  bundle: true,
+  platform: "node",
+  format: "cjs",
+  target: "node24",
+  banner: { js: GENERATED_BANNER },
+});
+
 /**
  * Official Providers are part of the Clash distribution, not packages a user installs later.
  *

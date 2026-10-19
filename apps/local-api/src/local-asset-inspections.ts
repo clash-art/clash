@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
 import { open, readFile } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -26,24 +25,11 @@ import {
   MEDIA_PROCESS_TIMEOUTS_MS,
   withMediaProcessDeadline,
 } from "./local-media-process.js";
-import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
-import { preparedStatement } from "./local-prepared-statements.js";
+import {
+  createLocalSqliteConnection,
+  type LocalSqliteDatabase,
+} from "./local-sqlite-connection.js";
 export { localFfprobePath } from "./local-media-binaries.js";
-
-interface SqliteRunResult {
-  changes: number | bigint;
-}
-
-interface SqliteStatement {
-  run(...params: unknown[]): SqliteRunResult;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-}
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
 
 const LOCAL_ASSET_INSPECTION_RECIPE =
   "asset-inspection/v4:canonical-media-facts";
@@ -1025,55 +1011,6 @@ interface InspectionRow {
   facts: LocalAssetInspectionFacts;
 }
 
-const nodeRequire = createRequire(import.meta.url);
-
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const database = new DatabaseSync(path);
-  database.exec(`
-    PRAGMA busy_timeout = 5000;
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS local_asset_inspections (
-      source_resource_id TEXT NOT NULL,
-      recipe TEXT NOT NULL,
-      facts_json TEXT NOT NULL,
-      inspected_at INTEGER NOT NULL,
-      PRIMARY KEY (source_resource_id, recipe)
-    );
-  `);
-  const inspectionTable = database
-    .prepare(
-      `
-      SELECT sql
-      FROM sqlite_master
-      WHERE type = 'table' AND name = 'local_asset_inspections'
-    `,
-    )
-    .get();
-  if (
-    typeof inspectionTable?.sql !== "string" ||
-    !/\brecipe\b/i.test(inspectionTable.sql)
-  ) {
-    database.exec(`
-      BEGIN IMMEDIATE;
-      ALTER TABLE local_asset_inspections
-        RENAME TO local_asset_inspections_unversioned;
-      CREATE TABLE local_asset_inspections (
-        source_resource_id TEXT NOT NULL,
-        recipe TEXT NOT NULL,
-        facts_json TEXT NOT NULL,
-        inspected_at INTEGER NOT NULL,
-        PRIMARY KEY (source_resource_id, recipe)
-      );
-      DROP TABLE local_asset_inspections_unversioned;
-      COMMIT;
-    `);
-  }
-  return database;
-}
-
 function parseInspectionRow(row: Record<string, unknown>): InspectionRow {
   const sourceResourceId = row.source_resource_id;
   const recipe = row.recipe;
@@ -1168,37 +1105,32 @@ export function createLocalAssetInspectionService(options: {
   clashRoot?: string;
   inspectResource?: LocalAssetInspector;
 }): LocalAssetInspectionService {
-  const databasePath = `${options.dataDir}/local.sqlite`;
   const resources = createLocalResourceStore({
     dataDir: options.dataDir,
     ...(options.clashRoot ? { clashRoot: options.clashRoot } : {}),
   });
   const inspectionInFlight = new Map<string, Promise<InspectionRow>>();
 
-  const connection = createLocalSqliteConnection({
-    dataDir: options.dataDir,
-    path: databasePath,
-    open: openDatabase,
-  });
+  const connection = createLocalSqliteConnection({ dataDir: options.dataDir });
 
+  /** Every task here is one statement: no session lease is needed. */
   async function withDatabase<T>(
-    task: (database: SqliteDatabase) => T,
+    task: (database: LocalSqliteDatabase) => Promise<T>,
   ): Promise<T> {
-    return connection.use(task);
+    return task(connection.db);
   }
 
   async function readInspection(
     sourceResourceId: string,
   ): Promise<InspectionRow | undefined> {
-    return withDatabase((database) => {
-      const row = preparedStatement(
-        database,
-        `
+    return withDatabase(async (database) => {
+      const row = await database
+        .prepare(
+          `
           SELECT source_resource_id, recipe, facts_json
           FROM local_asset_inspections
           WHERE source_resource_id = ? AND recipe = ?
         `,
-        (sql) => database.prepare(sql),
       ).get(sourceResourceId, LOCAL_ASSET_INSPECTION_RECIPE);
       return row ? parseInspectionRow(row) : undefined;
     });
@@ -1212,8 +1144,8 @@ export function createLocalAssetInspectionService(options: {
       input.source.resource,
       LocalAssetInspectionFactsSchema.parse(input.facts),
     );
-    await withDatabase((database) => {
-      database
+    await withDatabase(async (database) => {
+      await database
         .prepare(
           `
           INSERT OR IGNORE INTO local_asset_inspections (
@@ -1241,6 +1173,47 @@ export function createLocalAssetInspectionService(options: {
       );
     }
     return stored;
+  }
+
+  function inspectionKey(sourceResourceId: string): string {
+    return `${sourceResourceId}\u0000${LOCAL_ASSET_INSPECTION_RECIPE}`;
+  }
+
+  /**
+   * Claims the in-flight slot synchronously, before the task starts and before
+   * any await. `ensureInspection` used to check the slot only after awaited
+   * filesystem and SQLite reads, so one inspection could finish (including its
+   * failed probe) while a second caller was still resolving the source; that
+   * second caller then missed the slot and probed the same Asset again.
+   */
+  function coalesceInspection(
+    sourceResourceId: string,
+    task: () => Promise<InspectionRow>,
+  ): Promise<InspectionRow> {
+    const key = inspectionKey(sourceResourceId);
+    const existing = inspectionInFlight.get(key);
+    if (existing) return existing;
+    let resolve!: (row: InspectionRow) => void;
+    let reject!: (error: unknown) => void;
+    const pending = new Promise<InspectionRow>(
+      (resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+      },
+    );
+    inspectionInFlight.set(key, pending);
+    void (async () => {
+      try {
+        resolve(await task());
+      } catch (error) {
+        reject(error);
+      } finally {
+        if (inspectionInFlight.get(key) === pending) {
+          inspectionInFlight.delete(key);
+        }
+      }
+    })();
+    return pending;
   }
 
   async function ensureInspection(
@@ -1272,53 +1245,39 @@ export function createLocalAssetInspectionService(options: {
       );
     }
 
-    const key = `${source.resource.id}\u0000${LOCAL_ASSET_INSPECTION_RECIPE}`;
-    const existing = inspectionInFlight.get(key);
-    if (existing) return existing;
-
-    const task = (async () => {
-      const raced = await readInspection(source.resource.id);
-      if (raced) {
-        assertCompleteInspectionFacts(source.resource, raced.facts);
-        return raced;
-      }
-      const probed = LocalAssetInspectionFactsSchema.parse(
-        await inspectResource({
-          sourcePath: source.path,
-          resource: source.resource,
-        }),
-      );
-      const facts = assertCompleteInspectionFacts(
-        source.resource,
-        mergeInspectionFacts(
-          source.resource.id,
-          inspectionFactsFromResource(source),
-          probed,
-        ),
-      );
-      const canonicalContentType = canonicalAssetMediaTypeAssertion(
-        facts.contentType,
-      );
-      if (!canonicalContentType) {
-        throw new Error(
-          `Decoded ${source.resource.kind} Asset is missing a canonical media type.`,
-        );
-      }
-      const canonicalSource = await resources.seal({
-        resourceId: source.resource.id,
-        kind: source.resource.kind,
-        contentType: canonicalContentType,
-      });
-      return persistInspection({ source: canonicalSource, facts });
-    })();
-    inspectionInFlight.set(key, task);
-    try {
-      return await task;
-    } finally {
-      if (inspectionInFlight.get(key) === task) {
-        inspectionInFlight.delete(key);
-      }
+    const raced = await readInspection(source.resource.id);
+    if (raced) {
+      assertCompleteInspectionFacts(source.resource, raced.facts);
+      return raced;
     }
+    const probed = LocalAssetInspectionFactsSchema.parse(
+      await inspectResource({
+        sourcePath: source.path,
+        resource: source.resource,
+      }),
+    );
+    const facts = assertCompleteInspectionFacts(
+      source.resource,
+      mergeInspectionFacts(
+        source.resource.id,
+        inspectionFactsFromResource(source),
+        probed,
+      ),
+    );
+    const canonicalContentType = canonicalAssetMediaTypeAssertion(
+      facts.contentType,
+    );
+    if (!canonicalContentType) {
+      throw new Error(
+        `Decoded ${source.resource.kind} Asset is missing a canonical media type.`,
+      );
+    }
+    const canonicalSource = await resources.seal({
+      resourceId: source.resource.id,
+      kind: source.resource.kind,
+      contentType: canonicalContentType,
+    });
+    return persistInspection({ source: canonicalSource, facts });
   }
 
   async function installedSource(
@@ -1482,8 +1441,13 @@ export function createLocalAssetInspectionService(options: {
     },
 
     async inspect(input) {
-      const source = await installedSource(input.source);
-      const inspection = await ensureInspection(source);
+      const inspection = await coalesceInspection(
+        input.source.resource.id,
+        async () => {
+          const source = await installedSource(input.source);
+          return ensureInspection(source);
+        },
+      );
       // Caller metadata remains a display hint outside the byte-probe
       // authority. Only immutable Resource facts and verified probe output can
       // enter this result.

@@ -29,6 +29,7 @@ import {
 } from "./local-daemon-runtime.js";
 import {
   LOCAL_DAEMON_RUNTIME_MANIFEST_FILE,
+  LOCAL_DAEMON_RUNTIME_PAYLOAD_ROOTS,
   type LocalDaemonRuntimeManifest,
 } from "./local-daemon-manifest.js";
 import type { ClashRuntimeProfile } from "./local-paths.js";
@@ -316,7 +317,7 @@ function resolveFullRuntimeFingerprint(entryPath: string): string {
   };
   // The Host also retains the renderer's installation path. A renderer-only
   // upgrade must stop serving the previous installation's project page.
-  for (const name of ["bundled-plugins", "project-ui"]) {
+  for (const name of LOCAL_DAEMON_RUNTIME_PAYLOAD_ROOTS) {
     const payloadRoot = join(dirname(entryPath), name);
     try {
       visit(payloadRoot, name);
@@ -335,7 +336,7 @@ async function resolveFullRuntimeFingerprintAsync(
     await readFile(entryPath),
     await readRuntimeDependenciesAsync(entryPath),
   );
-  for (const name of ["bundled-plugins", "project-ui"]) {
+  for (const name of LOCAL_DAEMON_RUNTIME_PAYLOAD_ROOTS) {
     const payloadRoot = join(dirname(entryPath), name);
     let files: RuntimeTreeFile[];
     try {

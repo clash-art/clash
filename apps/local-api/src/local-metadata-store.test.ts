@@ -5,6 +5,11 @@ import { createRequire } from "node:module";
 import type { TextAppliedRevision } from "@clash/shared-types";
 import { describe, expect, it } from "vitest";
 import { createLocalMetadataStore } from "./local-metadata-store";
+import {
+  projectCardSummaryContent,
+  withProjectCardReplicaStamp,
+} from "./project-card-summary.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 const require = createRequire(import.meta.url);
 
@@ -17,14 +22,14 @@ function readSqlitePragma(
   pragma: string,
 ): string | number | undefined {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): {
         get(): Record<string, string | number> | undefined;
       };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = db.prepare(`PRAGMA ${pragma}`).get();
     return row ? Object.values(row)[0] : undefined;
@@ -37,14 +42,14 @@ function readMetadataMigrationMarker(
   dataDir: string,
 ): Record<string, unknown> | undefined {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): {
         get(...params: unknown[]): Record<string, unknown> | undefined;
       };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     return db
       .prepare("SELECT id, source_path FROM local_migration WHERE id = ?")
@@ -60,14 +65,14 @@ function readSqliteObjectName(
   name: string,
 ): string | undefined {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): {
         get(...params: unknown[]): Record<string, unknown> | undefined;
       };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const row = db
       .prepare("SELECT name FROM sqlite_master WHERE type = ? AND name = ?")
@@ -80,12 +85,12 @@ function readSqliteObjectName(
 
 function readSqliteTableColumns(dataDir: string, table: string): string[] {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { all(): Array<Record<string, unknown>> };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     return db
       .prepare(`PRAGMA table_info(${table})`)
@@ -98,12 +103,12 @@ function readSqliteTableColumns(dataDir: string, table: string): string[] {
 
 function createPartialCoreMetadataSqlite(dataDir: string): void {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       exec(sql: string): void;
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     db.exec(`
       CREATE TABLE local_migration (id TEXT PRIMARY KEY NOT NULL);
@@ -158,13 +163,13 @@ function insertTextRevisionRows(
   revisions: readonly TextAppliedRevision[],
 ): void {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       exec(sql: string): void;
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     const insert = db.prepare(`
       INSERT INTO text_revisions (
@@ -202,12 +207,12 @@ function insertTextRevisionRows(
 
 function corruptTextRevisionActor(dataDir: string, revisionId: string): void {
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   try {
     db.prepare(
       "UPDATE text_revisions SET actor_json = ? WHERE revision_id = ?",
@@ -239,6 +244,41 @@ describe("local metadata store", () => {
     expect(
       readSqliteObjectName(dataDir, "table", "timeline_revisions"),
     ).toBeUndefined();
+  });
+
+  it("persists Dashboard card summaries and ignores a stale replica stamp", async () => {
+    const dataDir = await tempDir();
+    const store = createLocalMetadataStore(dataDir);
+    const summary = withProjectCardReplicaStamp(
+      projectCardSummaryContent({
+        assetAuthorityCurrent: true,
+        entries: [],
+        coverAssetId: null,
+        preview: {
+          sourceVersion: "a".repeat(64),
+          docVersion: "b".repeat(64),
+          generatedAt: "2026-10-20T00:00:00.000Z",
+          preview: { canvasId: "default", bounds: null, nodes: [] },
+        },
+      }),
+      "stamp",
+    );
+    await store.saveProjectCardSummaries([
+      { projectId: "project-1", replicaStamp: "stamp", summary },
+    ]);
+    expect(await store.readProjectCardSummaries()).toEqual([
+      { projectId: "project-1", replicaStamp: "stamp", summary },
+    ]);
+    // A row whose column stamp disagrees with the serialized summary is stale
+    // and is rebuilt instead of being served.
+    await store.saveProjectCardSummaries([
+      {
+        projectId: "project-1",
+        replicaStamp: "newer-stamp",
+        summary,
+      },
+    ]);
+    expect(await store.readProjectCardSummaries()).toEqual([]);
   });
 
   it("keeps legacy Asset migration rows read-only during ordinary metadata saves", async () => {
@@ -394,6 +434,46 @@ describe("local metadata store", () => {
         },
       ],
     });
+  });
+
+  it("keeps the previous metadata when a rewrite fails part-way", async () => {
+    const dataDir = await tempDir();
+    const store = createLocalMetadataStore(dataDir);
+    const project = (id: string, name: string) => ({
+      id,
+      ownerId: "local-user",
+      name,
+      description: null,
+      createdAt: "2026-07-07T00:00:00.000Z",
+      updatedAt: "2026-07-07T00:01:00.000Z",
+      assets: [],
+    });
+    const empty = {
+      assets: [],
+      assetRefs: [],
+      assetNodeRefs: [],
+      sessions: [],
+      agentMembers: [],
+      sessionMessages: [],
+    };
+    await store.save({ projects: [project("project-a", "Before")], ...empty });
+
+    // The duplicate primary key fails after the deletes and the first insert ran.
+    await expect(
+      store.save({
+        projects: [
+          project("project-b", "After"),
+          project("project-c", "After"),
+          project("project-b", "Duplicate"),
+        ],
+        ...empty,
+      }),
+    ).rejects.toMatchObject({ code: "SQLITE_CONSTRAINT" });
+
+    const reloaded = await store.load();
+    expect(reloaded.projects.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "project-a", name: "Before" },
+    ]);
   });
 
   it("persists sanitized local mutation audit records outside metadata rewrites", async () => {
@@ -634,7 +714,7 @@ describe("Workspace import receipts", () => {
     });
 
     const { DatabaseSync } = require("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         prepare(sql: string): {
           all(): Array<Record<string, unknown>>;
         };
@@ -642,7 +722,9 @@ describe("Workspace import receipts", () => {
         close(): void;
       };
     };
-    const legacyDb = new DatabaseSync(join(dataDir, "local.sqlite"));
+    // Host restart over a legacy column: the next open migrates it away.
+    await closeLocalSqliteClient();
+    const legacyDb = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       legacyDb.exec(
         "ALTER TABLE workspace_import_receipt ADD COLUMN source_workspace_id TEXT NOT NULL DEFAULT 'legacy-machine'",
@@ -660,7 +742,7 @@ describe("Workspace import receipts", () => {
       importedAt: "2026-08-14T00:00:00.000Z",
     });
 
-    const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       expect(
         db
@@ -764,12 +846,12 @@ describe("typed metadata attachment projection index", () => {
     await store.listMetadataAttachmentIndex();
 
     const { DatabaseSync } = require("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         prepare(sql: string): { run(...params: unknown[]): unknown };
         close(): void;
       };
     };
-    const db = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const db = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       db.prepare(
         `INSERT INTO asset_metadata_index (
@@ -1008,12 +1090,12 @@ describe("typed metadata attachment projection index", () => {
       sessionMessages: [],
     });
     const { DatabaseSync } = require("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         exec(sql: string): void;
         close(): void;
       };
     };
-    const sqlite = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const sqlite = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       sqlite.exec(`
         CREATE TRIGGER fail_runtime_session_update

@@ -212,12 +212,12 @@ async function replaceLegacyProjectAssets(input: {
 
 function ageDeletedProjectForPurge(dataDir: string, projectId: string): void {
   const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       prepare(sql: string): { run(...params: unknown[]): unknown };
       close(): void;
     };
   };
-  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
   const agedDeletedAt = new Date(
     Date.now() - 8 * 24 * 60 * 60 * 1000,
   ).toISOString();
@@ -1054,12 +1054,12 @@ describe("Project-scoped ResolvedAsset routes", () => {
     });
 
     const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         prepare(sql: string): { get(): unknown };
         close(): void;
       };
     };
-    const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       expect(
         database

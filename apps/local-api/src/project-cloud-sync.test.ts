@@ -28,6 +28,7 @@ import { createLocalMetadataStore } from "./local-metadata-store";
 import { createLocalResourceStore } from "./local-resource-store";
 import { getLocalReplicaId } from "./local-replica-identity";
 import { LocalLoroRoomHub } from "./sync";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 const cleanup: Array<() => Promise<unknown>> = [];
 // Captured before any fake-timer test: file/SQLite work still settles on the
@@ -78,7 +79,10 @@ async function fixture(
       .href
   );
   const dataDir = await mkdtemp(join(tmpdir(), "project-cloud-sync-"));
-  cleanup.push(() => rm(dataDir, { recursive: true, force: true }));
+  cleanup.push(async () => {
+    await closeLocalSqliteClient();
+    await rm(dataDir, { recursive: true, force: true });
+  });
   const metadataStore = createLocalMetadataStore(dataDir),
     replicaId = await getLocalReplicaId(dataDir);
   const resourceStore = createLocalResourceStore({ dataDir });
@@ -616,7 +620,10 @@ it("shutdown interrupts a hanging content request without waiting for the networ
 
 async function receiverFor(source: Awaited<ReturnType<typeof fixture>>) {
   const dataDir = await mkdtemp(join(tmpdir(), "cloud-receiver-"));
-  cleanup.push(() => rm(dataDir, { recursive: true, force: true }));
+  cleanup.push(async () => {
+    await closeLocalSqliteClient();
+    await rm(dataDir, { recursive: true, force: true });
+  });
   const id = await getLocalReplicaId(dataDir),
     metadata = createLocalMetadataStore(dataDir),
     resources = createLocalResourceStore({ dataDir });
@@ -890,7 +897,10 @@ async function schedulerFixture(
   } = {},
 ) {
   const dataDir = await mkdtemp(join(tmpdir(), "cloud-scheduler-"));
-  cleanup.push(() => rm(dataDir, { recursive: true, force: true }));
+  cleanup.push(async () => {
+    await closeLocalSqliteClient();
+    await rm(dataDir, { recursive: true, force: true });
+  });
   const metadata = createLocalMetadataStore(dataDir);
   const replicaId = await getLocalReplicaId(dataDir);
   const now = new Date().toISOString();
@@ -1265,6 +1275,11 @@ describe("durable cloud outbox (#292 / #299)", () => {
       expect(stats.sizes[0]).toBeLessThan(fullSnapshotBytes);
       for (const bytes of stats.sizes.slice(1))
         expect(bytes).toBeLessThan(fullSnapshotBytes / 10);
+      // A max-wait flush that fired during the final advance can still be in
+      // flight after the first ready observation; settle it before asserting.
+      await waitForAsync(
+        async () => (await f.admission())?.status === "ready",
+      );
       expect((await f.admission())?.status).toBe("ready");
     } finally {
       vi.useRealTimers();

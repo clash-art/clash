@@ -1,7 +1,4 @@
 import { GeneratorDefinitionSchema, type GeneratorDefinition, type GeneratorDefinitionRef } from "@clash/shared-types";
-import { createRequire } from "node:module";
-import { chmod, mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
 import type {
@@ -10,23 +7,10 @@ import type {
   DurableRunPhase,
   DurableRunRecord,
 } from "@clash/shared-runtime";
-import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
-
-interface SqliteRunResult {
-  changes: number | bigint;
-}
-
-interface SqliteStatement {
-  run(...params: unknown[]): SqliteRunResult;
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-  all(...params: unknown[]): Record<string, unknown>[];
-}
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
+import {
+  createLocalSqliteConnection,
+  type LocalSqliteRunResult,
+} from "./local-sqlite-connection.js";
 
 export interface SqliteDurableRunJournal extends DurableRunJournal {
   /** Validated Host contracts retained for crash recovery across plugin changes. */
@@ -39,7 +23,6 @@ export interface SqliteDurableRunJournal extends DurableRunJournal {
   nextWakeAt(ownerId: string, projectId?: string): Promise<number | undefined>;
 }
 
-const nodeRequire = createRequire(import.meta.url);
 const PHASES = new Set<DurableRunPhase>([
   "queued",
   "submitting",
@@ -48,50 +31,6 @@ const PHASES = new Set<DurableRunPhase>([
   "succeeded",
   "failed",
 ]);
-
-function databasePath(dataDir: string): string {
-  return join(dataDir, "local.sqlite");
-}
-
-function openDatabase(path: string): SqliteDatabase {
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const database = new DatabaseSync(path);
-  database.exec(`
-    PRAGMA busy_timeout = 5000;
-    PRAGMA journal_mode = WAL;
-  `);
-  return database;
-}
-
-function applySchema(database: SqliteDatabase): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS generator_definition_archive (
-      plugin_id TEXT NOT NULL,
-      definition_id TEXT NOT NULL,
-      version TEXT NOT NULL,
-      schema_hash TEXT NOT NULL,
-      definition_json TEXT NOT NULL,
-      PRIMARY KEY (plugin_id, definition_id, version, schema_hash)
-    );
-    CREATE TABLE IF NOT EXISTS durable_run_journal (
-      action_run_id TEXT NOT NULL,
-      output_slot TEXT NOT NULL,
-      owner_realm TEXT NOT NULL,
-      owner_id TEXT NOT NULL,
-      revision INTEGER NOT NULL,
-      phase TEXT NOT NULL,
-      recover_at INTEGER,
-      updated_at INTEGER NOT NULL,
-      record_json TEXT NOT NULL,
-      PRIMARY KEY (action_run_id, output_slot)
-    );
-
-    CREATE INDEX IF NOT EXISTS durable_run_journal_recovery
-      ON durable_run_journal (owner_realm, owner_id, recover_at);
-  `);
-}
 
 function corrupt(identity: string, detail: string): Error {
   return new Error(
@@ -321,7 +260,7 @@ function sameFrozenFields(
   );
 }
 
-function changes(result: SqliteRunResult): number {
+function changes(result: LocalSqliteRunResult): number {
   return typeof result.changes === "bigint"
     ? Number(result.changes)
     : result.changes;
@@ -330,54 +269,41 @@ function changes(result: SqliteRunResult): number {
 export function createSqliteDurableRunJournal(
   dataDir: string,
 ): SqliteDurableRunJournal {
-  const path = databasePath(dataDir);
-
-  const connection = createLocalSqliteConnection({
-    dataDir,
-    path,
-    open: openDatabase,
-    prepare: applySchema,
-  });
-
-  async function withDatabase<T>(task: (database: SqliteDatabase) => T): Promise<T> {
-    return connection.use(task);
-  }
+  const connection = createLocalSqliteConnection({ dataDir });
 
   return {
     async rememberGeneratorDefinition(input) {
       const definition = GeneratorDefinitionSchema.parse(input);
-      await withDatabase(database => {
-        database.prepare("INSERT OR IGNORE INTO generator_definition_archive (plugin_id, definition_id, version, schema_hash, definition_json) VALUES (?, ?, ?, ?, ?)").run(
+      const row = await connection.use(async (database) => {
+        await database.prepare("INSERT OR IGNORE INTO generator_definition_archive (plugin_id, definition_id, version, schema_hash, definition_json) VALUES (?, ?, ?, ?, ?)").run(
           definition.pluginId, definition.definitionId, definition.version, definition.schemaHash, JSON.stringify(definition),
         );
-        const row = database.prepare("SELECT definition_json FROM generator_definition_archive WHERE plugin_id = ? AND definition_id = ? AND version = ? AND schema_hash = ?").get(
+        return database.prepare("SELECT definition_json FROM generator_definition_archive WHERE plugin_id = ? AND definition_id = ? AND version = ? AND schema_hash = ?").get(
           definition.pluginId, definition.definitionId, definition.version, definition.schemaHash,
         );
-        if (!row || !isDeepStrictEqual(GeneratorDefinitionSchema.parse(JSON.parse(String(row.definition_json))), definition)) {
-          throw new Error("Generator Definition identity already has different archived content.");
-        }
       });
+      if (!row || !isDeepStrictEqual(GeneratorDefinitionSchema.parse(JSON.parse(String(row.definition_json))), definition)) {
+        throw new Error("Generator Definition identity already has different archived content.");
+      }
     },
     async readGeneratorDefinition(ref) {
-      return withDatabase(database => {
-        const row = database.prepare("SELECT definition_json FROM generator_definition_archive WHERE plugin_id = ? AND definition_id = ? AND version = ? AND schema_hash = ?").get(
-          ref.pluginId, ref.definitionId, ref.version, ref.schemaHash,
-        );
-        if (!row) return undefined;
-        const definition = GeneratorDefinitionSchema.parse(JSON.parse(String(row.definition_json)));
-        if (definition.pluginId !== ref.pluginId || definition.definitionId !== ref.definitionId || definition.version !== ref.version || definition.schemaHash !== ref.schemaHash) {
-          throw new Error("Archived Generator Definition identity is corrupt.");
-        }
-        return definition;
-      });
+      const row = await connection.db.prepare("SELECT definition_json FROM generator_definition_archive WHERE plugin_id = ? AND definition_id = ? AND version = ? AND schema_hash = ?").get(
+        ref.pluginId, ref.definitionId, ref.version, ref.schemaHash,
+      );
+      if (!row) return undefined;
+      const definition = GeneratorDefinitionSchema.parse(JSON.parse(String(row.definition_json)));
+      if (definition.pluginId !== ref.pluginId || definition.definitionId !== ref.definitionId || definition.version !== ref.version || definition.schemaHash !== ref.schemaHash) {
+        throw new Error("Archived Generator Definition identity is corrupt.");
+      }
+      return definition;
     },
     async create(run) {
       const serialized = serializeRecord(run);
       const normalized = serialized.normalized;
-      return withDatabase((database) => {
-        database.exec("BEGIN IMMEDIATE");
+      return connection.use(async (database) => {
+        await database.exec("BEGIN IMMEDIATE");
         try {
-          const existingRow = database
+          const existingRow = await database
             .prepare(
               `
             SELECT action_run_id, output_slot, owner_realm, owner_id,
@@ -396,7 +322,7 @@ export function createSqliteDurableRunJournal(
               );
             }
           } else {
-            database
+            await database
               .prepare(
                 `
               INSERT INTO durable_run_journal (
@@ -417,9 +343,9 @@ export function createSqliteDurableRunJournal(
                 serialized.json,
               );
           }
-          database.exec("COMMIT");
+          await database.exec("COMMIT");
         } catch (error) {
-          database.exec("ROLLBACK");
+          await database.exec("ROLLBACK");
           throw error;
         }
       });
@@ -427,19 +353,17 @@ export function createSqliteDurableRunJournal(
 
     async load(identity) {
       assertIdentity(identity);
-      return withDatabase((database) => {
-        const row = database
-          .prepare(
-            `
-          SELECT action_run_id, output_slot, owner_realm, owner_id,
-                 revision, phase, record_json
-          FROM durable_run_journal
-          WHERE action_run_id = ? AND output_slot = ?
-        `,
-          )
-          .get(identity.actionRunId, identity.outputSlot);
-        return row ? parseRow(row) : undefined;
-      });
+      const row = await connection.db
+        .prepare(
+          `
+        SELECT action_run_id, output_slot, owner_realm, owner_id,
+               revision, phase, record_json
+        FROM durable_run_journal
+        WHERE action_run_id = ? AND output_slot = ?
+      `,
+        )
+        .get(identity.actionRunId, identity.outputSlot);
+      return row ? parseRow(row) : undefined;
     },
 
     async compareAndSet(identity, expectedRevision, next) {
@@ -464,8 +388,8 @@ export function createSqliteDurableRunJournal(
           "A durable run CAS must advance revision by exactly one.",
         );
       }
-      return withDatabase((database) => {
-        const currentRow = database
+      return connection.use(async (database) => {
+        const currentRow = await database
           .prepare(
             `
           SELECT action_run_id, output_slot, owner_realm, owner_id,
@@ -483,7 +407,7 @@ export function createSqliteDurableRunJournal(
         ) {
           return false;
         }
-        const result = database
+        const result = await database
           .prepare(
             `
           UPDATE durable_run_journal
@@ -516,8 +440,8 @@ export function createSqliteDurableRunJournal(
         throw new Error("A recoverable run scan requires an owner id.");
       if (!Number.isFinite(now))
         throw new Error("A recoverable run scan requires a finite time.");
-      return withDatabase((database) =>
-        database
+      return (
+        await connection.db
           .prepare(
             `
           SELECT action_run_id, output_slot, owner_realm, owner_id,
@@ -529,58 +453,50 @@ export function createSqliteDurableRunJournal(
         `,
           )
           .all(ownerId, now)
-          .map(parseRow),
-      );
+      ).map(parseRow);
     },
 
     async listOwnedProjectIds(ownerId) {
       if (!ownerId.trim())
         throw new Error("A durable run project scan requires an owner id.");
-      return withDatabase((database) => {
-        const projectIds = new Set(
-          database
-            .prepare(
-              `
-            SELECT action_run_id, output_slot, owner_realm, owner_id,
-                   revision, phase, record_json
-            FROM durable_run_journal
-            WHERE owner_realm = 'local' AND owner_id = ?
-              AND recover_at IS NOT NULL
-            ORDER BY action_run_id ASC, output_slot ASC
-          `,
-            )
-            .all(ownerId)
-            .map(parseRow)
-            .map(runProjectId),
-        );
-        return [...projectIds].sort();
-      });
+      const rows = await connection.db
+        .prepare(
+          `
+        SELECT action_run_id, output_slot, owner_realm, owner_id,
+               revision, phase, record_json
+        FROM durable_run_journal
+        WHERE owner_realm = 'local' AND owner_id = ?
+          AND recover_at IS NOT NULL
+        ORDER BY action_run_id ASC, output_slot ASC
+      `,
+        )
+        .all(ownerId);
+      const projectIds = new Set(rows.map(parseRow).map(runProjectId));
+      return [...projectIds].sort();
     },
 
     async nextWakeAt(ownerId, projectId) {
       if (!ownerId.trim())
         throw new Error("A durable run wake query requires an owner id.");
-      return withDatabase((database) => {
-        const rows = database
-          .prepare(
-            `
-          SELECT action_run_id, output_slot, owner_realm, owner_id,
-                 revision, phase, recover_at, record_json
-          FROM durable_run_journal
-          WHERE owner_realm = 'local' AND owner_id = ?
-            AND recover_at IS NOT NULL
-          ORDER BY recover_at ASC, action_run_id ASC, output_slot ASC
-        `,
-          )
-          .all(ownerId);
-        const row = projectId
-          ? rows.find((candidate) => {
-              const run = parseRow(candidate);
-              return runProjectId(run) === projectId;
-            })
-          : rows[0];
-        return typeof row?.recover_at === "number" ? row.recover_at : undefined;
-      });
+      const rows = await connection.db
+        .prepare(
+          `
+        SELECT action_run_id, output_slot, owner_realm, owner_id,
+               revision, phase, recover_at, record_json
+        FROM durable_run_journal
+        WHERE owner_realm = 'local' AND owner_id = ?
+          AND recover_at IS NOT NULL
+        ORDER BY recover_at ASC, action_run_id ASC, output_slot ASC
+      `,
+        )
+        .all(ownerId);
+      const row = projectId
+        ? rows.find((candidate) => {
+            const run = parseRow(candidate);
+            return runProjectId(run) === projectId;
+          })
+        : rows[0];
+      return typeof row?.recover_at === "number" ? row.recover_at : undefined;
     },
   };
 }

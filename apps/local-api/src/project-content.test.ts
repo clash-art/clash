@@ -15,9 +15,13 @@ import {
   createLocalDocumentProductService,
   type LocalDocumentProjectAuthority,
 } from "./local-document-product.js";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 
 const directories: string[] = [];
 afterEach(async () => {
+  // The Host worker may still have a statement queued that would recreate
+  // local.sqlite after the directory is removed.
+  await closeLocalSqliteClient();
   await Promise.all(
     directories
       .splice(0)

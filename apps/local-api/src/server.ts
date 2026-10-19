@@ -135,6 +135,10 @@ import {
 } from "./local-asset-inspections.js";
 import { createLocalAssetRepresentationService } from "./local-asset-representations.js";
 import { createLocalPluginAssetStagingStore } from "./local-plugin-asset-staging.js";
+import {
+  closeLocalSqliteClient,
+  localSqliteClient,
+} from "./local-sqlite-connection.js";
 import type { LocalPluginAssetStagingStore } from "./local-plugin-asset-staging.js";
 import { createLocalExecutorAssetCapabilityIssuer } from "./executor-asset-capability.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
@@ -1436,6 +1440,12 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
   // Startup probes run unawaited so listen is not blocked, but they still read
   // and create local SQLite state; close waits for them before reporting done.
   const startupProbes: Promise<unknown>[] = [];
+  // Open and migrate local.sqlite in the SQLite worker now, off the main
+  // thread. A failure is coded in `/health` and returned by every SQLite-backed
+  // route; the worker logs it.
+  startupProbes.push(
+    localSqliteClient().open(options.dataDir).catch(() => undefined),
+  );
   startupProbes.push(
     Promise.resolve(audioConfig.getVoiceInputConfig?.()).catch((error) => {
       hostLog.warn("host.voice_probe_degraded", { error });
@@ -2384,6 +2394,9 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
             await embeddedPluginHost?.stopAll().catch(() => undefined);
           }),
       ]);
+      // Every SQLite user above has drained: checkpoint WAL and close the
+      // worker within its deadline (SQLITE_CLOSE_TIMEOUT is logged otherwise).
+      await closeLocalSqliteClient();
     },
     () =>
       sourceWatchLifecyclePid === undefined

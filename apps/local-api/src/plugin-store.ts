@@ -1,8 +1,6 @@
-import { createRequire } from "node:module";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 
+import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 import { resolveProviderSecretKey } from "./local-provider-store";
 
 /**
@@ -26,15 +24,6 @@ import { resolveProviderSecretKey } from "./local-provider-store";
  * design, so this scoping is the boundary that remains: installing a plugin exposes the accounts
  * configured for that plugin, not every account on the machine.
  */
-
-interface SqliteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): {
-    run(...params: unknown[]): unknown;
-    get(...params: unknown[]): Record<string, unknown> | undefined;
-    all(...params: unknown[]): Record<string, unknown>[];
-  };
-}
 
 export interface PluginStoreEntryRef {
   pluginId: string;
@@ -80,16 +69,6 @@ export interface PluginStore {
 
 const SECRET_PREFIX = "enc:v1:";
 
-// `createRequire` rather than a bare `require`: this package is ESM (`"type": "module"`), and a
-// bare `require` in a file that also uses `import` leaves the module kind ambiguous. Node and tsx
-// both refuse it -- `tsx` reports ERR_AMBIGUOUS_MODULE_SYNTAX and will not load the file at all,
-// which is why a throwaway script that imported this module could not be run.
-//
-// Still lazy, which is the point: `node:sqlite` is loaded on the first call below, not at import
-// time. It is an experimental built-in, so paying for it only when a database is actually opened
-// keeps the cost off every consumer that merely imports this module.
-const nodeRequire = createRequire(import.meta.url);
-
 function encrypt(value: string, key: Buffer): string {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -115,22 +94,10 @@ function decrypt(stored: string, key: Buffer): string {
 }
 
 export async function openPluginStore(options: { dataDir: string }): Promise<PluginStore> {
-  await mkdir(options.dataDir, { recursive: true });
-  const { DatabaseSync } = nodeRequire("node:sqlite") as {
-    DatabaseSync: new (path: string) => SqliteDatabase;
-  };
-  const db = new DatabaseSync(join(options.dataDir, "local.sqlite"));
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS plugin_store (
-      plugin_id TEXT NOT NULL,
-      account_id TEXT NOT NULL,
-      key TEXT NOT NULL,
-      value TEXT NOT NULL,
-      is_secret INTEGER NOT NULL DEFAULT 0,
-      expires_at INTEGER,
-      PRIMARY KEY (plugin_id, account_id, key)
-    );
-  `);
+  // The SQLite worker migrates `plugin_store` and serves it on the Host's one
+  // WAL + busy_timeout connection; this opener used to set neither.
+  const db = createLocalSqliteConnection({ dataDir: options.dataDir }).db;
+  await db.prepare("SELECT 1 FROM plugin_store LIMIT 1").get();
   const secretKey = await resolveProviderSecretKey(options.dataDir);
 
   const store: PluginStore = {
@@ -146,7 +113,7 @@ export async function openPluginStore(options: { dataDir: string }): Promise<Plu
       const stored = entry.secret ? encrypt(entry.value, secretKey) : entry.value;
       // Replace, not append. A credential has one current value; keeping the previous one would
       // mean deciding which is live on every read, and leaving a revoked secret on disk.
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO plugin_store (plugin_id, account_id, key, value, is_secret, expires_at)
         VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT (plugin_id, account_id, key)
@@ -164,7 +131,7 @@ export async function openPluginStore(options: { dataDir: string }): Promise<Plu
     },
 
     async get(ref) {
-      const row = db.prepare(
+      const row = await db.prepare(
         "SELECT value, is_secret FROM plugin_store WHERE plugin_id = ? AND account_id = ? AND key = ?",
       ).get(ref.pluginId, ref.accountId, ref.key);
       if (!row) return undefined;
@@ -173,7 +140,7 @@ export async function openPluginStore(options: { dataDir: string }): Promise<Plu
     },
 
     async remove(ref) {
-      db.prepare(
+      await db.prepare(
         "DELETE FROM plugin_store WHERE plugin_id = ? AND account_id = ? AND key = ?",
       ).run(ref.pluginId, ref.accountId, ref.key);
     },
@@ -181,12 +148,12 @@ export async function openPluginStore(options: { dataDir: string }): Promise<Plu
     async dueForRenewal({ within, now = Date.now() }) {
       // Only entries that stated an expiry. A value with none is not eternal -- it is a value whose
       // plugin never asked to be woken about it.
-      return db.prepare(`
+      return (await db.prepare(`
         SELECT plugin_id, account_id, key, expires_at
         FROM plugin_store
         WHERE expires_at IS NOT NULL AND expires_at <= ?
         ORDER BY expires_at ASC
-      `).all(now + within).map((row) => ({
+      `).all(now + within)).map((row) => ({
         pluginId: String(row.plugin_id),
         accountId: String(row.account_id),
         key: String(row.key),
@@ -195,7 +162,7 @@ export async function openPluginStore(options: { dataDir: string }): Promise<Plu
     },
 
     async rawValueForTest(ref) {
-      const row = db.prepare(
+      const row = await db.prepare(
         "SELECT value FROM plugin_store WHERE plugin_id = ? AND account_id = ? AND key = ?",
       ).get(ref.pluginId, ref.accountId, ref.key);
       return row ? String(row.value ?? "") : undefined;

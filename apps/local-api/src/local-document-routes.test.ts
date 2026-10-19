@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { LoroDoc } from "loro-crdt";
 import { afterEach, describe, expect, it } from "vitest";
+import { closeLocalSqliteClient } from "./local-sqlite-connection.js";
 import {
   createProjectAsset,
   readDocumentAssetRevision,
@@ -14,6 +15,7 @@ import { createLocalApiApp } from "./app.js";
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  await closeLocalSqliteClient();
   await Promise.all(
     temporaryDirectories
       .splice(0)

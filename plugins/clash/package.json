@@ -11,6 +11,7 @@
     "mcp": "./runtime/index.js",
     "cli": "./runtime/clash-cli.cjs",
     "localApi": "./runtime/local-api.cjs",
+    "sqliteWorker": "./runtime/host-workers/sqlite-worker.cjs",
     "agents": "./runtime/agents"
   },
   "main": "./runtime/index.js",

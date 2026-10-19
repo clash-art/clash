@@ -672,12 +672,12 @@ describe("Local durable Timeline render workflow", () => {
     });
 
     const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         exec(sql: string): void;
         close(): void;
       };
     };
-    const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     database.exec("DELETE FROM local_asset_inspections");
     database.close();
 
@@ -903,14 +903,14 @@ describe("Local durable Timeline render workflow", () => {
       failure: { message: "Remotion media fetch timed out" },
     });
     const { DatabaseSync } = nodeRequire("node:sqlite") as {
-      DatabaseSync: new (path: string) => {
+      DatabaseSync: new (path: string, options?: { timeout?: number }) => {
         prepare(sql: string): {
           get(...params: unknown[]): Record<string, unknown> | undefined;
         };
         close(): void;
       };
     };
-    const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+    const database = new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
     try {
       expect(
         database

@@ -71,7 +71,7 @@ async function seedProjectAdmission(projectId: string, status: "pending" | "read
 function openSqlite() {
   const require = createRequire(import.meta.url);
   const { DatabaseSync } = require("node:sqlite") as {
-    DatabaseSync: new (path: string) => {
+    DatabaseSync: new (path: string, options?: { timeout?: number }) => {
       exec(sql: string): void;
       prepare(sql: string): {
         run(...params: unknown[]): unknown;
@@ -81,7 +81,7 @@ function openSqlite() {
       close(): void;
     };
   };
-  return new DatabaseSync(join(dataDir, "local.sqlite"));
+  return new DatabaseSync(join(dataDir, "local.sqlite"), { timeout: 5_000 });
 }
 
 function ageDeletedProjectForPurge(projectId: string): void {
