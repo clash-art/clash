@@ -3605,10 +3605,12 @@ describe("LocalLoroRoom", () => {
       },
     );
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onRemoteMirrorFailure = vi.fn();
     const room = await LocalLoroRoom.open({
       dataDir,
       projectId: "project/offline",
       remotePersistence: { appendUpdate },
+      onRemoteMirrorFailure,
     });
     const peerA: Uint8Array[] = [];
     const peerB: Uint8Array[] = [];
@@ -3639,6 +3641,14 @@ describe("LocalLoroRoom", () => {
     expect(errorSpy).toHaveBeenCalledWith(
       "[local-sync] failed to mirror update to remote persistence",
       expect.any(Error),
+    );
+    // A failed mirror is not log-only: the Host persists it on the Project's
+    // cloud admission and retries the local replica with backoff.
+    await vi.waitFor(() =>
+      expect(onRemoteMirrorFailure).toHaveBeenCalledWith(
+        "project/offline",
+        expect.any(Error),
+      ),
     );
   });
 

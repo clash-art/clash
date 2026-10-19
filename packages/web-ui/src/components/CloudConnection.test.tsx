@@ -88,6 +88,28 @@ it("signs in to the chosen self-host without admitting any project", async () =>
   ).toBe(false);
   expect(screen.queryByLabelText(/token/i)).toBeNull();
 });
+it("shows the persisted coded sync failure until a successful sync clears it", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      Response.json({
+        serviceUrl: "https://clash.art",
+        user: { id: "u", email: "u@example.test", name: "User" },
+        authenticated: true,
+        admission: {
+          status: "failed",
+          lastError: "PROJECT_METADATA_SYNC_FAILED: fetch failed",
+        },
+        webUrl: null,
+      }),
+    ),
+  );
+  render(<ProjectCloudPanel projectId="p" />);
+  expect(
+    await screen.findByText("PROJECT_METADATA_SYNC_FAILED: fetch failed"),
+  ).toBeTruthy();
+});
+
 it("requires explicit project admission and exposes Web only after server-confirmed readiness", async () => {
   let enabled = false,
     ready = false;

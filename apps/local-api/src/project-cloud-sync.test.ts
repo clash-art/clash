@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Hono } from "hono";
 import { LoroDoc } from "loro-crdt";
 import {
@@ -41,10 +41,29 @@ async function waitFor(predicate: () => boolean, timeoutMs = 5_000) {
   }
   if (!predicate()) throw new Error("Timed out waiting for condition");
 }
+async function waitForAsync(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 5_000,
+) {
+  const attempts = Math.ceil(timeoutMs / 10);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await predicate()) return;
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 10));
+  }
+  if (!(await predicate())) throw new Error("Timed out waiting for condition");
+}
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture(autoSchedule = true) {
+async function fixture(
+  autoSchedule = true,
+  overrides: {
+    mutationDebounceMs?: number;
+    mutationMaxWaitMs?: number;
+    retryBackoffBaseMs?: number;
+    retryBackoffMaxMs?: number;
+  } = {},
+) {
   // Cross-runtime integration: load the Worker adapters at runtime so their
   // ambient Cloudflare types do not contaminate the Node compiler's globals.
   const { createProjectContentRoutes } = await import(
@@ -63,8 +82,9 @@ async function fixture(autoSchedule = true) {
   const metadataStore = createLocalMetadataStore(dataDir),
     replicaId = await getLocalReplicaId(dataDir);
   const resourceStore = createLocalResourceStore({ dataDir });
-  const remoteDoc = new LoroDoc();
-  cleanup.push(async () => remoteDoc.free());
+  let remoteDoc = new LoroDoc();
+  const initialRemoteDoc = remoteDoc;
+  cleanup.push(async () => initialRemoteDoc.free());
   let cloudMetadata: ProjectMetadata | null = null;
   const metadata: ProjectMetadata = {
     projectId: "project",
@@ -93,6 +113,12 @@ async function fixture(autoSchedule = true) {
   let putCount = 0;
   let rejectUpload = false,
     beforePut: (() => Promise<void>) | undefined;
+  let rejectAppend = false,
+    rejectMetadata = false,
+    appendCalls = 0,
+    appendBytes = 0,
+    appendTimes: number[] = [],
+    appendSizes: number[] = [];
   const ports = {
     async authorize(input: { projectId: string; localReplicaId: string }) {
       const admission = await metadataStore.getProjectCloudAdmission(
@@ -174,12 +200,18 @@ async function fixture(autoSchedule = true) {
       return remoteDoc.export({ mode: "snapshot" });
     },
     async appendUpdate(_id: string, bytes: Uint8Array) {
+      if (rejectAppend) throw new Error("cloud link unavailable");
+      appendCalls += 1;
+      appendBytes += bytes.byteLength;
+      appendTimes.push(Date.now());
+      appendSizes.push(bytes.byteLength);
       remoteDoc.import(bytes);
     },
     async loadProjectMetadata() {
       return cloudMetadata;
     },
     async saveProjectMetadata(_id: string, value: ProjectMetadata) {
+      if (rejectMetadata) throw new Error("metadata mirror unavailable");
       cloudMetadata = value;
     },
   };
@@ -203,6 +235,10 @@ async function fixture(autoSchedule = true) {
       }) => ({ source: await resourceStore.seal(input), facts: {} as any }),
     },
     fetch: fetcher,
+    // The existing suite asserts on the end state of an explicit trigger, so
+    // it disables the mutation quiet period; the #292 burst test sets its own.
+    mutationDebounceMs: 0,
+    ...overrides,
   };
   service = createLocalProjectCloudSync(options);
   cleanup.push(() => service.close());
@@ -238,6 +274,31 @@ async function fixture(autoSchedule = true) {
     addResource,
     rejectUploads: (value: boolean) => {
       rejectUpload = value;
+    },
+    rejectAppends: (value: boolean) => {
+      rejectAppend = value;
+    },
+    rejectMetadata: (value: boolean) => {
+      rejectMetadata = value;
+    },
+    appendStats: () => ({
+      calls: appendCalls,
+      bytes: appendBytes,
+      times: [...appendTimes],
+      sizes: [...appendSizes],
+    }),
+    /** Simulates a ProjectRoom reset/restored server-side to an empty doc. */
+    resetRemoteDoc: () => {
+      const fresh = new LoroDoc();
+      cleanup.push(async () => fresh.free());
+      remoteDoc = fresh;
+    },
+    currentRemoteDoc: () => remoteDoc,
+    resetAppendStats: () => {
+      appendCalls = 0;
+      appendBytes = 0;
+      appendTimes = [];
+      appendSizes = [];
     },
     beforePut: (callback: () => Promise<void>) => {
       beforePut = callback;
@@ -689,7 +750,9 @@ it("a Resource committed during upload invalidates completion until its own byte
   expect([...f.objects.values()]).not.toContainEqual(later!.bytes);
   release();
   await running;
-  expect((await f.admission())?.status).toBe("ready");
+  // The commit during upload is coalesced into a follow-up run; wait for it to
+  // reach readiness instead of assuming the first run drains it.
+  await waitForAsync(async () => (await f.admission())?.status === "ready");
   expect([...f.objects.values()]).toContainEqual(later!.bytes);
 });
 
@@ -1085,5 +1148,312 @@ describe("Project cloud sync scheduling", () => {
     await waitFor(() => f.stats().loads >= projectIds.length);
     expect(f.stats().maxActive).toBe(2);
     expect(f.stats().loaded.sort()).toEqual([...projectIds].sort());
+  });
+});
+
+
+describe("durable cloud outbox (#292 / #299)", () => {
+  it("coalesces a 60-edit burst into one delta upload, not 60 snapshots", async () => {
+    // A quiet period makes the burst one upload window; without it the base
+    // exports/uploads the whole document once per applied update.
+    const f = await fixture(true, { mutationDebounceMs: 40 });
+    const seed = randomBytes(150_000).toString("base64");
+    await f.rooms.mutateProject("project", (doc) => {
+      doc.getMap("nodes").set("seed", { type: "text", data: { label: seed } });
+      return { value: undefined };
+    });
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    const fullSnapshotBytes = f.remoteDoc.export({ mode: "snapshot" }).byteLength;
+    expect(fullSnapshotBytes).toBeGreaterThan(100_000);
+    f.resetAppendStats();
+    for (let index = 0; index < 60; index += 1) {
+      await f.rooms.mutateProject("project", (doc) => {
+        doc.getMap("nodes").set(`edit-${index}`, {
+          type: "text",
+          data: { label: `edit ${index}` },
+        });
+        return { value: undefined };
+      });
+    }
+    await waitForAsync(async () => (await f.admission())?.status === "ready");
+    // Let a queued follow-up run settle before deciding how many uploads the
+    // burst produced.
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 150));
+    const stats = f.appendStats();
+    expect(stats.calls).toBeGreaterThan(0);
+    expect(stats.calls).toBeLessThanOrEqual(2);
+    // A delta is proportional to the edits, not to the document: much smaller
+    // than even one full snapshot, and tiny per edit.
+    expect(stats.bytes).toBeLessThan(fullSnapshotBytes);
+    expect(stats.bytes / 60).toBeLessThan(2_000);
+    expect((await f.admission())?.status).toBe("ready");
+  });
+
+  it("re-sends the baseline when the remote no longer covers the sync cursor", async () => {
+    // A delta the remote cannot apply would be parked as a pending import
+    // behind a successful append: acknowledged, but never visible.
+    const f = await fixture(true, { mutationDebounceMs: 40 });
+    const seed = randomBytes(150_000).toString("base64");
+    await f.rooms.mutateProject("project", (doc) => {
+      doc.getMap("nodes").set("seed", { type: "text", data: { label: seed } });
+      return { value: undefined };
+    });
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    f.resetRemoteDoc();
+    f.resetAppendStats();
+    await f.rooms.mutateProject("project", (doc) => {
+      doc.getMap("nodes").set("after-reset", {
+        type: "text",
+        data: { label: "after reset" },
+      });
+      return { value: undefined };
+    });
+    await waitForAsync(async () => f.appendStats().calls >= 1);
+    await waitForAsync(async () => (await f.admission())?.status === "ready");
+    // The upload is a full baseline, and the reset remote now holds both the
+    // pre-reset seed and the new edit.
+    expect(f.appendStats().bytes).toBeGreaterThan(100_000);
+    const nodes = f.currentRemoteDoc().getMap("nodes");
+    expect(nodes.get("seed")).toBeDefined();
+    expect(nodes.get("after-reset")).toBeDefined();
+  });
+
+  it("flushes a continuous edit stream at the max wait and keeps later uploads as deltas", async () => {
+    // A stream editing every 100 ms never leaves the 400 ms quiet period. The
+    // 2 s max wait must flush the window anyway instead of postponing forever.
+    const f = await fixture(true, { mutationDebounceMs: 400 });
+    const seed = randomBytes(150_000).toString("base64");
+    await f.rooms.mutateProject("project", (doc) => {
+      doc.getMap("nodes").set("seed", { type: "text", data: { label: seed } });
+      return { value: undefined };
+    });
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    const fullSnapshotBytes = f.remoteDoc.export({ mode: "snapshot" }).byteLength;
+    expect(fullSnapshotBytes).toBeGreaterThan(100_000);
+    f.resetAppendStats();
+    vi.useFakeTimers();
+    try {
+      const firstEditAt = Date.now();
+      for (let index = 0; index < 60; index += 1) {
+        await f.rooms.mutateProject("project", (doc) => {
+          doc.getMap("nodes").set(`stream-${index}`, {
+            type: "text",
+            data: { label: `edit ${index}` },
+          });
+          return { value: undefined };
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        if (index === 19) {
+          // Six seconds of edits start the first upload at the max wait, not
+          // after the stream eventually goes quiet.
+          await waitForAsync(async () => f.appendStats().calls >= 1);
+        }
+      }
+      await vi.advanceTimersByTimeAsync(3_000);
+      await waitForAsync(async () => f.appendStats().calls >= 2);
+      await waitForAsync(
+        async () => (await f.admission())?.status === "ready",
+      );
+      const stats = f.appendStats();
+      expect(stats.calls).toBeGreaterThanOrEqual(2);
+      expect(stats.times[0] - firstEditAt).toBeLessThanOrEqual(2_000 + 1);
+      // The baseline cursor was acknowledged by the seed run, so every upload
+      // is a delta proportional to the edits, not a whole snapshot.
+      expect(stats.sizes[0]).toBeLessThan(fullSnapshotBytes);
+      for (const bytes of stats.sizes.slice(1))
+        expect(bytes).toBeLessThan(fullSnapshotBytes / 10);
+      expect((await f.admission())?.status).toBe("ready");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the quiet and max-wait timers on close", async () => {
+    const f = await fixture(false, { mutationDebounceMs: 400 });
+    vi.useFakeTimers();
+    try {
+      await f.service.invalidate("project");
+      // The quiet timer, the max-wait timer, and the catch-up poll timer.
+      expect(vi.getTimerCount()).toBeGreaterThanOrEqual(2);
+      await f.service.close();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.appendStats().calls).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces repeated mirror failures into one coded write and one backoff step", async () => {
+    const f = await fixture(true, {
+      mutationDebounceMs: 60_000,
+      mutationMaxWaitMs: 60_000,
+      retryBackoffBaseMs: 1_000,
+      retryBackoffMaxMs: 4_000,
+    });
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    f.resetAppendStats();
+    // First failure of the episode is visible and arms a 1 s * (0.5 + 0) = 500 ms
+    // retry. A second or later attempt would be >= 1 s.
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.useFakeTimers();
+    try {
+      const edit = (index: number) =>
+        f.rooms.mutateProject("project", (doc) => {
+          doc.getMap("nodes").set(`offline-${index}`, {
+            type: "text",
+            data: { label: `queued ${index}` },
+          });
+          return { value: undefined };
+        });
+      await edit(0);
+      await f.service.reportMirrorFailure(
+        "project",
+        new Error("cloud link unavailable"),
+      );
+      const firstFailure = await f.admission();
+      expect(firstFailure).toMatchObject({
+        status: "failed",
+        lastError: expect.stringMatching(/^PROJECT_CLOUD_MIRROR_FAILED: /),
+      });
+      const firstUpdatedAt = firstFailure?.updatedAt;
+      for (let index = 1; index < 50; index += 1) {
+        // Advance a little so a second CAS would necessarily change updatedAt,
+        // but stay below the first backoff delay.
+        await vi.advanceTimersByTimeAsync(5);
+        await edit(index);
+        await f.service.reportMirrorFailure(
+          "project",
+          new Error("cloud link unavailable"),
+        );
+      }
+      const coalesced = await f.admission();
+      expect(coalesced).toMatchObject({
+        status: "failed",
+        lastError: expect.stringMatching(/^PROJECT_CLOUD_MIRROR_FAILED: /),
+      });
+      // One admission write: only the first failure rewrote the row.
+      expect(coalesced?.updatedAt).toBe(firstUpdatedAt);
+      // 49 * 5 ms elapsed; the single recorded attempt retries at 500 ms.
+      expect(f.appendStats().calls).toBe(0);
+      await vi.advanceTimersByTimeAsync(254);
+      expect(f.appendStats().calls).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await waitForAsync(async () => f.appendStats().calls > 0);
+      await waitForAsync(
+        async () => (await f.admission())?.status === "ready",
+      );
+      expect((await f.admission())?.status).toBe("ready");
+      expect((await f.admission())?.lastError).toBeNull();
+      // The queued edits were replayed by the successful run.
+      const remoteDoc = new LoroDoc();
+      remoteDoc.import(f.remoteDoc.export({ mode: "snapshot" }));
+      try {
+        expect(remoteDoc.getMap("nodes").get("offline-0")).toMatchObject({
+          data: { label: "queued 0" },
+        });
+        expect(remoteDoc.getMap("nodes").get("offline-49")).toMatchObject({
+          data: { label: "queued 49" },
+        });
+      } finally {
+        remoteDoc.free();
+      }
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("persists a coded metadata failure and clears it after a successful retry", async () => {
+    const f = await fixture(false);
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    f.rejectMetadata(true);
+    Object.assign(f.localMetadata(), {
+      name: "Renamed while offline",
+      updatedAt: "2026-09-02T00:00:00.000Z",
+    });
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("failed");
+    expect((await f.admission())?.lastError).toMatch(
+      /^PROJECT_METADATA_SYNC_FAILED: /,
+    );
+    f.rejectMetadata(false);
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    expect((await f.admission())?.lastError).toBeNull();
+  });
+
+  it("persists a coded link failure instead of logging it only", async () => {
+    const f = await fixture(false);
+    await f.service.schedule("project");
+    await f.service.reportMirrorFailure(
+      "project",
+      new Error("cloud link unavailable"),
+    );
+    expect(await f.admission()).toMatchObject({
+      status: "failed",
+      lastError: expect.stringMatching(/^PROJECT_CLOUD_MIRROR_FAILED: /),
+    });
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    expect((await f.admission())?.lastError).toBeNull();
+  });
+
+  it("replays an edit queued while the cloud was down after a Host restart", async () => {
+    const f = await fixture(false);
+    await f.service.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    f.rejectAppends(true);
+    await f.rooms.mutateProject("project", (doc) => {
+      doc.getMap("nodes").set("queued-while-down", {
+        type: "text",
+        data: { label: "survives restart" },
+      });
+      return { value: undefined };
+    });
+    Object.assign(f.localMetadata(), {
+      name: "Renamed while offline",
+      updatedAt: "2026-09-02T00:00:00.000Z",
+    });
+    await f.service.invalidate("project");
+    await waitForAsync(
+      async () => (await f.admission())?.status === "failed",
+    );
+    expect((await f.admission())?.lastError).toMatch(
+      /^PROJECT_CLOUD_MIRROR_FAILED: /,
+    );
+    await f.service.close();
+    await f.rooms.close();
+    f.rejectAppends(false);
+    const rooms = new LocalLoroRoomHub(
+      f.dataDir,
+      undefined,
+      null,
+      undefined,
+      undefined,
+    );
+    cleanup.push(() => rooms.close());
+    const restarted = createLocalProjectCloudSync({ ...f.options, rooms });
+    cleanup.push(() => restarted.close());
+    await restarted.start();
+    await restarted.schedule("project");
+    expect((await f.admission())?.status).toBe("ready");
+    // The metadata row is durable too; the coordinator replays it on the same
+    // restart without waiting for another local edit.
+    expect(f.cloudMetadata()?.name).toBe("Renamed while offline");
+    const remoteDoc = new LoroDoc();
+    remoteDoc.import(f.remoteDoc.export({ mode: "snapshot" }));
+    try {
+      expect(
+        remoteDoc.getMap("nodes").get("queued-while-down"),
+      ).toMatchObject({ data: { label: "survives restart" } });
+    } finally {
+      remoteDoc.free();
+    }
   });
 });

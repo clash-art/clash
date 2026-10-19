@@ -5,7 +5,10 @@ import { Readable } from "node:stream";
 import {
   createProjectCloudSyncCoordinator,
   isActionRequiredSyncFailure,
+  PROJECT_CLOUD_MIRROR_FAILED,
+  projectCloudSyncFailureMessage,
 } from "@clash/shared-runtime/project-cloud-sync";
+import { decodeImportBlobMeta, VersionVector } from "loro-crdt";
 import {
   createProjectMetadataReplicator,
   metadataBodyBlobPath,
@@ -84,6 +87,17 @@ export interface LocalProjectCloudSyncOptions {
   maxBytes?: number;
   /** Per sync attempt budget; larger media deployments may raise it. */
   networkTimeoutMs?: number;
+  /**
+   * Quiet period that coalesces local mutations into one cloud run. A drag or
+   * typing burst must not export/post the document once per applied update.
+   */
+  mutationDebounceMs?: number;
+  /**
+   * Upper bound measured from the first mutation of a window. A stream that
+   * never pauses would otherwise postpone the cloud upload forever, so the
+   * window is flushed once this elapses even while edits continue.
+   */
+  mutationMaxWaitMs?: number;
 }
 
 /** Node adapter around the shared coordinator. All triggers use this one queue;
@@ -312,17 +326,70 @@ export function createLocalProjectCloudSync(
           const room = await options.rooms.room(projectId);
           const incoming = await remote.loadSnapshot!(projectId, signal);
           if (incoming) await room.mergeRemoteSnapshot(incoming);
-          const captured = await options.rooms.inspectProject(
+          // The cursor is the durable version marker of the last acknowledged
+          // update. With one, a run posts only the delta the user just made;
+          // without one (first sync, re-admission, recovery) it posts a
+          // snapshot so the remote can never miss the baseline.
+          const cursor = await store.getProjectCloudSyncCursor(
             projectId,
-            (doc) => ({
-              snapshot: doc.export({ mode: "snapshot" }),
-              refs: projectSyncContent(doc),
-            }),
+            replicaId,
           );
+          const captured = await options.rooms.inspectProject(projectId, (doc) => {
+            const version = doc.version();
+            try {
+              let update: Uint8Array;
+              if (cursor) {
+                let from: VersionVector | undefined;
+                let remoteVersion: VersionVector | undefined;
+                try {
+                  from = VersionVector.decode(cursor);
+                  // A delta is only applicable if the remote already holds the
+                  // cursor's version. A room that was reset or restored
+                  // server-side would otherwise park the delta as a pending
+                  // import behind a 204: an acknowledged upload that never
+                  // applies. Re-send the baseline in that case.
+                  remoteVersion = incoming
+                    ? decodeImportBlobMeta(incoming, false)
+                        .partialEndVersionVector
+                    : undefined;
+                  const order = remoteVersion
+                    ? from.compare(remoteVersion)
+                    : undefined;
+                  if (order === undefined || order > 0)
+                    throw new Error("remote does not cover the sync cursor");
+                  update = doc.export({ mode: "update", from });
+                } catch {
+                  // A cursor the remote does not cover, or one from another
+                  // lineage/retention window, cannot be replayed as a delta;
+                  // recover with a full snapshot.
+                  update = doc.export({ mode: "snapshot" });
+                } finally {
+                  from?.free();
+                  remoteVersion?.free();
+                }
+              } else {
+                update = doc.export({ mode: "snapshot" });
+              }
+              return {
+                update,
+                version: version.encode(),
+                refs: projectSyncContent(doc),
+              };
+            } finally {
+              version.free();
+            }
+          });
           refs = captured.refs;
           // HTTP response acknowledges durable ProjectRoom persistence, unlike
           // starting a WebSocket or merely opening the local room.
-          await remote.appendUpdate(projectId, captured.snapshot, signal);
+          if (captured.update.byteLength > 0) {
+            await remote.appendUpdate(projectId, captured.update, signal);
+            await store.setProjectCloudSyncCursor(
+              projectId,
+              replicaId,
+              captured.version,
+            );
+          }
         },
         async syncMetadata() {
           await assertCurrent();
@@ -569,6 +636,17 @@ export function createLocalProjectCloudSync(
   const retryBackoffMaxMs = options.retryBackoffMaxMs ?? 30 * 60_000;
   const retryStates = new Map<string, { attempt: number; nextAt: number }>();
   const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const backoffQueues = new Map<string, Promise<void>>();
+  const mutationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const mutationMaxTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const mutationWindowStartedAt = new Map<string, number>();
+  const mutationDirty = new Set<string>();
+  const mutationDebounceMs = Math.max(0, options.mutationDebounceMs ?? 400);
+  const mutationMaxWaitMs = Math.max(0, options.mutationMaxWaitMs ?? 2_000);
+  /** One in-flight report per Project; repeated publish failures coalesce. */
+  const mirrorReports = new Map<string, Promise<void>>();
+  /** Set once a mirror failure is visible; cleared only by a successful run. */
+  const mirrorFailureEpisode = new Set<string>();
   const waiters: Array<() => void> = [];
   let active = 0;
 
@@ -619,6 +697,16 @@ export function createLocalProjectCloudSync(
     if (pending) clearTimeout(pending);
     retryTimers.delete(projectId);
   }
+  function clearMutationWindow(projectId: string): void {
+    const pending = mutationTimers.get(projectId);
+    if (pending) clearTimeout(pending);
+    mutationTimers.delete(projectId);
+    const maxWait = mutationMaxTimers.get(projectId);
+    if (maxWait) clearTimeout(maxWait);
+    mutationMaxTimers.delete(projectId);
+    mutationWindowStartedAt.delete(projectId);
+    mutationDirty.delete(projectId);
+  }
   async function candidateAdmissions(): Promise<ProjectCloudAdmission[]> {
     const replicaId = await getLocalReplicaId(options.dataDir);
     if (options.metadata.listAdmissions)
@@ -637,6 +725,21 @@ export function createLocalProjectCloudSync(
     return admissions;
   }
   async function scheduleBackoff(projectId: string): Promise<void> {
+    // Serialize per Project: a publish failure report and a mutation run can
+    // settle together, and both must observe the timer the first one armed.
+    const previous = backoffQueues.get(projectId) ?? Promise.resolve();
+    const task = previous
+      .catch(() => undefined)
+      .then(() => scheduleBackoffOnce(projectId));
+    const tracked = task.finally(() => {
+      if (backoffQueues.get(projectId) === tracked)
+        backoffQueues.delete(projectId);
+    });
+    backoffQueues.set(projectId, tracked);
+    return tracked;
+  }
+  async function scheduleBackoffOnce(projectId: string): Promise<void> {
+    if (closed) return;
     const replicaId = await getLocalReplicaId(options.dataDir);
     const state = await store.getProjectCloudSyncState(projectId, replicaId);
     // Any admitted Project that was just synced (admission, mutation, retry)
@@ -655,16 +758,21 @@ export function createLocalProjectCloudSync(
     ) {
       retryStates.delete(projectId);
       clearProjectRetry(projectId);
+      mirrorFailureEpisode.delete(projectId);
       return;
     }
     // A failure is already persisted as coded status/lastError; backoff only
-    // decides when the next automatic attempt starts.
+    // decides when the next automatic attempt starts. An armed timer already
+    // represents this failure episode, so repeated reports (one per local
+    // edit while offline) must not advance the counter again.
+    if (retryTimers.has(projectId)) return;
     const attempt = (retryStates.get(projectId)?.attempt ?? 0) + 1;
     const base = Math.min(
       retryBackoffMaxMs,
       retryBackoffBaseMs * 2 ** Math.min(attempt - 1, 8),
     );
     const delay = Math.max(0, Math.round(base * (0.5 + Math.random())));
+    if (closed) return;
     retryStates.set(projectId, { attempt, nextAt: Date.now() + delay });
     clearProjectRetry(projectId);
     const pending = setTimeout(() => {
@@ -684,6 +792,9 @@ export function createLocalProjectCloudSync(
 
   function schedule(projectId: string): Promise<void> {
     if (closed) return Promise.resolve();
+    // An explicit trigger supersedes the quiet period: the dirty marker is
+    // already durable on the admission row.
+    clearMutationWindow(projectId);
     queued.add(projectId);
     const existing = runs.get(projectId);
     if (existing) return existing;
@@ -716,13 +827,15 @@ export function createLocalProjectCloudSync(
     runs.set(projectId, task);
     return task;
   }
-  async function invalidate(projectId: string) {
-    retryStates.delete(projectId);
-    clearProjectRetry(projectId);
+  /** Durably mark a local mutation before it can be exported; one write per
+   * coalesced window is enough because a run captures the whole replica. */
+  async function markPending(projectId: string): Promise<boolean> {
     const replicaId = await getLocalReplicaId(options.dataDir);
     for (;;) {
       const state = await store.getProjectCloudSyncState(projectId, replicaId);
-      if (!state || state.admission.status === "local-only") return;
+      if (!state || state.admission.status === "local-only") return false;
+      if (state.admission.status === "pending" && !state.admission.lastError)
+        return true;
       if (
         await store.compareAndSetProjectCloudAdmission(state, {
           ...state.admission,
@@ -731,10 +844,51 @@ export function createLocalProjectCloudSync(
           lastError: null,
         })
       )
-        break;
+        return true;
+    }
+  }
+  async function invalidate(projectId: string) {
+    if (closed) return;
+    // A failed episode keeps its backoff attempt: every local edit while the
+    // cloud is down must not reset (or repeatedly advance) the counter.
+    if (!mutationDirty.has(projectId)) {
+      const startedAt = Date.now();
+      // Persist the dirty marker first: a crash inside the debounce window
+      // leaves a `pending` admission that `start()` replays at boot.
+      if (!(await markPending(projectId))) return;
+      mutationDirty.add(projectId);
+      mutationWindowStartedAt.set(projectId, startedAt);
     }
     armRetryTimer();
-    void schedule(projectId);
+    const pending = mutationTimers.get(projectId);
+    if (pending) clearTimeout(pending);
+    const timer = setTimeout(() => {
+      mutationTimers.delete(projectId);
+      clearMutationWindow(projectId);
+      void schedule(projectId);
+    }, mutationDebounceMs);
+    timer.unref?.();
+    mutationTimers.set(projectId, timer);
+    if (mutationMaxTimers.has(projectId)) return;
+    // The first mutation of this window starts the max-wait clock. A stream
+    // that never goes quiet still flushes once it elapses.
+    const startedAt = mutationWindowStartedAt.get(projectId) ?? Date.now();
+    const maxWaitDelay = Math.max(
+      0,
+      startedAt + mutationMaxWaitMs - Date.now(),
+    );
+    if (maxWaitDelay === 0) {
+      clearMutationWindow(projectId);
+      void schedule(projectId);
+      return;
+    }
+    const maxWait = setTimeout(() => {
+      mutationMaxTimers.delete(projectId);
+      clearMutationWindow(projectId);
+      void schedule(projectId);
+    }, maxWaitDelay);
+    maxWait.unref?.();
+    mutationMaxTimers.set(projectId, maxWait);
   }
   async function retry(
     trigger: { catchUp?: boolean } = {},
@@ -771,9 +925,75 @@ export function createLocalProjectCloudSync(
     }
     return scheduled;
   }
+  /**
+   * A direct replica-link publish failed. Persist a coded failure on the
+   * admission the UI already reads and arm the normal backoff; the next
+   * coordinator run replays the local replica, including any edits made while
+   * the link was down. Never log-only.
+   *
+   * While the cloud is down every local edit can publish and fail, so a
+   * failure episode is reported once: at most one in-flight CAS per Project,
+   * no rewrite once the coded failure is already visible, and at most one
+   * backoff advance (scheduleBackoff keeps an armed timer). A successful run
+   * clears both the coded state and the episode marker.
+   */
+  function reportMirrorFailure(
+    projectId: string,
+    error: unknown,
+  ): Promise<void> {
+    const inFlight = mirrorReports.get(projectId);
+    if (inFlight) return inFlight;
+    const task = reportMirrorFailureOnce(projectId, error).finally(() => {
+      if (mirrorReports.get(projectId) === task) mirrorReports.delete(projectId);
+    });
+    mirrorReports.set(projectId, task);
+    return task;
+  }
+  async function reportMirrorFailureOnce(
+    projectId: string,
+    error: unknown,
+  ): Promise<void> {
+    const replicaId = await getLocalReplicaId(options.dataDir);
+    for (;;) {
+      const state = await store.getProjectCloudSyncState(projectId, replicaId);
+      if (!state || state.admission.status === "local-only") return;
+      if (
+        state.admission.status === "failed" &&
+        state.admission.lastError?.includes(PROJECT_CLOUD_MIRROR_FAILED)
+      ) {
+        mirrorFailureEpisode.add(projectId);
+        return;
+      }
+      if (
+        mirrorFailureEpisode.has(projectId) &&
+        state.admission.status !== "ready"
+      )
+        return;
+      // A ready admission starts a new episode; until one is reported the
+      // first failure of that episode must be visible.
+      mirrorFailureEpisode.delete(projectId);
+      if (
+        await store.compareAndSetProjectCloudAdmission(state, {
+          ...state.admission,
+          status: "failed",
+          updatedAt: new Date().toISOString(),
+          lastError: projectCloudSyncFailureMessage(
+            error,
+            PROJECT_CLOUD_MIRROR_FAILED,
+          ),
+        })
+      ) {
+        mirrorFailureEpisode.add(projectId);
+        break;
+      }
+    }
+    await scheduleBackoff(projectId);
+  }
+
   return {
     schedule,
     invalidate,
+    reportMirrorFailure,
     async start() {
       // In the Host this runs after host.listening; it must never gate local
       // requests. No timer is armed while every Project is local-only.
@@ -785,6 +1005,13 @@ export function createLocalProjectCloudSync(
       stopRetryTimer();
       for (const projectId of [...retryTimers.keys()])
         clearProjectRetry(projectId);
+      for (const projectId of [...mutationTimers.keys()])
+        clearMutationWindow(projectId);
+      for (const projectId of [...mutationMaxTimers.keys()])
+        clearMutationWindow(projectId);
+      mirrorReports.clear();
+      mirrorFailureEpisode.clear();
+      backoffQueues.clear();
       retryStates.clear();
       await Promise.all(runs.values());
     },

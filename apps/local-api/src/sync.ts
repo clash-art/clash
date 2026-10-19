@@ -83,6 +83,11 @@ export interface LocalSyncOptions {
   canvasPreviewCacheEnabled?: boolean;
   upgradeProject?: LocalProjectUpgrade;
   onProjectCommitted?: (projectId: string) => Promise<void>;
+  /** Persist a failed direct replica-link publish; never leave it log-only. */
+  onRemoteMirrorFailure?: (
+    projectId: string,
+    error: unknown,
+  ) => void | Promise<void>;
   /**
    * Bound for the background remote-snapshot fetch. Open never waits on it; the
    * room serves the local replica and reports a coded remote state on failure.
@@ -772,6 +777,10 @@ export class LocalLoroRoom {
     private readonly canvasPreviewCacheEnabled = false,
     private readonly upgradeProject?: LocalProjectUpgrade,
     private readonly onProjectCommitted?: (projectId: string) => Promise<void>,
+    private readonly onRemoteMirrorFailure?: (
+      projectId: string,
+      error: unknown,
+    ) => void | Promise<void>,
     private readonly remoteSnapshotTimeoutMs = PROJECT_REMOTE_SNAPSHOT_TIMEOUT_MS,
     private readonly remoteSnapshotRetryBaseMs = PROJECT_REMOTE_SNAPSHOT_RETRY_BASE_MS,
     private readonly remoteSnapshotRetryMaxMs = PROJECT_REMOTE_SNAPSHOT_RETRY_MAX_MS,
@@ -795,6 +804,7 @@ export class LocalLoroRoom {
       options.canvasPreviewCacheEnabled ?? false,
       options.upgradeProject,
       options.onProjectCommitted,
+      options.onRemoteMirrorFailure,
       options.remoteSnapshotTimeoutMs,
       options.remoteSnapshotRetryBaseMs,
       options.remoteSnapshotRetryMaxMs,
@@ -2085,9 +2095,26 @@ export class LocalLoroRoom {
     }
   }
 
+  private reportRemoteMirrorFailure(error: unknown): void {
+    console.error(
+      "[local-sync] failed to mirror update to remote persistence",
+      error,
+    );
+    void Promise.resolve(
+      this.onRemoteMirrorFailure?.(this.projectId, error),
+    ).catch((hookError) => {
+      console.error(
+        "[local-sync] failed to record remote Project mirror failure",
+        hookError,
+      );
+    });
+  }
+
   private mirrorRemoteUpdate(update: Uint8Array): void {
     if (this.remoteLink) {
-      void Promise.resolve(this.remoteLink.publish(update)).catch(error => console.error("[local-sync] remote Project update failed", error));
+      void Promise.resolve(this.remoteLink.publish(update)).catch((error) =>
+        this.reportRemoteMirrorFailure(error),
+      );
       return;
     }
     if (!this.remotePersistence) return;
@@ -2098,12 +2125,7 @@ export class LocalLoroRoom {
           ? link.publish(update)
           : remotePersistence?.appendUpdate(this.projectId, update);
       })
-      .catch((error) => {
-        console.error(
-          "[local-sync] failed to mirror update to remote persistence",
-          error,
-        );
-      });
+      .catch((error) => this.reportRemoteMirrorFailure(error));
   }
 
   private attachRemoteLink(
@@ -2128,6 +2150,7 @@ export class LocalLoroRoom {
         message,
       });
       console.error("[local-sync] failed to start cloud replica link", error);
+      this.reportRemoteMirrorFailure(error);
     });
     return link;
   }
@@ -2176,6 +2199,10 @@ export class LocalLoroRoomHub {
     private readonly workflowProcessor?: LocalWorkflowProcessor | null,
     private readonly upgradeProject?: LocalProjectUpgrade,
     private readonly onProjectCommitted?: (projectId: string) => Promise<void>,
+    private readonly onRemoteMirrorFailure?: (
+      projectId: string,
+      error: unknown,
+    ) => void | Promise<void>,
   ) {
     this.replicaStore = new FileReplicaStore(join(dataDir, "projects"));
   }
@@ -2210,6 +2237,7 @@ export class LocalLoroRoomHub {
             canvasPreviewCacheEnabled: true,
             upgradeProject: this.upgradeProject,
             onProjectCommitted: this.onProjectCommitted,
+            onRemoteMirrorFailure: this.onRemoteMirrorFailure,
           },
           (opened) => {
             this.checkpointReadableRooms.set(projectId, opened);
@@ -2404,7 +2432,11 @@ export function attachLocalSync(
     workflowProcessor?: LocalWorkflowProcessor | null;
     hub?: LocalLoroRoomHub;
     upgradeProject?: LocalProjectUpgrade;
-  onProjectCommitted?: (projectId: string) => Promise<void>;
+    onProjectCommitted?: (projectId: string) => Promise<void>;
+    onRemoteMirrorFailure?: (
+      projectId: string,
+      error: unknown,
+    ) => void | Promise<void>;
   },
 ): LocalLoroRoomHub {
   const hub =
@@ -2414,6 +2446,8 @@ export function attachLocalSync(
       options.remotePersistence,
       options.workflowProcessor,
       options.upgradeProject,
+      options.onProjectCommitted,
+      options.onRemoteMirrorFailure,
     );
   const wss = new WebSocketServer({ noServer: true });
 

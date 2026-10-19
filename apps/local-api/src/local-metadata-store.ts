@@ -16,7 +16,7 @@ import {
 import type { Asset, AssetKind, AssetRefRow } from "@clash/shared-types/assets";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
-type SqlitePrimitive = string | number | null;
+type SqlitePrimitive = string | number | Uint8Array | null;
 
 type SqliteStatement = {
   run(...params: SqlitePrimitive[]): unknown;
@@ -358,6 +358,7 @@ function applySchema(db: SqliteDatabase): void {
       admitted_at TEXT,
       updated_at TEXT NOT NULL,
       last_error TEXT,
+      last_synced_version BLOB,
       PRIMARY KEY (project_id, local_replica_id)
     );
 
@@ -547,6 +548,7 @@ function applySchema(db: SqliteDatabase): void {
 
 function ensureLocalMetadataColumns(db: SqliteDatabase): void {
   ensureSqliteColumn(db, "project_cloud_admission", "state_version INTEGER NOT NULL DEFAULT 0");
+  ensureSqliteColumn(db, "project_cloud_admission", "last_synced_version BLOB");
   for (const column of [
     "completed_at INTEGER NOT NULL DEFAULT 0",
     "source_path TEXT NOT NULL DEFAULT ''",
@@ -2548,6 +2550,43 @@ export function createLocalMetadataStore(dataDir: string) {
     });
   }
 
+  /**
+   * Version vector of the last Loro update the cloud acknowledged. It is the
+   * durable outbox cursor: a later run exports only the delta above it, and a
+   * missing/unreadable cursor (first sync, re-admission, recovery) forces a
+   * full snapshot instead.
+   */
+  async function getProjectCloudSyncCursor(
+    projectId: string,
+    localReplicaId: string,
+  ): Promise<Uint8Array | null> {
+    return withDb((db) => {
+      const row = db
+        .prepare(
+          `SELECT last_synced_version FROM project_cloud_admission
+            WHERE project_id = ? AND local_replica_id = ? LIMIT 1`,
+        )
+        .get(projectId, localReplicaId);
+      const value = row?.last_synced_version;
+      if (value instanceof Uint8Array) return value;
+      if (value instanceof ArrayBuffer) return new Uint8Array(value);
+      return null;
+    });
+  }
+
+  async function setProjectCloudSyncCursor(
+    projectId: string,
+    localReplicaId: string,
+    version: Uint8Array | null,
+  ): Promise<void> {
+    await withDb((db) => {
+      db.prepare(
+        `UPDATE project_cloud_admission SET last_synced_version = ?
+          WHERE project_id = ? AND local_replica_id = ?`,
+      ).run(version, projectId, localReplicaId);
+    });
+  }
+
   async function getProjectCloudAdmission(
     projectId: string,
     localReplicaId: string,
@@ -2621,6 +2660,7 @@ export function createLocalMetadataStore(dataDir: string) {
            admitted_at = excluded.admitted_at,
            updated_at = excluded.updated_at,
            last_error = excluded.last_error,
+           last_synced_version = NULL,
            state_version = project_cloud_admission.state_version + 1`,
       ).run(
         parsed.projectId,
@@ -2695,5 +2735,7 @@ export function createLocalMetadataStore(dataDir: string) {
     },
     compareAndSetProjectCloudAdmission,
     getProjectCloudSyncState,
+    getProjectCloudSyncCursor,
+    setProjectCloudSyncCursor,
   };
 }

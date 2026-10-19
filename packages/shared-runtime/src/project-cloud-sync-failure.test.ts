@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isActionRequiredSyncFailure,
+  PROJECT_CLOUD_MIRROR_FAILED,
   projectCloudSyncFailureMessage,
 } from "./project-cloud-sync";
 
@@ -17,7 +18,18 @@ describe("project cloud sync failure severity", () => {
     expect(projectCloudSyncFailureMessage(error)).toMatch(/sign in again/i);
   });
 
-  it("keeps transient failures as-is so the 30 s retry continues", () => {
+  it("labels an uncoded failure with the plane that fell behind", () => {
+    const lastError = projectCloudSyncFailureMessage(
+      new Error("fetch failed"),
+      PROJECT_CLOUD_MIRROR_FAILED,
+    );
+    expect(lastError).toBe("PROJECT_CLOUD_MIRROR_FAILED: fetch failed");
+    expect(isActionRequiredSyncFailure({ status: "failed", lastError })).toBe(
+      false,
+    );
+  });
+
+  it("keeps transient failures as-is when the caller names no plane", () => {
     const error = Object.assign(new Error("Project content transport failed (503)"), { status: 503 });
     const lastError = projectCloudSyncFailureMessage(error);
     expect(lastError).toBe("Project content transport failed (503)");
