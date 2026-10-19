@@ -120,6 +120,26 @@ describe("ReplicaEngine", () => {
     expect(publish).toHaveBeenCalledTimes(1);
   });
 
+  it("skips the extra validation pass for an already-imported update", async () => {
+    const ports = memoryPorts();
+    const engine = await ReplicaEngine.open({
+      adapter,
+      eventLog: ports.eventLog,
+      checkpoints: ports.checkpoints,
+    });
+    const validate = vi.mocked(adapter.validate);
+    validate.mockClear();
+
+    await engine.submit({ id: "prevalidated", update: "P" }, {
+      prevalidated: true,
+    });
+    expect(validate).not.toHaveBeenCalled();
+    expect(engine.read((state) => state.text)).toBe("P");
+
+    await engine.submit({ id: "checked", update: "C" });
+    expect(validate).toHaveBeenCalledTimes(1);
+  });
+
   it("publishes a checkpoint before pruning and retains events needed by a lagging projection", async () => {
     const ports = memoryPorts();
     let projectionCursor = 1;

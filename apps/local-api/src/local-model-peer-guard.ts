@@ -48,14 +48,23 @@ function assetInputs(doc: LoroDoc, nodeId: string, node: Node): string[] {
 export function assertLocalPeerModelProjectionMutation(
   current: LoroDoc,
   candidate: LoroDoc,
+  changed?: {
+    nodeIds?: ReadonlySet<string>;
+    layoutIds?: ReadonlySet<string>;
+    checkLayouts?: boolean;
+  },
 ): void {
-  assertCanvasLayoutMutation(current, candidate);
+  if (changed?.checkLayouts !== false) {
+    assertCanvasLayoutMutation(current, candidate, changed?.layoutIds);
+  }
   const before = current.getMap("nodes");
   const after = candidate.getMap("nodes");
-  const deletedIds = [...before.keys()].filter(
+  const changedNodeIds =
+    changed?.nodeIds ?? new Set([...before.keys(), ...after.keys()]);
+  const deletedIds = [...changedNodeIds].filter(
     (id) => after.get(id) === undefined,
   );
-  for (const nodeId of new Set([...before.keys(), ...after.keys()])) {
+  for (const nodeId of changedNodeIds) {
     const oldNode = before.get(nodeId) as Node | undefined;
     const newNode = after.get(nodeId) as Node | undefined;
     if (!native(oldNode) && !native(newNode)) continue;

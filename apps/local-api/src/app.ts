@@ -286,7 +286,10 @@ import {
   PublicAssetStorageConfigError,
   type PublicAssetStorageService,
 } from "./public-asset-storage.js";
-import type { RemoteLoroPersistenceEnv } from "./sync.js";
+import type {
+  LocalProjectHealthSummary,
+  RemoteLoroPersistenceEnv,
+} from "./sync.js";
 import { createLocalProjectMetadataReplication } from "./project-metadata-replication.js";
 import {
   createHttpCloudAdmissionClient,
@@ -436,6 +439,8 @@ export interface LocalApiOptions {
   providerGenerationDeadlineMs?: number;
   /** Wake the shared project room after an HTTP command creates pending backend work. */
   processProjectWork?: (projectId: string) => Promise<void>;
+  /** Project durability/workflow state surfaced by `/health`; failures are coded, never log-only. */
+  projectHealth?: () => LocalProjectHealthSummary;
   /** Long-lived Hosts use this to keep background warm-up off active request windows. */
   onRequestActivity?: (event: "start" | "end") => void;
   resolvePluginBinding?: (
@@ -4731,6 +4736,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
 
   app.get("/health", (c) => {
     const logSink = options.logSinkHealth?.();
+    // `ok` is Host liveness: discovery and the daemon probe require ok === true
+    // to recognise this Host. A Project failure is a coded degraded field, never
+    // a liveness failure that would let a second Host start.
+    const project = options.projectHealth?.();
     return c.json({
       ok: true,
       mode: "local",
@@ -4744,6 +4753,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
               : {}),
           }
         : {}),
+      ...(project && !project.ok ? { project } : {}),
       runtime: {
         mode: "local",
         capabilities: defaultRuntimeCapabilities("local"),

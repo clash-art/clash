@@ -1,4 +1,5 @@
 import { mkdtemp, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   PluginHostClient,
+  PluginHostUnavailableError,
   pluginHostSocketPath,
   startPluginHostIpcServer,
 } from "./plugin-host-ipc";
@@ -500,6 +502,39 @@ describe("local plugin host IPC", () => {
       ).resolves.toMatchObject({ status: "completed" });
     } finally {
       await server.close();
+    }
+  });
+
+  it("codes a stopped plugin host as PLUGIN_HOST_UNAVAILABLE", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-plugin-ipc-stopped-"));
+    const socketPath = join(root, "not-running.sock");
+    await expect(
+      new PluginHostClient({ socketPath, timeoutMs: 200 }).listCards(),
+    ).rejects.toMatchObject({ code: "PLUGIN_HOST_UNAVAILABLE" });
+  });
+
+  it("codes a hung plugin host as PLUGIN_HOST_UNAVAILABLE on its IPC timeout", async () => {
+    const root = await mkdtemp(join(tmpdir(), "clash-plugin-ipc-hung-"));
+    const socketPath = join(root, "hung.sock");
+    const hung = createServer((socket) => {
+      // Accept the connection and never answer, like a wedged Host.
+      socket.on("data", () => {});
+    });
+    await new Promise<void>((resolve, reject) => {
+      hung.once("error", reject);
+      hung.listen(socketPath, resolve);
+    });
+    try {
+      await expect(
+        new PluginHostClient({ socketPath, timeoutMs: 25 }).listCards(),
+      ).rejects.toMatchObject({
+        code: "PLUGIN_HOST_UNAVAILABLE",
+        message: expect.stringContaining("timed out"),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        hung.close((error) => (error ? reject(error) : resolve())),
+      );
     }
   });
 });

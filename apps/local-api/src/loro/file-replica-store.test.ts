@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LoroDoc } from "loro-crdt";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileReplicaStore } from "./file-replica-store";
 
 let rootDir = "";
@@ -149,6 +149,88 @@ describe("FileReplicaStore", () => {
       doc.export({ mode: "snapshot" }),
     );
 
+    expect(syncedDirectories).toContain(projectDir(projectId));
+  });
+
+  it("fsyncs the update log before appendUpdate acknowledges the edit", async () => {
+    const projectId = "project/update-fsync";
+    const doc = new LoroDoc();
+    doc.getMap("nodes").set("fsync", { type: "text", data: {} });
+    const syncUpdateLog = vi.fn(async () => undefined);
+    const store = new FileReplicaStore(rootDir, { syncUpdateLog });
+
+    await store.appendUpdate(
+      projectId,
+      doc.export({ mode: "update", from: doc.oplogVersion() }),
+    );
+    expect(syncUpdateLog).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not acknowledge the append before the update-log flush completes", async () => {
+    const projectId = "project/update-fsync-barrier";
+    const doc = new LoroDoc();
+    doc.getMap("nodes").set("barrier", { type: "text", data: {} });
+    let releaseFlush!: () => void;
+    const flushGate = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    const syncUpdateLog = vi.fn(async () => {
+      await flushGate;
+    });
+    const store = new FileReplicaStore(rootDir, { syncUpdateLog });
+
+    let acknowledged = false;
+    const append = store
+      .appendUpdate(
+        projectId,
+        doc.export({ mode: "update", from: doc.oplogVersion() }),
+      )
+      .then(() => {
+        acknowledged = true;
+      });
+    await vi.waitFor(() => expect(syncUpdateLog).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The write is issued, but the edit is not acknowledged until fdatasync
+    // has completed.
+    expect(acknowledged).toBe(false);
+    releaseFlush();
+    await append;
+    expect(acknowledged).toBe(true);
+  });
+
+  it("rejects the append when the update log flush fails", async () => {
+    const projectId = "project/update-fsync-failure";
+    const doc = new LoroDoc();
+    doc.getMap("nodes").set("unflushed", { type: "text", data: {} });
+    const store = new FileReplicaStore(rootDir, {
+      syncUpdateLog: async () => {
+        throw new Error("injected EIO");
+      },
+    });
+
+    await expect(
+      store.appendUpdate(
+        projectId,
+        doc.export({ mode: "update", from: doc.oplogVersion() }),
+      ),
+    ).rejects.toThrow("injected EIO");
+  });
+
+  it("syncs the Loro directory after creating a new update log", async () => {
+    const projectId = "project/update-log-directory-sync";
+    const doc = new LoroDoc();
+    doc.getMap("nodes").set("directory", { type: "text", data: {} });
+    const syncedDirectories: string[] = [];
+    const store = new FileReplicaStore(rootDir, {
+      syncDirectory: async (path) => {
+        syncedDirectories.push(path);
+      },
+    });
+
+    await store.appendUpdate(
+      projectId,
+      doc.export({ mode: "update", from: doc.oplogVersion() }),
+    );
     expect(syncedDirectories).toContain(projectDir(projectId));
   });
 

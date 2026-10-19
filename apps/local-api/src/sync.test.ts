@@ -11,9 +11,11 @@ import {
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { LoroDoc } from "loro-crdt";
 import {
   CrdtType,
@@ -76,6 +78,7 @@ import { createLocalResourceStore } from "./local-resource-store";
 import { createLocalPluginAssetStagingStore } from "./local-plugin-asset-staging";
 import { createSqliteDurableRunJournal } from "./durable-run-journal";
 import { createLocalAssetInspectionService } from "./local-asset-inspections";
+import { PluginHostUnavailableError } from "./runtime/host/lib/plugin-host-ipc.js";
 
 let dataDir = "";
 
@@ -578,6 +581,51 @@ describe("LocalLoroRoom", () => {
     };
   }
 
+  it("does not run workflow or Model discovery for an edit without a runnable node", async () => {
+    let processCalls = 0;
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/no-runnable-work",
+      workflowProcessor: {
+        async process() {
+          processCalls += 1;
+          return false;
+        },
+      },
+    });
+    try {
+      await room.mutateProject((doc) => {
+        doc.getMap("nodes").set("completed", {
+          id: "completed",
+          type: "image",
+          canvasId: "main",
+          data: { status: "completed" },
+        });
+        return { value: undefined };
+      });
+      const callsBeforeEdit = processCalls;
+      const peer = room.addPeer(() => {});
+      const client = LoroDoc.fromSnapshot(room.snapshot());
+      const version = client.version();
+      try {
+        client.getMap("canvasNodeLayouts").set("completed", {
+          position: { x: 10, y: 20 },
+        });
+        client.commit();
+        await room.receive(
+          peer,
+          client.export({ mode: "update", from: version }),
+        );
+      } finally {
+        version.free();
+        client.free();
+      }
+      expect(processCalls).toBe(callsBeforeEdit);
+    } finally {
+      await room.close();
+    }
+  });
+
   it("drains in-flight Project work and cancels future polls when its hub closes", async () => {
     let releaseWork!: () => void;
     let notifyStarted!: () => void;
@@ -905,6 +953,88 @@ describe("LocalLoroRoom", () => {
     });
     expect(order.indexOf("append")).toBeGreaterThanOrEqual(0);
     expect(order.indexOf("ack")).toBeGreaterThan(order.indexOf("append"));
+  });
+
+  it("keeps an acknowledged edit after the Host is killed with SIGKILL", async () => {
+    const projectId = "project/kill9-durable-ack";
+    const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+    const fixture = fileURLToPath(
+      new URL("./loro/durable-ack-kill9.fixture.ts", import.meta.url),
+    );
+    const child = spawn(
+      process.execPath,
+      [
+        join(packageRoot, "node_modules/tsx/dist/cli.mjs"),
+        fixture,
+        dataDir,
+        projectId,
+      ],
+      { cwd: packageRoot, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    let acked = false;
+    try {
+      acked = await new Promise<boolean>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`child did not ack: ${stderr}`)),
+          30_000,
+        );
+        let stdout = "";
+        child.stdout.on("data", (chunk) => {
+          stdout += String(chunk);
+          if (stdout.includes("acked\n")) {
+            clearTimeout(timer);
+            resolve(true);
+          }
+        });
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("exit", (code, signal) => {
+          if (stdout.includes("acked\n")) return;
+          clearTimeout(timer);
+          reject(
+            new Error(
+              `child exited before ack (code ${code}, signal ${signal}): ${stderr}`,
+            ),
+          );
+        });
+      });
+      expect(acked).toBe(true);
+      const exited = new Promise<void>((resolve) =>
+        child.once("exit", () => resolve()),
+      );
+      child.kill("SIGKILL");
+      await exited;
+
+      const reopened = await LocalLoroRoom.open({
+        dataDir,
+        projectId,
+        workflowProcessor: null,
+      });
+      try {
+        await expect(
+          reopened.inspectProject((doc) =>
+            doc.getMap("nodes").get("kill9-node"),
+          ),
+        ).resolves.toMatchObject({
+          data: {
+            status: "completed",
+            label: "acknowledged across SIGKILL",
+          },
+        });
+      } finally {
+        await reopened.close();
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }
   });
 
   it("rejects a peer-authored Project Asset before it can bypass Host L0/L1 publication", async () => {
@@ -3538,6 +3668,8 @@ describe("LocalLoroRoom", () => {
       .spyOn(FileReplicaStore.prototype, "saveReplicaCheckpointCursor")
       .mockRejectedValueOnce(new Error("injected compaction failure"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sideband: Record<string, unknown>[] = [];
+    room.addPeer(() => {}, { sendJson: (message) => sideband.push(message) });
     try {
       let committedEdit = 0;
       while (compactSpy.mock.calls.length === 0 && committedEdit < 64) {
@@ -3559,6 +3691,20 @@ describe("LocalLoroRoom", () => {
           doc.getMap("checkpoint-regression").toJSON(),
         ),
       ).toHaveProperty(`edit-${committedEdit}`, committedEdit);
+      expect(room.projectHealth()).toMatchObject({
+        ok: false,
+        code: "PROJECT_CHECKPOINT_FAILED",
+        failures: [
+          expect.objectContaining({ cause: "injected compaction failure" }),
+        ],
+      });
+      expect(sideband).toContainEqual(
+        expect.objectContaining({
+          type: "project_health",
+          ok: false,
+          code: "PROJECT_CHECKPOINT_FAILED",
+        }),
+      );
 
       const retryEdit = committedEdit + 1;
       await room.mutateProject((doc) => {
@@ -3586,6 +3732,10 @@ describe("LocalLoroRoom", () => {
           )
         ).byteLength,
       ).toBe(0);
+      expect(room.projectHealth()).toMatchObject({ ok: true });
+      expect(sideband).toContainEqual(
+        expect.objectContaining({ type: "project_health", ok: true }),
+      );
 
       const reopened = await LocalLoroRoom.open({
         dataDir,
@@ -3602,6 +3752,243 @@ describe("LocalLoroRoom", () => {
       });
     } finally {
       compactSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("reports a coded project health failure when the debounced pending pass rejects and clears it on the next pass", async () => {
+    const projectId = "project/pending-work-failure";
+    let failNext = false;
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      workflowProcessor: {
+        async process() {
+          if (failNext) throw new Error("injected pending work failure");
+          return false;
+        },
+      },
+    });
+    const sideband: Record<string, unknown>[] = [];
+    const peer = room.addPeer(() => {}, {
+      sendJson: (message) => sideband.push(message),
+    });
+    try {
+      failNext = true;
+      const first = new LoroDoc();
+      first.getMap("nodes").set("pending-node", {
+        id: "pending-node",
+        type: "text",
+        canvasId: "main",
+        data: {
+          status: "pending",
+          actionType: "text-gen",
+          prompt: "retry the deferred pass",
+          modelId: "test-model",
+        },
+      });
+      await room.receive(peer, first.export({ mode: "snapshot" }), {
+        awaitPendingWork: false,
+      });
+
+      await vi.waitFor(() => {
+        expect(room.projectHealth()).toMatchObject({
+          ok: false,
+          code: "PROJECT_WORK_FAILED",
+          failures: [
+            expect.objectContaining({
+              projectId,
+              code: "PROJECT_WORK_FAILED",
+              cause: "injected pending work failure",
+              message: expect.stringContaining("injected pending work failure"),
+            }),
+          ],
+        });
+      });
+      expect(sideband).toContainEqual(
+        expect.objectContaining({
+          type: "project_health",
+          ok: false,
+          code: "PROJECT_WORK_FAILED",
+          projectId,
+          message: expect.stringContaining("injected pending work failure"),
+        }),
+      );
+
+      failNext = false;
+      const second = LoroDoc.fromSnapshot(room.snapshot());
+      const pending = second.getMap("nodes").get("pending-node") as Record<
+        string,
+        any
+      >;
+      second.getMap("nodes").set("pending-node", {
+        ...pending,
+        data: { ...pending.data, label: "retry" },
+      });
+      await room.receive(peer, second.export({ mode: "update" }), {
+        awaitPendingWork: false,
+      });
+
+      await vi.waitFor(() => {
+        expect(sideband).toContainEqual(
+          expect.objectContaining({
+            type: "project_health",
+            ok: true,
+            projectId,
+          }),
+        );
+        expect(room.projectHealth()).toMatchObject({ ok: true });
+      });
+    } finally {
+      await room.close();
+    }
+  });
+
+  it("runs a pending workflow pass before closing when the debounce timer is armed", async () => {
+    vi.useFakeTimers();
+    const projectId = "project/pending-work-close";
+    let passes = 0;
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      workflowProcessor: {
+        async process({ doc }) {
+          passes += 1;
+          const node = doc.getMap("nodes").get("pending-close") as
+            | Record<string, any>
+            | undefined;
+          if (node) {
+            doc.getMap("nodes").set("pending-close", {
+              ...node,
+              data: { ...node.data, status: "completed" },
+            });
+          }
+          return true;
+        },
+      },
+    });
+    try {
+      const peer = room.addPeer(() => {});
+      passes = 0;
+      const source = new LoroDoc();
+      source.getMap("nodes").set("pending-close", {
+        id: "pending-close",
+        type: "text",
+        canvasId: "main",
+        data: { status: "pending" },
+      });
+      await room.receive(peer, source.export({ mode: "snapshot" }), {
+        awaitPendingWork: false,
+      });
+      expect((room as any).pendingWorkTimer).toBeDefined();
+
+      await room.close();
+
+      expect(passes).toBe(1);
+      await expect(
+        room.inspectCheckpointedProject((doc) =>
+          doc.getMap("nodes").get("pending-close"),
+        ),
+      ).resolves.toMatchObject({ data: { status: "completed" } });
+    } finally {
+      await room.close();
+    }
+  });
+
+  it("runs checkpoints at most once per floor interval during a 60 Hz drag", async () => {
+    vi.useFakeTimers();
+    const start = Date.UTC(2030, 0, 1);
+    vi.setSystemTime(start);
+    const checkpointTimes: number[] = [];
+    const snapshotSpy = vi
+      .spyOn(FileReplicaStore.prototype, "saveSnapshotAtomic")
+      .mockImplementation(async () => {
+        checkpointTimes.push(Date.now());
+      });
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId: "project/drag-checkpoint-floor",
+      workflowProcessor: null,
+    });
+    try {
+      // 600 edits at 60 Hz = 10 s of dragging. The count threshold (16) would
+      // otherwise checkpoint every 267 ms.
+      for (let index = 0; index < 600; index += 1) {
+        vi.setSystemTime(start + Math.round((index * 1_000) / 60));
+        await room.mutateProject((doc) => {
+          doc.getMap("drag").set("cursor", index);
+          return { value: undefined };
+        });
+      }
+      expect(checkpointTimes.length).toBeGreaterThan(0);
+      for (let index = 1; index < checkpointTimes.length; index += 1) {
+        expect(
+          checkpointTimes[index]! - checkpointTimes[index - 1]!,
+        ).toBeGreaterThanOrEqual(5_000);
+      }
+    } finally {
+      await room.close();
+      snapshotSpy.mockRestore();
+    }
+  });
+
+  it("refuses new edits with a coded error once the update log exceeds its cap and the checkpoint fails", async () => {
+    const projectId = "project/compact-cap-refusal";
+    const sizeSpy = vi
+      .spyOn(FileReplicaStore.prototype, "updateLogSize")
+      .mockResolvedValue(Number.MAX_SAFE_INTEGER);
+    const saveSpy = vi
+      .spyOn(FileReplicaStore.prototype, "saveSnapshotAtomic")
+      .mockRejectedValue(new Error("injected ENOSPC"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let room: LocalLoroRoom | undefined;
+    try {
+      room = await LocalLoroRoom.open({
+        dataDir,
+        projectId,
+        workflowProcessor: null,
+      });
+      const sideband: Record<string, unknown>[] = [];
+      room.addPeer(() => {}, {
+        sendJson: (message) => sideband.push(message),
+      });
+
+      await expect(
+        room.mutateProject((doc) => {
+          doc.getMap("checkpoint-cap").set("refused", true);
+          return { value: undefined };
+        }),
+      ).rejects.toMatchObject({
+        code: "PROJECT_CHECKPOINT_FAILED",
+        projectId,
+      });
+
+      expect(room.projectHealth()).toMatchObject({
+        ok: false,
+        code: "PROJECT_CHECKPOINT_FAILED",
+        failures: [
+          expect.objectContaining({
+            cause: "injected ENOSPC",
+            logBytes: Number.MAX_SAFE_INTEGER,
+          }),
+        ],
+      });
+      expect(sideband).toContainEqual(
+        expect.objectContaining({
+          type: "project_health",
+          ok: false,
+          code: "PROJECT_CHECKPOINT_FAILED",
+        }),
+      );
+      await expect(
+        room.inspectCheckpointedProject((doc) =>
+          doc.getMap("checkpoint-cap").toJSON(),
+        ),
+      ).resolves.toEqual({});
+    } finally {
+      await room?.close();
+      sizeSpy.mockRestore();
+      saveSpy.mockRestore();
       errorSpy.mockRestore();
     }
   });
@@ -3872,6 +4259,226 @@ describe("attachLocalSync", () => {
     await closeWebSocket(ws);
     await hub.close();
     await closeServer(server);
+  });
+
+  it("acks a loro-v1 peer layout deletion instead of rejecting it", async () => {
+    const server = createServer();
+    const hub = attachLocalSync(server, { dataDir });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as { port: number }).port;
+    const projectId = "project/protocol-layout-delete";
+    await hub.mutateProject(projectId, (doc) => {
+      doc.getMap("nodes").set("layout-node", {
+        id: "layout-node",
+        type: "image",
+        canvasId: "main",
+        data: {},
+      });
+      doc
+        .getMap(CANVAS_NODE_LAYOUTS)
+        .set("layout-node", { position: { x: 10, y: 20 } });
+      return { value: undefined };
+    });
+    const source = new LoroDoc();
+    source.import(
+      await hub.inspectProject(projectId, (doc) =>
+        doc.export({ mode: "snapshot" }),
+      ),
+    );
+
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/sync/${encodeURIComponent(projectId)}?protocol=loro-v1`,
+    );
+    const messages: ProtocolMessage[] = [];
+    const sideband: Record<string, any>[] = [];
+    ws.on("message", (data, isBinary) => {
+      if (isBinary) messages.push(decode(new Uint8Array(data as Buffer)));
+      else sideband.push(JSON.parse(String(data)));
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+      });
+      const joinVersion = source.version();
+      ws.send(
+        encode({
+          type: MessageType.JoinRequest,
+          crdt: CrdtType.Loro,
+          roomId: projectId,
+          auth: new Uint8Array(),
+          version: joinVersion.encode(),
+        }),
+      );
+      joinVersion.free();
+      await vi.waitFor(() => {
+        expect(
+          messages.some(
+            (message) => message.type === MessageType.JoinResponseOk,
+          ),
+        ).toBe(true);
+      });
+
+      const updateVersion = source.version();
+      source.getMap(CANVAS_NODE_LAYOUTS).delete("layout-node");
+      source.commit();
+      const update = source.export({ mode: "update", from: updateVersion });
+      updateVersion.free();
+      const batchId = "0x0000000000000023" as const;
+      ws.send(
+        encode({
+          type: MessageType.DocUpdate,
+          crdt: CrdtType.Loro,
+          roomId: projectId,
+          updates: [update],
+          batchId,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(messages).toContainEqual(
+            expect.objectContaining({
+              type: MessageType.Ack,
+              refId: batchId,
+              status: UpdateStatusCode.Ok,
+            }),
+          );
+        },
+        { timeout: 2_000 },
+      );
+      expect(sideband).not.toContainEqual(
+        expect.objectContaining({ type: "sync_error" }),
+      );
+      await expect(
+        hub.inspectProject(projectId, (doc) =>
+          doc.getMap(CANVAS_NODE_LAYOUTS).get("layout-node"),
+        ),
+      ).resolves.toBeUndefined();
+    } finally {
+      await closeWebSocket(ws);
+      await hub.close();
+      await closeServer(server);
+    }
+  });
+
+  it("acks promptly while plugin discovery is hung and records the coded node failure", async () => {
+    const projectId = "project/plugin-host-hung";
+    let markDiscoveryStarted!: () => void;
+    const discoveryStarted = new Promise<void>((resolve) => {
+      markDiscoveryStarted = resolve;
+    });
+    let failDiscovery!: (error: unknown) => void;
+    const modelCards = new Promise<never>((_, reject) => {
+      failDiscovery = reject;
+    });
+    const workflowProcessor = createLocalWorkflowProcessor({
+      dataDir,
+      modelCards: () => {
+        markDiscoveryStarted();
+        return modelCards;
+      },
+    });
+    const server = createServer();
+    const hub = attachLocalSync(server, { dataDir, workflowProcessor });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const port = (server.address() as { port: number }).port;
+    const ws = new WebSocket(
+      `ws://127.0.0.1:${port}/sync/${encodeURIComponent(projectId)}?protocol=loro-v1`,
+    );
+    const messages: ProtocolMessage[] = [];
+    ws.on("message", (data, isBinary) => {
+      if (isBinary) messages.push(decode(new Uint8Array(data as Buffer)));
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", resolve);
+        ws.once("error", reject);
+      });
+      ws.send(
+        encode({
+          type: MessageType.JoinRequest,
+          crdt: CrdtType.Loro,
+          roomId: projectId,
+          auth: new Uint8Array(),
+          version: new LoroDoc().version().encode(),
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(
+          messages.some(
+            (message) => message.type === MessageType.JoinResponseOk,
+          ),
+        ).toBe(true);
+      });
+
+      const source = new LoroDoc();
+      source.getMap("nodes").set("hung-node", {
+        id: "hung-node",
+        type: "text",
+        canvasId: "main",
+        data: {
+          status: "pending",
+          actionType: "text-gen",
+          prompt: "wait for a stopped plugin host",
+          modelId: "test-model",
+        },
+      });
+      const batchId = "0x0000000000000022" as const;
+      ws.send(
+        encode({
+          type: MessageType.DocUpdate,
+          crdt: CrdtType.Loro,
+          roomId: projectId,
+          updates: [source.export({ mode: "snapshot" })],
+          batchId,
+        }),
+      );
+
+      // Discovery is now blocked on a promise that never settles on its own.
+      await discoveryStarted;
+      // The ack must cover durability, not the hung discovery pass.
+      await vi.waitFor(() => {
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            type: MessageType.Ack,
+            refId: batchId,
+            status: UpdateStatusCode.Ok,
+          }),
+        );
+      }, { timeout: 2_000 });
+
+      failDiscovery(
+        new PluginHostUnavailableError(
+          "Clash plugin host IPC timed out after 10000 ms.",
+        ),
+      );
+      await vi.waitFor(
+        async () => {
+          const node = await hub.inspectProject(projectId, (doc) =>
+            doc.getMap("nodes").get("hung-node"),
+          );
+          expect(node).toMatchObject({
+            data: {
+              status: "failed",
+              errorCode: "PLUGIN_HOST_UNAVAILABLE",
+            },
+          });
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      failDiscovery?.(
+        new PluginHostUnavailableError("Test teardown."),
+      );
+      await closeWebSocket(ws);
+      await hub.close();
+      await closeServer(server);
+    }
   });
 
   it("broadcasts local agent presence and structured Canvas activity", async () => {
