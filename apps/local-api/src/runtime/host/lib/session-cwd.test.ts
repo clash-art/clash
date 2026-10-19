@@ -16,6 +16,7 @@ import {
   ensureAgentCwd,
   resolveAgentMcpServers,
   resolveBundledAgentsDir,
+  writeProjectWorkspaceMarker,
 } from "./session-cwd";
 
 async function expectDirectory(path: string): Promise<void> {
@@ -167,6 +168,50 @@ it("ensureAgentCwd uses collision-resistant cwd paths for distinct project ids",
   }
 });
 
+it("removes a partial project directory when the marker cannot be written", async () => {
+  const previous = process.env.CLASH_HOME;
+  const root = await mkdtemp(join(tmpdir(), "clash-marker-failure-"));
+  process.env.CLASH_HOME = root;
+  try {
+    const projects = join(root, "projects");
+    await mkdir(projects, { recursive: true });
+    const cwd = join(projects, "marker-failure");
+    // A non-directory at the project path makes the marker step fail after
+    // the path was created.
+    await writeFile(cwd, "not a directory");
+    await expect(
+      writeProjectWorkspaceMarker("marker-failure"),
+    ).rejects.toMatchObject({
+      code: "PROJECT_WORKSPACE_PREPARE_FAILED",
+    });
+    await expect(stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    if (previous === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = previous;
+  }
+});
+
+it("removes a partial project directory when the marker cannot be written", async () => {
+  const previous = process.env.CLASH_HOME;
+  const root = await mkdtemp(join(tmpdir(), "clash-marker-failure-"));
+  process.env.CLASH_HOME = root;
+  try {
+    const projects = join(root, "projects");
+    await mkdir(projects, { recursive: true });
+    const cwd = join(projects, "marker-failure");
+    // A non-directory at the project path makes the marker step fail after
+    // the path was created.
+    await writeFile(cwd, "not a directory");
+    await expect(writeProjectWorkspaceMarker("marker-failure")).rejects.toMatchObject({
+      code: "PROJECT_WORKSPACE_PREPARE_FAILED",
+    });
+    await expect(stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    if (previous === undefined) delete process.env.CLASH_HOME;
+    else process.env.CLASH_HOME = previous;
+  }
+});
+
 it("ensureAgentCwd rejects unknown agent templates instead of starting bare", async () => {
   const originalHome = process.env.HOME;
   const home = await mkdtemp(join(tmpdir(), "clash-session-cwd-"));
@@ -249,8 +294,12 @@ it("ensureAgentCwd seeds native project instructions once and links the canonica
     const codexSkill = join(cwd, ".agents", "skills", "clash");
     expect((await lstat(codexSkill)).isSymbolicLink()).toBe(true);
     expect(await readlink(codexSkill)).toBe(bundledSkillDir);
-    expect(await readFile(join(codexSkill, "SKILL.md"), "utf8")).toBe(clashSkill);
-    for (const [, reference] of clashSkill.matchAll(/\]\((references\/[^)]+)\)/g)) {
+    expect(await readFile(join(codexSkill, "SKILL.md"), "utf8")).toBe(
+      clashSkill,
+    );
+    for (const [, reference] of clashSkill.matchAll(
+      /\]\((references\/[^)]+)\)/g,
+    )) {
       expect(await readFile(join(codexSkill, reference!), "utf8")).toBe(
         await readFile(join(bundledSkillDir, reference!), "utf8"),
       );

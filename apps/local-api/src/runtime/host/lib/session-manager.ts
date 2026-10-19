@@ -30,7 +30,7 @@ import {
  *     session.event    { session_id, turn_id, event }
  *     session.diagnostic { session_id, turn_id?, diagnostic }
  *     session.complete { session_id, turn_id }
- *     session.error    { session_id, turn_id?, message }
+ *     session.error    { session_id, turn_id?, message, code? }
  *     session.disposed { session_id }
  */
 
@@ -54,6 +54,7 @@ import {
   readAgentRuntime,
   resolveAgentMcpServers,
 } from "./session-cwd.js";
+import { PROJECT_WORKSPACE_PREPARE_FAILED } from "../../../workspace-prepare-error.js";
 
 const DEFAULT_SESSION_CONTEXT_ID = "clash";
 
@@ -365,6 +366,8 @@ export type ManagerOut =
       session_id: string;
       turn_id?: string;
       message: string;
+      /** Stable product code when the failure is actionable by the client. */
+      code?: string;
     }
   | { type: "session.disposed"; session_id: string };
 
@@ -570,12 +573,25 @@ export class SessionManager {
     // Workspace cwd: ~/.clash/projects/<project>/. Sessions are transcript
     // rows, not directories; different sessions for one project see the same
     // project files and app-owned `clash` shim.
-    const sessionCwd = await ensureAgentCwd(
-      agentTemplateId,
-      p.project_id,
-      { harnessId: resolvedAgentId },
-      hostRuntimeEnv,
-    );
+    let sessionCwd: string;
+    try {
+      sessionCwd = await ensureAgentCwd(
+        agentTemplateId,
+        p.project_id,
+        { harnessId: resolvedAgentId },
+        hostRuntimeEnv,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#transition(p.session_id, { type: "session.error", message });
+      this.#send({
+        type: "session.error",
+        session_id: p.session_id,
+        message,
+        code: PROJECT_WORKSPACE_PREPARE_FAILED,
+      });
+      return;
+    }
     process.stderr.write(
       `  → SessionManager.start ${agent.spec.command}${resumeId ? ` (resume ${resumeId.slice(0, 8)}…)` : ""} cwd=${sessionCwd}\n`,
     );

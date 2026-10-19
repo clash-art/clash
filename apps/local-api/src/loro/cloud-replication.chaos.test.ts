@@ -111,16 +111,29 @@ class ReplicaLinkReadiness {
     this.joined.add(linkId);
   }
 
+  private drained = false;
+
   markDisconnected(linkId: symbol): void {
     this.joined.delete(linkId);
+    if (this.joined.size === 0) this.drained = true;
+  }
+
+  /** Arm before forcing a disconnect; see waitForDrained. */
+  armDrain(): void {
+    this.drained = false;
+  }
+
+  /**
+   * Waits until every joined link has disconnected at least once since
+   * armDrain. A latch, not a sample: full-jitter reconnects can drop and
+   * rejoin both links between two polls of joined.size.
+   */
+  async waitForDrained(trace: string[]): Promise<void> {
+    await waitUntil(() => this.drained, trace);
   }
 
   async waitFor(count: number, trace: string[]): Promise<void> {
     await waitUntil(() => this.joined.size >= count, trace);
-  }
-
-  async waitForExact(count: number, trace: string[]): Promise<void> {
-    await waitUntil(() => this.joined.size === count, trace);
   }
 
   async waitForTotalJoins(count: number, trace: string[]): Promise<void> {
@@ -499,8 +512,9 @@ describe("local-to-cloud Loro replication under deterministic chaos", () => {
       cloud.trace,
     );
 
+    readiness.armDrain();
     cloud.disconnectAll();
-    await readiness.waitForExact(0, cloud.trace);
+    await readiness.waitForDrained(cloud.trace);
     await Promise.all([write(roomA, 5), write(roomB, 6)]);
     await readiness.waitForTotalJoins(6, cloud.trace);
     await readiness.waitFor(2, cloud.trace);
@@ -621,8 +635,9 @@ describe("local-to-cloud Loro replication under deterministic chaos", () => {
     cloud.duplicateNextUpdate();
     await writeBatch(48, 16);
     await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);
+    readiness.armDrain();
     cloud.disconnectAll();
-    await readiness.waitForExact(0, cloud.trace);
+    await readiness.waitForDrained(cloud.trace);
     await writeBatch(64, 16);
     await readiness.waitFor(2, cloud.trace);
     await waitUntil(() => matchesExpected(cloud.document, expected), cloud.trace);

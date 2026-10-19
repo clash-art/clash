@@ -79,6 +79,7 @@ describe("LoroCloudReplicaLink", () => {
         "x-client-type": "cli",
         "x-device-name": encodeURIComponent(`Clash Host · ${hostname()}`),
       },
+      { handshakeTimeoutMs: 10_000 },
     );
     const deviceHeader = createSocket.mock.calls[0]?.[1]?.["x-device-name"];
     expect(decodeURIComponent(deviceHeader!)).toBe(
@@ -255,6 +256,95 @@ describe("LoroCloudReplicaLink", () => {
         await vi.advanceTimersByTimeAsync(60_000);
         expect(createSocket).toHaveBeenCalledTimes(1);
         expect(onActionRequired).toHaveBeenCalledTimes(1);
+        await link.close();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("gives up a blackholed handshake at the timeout and reports the coded state", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const states: any[] = [];
+        const createSocket = vi.fn(() => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        });
+        const link = new LoroCloudReplicaLink({
+          baseUrl: "https://cloud.example/",
+          projectId: "project-timeout",
+          doc: () => new LoroDoc(),
+          createSocket,
+          commit: async () => {},
+          onState: (state) => states.push(state),
+          handshakeTimeoutMs: 1_000,
+          reconnectBaseMs: 100,
+          reconnectMaxMs: 1_000,
+          random: () => 1,
+        });
+        link.start();
+        expect(states.at(-1)).toMatchObject({ state: "connecting" });
+        await vi.advanceTimersByTimeAsync(999);
+        expect(
+          states.some((state) => state.code === "CLOUD_LINK_HANDSHAKE_TIMEOUT"),
+        ).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(states).toContainEqual(
+          expect.objectContaining({
+            state: "retrying",
+            code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+            attempt: 1,
+            retryAt: expect.any(String),
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(100);
+        expect(createSocket).toHaveBeenCalledTimes(2);
+        await link.close();
+        expect(states.at(-1)).toMatchObject({ state: "stopped" });
+        // A closed link never keeps a reconnect timer alive.
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(createSocket).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("caps full-jittered reconnect delays at the configured ceiling", async () => {
+      vi.useFakeTimers();
+      try {
+        const sockets: FakeSocket[] = [];
+        const states: any[] = [];
+        const createSocket = vi.fn(() => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        });
+        const link = new LoroCloudReplicaLink({
+          baseUrl: "https://cloud.example/",
+          projectId: "project-backoff",
+          doc: () => new LoroDoc(),
+          createSocket,
+          commit: async () => {},
+          onState: (state) => states.push(state),
+          reconnectBaseMs: 100,
+          reconnectMaxMs: 1_000,
+          random: () => 1,
+        });
+        link.start();
+        const delays: number[] = [];
+        for (let attempt = 0; attempt < 7; attempt += 1) {
+          const before = sockets.length;
+          sockets.at(-1)!.emit("close", 1006);
+          const retry = states.filter((state) => state.state === "retrying").at(-1)!;
+          const delay = Date.parse(retry.retryAt) - Date.now();
+          delays.push(delay);
+          expect(delay).toBeLessThanOrEqual(1_000);
+          await vi.advanceTimersByTimeAsync(delay);
+          expect(sockets.length).toBe(before + 1);
+        }
+        expect(delays).toEqual([100, 200, 400, 800, 1_000, 1_000, 1_000]);
         await link.close();
       } finally {
         vi.useRealTimers();

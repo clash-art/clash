@@ -161,19 +161,34 @@ export interface ProjectLoadErrorMessage {
   nodeId?: string;
 }
 
+/** Coded reason a Project room is not fully caught up with its cloud replica. */
+export type ProjectRemoteStateCode =
+  | "PROJECT_REMOTE_UNAVAILABLE"
+  | "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED"
+  | "CLOUD_LINK_HANDSHAKE_TIMEOUT"
+  | "CLOUD_LINK_UNREACHABLE"
+  | "CLOUD_LINK_START_FAILED"
+  | "CLOUD_LINK_ACTION_REQUIRED";
+
 /**
  * Host → client: how the local Project room currently relates to its cloud replica.
  *
  * The local replica always opens and accepts edits. `unavailable` and
  * `import-failed` mean the cloud may be ahead of what this client sees; they are
  * non-fatal and clear when a later background merge succeeds.
+ *
+ * Snapshot catch-up and the cloud transport link share this one channel. The
+ * Host reports the more severe of the two, so a connected link never hides a
+ * failed snapshot import (and a retrying link never hides a ready snapshot).
+ * `CLOUD_LINK_*` codes describe the transport; the `PROJECT_REMOTE_*` codes
+ * describe the snapshot.
  */
 export interface ProjectRemoteStateMessage {
   type: "project.remote-state";
   projectId: string;
   state: "synced" | "unavailable" | "import-failed";
   /** Coded reason; absent when `state` is `synced`. */
-  code?: "PROJECT_REMOTE_UNAVAILABLE" | "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED";
+  code?: ProjectRemoteStateCode;
   message?: string;
   /** When the next automatic attempt is due, as an ISO timestamp. */
   retryAt?: string;
@@ -205,7 +220,11 @@ export function isSidebandMessage(msg: unknown): msg is SidebandMessage {
       (state === "synced" || state === "unavailable" || state === "import-failed") &&
       (remote.code === undefined ||
         remote.code === "PROJECT_REMOTE_UNAVAILABLE" ||
-        remote.code === "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED") &&
+        remote.code === "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED" ||
+        remote.code === "CLOUD_LINK_HANDSHAKE_TIMEOUT" ||
+        remote.code === "CLOUD_LINK_UNREACHABLE" ||
+        remote.code === "CLOUD_LINK_START_FAILED" ||
+        remote.code === "CLOUD_LINK_ACTION_REQUIRED") &&
       (remote.message === undefined || typeof remote.message === "string") &&
       (remote.retryAt === undefined || typeof remote.retryAt === "string")
     );

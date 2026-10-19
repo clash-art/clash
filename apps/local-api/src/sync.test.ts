@@ -79,7 +79,10 @@ import {
 import { createLocalWorkflowProcessor } from "./local-processor";
 import { createLocalMetadataStore } from "./local-metadata-store";
 import { FileReplicaStore } from "./loro/file-replica-store";
-import { LoroCloudReplicaLink } from "./loro/cloud-replica-link";
+import {
+  LoroCloudReplicaLink,
+  type CloudReplicaLinkState,
+} from "./loro/cloud-replica-link";
 import { createLocalResourceStore } from "./local-resource-store";
 import { createLocalPluginAssetStagingStore } from "./local-plugin-asset-staging";
 import { createSqliteDurableRunJournal } from "./durable-run-journal";
@@ -3803,6 +3806,187 @@ describe("LocalLoroRoom", () => {
     );
     // The local room stayed usable after the failed import.
     expect(room.snapshot().byteLength).toBeGreaterThan(0);
+  });
+
+  it("reports a failed cloud link start and its coded transport state on the room", async () => {
+    const projectId = "project/cloud-link-start-failure";
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => null),
+        appendUpdate: vi.fn(async () => {}),
+        createLink: ({ onState }) => ({
+          start: () => {
+            onState?.({
+              state: "retrying",
+              code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+              attempt: 1,
+              retryAt: new Date(Date.now() + 500).toISOString(),
+            });
+            return Promise.reject(new Error("Cloud admission was revoked"));
+          },
+          publish: async () => {},
+          close: async () => {},
+        }),
+      },
+      workflowProcessor: null,
+      remoteSnapshotTimeoutMs: 60_000,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId,
+          state: "unavailable",
+          code: "CLOUD_LINK_HANDSHAKE_TIMEOUT",
+          retryAt: expect.any(String),
+        }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId,
+          state: "unavailable",
+          code: "CLOUD_LINK_START_FAILED",
+          message: expect.stringContaining("admission was revoked"),
+        }),
+      ),
+    );
+    expect(messages.some((message) => message.type === "project.cloud-link"))
+      .toBe(false);
+    await room.close();
+  });
+
+  it("reports a retrying cloud link through remote-state and clears it on connect", async () => {
+    const projectId = "project/cloud-link-retry";
+    let reportLink: ((state: CloudReplicaLinkState) => void) | undefined;
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => null),
+        appendUpdate: vi.fn(async () => {}),
+        createLink: ({ onState }) => {
+          reportLink = onState;
+          return {
+            start: async () => {},
+            publish: async () => {},
+            close: async () => {},
+          };
+        },
+      },
+      workflowProcessor: null,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await vi.waitFor(() => expect(reportLink).toBeTypeOf("function"));
+    const retryAt = new Date(Date.now() + 4_000).toISOString();
+    reportLink?.({
+      state: "retrying",
+      code: "CLOUD_LINK_UNREACHABLE",
+      attempt: 2,
+      retryAt,
+    });
+    await vi.waitFor(() =>
+      expect(messages.at(-1)).toEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId,
+          state: "unavailable",
+          code: "CLOUD_LINK_UNREACHABLE",
+          retryAt,
+        }),
+      ),
+    );
+
+    // A peer that joins while the link is down receives the current state.
+    const late: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, { sendJson: (message) => late.push(message) });
+    expect(late).toContainEqual(
+      expect.objectContaining({
+        type: "project.remote-state",
+        projectId,
+        state: "unavailable",
+        code: "CLOUD_LINK_UNREACHABLE",
+      }),
+    );
+
+    reportLink?.({ state: "connected" });
+    await vi.waitFor(() =>
+      expect(messages.at(-1)).toEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId,
+          state: "synced",
+        }),
+      ),
+    );
+    await room.close();
+  });
+
+  it("keeps a snapshot import failure over a connected cloud link", async () => {
+    const projectId = "project/cloud-combined-state";
+    let reportLink: ((state: CloudReplicaLinkState) => void) | undefined;
+    const room = await LocalLoroRoom.open({
+      dataDir,
+      projectId,
+      remotePersistence: {
+        loadSnapshot: vi.fn(async () => new Uint8Array([1, 2, 3])),
+        appendUpdate: vi.fn(async () => {}),
+        createLink: ({ onState }) => {
+          reportLink = onState;
+          return {
+            start: async () => {},
+            publish: async () => {},
+            close: async () => {},
+          };
+        },
+      },
+      workflowProcessor: null,
+      remoteSnapshotRetryBaseMs: 60_000,
+    });
+    const messages: Array<Record<string, unknown>> = [];
+    room.addPeer(() => {}, {
+      sendJson: (message) => messages.push(message),
+    });
+    await vi.waitFor(() =>
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          type: "project.remote-state",
+          projectId,
+          state: "import-failed",
+          code: "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED",
+        }),
+      ),
+    );
+    const afterImportFailure = messages.length;
+
+    reportLink?.({ state: "connected" });
+    reportLink?.({
+      state: "retrying",
+      code: "CLOUD_LINK_UNREACHABLE",
+      retryAt: new Date(Date.now() + 5_000).toISOString(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Neither a connected link nor a transport retry may mask the import
+    // failure with a "synced" or plain link-unavailable state.
+    expect(
+      messages.slice(afterImportFailure).filter(
+        (message) =>
+          message.type === "project.remote-state" &&
+          message.state !== "import-failed",
+      ),
+    ).toEqual([]);
+    await room.close();
   });
 
   it("opens without waiting for a due provider run and publishes its result after open", async () => {

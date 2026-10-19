@@ -172,7 +172,10 @@ import {
 } from "./public-asset-storage.js";
 import type { LocalDirectorStageRenderer } from "./director-stage-renderer.js";
 import { createNpxSkillsMarketplace } from "./marketplace-skills.js";
-import { ensureAgentCwd } from "./runtime/host/lib/session-cwd.js";
+import {
+  ensureAgentCwd,
+  writeProjectWorkspaceMarker,
+} from "./runtime/host/lib/session-cwd.js";
 import skillMarketplaceRegistry from "../../../skills/registry.json" with { type: "json" };
 
 export { createHeadlessDirectorStageRenderer } from "./director-stage-renderer.js";
@@ -1912,6 +1915,9 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         ...process.env,
         CLASH_LOCAL_DATA_DIR: options.dataDir,
       });
+    },
+    writeProjectWorkspaceMarker: async (projectId) => {
+      await writeProjectWorkspaceMarker(projectId);
     },
     projectAssetProjectionOrigin: localOrigin,
     projectAssetReplica,

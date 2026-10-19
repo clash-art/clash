@@ -25,11 +25,16 @@ import {
   mkdir,
   readFile,
   readdir,
+  readlink,
+  rm,
+  stat,
+  symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { McpServer } from "@agentclientprotocol/sdk";
 import {
@@ -41,6 +46,15 @@ import { paths } from "./platform.js";
 import { ensureProjectAgentInstructions } from "./project-agent-instructions.js";
 import { ensureProjectSkillLinks } from "./project-skill-links.js";
 import { resolveHostProjectSkills } from "../../../host-skill-config.js";
+import {
+  PROJECT_WORKSPACE_PREPARE_FAILED,
+  ProjectWorkspacePrepareError,
+} from "../../../workspace-prepare-error.js";
+
+export {
+  PROJECT_WORKSPACE_PREPARE_FAILED,
+  ProjectWorkspacePrepareError,
+} from "../../../workspace-prepare-error.js";
 
 /** Used when the caller doesn't supply a project id (e.g. Quick connect). */
 const DEFAULT_PROJECT = "_default";
@@ -301,6 +315,76 @@ export async function resolveAgentMcpServers(
   return resolved.flat();
 }
 
+interface ManagedSkillLink {
+  path: string;
+  /** Absolute source the link must resolve to. */
+  target: string;
+}
+
+interface PreparedProjectWorkspace {
+  planKey: string;
+  cwd: string;
+  /**
+   * The Skill/link projection created by the last full pass. A repeat spawn
+   * only `lstat`s these entries; it never rescans manifests or directories.
+   */
+  managedSkillLinks: ManagedSkillLink[];
+}
+
+const preparedProjectWorkspaces = new Map<string, PreparedProjectWorkspace>();
+
+interface SkillPlanFileCheck {
+  path: string;
+  mtimeMs: number;
+  size: number;
+}
+
+interface SkillPlan {
+  signature: string;
+  checks: SkillPlanFileCheck[];
+  initialSkills: Map<string, string>;
+}
+
+const skillPlans = new Map<string, SkillPlan>();
+
+interface HostSkillPlan {
+  signature: string;
+  skills: Map<string, string>;
+}
+
+const hostSkillPlans = new Map<string, HostSkillPlan>();
+
+/**
+ * Create only the project identity marker on the create request path.
+ *
+ * The full agent layout (projections, timelines, sessions, Skill links,
+ * AGENTS.md) is materialized by `ensureAgentCwd` on the first agent session.
+ * A failure removes the partial directory before surfacing a coded error, so a
+ * project id is never left behind as a marker-less or empty workspace.
+ */
+export async function writeProjectWorkspaceMarker(
+  projectId: string,
+): Promise<string> {
+  const canonicalProjectId =
+    projectId && projectId.length > 0 ? projectId : DEFAULT_PROJECT;
+  const cwd = join(
+    paths().projectsDir,
+    projectIdPathSegment(canonicalProjectId),
+  );
+  try {
+    await mkdir(cwd, { recursive: true });
+    await writeProjectMarker(cwd, canonicalProjectId);
+    return cwd;
+  } catch (error) {
+    await rm(cwd, { recursive: true, force: true }).catch(() => undefined);
+    throw new ProjectWorkspacePrepareError(
+      canonicalProjectId,
+      "project marker",
+      error,
+    );
+  }
+}
+
 /**
  * Ensure the project workspace exists and return its absolute path.
  * Idempotent — safe to call on every spawn.
@@ -310,6 +394,11 @@ export async function resolveAgentMcpServers(
  *     .clash/project.toml
  *     AGENTS.md (seeded once; user edits are preserved)
  *     harness-native Skill links when explicitly supported
+ *
+ * A repeated call for the same project, template, plugin versions and Host
+ * Skill configuration only revalidates the plan signature, the marker and the
+ * managed Skill links; it does not rescan plugin manifests or Skill directories.
+ * A deleted or dangling managed link is recreated before the spawn continues.
  */
 export async function ensureAgentCwd(
   agentTemplateId: string,
@@ -321,19 +410,273 @@ export async function ensureAgentCwd(
     projectId && projectId.length > 0 ? projectId : DEFAULT_PROJECT;
   const projectPathSegment = projectIdPathSegment(canonicalProjectId);
   const cwd = join(paths().projectsDir, projectPathSegment);
-  await mkdir(cwd, { recursive: true });
-  await ensureProjectWorkspaceLayout(cwd);
-  await assertAgentTemplate(agentTemplateId);
-  await installNativeAgentSkills(
+  try {
+    await assertAgentTemplate(agentTemplateId);
+    const harnessId = capabilities.harnessId ?? "";
+    const workspaceSkillDirectory =
+      resolveHarnessProjectSkillDirectory(harnessId);
+    const env = { ...process.env, ...runtimeEnv };
+    const skillPlan = workspaceSkillDirectory
+      ? await loadSkillPlan(agentTemplateId, workspaceSkillDirectory, env)
+      : null;
+    const hostSkills = skillPlan
+      ? await cachedHostProjectSkills(canonicalProjectId, env)
+      : null;
+    const planKey = [
+      agentTemplateId,
+      harnessId,
+      skillPlan?.signature ?? "",
+      hostSkills?.signature ?? "",
+    ].join("\0");
+    const prepared = preparedProjectWorkspaces.get(cwd);
+    if (prepared?.planKey === planKey) {
+      const marker = await lstat(join(cwd, ".clash", "project.toml")).catch(
+        () => null,
+      );
+      if (
+        marker?.isFile() &&
+        (await revalidateManagedSkillLinks(prepared.managedSkillLinks))
+      ) {
+        return cwd;
+      }
+    }
+    await mkdir(cwd, { recursive: true });
+    await ensureProjectWorkspaceLayout(cwd);
+    if (skillPlan && hostSkills) {
+      await installNativeAgentSkills(
+        skillPlan,
+        workspaceSkillDirectory!,
+        cwd,
+        hostSkills.skills,
+        env,
+      );
+    }
+    await writeProjectMarker(cwd, canonicalProjectId);
+    await ensureProjectAgentInstructions(cwd);
+    const managedSkillLinks =
+      skillPlan && hostSkills
+        ? await collectManagedSkillLinks(
+            cwd,
+            workspaceSkillDirectory!,
+            skillPlan.initialSkills,
+            hostSkills.skills,
+          )
+        : [];
+    preparedProjectWorkspaces.set(cwd, {
+      planKey,
+      cwd,
+      managedSkillLinks,
+    });
+    return cwd;
+  } catch (error) {
+    if (error instanceof ProjectWorkspacePrepareError) throw error;
+    throw new ProjectWorkspacePrepareError(
+      canonicalProjectId,
+      "agent workspace",
+      error,
+    );
+  }
+}
+
+/**
+ * Revalidate the links projected into the workspace by the last full pass.
+ *
+ * This is the repeat-spawn fast path: one `lstat` per managed link plus a
+ * follow-up `stat` for symlinks (a dangling link still passes lstat). It never
+ * reads a manifest or lists a Skill directory. A missing link is recreated; a
+ * conflicted entry returns false so the caller runs the full reconcile, which
+ * raises the existing coded conflict error.
+ */
+async function revalidateManagedSkillLinks(
+  links: readonly ManagedSkillLink[],
+): Promise<boolean> {
+  for (const link of links) {
+    const current = await lstat(link.path).catch(() => null);
+    if (!current) {
+      try {
+        await symlink(link.target, link.path, "dir");
+      } catch {
+        return false;
+      }
+      continue;
+    }
+    if (!current.isSymbolicLink()) return false;
+    const actual = resolve(
+      dirname(link.path),
+      await readlink(link.path).catch(() => ""),
+    );
+    if (actual !== link.target) return false;
+    // lstat is satisfied by a dangling symlink; follow it once to detect a
+    // broken target and repair the entry instead of spawning with no Skill.
+    if (!(await stat(link.path).catch(() => null))) {
+      await unlink(link.path).catch(() => undefined);
+      try {
+        await symlink(link.target, link.path, "dir");
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+async function collectManagedSkillLinks(
+  cwd: string,
+  workspaceSkillDirectory: string,
+  initialSkills: ReadonlyMap<string, string>,
+  installedSkills: ReadonlyMap<string, string>,
+): Promise<ManagedSkillLink[]> {
+  const root = resolveWorkspaceSkillRoot(cwd, workspaceSkillDirectory);
+  if (!root) return [];
+  const canonical = join(cwd, ".agents", "skills");
+  const links = new Map<string, string>();
+  for (const [name, source] of installedSkills) {
+    links.set(join(canonical, name), resolve(source));
+  }
+  // Defaults only materialize into a brand-new Skill directory. Only remember
+  // the ones the last pass actually created, so a deliberate removal of an
+  // existing project Skill is not resurrected by a repeat spawn.
+  for (const [name, source] of initialSkills) {
+    const path = join(canonical, name);
+    const current = await lstat(path).catch(() => null);
+    if (!current?.isSymbolicLink()) continue;
+    const target = resolve(dirname(path), await readlink(path).catch(() => ""));
+    if (target === resolve(source)) links.set(path, target);
+  }
+  for (const directory of new Set([
+    ".claude/skills",
+    workspaceSkillDirectory,
+  ])) {
+    const alias = join(cwd, directory);
+    if (alias === canonical) continue;
+    links.set(alias, canonical);
+  }
+  return Array.from(links, ([path, target]) => ({ path, target }));
+}
+
+async function loadSkillPlan(
+  agentTemplateId: string,
+  workspaceSkillDirectory: string,
+  runtimeEnv: Record<string, string | undefined>,
+): Promise<SkillPlan | null> {
+  const cacheKey = [
     agentTemplateId,
-    resolveHarnessProjectSkillDirectory(capabilities.harnessId ?? ""),
-    cwd,
-    { ...process.env, ...runtimeEnv },
-    canonicalProjectId,
+    workspaceSkillDirectory,
+    homedir(),
+    runtimeEnv.CLASH_BUILTIN_PLUGIN_ROOT ?? "",
+    runtimeEnv.CLASH_AGENT_BUNDLE_ROOT ?? "",
+  ].join("\0");
+  const cached = skillPlans.get(cacheKey);
+  if (cached && (await skillPlanUnchanged(cached))) return cached;
+  const scanned = await scanSkillPlan(
+    agentTemplateId,
+    workspaceSkillDirectory,
+    runtimeEnv,
   );
-  await writeProjectMarker(cwd, canonicalProjectId);
-  await ensureProjectAgentInstructions(cwd);
-  return cwd;
+  if (scanned) skillPlans.set(cacheKey, scanned);
+  else skillPlans.delete(cacheKey);
+  return scanned;
+}
+
+async function skillPlanUnchanged(plan: SkillPlan): Promise<boolean> {
+  for (const check of plan.checks) {
+    const current = await stat(check.path).catch(() => null);
+    if (
+      !current ||
+      current.mtimeMs !== check.mtimeMs ||
+      current.size !== check.size
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function scanSkillPlan(
+  agentTemplateId: string,
+  workspaceSkillDirectory: string,
+  runtimeEnv: Record<string, string | undefined>,
+): Promise<SkillPlan | null> {
+  // Validate before reading: an unknown template must not create a directory.
+  const agentRoot = join(bundledAgentsDir(), sanitize(agentTemplateId));
+  const runtimePath = join(agentRoot, "runtime.json");
+  const runtimeStat = await stat(runtimePath);
+  const runtime = await readAgentRuntime(agentTemplateId);
+  if (!runtime?.plugins?.length) return null;
+  const checks: SkillPlanFileCheck[] = [
+    {
+      path: runtimePath,
+      mtimeMs: runtimeStat.mtimeMs,
+      size: runtimeStat.size,
+    },
+  ];
+  const initialSkills = new Map<string, string>();
+  for (const pluginId of runtime.plugins) {
+    const pluginRoot = resolveAgentPluginRoot(agentRoot, pluginId, runtimeEnv);
+    const manifestPath = join(pluginRoot, ".codex-plugin", "plugin.json");
+    const manifestStat = await stat(manifestPath);
+    checks.push({
+      path: manifestPath,
+      mtimeMs: manifestStat.mtimeMs,
+      size: manifestStat.size,
+    });
+    const manifest = JSON.parse(
+      await readFile(manifestPath, "utf8"),
+    ) as JsonRecord;
+    const configuredRoots =
+      typeof manifest.skills === "string"
+        ? [manifest.skills]
+        : Array.isArray(manifest.skills)
+          ? manifest.skills.filter(
+              (entry): entry is string => typeof entry === "string",
+            )
+          : [];
+    for (const configuredRoot of configuredRoots) {
+      const skillRoot = resolvePluginPath(
+        pluginRoot,
+        pluginRoot,
+        configuredRoot,
+      );
+      const entries = await readdir(skillRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name !== "clash") continue;
+        const globalSource = join(homedir(), ".agents", "skills", entry.name);
+        const globalSkill = await lstat(join(globalSource, "SKILL.md")).catch(
+          () => null,
+        );
+        initialSkills.set(
+          entry.name,
+          globalSkill?.isFile() ? globalSource : join(skillRoot, entry.name),
+        );
+      }
+    }
+  }
+  return {
+    signature: checks
+      .map((check) => `${check.path}:${check.mtimeMs}:${check.size}`)
+      .join("|"),
+    checks,
+    initialSkills,
+  };
+}
+
+async function cachedHostProjectSkills(
+  projectId: string,
+  runtimeEnv: Record<string, string | undefined>,
+): Promise<HostSkillPlan> {
+  const dataDir = defaultLocalApiDataDir(runtimeEnv);
+  const cacheKey = `${dataDir}\0${projectId}`;
+  const store = createClashUserConfigStore(dataDir);
+  const configStat = await stat(store.configPath).catch(() => null);
+  const signature = configStat
+    ? `${configStat.mtimeMs}:${configStat.size}`
+    : "missing";
+  const cached = hostSkillPlans.get(cacheKey);
+  if (cached?.signature === signature) return cached;
+  const skills = await resolveHostProjectSkills(projectId, runtimeEnv);
+  const entry = { signature, skills };
+  hostSkillPlans.set(cacheKey, entry);
+  return entry;
 }
 
 async function ensureProjectWorkspaceLayout(cwd: string): Promise<void> {
@@ -436,54 +779,23 @@ function resolveWorkspaceSkillRoot(
 }
 
 async function installNativeAgentSkills(
-  agentTemplateId: string,
-  workspaceSkillDirectory: string | undefined,
+  plan: SkillPlan,
+  workspaceSkillDirectory: string,
   cwd: string,
+  installedSkills: Map<string, string>,
   runtimeEnv: Record<string, string | undefined>,
-  projectId: string,
 ): Promise<void> {
   const root = resolveWorkspaceSkillRoot(cwd, workspaceSkillDirectory);
   if (!root) return;
-  const runtime = await readAgentRuntime(agentTemplateId);
-  if (!runtime?.plugins?.length) return;
-  const initialSkills = new Map<string, string>();
-
-  for (const pluginId of runtime.plugins) {
-    const agentRoot = join(bundledAgentsDir(), sanitize(agentTemplateId));
-    const pluginRoot = resolveAgentPluginRoot(agentRoot, pluginId, runtimeEnv);
-    const manifest = JSON.parse(
-      await readFile(join(pluginRoot, ".codex-plugin", "plugin.json"), "utf8"),
-    ) as JsonRecord;
-    const configuredRoots =
-      typeof manifest.skills === "string"
-        ? [manifest.skills]
-        : Array.isArray(manifest.skills)
-          ? manifest.skills.filter(
-              (entry): entry is string => typeof entry === "string",
-            )
-          : [];
-    for (const configuredRoot of configuredRoots) {
-      const skillRoot = resolvePluginPath(
-        pluginRoot,
-        pluginRoot,
-        configuredRoot,
-      );
-      const entries = await readdir(skillRoot, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || entry.name !== "clash") continue;
-        const globalSource = join(homedir(), ".agents", "skills", entry.name);
-        initialSkills.set(entry.name, existsSync(join(globalSource, "SKILL.md"))
-          ? globalSource
-          : join(skillRoot, entry.name));
-      }
-    }
-  }
   await ensureProjectSkillLinks({
     cwd,
-    nativeDirectories: [".claude/skills", workspaceSkillDirectory!],
-    initialSkills,
-    installedSkills: await resolveHostProjectSkills(projectId, runtimeEnv),
-    managedSkillsRoot: join(createClashUserConfigStore(defaultLocalApiDataDir(runtimeEnv)).clashHome, "plugin-skills"),
+    nativeDirectories: [".claude/skills", workspaceSkillDirectory],
+    initialSkills: plan.initialSkills,
+    installedSkills,
+    managedSkillsRoot: join(
+      createClashUserConfigStore(defaultLocalApiDataDir(runtimeEnv)).clashHome,
+      "plugin-skills",
+    ),
     legacySkillsRoot: join(homedir(), ".agents", "skills"),
   });
 }
