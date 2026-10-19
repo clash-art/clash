@@ -222,22 +222,30 @@ async function readConfig(
     !Array.isArray(record.remote_loro)
       ? (record.remote_loro as Record<string, unknown>)
       : {};
-  const credentials = await store.getCredentials();
-  const server = await store.getSection<{ url?: string }>("server");
-  return {
-    version: 1,
-    mode: normalizeMode(record.mode),
-    remoteLoroUrl: normalizeRemoteUrl(remote.url),
+  const mode = normalizeMode(record.mode);
+  const remoteLoroUrl = normalizeRemoteUrl(remote.url);
+  // A local-only config has no remote transport to authorize, so defer the
+  // credentials and server reads until cloud sync is actually configured. A
+  // per-project admission still resolves its token through cloud-accounts.
+  let remoteLoroToken: string | null = null;
+  if (mode === "cloud-sync" && remoteLoroUrl) {
+    const credentials = await store.getCredentials();
+    const server = await store.getSection<{ url?: string }>("server");
     // A signed-in local-only host may only have the CLI API token. Reuse it
     // for the project-scoped admission/Loro transport without changing the
     // process-wide sync mode.
-    remoteLoroToken: trimToNull(
+    remoteLoroToken = trimToNull(
       credentials.syncRemoteLoroToken ??
-        (normalizeRemoteUrl(server?.url) === normalizeRemoteUrl(remote.url) &&
-        normalizeRemoteUrl(remote.url)
+        (normalizeRemoteUrl(server?.url) === remoteLoroUrl
           ? credentials.cliApiKey
           : undefined),
-    ),
+    );
+  }
+  return {
+    version: 1,
+    mode,
+    remoteLoroUrl,
+    remoteLoroToken,
     capabilities: normalizeCapabilities(record.capabilities),
     updatedAt:
       typeof record.updated_at === "string"
@@ -397,6 +405,11 @@ export function createLocalSyncConfigStore(
     },
 
     async resolveRemotePersistence(projectId?: string) {
+      // Per-project admission may exist even while the process-wide mode stays
+      // local-only (a signed-in host that syncs only opted-in Projects), so the
+      // config read and admission probe cannot be skipped here. Open does this
+      // work off the local path in the background, and a local-only project
+      // never reaches the token resolver below.
       await effective();
       if (!projectId) return undefined;
       const replicaId = await getLocalReplicaId(options.dataDir);

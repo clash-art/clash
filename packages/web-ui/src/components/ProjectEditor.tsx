@@ -270,6 +270,7 @@ import {
 } from "@clash/web-ui/lib/projectNavigatorChrome";
 import { dispatchHostMutationEvent } from "@clash/web-ui/lib/hostMutationEvents";
 import { SyncRecoveryDialog } from "./SyncRecoveryDialog";
+import { ProjectRemoteStateNotice } from "./ProjectRemoteStateNotice";
 import {
   averageRectCenters,
   collapseVelocityFromPointer,
@@ -7237,6 +7238,9 @@ export default function ProjectEditor({
                                         "var(--clash-project-editor-height, 100dvh)",
                                     }}
                                   >
+                                    <ProjectRemoteStateNotice
+                                      state={loroSync.remoteState}
+                                    />
                                     {/* Hidden File Input */}
                                     <Input
                                       type="file"

@@ -55,6 +55,7 @@ import {
   type ActivityAction,
   type ActivityMessage,
   type ClientType,
+  type ProjectRemoteStateMessage,
   type PresenceClient,
 } from "@clash/shared-types";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
@@ -79,6 +80,15 @@ export interface LocalSyncOptions {
   canvasPreviewCacheEnabled?: boolean;
   upgradeProject?: LocalProjectUpgrade;
   onProjectCommitted?: (projectId: string) => Promise<void>;
+  /**
+   * Bound for the background remote-snapshot fetch. Open never waits on it; the
+   * room serves the local replica and reports a coded remote state on failure.
+   */
+  remoteSnapshotTimeoutMs?: number;
+  /** First retry delay after a failed background remote fetch/import. */
+  remoteSnapshotRetryBaseMs?: number;
+  /** Cap for the exponential background retry delay. */
+  remoteSnapshotRetryMaxMs?: number;
 }
 
 export interface RemoteLoroPersistence {
@@ -122,6 +132,13 @@ const PROJECT_CANVAS_PREVIEW_DEBOUNCE_MS = 350;
  * pass would delay the next edit's acknowledgement.
  */
 const PROJECT_PENDING_WORK_DEBOUNCE_MS = 100;
+/**
+ * A cloud snapshot may never arrive. Open serves the local replica immediately
+ * and bounds the background catch-up so a blackholed host cannot stall it.
+ */
+const PROJECT_REMOTE_SNAPSHOT_TIMEOUT_MS = 5_000;
+const PROJECT_REMOTE_SNAPSHOT_RETRY_BASE_MS = 30_000;
+const PROJECT_REMOTE_SNAPSHOT_RETRY_MAX_MS = 5 * 60_000;
 const HOST_OWNED_GENERATOR_AUTHORITY_CONTAINERS = [
   GENERATOR_SCHEMA_CONTAINER,
   PROJECT_GENERATORS_CONTAINER,
@@ -424,6 +441,35 @@ async function resolveRemotePersistence(
   return source;
 }
 
+/**
+ * Settle with the first of a promise or an abort. A transport that ignores the
+ * signal still leaves this bounded; its late result is dropped here so callers
+ * cannot attach a link or merge a snapshot after the attempt expired.
+ */
+function raceRemoteAttempt<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 export function createHttpRemoteLoroPersistence(
   options: HttpRemoteLoroPersistenceOptions,
 ): RemoteLoroPersistence {
@@ -604,9 +650,7 @@ async function loadDoc(options: LocalSyncOptions): Promise<{
   doc: LoroDoc;
   replica: ReplicaEngine<LoroDoc, Uint8Array, Uint8Array>;
   store: FileReplicaStore;
-  importedRemoteSnapshot: boolean;
   workspaceRepaired: boolean;
-  remotePersistence?: RemoteLoroPersistence;
 }> {
   const store = new FileReplicaStore(join(options.dataDir, "projects"));
   let replica: ReplicaEngine<LoroDoc, Uint8Array, Uint8Array>;
@@ -623,24 +667,9 @@ async function loadDoc(options: LocalSyncOptions): Promise<{
   const doc = LoroDoc.fromSnapshot(durableDoc.export({ mode: "snapshot" }));
   const durableVersion = durableDoc.version();
 
-  let importedRemoteSnapshot = false;
-  const remotePersistence = await resolveRemotePersistence(
-    options.remotePersistence,
-    options.projectId,
-  );
-  if (remotePersistence?.loadSnapshot) {
-    try {
-      const remoteSnapshot = await remotePersistence.loadSnapshot(
-        options.projectId,
-      );
-      if (remoteSnapshot?.byteLength) {
-        doc.import(remoteSnapshot);
-        importedRemoteSnapshot = true;
-      }
-    } catch (error) {
-      console.error("[local-sync] failed to import remote snapshot", error);
-    }
-  }
+  // Cloud state is fetched after the room opens (see startRemoteSnapshotSync).
+  // Opening must never wait on config/admission/token work or the network, and
+  // an unavailable remote must not turn into a silently stale local view.
 
   const graphRepair = reconcileCanvasGraph(doc);
   const timelineRepair = reconcileProjectTimelineOwnership(doc);
@@ -683,9 +712,7 @@ async function loadDoc(options: LocalSyncOptions): Promise<{
     doc,
     replica,
     store,
-    importedRemoteSnapshot,
     workspaceRepaired,
-    remotePersistence,
   };
 }
 
@@ -717,6 +744,12 @@ export class LocalLoroRoom {
   private closed = false;
   private closePromise: Promise<void> | undefined;
   private remoteLink: ReplicaLinkPort<Uint8Array> | undefined;
+  private remoteState: ProjectRemoteStateMessage | undefined;
+  private remoteSyncTimer: ReturnType<typeof setTimeout> | undefined;
+  private remoteSyncAbort: AbortController | undefined;
+  private remoteSyncInFlight = false;
+  private remoteSyncRetryMs: number;
+  private openBackgroundImmediate: ReturnType<typeof setImmediate> | undefined;
 
   private constructor(
     private readonly projectId: string,
@@ -728,8 +761,12 @@ export class LocalLoroRoom {
     private readonly canvasPreviewCacheEnabled = false,
     private readonly upgradeProject?: LocalProjectUpgrade,
     private readonly onProjectCommitted?: (projectId: string) => Promise<void>,
+    private readonly remoteSnapshotTimeoutMs = PROJECT_REMOTE_SNAPSHOT_TIMEOUT_MS,
+    private readonly remoteSnapshotRetryBaseMs = PROJECT_REMOTE_SNAPSHOT_RETRY_BASE_MS,
+    private readonly remoteSnapshotRetryMaxMs = PROJECT_REMOTE_SNAPSHOT_RETRY_MAX_MS,
   ) {
     this.checkpointedDoc = this.replica.read((state) => state);
+    this.remoteSyncRetryMs = this.remoteSnapshotRetryBaseMs;
   }
 
   static async open(
@@ -747,14 +784,195 @@ export class LocalLoroRoom {
       options.canvasPreviewCacheEnabled ?? false,
       options.upgradeProject,
       options.onProjectCommitted,
+      options.remoteSnapshotTimeoutMs,
+      options.remoteSnapshotRetryBaseMs,
+      options.remoteSnapshotRetryMaxMs,
     );
     room.updateLogBytes = await loaded.store.updateLogSize(options.projectId);
-    if (loaded.importedRemoteSnapshot || loaded.workspaceRepaired)
-      await room.saveSnapshot();
-    room.attachRemoteLink(loaded.remotePersistence);
+    if (loaded.workspaceRepaired) await room.saveSnapshot();
     await onCheckpointReadable?.(room);
-    await room.processPendingWork();
+    room.startOpenBackgroundWork();
     return room;
+  }
+
+  /**
+   * Catch the local room up after it is already serving peers.
+   *
+   * A due Provider run and a cloud snapshot are both remote work. Deferring
+   * both keeps project open independent of a stalled provider or a blackholed
+   * cloud, while the existing room events still publish the results.
+   */
+  private startOpenBackgroundWork(): void {
+    this.openBackgroundImmediate = setImmediate(() => {
+      this.openBackgroundImmediate = undefined;
+      if (this.closed) return;
+      this.startRemoteSnapshotSync(0);
+      // Same pass the room used to await, including Project Asset
+      // materialization; only its latency moved off the open path.
+      void this.processPendingWork().catch((error) =>
+        this.recordWorkFailure(error),
+      );
+    });
+    this.openBackgroundImmediate.unref?.();
+  }
+
+  private startRemoteSnapshotSync(delayMs: number): void {
+    if (this.closed || !this.remotePersistence) return;
+    if (this.remoteSyncTimer) clearTimeout(this.remoteSyncTimer);
+    this.remoteSyncTimer = setTimeout(() => {
+      this.remoteSyncTimer = undefined;
+      void this.syncRemoteSnapshotOnce();
+    }, Math.max(0, delayMs));
+    this.remoteSyncTimer.unref?.();
+  }
+
+  private async syncRemoteSnapshotOnce(): Promise<void> {
+    if (this.closed || this.remoteSyncInFlight) return;
+    this.remoteSyncInFlight = true;
+    // One bound covers the whole background attempt: resolving admission and
+    // credentials can itself block on a token refresh, and the snapshot fetch
+    // must share the same budget rather than starting a fresh one.
+    const timeoutSignal = AbortSignal.timeout(this.remoteSnapshotTimeoutMs);
+    const closeController = new AbortController();
+    this.remoteSyncAbort = closeController;
+    const signal = AbortSignal.any([timeoutSignal, closeController.signal]);
+    const timeoutError = () =>
+      new Error(
+        `Cloud state request timed out after ${this.remoteSnapshotTimeoutMs} ms`,
+      );
+    const attemptError = (error: unknown) =>
+      timeoutSignal.aborted
+        ? timeoutError()
+        : error instanceof Error
+          ? error
+          : new Error(String(error));
+    try {
+      let remote: RemoteLoroPersistence | undefined;
+      try {
+        remote = await raceRemoteAttempt(
+          resolveRemotePersistence(this.remotePersistence, this.projectId),
+          signal,
+        );
+      } catch (error) {
+        this.reportRemoteState(
+          "unavailable",
+          "PROJECT_REMOTE_UNAVAILABLE",
+          attemptError(error),
+        );
+        return;
+      }
+      if (this.closed) return;
+      if (signal.aborted) {
+        this.reportRemoteState(
+          "unavailable",
+          "PROJECT_REMOTE_UNAVAILABLE",
+          timeoutError(),
+        );
+        return;
+      }
+      // Local-only projects resolve to no persistence: nothing to fetch and no
+      // state for the client to show.
+      if (!remote) {
+        this.clearRemoteState();
+        return;
+      }
+      this.attachRemoteLink(remote);
+      if (!remote.loadSnapshot) {
+        this.clearRemoteState();
+        return;
+      }
+      let snapshot: Uint8Array | null;
+      try {
+        snapshot = await raceRemoteAttempt(
+          remote.loadSnapshot(this.projectId, signal),
+          signal,
+        );
+      } catch (error) {
+        this.reportRemoteState(
+          "unavailable",
+          "PROJECT_REMOTE_UNAVAILABLE",
+          attemptError(error),
+        );
+        return;
+      }
+      if (this.closed) return;
+      if (signal.aborted) {
+        this.reportRemoteState(
+          "unavailable",
+          "PROJECT_REMOTE_UNAVAILABLE",
+          timeoutError(),
+        );
+        return;
+      }
+      if (!snapshot?.byteLength) {
+        this.clearRemoteState();
+        return;
+      }
+      try {
+        await this.mergeRemoteSnapshot(snapshot, { awaitPendingWork: false });
+      } catch (error) {
+        this.reportRemoteState(
+          "import-failed",
+          "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED",
+          error,
+        );
+        return;
+      }
+      this.clearRemoteState();
+    } finally {
+      if (this.remoteSyncAbort === closeController) {
+        this.remoteSyncAbort = undefined;
+      }
+      this.remoteSyncInFlight = false;
+    }
+  }
+
+  private reportRemoteState(
+    state: "unavailable" | "import-failed",
+    code:
+      | "PROJECT_REMOTE_UNAVAILABLE"
+      | "PROJECT_REMOTE_SNAPSHOT_IMPORT_FAILED",
+    error: unknown,
+  ): void {
+    if (this.closed) return;
+    const reason = (error instanceof Error ? error.message : String(error))
+      .replace(/\s+/gu, " ")
+      .trim()
+      .slice(0, 500);
+    const retryDelay = Math.max(1_000, this.remoteSyncRetryMs);
+    this.remoteSyncRetryMs = Math.min(
+      this.remoteSnapshotRetryMaxMs,
+      Math.max(retryDelay + 1, retryDelay * 2),
+    );
+    this.remoteState = {
+      type: "project.remote-state",
+      projectId: this.projectId,
+      state,
+      code,
+      message:
+        state === "unavailable"
+          ? `Cloud state is unavailable; showing the local revision. Edits are saved locally.${reason ? ` ${reason}` : ""}`
+          : `Cloud state could not be imported; showing the local revision. Edits are saved locally.${reason ? ` ${reason}` : ""}`,
+      retryAt: new Date(Date.now() + retryDelay).toISOString(),
+    };
+    console.warn(`[local-sync] ${code}`, error);
+    this.broadcastJson({ ...this.remoteState });
+    this.startRemoteSnapshotSync(retryDelay);
+  }
+
+  private clearRemoteState(): void {
+    this.remoteSyncRetryMs = this.remoteSnapshotRetryBaseMs;
+    if (this.remoteSyncTimer) {
+      clearTimeout(this.remoteSyncTimer);
+      this.remoteSyncTimer = undefined;
+    }
+    if (!this.remoteState) return;
+    this.remoteState = undefined;
+    this.broadcastJson({
+      type: "project.remote-state",
+      projectId: this.projectId,
+      state: "synced",
+    });
   }
 
   snapshot(): Uint8Array {
@@ -925,6 +1143,10 @@ export class LocalLoroRoom {
       syncProtocol: options?.syncProtocol,
     });
     if (options?.sendInitialSnapshot !== false) send(this.snapshot());
+    // A client that connects while the cloud is unreachable must see the same
+    // stale-remote state as peers that were already attached.
+    if (this.remoteState)
+      options?.sendJson?.({ ...this.remoteState });
     this.broadcastPresence();
     return id;
   }
@@ -975,7 +1197,10 @@ export class LocalLoroRoom {
   }
 
   /** Import remote state through the same durable Project mutation queue. */
-  async mergeRemoteSnapshot(snapshot: Uint8Array): Promise<void> {
+  async mergeRemoteSnapshot(
+    snapshot: Uint8Array,
+    options?: { awaitPendingWork?: boolean },
+  ): Promise<void> {
     const missing = await this.inspectProject(doc => {
       const before = doc.version();
       try {
@@ -985,12 +1210,14 @@ export class LocalLoroRoom {
         finally { after.free(); }
       } finally { before.free(); }
     });
-    if (missing) await this.receiveCloudUpdates(loroSyncUpdateId(missing), [missing]);
+    if (missing)
+      await this.receiveCloudUpdates(loroSyncUpdateId(missing), [missing], options);
   }
 
   private async receiveCloudUpdates(
     _batchId: string,
     updates: Uint8Array[],
+    options?: { awaitPendingWork?: boolean },
   ): Promise<void> {
     await this.enqueueProjectOperation(async () => {
       for (const raw of updates) {
@@ -1024,6 +1251,10 @@ export class LocalLoroRoom {
         this.remoteLink?.publish(repairUpdate);
       }
     });
+    if (options?.awaitPendingWork === false) {
+      this.schedulePendingWork();
+      return;
+    }
     await this.processPendingWork({ onlyIfRunnable: true });
   }
 
@@ -1704,8 +1935,21 @@ export class LocalLoroRoom {
 
   private async closeOnce(): Promise<void> {
     const pendingWorkPassDue = this.pendingWorkTimer !== undefined;
+    const openWorkDue = this.openBackgroundImmediate !== undefined;
     this.closed = true;
     this.pollScheduleVersion += 1;
+    if (this.openBackgroundImmediate) {
+      clearImmediate(this.openBackgroundImmediate);
+      this.openBackgroundImmediate = undefined;
+    }
+    if (this.remoteSyncTimer) {
+      clearTimeout(this.remoteSyncTimer);
+      this.remoteSyncTimer = undefined;
+    }
+    // A background resolve may still be inside a token/admission read. Abort it
+    // so a late result cannot attach a link or broadcast after close.
+    this.remoteSyncAbort?.abort(new Error("Project room closed"));
+    this.remoteSyncAbort = undefined;
     if (this.pendingWorkTimer) {
       clearTimeout(this.pendingWorkTimer);
       this.pendingWorkTimer = undefined;
@@ -1718,9 +1962,10 @@ export class LocalLoroRoom {
       clearTimeout(this.checkpointRetryTimer);
       this.checkpointRetryTimer = undefined;
     }
-    // A close inside the debounce window would otherwise drop work an already
-    // acknowledged edit made runnable. Finish that pass before tearing down.
-    if (pendingWorkPassDue) {
+    // A close inside the debounce window (or before the deferred open pass
+    // starts) would otherwise drop work an already acknowledged edit made
+    // runnable. Finish that pass before tearing down.
+    if (pendingWorkPassDue || openWorkDue) {
       try {
         await this.enqueuePendingWorkPass(
           { onlyIfRunnable: true },
