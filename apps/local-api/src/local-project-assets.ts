@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 import {
   AssetSdkContractError,
+  PROJECT_ASSET_IMPORT_MAX_BYTES,
   createAssetClient,
   resolveProjectAsset,
   type AssetResolverPorts,
@@ -139,6 +140,15 @@ export type LocalProjectAssetInstallInput = {
       source?: never;
       bytes?: never;
       declaredByteLength?: never;
+      sourceMtimeMs?: never;
+    }
+  | {
+      /** Absolute local source the Host opens, clones or copies itself. */
+      sourcePath: string;
+      declaredByteLength: number;
+      sourceMtimeMs?: number;
+      source?: never;
+      bytes?: never;
     }
 );
 
@@ -1481,6 +1491,36 @@ export function createLocalProjectAssetService(options: {
       }
       const staged = await resources.adoptAssembled(input.assembled);
       try {
+        const asset = await publishInstalledInput(input, staged);
+        await releaseStagedQuietly(staged.resourceId);
+        return { asset, replayed: false };
+      } catch (error) {
+        await discardStagedQuietly(staged.resourceId);
+        throw error;
+      }
+    }
+    if ("sourcePath" in input) {
+      const staged = await resources.stagePath({
+        sourcePath: input.sourcePath,
+        declaredByteLength: input.declaredByteLength,
+        maxByteLength: PROJECT_ASSET_IMPORT_MAX_BYTES,
+        ...(input.sourceMtimeMs === undefined
+          ? {}
+          : { sourceMtimeMs: input.sourceMtimeMs }),
+        ...(input.name ? { originalName: input.name } : {}),
+      });
+      try {
+        const decision = await checkImportBeforeInstall(
+          input,
+          staged.resourceId,
+        );
+        if (decision.replay) {
+          await discardStagedQuietly(staged.resourceId);
+          return {
+            asset: await existingResolved(projectId, projectAssetId),
+            replayed: true,
+          };
+        }
         const asset = await publishInstalledInput(input, staged);
         await releaseStagedQuietly(staged.resourceId);
         return { asset, replayed: false };

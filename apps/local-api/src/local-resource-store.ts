@@ -4,16 +4,18 @@ import { createRequire } from "node:module";
 import {
   access,
   chmod,
+  copyFile,
   link,
   open,
   readdir,
   rename,
   stat,
+  statfs,
   unlink,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { Readable } from "node:stream";
 
 import { PROJECT_ASSET_IMPORT_MAX_BYTES } from "@clash/asset-sdk";
@@ -157,6 +159,67 @@ function errnoCode(error: unknown): string | undefined {
   return typeof code === "string" ? code : undefined;
 }
 
+/**
+ * A path import could not read the caller's source file. It is distinct from a
+ * missing immutable Resource: nothing was staged and the caller must fix the
+ * source path.
+ */
+export class LocalResourceImportSourceError extends Error {
+  readonly code:
+    "ASSET_IMPORT_SOURCE_UNREADABLE" | "ASSET_IMPORT_SOURCE_CHANGED";
+
+  constructor(
+    code: "ASSET_IMPORT_SOURCE_UNREADABLE" | "ASSET_IMPORT_SOURCE_CHANGED",
+    message: string,
+    readonly errno?: string,
+  ) {
+    super(`${code}: ${message}${errno ? ` (${errno})` : ""}`);
+    this.name = "LocalResourceImportSourceError";
+    this.code = code;
+  }
+}
+
+/** Errnos where the platform/volume cannot clone, so one streamed copy runs. */
+const CLONE_FALLBACK_ERRNOS = new Set([
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EXDEV",
+  "EINVAL",
+  "ENOSYS",
+  "ENOTTY",
+]);
+
+function isUnreadableSourceErrno(code: string | undefined): boolean {
+  return (
+    code === "ENOENT" ||
+    code === "ENOTDIR" ||
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "EISDIR"
+  );
+}
+
+/** Linux `statfs` magic numbers used only to name the log's `fs` field. */
+const FILESYSTEM_NAMES: Readonly<Record<number, string>> = {
+  0xef53: "ext4",
+  0x58465342: "xfs",
+  0x9123683e: "btrfs",
+  0x01021994: "tmpfs",
+  0x794c7630: "overlay",
+  0x65735546: "fuse",
+  0x6969: "nfs",
+  0x2fc12fc1: "zfs",
+};
+
+async function filesystemNameFor(path: string): Promise<string> {
+  try {
+    const info = await statfs(path);
+    return FILESYSTEM_NAMES[Number(info.type)] ?? process.platform;
+  } catch {
+    return process.platform;
+  }
+}
+
 function localResourceFileError(
   resourceId: string,
   error: unknown,
@@ -292,6 +355,22 @@ export interface LocalResourceStore {
     maxByteLength: number;
     /** Optional lowercase SHA-256 claimed by the transport. */
     expectedDigest?: string;
+    originalName?: string;
+  }): Promise<LocalResourceStagingProjection>;
+  /**
+   * Stages bytes the caller names by absolute path, so the Host can ask the
+   * filesystem for a copy-on-write clone. A same-volume filesystem that cannot
+   * clone is reported through `onEvent` and gets exactly one streamed copy;
+   * either path hashes the bytes once.
+   */
+  stagePath(input: {
+    sourcePath: string;
+    /** Exact source size the caller observed. */
+    declaredByteLength: number;
+    /** Source mtime the caller observed, when it sent one. */
+    sourceMtimeMs?: number;
+    /** Hard Host limit, enforced before any byte is written. */
+    maxByteLength: number;
     originalName?: string;
   }): Promise<LocalResourceStagingProjection>;
   /**
@@ -905,6 +984,81 @@ export function createLocalResourceStore(options: {
     return persist(intended, storageKey, factsVerified);
   }
 
+  /** Volume pairs the OS has already refused to clone, with the errno. */
+  const cloneFallbacks = new Map<string, string>();
+
+  /**
+   * Publishes an already-written temporary file under its digest's staging
+   * name and indexes its receipt. The caller owns removing `temporaryPath`.
+   */
+  async function commitTemporaryStaging(input: {
+    temporaryPath: string;
+    digest: string;
+    byteLength: number;
+  }): Promise<LocalResourceStagingProjection> {
+    const resourceId = resourceIdForSha256(input.digest);
+    const storageKey = `local-blobs/${input.digest}/staging`;
+    const path = await assetPathForWrite(
+      options.dataDir,
+      storageKey,
+      options.clashRoot,
+    );
+    let linkedPath: string | undefined;
+    try {
+      try {
+        await link(input.temporaryPath, path);
+      } catch (error) {
+        if (errnoCode(error) !== "EEXIST") throw error;
+        // Replace an unreferenced file left at this path with the bytes just
+        // hashed; the inode is never re-read to decide.
+        await rename(input.temporaryPath, path);
+      }
+      linkedPath = path;
+      await chmod(path, 0o444);
+      await withDatabase((database) => {
+        database
+          .prepare(
+            `
+            INSERT OR IGNORE INTO local_resource_staging (
+              resource_id, digest_sha256, byte_length, storage_key, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+          `,
+          )
+          .run(
+            resourceId,
+            input.digest,
+            input.byteLength,
+            storageKey,
+            Date.now(),
+          );
+      });
+      const stored = await stagingRowFor(resourceId);
+      if (
+        !stored ||
+        stored.digest !== input.digest ||
+        stored.byteLength !== input.byteLength ||
+        stored.storageKey !== storageKey
+      ) {
+        throw new Error(
+          `Local Resource staging receipt ${resourceId} was not indexed with the staged facts.`,
+        );
+      }
+      return await stagingProjection(stored);
+    } catch (error) {
+      // A failure after the staging name exists must remove both that name and
+      // its receipt; otherwise the bytes leak with nothing pointing at them.
+      if (linkedPath) {
+        await unlink(linkedPath).catch(() => undefined);
+        await withDatabase((database) => {
+          database
+            .prepare("DELETE FROM local_resource_staging WHERE resource_id = ?")
+            .run(resourceId);
+        }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+
   const store: LocalResourceStore = {
     async readFacts(resourceId) {
       const row = await rowFor(resourceId);
@@ -1059,8 +1213,6 @@ export function createLocalResourceStore(options: {
       );
       const handle = await open(temporaryPath, "wx", 0o600);
       let handleOpen = true;
-      let linkedPath: string | undefined;
-      let linkedResourceId: string | undefined;
       try {
         const digestState = createHash("sha256");
         let byteLength = 0;
@@ -1110,67 +1262,195 @@ export function createLocalResourceStore(options: {
         await handle.close();
         handleOpen = false;
         await chmod(temporaryPath, 0o444);
-
-        const resourceId = resourceIdForSha256(digest);
-        linkedResourceId = resourceId;
-        const storageKey = `local-blobs/${digest}/staging`;
-        const path = await assetPathForWrite(
-          options.dataDir,
-          storageKey,
-          options.clashRoot,
-        );
-        try {
-          await link(temporaryPath, path);
-        } catch (error) {
-          if (errnoCode(error) !== "EEXIST") throw error;
-          // The bytes just hashed while streaming replace whatever file is
-          // already at this path; it is never re-read to decide.
-          await rename(temporaryPath, path);
-        }
-        linkedPath = path;
-        await chmod(path, 0o444);
-        await withDatabase((database) => {
-          database
-            .prepare(
-              `
-              INSERT OR IGNORE INTO local_resource_staging (
-                resource_id, digest_sha256, byte_length, storage_key, created_at
-              ) VALUES (?, ?, ?, ?, ?)
-            `,
-            )
-            .run(resourceId, digest, byteLength, storageKey, Date.now());
+        return await commitTemporaryStaging({
+          temporaryPath,
+          digest,
+          byteLength,
         });
-        const stored = await stagingRowFor(resourceId);
-        if (
-          !stored ||
-          stored.digest !== digest ||
-          stored.byteLength !== byteLength ||
-          stored.storageKey !== storageKey
-        ) {
-          throw new Error(
-            `Local Resource staging receipt ${resourceId} was not indexed with the streamed facts.`,
-          );
-        }
-        return await stagingProjection(stored);
-      } catch (error) {
-        // Never leave the staging name or its receipt behind for a failed
-        // stream: both are unreferenced once this call fails.
-        if (linkedPath) {
-          await unlink(linkedPath).catch(() => undefined);
-          const resourceId = linkedResourceId;
-          if (resourceId) {
-            await withDatabase((database) => {
-              database
-                .prepare(
-                  "DELETE FROM local_resource_staging WHERE resource_id = ?",
-                )
-                .run(resourceId);
-            }).catch(() => undefined);
-          }
-        }
-        throw error;
       } finally {
         if (handleOpen) await handle.close().catch(() => undefined);
+        await unlink(temporaryPath).catch(() => undefined);
+      }
+    },
+
+    async stagePath(input) {
+      const maxByteLength = boundedByteLength(
+        input.maxByteLength,
+        "Local Resource path maximum byte length",
+      );
+      const declaredByteLength = boundedByteLength(
+        input.declaredByteLength,
+        "Local Resource path declared byte length",
+      );
+      if (declaredByteLength > maxByteLength) {
+        throw new LocalResourceStreamLimitError(maxByteLength);
+      }
+      const started = Date.now();
+      let sourceInfo: Awaited<ReturnType<typeof stat>>;
+      try {
+        sourceInfo = await stat(input.sourcePath);
+      } catch (error) {
+        throw new LocalResourceImportSourceError(
+          "ASSET_IMPORT_SOURCE_UNREADABLE",
+          `Import source ${input.sourcePath} cannot be read.`,
+          errnoCode(error),
+        );
+      }
+      if (!sourceInfo.isFile()) {
+        throw new LocalResourceImportSourceError(
+          "ASSET_IMPORT_SOURCE_UNREADABLE",
+          `Import source ${input.sourcePath} is not a regular file.`,
+        );
+      }
+      if (sourceInfo.size > maxByteLength) {
+        throw new LocalResourceStreamLimitError(maxByteLength);
+      }
+      if (sourceInfo.size !== declaredByteLength) {
+        throw new LocalResourceImportSourceError(
+          "ASSET_IMPORT_SOURCE_CHANGED",
+          `Import source ${input.sourcePath} is ${sourceInfo.size} bytes; the caller declared ${declaredByteLength}.`,
+        );
+      }
+      if (
+        input.sourceMtimeMs !== undefined &&
+        sourceInfo.mtimeMs !== input.sourceMtimeMs
+      ) {
+        throw new LocalResourceImportSourceError(
+          "ASSET_IMPORT_SOURCE_CHANGED",
+          `Import source ${input.sourcePath} changed after the caller read it.`,
+          "ESTALE",
+        );
+      }
+
+      const temporaryStorageKey = `local-blobs/stream-staging/${randomUUID()}.clone`;
+      const temporaryPath = await assetPathForWrite(
+        options.dataDir,
+        temporaryStorageKey,
+        options.clashRoot,
+      );
+      const targetDev = (await stat(dirname(temporaryPath))).dev;
+      const volumeKey = `${sourceInfo.dev}:${targetDev}`;
+      // libuv's Windows copy path ignores the FICLONE flags (it is CopyFileW),
+      // so _FORCE cannot prove a block clone there. Without the native
+      // FSCTL_DUPLICATE_EXTENTS_TO_FILE helper, report the fallback instead of
+      // claiming a clone that silently copied every byte.
+      let fallbackReason =
+        process.platform === "win32"
+          ? "PLATFORM_UNSUPPORTED"
+          : cloneFallbacks.get(volumeKey);
+      let cloned = false;
+      try {
+        if (fallbackReason === undefined) {
+          try {
+            // _FORCE is required: plain COPYFILE_FICLONE silently full-copies,
+            // so the fallback could never be detected or reported.
+            await copyFile(
+              input.sourcePath,
+              temporaryPath,
+              constants.COPYFILE_FICLONE_FORCE,
+            );
+            cloned = true;
+          } catch (error) {
+            const errno = errnoCode(error);
+            await unlink(temporaryPath).catch(() => undefined);
+            if (errno && CLONE_FALLBACK_ERRNOS.has(errno)) {
+              fallbackReason = errno;
+              cloneFallbacks.set(volumeKey, errno);
+            } else if (isUnreadableSourceErrno(errno)) {
+              throw new LocalResourceImportSourceError(
+                "ASSET_IMPORT_SOURCE_UNREADABLE",
+                `Import source ${input.sourcePath} cannot be read.`,
+                errno,
+              );
+            } else {
+              throw error;
+            }
+          }
+        }
+
+        if (cloned) {
+          // A clone is a point-in-time snapshot of the source. Re-stat it so a
+          // concurrent write is a coded failure rather than a mixed Asset.
+          const afterClone = await stat(input.sourcePath);
+          if (
+            afterClone.dev !== sourceInfo.dev ||
+            afterClone.ino !== sourceInfo.ino ||
+            afterClone.size !== sourceInfo.size ||
+            afterClone.mtimeMs !== sourceInfo.mtimeMs
+          ) {
+            throw new LocalResourceImportSourceError(
+              "ASSET_IMPORT_SOURCE_CHANGED",
+              `Import source ${input.sourcePath} changed while it was cloned.`,
+              "ESTALE",
+            );
+          }
+          const digestState = createHash("sha256");
+          let byteLength = 0;
+          for await (const chunk of createReadStream(temporaryPath)) {
+            if (!(chunk instanceof Uint8Array)) {
+              throw new Error(
+                "Local Resource clone stream returned a non-byte chunk.",
+              );
+            }
+            const nextByteLength = byteLength + chunk.byteLength;
+            if (
+              !Number.isSafeInteger(nextByteLength) ||
+              nextByteLength > maxByteLength
+            ) {
+              throw new LocalResourceStreamLimitError(maxByteLength);
+            }
+            digestState.update(chunk);
+            byteLength = nextByteLength;
+          }
+          if (byteLength !== declaredByteLength) {
+            throw new LocalResourceStreamLengthMismatchError(
+              `Local Resource clone byte length ${byteLength} does not match its declared byte length ${declaredByteLength}.`,
+            );
+          }
+          const digest = digestState.digest("hex");
+          await chmod(temporaryPath, 0o444);
+          const ms = Date.now() - started;
+          const staged = await commitTemporaryStaging({
+            temporaryPath,
+            digest,
+            byteLength,
+          });
+          options.onEvent?.({
+            level: "info",
+            event: "project_asset_import.clone",
+            fields: {
+              code: "PROJECT_ASSET_IMPORT_CLONE",
+              fs: await filesystemNameFor(dirname(temporaryPath)),
+              bytes: byteLength,
+              ms,
+            },
+          });
+          return staged;
+        }
+
+        // One copy + one hash: the pre-#315 streamed staging path.
+        const staged = await store.stageStream({
+          source: createReadStream(input.sourcePath),
+          declaredByteLength,
+          maxByteLength,
+          ...(input.originalName === undefined
+            ? {}
+            : { originalName: input.originalName }),
+        });
+        const ms = Date.now() - started;
+        options.onEvent?.({
+          level: "info",
+          event: "project_asset_import.clone_fallback",
+          fields: {
+            code: "PROJECT_ASSET_IMPORT_CLONE_FALLBACK",
+            fs: await filesystemNameFor(dirname(temporaryPath)),
+            reason: fallbackReason ?? "UNKNOWN",
+            bytes: staged.byteLength,
+            ms,
+          },
+        });
+        return staged;
+      } finally {
         await unlink(temporaryPath).catch(() => undefined);
       }
     },

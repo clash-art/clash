@@ -196,6 +196,16 @@ function snapshotProjectImport(
   };
 }
 
+/** A Host without the loopback path route must keep the streamed transports. */
+function pathImportUnavailable(status: number, body: unknown): boolean {
+  if (status === 404 || status === 405 || status === 501) return true;
+  const code =
+    body !== null && typeof body === "object"
+      ? (body as { code?: unknown }).code
+      : undefined;
+  return status === 403 && code === "ASSET_IMPORT_PATH_LOOPBACK_ONLY";
+}
+
 /** Resolve a caller digest only when the session branch actually needs it. */
 async function resolveImportSha256(
   sha256: string | (() => Promise<string>) | undefined,
@@ -404,6 +414,51 @@ export function createProjectAssetHttpClient(
       const maxBytes =
         options.singleShotMaxBytes ?? PROJECT_ASSET_SINGLE_SHOT_MAX_BYTES;
       const base = url.slice(0, -"/import-file".length);
+      const sourcePath = snapshot.file.sourcePath;
+      if (sourcePath) {
+        // A Node caller and a loopback Host share this filesystem: let the Host
+        // clone the file (and hash it once) instead of sending every byte.
+        const pathResponse = await fetch(base + "/import-path", {
+          ...requestInit({
+            method: "POST",
+            headers: headers(connected, {
+              "content-type": "application/json",
+            }),
+            body: JSON.stringify({
+              sourcePath,
+              byteLength: snapshot.file.size,
+              ...(snapshot.file.sourceMtimeMs === undefined
+                ? {}
+                : { mtimeMs: snapshot.file.sourceMtimeMs }),
+              kind: snapshot.kind,
+              projectAssetId: snapshot.projectAssetId,
+              fileName: snapshot.fileName,
+              ...(snapshot.file.type
+                ? { contentType: snapshot.file.type }
+                : {}),
+              ...(snapshot.duplicateContent
+                ? { duplicateContent: snapshot.duplicateContent }
+                : {}),
+            }),
+          }),
+        });
+        const pathBody = (await pathResponse.json().catch(() => undefined)) as
+          unknown | undefined;
+        if (pathResponse.ok) {
+          if (
+            pathResponse.headers.get(PROJECT_ASSET_IMPORT_REPLAY_HEADER) ===
+            "true"
+          )
+            snapshot.onReplay?.();
+          return ResolvedAssetSchema.parse(pathBody);
+        }
+        if (!pathImportUnavailable(pathResponse.status, pathBody)) {
+          throw (
+            options.createHttpError?.(pathResponse.status, pathBody) ??
+            new ProjectAssetHttpError(pathResponse.status, pathBody)
+          );
+        }
+      }
       if (snapshot.chunked === true || snapshot.file.size > maxBytes) {
         const sha256 = await resolveImportSha256(snapshot.sha256);
         const sessionResponse = await fetch(

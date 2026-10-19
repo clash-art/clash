@@ -92,10 +92,14 @@ export async function openAssetImportFile(
   filePath: string,
   contentType: string,
 ): Promise<AssetImportFile> {
-  const { size } = await stat(filePath);
+  const { size, mtimeMs } = await stat(filePath);
   return {
     size,
     type: contentType,
+    // The path and its observed mtime let a loopback Host clone the file
+    // instead of receiving a full copy over HTTP.
+    sourcePath: filePath,
+    sourceMtimeMs: mtimeMs,
     // Node's stream/web type and the global one differ under Worker typings.
     stream: () =>
       Readable.toWeb(

@@ -44,6 +44,13 @@ afterEach(async () => {
 async function recordingHost() {
   const received: ReceivedImport[] = [];
   const server = createServer((request, response) => {
+    if (request.url?.includes("/import-path")) {
+      // This stand-in has no loopback path route: the client must stream.
+      request.resume();
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ code: "NOT_FOUND" }));
+      return;
+    }
     const digest = createHash("sha256");
     let chunkCount = 0;
     let byteLength = 0;
