@@ -748,12 +748,32 @@ export class LocalLoroRoom {
   private activityThrottle = new Map<string, number>();
   private pendingWorkQueue: Promise<void> = Promise.resolve();
   private pendingWorkTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Absolute due time of the armed pending-work pass. */
+  private pendingWorkDueAt: number | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Absolute due time of the armed poll, restored if eviction is cancelled. */
+  private pollDueAt: number | undefined;
+  /** Schedule captured by an idle-eviction flush, restored on cancellation. */
+  private suspendedEvictionSchedule:
+    | {
+        remote: boolean;
+        remoteDueAt?: number;
+        pollDueAt?: number;
+        pendingWorkDueAt?: number;
+      }
+    | undefined;
   private pollScheduleVersion = 0;
   private canvasPreviewTimer: ReturnType<typeof setTimeout> | undefined;
   private canvasPreviewWrites: Promise<void> = Promise.resolve();
   private closed = false;
   private closePromise: Promise<void> | undefined;
+  private lastActiveAt = Date.now();
+  private evicting = false;
+  /** Operations in flight through the hub; an eviction must not start under them. */
+  private activeOperations = 0;
+  private evictionCancellation: Promise<void> | undefined;
+  private resolveEvictionCancellation: (() => void) | undefined;
+  private documentsReleased = false;
   private remoteLink: ReplicaLinkPort<Uint8Array> | undefined;
   /** Snapshot catch-up state, independent of the transport link. */
   private snapshotState: ProjectRemoteStateMessage | undefined;
@@ -762,6 +782,8 @@ export class LocalLoroRoom {
   /** Combined state published to peers: the worse of snapshot and link. */
   private remoteState: ProjectRemoteStateMessage | undefined;
   private remoteSyncTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Absolute due time of the armed remote catch-up. */
+  private remoteSyncDueAt: number | undefined;
   private remoteSyncAbort: AbortController | undefined;
   private remoteSyncInFlight = false;
   private remoteSyncRetryMs: number;
@@ -840,10 +862,19 @@ export class LocalLoroRoom {
   private startRemoteSnapshotSync(delayMs: number): void {
     if (this.closed || !this.remotePersistence) return;
     if (this.remoteSyncTimer) clearTimeout(this.remoteSyncTimer);
+    const delay = Math.max(0, delayMs);
+    this.remoteSyncDueAt = Date.now() + delay;
     this.remoteSyncTimer = setTimeout(() => {
       this.remoteSyncTimer = undefined;
+      this.remoteSyncDueAt = undefined;
+      // The current attempt may outlive a cancelled eviction's abort. Keep the
+      // catch-up schedule alive instead of letting a one-shot timer vanish.
+      if (this.remoteSyncInFlight) {
+        this.startRemoteSnapshotSync(this.remoteSyncRetryMs);
+        return;
+      }
       void this.syncRemoteSnapshotOnce();
-    }, Math.max(0, delayMs));
+    }, delay);
     this.remoteSyncTimer.unref?.();
   }
 
@@ -986,6 +1017,7 @@ export class LocalLoroRoom {
     if (this.remoteSyncTimer) {
       clearTimeout(this.remoteSyncTimer);
       this.remoteSyncTimer = undefined;
+      this.remoteSyncDueAt = undefined;
     }
     this.snapshotState = undefined;
     this.publishRemoteState();
@@ -1064,7 +1096,223 @@ export class LocalLoroRoom {
     return run;
   }
 
+  private touch(): void {
+    this.lastActiveAt = Date.now();
+  }
+
+  private assertAcceptsOperations(): void {
+    if (this.closed) throw new LocalProjectRoomClosedError(this.projectId);
+    if (this.evicting) {
+      throw new LocalProjectRoomEvictingError(this.projectId);
+    }
+  }
+
+  /** Reads stay valid after an ordinary close while the documents still exist. */
+  private assertAcceptsReads(): void {
+    if (this.documentsReleased) {
+      throw new LocalProjectRoomClosedError(this.projectId);
+    }
+    if (this.evicting) {
+      throw new LocalProjectRoomEvictingError(this.projectId);
+    }
+  }
+
+  hasConnectedClients(): boolean {
+    return this.peers.size > 0;
+  }
+
+  lastActivityAt(): number {
+    return this.lastActiveAt;
+  }
+
+  /** Reserves this room for idle eviction; a peer attach cancels the attempt. */
+  beginIdleEviction(): boolean {
+    if (
+      this.closed ||
+      this.evicting ||
+      this.peers.size > 0 ||
+      this.activeOperations > 0
+    )
+      return false;
+    this.evicting = true;
+    this.evictionCancellation = new Promise<void>((resolve) => {
+      this.resolveEvictionCancellation = resolve;
+    });
+    return true;
+  }
+
+  /** Pins an in-flight operation so an idle sweep cannot close the room under it. */
+  pinOperation(): () => void {
+    this.activeOperations += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeOperations -= 1;
+    };
+  }
+
+  isIdleEvictionActive(): boolean {
+    return this.evicting;
+  }
+
+  /**
+   * Cancels an eviction attempt and restores the schedule its flush suspended.
+   *
+   * A failed checkpoint, a peer that wins the attach race, or a replaced map
+   * entry leaves the room serving traffic; it must keep pulling remote changes
+   * and running journaled Provider work instead of going quiet until reopen.
+   */
+  cancelIdleEviction(): void {
+    if (!this.evicting) return;
+    this.evicting = false;
+    this.resolveEvictionCancellation?.();
+    this.resolveEvictionCancellation = undefined;
+    this.evictionCancellation = undefined;
+    const suspended = this.suspendedEvictionSchedule;
+    this.suspendedEvictionSchedule = undefined;
+    if (!suspended || this.closed) return;
+    if (suspended.remote && !this.remoteSyncTimer) {
+      this.startRemoteSnapshotSync(
+        suspended.remoteDueAt === undefined
+          ? this.remoteSyncRetryMs
+          : suspended.remoteDueAt - Date.now(),
+      );
+    }
+    if (suspended.pollDueAt !== undefined && !this.pollTimer) {
+      this.armPollTimer(suspended.pollDueAt - Date.now());
+    }
+    if (suspended.pendingWorkDueAt !== undefined && !this.pendingWorkTimer) {
+      this.armPendingWorkTimer(suspended.pendingWorkDueAt - Date.now());
+    }
+  }
+
+  /**
+   * Settles every background pass and checkpoints the durable update log before
+   * the hub is allowed to drop the room. A failed checkpoint keeps the room
+   * open and reports its existing coded health failure.
+   */
+  async flushForIdleEviction(): Promise<LocalProjectHealth> {
+    if (this.closed) {
+      return {
+        ok: false,
+        projectId: this.projectId,
+        code: "PROJECT_WORK_FAILED",
+        message: `Project ${this.projectId} room is already closed.`,
+      };
+    }
+    const remoteDueAt = this.remoteSyncDueAt;
+    const remoteInFlight = this.remoteSyncInFlight;
+    if (this.remoteSyncTimer) {
+      clearTimeout(this.remoteSyncTimer);
+      this.remoteSyncTimer = undefined;
+      this.remoteSyncDueAt = undefined;
+    }
+    const pollDueAt = this.pollDueAt;
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+      this.pollTimer = undefined;
+      this.pollDueAt = undefined;
+    }
+    const pendingWorkDueAt = this.pendingWorkTimer
+      ? (this.pendingWorkDueAt ?? Date.now())
+      : undefined;
+    this.suspendedEvictionSchedule =
+      remoteDueAt !== undefined ||
+      remoteInFlight ||
+      pollDueAt !== undefined ||
+      pendingWorkDueAt !== undefined
+        ? {
+            remote: remoteDueAt !== undefined || remoteInFlight,
+            remoteDueAt,
+            pollDueAt,
+            pendingWorkDueAt,
+          }
+        : undefined;
+    // A remote catch-up may still be applying an update. Abort it and let its
+    // settlement clear before deciding the room has no unflushed work. A peer
+    // attach (or another cancellation) ends this wait immediately.
+    this.remoteSyncAbort?.abort(new Error("Project room idle eviction"));
+    this.remoteSyncAbort = undefined;
+    const remoteDeadline = Date.now() + 5_000;
+    const cancellation = this.evictionCancellation;
+    while (this.remoteSyncInFlight && Date.now() < remoteDeadline) {
+      if (!this.evicting || this.closed)
+        return { ok: true, projectId: this.projectId };
+      const remaining = remoteDeadline - Date.now();
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, Math.min(10, remaining));
+          timer.unref?.();
+        }),
+        ...(cancellation ? [cancellation] : []),
+      ]);
+    }
+    if (!this.evicting || this.closed)
+      return { ok: true, projectId: this.projectId };
+    if (this.remoteSyncInFlight) {
+      return {
+        ok: false,
+        projectId: this.projectId,
+        code: "PROJECT_WORK_FAILED",
+        message: `Project ${this.projectId} remote sync did not settle before idle eviction.`,
+      };
+    }
+    const openWorkDue = this.openBackgroundImmediate !== undefined;
+    if (this.openBackgroundImmediate) {
+      clearImmediate(this.openBackgroundImmediate);
+      this.openBackgroundImmediate = undefined;
+    }
+    const pendingWorkPassDue = this.pendingWorkTimer !== undefined;
+    if (this.pendingWorkTimer) {
+      clearTimeout(this.pendingWorkTimer);
+      this.pendingWorkTimer = undefined;
+      this.pendingWorkDueAt = undefined;
+      // This flush runs the pass now, so cancellation must not arm it again.
+      if (this.suspendedEvictionSchedule)
+        this.suspendedEvictionSchedule.pendingWorkDueAt = undefined;
+    }
+    if (openWorkDue || pendingWorkPassDue) {
+      try {
+        await this.enqueuePendingWorkPass(
+          { onlyIfRunnable: true },
+          true,
+        );
+      } catch (error) {
+        this.recordWorkFailure(error);
+      }
+    }
+    await this.pendingWorkQueue.catch(() => undefined);
+    await this.projectOperations.catch(() => undefined);
+    if (this.canvasPreviewTimer) {
+      clearTimeout(this.canvasPreviewTimer);
+      this.canvasPreviewTimer = undefined;
+      this.enqueueCanvasPreviewRefresh();
+    }
+    await this.canvasPreviewWrites.catch(() => undefined);
+    if (this.checkpointFailure) {
+      return { ...this.checkpointFailure, logBytes: this.updateLogBytes };
+    }
+    if (this.updatesSinceSnapshot > 0 || this.updateLogBytes > 0) {
+      try {
+        await this.saveSnapshot();
+      } catch (error) {
+        this.recordCheckpointFailure(error);
+        return this.projectHealth().failures[0] ?? {
+          ok: false,
+          projectId: this.projectId,
+          code: "PROJECT_CHECKPOINT_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+          logBytes: this.updateLogBytes,
+        };
+      }
+    }
+    return { ok: true, projectId: this.projectId };
+  }
+
   inspectProject<T>(read: (doc: LoroDoc) => T | Promise<T>): Promise<T> {
+    this.assertAcceptsReads();
+    this.touch();
     return this.enqueueProjectOperation(async () => {
       const snapshot = LoroDoc.fromSnapshot(this.doc.export({ mode: "snapshot" }));
       try { return await read(snapshot); }
@@ -1083,6 +1331,8 @@ export class LocalLoroRoom {
   async inspectCheckpointedProject<T>(
     read: (doc: LoroDoc) => T | Promise<T>,
   ): Promise<T> {
+    this.assertAcceptsReads();
+    this.touch();
     const snapshot = LoroDoc.fromSnapshot(this.checkpointedDoc.export({ mode: "snapshot" }));
     try { return await read(snapshot); }
     finally { snapshot.free(); }
@@ -1093,6 +1343,8 @@ export class LocalLoroRoom {
       doc: LoroDoc,
     ) => { value: T; save?: boolean } | Promise<{ value: T; save?: boolean }>,
   ): Promise<T> {
+    this.assertAcceptsOperations();
+    this.touch();
     return this.enqueueProjectOperation(async () => {
       try {
         const versionBefore = this.doc.version();
@@ -1127,6 +1379,8 @@ export class LocalLoroRoom {
   mutateProjectWithCheckpoint<T>(
     mutation: (doc: LoroDoc, checkpoint: () => Promise<void>) => T | Promise<T>,
   ): Promise<T> {
+    this.assertAcceptsOperations();
+    this.touch();
     return this.enqueueProjectOperation(async () => {
       try {
         let versionBefore = this.doc.version();
@@ -1203,6 +1457,12 @@ export class LocalLoroRoom {
       sendInitialSnapshot?: boolean;
     },
   ): PeerId {
+    if (this.closed) throw new LocalProjectRoomClosedError(this.projectId);
+    // A client that arrives while an idle flush is still settling wins: the
+    // attach cancels eviction and the room keeps serving instead of making the
+    // socket retry against a room that is about to disappear.
+    if (this.evicting) this.cancelIdleEviction();
+    this.touch();
     const id = Symbol("peer");
     this.peers.set(id, {
       sendUpdate: send,
@@ -1222,6 +1482,7 @@ export class LocalLoroRoom {
 
   removePeer(id: PeerId): void {
     this.peers.delete(id);
+    this.touch();
     this.broadcastPresence();
   }
 
@@ -1238,6 +1499,7 @@ export class LocalLoroRoom {
     update: Uint8Array,
     options?: { awaitPendingWork?: boolean },
   ): Promise<void> {
+    this.touch();
     const runnableNodeIds = await this.enqueueProjectOperation(() =>
       this.receiveUnsafe(sender, update),
     );
@@ -1252,16 +1514,23 @@ export class LocalLoroRoom {
   }
 
   private schedulePendingWork(): void {
+    this.armPendingWorkTimer(PROJECT_PENDING_WORK_DEBOUNCE_MS);
+  }
+
+  private armPendingWorkTimer(delayMs: number): void {
     if (this.closed) return;
     if (this.pendingWorkTimer) clearTimeout(this.pendingWorkTimer);
+    const delay = Math.max(0, delayMs);
+    this.pendingWorkDueAt = Date.now() + delay;
     this.pendingWorkTimer = setTimeout(() => {
       this.pendingWorkTimer = undefined;
+      this.pendingWorkDueAt = undefined;
       // The debounce window may have covered many updates; one full scan at
       // the end of the burst is cheap and cannot use a stale touched set.
       void this.processPendingWork({ onlyIfRunnable: true }).catch((error) =>
         this.recordWorkFailure(error),
       );
-    }, PROJECT_PENDING_WORK_DEBOUNCE_MS);
+    }, delay);
     this.pendingWorkTimer.unref?.();
   }
 
@@ -1977,6 +2246,7 @@ export class LocalLoroRoom {
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
+      this.pollDueAt = undefined;
     }
     if (this.closed || !this.workflowProcessor?.nextWakeAt) return;
     const earliest = await this.workflowProcessor.nextWakeAt(this.projectId);
@@ -1987,26 +2257,42 @@ export class LocalLoroRoom {
     )
       return;
     // A floor, so a provider that asks for no delay cannot turn this into a busy loop.
-    const delay = Math.max(
-      this.workflowProcessor.minimumPollDelayMs ?? 1_000,
-      earliest - Date.now(),
+    this.armPollTimer(
+      Math.max(
+        this.workflowProcessor.minimumPollDelayMs ?? 1_000,
+        earliest - Date.now(),
+      ),
     );
+  }
+
+  private armPollTimer(delayMs: number): void {
+    if (this.closed) return;
+    if (this.pollTimer) clearTimeout(this.pollTimer);
+    const delay = Math.max(0, delayMs);
+    this.pollDueAt = Date.now() + delay;
     this.pollTimer = setTimeout(() => {
       this.pollTimer = undefined;
+      this.pollDueAt = undefined;
       void this.processPendingWork();
     }, delay);
     this.pollTimer.unref?.();
   }
 
-  close(): Promise<void> {
-    return (this.closePromise ??= this.closeOnce());
+  close(options: { releaseDocuments?: boolean } = {}): Promise<void> {
+    return (this.closePromise ??= this.closeOnce(
+      options.releaseDocuments ?? false,
+    ));
   }
 
-  private async closeOnce(): Promise<void> {
+  private async closeOnce(releaseDocuments: boolean): Promise<void> {
     const pendingWorkPassDue = this.pendingWorkTimer !== undefined;
     const openWorkDue = this.openBackgroundImmediate !== undefined;
     this.closed = true;
     this.pollScheduleVersion += 1;
+    this.suspendedEvictionSchedule = undefined;
+    this.resolveEvictionCancellation?.();
+    this.resolveEvictionCancellation = undefined;
+    this.evictionCancellation = undefined;
     if (this.openBackgroundImmediate) {
       clearImmediate(this.openBackgroundImmediate);
       this.openBackgroundImmediate = undefined;
@@ -2015,6 +2301,7 @@ export class LocalLoroRoom {
       clearTimeout(this.remoteSyncTimer);
       this.remoteSyncTimer = undefined;
     }
+    this.remoteSyncDueAt = undefined;
     // A background resolve may still be inside a token/admission read. Abort it
     // so a late result cannot attach a link or broadcast after close.
     this.remoteSyncAbort?.abort(new Error("Project room closed"));
@@ -2023,10 +2310,12 @@ export class LocalLoroRoom {
       clearTimeout(this.pendingWorkTimer);
       this.pendingWorkTimer = undefined;
     }
+    this.pendingWorkDueAt = undefined;
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
     }
+    this.pollDueAt = undefined;
     if (this.checkpointRetryTimer) {
       clearTimeout(this.checkpointRetryTimer);
       this.checkpointRetryTimer = undefined;
@@ -2055,6 +2344,15 @@ export class LocalLoroRoom {
     await this.remoteLink?.close();
     this.remoteLink = undefined;
     this.peers.clear();
+    // The room owns the working document and the replica's checkpointed
+    // document; both are distinct native Loro documents. Ordinary close keeps
+    // them readable (existing callers inspect the checkpoint after close);
+    // idle eviction removes the room, so it releases them explicitly.
+    if (releaseDocuments) {
+      this.documentsReleased = true;
+      this.doc.free();
+      this.checkpointedDoc.free();
+    }
   }
 
   private async processPendingWorkOnce(): Promise<void> {
@@ -2175,6 +2473,25 @@ export class LocalLoroRoom {
   }
 }
 
+/** The hub is flushing/evicting an idle room; the caller should reopen it. */
+export class LocalProjectRoomEvictingError extends Error {
+  override name = "LocalProjectRoomEvictingError";
+  readonly code = "PROJECT_ROOM_EVICTING" as const;
+
+  constructor(readonly projectId: string) {
+    super(`Project ${projectId} room is being evicted after idle.`);
+  }
+}
+
+export class LocalProjectRoomClosedError extends Error {
+  override name = "LocalProjectRoomClosedError";
+  readonly code = "PROJECT_ROOM_CLOSED" as const;
+
+  constructor(readonly projectId: string) {
+    super(`Project ${projectId} room is closed.`);
+  }
+}
+
 export class LocalProjectRoomBusyError extends Error {
   override name = "LocalProjectRoomBusyError";
   readonly code = "PROJECT_BUSY" as const;
@@ -2191,6 +2508,10 @@ export class LocalLoroRoomHub {
   private readonly importReservations = new Set<string>();
   private readonly activeImports = new Set<Promise<unknown>>();
   private readonly replicaStore: FileReplicaStore;
+  private readonly evictions = new Map<string, Promise<void>>();
+  private readonly idleTimeoutMs: number;
+  private readonly maxRooms: number;
+  private readonly idleSweepTimer: ReturnType<typeof setInterval>;
   private closed = false;
   private closePromise: Promise<void> | undefined;
 
@@ -2204,16 +2525,36 @@ export class LocalLoroRoomHub {
       projectId: string,
       error: unknown,
     ) => void | Promise<void>,
+    options: {
+      idleTimeoutMs?: number;
+      maxRooms?: number;
+      sweepIntervalMs?: number;
+    } = {},
   ) {
     this.replicaStore = new FileReplicaStore(join(dataDir, "projects"));
+    this.idleTimeoutMs = Math.max(0, options.idleTimeoutMs ?? 60_000);
+    this.maxRooms = Math.max(1, options.maxRooms ?? 8);
+    const sweepIntervalMs = Math.max(
+      25,
+      options.sweepIntervalMs ??
+        Math.min(5_000, Math.max(250, this.idleTimeoutMs / 4)),
+    );
+    this.idleSweepTimer = setInterval(() => {
+      void this.evictIdleRooms().catch((error) => {
+        console.error("[local-sync] idle room sweep failed", error);
+      });
+    }, sweepIntervalMs);
+    this.idleSweepTimer.unref?.();
   }
 
-  room(projectId: string): Promise<LocalLoroRoom> {
+  async room(projectId: string): Promise<LocalLoroRoom> {
+    const eviction = this.evictions.get(projectId);
+    if (eviction) await eviction.catch(() => undefined);
     if (this.closed) {
-      return Promise.reject(new Error("Local Project room hub is closed."));
+      throw new Error("Local Project room hub is closed.");
     }
     if (this.importReservations.has(projectId)) {
-      return Promise.reject(new LocalProjectRoomBusyError(projectId));
+      throw new LocalProjectRoomBusyError(projectId);
     }
     let room = this.rooms.get(projectId);
     if (!room) {
@@ -2354,21 +2695,55 @@ export class LocalLoroRoomHub {
     );
   }
 
+  /**
+   * Runs an operation against the current room, retrying if an idle eviction
+   * races the acquisition. Callers that must await between taking a room and
+   * using it should route through this method instead of holding `room()`.
+   */
+  async withRoom<T>(
+    projectId: string,
+    operation: (room: LocalLoroRoom) => Promise<T>,
+  ): Promise<T> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // Take the pin before the room can be considered idle: beginIdleEviction
+      // refuses a room with an active operation, so an awaited operation cannot
+      // be closed underneath by a concurrent sweep.
+      const room = await this.room(projectId);
+      const release = room.pinOperation();
+      try {
+        return await operation(room);
+      } catch (error) {
+        if (
+          error instanceof LocalProjectRoomEvictingError ||
+          error instanceof LocalProjectRoomClosedError
+        ) {
+          continue;
+        }
+        throw error;
+      } finally {
+        release();
+      }
+    }
+    throw new Error(
+      `Project ${projectId} room could not be acquired after idle eviction.`,
+    );
+  }
+
   async inspectProject<T>(
     projectId: string,
     read: (doc: LoroDoc) => T | Promise<T>,
   ): Promise<T> {
-    return (await this.room(projectId)).inspectProject(read);
+    return this.withRoom(projectId, (room) => room.inspectProject(read));
   }
 
   async inspectCheckpointedProject<T>(
     projectId: string,
     read: (doc: LoroDoc) => T | Promise<T>,
   ): Promise<T> {
-    const initialized = this.checkpointReadableRooms.get(projectId);
-    return initialized
-      ? initialized.inspectCheckpointedProject(read)
-      : (await this.room(projectId)).inspectCheckpointedProject(read);
+    return this.withRoom(projectId, (room) => {
+      const initialized = this.checkpointReadableRooms.get(projectId) ?? room;
+      return initialized.inspectCheckpointedProject(read);
+    });
   }
 
   async mutateProject<T>(
@@ -2377,23 +2752,136 @@ export class LocalLoroRoomHub {
       doc: LoroDoc,
     ) => { value: T; save?: boolean } | Promise<{ value: T; save?: boolean }>,
   ): Promise<T> {
-    return (await this.room(projectId)).mutateProject(mutation);
+    return this.withRoom(projectId, (room) =>
+      room.mutateProject(mutation),
+    );
   }
 
   async mutateProjectWithCheckpoint<T>(
     projectId: string,
     mutation: (doc: LoroDoc, checkpoint: () => Promise<void>) => T | Promise<T>,
   ): Promise<T> {
-    return (await this.room(projectId)).mutateProjectWithCheckpoint(mutation);
+    return this.withRoom(projectId, (room) =>
+      room.mutateProjectWithCheckpoint(mutation),
+    );
+  }
+
+  async mergeRemoteSnapshot(
+    projectId: string,
+    snapshot: Uint8Array,
+    options?: { awaitPendingWork?: boolean },
+  ): Promise<void> {
+    return this.withRoom(projectId, (room) =>
+      room.mergeRemoteSnapshot(snapshot, options),
+    );
   }
 
   async refresh(projectId: string): Promise<void> {
     const existing = this.rooms.get(projectId);
-    if (!existing) {
-      await this.room(projectId);
-      return;
+    await this.withRoom(projectId, (room) =>
+      existing ? room.refreshFromStore() : Promise.resolve(),
+    );
+  }
+
+  roomCount(): number {
+    return this.rooms.size;
+  }
+
+  /**
+   * Evicts rooms that have had no clients for `idleTimeoutMs`, plus
+   * least-recently-used idle rooms while the open count exceeds `maxRooms`.
+   * Connected rooms and rooms whose flush/checkpoint fails stay open.
+   */
+  async evictIdleRooms(
+    options: {
+      now?: number;
+      idleTimeoutMs?: number;
+      maxRooms?: number;
+    } = {},
+  ): Promise<{
+    evicted: string[];
+    failures: LocalProjectHealth[];
+  }> {
+    const now = options.now ?? Date.now();
+    const idleTimeoutMs = options.idleTimeoutMs ?? this.idleTimeoutMs;
+    const maxRooms = options.maxRooms ?? this.maxRooms;
+    const candidates: Array<{
+      projectId: string;
+      roomPromise: Promise<LocalLoroRoom>;
+      room: LocalLoroRoom;
+      idleFor: number;
+    }> = [];
+    for (const [projectId, promise] of this.rooms) {
+      if (this.evictions.has(projectId)) continue;
+      const room = await promise.catch(() => undefined);
+      if (!room || room.hasConnectedClients()) continue;
+      candidates.push({
+        projectId,
+        roomPromise: promise,
+        room,
+        idleFor: now - room.lastActivityAt(),
+      });
     }
-    await (await existing).refreshFromStore();
+    candidates.sort((left, right) => right.idleFor - left.idleFor);
+    const evicted: string[] = [];
+    const failures: LocalProjectHealth[] = [];
+    for (const candidate of candidates) {
+      const timedOut = candidate.idleFor >= idleTimeoutMs;
+      if (!timedOut && this.rooms.size <= maxRooms) continue;
+      const result = await this.evictRoom(
+        candidate.projectId,
+        candidate.roomPromise,
+        candidate.room,
+      );
+      if (result.evicted) evicted.push(candidate.projectId);
+      else if (result.failure) failures.push(result.failure);
+    }
+    return { evicted, failures };
+  }
+
+  private async evictRoom(
+    projectId: string,
+    roomPromise: Promise<LocalLoroRoom>,
+    room: LocalLoroRoom,
+  ): Promise<{ evicted: boolean; failure?: LocalProjectHealth }> {
+    if (!room.beginIdleEviction()) return { evicted: false };
+    const run = (async () => {
+      const flushed = await room.flushForIdleEviction();
+      // A peer attach (or another cancellation) may have won while the flush
+      // was waiting. The room is serving again; restore nothing twice and
+      // report no failure for the abandoned eviction.
+      if (!room.isIdleEvictionActive()) return { evicted: false };
+      if (!flushed.ok) {
+        room.cancelIdleEviction();
+        return { evicted: false, failure: flushed };
+      }
+      if (room.hasConnectedClients()) {
+        room.cancelIdleEviction();
+        return { evicted: false };
+      }
+      // No await between this final check and removing the room, so a new peer
+      // cannot attach to a room that is already leaving the map.
+      if (this.rooms.get(projectId) !== roomPromise) {
+        room.cancelIdleEviction();
+        return { evicted: false };
+      }
+      this.rooms.delete(projectId);
+      this.checkpointReadableRooms.delete(projectId);
+      await room.close({ releaseDocuments: true });
+      return { evicted: true };
+    })();
+    const tracked = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.evictions.set(projectId, tracked);
+    try {
+      return await run;
+    } finally {
+      if (this.evictions.get(projectId) === tracked) {
+        this.evictions.delete(projectId);
+      }
+    }
   }
 
   projectHealth(): LocalProjectHealthSummary {
@@ -2433,7 +2921,9 @@ export class LocalLoroRoomHub {
 
   private async closeOnce(): Promise<void> {
     this.closed = true;
+    clearInterval(this.idleSweepTimer);
     await Promise.allSettled(this.activeImports);
+    await Promise.allSettled(this.evictions.values());
     const rooms = await Promise.allSettled(this.rooms.values());
     await Promise.all(
       rooms.flatMap((result) =>
@@ -2442,6 +2932,7 @@ export class LocalLoroRoomHub {
     );
     this.rooms.clear();
     this.checkpointReadableRooms.clear();
+    this.evictions.clear();
   }
 }
 
@@ -2561,7 +3052,7 @@ async function bindSocket(
     pendingMessages.push([data, isBinary]);
   };
   ws.on("message", bufferMessage);
-  const room = await hub.room(projectId);
+  let room = await hub.room(projectId);
   const sendProtocolUpdate = (update: Uint8Array) => {
     for (const frame of encodeLoroProtocolUpdateFrames(
       projectId,
@@ -2571,21 +3062,32 @@ async function bindSocket(
       if (ws.readyState === ws.OPEN) ws.send(frame);
     }
   };
-  const peerId = room.addPeer(
-    (update) => {
-      if (syncProtocol) sendProtocolUpdate(update);
-      else if (ws.readyState === ws.OPEN) ws.send(update);
-    },
-    {
-      runtimeId,
-      presence,
-      syncProtocol,
-      sendInitialSnapshot: !syncProtocol,
-      sendJson: (msg) => {
-        if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+  const attachPeer = () =>
+    room.addPeer(
+      (update) => {
+        if (syncProtocol) sendProtocolUpdate(update);
+        else if (ws.readyState === ws.OPEN) ws.send(update);
       },
-    },
-  );
+      {
+        runtimeId,
+        presence,
+        syncProtocol,
+        sendInitialSnapshot: !syncProtocol,
+        sendJson: (msg) => {
+          if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+        },
+      },
+    );
+  let peerId: PeerId;
+  try {
+    peerId = attachPeer();
+  } catch (error) {
+    // An idle eviction can start between the hub lookup and peer attach. Wait
+    // for it to finish, then attach to the fresh room instead of failing open.
+    if (!(error instanceof LocalProjectRoomEvictingError)) throw error;
+    room = await hub.room(projectId);
+    peerId = attachPeer();
+  }
   hub.notePeerAttached(projectId);
   const protocolSession = syncProtocol
     ? new LoroProtocolServerSession({

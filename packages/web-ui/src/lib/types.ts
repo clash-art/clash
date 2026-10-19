@@ -5,7 +5,8 @@ import type {
 } from "@clash/shared-types";
 
 export interface ProjectCardError {
-  code: "PROJECT_UPGRADE_FAILED";
+  /** PROJECT_UPGRADE_FAILED for a failed upgrade; otherwise the failure's own code. */
+  code: string;
   message: string;
   nodeId?: string;
 }

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { LoroDoc } from "loro-crdt";
 import { expect, it } from "vitest";
 import { createLocalApiApp } from "./app";
+import { FileReplicaStore } from "./loro/file-replica-store";
 import { LocalProjectUpgradeError } from "./local-project-upgrade";
 
 it("keeps project metadata navigable when another project's preview cannot upgrade", async () => {
@@ -12,7 +13,7 @@ it("keeps project metadata navigable when another project's preview cannot upgra
   let brokenId: string | undefined;
   const app = createLocalApiApp({ dataDir, projectAssetReplica: {
     async inspect(id, read) {
-      if (id === brokenId) throw new LocalProjectUpgradeError(id, "Unavailable legacy model");
+      if (id === brokenId) throw new LocalProjectUpgradeError(id, "Unavailable legacy model", "legacy-node");
       if (!docs.has(id)) docs.set(id, new LoroDoc());
       return read(docs.get(id)!);
     },
@@ -29,6 +30,19 @@ it("keeps project metadata navigable when another project's preview cannot upgra
     };
     brokenId = await create("Old project");
     const newId = await create("随便什么吧");
+    // A legacy canvas draft is what makes the summary list path ask the
+    // authoritative replica to upgrade; that replica is where the failure
+    // surfaces (a real Host's room open runs the same upgrade).
+    await new FileReplicaStore(join(dataDir, "projects")).updateSnapshotAtomic(
+      brokenId,
+      (doc) => {
+        doc.getMap("nodes").set("legacy-node", {
+          type: "action-badge",
+          data: { actionType: "image-gen" },
+        });
+        return { value: undefined };
+      },
+    );
     const response = await app.request("/api/v1/projects");
     expect(response.status).toBe(200);
     const body = await response.json() as {
@@ -37,7 +51,7 @@ it("keeps project metadata navigable when another project's preview cannot upgra
         name: string;
         assets: unknown[];
         assetCount: number;
-        error?: { code: string; message: string };
+        error?: { code: string; message: string; nodeId?: string };
       }[];
     };
     expect(body.projects).toEqual(expect.arrayContaining([
@@ -50,6 +64,7 @@ it("keeps project metadata navigable when another project's preview cannot upgra
       error: {
         code: "PROJECT_UPGRADE_FAILED",
         message: "Unavailable legacy model",
+        nodeId: "legacy-node",
       },
     });
     // The other card is unaffected by its neighbour's upgrade failure.

@@ -57,7 +57,7 @@ class ProjectContentHttpError extends Error {
 
 export interface LocalProjectCloudSyncOptions {
   dataDir: string;
-  rooms: Pick<LocalLoroRoomHub, "room" | "inspectProject">;
+  rooms: Pick<LocalLoroRoomHub, "mergeRemoteSnapshot" | "inspectProject">;
   remote(projectId: string): Promise<RemoteLoroPersistence | undefined>;
   metadata: {
     list(): Promise<string[]>;
@@ -323,9 +323,13 @@ export function createLocalProjectCloudSync(
           remote = configured;
           await syncTombstone(remote);
           await assertCurrent();
-          const room = await options.rooms.room(projectId);
+          // Fetch before taking a room: an idle eviction may close it while
+          // this network wait is in flight, and holding the stale handle would
+          // persist a spurious coded failure instead of merging into the room
+          // the hub opens next.
           const incoming = await remote.loadSnapshot!(projectId, signal);
-          if (incoming) await room.mergeRemoteSnapshot(incoming);
+          if (incoming)
+            await options.rooms.mergeRemoteSnapshot(projectId, incoming);
           // The cursor is the durable version marker of the last acknowledged
           // update. With one, a run posts only the delta the user just made;
           // without one (first sync, re-admission, recovery) it posts a

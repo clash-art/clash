@@ -57,7 +57,10 @@ import {
   localProjectAssetCachesFor,
   localProjectAssetProjectionKey,
 } from "./local-project-asset-cache.js";
-import { createLocalMetadataStore } from "./local-metadata-store.js";
+import {
+  createLocalMetadataStore,
+  type LocalMetadataDb,
+} from "./local-metadata-store.js";
 import {
   createLocalResourceStore,
   LocalResourceError,
@@ -75,6 +78,11 @@ import {
 import type { LocalAssetInspectionFacts } from "./local-asset-inspections.js";
 import type { LocalAssetRepresentationService } from "./local-asset-representations.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
+import {
+  projectCardSummaryContent,
+  type ProjectCardSummaryContent,
+} from "./project-card-summary.js";
+import { projectCanvasPreviewCacheEntryFromDoc } from "./project-canvas-preview-cache.js";
 
 export type LocalProjectAssetMigrationErrorCode =
   | "PROJECT_ASSET_ID_COLLISION"
@@ -164,6 +172,21 @@ export interface LocalProjectAssetService {
     projectId: string,
     doc: import("loro-crdt").LoroDoc,
   ): Promise<boolean>;
+  /**
+   * Builds the derived Dashboard card from one recovered document without
+   * opening a room or writing migration state. Legacy documents report
+   * `assetAuthorityCurrent: false` so the caller can materialize once.
+   */
+  buildProjectCardSummary(
+    projectId: string,
+    doc: import("loro-crdt").LoroDoc,
+    legacy?: LocalMetadataDb,
+  ): Promise<ProjectCardSummaryContent>;
+  /** Resolves the four card entries (never the full Project Asset list). */
+  resolveCardEntries(
+    projectId: string,
+    entries: readonly ProjectAssetEntry[],
+  ): Promise<ResolvedAsset[]>;
   /** Installs immutable bytes without publishing Project membership. Durable staging uses this. */
   stageOwned(input: {
     kind: AssetKind;
@@ -1344,6 +1367,42 @@ export function createLocalProjectAssetService(options: {
     materializedProjects.add(projectId);
   }
 
+  async function buildProjectCardSummary(
+    projectIdInput: string,
+    doc: import("loro-crdt").LoroDoc,
+    legacy?: LocalMetadataDb,
+  ): Promise<ProjectCardSummaryContent> {
+    const projectId = nonEmpty(projectIdInput, "projectId");
+    const assetAuthorityCurrent = projectAssetAuthorityVersion(doc) === 1;
+    const entries = assetAuthorityCurrent
+      ? listProjectAssets(doc, { projectId })
+      : await prepareLegacyEntries(
+          projectId,
+          doc,
+          legacy ?? (await metadata.load()),
+        );
+    return projectCardSummaryContent({
+      // An empty unmigrated Project has nothing to migrate; treating it as
+      // current keeps a brand-new Dashboard card from opening a room just to
+      // publish an empty Asset container.
+      assetAuthorityCurrent:
+        assetAuthorityCurrent || entries.length === 0,
+      entries,
+      coverAssetId: readProjectCoverAssetId(doc),
+      preview: projectCanvasPreviewCacheEntryFromDoc(doc),
+    });
+  }
+
+  async function resolveCardEntries(
+    projectIdInput: string,
+    entries: readonly ProjectAssetEntry[],
+  ): Promise<ResolvedAsset[]> {
+    const projectId = nonEmpty(projectIdInput, "projectId");
+    return Promise.all(
+      entries.map((entry) => resolveEntry(projectId, entry)),
+    );
+  }
+
   async function projectionFromEntry(
     projectId: string,
     entry: ProjectAssetEntry | null,
@@ -1782,6 +1841,10 @@ export function createLocalProjectAssetService(options: {
     readObserved(projectId, projectAssetId) {
       return resolveObserved(projectId, projectAssetId);
     },
+
+    buildProjectCardSummary,
+
+    resolveCardEntries,
 
     async list(projectId) {
       await materialize(projectId);

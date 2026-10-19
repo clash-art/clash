@@ -35,6 +35,7 @@ import {
 } from "./local-asset-paths.js";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
+import { preparedStatement } from "./local-prepared-statements.js";
 
 interface SqliteRunResult {
   changes: number | bigint;
@@ -715,16 +716,16 @@ export function createLocalResourceStore(options: {
     resourceId: string,
   ): Promise<LocalResourceRow | undefined> {
     return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `
+      const row = preparedStatement(
+        database,
+        `
           SELECT resource_id, kind, digest_sha256, byte_length,
                  content_type, storage_key, facts_verified, created_at
           FROM local_resources
           WHERE resource_id = ?
         `,
-        )
-        .get(resourceId);
+        (sql) => database.prepare(sql),
+      ).get(resourceId);
       return row ? parseRow(row) : undefined;
     });
   }
@@ -733,15 +734,15 @@ export function createLocalResourceStore(options: {
     resourceId: string,
   ): Promise<LocalResourceStagingRow | undefined> {
     return withDatabase((database) => {
-      const row = database
-        .prepare(
-          `
+      const row = preparedStatement(
+        database,
+        `
           SELECT resource_id, digest_sha256, byte_length, storage_key
           FROM local_resource_staging
           WHERE resource_id = ?
         `,
-        )
-        .get(resourceId);
+        (sql) => database.prepare(sql),
+      ).get(resourceId);
       return row ? parseStagingRow(row) : undefined;
     });
   }

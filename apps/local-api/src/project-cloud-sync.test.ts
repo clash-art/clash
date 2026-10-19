@@ -1457,3 +1457,62 @@ describe("durable cloud outbox (#292 / #299)", () => {
     }
   });
 });
+
+describe("Project cloud sync under idle eviction", () => {
+  it("merges the remote snapshot when eviction races the network wait", async () => {
+    const f = await fixture(false);
+    await f.rooms.mutateProject("project", (doc) => {
+      doc.getMap("nodes").set("local-only", { data: { status: "idle" } });
+      return { value: undefined, save: true };
+    });
+    f.currentRemoteDoc()
+      .getMap("nodes")
+      .set("remote-only", { data: { status: "idle" } });
+    const base = await f.options.remote();
+    expect(base).toBeDefined();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const service = createLocalProjectCloudSync({
+      ...f.options,
+      remote: async () => ({
+        ...base!,
+        async loadSnapshot() {
+          started();
+          // Stand in for the network wait after sync has begun but before it
+          // has a room to merge into.
+          await gate;
+          return f.currentRemoteDoc().export({ mode: "snapshot" });
+        },
+      }),
+    });
+    cleanup.push(() => service.close());
+
+    const run = service.schedule("project");
+    await startedPromise;
+    await expect(
+      f.rooms.evictIdleRooms({ idleTimeoutMs: 0 }),
+    ).resolves.toEqual({ evicted: ["project"], failures: [] });
+    release();
+    await run;
+
+    await expect(f.admission()).resolves.toMatchObject({
+      status: "ready",
+      lastError: null,
+    });
+    await expect(
+      f.rooms.inspectProject("project", (doc) => ({
+        remote: doc.getMap("nodes").get("remote-only"),
+        local: doc.getMap("nodes").get("local-only"),
+      })),
+    ).resolves.toEqual({
+      remote: { data: { status: "idle" } },
+      local: { data: { status: "idle" } },
+    });
+  });
+});

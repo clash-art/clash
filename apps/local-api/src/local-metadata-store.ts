@@ -15,6 +15,10 @@ import {
 } from "@clash/shared-types";
 import type { Asset, AssetKind, AssetRefRow } from "@clash/shared-types/assets";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
+import {
+  parseProjectCardSummary,
+  type StoredProjectCardSummary,
+} from "./project-card-summary.js";
 
 type SqlitePrimitive = string | number | Uint8Array | null;
 
@@ -307,6 +311,15 @@ function applySchema(db: SqliteDatabase): void {
       created_at TEXT,
       position INTEGER NOT NULL,
       PRIMARY KEY (project_id, asset_id, position)
+    );
+
+    -- Additive derived Dashboard card cache. It can always be rebuilt from
+    -- Project Loro; no Project, Asset, or user data depends on this table.
+    CREATE TABLE IF NOT EXISTS project_card_summary (
+      project_id TEXT PRIMARY KEY NOT NULL,
+      replica_stamp TEXT NOT NULL,
+      summary_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS asset_metadata_index (
@@ -2694,6 +2707,67 @@ export function createLocalMetadataStore(dataDir: string) {
     });
   }
 
+  async function readProjectCardSummaries(): Promise<
+    StoredProjectCardSummary[]
+  > {
+    return withDb((db) => {
+      const rows = db
+        .prepare(
+          "SELECT project_id, replica_stamp, summary_json FROM project_card_summary",
+        )
+        .all();
+      const summaries: StoredProjectCardSummary[] = [];
+      for (const row of rows) {
+        const projectId = rowString(row, "project_id");
+        const replicaStamp = rowOptionalString(row, "replica_stamp");
+        const raw = rowOptionalString(row, "summary_json");
+        if (!projectId || !replicaStamp || !raw) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          continue;
+        }
+        const summary = parseProjectCardSummary(parsed);
+        if (!summary || summary.replicaStamp !== replicaStamp) continue;
+        summaries.push({ projectId, replicaStamp, summary });
+      }
+      return summaries;
+    });
+  }
+
+  async function saveProjectCardSummaries(
+    summaries: readonly StoredProjectCardSummary[],
+  ): Promise<void> {
+    if (summaries.length === 0) return;
+    await withDb((db) => {
+      const insert = db.prepare(
+        `INSERT INTO project_card_summary (
+           project_id, replica_stamp, summary_json, updated_at
+         ) VALUES (?, ?, ?, ?)
+         ON CONFLICT(project_id) DO UPDATE SET
+           replica_stamp = excluded.replica_stamp,
+           summary_json = excluded.summary_json,
+           updated_at = excluded.updated_at`,
+      );
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const item of summaries) {
+          insert.run(
+            item.projectId,
+            item.replicaStamp,
+            JSON.stringify(item.summary),
+            Date.now(),
+          );
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  }
+
   return {
     path,
     load,
@@ -2737,5 +2811,7 @@ export function createLocalMetadataStore(dataDir: string) {
     getProjectCloudSyncState,
     getProjectCloudSyncCursor,
     setProjectCloudSyncCursor,
+    readProjectCardSummaries,
+    saveProjectCardSummaries,
   };
 }

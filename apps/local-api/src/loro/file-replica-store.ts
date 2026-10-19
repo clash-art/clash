@@ -256,6 +256,28 @@ export class FileReplicaStore {
     }
   }
 
+  /**
+   * Cheap durable identity for a Project replica. Snapshot renames and update
+   * log appends change it, so derived Dashboard cards can reject stale rows
+   * without recovering the whole Loro document on every list.
+   */
+  async replicaStamp(projectId: string): Promise<string> {
+    const parts = await Promise.all(
+      [this.snapshotPath(projectId), this.updateLogPath(projectId)].map(
+        async (path) => {
+          try {
+            const info = await stat(path, { bigint: true });
+            return `${info.size}:${info.mtimeNs}`;
+          } catch (error) {
+            if (!isMissingFile(error)) throw error;
+            return "missing";
+          }
+        },
+      ),
+    );
+    return parts.join("|");
+  }
+
   async loadReplicaCheckpointCursor(projectId: string): Promise<number> {
     let raw: string;
     try {
