@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { Canvas } from "./canvas-ops.js";
@@ -42,7 +43,8 @@ export type RenderableTimelineDsl = {
   [key: string]: unknown;
 };
 
-export const TimelineExportProgressSchema = z
+export let TimelineExportProgressSchema = lazySchema(() => (
+z
   .object({
     renderNodeId: z.string().min(1),
     timelineId: z.string().min(1),
@@ -51,7 +53,8 @@ export const TimelineExportProgressSchema = z
     progress: z.number().min(0).max(1).optional(),
     error: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { TimelineExportProgressSchema = real; });
 
 export type TimelineExportProgress = z.infer<
   typeof TimelineExportProgressSchema

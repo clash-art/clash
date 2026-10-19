@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import { z } from "zod";
 import { ExecutablePluginJsonValueSchema } from "./plugin-json-value.js";
@@ -8,7 +9,8 @@ import {
 } from "./generator-v2.js";
 
 /** Shared native Generator HTTP request contracts, also disclosed through MCP. */
-export const CreateProjectGeneratorRequestSchema = z
+export let CreateProjectGeneratorRequestSchema = lazySchema(() => (
+z
   .object({
     generatorId: z.string().trim().min(1),
     generatorRevisionId: z.string().trim().min(1),
@@ -36,21 +38,25 @@ export const CreateProjectGeneratorRequestSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+), (real) => { CreateProjectGeneratorRequestSchema = real; });
 export type CreateProjectGeneratorRequest = z.infer<
   typeof CreateProjectGeneratorRequestSchema
 >;
 
 /** A Run may be shown in a Canvas. Opening its composer does not create a placement. */
-export const GeneratorRunCanvasPlacementSchema = z.object({
+export let GeneratorRunCanvasPlacementSchema = lazySchema(() => (
+z.object({
   canvasId: z.string().trim().min(1),
   nodeId: z.string().trim().min(1),
   actionCardId: z.string().trim().min(1).optional(),
   label: z.string().optional(),
-}).strict();
+}).strict()
+), (real) => { GeneratorRunCanvasPlacementSchema = real; });
 export type GeneratorRunCanvasPlacement = z.infer<typeof GeneratorRunCanvasPlacementSchema>;
 
-export const SubmitGeneratorActionRequestSchema = z
+export let SubmitGeneratorActionRequestSchema = lazySchema(() => (
+z
   .object({
     actionRunId: z.string().trim().min(1),
     generatorRevisionId: z.string().trim().min(1),
@@ -60,12 +66,14 @@ export const SubmitGeneratorActionRequestSchema = z
     invocationInputRefs: z.array(GeneratorInputRefSchema).default([]),
     canvasPlacement: GeneratorRunCanvasPlacementSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { SubmitGeneratorActionRequestSchema = real; });
 export type SubmitGeneratorActionRequest = z.infer<
   typeof SubmitGeneratorActionRequestSchema
 >;
 
-export const AdvanceProjectGeneratorRequestSchema = z
+export let AdvanceProjectGeneratorRequestSchema = lazySchema(() => (
+z
   .object({
     expectedHeadRevisionId: z.string().trim().min(1),
     generatorRevisionId: z.string().trim().min(1),
@@ -86,7 +94,8 @@ export const AdvanceProjectGeneratorRequestSchema = z
       )
       .optional(),
   })
-  .strict();
+  .strict()
+), (real) => { AdvanceProjectGeneratorRequestSchema = real; });
 export type AdvanceProjectGeneratorRequest = z.infer<
   typeof AdvanceProjectGeneratorRequestSchema
 >;

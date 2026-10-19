@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { MediaObservationSchema, MediaOperationTraceSchema } from "./asset-evidence.js";
 import { MODEL_TEXT_DOCUMENT_KIND, MODEL_TEXT_DOCUMENT_SCHEMA_VERSION } from "./model-output-contract.js";
@@ -14,19 +15,24 @@ import {
   MediaAnalysisDocumentSchemas,
 } from "./media-analysis-documents.js";
 
-const idSchema = z.string().trim().min(1);
+let idSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { idSchema = real; });
 
-export const DocumentProjectionContractSchema = z
+export let DocumentProjectionContractSchema = lazySchema(() => (
+z
   .object({
     format: z.enum(["json", "text"]),
     editable: z.boolean(),
   })
-  .strict();
+  .strict()
+), (real) => { DocumentProjectionContractSchema = real; });
 export type DocumentProjectionContract = z.infer<
   typeof DocumentProjectionContractSchema
 >;
 
-export const DocumentKindDefinitionSchema = z
+export let DocumentKindDefinitionSchema = lazySchema(() => (
+z
   .object({
     kind: idSchema,
     schemaVersion: z.number().int().positive(),
@@ -45,7 +51,8 @@ export const DocumentKindDefinitionSchema = z
         message: "Document product consumer declarations must be unique.",
       }),
   })
-  .strict();
+  .strict()
+), (real) => { DocumentKindDefinitionSchema = real; });
 export type DocumentKindDefinition = z.infer<
   typeof DocumentKindDefinitionSchema
 >;
@@ -60,6 +67,7 @@ export interface DocumentKindDeclaration {
 }
 
 const declarations = new Map<string, DocumentKindDeclaration>();
+let builtInDocumentKindsRegistered = false;
 
 function declarationKey(kind: string, schemaVersion: number): string {
   return `${kind}\0${schemaVersion}`;
@@ -68,6 +76,7 @@ function declarationKey(kind: string, schemaVersion: number): string {
 export function registerDocumentKind(
   declarationInput: DocumentKindDeclaration,
 ): void {
+  ensureBuiltInDocumentKinds();
   const definition = DocumentKindDefinitionSchema.parse(
     declarationInput.definition,
   );
@@ -87,10 +96,12 @@ export function getDocumentKindDefinition(
   kind: string,
   schemaVersion: number,
 ): DocumentKindDefinition | undefined {
+  ensureBuiltInDocumentKinds();
   return declarations.get(declarationKey(kind, schemaVersion))?.definition;
 }
 
 export function listDocumentKindDefinitions(): DocumentKindDefinition[] {
+  ensureBuiltInDocumentKinds();
   return [...declarations.values()]
     .map(({ definition }) => definition)
     .sort(
@@ -105,6 +116,7 @@ export function parseDocumentBody(
   schemaVersion: number,
   value: unknown,
 ): unknown {
+  ensureBuiltInDocumentKinds();
   const declaration = declarations.get(declarationKey(kind, schemaVersion));
   if (!declaration) {
     throw new Error(`Undeclared Document kind: ${kind}@${schemaVersion}.`);
@@ -112,7 +124,12 @@ export function parseDocumentBody(
   return declaration.schema.parse(value);
 }
 
-registerDocumentKind({
+// Deferred like the asset-metadata built-ins: validating each declaration constructs its schema and
+// previously ran at module evaluation on every Host start.
+function ensureBuiltInDocumentKinds(): void {
+  if (builtInDocumentKindsRegistered) return;
+  builtInDocumentKindsRegistered = true;
+  registerDocumentKind({
   definition: {
     kind: MODEL_TEXT_DOCUMENT_KIND,
     schemaVersion: MODEL_TEXT_DOCUMENT_SCHEMA_VERSION,
@@ -212,4 +229,5 @@ for (const category of MediaAnalysisCategorySchema.options) {
     },
     schema: MediaAnalysisDocumentSchemas[category],
   });
+  }
 }

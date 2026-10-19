@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { LoroMap, type LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
@@ -24,36 +25,47 @@ export {
 } from "./director-reference.js";
 import { DEFAULT_CANVAS_ID, ensureProjectCanvas } from "./project-workspace.js";
 
-export const DirectorStageVector3Schema = z.tuple([
+export let DirectorStageVector3Schema = lazySchema(() => (
+z.tuple([
   z.number().finite(),
   z.number().finite(),
   z.number().finite(),
-]);
+])
+), (real) => { DirectorStageVector3Schema = real; });
 
-export const DirectorStageTransformSchema = z.object({
+export let DirectorStageTransformSchema = lazySchema(() => (
+z.object({
   position: DirectorStageVector3Schema,
   rotation: DirectorStageVector3Schema,
   scale: DirectorStageVector3Schema,
-});
+})
+), (real) => { DirectorStageTransformSchema = real; });
 
-export const DirectorStagePoseSchema = z.object({
+export let DirectorStagePoseSchema = lazySchema(() => (
+z.object({
   preset: z.string().min(1),
   joints: z.record(z.string(), DirectorStageVector3Schema),
-});
+})
+), (real) => { DirectorStagePoseSchema = real; });
 
-export const DirectorStageAttachmentSocketSchema = z.enum([
+export let DirectorStageAttachmentSocketSchema = lazySchema(() => (
+z.enum([
   "origin",
   "seat",
   "saddle",
-]);
+])
+), (real) => { DirectorStageAttachmentSocketSchema = real; });
 
-export const DirectorStageAttachmentSchema = z.object({
+export let DirectorStageAttachmentSchema = lazySchema(() => (
+z.object({
   parentId: z.string().min(1),
   socket: DirectorStageAttachmentSocketSchema,
   offset: DirectorStageTransformSchema,
-});
+})
+), (real) => { DirectorStageAttachmentSchema = real; });
 
-const DirectorStageObjectBaseSchema = z.object({
+let DirectorStageObjectBaseSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   visible: z.boolean(),
@@ -61,18 +73,22 @@ const DirectorStageObjectBaseSchema = z.object({
   groupId: z.string().min(1).optional(),
   attachment: DirectorStageAttachmentSchema.optional(),
   transform: DirectorStageTransformSchema,
-});
+})
+), (real) => { DirectorStageObjectBaseSchema = real; });
 
-export const DirectorStagePropTypeSchema = z.enum([
+export let DirectorStagePropTypeSchema = lazySchema(() => (
+z.enum([
   "chair",
   "table",
   "sofa",
   "crate",
   "barrel",
   "floor-lamp",
-]);
+])
+), (real) => { DirectorStagePropTypeSchema = real; });
 
-export const DirectorStageSetTypeSchema = z.enum([
+export let DirectorStageSetTypeSchema = lazySchema(() => (
+z.enum([
   "wall",
   "doorway",
   "window",
@@ -80,23 +96,29 @@ export const DirectorStageSetTypeSchema = z.enum([
   "cyclorama",
   "tree",
   "rock",
-]);
+])
+), (real) => { DirectorStageSetTypeSchema = real; });
 
-export const DirectorStageVehicleTypeSchema = z.enum([
+export let DirectorStageVehicleTypeSchema = lazySchema(() => (
+z.enum([
   "car",
   "van",
   "motorcycle",
   "bicycle",
   "boat",
-]);
+])
+), (real) => { DirectorStageVehicleTypeSchema = real; });
 
-export const DirectorStageLightTypeSchema = z.enum([
+export let DirectorStageLightTypeSchema = lazySchema(() => (
+z.enum([
   "point",
   "spot",
   "directional",
-]);
+])
+), (real) => { DirectorStageLightTypeSchema = real; });
 
-export const DirectorStageObjectSchema = z.discriminatedUnion("kind", [
+export let DirectorStageObjectSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   DirectorStageObjectBaseSchema.extend({
     kind: z.literal("code"),
     code: z.object({
@@ -177,9 +199,11 @@ export const DirectorStageObjectSchema = z.discriminatedUnion("kind", [
       }).optional(),
     }),
   }),
-]);
+])
+), (real) => { DirectorStageObjectSchema = real; });
 
-export const DirectorStageCameraSchema = z.object({
+export let DirectorStageCameraSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   position: DirectorStageVector3Schema,
@@ -203,17 +227,21 @@ export const DirectorStageCameraSchema = z.object({
     (optics) => optics.farClipM > optics.nearClipM,
     { message: "Camera far clip must be greater than near clip" },
   ).optional(),
-});
+})
+), (real) => { DirectorStageCameraSchema = real; });
 
-export const DirectorStageAspectRatioSchema = z.enum([
+export let DirectorStageAspectRatioSchema = lazySchema(() => (
+z.enum([
   "16:9",
   "9:16",
   "4:3",
   "3:4",
   "1:1",
-]);
+])
+), (real) => { DirectorStageAspectRatioSchema = real; });
 
-export const DirectorStageShotSchema = z.object({
+export let DirectorStageShotSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   cameraId: z.string().min(1),
@@ -223,14 +251,18 @@ export const DirectorStageShotSchema = z.object({
   stageRevisionId: z.string().min(1),
   createdAt: z.string().datetime(),
   timeSeconds: z.number().nonnegative().optional(),
-});
+})
+), (real) => { DirectorStageShotSchema = real; });
 
-export const DirectorStageCameraRigPathSchema = z.object({
+export let DirectorStageCameraRigPathSchema = lazySchema(() => (
+z.object({
   interpolation: z.enum(["linear", "catmull-rom"]),
   points: z.array(DirectorStageVector3Schema).min(2),
-});
+})
+), (real) => { DirectorStageCameraRigPathSchema = real; });
 
-export const DirectorStageCameraRigOrientationSchema = z.discriminatedUnion("mode", [
+export let DirectorStageCameraRigOrientationSchema = lazySchema(() => (
+z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("fixed-target"),
     target: DirectorStageVector3Schema,
@@ -246,9 +278,11 @@ export const DirectorStageCameraRigOrientationSchema = z.discriminatedUnion("mod
     startRotation: DirectorStageVector3Schema,
     endRotation: DirectorStageVector3Schema,
   }),
-]);
+])
+), (real) => { DirectorStageCameraRigOrientationSchema = real; });
 
-export const DirectorStageCameraRigLensSchema = z.discriminatedUnion("mode", [
+export let DirectorStageCameraRigLensSchema = lazySchema(() => (
+z.discriminatedUnion("mode", [
   z.object({
     mode: z.literal("locked"),
     focalLengthMm: z.number().positive().max(1_000),
@@ -258,9 +292,11 @@ export const DirectorStageCameraRigLensSchema = z.discriminatedUnion("mode", [
     startFocalLengthMm: z.number().positive().max(1_000),
     endFocalLengthMm: z.number().positive().max(1_000),
   }),
-]);
+])
+), (real) => { DirectorStageCameraRigLensSchema = real; });
 
-export const DirectorStageCameraRigSchema = z.object({
+export let DirectorStageCameraRigSchema = lazySchema(() => (
+z.object({
   kind: z.enum(["dolly", "truck", "pedestal", "pan", "tilt", "orbit", "crane"]),
   settleInSeconds: z.number().nonnegative(),
   settleOutSeconds: z.number().nonnegative(),
@@ -290,9 +326,11 @@ export const DirectorStageCameraRigSchema = z.object({
       message: "Non-orbit camera rigs require a camera path",
     });
   }
-});
+})
+), (real) => { DirectorStageCameraRigSchema = real; });
 
-export const DirectorStageShotCompositionSchema = z.object({
+export let DirectorStageShotCompositionSchema = lazySchema(() => (
+z.object({
   primarySubjectId: z.string().min(1),
   secondarySubjectIds: z.array(z.string().min(1)).optional(),
   headroomRatio: z.number().min(0).max(0.5),
@@ -304,9 +342,11 @@ export const DirectorStageShotCompositionSchema = z.object({
     toObjectId: z.string().min(1),
     cameraSide: z.enum(["left", "right"]),
   }).optional(),
-});
+})
+), (real) => { DirectorStageShotCompositionSchema = real; });
 
-export const DirectorStageSequenceShotSchema = z.object({
+export let DirectorStageSequenceShotSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   cameraId: z.string().min(1),
@@ -322,18 +362,22 @@ export const DirectorStageSequenceShotSchema = z.object({
     rig: DirectorStageCameraRigSchema.optional(),
   }).optional(),
   composition: DirectorStageShotCompositionSchema.optional(),
-});
+})
+), (real) => { DirectorStageSequenceShotSchema = real; });
 
-export const DirectorStageSignedAxisSchema = z.enum([
+export let DirectorStageSignedAxisSchema = lazySchema(() => (
+z.enum([
   "+X",
   "-X",
   "+Y",
   "-Y",
   "+Z",
   "-Z",
-]);
+])
+), (real) => { DirectorStageSignedAxisSchema = real; });
 
-export const DirectorStageMotionAssetSchema = z.object({
+export let DirectorStageMotionAssetSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   assetId: z.string().min(1),
@@ -352,16 +396,20 @@ export const DirectorStageMotionAssetSchema = z.object({
     boneMap: z.record(z.string().min(1), z.string().min(1)).optional(),
   }),
   tags: z.array(z.string().min(1)).optional(),
-});
+})
+), (real) => { DirectorStageMotionAssetSchema = real; });
 
-export const DirectorStageAnimationKeyframeSchema = z.object({
+export let DirectorStageAnimationKeyframeSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   time: z.number().nonnegative(),
   value: z.union([z.number(), DirectorStageVector3Schema]),
   interpolation: z.enum(["hold", "linear", "bezier"]).default("linear"),
-});
+})
+), (real) => { DirectorStageAnimationKeyframeSchema = real; });
 
-export const DirectorStageAnimationTrackSchema = z.object({
+export let DirectorStageAnimationTrackSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   targetId: z.string().min(1),
   property: z.enum([
@@ -374,9 +422,11 @@ export const DirectorStageAnimationTrackSchema = z.object({
     "fStop",
   ]),
   keyframes: z.array(DirectorStageAnimationKeyframeSchema),
-});
+})
+), (real) => { DirectorStageAnimationTrackSchema = real; });
 
-export const DirectorStageActionNameSchema = z.enum([
+export let DirectorStageActionNameSchema = lazySchema(() => (
+z.enum([
   "idle",
   "walk",
   "run",
@@ -399,14 +449,18 @@ export const DirectorStageActionNameSchema = z.enum([
   "swim",
   "drive",
   "death",
-]);
+])
+), (real) => { DirectorStageActionNameSchema = real; });
 
-export const DirectorStageActionLayerSchema = z.enum([
+export let DirectorStageActionLayerSchema = lazySchema(() => (
+z.enum([
   "full-body",
   "upper-body",
-]);
+])
+), (real) => { DirectorStageActionLayerSchema = real; });
 
-export const DirectorStageActionClipSchema = z.object({
+export let DirectorStageActionClipSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   targetId: z.string().min(1),
   action: DirectorStageActionNameSchema,
@@ -425,9 +479,11 @@ export const DirectorStageActionClipSchema = z.object({
     mode: z.enum(["direct", "humanoid"]),
     targetRigProfileId: z.string().min(1),
   }).optional(),
-});
+})
+), (real) => { DirectorStageActionClipSchema = real; });
 
-export const DirectorStageStoryBeatSchema = z.object({
+export let DirectorStageStoryBeatSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   title: z.string().min(1),
   startTime: z.number().nonnegative(),
@@ -437,24 +493,30 @@ export const DirectorStageStoryBeatSchema = z.object({
     speakerId: z.string().min(1),
     text: z.string().min(1),
   }).optional(),
-});
+})
+), (real) => { DirectorStageStoryBeatSchema = real; });
 
-export const DirectorStageCameraCueSchema = z.object({
+export let DirectorStageCameraCueSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   cameraId: z.string().min(1),
   startTime: z.number().nonnegative(),
   durationSeconds: z.number().positive(),
-});
+})
+), (real) => { DirectorStageCameraCueSchema = real; });
 
-export const DirectorStageWorkingVolumePresetSchema = z.enum([
+export let DirectorStageWorkingVolumePresetSchema = lazySchema(() => (
+z.enum([
   "compact",
   "standard",
   "large",
   "custom",
-]);
+])
+), (real) => { DirectorStageWorkingVolumePresetSchema = real; });
 
-export const DirectorStageWorkingVolumeSchema = z.object({
+export let DirectorStageWorkingVolumeSchema = lazySchema(() => (
+z.object({
   mode: z.literal("bounded-box"),
   preset: DirectorStageWorkingVolumePresetSchema,
   // Three uses X/Y/Z, so the stored order is width/height/depth.
@@ -465,9 +527,11 @@ export const DirectorStageWorkingVolumeSchema = z.object({
   ]),
   // World-space center of the floor plane. The box center is derived at half height.
   origin: DirectorStageVector3Schema,
-});
+})
+), (real) => { DirectorStageWorkingVolumeSchema = real; });
 
-export const DirectorStageEnvironmentCalibrationSchema = z.object({
+export let DirectorStageEnvironmentCalibrationSchema = lazySchema(() => (
+z.object({
   projection: z.literal("equirectangular"),
   capturePosition: DirectorStageVector3Schema,
   captureRotation: DirectorStageVector3Schema,
@@ -475,9 +539,11 @@ export const DirectorStageEnvironmentCalibrationSchema = z.object({
   forwardU: z.number().min(0).max(1),
   gridCellMeters: z.number().positive(),
   workingVolume: DirectorStageWorkingVolumeSchema.optional(),
-});
+})
+), (real) => { DirectorStageEnvironmentCalibrationSchema = real; });
 
-export const DirectorStageStateSchema = z.object({
+export let DirectorStageStateSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   scene: z.object({
     backgroundColor: z.string().min(1),
@@ -508,7 +574,8 @@ export const DirectorStageStateSchema = z.object({
     storyBeats: z.array(DirectorStageStoryBeatSchema).optional(),
     cameraCues: z.array(DirectorStageCameraCueSchema).optional(),
   }).optional(),
-});
+})
+), (real) => { DirectorStageStateSchema = real; });
 
 const DIRECTOR_STAGE_CAPTURE_OUTPUT_ERROR =
   "Director Stage authoring state cannot contain capture outputs; use capture receipts and Project Asset references";
@@ -518,9 +585,11 @@ const DIRECTOR_STAGE_CAPTURE_OUTPUT_ERROR =
  * the legacy read contract so projects created before capture receipts can be
  * opened and migrated without making Action outputs part of new revisions.
  */
-export const DirectorStageAuthoringStateSchema = DirectorStageStateSchema.extend({
+export let DirectorStageAuthoringStateSchema = lazySchema(() => (
+DirectorStageStateSchema.extend({
   shots: z.array(DirectorStageShotSchema).max(0, DIRECTOR_STAGE_CAPTURE_OUTPUT_ERROR),
-});
+})
+), (real) => { DirectorStageAuthoringStateSchema = real; });
 
 export type DirectorStageSchemaContract = "state" | "object" | "camera";
 

@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import { AssetKindSchema } from "./assets.js";
@@ -9,24 +10,28 @@ import type { DraftActionAssetInput } from "./action-asset-bindings.js";
  * `projectAssetId` is the only media identity. Host URLs, local paths,
  * Resource ids, and storage keys are intentionally impossible to encode.
  */
-export const CopilotProjectAssetReferenceSchema = z
+export let CopilotProjectAssetReferenceSchema = lazySchema(() => (
+z
   .object({
     projectAssetId: z.string().trim().min(1),
     kind: AssetKindSchema,
     label: z.string().trim().min(1),
   })
-  .strict();
+  .strict()
+), (real) => { CopilotProjectAssetReferenceSchema = real; });
 export type CopilotProjectAssetReference = z.infer<
   typeof CopilotProjectAssetReferenceSchema
 >;
 
 /** One Copilot turn's persistent draft Action input identity. */
-export const CopilotProjectAssetSubmissionSchema = z
+export let CopilotProjectAssetSubmissionSchema = lazySchema(() => (
+z
   .object({
     actionId: z.string().trim().min(1),
     assets: CopilotProjectAssetReferenceSchema.array().min(1),
   })
-  .strict();
+  .strict()
+), (real) => { CopilotProjectAssetSubmissionSchema = real; });
 export type CopilotProjectAssetSubmission = z.infer<
   typeof CopilotProjectAssetSubmissionSchema
 >;

@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 import { ResourceSchema, type AssetKind } from "./assets.js";
@@ -48,7 +49,8 @@ export function projectSyncContent(doc: LoroDoc): {
   };
 }
 
-export const ProjectResourceDeliveryRequestSchema = z.discriminatedUnion(
+export let ProjectResourceDeliveryRequestSchema = lazySchema(() => (
+z.discriminatedUnion(
   "operation",
   [
     z
@@ -65,4 +67,5 @@ export const ProjectResourceDeliveryRequestSchema = z.discriminatedUnion(
       })
       .strict(),
   ],
-);
+)
+), (real) => { ProjectResourceDeliveryRequestSchema = real; });

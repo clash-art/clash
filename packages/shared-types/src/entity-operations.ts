@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from 'zod';
 
 /**
@@ -27,10 +28,13 @@ import { z } from 'zod';
  */
 export const ENTITY_OPERATIONS = ['create', 'attach', 'detach'] as const;
 
-export const EntityOperationSchema = z.enum(ENTITY_OPERATIONS);
+export let EntityOperationSchema = lazySchema(() => (
+z.enum(ENTITY_OPERATIONS)
+), (real) => { EntityOperationSchema = real; });
 export type EntityOperation = z.infer<typeof EntityOperationSchema>;
 
-export const ExecutablePluginEntityExportSchema = z.object({
+export let ExecutablePluginEntityExportSchema = lazySchema(() => (
+z.object({
   /** Stable entity name, unique within the plugin. */
   entity: z.string().trim().regex(/^[a-z0-9][a-z0-9-]*$/),
   title: z.string().trim().min(1),
@@ -58,6 +62,7 @@ export const ExecutablePluginEntityExportSchema = z.object({
       message: 'canvasNodeType applies to an entity that declares the attach operation.',
     });
   }
-});
+})
+), (real) => { ExecutablePluginEntityExportSchema = real; });
 
 export type ExecutablePluginEntityExport = z.infer<typeof ExecutablePluginEntityExportSchema>;

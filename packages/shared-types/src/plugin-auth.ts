@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 /**
@@ -14,12 +15,16 @@ import { z } from "zod";
  */
 
 /** A duration the host can act on: `60s`, `15m`, `12h`, `7d`. */
-const DurationSchema = z.string().trim().regex(
+let DurationSchema = lazySchema(() => (
+z.string().trim().regex(
   /^\d+(?:s|m|h|d)$/,
   "Write a duration like 60s, 15m, 12h or 7d.",
-);
+)
+), (real) => { DurationSchema = real; });
 
-const StorageKeySchema = z.string().trim().min(1);
+let StorageKeySchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { StorageKeySchema = real; });
 
 /**
  * Five kinds, which covered every vendor examined.
@@ -27,7 +32,8 @@ const StorageKeySchema = z.string().trim().min(1);
  * They describe rendering, not meaning. `secret` says draw it masked and store it encrypted; it
  * does not say the value is an api key, because the host has no use for knowing that.
  */
-export const PluginAuthFormItemSchema = z.discriminatedUnion("kind", [
+export let PluginAuthFormItemSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("field"),
     key: StorageKeySchema,
@@ -62,7 +68,8 @@ export const PluginAuthFormItemSchema = z.discriminatedUnion("kind", [
     key: StorageKeySchema,
     label: z.string().trim().min(1),
   }).strict(),
-]);
+])
+), (real) => { PluginAuthFormItemSchema = real; });
 
 /**
  * Where the browser goes and how the answer comes back.
@@ -89,7 +96,8 @@ const HOST_OWNED_PARAMS = [
   "client_secret",
 ];
 
-export const PluginAuthFlowCredentialSchema = z.object({
+export let PluginAuthFlowCredentialSchema = lazySchema(() => (
+z.object({
   /**
    * Where the vendor left the credential once the flow finished.
    *
@@ -103,9 +111,11 @@ export const PluginAuthFlowCredentialSchema = z.object({
   name: z.string().trim().min(1),
   /** The store key to write it under. */
   storeAs: z.string().trim().min(1),
-}).strict();
+}).strict()
+), (real) => { PluginAuthFlowCredentialSchema = real; });
 
-export const PluginAuthFlowSchema = z.object({
+export let PluginAuthFlowSchema = lazySchema(() => (
+z.object({
   // Opened in the user's browser. A plaintext address would carry the request, and anything echoed
   // back to it, in the clear.
   open: z.string().trim().url().refine(
@@ -178,7 +188,8 @@ export const PluginAuthFlowSchema = z.object({
       });
     }
   }
-});
+})
+), (real) => { PluginAuthFlowSchema = real; });
 
 /**
  * When the host should wake the plugin to renew.
@@ -189,10 +200,12 @@ export const PluginAuthFlowSchema = z.object({
  * that case would mean reporting a failure outward and waiting to be called again, to do something
  * the plugin could have done immediately.
  */
-export const PluginAuthRenewSchema = z.union([
+export let PluginAuthRenewSchema = lazySchema(() => (
+z.union([
   z.object({ before: DurationSchema }).strict(),
   z.object({ every: DurationSchema }).strict(),
-]);
+])
+), (real) => { PluginAuthRenewSchema = real; });
 
 /**
  * One way of authenticating: a whole configuration, not a field.
@@ -226,7 +239,8 @@ export const PluginAuthRenewSchema = z.union([
  * file its user can; the constraint below only catches a declaration that reaches somewhere it
  * plainly did not mean to.
  */
-export const PluginAuthImportSchema = z.object({
+export let PluginAuthImportSchema = lazySchema(() => (
+z.object({
   format: z.literal("electron-store-aes-256-gcm-v2"),
   /** A subdirectory of the user's application data, not an arbitrary path. */
   appDataSubdirectory: z.string().trim().min(1)
@@ -240,9 +254,11 @@ export const PluginAuthImportSchema = z.object({
   tokenPath: z.array(z.string().trim().min(1)).min(1),
   /** The store key to write it under. */
   storeAs: z.string().trim().min(1),
-}).strict();
+}).strict()
+), (real) => { PluginAuthImportSchema = real; });
 
-export const PluginAuthMethodSchema = z.object({
+export let PluginAuthMethodSchema = lazySchema(() => (
+z.object({
   id: z.string().trim().min(1),
   label: z.string().trim().min(1),
   form: z.array(PluginAuthFormItemSchema).optional(),
@@ -254,9 +270,11 @@ export const PluginAuthMethodSchema = z.object({
     || method.import !== undefined,
   // A method with none of the three offers the user a name and nothing to do with it.
   { message: "An auth method must collect something, start a flow, or import a credential." },
-);
+)
+), (real) => { PluginAuthMethodSchema = real; });
 
-export const PluginAuthDeclarationSchema = z.object({
+export let PluginAuthDeclarationSchema = lazySchema(() => (
+z.object({
   methods: z.array(PluginAuthMethodSchema).min(1),
 }).strict().superRefine((declaration, ctx) => {
   const seen = new Set<string>();
@@ -271,7 +289,8 @@ export const PluginAuthDeclarationSchema = z.object({
     }
     seen.add(method.id);
   }
-});
+})
+), (real) => { PluginAuthDeclarationSchema = real; });
 
 export type PluginAuthMethod = z.infer<typeof PluginAuthMethodSchema>;
 

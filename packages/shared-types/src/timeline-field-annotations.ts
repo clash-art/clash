@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { TimelineItemKeyframesSchema } from "./timeline-keyframes.js";
 import {
@@ -234,11 +235,21 @@ export const TIMELINE_TRANSITION_TYPES = [
   "zoom-in",
 ] as const;
 
-const NonEmptyStringSchema = z.string().min(1);
-const FiniteNumberSchema = z.number().finite();
-const NonnegativeFrameSchema = z.number().int().nonnegative();
-const PositiveFrameSchema = z.number().int().positive();
-const CssColorSchema = z.string().min(1);
+let NonEmptyStringSchema = lazySchema(() => (
+z.string().min(1)
+), (real) => { NonEmptyStringSchema = real; });
+let FiniteNumberSchema = lazySchema(() => (
+z.number().finite()
+), (real) => { FiniteNumberSchema = real; });
+let NonnegativeFrameSchema = lazySchema(() => (
+z.number().int().nonnegative()
+), (real) => { NonnegativeFrameSchema = real; });
+let PositiveFrameSchema = lazySchema(() => (
+z.number().int().positive()
+), (real) => { PositiveFrameSchema = real; });
+let CssColorSchema = lazySchema(() => (
+z.string().min(1)
+), (real) => { CssColorSchema = real; });
 
 export const TIMELINE_ITEM_TRANSFORM_SEMANTICS = {
   position: {
@@ -259,7 +270,8 @@ export const TIMELINE_ITEM_TRANSFORM_SEMANTICS = {
   },
 } as const;
 
-export const TimelineItemPropertiesSchema = z.object({
+export let TimelineItemPropertiesSchema = lazySchema(() => (
+z.object({
   x: FiniteNumberSchema.describe(
     "Horizontal center offset in composition pixels; 0 is the composition center.",
   ),
@@ -274,35 +286,47 @@ export const TimelineItemPropertiesSchema = z.object({
   ),
   rotation: FiniteNumberSchema.describe("Clockwise rotation in degrees.").optional(),
   opacity: z.number().finite().min(0).max(1).describe("Unitless opacity from 0 through 1.").optional(),
-});
+})
+), (real) => { TimelineItemPropertiesSchema = real; });
 
-export const TimelineEffectParamValueSchema = z.union([
+export let TimelineEffectParamValueSchema = lazySchema(() => (
+z.union([
   z.string(),
   FiniteNumberSchema,
   z.boolean(),
   z.tuple([FiniteNumberSchema, FiniteNumberSchema]),
-]);
+])
+), (real) => { TimelineEffectParamValueSchema = real; });
 
-export const TimelineEffectInstanceRefSchema = z.object({
+export let TimelineEffectInstanceRefSchema = lazySchema(() => (
+z.object({
   effectId: z.string().regex(/^[a-z0-9]+(?:[._/-][a-z0-9]+)+$/),
   effectVersion: z.number().int().positive(),
   params: z.record(z.string(), TimelineEffectParamValueSchema).optional(),
-});
+})
+), (real) => { TimelineEffectInstanceRefSchema = real; });
 
-export const TimelineMediaFitSchema = z.enum(TIMELINE_MEDIA_FITS);
+export let TimelineMediaFitSchema = lazySchema(() => (
+z.enum(TIMELINE_MEDIA_FITS)
+), (real) => { TimelineMediaFitSchema = real; });
 
-export const TimelineClipAnimationSchema = z.object({
+export let TimelineClipAnimationSchema = lazySchema(() => (
+z.object({
   type: z.enum(TIMELINE_CLIP_ANIMATION_TYPES),
   durationInFrames: PositiveFrameSchema,
-});
+})
+), (real) => { TimelineClipAnimationSchema = real; });
 
-export const TimelineAudioDuckingSchema = z.object({
+export let TimelineAudioDuckingSchema = lazySchema(() => (
+z.object({
   amountDb: z.number().finite().min(-60).max(0),
   attackFrames: NonnegativeFrameSchema,
   releaseFrames: NonnegativeFrameSchema,
-});
+})
+), (real) => { TimelineAudioDuckingSchema = real; });
 
-export const TimelineCaptionCueSchema = z.object({
+export let TimelineCaptionCueSchema = lazySchema(() => (
+z.object({
   id: NonEmptyStringSchema,
   startFrame: NonnegativeFrameSchema,
   durationInFrames: PositiveFrameSchema,
@@ -310,9 +334,11 @@ export const TimelineCaptionCueSchema = z.object({
   wordIds: z.array(NonEmptyStringSchema).optional(),
   sourceStartFrame: NonnegativeFrameSchema.optional(),
   sourceEndFrame: NonnegativeFrameSchema.optional(),
-});
+})
+), (real) => { TimelineCaptionCueSchema = real; });
 
-export const TimelineCaptionWordReferenceSchema = z.object({
+export let TimelineCaptionWordReferenceSchema = lazySchema(() => (
+z.object({
   id: NonEmptyStringSchema,
   text: z.string(),
   assetId: NonEmptyStringSchema.optional(),
@@ -322,34 +348,42 @@ export const TimelineCaptionWordReferenceSchema = z.object({
   sourceStartFrame: NonnegativeFrameSchema,
   sourceEndFrame: NonnegativeFrameSchema,
   confidence: z.number().finite().min(0).max(1).optional(),
-});
+})
+), (real) => { TimelineCaptionWordReferenceSchema = real; });
 
-export const TimelineSourceToOutputFrameMapSchema = z.object({
+export let TimelineSourceToOutputFrameMapSchema = lazySchema(() => (
+z.object({
   sourceStartFrame: NonnegativeFrameSchema,
   sourceEndFrame: NonnegativeFrameSchema,
   outputStartFrame: NonnegativeFrameSchema,
   outputEndFrame: NonnegativeFrameSchema,
-});
+})
+), (real) => { TimelineSourceToOutputFrameMapSchema = real; });
 
-export const TimelineTypographyStyleSchema = z.object({
+export let TimelineTypographyStyleSchema = lazySchema(() => (
+z.object({
   color: CssColorSchema.optional(),
   fontSize: z.number().finite().positive().optional(),
   fontFamily: NonEmptyStringSchema.optional(),
   fontWeight: z.union([z.string(), FiniteNumberSchema]).optional(),
   backgroundColor: CssColorSchema.optional(),
   position: z.enum(TIMELINE_CAPTION_POSITIONS).optional(),
-});
+})
+), (real) => { TimelineTypographyStyleSchema = real; });
 
-export const TimelineEditorTranscriptWordSchema = z.object({
+export let TimelineEditorTranscriptWordSchema = lazySchema(() => (
+z.object({
   id: NonEmptyStringSchema,
   text: z.string(),
   startMs: z.number().finite().nonnegative(),
   endMs: z.number().finite().nonnegative(),
   confidence: z.number().finite().min(0).max(1).optional(),
   speakerId: NonEmptyStringSchema.optional(),
-});
+})
+), (real) => { TimelineEditorTranscriptWordSchema = real; });
 
-export const TimelineEditorAssetTranscriptSchema = z.object({
+export let TimelineEditorAssetTranscriptSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("clash.editor.asset-transcript"),
   assetId: NonEmptyStringSchema,
@@ -359,19 +393,24 @@ export const TimelineEditorAssetTranscriptSchema = z.object({
   backendId: NonEmptyStringSchema.optional(),
   modelId: NonEmptyStringSchema.optional(),
   language: NonEmptyStringSchema.optional(),
-});
+})
+), (real) => { TimelineEditorAssetTranscriptSchema = real; });
 
-export const TimelineSequenceSchema = z.object({
+export let TimelineSequenceSchema = lazySchema(() => (
+z.object({
   baseUrl: NonEmptyStringSchema,
   frameCount: PositiveFrameSchema,
   fps: z.number().finite().positive(),
-});
+})
+), (real) => { TimelineSequenceSchema = real; });
 
-export const TimelineDerivedAssetSchema = z.object({
+export let TimelineDerivedAssetSchema = lazySchema(() => (
+z.object({
   kind: z.enum(TIMELINE_DERIVATION_KINDS),
   description: z.string().optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
-});
+})
+), (real) => { TimelineDerivedAssetSchema = real; });
 
 const noControl = { surface: "none" } as const;
 const timelineControl = { surface: "timeline" } as const;

@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import {
   DEFAULT_TIMELINE_KEYFRAME_INTERPOLATION,
@@ -66,11 +67,15 @@ type TimelineKeyframeChannelAnnotation = {
   maskField?: TimelineMaskField;
 };
 
-const FiniteVectorSchema = z.tuple([z.number().finite(), z.number().finite()]);
-const NonNegativeVectorSchema = z.tuple([
+let FiniteVectorSchema = lazySchema(() => (
+z.tuple([z.number().finite(), z.number().finite()])
+), (real) => { FiniteVectorSchema = real; });
+let NonNegativeVectorSchema = lazySchema(() => (
+z.tuple([
   z.number().finite().nonnegative(),
   z.number().finite().nonnegative(),
-]);
+])
+), (real) => { NonNegativeVectorSchema = real; });
 
 const TIMELINE_TRANSFORM_KEYFRAME_ANNOTATIONS = {
   position: {
@@ -128,10 +133,14 @@ export const TIMELINE_KEYFRAME_CHANNELS = Object.freeze(
   Object.keys(TIMELINE_KEYFRAME_CHANNEL_ANNOTATIONS) as TimelineKeyframeChannel[],
 );
 
-const TimelineKeyframeInterpolationSchema = z.enum(TIMELINE_KEYFRAME_INTERPOLATIONS)
-  .describe("Interpolation from this keyframe to the next keyframe.");
-const TimelineKeyframeFrameSchema = z.number().int().nonnegative()
-  .describe("item-local frame. It must be less than the owning item's durationInFrames.");
+let TimelineKeyframeInterpolationSchema = lazySchema(() => (
+z.enum(TIMELINE_KEYFRAME_INTERPOLATIONS)
+  .describe("Interpolation from this keyframe to the next keyframe.")
+), (real) => { TimelineKeyframeInterpolationSchema = real; });
+let TimelineKeyframeFrameSchema = lazySchema(() => (
+z.number().int().nonnegative()
+  .describe("item-local frame. It must be less than the owning item's durationInFrames.")
+), (real) => { TimelineKeyframeFrameSchema = real; });
 
 function timelineKeyframeSchema(valueSchema: z.ZodType<unknown>): z.ZodTypeAny {
   return z.object({
@@ -141,13 +150,17 @@ function timelineKeyframeSchema(valueSchema: z.ZodType<unknown>): z.ZodTypeAny {
   }).strict();
 }
 
-export const TimelineVectorKeyframeSchema = timelineKeyframeSchema(
+export let TimelineVectorKeyframeSchema = lazySchema(() => (
+timelineKeyframeSchema(
   FiniteVectorSchema,
-) as z.ZodType<TimelineVectorKeyframe>;
+) as z.ZodType<TimelineVectorKeyframe>
+), (real) => { TimelineVectorKeyframeSchema = real; });
 
-export const TimelineScalarKeyframeSchema = timelineKeyframeSchema(
+export let TimelineScalarKeyframeSchema = lazySchema(() => (
+timelineKeyframeSchema(
   z.number().finite(),
-) as z.ZodType<TimelineScalarKeyframe>;
+) as z.ZodType<TimelineScalarKeyframe>
+), (real) => { TimelineScalarKeyframeSchema = real; });
 
 const timelineItemKeyframesSchemaShape = Object.fromEntries(
   Object.entries(TIMELINE_KEYFRAME_CHANNEL_ANNOTATIONS).map(([channel, annotation]) => [
@@ -158,9 +171,11 @@ const timelineItemKeyframesSchemaShape = Object.fromEntries(
   ]),
 ) as unknown as Record<TimelineKeyframeChannel, z.ZodTypeAny>;
 
-export const TimelineItemKeyframesSchema = z.object(timelineItemKeyframesSchemaShape)
+export let TimelineItemKeyframesSchema = lazySchema(() => (
+z.object(timelineItemKeyframesSchemaShape)
   .strict()
-  .describe("TimelineItemKeyframes") as z.ZodType<TimelineItemKeyframes>;
+  .describe("TimelineItemKeyframes") as z.ZodType<TimelineItemKeyframes>
+), (real) => { TimelineItemKeyframesSchema = real; });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

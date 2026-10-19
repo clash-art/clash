@@ -1,31 +1,37 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { ProjectMetadataSchema } from "./project-metadata.js";
 import { ResourceIdSchema } from "./assets.js";
 
 /** Project-level cloud state. `local-only` is never sent by the cloud API. */
-export const ProjectCloudAdmissionStatusSchema = z.enum([
+export let ProjectCloudAdmissionStatusSchema = lazySchema(() => (
+z.enum([
   "local-only",
   "pending",
   "syncing",
   "ready",
   "failed",
-]);
+])
+), (real) => { ProjectCloudAdmissionStatusSchema = real; });
 export type ProjectCloudAdmissionStatus = z.infer<
   typeof ProjectCloudAdmissionStatusSchema
 >;
 
-export const ProjectCloudCapabilitiesSchema = z
+export let ProjectCloudCapabilitiesSchema = lazySchema(() => (
+z
   .object({
     canvas: z.boolean(),
     projectMetadata: z.boolean(),
     resources: z.boolean(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectCloudCapabilitiesSchema = real; });
 export type ProjectCloudCapabilities = z.infer<
   typeof ProjectCloudCapabilitiesSchema
 >;
 
-export const ProjectCloudAdmissionSchema = z
+export let ProjectCloudAdmissionSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     projectId: z.string().trim().min(1),
@@ -48,12 +54,14 @@ export const ProjectCloudAdmissionSchema = z
         message: "failed admission must include lastError",
       });
     }
-  });
+  })
+), (real) => { ProjectCloudAdmissionSchema = real; });
 export type ProjectCloudAdmission = z.infer<
   typeof ProjectCloudAdmissionSchema
 >;
 
-export const ProjectCloudAdmissionRequestSchema = z
+export let ProjectCloudAdmissionRequestSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     projectId: z.string().trim().min(1),
@@ -61,18 +69,21 @@ export const ProjectCloudAdmissionRequestSchema = z
     metadata: ProjectMetadataSchema,
     resourceIds: z.array(ResourceIdSchema).max(100_000),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectCloudAdmissionRequestSchema = real; });
 export type ProjectCloudAdmissionRequest = z.infer<
   typeof ProjectCloudAdmissionRequestSchema
 >;
 
-export const ProjectCloudAdmissionResponseSchema = z
+export let ProjectCloudAdmissionResponseSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     admission: ProjectCloudAdmissionSchema,
     syncBaseUrl: z.string().url(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectCloudAdmissionResponseSchema = real; });
 export type ProjectCloudAdmissionResponse = z.infer<
   typeof ProjectCloudAdmissionResponseSchema
 >;

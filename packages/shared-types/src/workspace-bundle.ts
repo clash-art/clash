@@ -1,18 +1,26 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import { ResourceSchema } from "./assets.js";
 import { GeneratorDefinitionRefSchema } from "./generator-v2.js";
 import { TextAppliedRevisionSchema } from "./text-revisions.js";
 
-const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
-const ContentSha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
-const NonEmptyIdSchema = z.string().trim().min(1).max(500);
+let Sha256Schema = lazySchema(() => (
+z.string().regex(/^[a-f0-9]{64}$/u)
+), (real) => { Sha256Schema = real; });
+let ContentSha256Schema = lazySchema(() => (
+z.string().regex(/^sha256:[a-f0-9]{64}$/u)
+), (real) => { ContentSha256Schema = real; });
+let NonEmptyIdSchema = lazySchema(() => (
+z.string().trim().min(1).max(500)
+), (real) => { NonEmptyIdSchema = real; });
 
 /** Fixed, auditable v1 directory-bundle entry points. */
 export const WORKSPACE_BUNDLE_MANIFEST_PATH = "workspace.json" as const;
 export const WORKSPACE_BUNDLE_PROJECT_PATH = "project.bin" as const;
 
-export const WorkspaceBundleRelativePathSchema = z
+export let WorkspaceBundleRelativePathSchema = lazySchema(() => (
+z
   .string()
   .min(1)
   .max(4_096)
@@ -32,7 +40,8 @@ export const WorkspaceBundleRelativePathSchema = z
         message: "Workspace bundle paths must be safe POSIX-relative paths",
       });
     }
-  });
+  })
+), (real) => { WorkspaceBundleRelativePathSchema = real; });
 
 /** The same fail-closed secret-path policy used by Workspace worktree export. */
 export function workspacePortablePathLooksSecret(
@@ -58,15 +67,17 @@ export function workspacePortablePathLooksSecret(
   );
 }
 
-export const WorkspacePortableSourcePathSchema =
-  WorkspaceBundleRelativePathSchema.superRefine((value, context) => {
+export let WorkspacePortableSourcePathSchema =
+  lazySchema(() => (
+WorkspaceBundleRelativePathSchema.superRefine((value, context) => {
     if (workspacePortablePathLooksSecret(value)) {
       context.addIssue({
         code: "custom",
         message: "Workspace source paths must not identify secret-like files",
       });
     }
-  });
+  })
+), (real) => { WorkspacePortableSourcePathSchema = real; });
 
 const WORKSPACE_PRIVATE_JSON_KEYS = new Set([
   "provideraccountid",
@@ -109,7 +120,8 @@ function workspaceAbsoluteMachinePath(value: string, key: string): boolean {
  * Core Generator/Canvas/Timeline schemas remain unchanged; Workspace export
  * applies this additional portability boundary before publishing project.bin.
  */
-export const WorkspacePortableJsonObjectSchema = z
+export let WorkspacePortableJsonObjectSchema = lazySchema(() => (
+z
   .record(z.string(), z.unknown())
   .superRefine((root, context) => {
     const seen = new WeakSet<object>();
@@ -183,15 +195,19 @@ export const WorkspacePortableJsonObjectSchema = z
       }
     };
     visit(root, []);
-  });
+  })
+), (real) => { WorkspacePortableJsonObjectSchema = real; });
 
-export const WorkspaceBundleFileRoleSchema = z.enum([
+export let WorkspaceBundleFileRoleSchema = lazySchema(() => (
+z.enum([
   "workspace",
   "project",
   "object",
-]);
+])
+), (real) => { WorkspaceBundleFileRoleSchema = real; });
 
-export const WorkspaceBundleFileSchema = z
+export let WorkspaceBundleFileSchema = lazySchema(() => (
+z
   .object({
     path: WorkspaceBundleRelativePathSchema,
     role: WorkspaceBundleFileRoleSchema,
@@ -199,25 +215,31 @@ export const WorkspaceBundleFileSchema = z
     sha256: Sha256Schema,
     mode: z.enum(["0644", "0755"]),
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleFileSchema = real; });
 
-export const WorkspaceBundleResourceSchema = z
+export let WorkspaceBundleResourceSchema = lazySchema(() => (
+z
   .object({
     resource: ResourceSchema,
     path: WorkspaceBundleRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleResourceSchema = real; });
 
-export const WorkspaceBundleDocumentBodySchema = z
+export let WorkspaceBundleDocumentBodySchema = lazySchema(() => (
+z
   .object({
     contentHash: ContentSha256Schema,
     byteLength: z.number().int().nonnegative(),
     contentType: z.literal("application/json"),
     path: WorkspaceBundleRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleDocumentBodySchema = real; });
 
-export const WorkspaceBundleTextRevisionSchema = z
+export let WorkspaceBundleTextRevisionSchema = lazySchema(() => (
+z
   .object({
     revision: TextAppliedRevisionSchema.extend({
       contentHash: z.string().regex(/^[a-f0-9]{16}$/u),
@@ -225,23 +247,29 @@ export const WorkspaceBundleTextRevisionSchema = z
     }).strict(),
     path: WorkspaceBundleRelativePathSchema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleTextRevisionSchema = real; });
 
-export const WorkspaceBundleProjectSchema = z
+export let WorkspaceBundleProjectSchema = lazySchema(() => (
+z
   .object({
     path: z.literal(WORKSPACE_BUNDLE_PROJECT_PATH),
     codec: z.literal("loro-shallow-snapshot"),
     codecVersion: z.literal(1),
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleProjectSchema = real; });
 
-export const WorkspaceSemanticModelReferenceSchema = z
+export let WorkspaceSemanticModelReferenceSchema = lazySchema(() => (
+z
   .object({
     modelId: NonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceSemanticModelReferenceSchema = real; });
 
-export const WorkspaceBundleExcludedPathSchema = z
+export let WorkspaceBundleExcludedPathSchema = lazySchema(() => (
+z
   .object({
     path: WorkspaceBundleRelativePathSchema,
     reason: z.enum([
@@ -251,9 +279,11 @@ export const WorkspaceBundleExcludedPathSchema = z
       "cache",
     ]),
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleExcludedPathSchema = real; });
 
-export const WorkspaceBundleSourceSchema = z
+export let WorkspaceBundleSourceSchema = lazySchema(() => (
+z
   .object({
     projectId: NonEmptyIdSchema,
     display: z
@@ -265,9 +295,11 @@ export const WorkspaceBundleSourceSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleSourceSchema = real; });
 
-export const WorkspaceBundleContentSchema = z
+export let WorkspaceBundleContentSchema = lazySchema(() => (
+z
   .object({
     workspaceRoot: z.literal("workspace"),
     project: WorkspaceBundleProjectSchema,
@@ -275,16 +307,20 @@ export const WorkspaceBundleContentSchema = z
     documentBodies: z.array(WorkspaceBundleDocumentBodySchema),
     textRevisions: z.array(WorkspaceBundleTextRevisionSchema),
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleContentSchema = real; });
 
-export const WorkspaceBundleSemanticRequirementsSchema = z
+export let WorkspaceBundleSemanticRequirementsSchema = lazySchema(() => (
+z
   .object({
     generatorDefinitions: z.array(GeneratorDefinitionRefSchema),
     modelReferences: z.array(WorkspaceSemanticModelReferenceSchema),
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceBundleSemanticRequirementsSchema = real; });
 
-export const WorkspaceBundleManifestSchema = z
+export let WorkspaceBundleManifestSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.bundle"),
@@ -501,15 +537,22 @@ export const WorkspaceBundleManifestSchema = z
         );
       }
     });
-  });
+  })
+), (real) => { WorkspaceBundleManifestSchema = real; });
 
-const WorkspaceTransferTimestampSchema = z.string().datetime({ offset: true });
-const WorkspaceTransferCapabilitySchema = z
+let WorkspaceTransferTimestampSchema = lazySchema(() => (
+z.string().datetime({ offset: true })
+), (real) => { WorkspaceTransferTimestampSchema = real; });
+let WorkspaceTransferCapabilitySchema = lazySchema(() => (
+z
   .string()
   .min(16)
   .max(500)
-  .regex(/^[A-Za-z0-9_-]+$/u);
-const WorkspaceTransferIdempotencyKeySchema = z.string().trim().min(1).max(500);
+  .regex(/^[A-Za-z0-9_-]+$/u)
+), (real) => { WorkspaceTransferCapabilitySchema = real; });
+let WorkspaceTransferIdempotencyKeySchema = lazySchema(() => (
+z.string().trim().min(1).max(500)
+), (real) => { WorkspaceTransferIdempotencyKeySchema = real; });
 
 function validateWorkspaceImportIdempotency(
   value: { idempotencyKey: string; bundleDigest: string },
@@ -524,10 +567,12 @@ function validateWorkspaceImportIdempotency(
   }
 }
 
-export const WorkspaceTransferFileCapabilitySchema =
-  WorkspaceBundleFileSchema.extend({
+export let WorkspaceTransferFileCapabilitySchema =
+  lazySchema(() => (
+WorkspaceBundleFileSchema.extend({
     fileId: WorkspaceTransferCapabilitySchema,
-  }).strict();
+  }).strict()
+), (real) => { WorkspaceTransferFileCapabilitySchema = real; });
 
 function validateTransferFileIdentities(
   files: ReadonlyArray<{
@@ -565,17 +610,22 @@ function validateTransferFileIdentities(
   });
 }
 
-export const WorkspaceExportRequestSchema = z
+export let WorkspaceExportRequestSchema = lazySchema(() => (
+z
   .object({
     sourceWorkspaceId: NonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceExportRequestSchema = real; });
 
-export const WorkspaceExportSourceSchema = WorkspaceBundleSourceSchema.extend({
+export let WorkspaceExportSourceSchema = lazySchema(() => (
+WorkspaceBundleSourceSchema.extend({
   sourceWorkspaceId: NonEmptyIdSchema,
-}).strict();
+}).strict()
+), (real) => { WorkspaceExportSourceSchema = real; });
 
-export const WorkspaceExportPlanSchema = z
+export let WorkspaceExportPlanSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.export-plan"),
@@ -614,9 +664,11 @@ export const WorkspaceExportPlanSchema = z
         }),
       );
     }
-  });
+  })
+), (real) => { WorkspaceExportPlanSchema = real; });
 
-export const WorkspaceImportStartSchema = z
+export let WorkspaceImportStartSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.import-start"),
@@ -634,20 +686,27 @@ export const WorkspaceImportStartSchema = z
         message: "Import bundle digest must match the manifest identity",
       });
     }
-  });
+  })
+), (real) => { WorkspaceImportStartSchema = real; });
 
-export const WorkspaceImportFileStateSchema = z.enum(["missing", "present"]);
+export let WorkspaceImportFileStateSchema = lazySchema(() => (
+z.enum(["missing", "present"])
+), (real) => { WorkspaceImportFileStateSchema = real; });
 
-export const WorkspaceImportFileSlotSchema =
-  WorkspaceTransferFileCapabilitySchema.extend({
+export let WorkspaceImportFileSlotSchema =
+  lazySchema(() => (
+WorkspaceTransferFileCapabilitySchema.extend({
     state: WorkspaceImportFileStateSchema,
-  }).strict();
+  }).strict()
+), (real) => { WorkspaceImportFileSlotSchema = real; });
 
-export const WorkspaceImportTargetSchema = z
+export let WorkspaceImportTargetSchema = lazySchema(() => (
+z
   .object({
     projectId: NonEmptyIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceImportTargetSchema = real; });
 
 const WorkspaceImportIdentityShape = {
   importId: WorkspaceTransferCapabilitySchema,
@@ -657,7 +716,8 @@ const WorkspaceImportIdentityShape = {
   target: WorkspaceImportTargetSchema,
 } as const;
 
-export const WorkspaceImportSessionSchema = z
+export let WorkspaceImportSessionSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.import-session"),
@@ -705,9 +765,11 @@ export const WorkspaceImportSessionSchema = z
         message: "Staging imports cannot claim a commit timestamp",
       });
     }
-  });
+  })
+), (real) => { WorkspaceImportSessionSchema = real; });
 
-export const WorkspaceImportFileUploadReceiptSchema = z
+export let WorkspaceImportFileUploadReceiptSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.import-file-upload-receipt"),
@@ -717,9 +779,11 @@ export const WorkspaceImportFileUploadReceiptSchema = z
     bytes: z.number().int().nonnegative(),
     sha256: Sha256Schema,
   })
-  .strict();
+  .strict()
+), (real) => { WorkspaceImportFileUploadReceiptSchema = real; });
 
-export const WorkspaceImportCommitRequestSchema = z
+export let WorkspaceImportCommitRequestSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.import-commit"),
@@ -727,9 +791,11 @@ export const WorkspaceImportCommitRequestSchema = z
     bundleDigest: Sha256Schema,
   })
   .strict()
-  .superRefine(validateWorkspaceImportIdempotency);
+  .superRefine(validateWorkspaceImportIdempotency)
+), (real) => { WorkspaceImportCommitRequestSchema = real; });
 
-export const WorkspaceImportCommitResponseSchema = z
+export let WorkspaceImportCommitResponseSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.workspace.import-commit-response"),
@@ -738,7 +804,8 @@ export const WorkspaceImportCommitResponseSchema = z
     committedAt: WorkspaceTransferTimestampSchema,
   })
   .strict()
-  .superRefine(validateWorkspaceImportIdempotency);
+  .superRefine(validateWorkspaceImportIdempotency)
+), (real) => { WorkspaceImportCommitResponseSchema = real; });
 
 export type WorkspaceBundleFileRole = z.infer<
   typeof WorkspaceBundleFileRoleSchema

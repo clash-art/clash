@@ -1,16 +1,22 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import { TranscriptWordSchema } from "./production-metadata.js";
 
-const SourceHashSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+let SourceHashSchema = lazySchema(() => (
+z.string().regex(/^sha256:[a-f0-9]{64}$/)
+), (real) => { SourceHashSchema = real; });
 
-export const TimelineTranscriptSourceSchema = z.object({
+export let TimelineTranscriptSourceSchema = lazySchema(() => (
+z.object({
   assetId: z.string().min(1),
   transcriptSourcePath: z.string().min(1),
   transcriptSourceHash: SourceHashSchema,
   transcriptRevision: z.string().min(1).optional(),
-});
+})
+), (real) => { TimelineTranscriptSourceSchema = real; });
 
-export const TimelineTranscriptWordSchema = z.object({
+export let TimelineTranscriptWordSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   text: z.string().min(1),
   assetId: z.string().min(1),
@@ -38,9 +44,11 @@ export const TimelineTranscriptWordSchema = z.object({
       path: ["timelineEndFrame"],
     });
   }
-});
+})
+), (real) => { TimelineTranscriptWordSchema = real; });
 
-export const TimelineTranscriptProjectionSchema = z.object({
+export let TimelineTranscriptProjectionSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("clash.timeline.transcript.projection"),
   timelineId: z.string().min(1),
@@ -98,9 +106,11 @@ export const TimelineTranscriptProjectionSchema = z.object({
     }
     previousTimelineStart = word.timelineStartFrame;
   });
-});
+})
+), (real) => { TimelineTranscriptProjectionSchema = real; });
 
-export const TimelineTranscriptClipInputSchema = z.object({
+export let TimelineTranscriptClipInputSchema = lazySchema(() => (
+z.object({
   clipId: z.string().min(1),
   trackId: z.string().min(1).optional(),
   assetId: z.string().min(1),
@@ -117,15 +127,18 @@ export const TimelineTranscriptClipInputSchema = z.object({
 }).refine((clip) => clip.sourceEndFrame > clip.sourceStartFrame, {
   message: "timeline transcript clip sourceEndFrame must be greater than sourceStartFrame",
   path: ["sourceEndFrame"],
-});
+})
+), (real) => { TimelineTranscriptClipInputSchema = real; });
 
-export const BuildTimelineTranscriptProjectionInputSchema = z.object({
+export let BuildTimelineTranscriptProjectionInputSchema = lazySchema(() => (
+z.object({
   timelineId: z.string().min(1),
   timelineRevision: z.string().min(1),
   fps: z.number().positive(),
   durationFrames: z.number().int().min(0),
   clips: z.array(TimelineTranscriptClipInputSchema).min(1),
-});
+})
+), (real) => { BuildTimelineTranscriptProjectionInputSchema = real; });
 
 export type TimelineTranscriptSource = z.infer<typeof TimelineTranscriptSourceSchema>;
 export type TimelineTranscriptWord = z.infer<typeof TimelineTranscriptWordSchema>;

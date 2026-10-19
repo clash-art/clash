@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { LoroMap, type LoroDoc } from "loro-crdt";
 import { z } from "zod";
 
@@ -21,7 +22,8 @@ export interface ProjectAssetReadContext {
   projectId?: string;
 }
 
-const LegacyLinkedProjectAssetSourceSchema = z
+let LegacyLinkedProjectAssetSourceSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("linked"),
     resourceId: z.string().trim().min(1),
@@ -46,7 +48,8 @@ const LegacyLinkedProjectAssetSourceSchema = z
         .strict(),
     ]),
   })
-  .strict();
+  .strict()
+), (real) => { LegacyLinkedProjectAssetSourceSchema = real; });
 
 export type ProjectAssetMutationErrorCode =
   | "INVALID_PROJECT_ASSET"

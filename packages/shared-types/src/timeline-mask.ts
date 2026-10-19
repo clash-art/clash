@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 import {
   DEFAULT_TIMELINE_KEYFRAME_INTERPOLATION,
@@ -112,14 +113,18 @@ function defineTimelineMaskField(
   };
 }
 
-const FiniteMaskVectorSchema = z.tuple([
+let FiniteMaskVectorSchema = lazySchema(() => (
+z.tuple([
   z.number().finite(),
   z.number().finite(),
-]);
-const NonNegativeMaskVectorSchema = z.tuple([
+])
+), (real) => { FiniteMaskVectorSchema = real; });
+let NonNegativeMaskVectorSchema = lazySchema(() => (
+z.tuple([
   z.number().finite().nonnegative(),
   z.number().finite().nonnegative(),
-]);
+])
+), (real) => { NonNegativeMaskVectorSchema = real; });
 
 /**
  * Implementation-side mask annotations. This is the single source used to
@@ -278,9 +283,11 @@ const timelineMaskSchemaShape = Object.fromEntries(
   ]),
 ) as TimelineMaskSchemaShape;
 
-export const TimelineItemMaskSchema = z.object(timelineMaskSchemaShape)
+export let TimelineItemMaskSchema = lazySchema(() => (
+z.object(timelineMaskSchemaShape)
   .strict()
-  .describe("TimelineItemMask") as z.ZodType<TimelineItemMask>;
+  .describe("TimelineItemMask") as z.ZodType<TimelineItemMask>
+), (real) => { TimelineItemMaskSchema = real; });
 
 export const TIMELINE_MASK_FIELDS = Object.freeze(
   Object.keys(TIMELINE_MASK_FIELD_ANNOTATIONS) as TimelineMaskField[],

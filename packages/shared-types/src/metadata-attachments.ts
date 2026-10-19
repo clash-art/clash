@@ -1,32 +1,41 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
-const ScopedIdSchema = z.string().trim().min(1);
+let ScopedIdSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { ScopedIdSchema = real; });
 
 /**
  * A metadata target names product state only. Runtime locators, storage keys,
  * paths, and URLs are deliberately not part of this identity.
  */
-export const ProjectAssetMetadataTargetSchema = z
+export let ProjectAssetMetadataTargetSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("project-asset"),
     projectId: ScopedIdSchema,
     assetId: ScopedIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ProjectAssetMetadataTargetSchema = real; });
 
-export const ActionRevisionMetadataTargetSchema = z
+export let ActionRevisionMetadataTargetSchema = lazySchema(() => (
+z
   .object({
     kind: z.literal("action-revision"),
     projectId: ScopedIdSchema,
     actionId: ScopedIdSchema,
     actionRevisionId: ScopedIdSchema,
   })
-  .strict();
+  .strict()
+), (real) => { ActionRevisionMetadataTargetSchema = real; });
 
-export const MetadataAttachmentTargetSchema = z.discriminatedUnion("kind", [
+export let MetadataAttachmentTargetSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   ProjectAssetMetadataTargetSchema,
   ActionRevisionMetadataTargetSchema,
-]);
+])
+), (real) => { MetadataAttachmentTargetSchema = real; });
 
 export type ProjectAssetMetadataTarget = z.infer<
   typeof ProjectAssetMetadataTargetSchema

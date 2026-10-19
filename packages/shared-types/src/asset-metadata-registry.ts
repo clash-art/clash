@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import { AsrTimedTranscriptSchema } from "./production-metadata.js";
@@ -20,7 +21,8 @@ export {
  * always be rematerialized -- but `contentHash` has to pin the grid, because a
  * re-run renumbers every wordId that downstream artifacts reference.
  */
-export const MediaTranscriptMetadataSchema = z.object({
+export let MediaTranscriptMetadataSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("media.transcript"),
   backendId: z.string().min(1),
@@ -44,7 +46,8 @@ export const MediaTranscriptMetadataSchema = z.object({
     segmentCount: z.number().int().nonnegative().optional(),
     averageConfidence: z.number().min(0).max(1).optional(),
   }),
-});
+})
+), (real) => { MediaTranscriptMetadataSchema = real; });
 
 export type MediaTranscriptMetadata = z.infer<
   typeof MediaTranscriptMetadataSchema
@@ -59,7 +62,8 @@ export type MediaTranscriptMetadata = z.infer<
  * images that cannot be told apart. The renderer already knows every fact here; they were simply
  * never attached to the asset.
  */
-export const MediaRenderLineageMetadataSchema = z.object({
+export let MediaRenderLineageMetadataSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("media.render-lineage"),
   /** The entity rendered, e.g. a Director Stage or a Timeline. */
@@ -73,7 +77,8 @@ export const MediaRenderLineageMetadataSchema = z.object({
   renderer: z.string().min(1).optional(),
   /** The media file this describes. */
   sourceHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
-});
+})
+), (real) => { MediaRenderLineageMetadataSchema = real; });
 
 export type MediaRenderLineageMetadata = z.infer<
   typeof MediaRenderLineageMetadataSchema
@@ -83,7 +88,8 @@ export type MediaRenderLineageMetadata = z.infer<
  * A short producer-attributed description of what the media shows or says.
  * Small enough to live inline as its own identity: no body, no blob.
  */
-export const MediaDescriptionMetadataSchema = z.object({
+export let MediaDescriptionMetadataSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("media.description"),
   text: z.string().min(1),
@@ -92,7 +98,8 @@ export const MediaDescriptionMetadataSchema = z.object({
   producerModelId: z.string().min(1).optional(),
   /** The media file this describes. */
   sourceHash: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
-});
+})
+), (real) => { MediaDescriptionMetadataSchema = real; });
 
 export type MediaDescriptionMetadata = z.infer<
   typeof MediaDescriptionMetadataSchema
@@ -166,6 +173,28 @@ export type AssetMetadataSchemaLike = {
  */
 const declaredKinds = new Map<string, DeclaredAssetMetadataKind>();
 
+// The built-in kinds are registered on first access rather than at module evaluation: registering
+// one safely parses probe values through its schema, which would construct the metadata schemas on
+// every Host start even though no request had asked for them yet.
+let builtInKindsRegistered = false;
+
+function ensureBuiltInAssetMetadataKinds(): void {
+  if (builtInKindsRegistered) return;
+  builtInKindsRegistered = true;
+  registerAssetMetadataKind({
+    kind: "media.transcript",
+    schema: MediaTranscriptMetadataSchema,
+  });
+  registerAssetMetadataKind({
+    kind: "media.description",
+    schema: MediaDescriptionMetadataSchema,
+  });
+  registerAssetMetadataKind({
+    kind: "media.render-lineage",
+    schema: MediaRenderLineageMetadataSchema,
+  });
+}
+
 /**
  * Declare a metadata kind as data. A declared kind needs no switch branch and
  * no CLI verb: the generic apply path validates it, writes it, and versions it
@@ -178,6 +207,7 @@ const declaredKinds = new Map<string, DeclaredAssetMetadataKind>();
 export function registerAssetMetadataKind(
   declaration: DeclaredAssetMetadataKind,
 ): void {
+  ensureBuiltInAssetMetadataKinds();
   const issuesFor = (
     probe: unknown,
   ): ReadonlyArray<AssetMetadataSchemaIssue> => {
@@ -209,12 +239,14 @@ export function registerAssetMetadataKind(
 }
 
 export function listDeclaredAssetMetadataKinds(): string[] {
+  ensureBuiltInAssetMetadataKinds();
   return [...declaredKinds.keys()].sort();
 }
 
 export function getDeclaredAssetMetadataKind(
   kind: string,
 ): DeclaredAssetMetadataKind | undefined {
+  ensureBuiltInAssetMetadataKinds();
   return declaredKinds.get(kind);
 }
 
@@ -227,7 +259,8 @@ export type ParsedAssetMetadataFillAction = {
   createdAt?: string;
 };
 
-const FillActionEnvelopeSchema = z
+let FillActionEnvelopeSchema = lazySchema(() => (
+z
   .object({
     actionId: z.string().trim().min(1),
     target: MetadataAttachmentTargetSchema,
@@ -236,7 +269,8 @@ const FillActionEnvelopeSchema = z
     producer: z.string().trim().min(1),
     createdAt: z.string().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { FillActionEnvelopeSchema = real; });
 
 /**
  * Parse a fill action against whichever kind it declares. A kind nobody
@@ -246,6 +280,7 @@ export function parseAssetMetadataFillAction(
   value: unknown,
 ): ParsedAssetMetadataFillAction {
   const envelope = FillActionEnvelopeSchema.parse(value);
+  ensureBuiltInAssetMetadataKinds();
   if (envelope.metadata.kind !== envelope.metadataKind) {
     throw new Error(
       `metadata kind mismatch: ${envelope.metadataKind} does not match ${envelope.metadata.kind}`,
@@ -270,22 +305,8 @@ export function parseDeclaredAssetMetadata(
   kind: string,
   value: unknown,
 ): unknown {
+  ensureBuiltInAssetMetadataKinds();
   const declared = declaredKinds.get(kind);
   if (!declared) throw new Error(`Undeclared asset metadata kind: ${kind}`);
   return declared.schema.parse(value);
 }
-
-registerAssetMetadataKind({
-  kind: "media.transcript",
-  schema: MediaTranscriptMetadataSchema,
-});
-
-registerAssetMetadataKind({
-  kind: "media.description",
-  schema: MediaDescriptionMetadataSchema,
-});
-
-registerAssetMetadataKind({
-  kind: "media.render-lineage",
-  schema: MediaRenderLineageMetadataSchema,
-});

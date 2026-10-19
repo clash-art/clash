@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import type { LoroDoc } from "loro-crdt";
 import {
   getAbsoluteRect,
@@ -9,7 +10,8 @@ import { z } from "zod";
 import { Canvas } from "./canvas-ops.js";
 import { DEFAULT_CANVAS_ID } from "./project-workspace.js";
 
-export const ProjectCanvasPreviewNodeSchema = z
+export let ProjectCanvasPreviewNodeSchema = lazySchema(() => (
+z
   .object({
     id: z.string().trim().min(1),
     type: z.string().trim().min(1),
@@ -21,12 +23,14 @@ export const ProjectCanvasPreviewNodeSchema = z
     assetId: z.string().trim().min(1).optional(),
     label: z.string().trim().min(1).optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectCanvasPreviewNodeSchema = real; });
 export type ProjectCanvasPreviewNode = z.infer<
   typeof ProjectCanvasPreviewNodeSchema
 >;
 
-export const ProjectCanvasPreviewSchema = z
+export let ProjectCanvasPreviewSchema = lazySchema(() => (
+z
   .object({
     canvasId: z.string().trim().min(1),
     bounds: z
@@ -40,17 +44,20 @@ export const ProjectCanvasPreviewSchema = z
       .nullable(),
     nodes: z.array(ProjectCanvasPreviewNodeSchema),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectCanvasPreviewSchema = real; });
 export type ProjectCanvasPreview = z.infer<typeof ProjectCanvasPreviewSchema>;
 
-export const ProjectCanvasThumbnailSchema = z
+export let ProjectCanvasThumbnailSchema = lazySchema(() => (
+z
   .object({
     url: z.string().url(),
     revision: z.string().regex(/^[a-f0-9]{64}$/u),
     width: z.number().int().positive(),
     height: z.number().int().positive(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectCanvasThumbnailSchema = real; });
 export type ProjectCanvasThumbnail = z.infer<
   typeof ProjectCanvasThumbnailSchema
 >;

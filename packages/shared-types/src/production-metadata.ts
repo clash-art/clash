@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 import {
@@ -5,30 +6,37 @@ import {
   type MetadataAttachmentTarget,
 } from "./metadata-attachments.js";
 
-const FrameRangeSchema = z.object({
+let FrameRangeSchema = lazySchema(() => (
+z.object({
   startFrame: z.number().int().min(0),
   endFrame: z.number().int().min(0),
-});
+})
+), (real) => { FrameRangeSchema = real; });
 
-export const AudioBeatSchema = z.object({
+export let AudioBeatSchema = lazySchema(() => (
+z.object({
   frame: z.number().int().min(0),
   timeSeconds: z.number().min(0),
   confidence: z.number().min(0).max(1),
   bar: z.number().int().positive().optional(),
   beatInBar: z.number().int().positive().optional(),
   downbeat: z.boolean().optional(),
-});
+})
+), (real) => { AudioBeatSchema = real; });
 
-export const AudioEnergyPointSchema = z.object({
+export let AudioEnergyPointSchema = lazySchema(() => (
+z.object({
   frame: z.number().int().min(0),
   timeSeconds: z.number().min(0),
   rms: z.number().min(0),
   normalized: z.number().min(0).max(1),
   novelty: z.number().min(0).max(1),
   impact: z.number().min(0).max(1),
-});
+})
+), (real) => { AudioEnergyPointSchema = real; });
 
-export const AudioSectionSchema = z.object({
+export let AudioSectionSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   startFrame: z.number().int().min(0),
   endFrame: z.number().int().min(0),
@@ -56,26 +64,32 @@ export const AudioSectionSchema = z.object({
   novelty: z.number().min(0).max(1).optional(),
   impact: z.number().min(0).max(1).optional(),
   cutDensity: z.enum(["hold", "medium", "fast"]).optional(),
-});
+})
+), (real) => { AudioSectionSchema = real; });
 
-export const AudioBeatMetadataSchema = z.object({
+export let AudioBeatMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("audio.beat-analysis"),
   bpm: z.number().positive(),
   fps: z.number().positive(),
   beats: z.array(AudioBeatSchema),
   sections: z.array(AudioSectionSchema).default([]),
   energyCurve: z.array(AudioEnergyPointSchema).default([]),
-});
+})
+), (real) => { AudioBeatMetadataSchema = real; });
 
-export const AudioStemTypeSchema = z.enum([
+export let AudioStemTypeSchema = lazySchema(() => (
+z.enum([
   "vocal",
   "instrumental",
   "drums",
   "bass",
   "other",
-]);
+])
+), (real) => { AudioStemTypeSchema = real; });
 
-export const AudioStemAssetSchema = z.object({
+export let AudioStemAssetSchema = lazySchema(() => (
+z.object({
   stemAssetId: z.string().min(1),
   stemType: AudioStemTypeSchema,
   filePath: z.string().min(1),
@@ -84,9 +98,11 @@ export const AudioStemAssetSchema = z.object({
   durationSeconds: z.number().positive().optional(),
   sampleRate: z.number().int().positive().optional(),
   channels: z.number().int().positive().optional(),
-});
+})
+), (real) => { AudioStemAssetSchema = real; });
 
-export const AudioStemSeparationMetadataSchema = z.object({
+export let AudioStemSeparationMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("audio.stem-separation"),
   separationId: z.string().min(1),
   sourceAssetId: z.string().min(1),
@@ -96,9 +112,11 @@ export const AudioStemSeparationMetadataSchema = z.object({
   stems: z.array(AudioStemAssetSchema).min(1),
   vocalStemAssetId: z.string().min(1).optional(),
   decisionLog: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { AudioStemSeparationMetadataSchema = real; });
 
-export const LyricsAlignmentUnitSchema = z
+export let LyricsAlignmentUnitSchema = lazySchema(() => (
+z
   .object({
     lineId: z.string().min(1),
     wordId: z.string().min(1).optional(),
@@ -113,9 +131,11 @@ export const LyricsAlignmentUnitSchema = z
   .refine((unit) => unit.endMs > unit.startMs, {
     message: "lyrics alignment unit endMs must be greater than startMs",
     path: ["endMs"],
-  });
+  })
+), (real) => { LyricsAlignmentUnitSchema = real; });
 
-export const LyricsUnmatchedRangeSchema = z
+export let LyricsUnmatchedRangeSchema = lazySchema(() => (
+z
   .object({
     startMs: z.number().min(0),
     endMs: z.number().min(0),
@@ -125,18 +145,22 @@ export const LyricsUnmatchedRangeSchema = z
   .refine((range) => range.endMs > range.startMs, {
     message: "lyrics unmatched range endMs must be greater than startMs",
     path: ["endMs"],
-  });
+  })
+), (real) => { LyricsUnmatchedRangeSchema = real; });
 
-export const LyricsAlignmentMetadataSchema = z.object({
+export let LyricsAlignmentMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("audio.lyrics-alignment"),
   fps: z.number().positive(),
   lyricsSource: z.string().min(1),
   vocalStemAssetId: z.string().min(1).optional(),
   units: z.array(LyricsAlignmentUnitSchema).min(1),
   unmatchedRanges: z.array(LyricsUnmatchedRangeSchema).default([]),
-});
+})
+), (real) => { LyricsAlignmentMetadataSchema = real; });
 
-export const AsrTimedWordSchema = z
+export let AsrTimedWordSchema = lazySchema(() => (
+z
   .object({
     id: z.string().min(1),
     text: z.string().min(1),
@@ -148,9 +172,11 @@ export const AsrTimedWordSchema = z
   .refine((word) => word.endMs > word.startMs, {
     message: "ASR word endMs must be greater than startMs",
     path: ["endMs"],
-  });
+  })
+), (real) => { AsrTimedWordSchema = real; });
 
-export const AsrTimedSegmentSchema = z
+export let AsrTimedSegmentSchema = lazySchema(() => (
+z
   .object({
     id: z.string().min(1),
     text: z.string().min(1),
@@ -162,9 +188,11 @@ export const AsrTimedSegmentSchema = z
   .refine((segment) => segment.endMs > segment.startMs, {
     message: "ASR segment endMs must be greater than startMs",
     path: ["endMs"],
-  });
+  })
+), (real) => { AsrTimedSegmentSchema = real; });
 
-export const AsrTimedTranscriptSchema = z
+export let AsrTimedTranscriptSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.asr.timed-transcript"),
@@ -219,18 +247,22 @@ export const AsrTimedTranscriptSchema = z
         }
       });
     });
-  });
+  })
+), (real) => { AsrTimedTranscriptSchema = real; });
 
-export const TranscriptWordSchema = z.object({
+export let TranscriptWordSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   text: z.string(),
   startFrame: z.number().int().min(0),
   endFrame: z.number().int().min(0),
   confidence: z.number().min(0).max(1).optional(),
   speakerId: z.string().min(1).optional(),
-});
+})
+), (real) => { TranscriptWordSchema = real; });
 
-export const AsrTranscriptMetadataSchema = z.object({
+export let AsrTranscriptMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("asr-transcript"),
   sourcePath: z.string().min(1),
   sourceHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -240,9 +272,11 @@ export const AsrTranscriptMetadataSchema = z.object({
   durationFrames: z.number().int().min(0).optional(),
   wordCount: z.number().int().nonnegative(),
   averageConfidence: z.number().min(0).max(1).optional(),
-});
+})
+), (real) => { AsrTranscriptMetadataSchema = real; });
 
-export const TextCutSchema = z.object({
+export let TextCutSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   sourceStartFrame: z.number().int().min(0),
   sourceEndFrame: z.number().int().min(0),
@@ -253,9 +287,11 @@ export const TextCutSchema = z.object({
   requiresReview: z.boolean().optional(),
   confidence: z.number().min(0).max(1).optional(),
   detectionSource: z.string().min(1).optional(),
-});
+})
+), (real) => { TextCutSchema = real; });
 
-export const CaptionCueSchema = z.object({
+export let CaptionCueSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   startFrame: z.number().int().min(0),
   durationInFrames: z.number().int().positive(),
@@ -263,9 +299,11 @@ export const CaptionCueSchema = z.object({
   wordIds: z.array(z.string()).optional(),
   sourceStartFrame: z.number().int().min(0).optional(),
   sourceEndFrame: z.number().int().min(0).optional(),
-});
+})
+), (real) => { CaptionCueSchema = real; });
 
-export const TalkingHeadMetadataSchema = z.object({
+export let TalkingHeadMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("talking-head.analysis"),
   fps: z.number().positive(),
   asr: AsrTranscriptMetadataSchema.optional(),
@@ -287,22 +325,28 @@ export const TalkingHeadMetadataSchema = z.object({
       }),
     )
     .default([]),
-});
+})
+), (real) => { TalkingHeadMetadataSchema = real; });
 
-export const RightsMetadataSchema = z.object({
+export let RightsMetadataSchema = lazySchema(() => (
+z.object({
   license: z.string().min(1),
   attribution: z.string().min(1),
   redistributionAllowed: z.boolean(),
   derivativeAllowed: z.boolean(),
-});
+})
+), (real) => { RightsMetadataSchema = real; });
 
-export const ReferenceShotSchema = FrameRangeSchema.extend({
+export let ReferenceShotSchema = lazySchema(() => (
+FrameRangeSchema.extend({
   id: z.string().min(1),
   description: z.string().min(1),
   tags: z.array(z.string()).default([]),
-});
+})
+), (real) => { ReferenceShotSchema = real; });
 
-export const ReferenceVideoMetadataSchema = z.object({
+export let ReferenceVideoMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("reference-video.analysis"),
   sourceUrl: z.string().min(1),
   rights: RightsMetadataSchema,
@@ -313,24 +357,30 @@ export const ReferenceVideoMetadataSchema = z.object({
       similarityScore: z.number().min(0).max(1).optional(),
     })
     .optional(),
-});
+})
+), (real) => { ReferenceVideoMetadataSchema = real; });
 
-export const ReferenceDownloadSourceLedgerSchema = z.object({
+export let ReferenceDownloadSourceLedgerSchema = lazySchema(() => (
+z.object({
   sourceUrl: z.string().min(1),
   license: z.string().min(1),
   attribution: z.string().min(1),
   allowedUses: z.array(z.string().min(1)).default(["analysis-only"]),
   redistributionAllowed: z.boolean(),
   derivativeAllowed: z.boolean(),
-});
+})
+), (real) => { ReferenceDownloadSourceLedgerSchema = real; });
 
-export const ReferenceDownloadFileSchema = z.object({
+export let ReferenceDownloadFileSchema = lazySchema(() => (
+z.object({
   path: z.string().min(1),
   mediaType: z.enum(["video", "audio", "image", "metadata", "unknown"]),
   sizeBytes: z.number().int().nonnegative().optional(),
-});
+})
+), (real) => { ReferenceDownloadFileSchema = real; });
 
-export const ReferenceDownloadMetadataBaseSchema = z.object({
+export let ReferenceDownloadMetadataBaseSchema = lazySchema(() => (
+z.object({
   kind: z.literal("reference.download"),
   sourceUrl: z.string().min(1),
   tool: z.literal("yt-dlp"),
@@ -340,7 +390,8 @@ export const ReferenceDownloadMetadataBaseSchema = z.object({
   finalExportAllowed: z.boolean(),
   sourceLedger: ReferenceDownloadSourceLedgerSchema,
   decisionLog: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { ReferenceDownloadMetadataBaseSchema = real; });
 
 function hasReferenceDownloadFinalExportRights(
   metadata: z.infer<typeof ReferenceDownloadMetadataBaseSchema>,
@@ -352,16 +403,19 @@ function hasReferenceDownloadFinalExportRights(
   );
 }
 
-export const ReferenceDownloadMetadataSchema =
-  ReferenceDownloadMetadataBaseSchema.refine(
+export let ReferenceDownloadMetadataSchema =
+  lazySchema(() => (
+ReferenceDownloadMetadataBaseSchema.refine(
     hasReferenceDownloadFinalExportRights,
     {
       message: "final export requires derivative and redistribution rights",
       path: ["finalExportAllowed"],
     },
-  );
+  )
+), (real) => { ReferenceDownloadMetadataSchema = real; });
 
-export const VisualMomentCandidateSchema = z
+export let VisualMomentCandidateSchema = lazySchema(() => (
+z
   .object({
     id: z.string().min(1),
     startMs: z.number().min(0),
@@ -381,34 +435,42 @@ export const VisualMomentCandidateSchema = z
   .refine((candidate) => candidate.endMs > candidate.startMs, {
     message: "visual moment endMs must be greater than startMs",
     path: ["endMs"],
-  });
+  })
+), (real) => { VisualMomentCandidateSchema = real; });
 
-export const VideoVisualMomentMetadataSchema = z.object({
+export let VideoVisualMomentMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("video.visual-moments"),
   sourceVideoAssetId: z.string().min(1),
   fps: z.number().positive(),
   sourcePath: z.string().min(1).optional(),
   sceneChanges: z.array(z.number().int().min(0)).default([]),
   candidates: z.array(VisualMomentCandidateSchema).min(1),
-});
+})
+), (real) => { VideoVisualMomentMetadataSchema = real; });
 
-export const CharacterReferenceViewKindSchema = z.enum([
+export let CharacterReferenceViewKindSchema = lazySchema(() => (
+z.enum([
   "front",
   "side",
   "back",
   "three-quarter",
   "expression",
-]);
+])
+), (real) => { CharacterReferenceViewKindSchema = real; });
 
-export const CharacterReferenceViewSchema = z.object({
+export let CharacterReferenceViewSchema = lazySchema(() => (
+z.object({
   view: CharacterReferenceViewKindSchema,
   assetId: z.string().min(1),
   path: z.string().min(1),
   locked: z.boolean().default(true),
   copyOnWriteRequired: z.boolean().default(true),
-});
+})
+), (real) => { CharacterReferenceViewSchema = real; });
 
-export const ImageStoryboardMetadataSchema = z.object({
+export let ImageStoryboardMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("image.storyboard-consistency"),
   characters: z
     .array(
@@ -442,9 +504,11 @@ export const ImageStoryboardMetadataSchema = z.object({
       }),
     )
     .default([]),
-});
+})
+), (real) => { ImageStoryboardMetadataSchema = real; });
 
-export const SemanticReferenceRoleKindSchema = z.enum([
+export let SemanticReferenceRoleKindSchema = lazySchema(() => (
+z.enum([
   "identity-front",
   "identity-side",
   "identity-back",
@@ -454,17 +518,21 @@ export const SemanticReferenceRoleKindSchema = z.enum([
   "style-frame",
   "logo-lock",
   "product-packshot",
-]);
+])
+), (real) => { SemanticReferenceRoleKindSchema = real; });
 
-export const SemanticReferenceDownstreamUsageSchema = z.enum([
+export let SemanticReferenceDownstreamUsageSchema = lazySchema(() => (
+z.enum([
   "identity-reference",
   "scene-reference",
   "style-reference",
   "brand-lock",
   "product-reference",
-]);
+])
+), (real) => { SemanticReferenceDownstreamUsageSchema = real; });
 
-export const SemanticReferenceRoleSchema = z.object({
+export let SemanticReferenceRoleSchema = lazySchema(() => (
+z.object({
   roleId: z.string().min(1),
   assetId: z.string().min(1),
   role: SemanticReferenceRoleKindSchema,
@@ -474,14 +542,18 @@ export const SemanticReferenceRoleSchema = z.object({
   copyOnWriteRequired: z.boolean(),
   downstreamUsage: SemanticReferenceDownstreamUsageSchema,
   constraints: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { SemanticReferenceRoleSchema = real; });
 
-export const SemanticReferenceRolesMetadataSchema = z.object({
+export let SemanticReferenceRolesMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("image.semantic-reference-roles"),
   roles: z.array(SemanticReferenceRoleSchema).min(1),
-});
+})
+), (real) => { SemanticReferenceRolesMetadataSchema = real; });
 
-export const ProductLogoQaReferenceSchema = z.object({
+export let ProductLogoQaReferenceSchema = lazySchema(() => (
+z.object({
   roleId: z.string().min(1),
   assetId: z.string().min(1),
   role: z.enum(["logo-lock", "product-packshot"]),
@@ -490,9 +562,11 @@ export const ProductLogoQaReferenceSchema = z.object({
   locked: z.boolean(),
   copyOnWriteRequired: z.boolean(),
   constraints: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { ProductLogoQaReferenceSchema = real; });
 
-export const ProductLogoQaCheckKindSchema = z.enum([
+export let ProductLogoQaCheckKindSchema = lazySchema(() => (
+z.enum([
   "logo-presence",
   "glyph-lock",
   "brand-color",
@@ -500,9 +574,11 @@ export const ProductLogoQaCheckKindSchema = z.enum([
   "claim-text",
   "material-finish",
   "packaging-layout",
-]);
+])
+), (real) => { ProductLogoQaCheckKindSchema = real; });
 
-export const ProductLogoQaCheckSchema = z.object({
+export let ProductLogoQaCheckSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   roleId: z.string().min(1),
   referenceAssetId: z.string().min(1),
@@ -514,9 +590,11 @@ export const ProductLogoQaCheckSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
   deltaE: z.number().min(0).optional(),
   evidence: z.string().min(1).optional(),
-});
+})
+), (real) => { ProductLogoQaCheckSchema = real; });
 
-export const ProductLogoQaMetadataSchema = z.object({
+export let ProductLogoQaMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("image.product-logo-qa"),
   targetAssetId: z.string().min(1),
   referencePackAssetId: z.string().min(1).optional(),
@@ -526,9 +604,11 @@ export const ProductLogoQaMetadataSchema = z.object({
   verdict: z.enum(["pass", "requires-review", "fail"]),
   blockedReasons: z.array(z.string().min(1)).default([]),
   copyOnWriteRequired: z.boolean(),
-});
+})
+), (real) => { ProductLogoQaMetadataSchema = real; });
 
-export const AnalysisBackendBenchmarkMetricSchema = z.object({
+export let AnalysisBackendBenchmarkMetricSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   label: z.string().min(1).optional(),
   score: z.number().min(0).max(1),
@@ -536,18 +616,22 @@ export const AnalysisBackendBenchmarkMetricSchema = z.object({
   weight: z.number().positive().default(1),
   higherIsBetter: z.boolean().default(true),
   status: z.enum(["pass", "fail"]),
-});
+})
+), (real) => { AnalysisBackendBenchmarkMetricSchema = real; });
 
-export const AnalysisBackendBenchmarkCandidateSchema = z.object({
+export let AnalysisBackendBenchmarkCandidateSchema = lazySchema(() => (
+z.object({
   backendId: z.string().min(1),
   capability: z.string().min(1),
   resultPath: z.string().min(1),
   metrics: z.array(AnalysisBackendBenchmarkMetricSchema).min(1),
   weightedScore: z.number().min(0).max(1),
   status: z.enum(["pass", "fail"]),
-});
+})
+), (real) => { AnalysisBackendBenchmarkCandidateSchema = real; });
 
-export const AnalysisBackendBenchmarkMetadataSchema = z.object({
+export let AnalysisBackendBenchmarkMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("analysis.backend-benchmark"),
   benchmarkId: z.string().min(1),
   targetCapability: z.string().min(1),
@@ -557,23 +641,29 @@ export const AnalysisBackendBenchmarkMetadataSchema = z.object({
   verdict: z.enum(["pass", "requires-review", "fail"]),
   blockedReasons: z.array(z.string().min(1)).default([]),
   decisionLog: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { AnalysisBackendBenchmarkMetadataSchema = real; });
 
-export const ImageEmbeddingDistanceMetricSchema = z.enum([
+export let ImageEmbeddingDistanceMetricSchema = lazySchema(() => (
+z.enum([
   "cosine",
   "dot",
   "euclidean",
-]);
+])
+), (real) => { ImageEmbeddingDistanceMetricSchema = real; });
 
-export const ImageEmbeddingBaselineForSchema = z.enum([
+export let ImageEmbeddingBaselineForSchema = lazySchema(() => (
+z.enum([
   "identity",
   "product",
   "scene",
   "style",
   "logo",
-]);
+])
+), (real) => { ImageEmbeddingBaselineForSchema = real; });
 
-export const ImageEmbeddingStoreItemSchema = z.object({
+export let ImageEmbeddingStoreItemSchema = lazySchema(() => (
+z.object({
   assetId: z.string().min(1),
   roleId: z.string().min(1).optional(),
   subjectId: z.string().min(1).optional(),
@@ -585,9 +675,11 @@ export const ImageEmbeddingStoreItemSchema = z.object({
   locked: z.boolean(),
   copyOnWriteRequired: z.boolean(),
   tags: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { ImageEmbeddingStoreItemSchema = real; });
 
-export const ImageEmbeddingStoreMetadataSchema = z.object({
+export let ImageEmbeddingStoreMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("image.embedding-store"),
   embeddingSetId: z.string().min(1),
   modelId: z.string().min(1),
@@ -595,14 +687,18 @@ export const ImageEmbeddingStoreMetadataSchema = z.object({
   distanceMetric: ImageEmbeddingDistanceMetricSchema,
   items: z.array(ImageEmbeddingStoreItemSchema).min(1),
   copyOnWriteRequired: z.boolean(),
-});
+})
+), (real) => { ImageEmbeddingStoreMetadataSchema = real; });
 
-export const ImageComfyuiApiFormatSchema = z.enum([
+export let ImageComfyuiApiFormatSchema = lazySchema(() => (
+z.enum([
   "comfyui-api-json",
   "comfyui-ui-json",
-]);
+])
+), (real) => { ImageComfyuiApiFormatSchema = real; });
 
-export const ImageComfyuiModelTypeSchema = z.enum([
+export let ImageComfyuiModelTypeSchema = lazySchema(() => (
+z.enum([
   "checkpoint",
   "vae",
   "lora",
@@ -610,9 +706,11 @@ export const ImageComfyuiModelTypeSchema = z.enum([
   "upscaler",
   "embedding",
   "other",
-]);
+])
+), (real) => { ImageComfyuiModelTypeSchema = real; });
 
-export const ImageComfyuiModelReferenceSchema = z.object({
+export let ImageComfyuiModelReferenceSchema = lazySchema(() => (
+z.object({
   name: z.string().min(1),
   type: ImageComfyuiModelTypeSchema,
   path: z.string().min(1).optional(),
@@ -621,9 +719,11 @@ export const ImageComfyuiModelReferenceSchema = z.object({
     .regex(/^sha256:[a-f0-9]{64}$/)
     .optional(),
   license: z.string().min(1).optional(),
-});
+})
+), (real) => { ImageComfyuiModelReferenceSchema = real; });
 
-export const ImageComfyuiCustomNodeSchema = z.object({
+export let ImageComfyuiCustomNodeSchema = lazySchema(() => (
+z.object({
   name: z.string().min(1),
   source: z.string().min(1).optional(),
   version: z.string().min(1).optional(),
@@ -632,9 +732,11 @@ export const ImageComfyuiCustomNodeSchema = z.object({
     .string()
     .regex(/^sha256:[a-f0-9]{64}$/)
     .optional(),
-});
+})
+), (real) => { ImageComfyuiCustomNodeSchema = real; });
 
-export const ImageComfyuiInputKindSchema = z.enum([
+export let ImageComfyuiInputKindSchema = lazySchema(() => (
+z.enum([
   "text",
   "image",
   "mask",
@@ -645,9 +747,11 @@ export const ImageComfyuiInputKindSchema = z.enum([
   "lora",
   "controlnet",
   "other",
-]);
+])
+), (real) => { ImageComfyuiInputKindSchema = real; });
 
-export const ImageComfyuiInputSlotSchema = z.object({
+export let ImageComfyuiInputSlotSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   nodeId: z.string().min(1),
   inputName: z.string().min(1),
@@ -655,21 +759,27 @@ export const ImageComfyuiInputSlotSchema = z.object({
   value: z.union([z.string(), z.number(), z.boolean()]).optional(),
   assetId: z.string().min(1).optional(),
   path: z.string().min(1).optional(),
-});
+})
+), (real) => { ImageComfyuiInputSlotSchema = real; });
 
-export const ImageComfyuiOutputStatusSchema = z.enum([
+export let ImageComfyuiOutputStatusSchema = lazySchema(() => (
+z.enum([
   "planned",
   "materialized",
-]);
+])
+), (real) => { ImageComfyuiOutputStatusSchema = real; });
 
-export const ImageComfyuiOutputMediaTypeSchema = z.enum([
+export let ImageComfyuiOutputMediaTypeSchema = lazySchema(() => (
+z.enum([
   "image",
   "image-sequence",
   "mask",
   "metadata",
-]);
+])
+), (real) => { ImageComfyuiOutputMediaTypeSchema = real; });
 
-export const ImageComfyuiOutputSchema = z.object({
+export let ImageComfyuiOutputSchema = lazySchema(() => (
+z.object({
   outputAssetId: z.string().min(1),
   nodeId: z.string().min(1),
   outputName: z.string().min(1).optional(),
@@ -680,16 +790,20 @@ export const ImageComfyuiOutputSchema = z.object({
     .regex(/^sha256:[a-f0-9]{64}$/)
     .optional(),
   status: ImageComfyuiOutputStatusSchema,
-});
+})
+), (real) => { ImageComfyuiOutputSchema = real; });
 
-export const ImageComfyuiExecutionSchema = z.object({
+export let ImageComfyuiExecutionSchema = lazySchema(() => (
+z.object({
   mode: z.enum(["planned", "completed", "failed"]),
   runnerId: z.string().min(1).optional(),
   promptId: z.string().min(1).optional(),
   executedAt: z.string().min(1).optional(),
-});
+})
+), (real) => { ImageComfyuiExecutionSchema = real; });
 
-export const ImageComfyuiRunnerMetadataSchema = z.object({
+export let ImageComfyuiRunnerMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("image.comfyui-runner"),
   workflowId: z.string().min(1),
   workflowPath: z.string().min(1),
@@ -702,9 +816,11 @@ export const ImageComfyuiRunnerMetadataSchema = z.object({
   outputs: z.array(ImageComfyuiOutputSchema).min(1),
   execution: ImageComfyuiExecutionSchema.prefault({ mode: "planned" }),
   decisionLog: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { ImageComfyuiRunnerMetadataSchema = real; });
 
-export const StoryboardPromptSchema = z.object({
+export let StoryboardPromptSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   panelId: z.string().min(1),
   sceneId: z.string().min(1),
@@ -714,23 +830,29 @@ export const StoryboardPromptSchema = z.object({
   outputAssetId: z.string().min(1),
   outputPath: z.string().min(1),
   modelHint: z.string().optional(),
-});
+})
+), (real) => { StoryboardPromptSchema = real; });
 
-export const StoryboardPromptPackSchema = z.object({
+export let StoryboardPromptPackSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("clash.storyboard.prompt-pack"),
   storyboardAssetId: z.string().min(1),
   prompts: z.array(StoryboardPromptSchema).min(1),
-});
+})
+), (real) => { StoryboardPromptPackSchema = real; });
 
-export const SafeZonesSchema = z.object({
+export let SafeZonesSchema = lazySchema(() => (
+z.object({
   top: z.number().int().min(0),
   right: z.number().int().min(0),
   bottom: z.number().int().min(0),
   left: z.number().int().min(0),
-});
+})
+), (real) => { SafeZonesSchema = real; });
 
-export const AdDeliveryVariantSchema = z.object({
+export let AdDeliveryVariantSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   platform: z.string().min(1),
   durationSeconds: z.number().positive(),
@@ -740,24 +862,30 @@ export const AdDeliveryVariantSchema = z.object({
   safeZones: SafeZonesSchema,
   subtitlesRequired: z.boolean().default(true),
   loudnessTarget: z.string().min(1).default("platform-default"),
-});
+})
+), (real) => { AdDeliveryVariantSchema = real; });
 
-export const AdPackshotSpecSchema = z.object({
+export let AdPackshotSpecSchema = lazySchema(() => (
+z.object({
   required: z.boolean().default(true),
   assetId: z.string().min(1),
   startFrame: z.number().int().min(0),
   endFrame: z.number().int().min(0),
-});
+})
+), (real) => { AdPackshotSpecSchema = real; });
 
-export const AdEndCardSpecSchema = z.object({
+export let AdEndCardSpecSchema = lazySchema(() => (
+z.object({
   required: z.boolean().default(true),
   durationFrames: z.number().int().positive(),
   cta: z.string().min(1),
   disclaimer: z.string().min(1).optional(),
   qrRequired: z.boolean().default(false),
-});
+})
+), (real) => { AdEndCardSpecSchema = real; });
 
-export const AdDeliveryMetadataSchema = z.object({
+export let AdDeliveryMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("ad.delivery-spec"),
   brand: z.string().min(1),
   fps: z.number().positive(),
@@ -766,15 +894,19 @@ export const AdDeliveryMetadataSchema = z.object({
   packshot: AdPackshotSpecSchema,
   endCard: AdEndCardSpecSchema,
   rightsLedgerAssetId: z.string().min(1).optional(),
-});
+})
+), (real) => { AdDeliveryMetadataSchema = real; });
 
-const AdDeliveryChecklistItemSchema = z.object({
+let AdDeliveryChecklistItemSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   required: z.boolean(),
-});
+})
+), (real) => { AdDeliveryChecklistItemSchema = real; });
 
-export const AdDeliverySpecProjectionSchema = z.object({
+export let AdDeliverySpecProjectionSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("clash.ad.delivery-spec.projection"),
   targetAssetId: z.string().min(1),
@@ -786,9 +918,11 @@ export const AdDeliverySpecProjectionSchema = z.object({
   endCard: AdEndCardSpecSchema,
   rightsLedgerAssetId: z.string().min(1).optional(),
   checklist: z.array(AdDeliveryChecklistItemSchema).default([]),
-});
+})
+), (real) => { AdDeliverySpecProjectionSchema = real; });
 
-export const AdDeliveryExportProbeSchema = z.object({
+export let AdDeliveryExportProbeSchema = lazySchema(() => (
+z.object({
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   fps: z.number().positive(),
@@ -797,15 +931,19 @@ export const AdDeliveryExportProbeSchema = z.object({
   hasAudio: z.boolean(),
   videoCodec: z.string().min(1).optional(),
   audioCodec: z.string().min(1).optional(),
-});
+})
+), (real) => { AdDeliveryExportProbeSchema = real; });
 
-export const AdDeliverySafeZoneViolationSchema = z.object({
+export let AdDeliverySafeZoneViolationSchema = lazySchema(() => (
+z.object({
   frame: z.number().int().min(0).optional(),
   description: z.string().min(1),
   severity: z.enum(["warning", "error"]).default("error"),
-});
+})
+), (real) => { AdDeliverySafeZoneViolationSchema = real; });
 
-export const AdDeliveryVisualQaReportSchema = z.object({
+export let AdDeliveryVisualQaReportSchema = lazySchema(() => (
+z.object({
   captionsPresent: z.boolean(),
   safeZoneViolations: z.array(AdDeliverySafeZoneViolationSchema).default([]),
   packshotVisible: z.boolean(),
@@ -814,18 +952,22 @@ export const AdDeliveryVisualQaReportSchema = z.object({
   ctaVisible: z.boolean().optional(),
   logoLockupVisible: z.boolean().optional(),
   finalFrameHolds: z.boolean().optional(),
-});
+})
+), (real) => { AdDeliveryVisualQaReportSchema = real; });
 
-export const AdDeliveryExportValidationCheckSchema = z.object({
+export let AdDeliveryExportValidationCheckSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   status: z.enum(["pass", "fail"]),
   required: z.boolean(),
   severity: z.enum(["error", "warning"]).default("error"),
   expected: z.string().min(1),
   actual: z.string().min(1),
-});
+})
+), (real) => { AdDeliveryExportValidationCheckSchema = real; });
 
-export const AdDeliveryExportValidationReceiptSchema = z.object({
+export let AdDeliveryExportValidationReceiptSchema = lazySchema(() => (
+z.object({
   schemaVersion: z.literal(1),
   kind: z.literal("clash.ad.delivery-export-validation"),
   targetAssetId: z.string().min(1),
@@ -836,9 +978,11 @@ export const AdDeliveryExportValidationReceiptSchema = z.object({
   visualQa: AdDeliveryVisualQaReportSchema.optional(),
   checks: z.array(AdDeliveryExportValidationCheckSchema).min(1),
   verdict: z.enum(["pass", "fail"]),
-});
+})
+), (real) => { AdDeliveryExportValidationReceiptSchema = real; });
 
-export const AdVisualQaCheckKindSchema = z.enum([
+export let AdVisualQaCheckKindSchema = lazySchema(() => (
+z.enum([
   "captions-present",
   "safe-zone",
   "packshot-visible",
@@ -848,9 +992,11 @@ export const AdVisualQaCheckKindSchema = z.enum([
   "cta-visible",
   "logo-lockup-visible",
   "final-frame-hold",
-]);
+])
+), (real) => { AdVisualQaCheckKindSchema = real; });
 
-export const AdVisualQaCheckSchema = z.object({
+export let AdVisualQaCheckSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   check: AdVisualQaCheckKindSchema,
   status: z.enum(["pass", "fail", "requires-review"]),
@@ -860,9 +1006,11 @@ export const AdVisualQaCheckSchema = z.object({
   confidence: z.number().min(0).max(1).optional(),
   frame: z.number().int().min(0).optional(),
   evidencePath: z.string().min(1).optional(),
-});
+})
+), (real) => { AdVisualQaCheckSchema = real; });
 
-export const AdVisualQaMetadataSchema = z.object({
+export let AdVisualQaMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("ad.visual-qa"),
   targetAssetId: z.string().min(1),
   variantId: z.string().min(1),
@@ -873,30 +1021,38 @@ export const AdVisualQaMetadataSchema = z.object({
   blockedReasons: z.array(z.string().min(1)).default([]),
   visualQa: AdDeliveryVisualQaReportSchema,
   decisionLog: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { AdVisualQaMetadataSchema = real; });
 
-export const ContentCredentialModeSchema = z.enum([
+export let ContentCredentialModeSchema = lazySchema(() => (
+z.enum([
   "unsigned-manifest",
   "signed-c2pa",
   "external",
-]);
+])
+), (real) => { ContentCredentialModeSchema = real; });
 
-export const ContentCredentialSignatureStatusSchema = z.enum([
+export let ContentCredentialSignatureStatusSchema = lazySchema(() => (
+z.enum([
   "unsigned",
   "signed",
   "external",
   "failed",
-]);
+])
+), (real) => { ContentCredentialSignatureStatusSchema = real; });
 
-export const ContentCredentialIngredientRelationshipSchema = z.enum([
+export let ContentCredentialIngredientRelationshipSchema = lazySchema(() => (
+z.enum([
   "source",
   "reference",
   "generated-input",
   "model",
   "metadata",
-]);
+])
+), (real) => { ContentCredentialIngredientRelationshipSchema = real; });
 
-export const ContentCredentialIngredientSchema = z.object({
+export let ContentCredentialIngredientSchema = lazySchema(() => (
+z.object({
   assetId: z.string().min(1).optional(),
   path: z.string().min(1),
   relationship: ContentCredentialIngredientRelationshipSchema,
@@ -906,16 +1062,20 @@ export const ContentCredentialIngredientSchema = z.object({
     .optional(),
   title: z.string().min(1).optional(),
   rights: z.string().min(1).optional(),
-});
+})
+), (real) => { ContentCredentialIngredientSchema = real; });
 
-export const ContentCredentialActionSchema = z.object({
+export let ContentCredentialActionSchema = lazySchema(() => (
+z.object({
   actionId: z.string().min(1).optional(),
   action: z.string().min(1),
   softwareAgent: z.string().min(1).optional(),
   when: z.string().min(1).optional(),
-});
+})
+), (real) => { ContentCredentialActionSchema = real; });
 
-export const ContentCredentialAssertionSchema = z.object({
+export let ContentCredentialAssertionSchema = lazySchema(() => (
+z.object({
   label: z.string().min(1),
   value: z.string().min(1),
   path: z.string().min(1).optional(),
@@ -923,9 +1083,11 @@ export const ContentCredentialAssertionSchema = z.object({
     .string()
     .regex(/^sha256:[a-f0-9]{64}$/)
     .optional(),
-});
+})
+), (real) => { ContentCredentialAssertionSchema = real; });
 
-export const ContentCredentialsMetadataSchema = z.object({
+export let ContentCredentialsMetadataSchema = lazySchema(() => (
+z.object({
   kind: z.literal("provenance.content-credentials"),
   credentialId: z.string().min(1),
   targetAssetId: z.string().min(1),
@@ -946,9 +1108,11 @@ export const ContentCredentialsMetadataSchema = z.object({
   actions: z.array(ContentCredentialActionSchema).default([]),
   assertions: z.array(ContentCredentialAssertionSchema).default([]),
   decisionLog: z.array(z.string().min(1)).default([]),
-});
+})
+), (real) => { ContentCredentialsMetadataSchema = real; });
 
-const ProductionMetadataBaseSchema = z.discriminatedUnion("kind", [
+let ProductionMetadataBaseSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   AudioBeatMetadataSchema,
   AudioStemSeparationMetadataSchema,
   LyricsAlignmentMetadataSchema,
@@ -965,10 +1129,12 @@ const ProductionMetadataBaseSchema = z.discriminatedUnion("kind", [
   AdDeliveryMetadataSchema,
   AdVisualQaMetadataSchema,
   ContentCredentialsMetadataSchema,
-]);
+])
+), (real) => { ProductionMetadataBaseSchema = real; });
 
-export const ProductionMetadataSchema =
-  ProductionMetadataBaseSchema.superRefine((metadata, context) => {
+export let ProductionMetadataSchema =
+  lazySchema(() => (
+ProductionMetadataBaseSchema.superRefine((metadata, context) => {
     if (
       metadata.kind === "reference.download" &&
       !hasReferenceDownloadFinalExportRights(metadata)
@@ -979,9 +1145,11 @@ export const ProductionMetadataSchema =
         path: ["finalExportAllowed"],
       });
     }
-  });
+  })
+), (real) => { ProductionMetadataSchema = real; });
 
-export const AssetMetadataFillActionSchema = z
+export let AssetMetadataFillActionSchema = lazySchema(() => (
+z
   .object({
     actionId: z.string().min(1),
     target: MetadataAttachmentTargetSchema,
@@ -990,7 +1158,8 @@ export const AssetMetadataFillActionSchema = z
     producer: z.string().min(1),
     createdAt: z.string().optional(),
   })
-  .strict();
+  .strict()
+), (real) => { AssetMetadataFillActionSchema = real; });
 
 export type AudioBeatMetadata = z.infer<typeof AudioBeatMetadataSchema>;
 export type AudioStemType = z.infer<typeof AudioStemTypeSchema>;

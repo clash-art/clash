@@ -1,9 +1,15 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
-export const ProviderUsageStatusSchema = z.enum(["submitted", "completed", "failed"]);
-export const ProviderUsagePricingSourceSchema = z.enum(["pika-catalog", "unavailable"]);
+export let ProviderUsageStatusSchema = lazySchema(() => (
+z.enum(["submitted", "completed", "failed"])
+), (real) => { ProviderUsageStatusSchema = real; });
+export let ProviderUsagePricingSourceSchema = lazySchema(() => (
+z.enum(["pika-catalog", "unavailable"])
+), (real) => { ProviderUsagePricingSourceSchema = real; });
 
-export const ProviderUsageAuditEventSchema = z.object({
+export let ProviderUsageAuditEventSchema = lazySchema(() => (
+z.object({
   id: z.string().min(1),
   userId: z.string().min(1),
   providerId: z.string().min(1),
@@ -27,7 +33,8 @@ export const ProviderUsageAuditEventSchema = z.object({
   errorCode: z.string().optional(),
   errorMessage: z.string().optional(),
   occurredAt: z.string().datetime(),
-});
+})
+), (real) => { ProviderUsageAuditEventSchema = real; });
 
 export type ProviderUsageStatus = z.infer<typeof ProviderUsageStatusSchema>;
 export type ProviderUsagePricingSource = z.infer<typeof ProviderUsagePricingSourceSchema>;

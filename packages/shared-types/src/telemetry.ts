@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 /**
@@ -21,7 +22,9 @@ export const TELEMETRY_KEYS = [
   "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 ] as const;
 
-export const TelemetryKeySchema = z.enum(TELEMETRY_KEYS);
+export let TelemetryKeySchema = lazySchema(() => (
+z.enum(TELEMETRY_KEYS)
+), (real) => { TelemetryKeySchema = real; });
 export type TelemetryKey = z.infer<typeof TelemetryKeySchema>;
 
 /** Credential-bearing keys: stored with secrets and never echoed back. */
@@ -43,13 +46,18 @@ export const LOCAL_OTLP_TRACES_PATH = "/api/v1/local/otlp/v1/traces";
 
 /** OTLP transports the Host can export with. */
 export const OTLP_PROTOCOLS = ["http/protobuf", "http/json"] as const;
-export const OtlpProtocolSchema = z.enum(OTLP_PROTOCOLS);
+export let OtlpProtocolSchema = lazySchema(() => (
+z.enum(OTLP_PROTOCOLS)
+), (real) => { OtlpProtocolSchema = real; });
 export type OtlpProtocol = z.infer<typeof OtlpProtocolSchema>;
 
-export const TelemetryValueSourceSchema = z.enum(["config", "env", "default"]);
+export let TelemetryValueSourceSchema = lazySchema(() => (
+z.enum(["config", "env", "default"])
+), (real) => { TelemetryValueSourceSchema = real; });
 export type TelemetryValueSource = z.infer<typeof TelemetryValueSourceSchema>;
 
-export const TelemetryExportReasonSchema = z.enum([
+export let TelemetryExportReasonSchema = lazySchema(() => (
+z.enum([
   "enabled",
   "telemetry_disabled",
   "sdk_disabled",
@@ -57,10 +65,12 @@ export const TelemetryExportReasonSchema = z.enum([
   "unsupported_exporter",
   "unsupported_protocol",
   "invalid_endpoint",
-]);
+])
+), (real) => { TelemetryExportReasonSchema = real; });
 export type TelemetryExportReason = z.infer<typeof TelemetryExportReasonSchema>;
 
-export const TelemetryKeyStateSchema = z.object({
+export let TelemetryKeyStateSchema = lazySchema(() => (
+z.object({
   key: TelemetryKeySchema,
   secret: z.boolean(),
   /** Settings value; always null for secret keys. */
@@ -70,21 +80,26 @@ export const TelemetryKeyStateSchema = z.object({
   env: z.string().nullable(),
   has_env: z.boolean(),
   source: TelemetryValueSourceSchema,
-});
+})
+), (real) => { TelemetryKeyStateSchema = real; });
 export type TelemetryKeyState = z.infer<typeof TelemetryKeyStateSchema>;
 
-export const TelemetryExportStatusSchema = z.object({
+export let TelemetryExportStatusSchema = lazySchema(() => (
+z.object({
   enabled: z.boolean(),
   reason: TelemetryExportReasonSchema,
   endpoint: z.string().nullable(),
   protocol: z.string().nullable(),
-});
+})
+), (real) => { TelemetryExportStatusSchema = real; });
 export type TelemetryExportStatus = z.infer<typeof TelemetryExportStatusSchema>;
 
-export const PublicTelemetryConfigSchema = z.object({
+export let PublicTelemetryConfigSchema = lazySchema(() => (
+z.object({
   keys: z.array(TelemetryKeyStateSchema),
   export: TelemetryExportStatusSchema,
-});
+})
+), (real) => { PublicTelemetryConfigSchema = real; });
 export type PublicTelemetryConfig = z.infer<typeof PublicTelemetryConfigSchema>;
 
 /**
@@ -92,7 +107,9 @@ export type PublicTelemetryConfig = z.infer<typeof PublicTelemetryConfigSchema>;
  * the environment value); null removes it so the environment applies again.
  * Unlisted keys are unchanged.
  */
-export const TelemetryConfigPatchSchema = z.object({
+export let TelemetryConfigPatchSchema = lazySchema(() => (
+z.object({
   settings: z.partialRecord(TelemetryKeySchema, z.string().nullable()),
-});
+})
+), (real) => { TelemetryConfigPatchSchema = real; });
 export type TelemetryConfigPatch = z.infer<typeof TelemetryConfigPatchSchema>;

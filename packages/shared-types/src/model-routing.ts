@@ -1,15 +1,19 @@
+import { lazySchema, lazyValue } from "./lazy-schema.js";
 import { z } from "zod";
 
 import { MOCK_MODEL_CARDS, MODEL_CARDS, ModelCardSchema, normalizeModelId, type ModelCard, type ModelCardConsumer, type ModelKind, type ModelParameter, type ProviderAssetInput, type ProviderCredentialRequirements, type ProviderInputAdaptation, type ReferenceBinding } from "./models.js";
 import { findCompatibleModels, type Modality } from "./model-capabilities.js";
 import type { ExecutablePluginBinding } from "./executable-plugin.js";
 
-const DynamicProviderIdSchema = z.string().trim().regex(
+let DynamicProviderIdSchema = lazySchema(() => (
+z.string().trim().regex(
   /^[a-z0-9][a-z0-9._-]*$/,
   "Provider ecosystem ids must be lowercase plugin-safe identifiers.",
-);
+)
+), (real) => { DynamicProviderIdSchema = real; });
 
-export const BuiltinModelUpstreamIdSchema = z.enum([
+export let BuiltinModelUpstreamIdSchema = lazySchema(() => (
+z.enum([
   "local",
   "mock",
   "fal",
@@ -26,11 +30,13 @@ export const BuiltinModelUpstreamIdSchema = z.enum([
   "volcengine-modelark",
   "elevenlabs",
   "suno",
-]);
+])
+), (real) => { BuiltinModelUpstreamIdSchema = real; });
 export const ModelUpstreamIdSchema = DynamicProviderIdSchema;
 export type ModelUpstreamId = z.infer<typeof ModelUpstreamIdSchema>;
 
-export const BuiltinModelUpstreamApiShapeSchema = z.enum([
+export let BuiltinModelUpstreamApiShapeSchema = lazySchema(() => (
+z.enum([
   "local-asr",
   "local-tts",
   "fal",
@@ -49,15 +55,19 @@ export const BuiltinModelUpstreamApiShapeSchema = z.enum([
   "modelark",
   "elevenlabs",
   "suno",
-]);
+])
+), (real) => { BuiltinModelUpstreamApiShapeSchema = real; });
 export const ModelUpstreamApiShapeSchema = DynamicProviderIdSchema;
 export type ModelUpstreamApiShape = z.infer<typeof ModelUpstreamApiShapeSchema>;
 
-export const BuiltinProviderOAuthIdSchema = z.never();
+export let BuiltinProviderOAuthIdSchema = lazySchema(() => (
+z.never()
+), (real) => { BuiltinProviderOAuthIdSchema = real; });
 export const ProviderOAuthIdSchema = DynamicProviderIdSchema;
 export type ProviderOAuthId = z.infer<typeof ProviderOAuthIdSchema>;
 
-export const BuiltinProviderAccountIdSchema = z.enum([
+export let BuiltinProviderAccountIdSchema = lazySchema(() => (
+z.enum([
   "local",
   "official",
   "fal",
@@ -70,7 +80,8 @@ export const BuiltinProviderAccountIdSchema = z.enum([
   "suno",
   "mock",
   "custom",
-]);
+])
+), (real) => { BuiltinProviderAccountIdSchema = real; });
 export const ProviderAccountIdSchema = DynamicProviderIdSchema;
 export type ProviderAccountId = z.infer<typeof ProviderAccountIdSchema>;
 
@@ -216,13 +227,16 @@ export interface ModelCatalogEntry {
   missingOAuth: ProviderOAuthId[];
 }
 
-export const ModelCardProviderBindingSchema = z.object({
+export let ModelCardProviderBindingSchema = lazySchema(() => (
+z.object({
   providerAccountId: z.string().trim().min(1),
   upstreamModel: z.string().trim().min(1),
-});
+})
+), (real) => { ModelCardProviderBindingSchema = real; });
 export type ModelCardProviderBinding = z.infer<typeof ModelCardProviderBindingSchema>;
 
-export const UserModelCardConfigSchema = z.object({
+export let UserModelCardConfigSchema = lazySchema(() => (
+z.object({
   modelId: z.string().trim().min(1),
   custom: z.boolean().default(false),
   name: z.string().trim().min(1).optional(),
@@ -232,7 +246,8 @@ export const UserModelCardConfigSchema = z.object({
   providerBindings: z.array(ModelCardProviderBindingSchema).default([]),
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
-});
+})
+), (real) => { UserModelCardConfigSchema = real; });
 export type UserModelCardConfig = z.infer<typeof UserModelCardConfigSchema>;
 
 function compatibleTextApiShape(
@@ -561,8 +576,8 @@ export const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
   },
 ];
 
-const MODEL_DECLARED_ROUTES = routesFromModelCards(MODEL_CARDS);
-const MOCK_DECLARED_ROUTES = routesFromModelCards(MOCK_MODEL_CARDS);
+let MODEL_DECLARED_ROUTES = lazyValue(() => routesFromModelCards(MODEL_CARDS), [], (real) => { MODEL_DECLARED_ROUTES = real; });
+let MOCK_DECLARED_ROUTES = lazyValue(() => routesFromModelCards(MOCK_MODEL_CARDS), [], (real) => { MOCK_DECLARED_ROUTES = real; });
 
 const MOCK_ROUTES: ModelUpstreamRoute[] = [
   ...FAL_IMAGE_ROUTES.map(([modelCode, upstreamModel]) => falMock(modelCode, "image", upstreamModel)),
@@ -573,11 +588,11 @@ const MOCK_ROUTES: ModelUpstreamRoute[] = [
   falMock("elevenlabs-tts", "audio", "fal-ai/minimax/speech-02-hd"),
 ];
 
-export const MODEL_UPSTREAM_ROUTES: ModelUpstreamRoute[] = [
+export let MODEL_UPSTREAM_ROUTES: ModelUpstreamRoute[] = lazyValue(() => [
   ...MODEL_DECLARED_ROUTES,
   ...MOCK_DECLARED_ROUTES,
   ...MOCK_ROUTES,
-];
+], [], (real) => { MODEL_UPSTREAM_ROUTES = real; });
 
 export const MODEL_PROVIDER_ROUTES = MODEL_UPSTREAM_ROUTES;
 

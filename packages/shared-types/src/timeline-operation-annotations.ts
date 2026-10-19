@@ -1,3 +1,4 @@
+import { lazySchema, lazyValue } from "./lazy-schema.js";
 import { z } from "zod";
 import { zodToDraft7JsonSchema } from "./zod-json-schema.js";
 import {
@@ -52,24 +53,37 @@ export type TimelineOperationCatalogEntry = Omit<
   outputJsonSchema: Record<string, unknown>;
 };
 
-const IdentifierSchema = z.string().trim().min(1);
-const FiniteNumberSchema = z.number().finite();
-const FrameSchema = z.number().finite().int().nonnegative();
-const PositiveFrameSchema = z.number().finite().int().positive();
-const PositionSchema = z
+let IdentifierSchema = lazySchema(() => (
+z.string().trim().min(1)
+), (real) => { IdentifierSchema = real; });
+let FiniteNumberSchema = lazySchema(() => (
+z.number().finite()
+), (real) => { FiniteNumberSchema = real; });
+let FrameSchema = lazySchema(() => (
+z.number().finite().int().nonnegative()
+), (real) => { FrameSchema = real; });
+let PositiveFrameSchema = lazySchema(() => (
+z.number().finite().int().positive()
+), (real) => { PositiveFrameSchema = real; });
+let PositionSchema = lazySchema(() => (
+z
   .object({
     x: FiniteNumberSchema,
     y: FiniteNumberSchema,
   })
-  .strict();
+  .strict()
+), (real) => { PositionSchema = real; });
 
-const TimelineDocumentEnvelopeSchema = z
+let TimelineDocumentEnvelopeSchema = lazySchema(() => (
+z
   .object({
     tracks: z.array(z.unknown()),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineDocumentEnvelopeSchema = real; });
 
-const TimelineOwnerSchema = z.discriminatedUnion("kind", [
+let TimelineOwnerSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("project") }).strict(),
   z
     .object({
@@ -78,9 +92,11 @@ const TimelineOwnerSchema = z.discriminatedUnion("kind", [
       actionNodeId: IdentifierSchema,
     })
     .strict(),
-]);
+])
+), (real) => { TimelineOwnerSchema = real; });
 
-const ProjectTimelineEntitySchema = z
+let ProjectTimelineEntitySchema = lazySchema(() => (
+z
   .object({
     id: IdentifierSchema,
     name: IdentifierSchema,
@@ -88,7 +104,8 @@ const ProjectTimelineEntitySchema = z
     revisionId: IdentifierSchema,
     state: z.unknown(),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { ProjectTimelineEntitySchema = real; });
 
 /** Discovery carries identity and size; clip bodies are an explicit detail read. */
 export function summarizeProjectTimeline<T extends { state: unknown }>(
@@ -130,7 +147,8 @@ export function summarizeProjectTimeline<T extends { state: unknown }>(
   };
 }
 
-const ProjectTimelineSummarySchema = ProjectTimelineEntitySchema.omit({
+let ProjectTimelineSummarySchema = lazySchema(() => (
+ProjectTimelineEntitySchema.omit({
   state: true,
 })
   .extend({
@@ -141,26 +159,32 @@ const ProjectTimelineSummarySchema = ProjectTimelineEntitySchema.omit({
     compositionWidth: FiniteNumberSchema.optional(),
     compositionHeight: FiniteNumberSchema.optional(),
   })
-  .strict();
+  .strict()
+), (real) => { ProjectTimelineSummarySchema = real; });
 
-const TimelineIssueSchema = z
+let TimelineIssueSchema = lazySchema(() => (
+z
   .object({
     severity: z.enum(["error", "warning"]).optional(),
     code: IdentifierSchema,
     message: z.string().min(1),
     path: z.string(),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineIssueSchema = real; });
 
-const TimelineFullSchemaOutputSchema = z
+let TimelineFullSchemaOutputSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.union([z.number().int().positive(), IdentifierSchema]),
     contractFingerprint: IdentifierSchema,
     jsonSchema: z.record(z.string(), z.unknown()),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineFullSchemaOutputSchema = real; });
 
-const TimelineAuthoringSchemaOutputSchema = z
+let TimelineAuthoringSchemaOutputSchema = lazySchema(() => (
+z
   .object({
     view: z.literal("authoring"),
     schemaVersion: z.number().int().positive(),
@@ -173,23 +197,29 @@ const TimelineAuthoringSchemaOutputSchema = z
     examples: z.record(z.string(), z.unknown()),
     submission: z.record(z.string(), z.unknown()),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineAuthoringSchemaOutputSchema = real; });
 
-const TimelineSchemaOutputSchema = z.union([
+let TimelineSchemaOutputSchema = lazySchema(() => (
+z.union([
   TimelineAuthoringSchemaOutputSchema,
   TimelineFullSchemaOutputSchema,
-]);
+])
+), (real) => { TimelineSchemaOutputSchema = real; });
 
-const TimelineValidationOutputSchema = z
+let TimelineValidationOutputSchema = lazySchema(() => (
+z
   .object({
     ok: z.boolean(),
     issues: z.array(TimelineIssueSchema).default([]),
     contractFingerprint: IdentifierSchema.optional(),
     sources: z.array(IdentifierSchema).optional(),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineValidationOutputSchema = real; });
 
-const TimelineProjectionOutputSchema = z
+let TimelineProjectionOutputSchema = lazySchema(() => (
+z
   .object({
     pulled: z.literal(true),
     projectId: IdentifierSchema,
@@ -199,9 +229,11 @@ const TimelineProjectionOutputSchema = z
     filePath: IdentifierSchema,
     timelineHash: IdentifierSchema,
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineProjectionOutputSchema = real; });
 
-const TimelineApplyOutputSchema = z
+let TimelineApplyOutputSchema = lazySchema(() => (
+z
   .object({
     applied: z.literal(true),
     projectId: IdentifierSchema,
@@ -212,9 +244,11 @@ const TimelineApplyOutputSchema = z
     sources: z.array(IdentifierSchema),
     timelineHash: IdentifierSchema,
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineApplyOutputSchema = real; });
 
-const TimelineRenderTargetSchema = z.discriminatedUnion("kind", [
+let TimelineRenderTargetSchema = lazySchema(() => (
+z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("project-assets") }).strict(),
   z
     .object({
@@ -223,7 +257,8 @@ const TimelineRenderTargetSchema = z.discriminatedUnion("kind", [
       actionNodeId: IdentifierSchema,
     })
     .strict(),
-]);
+])
+), (real) => { TimelineRenderTargetSchema = real; });
 
 /**
  * Why a Timeline export ran on the Host instead of in the browser. Defined once here: the browser
@@ -242,7 +277,8 @@ export const TIMELINE_RENDER_FALLBACK_REASONS = [
 export type TimelineRenderFallbackReason =
   (typeof TIMELINE_RENDER_FALLBACK_REASONS)[number];
 
-const TimelineRenderReceiptSchema = z
+let TimelineRenderReceiptSchema = lazySchema(() => (
+z
   .object({
     submitted: z.literal(true),
     completed: z.boolean(),
@@ -266,47 +302,57 @@ const TimelineRenderReceiptSchema = z
       .strict()
       .optional(),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineRenderReceiptSchema = real; });
 
-const timelineEditorItemVariantSchemas = TIMELINE_DSL_ITEM_TYPES.map((type) =>
-  z
-    .object({
-      ...timelineDslAnnotatedObjectShape(
-        TIMELINE_DSL_FIELD_ANNOTATIONS.itemBase,
-        {
-          requiredness: "runtime",
-          overrides: {
-            type: z.literal(type),
-            from: FrameSchema,
-          },
-        },
-      ),
-      ...timelineDslAnnotatedObjectShape(
-        TIMELINE_DSL_FIELD_ANNOTATIONS.itemTypes[type],
-        { requiredness: "runtime" },
-      ),
-    })
-    .strict(),
-);
+let timelineEditorItemVariantSchemas = lazyValue(
+  () =>
+    TIMELINE_DSL_ITEM_TYPES.map((type) =>
+      z
+        .object({
+          ...timelineDslAnnotatedObjectShape(
+            TIMELINE_DSL_FIELD_ANNOTATIONS.itemBase,
+            {
+              requiredness: "runtime",
+              overrides: {
+                type: z.literal(type),
+                from: FrameSchema,
+              },
+            },
+          ),
+          ...timelineDslAnnotatedObjectShape(
+            TIMELINE_DSL_FIELD_ANNOTATIONS.itemTypes[type],
+            { requiredness: "runtime" },
+          ),
+        })
+        .strict(),
+    ),
+  [],
+  (real) => { timelineEditorItemVariantSchemas = real; });
 
-const TimelineItemEnvelopeSchema = z.discriminatedUnion(
+let TimelineItemEnvelopeSchema = lazySchema(() => (
+z.discriminatedUnion(
   "type",
   timelineEditorItemVariantSchemas as unknown as [
     z.core.$ZodTypeDiscriminable,
     ...z.core.$ZodTypeDiscriminable[],
   ],
-);
+)
+), (real) => { TimelineItemEnvelopeSchema = real; });
 
-const TimelineTrackEnvelopeSchema = z
+let TimelineTrackEnvelopeSchema = lazySchema(() => (
+z
   .object(
     timelineDslAnnotatedObjectShape(TIMELINE_DSL_FIELD_ANNOTATIONS.track, {
       requiredness: "runtime",
       overrides: { items: z.array(TimelineItemEnvelopeSchema) },
     }),
   )
-  .strict();
+  .strict()
+), (real) => { TimelineTrackEnvelopeSchema = real; });
 
-const TimelineAssetEnvelopeSchema = z
+let TimelineAssetEnvelopeSchema = lazySchema(() => (
+z
   .object({
     id: IdentifierSchema,
     name: IdentifierSchema,
@@ -314,9 +360,11 @@ const TimelineAssetEnvelopeSchema = z
     src: IdentifierSchema,
     createdAt: FiniteNumberSchema,
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineAssetEnvelopeSchema = real; });
 
-const TimelineTranscriptEnvelopeSchema = z
+let TimelineTranscriptEnvelopeSchema = lazySchema(() => (
+z
   .object({
     schemaVersion: z.literal(1),
     kind: z.literal("clash.editor.asset-transcript"),
@@ -334,21 +382,26 @@ const TimelineTranscriptEnvelopeSchema = z
         .passthrough(),
     ),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineTranscriptEnvelopeSchema = real; });
 
-const TimelineEditorStateEnvelopeSchema = z
+let TimelineEditorStateEnvelopeSchema = lazySchema(() => (
+z
   .object({
     tracks: z.array(TimelineTrackEnvelopeSchema),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineEditorStateEnvelopeSchema = real; });
 
-const TimelineCommandOutputSchema = z
+let TimelineCommandOutputSchema = lazySchema(() => (
+z
   .object({
     ok: z.boolean(),
     dsl: TimelineDocumentEnvelopeSchema,
     issues: z.array(TimelineIssueSchema),
   })
-  .passthrough();
+  .passthrough()
+), (real) => { TimelineCommandOutputSchema = real; });
 
 function annotation(
   options: TimelineOperationAnnotation,
@@ -788,7 +841,8 @@ const itemUpdateFields: Record<string, TimelineDslFieldAnnotation> = {
     ...Object.values(TIMELINE_DSL_FIELD_ANNOTATIONS.itemTypes),
   ),
 };
-const ItemUpdatesSchema = z
+let ItemUpdatesSchema = lazySchema(() => (
+z
   .object(
     timelineDslAnnotatedObjectShape(itemUpdateFields, {
       requiredness: "partial",
@@ -799,8 +853,10 @@ const ItemUpdatesSchema = z
   .refine(
     (updates) => Object.keys(updates).length > 0,
     "At least one item field must be updated.",
-  );
-const TrackUpdatesSchema = z
+  )
+), (real) => { ItemUpdatesSchema = real; });
+let TrackUpdatesSchema = lazySchema(() => (
+z
   .object(
     timelineDslAnnotatedObjectShape(TIMELINE_DSL_FIELD_ANNOTATIONS.track, {
       requiredness: "partial",
@@ -811,7 +867,8 @@ const TrackUpdatesSchema = z
   .refine(
     (updates) => Object.keys(updates).length > 0,
     "At least one track field must be updated.",
-  );
+  )
+), (real) => { TrackUpdatesSchema = real; });
 
 function editorAction(
   id: string,

@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from 'zod';
 
 export const TIMELINE_LIBRARY_CATEGORIES = [
@@ -32,7 +33,8 @@ export const TIMELINE_LIBRARY_GROUPS = [
 
 export type TimelineLibraryGroup = (typeof TIMELINE_LIBRARY_GROUPS)[number];
 
-const TimelineLibraryGroupIdSchema = z.enum([
+let TimelineLibraryGroupIdSchema = lazySchema(() => (
+z.enum([
   'recommended',
   'text',
   'graphics',
@@ -40,7 +42,8 @@ const TimelineLibraryGroupIdSchema = z.enum([
   'visual-effects',
   'color-looks',
   'audio',
-]);
+])
+), (real) => { TimelineLibraryGroupIdSchema = real; });
 
 export type TimelineLibraryCategoryContract = {
   domain: 'composition' | 'asset' | 'visual-processor' | 'audio-processor' | 'preset';
@@ -143,31 +146,40 @@ export function getTimelineLibraryCategoryContract(
   return TIMELINE_LIBRARY_CATEGORY_CONTRACTS[category];
 }
 
-const StableCatalogIdSchema = z.string().regex(
+let StableCatalogIdSchema = lazySchema(() => (
+z.string().regex(
   /^[a-z0-9][a-z0-9._:/-]*$/,
   'Catalog ids must be stable lower-case identifiers.',
-);
+)
+), (real) => { StableCatalogIdSchema = real; });
 
-const VersionSchema = z.number().int().positive();
+let VersionSchema = lazySchema(() => (
+z.number().int().positive()
+), (real) => { VersionSchema = real; });
 
-const TimelineLibraryCollectionQuerySchema = z.object({
+let TimelineLibraryCollectionQuerySchema = lazySchema(() => (
+z.object({
   categories: z.array(z.enum(TIMELINE_LIBRARY_CATEGORIES)).min(1).optional(),
   tags: z.array(z.string().min(1)).min(1).optional(),
   favoriteOnly: z.literal(true).optional(),
 }).strict().refine(
   (query) => Boolean(query.favoriteOnly || query.categories?.length || query.tags?.length),
   'A collection query must select a category, tag, or favorites.',
-);
+)
+), (real) => { TimelineLibraryCollectionQuerySchema = real; });
 
-export const TimelineLibraryCollectionSchema = z.object({
+export let TimelineLibraryCollectionSchema = lazySchema(() => (
+z.object({
   id: StableCatalogIdSchema,
   label: z.string().min(1),
   groupId: TimelineLibraryGroupIdSchema,
   parentId: StableCatalogIdSchema.optional(),
   query: TimelineLibraryCollectionQuerySchema,
-}).strict();
+}).strict()
+), (real) => { TimelineLibraryCollectionSchema = real; });
 
-const TimelineLibraryDeliverySchema = z.discriminatedUnion('state', [
+let TimelineLibraryDeliverySchema = lazySchema(() => (
+z.discriminatedUnion('state', [
   z.object({ state: z.literal('bundled') }).strict(),
   z.object({ state: z.literal('remote') }).strict(),
   z.object({
@@ -179,25 +191,30 @@ const TimelineLibraryDeliverySchema = z.discriminatedUnion('state', [
     state: z.literal('failed'),
     message: z.string().min(1),
   }).strict(),
-]);
+])
+), (real) => { TimelineLibraryDeliverySchema = real; });
 
-export const TimelineLibraryItemViewStateSchema = z.object({
+export let TimelineLibraryItemViewStateSchema = lazySchema(() => (
+z.object({
   itemId: StableCatalogIdSchema,
   favorite: z.boolean(),
   access: z.enum(['free', 'entitled', 'requires-upgrade']),
   delivery: TimelineLibraryDeliverySchema,
-}).strict();
+}).strict()
+), (real) => { TimelineLibraryItemViewStateSchema = real; });
 
 export type TimelineLibraryCollection = z.infer<typeof TimelineLibraryCollectionSchema>;
 export type TimelineLibraryItemViewState = z.infer<typeof TimelineLibraryItemViewStateSchema>;
 
-export const TimelineLibraryProvenanceSchema = z.object({
+export let TimelineLibraryProvenanceSchema = lazySchema(() => (
+z.object({
   provider: z.string().min(1),
   upstreamId: z.string().min(1).optional(),
   sourceUrl: z.string().url().optional(),
   license: z.string().min(1).optional(),
   adapted: z.boolean().optional(),
-}).strict();
+}).strict()
+), (real) => { TimelineLibraryProvenanceSchema = real; });
 
 const TimelineLibraryBaseShape = {
   id: StableCatalogIdSchema,
@@ -217,23 +234,28 @@ const TimelineLibraryBaseShape = {
   }).strict().optional(),
 };
 
-const EffectRefSchema = z.object({
+let EffectRefSchema = lazySchema(() => (
+z.object({
   kind: z.literal('effect-ref'),
   effectId: StableCatalogIdSchema,
   effectVersion: VersionSchema,
   params: z.record(z.string(), z.unknown()).optional(),
-}).strict();
+}).strict()
+), (real) => { EffectRefSchema = real; });
 
-const CaptionStyleSchema = z.object({
+let CaptionStyleSchema = lazySchema(() => (
+z.object({
   fontFamily: z.string().min(1).optional(),
   fontSize: z.number().positive().optional(),
   fontWeight: z.union([z.string().min(1), z.number().positive()]).optional(),
   color: z.string().min(1).optional(),
   backgroundColor: z.string().min(1).optional(),
   position: z.enum(['bottom', 'top', 'center']).optional(),
-}).strict();
+}).strict()
+), (real) => { CaptionStyleSchema = real; });
 
-const TextLibraryItemSchema = z.object({
+let TextLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('text'),
   artifact: z.object({
@@ -245,9 +267,11 @@ const TextLibraryItemSchema = z.object({
     fontWeight: z.string().min(1).optional(),
   }).strict(),
   apply: z.object({ kind: z.literal('insert-text-item') }).strict(),
-}).strict();
+}).strict()
+), (real) => { TextLibraryItemSchema = real; });
 
-const StickerLibraryItemSchema = z.object({
+let StickerLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('stickers'),
   artifact: z.object({
@@ -256,9 +280,11 @@ const StickerLibraryItemSchema = z.object({
     assetId: StableCatalogIdSchema.optional(),
   }).strict(),
   apply: z.object({ kind: z.literal('insert-sticker-item') }).strict(),
-}).strict();
+}).strict()
+), (real) => { StickerLibraryItemSchema = real; });
 
-const SoundEffectLibraryItemSchema = z.object({
+let SoundEffectLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('sound-effects'),
   artifact: z.object({
@@ -268,9 +294,11 @@ const SoundEffectLibraryItemSchema = z.object({
   apply: z.object({
     kind: z.literal('insert-audio-item'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { SoundEffectLibraryItemSchema = real; });
 
-const TransitionLibraryItemSchema = z.object({
+let TransitionLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('transitions'),
   artifact: EffectRefSchema,
@@ -278,9 +306,11 @@ const TransitionLibraryItemSchema = z.object({
     kind: z.literal('attach-transition'),
     binding: z.literal('between-items'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { TransitionLibraryItemSchema = real; });
 
-const VisualEffectLibraryItemSchema = z.object({
+let VisualEffectLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('fx'),
   artifact: EffectRefSchema,
@@ -288,9 +318,11 @@ const VisualEffectLibraryItemSchema = z.object({
     kind: z.literal('attach-visual-effect'),
     binding: z.literal('item-or-range'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { VisualEffectLibraryItemSchema = real; });
 
-const ZoomLibraryItemSchema = z.object({
+let ZoomLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('zoom'),
   artifact: EffectRefSchema,
@@ -298,9 +330,11 @@ const ZoomLibraryItemSchema = z.object({
     kind: z.literal('attach-visual-effect'),
     binding: z.literal('track-range'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { ZoomLibraryItemSchema = real; });
 
-const LutLibraryItemSchema = z.object({
+let LutLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('luts'),
   artifact: z.discriminatedUnion('kind', [
@@ -314,9 +348,11 @@ const LutLibraryItemSchema = z.object({
     kind: z.literal('attach-color-look'),
     binding: z.literal('item'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { LutLibraryItemSchema = real; });
 
-const AudioEffectLibraryItemSchema = z.object({
+let AudioEffectLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('audio-fx'),
   artifact: z.object({
@@ -329,9 +365,11 @@ const AudioEffectLibraryItemSchema = z.object({
     kind: z.literal('attach-audio-effect'),
     binding: z.literal('audio-item-or-track'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { AudioEffectLibraryItemSchema = real; });
 
-const CaptionLibraryItemSchema = z.object({
+let CaptionLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('captions'),
   artifact: z.object({
@@ -339,9 +377,11 @@ const CaptionLibraryItemSchema = z.object({
     style: CaptionStyleSchema,
   }).strict(),
   apply: z.object({ kind: z.literal('update-caption-style') }).strict(),
-}).strict();
+}).strict()
+), (real) => { CaptionLibraryItemSchema = real; });
 
-const FilterLibraryItemSchema = z.object({
+let FilterLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('filters'),
   artifact: EffectRefSchema,
@@ -349,9 +389,11 @@ const FilterLibraryItemSchema = z.object({
     kind: z.literal('attach-color-look'),
     binding: z.literal('item'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { FilterLibraryItemSchema = real; });
 
-const AdjustmentLibraryItemSchema = z.object({
+let AdjustmentLibraryItemSchema = lazySchema(() => (
+z.object({
   ...TimelineLibraryBaseShape,
   category: z.literal('adjustments'),
   artifact: EffectRefSchema,
@@ -359,9 +401,11 @@ const AdjustmentLibraryItemSchema = z.object({
     kind: z.literal('attach-visual-effect'),
     binding: z.literal('item'),
   }).strict(),
-}).strict();
+}).strict()
+), (real) => { AdjustmentLibraryItemSchema = real; });
 
-export const TimelineLibraryItemSchema = z.discriminatedUnion('category', [
+export let TimelineLibraryItemSchema = lazySchema(() => (
+z.discriminatedUnion('category', [
   TextLibraryItemSchema,
   StickerLibraryItemSchema,
   SoundEffectLibraryItemSchema,
@@ -373,7 +417,8 @@ export const TimelineLibraryItemSchema = z.discriminatedUnion('category', [
   CaptionLibraryItemSchema,
   FilterLibraryItemSchema,
   AdjustmentLibraryItemSchema,
-]);
+])
+), (real) => { TimelineLibraryItemSchema = real; });
 
 export type TimelineLibraryItem = z.infer<typeof TimelineLibraryItemSchema>;
 

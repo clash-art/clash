@@ -1,3 +1,4 @@
+import { lazySchema } from "./lazy-schema.js";
 import { z } from "zod";
 
 /**
@@ -26,7 +27,8 @@ export function parsePluginId(id: string): PluginIdParts {
   return { publisher: publisher!, name: name! };
 }
 
-export const pluginIdSchema = z.string().trim().superRefine((value, ctx) => {
+export let pluginIdSchema = lazySchema(() => (
+z.string().trim().superRefine((value, ctx) => {
   const segments = value.split(".");
   if (segments.length !== 2) {
     ctx.addIssue({
@@ -49,4 +51,5 @@ export const pluginIdSchema = z.string().trim().superRefine((value, ctx) => {
       });
     }
   }
-});
+})
+), (real) => { pluginIdSchema = real; });

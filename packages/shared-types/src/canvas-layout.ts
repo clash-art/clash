@@ -1,10 +1,14 @@
+import { lazySchema } from "./lazy-schema.js";
 import type { LoroDoc } from "loro-crdt";
 import { z } from "zod";
 
 /** Canvas presentation is independent of immutable node and Generator facts. */
 export const CANVAS_NODE_LAYOUTS = "canvasNodeLayouts";
-const dimension = z.union([z.number().finite().nonnegative(), z.string()]);
-export const CanvasNodeLayoutSchema = z
+let dimension = lazySchema(() => (
+z.union([z.number().finite().nonnegative(), z.string()])
+), (real) => { dimension = real; });
+export let CanvasNodeLayoutSchema = lazySchema(() => (
+z
   .object({
     position: z
       .object({ x: z.number().finite(), y: z.number().finite() })
@@ -21,7 +25,8 @@ export const CanvasNodeLayoutSchema = z
       .strict()
       .optional(),
   })
-  .strict();
+  .strict()
+), (real) => { CanvasNodeLayoutSchema = real; });
 export type CanvasNodeLayout = z.infer<typeof CanvasNodeLayoutSchema>;
 
 export function projectCanvasNodeLayout<T extends Record<string, any>>(
