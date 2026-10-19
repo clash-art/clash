@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   chmod,
   mkdtemp,
@@ -7,6 +8,7 @@ import {
   readFile,
   stat,
   unlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -15,10 +17,81 @@ import { Readable } from "node:stream";
 
 import { describe, expect, it } from "vitest";
 
+import { PROJECT_ASSET_IMPORT_MAX_BYTES } from "@clash/asset-sdk";
+
 import {
   createLocalResourceStore,
+  LocalResourceStreamLimitError,
   resourceIdForSha256,
+  stageLocalResourceInput,
+  sweepLocalResourceStaging,
 } from "./local-resource-store.js";
+
+const nodeRequire = createRequire(import.meta.url);
+
+function ageStagingRow(
+  dataDir: string,
+  resourceId: string,
+  createdAt: number,
+): void {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { run(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    database
+      .prepare(
+        "UPDATE local_resource_staging SET created_at = ? WHERE resource_id = ?",
+      )
+      .run(createdAt, resourceId);
+  } finally {
+    database.close();
+  }
+}
+
+function stagingRowCount(dataDir: string): number {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { get(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    const row = database
+      .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
+      .get() as { count: number };
+    return row.count;
+  } finally {
+    database.close();
+  }
+}
+
+function setSealedStorageKey(
+  dataDir: string,
+  resourceId: string,
+  storageKey: string,
+): void {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { run(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    database
+      .prepare(
+        "UPDATE local_resources SET storage_key = ? WHERE resource_id = ?",
+      )
+      .run(storageKey, resourceId);
+  } finally {
+    database.close();
+  }
+}
 
 async function fixture() {
   const clashRoot = await mkdtemp(join(tmpdir(), "clash-resource-store-"));
@@ -638,13 +711,27 @@ describe("local Resource CAS", () => {
 
 it("retains an opaque replicated Resource identity only after local facts verification", async () => {
   const { store } = await fixture();
-  const staged = await store.stage({ bytes: new TextEncoder().encode("immutable-replica") });
-  const source = await store.seal({ receipt: staged.receipt, kind: "image", contentType: "image/png" });
+  const staged = await store.stage({
+    bytes: new TextEncoder().encode("immutable-replica"),
+  });
+  const source = await store.seal({
+    receipt: staged.receipt,
+    kind: "image",
+    contentType: "image/png",
+  });
   const remote = { ...source.resource, id: "opaque-remote-resource" };
-  const installed = await store.installReplica({ resource: remote, verifiedResourceId: source.resource.id });
+  const installed = await store.installReplica({
+    resource: remote,
+    verifiedResourceId: source.resource.id,
+  });
   expect(installed.resource).toEqual(remote);
   expect(await readFile(installed.path)).toEqual(await readFile(source.path));
-  await expect(store.installReplica({ resource: { ...remote, kind: "video" }, verifiedResourceId: source.resource.id })).rejects.toThrow(/facts/i);
+  await expect(
+    store.installReplica({
+      resource: { ...remote, kind: "video" },
+      verifiedResourceId: source.resource.id,
+    }),
+  ).rejects.toThrow(/facts/i);
 });
 
 it("adopts an assembled file by renaming its inode into staging, without copying or hashing it again", async () => {
@@ -682,4 +769,239 @@ it("discards staged bytes without touching a sealed Resource", async () => {
   await expect(store.resolveStaged(staged.resourceId)).resolves.toBeUndefined();
   await expect(stat(staged.path)).rejects.toMatchObject({ code: "ENOENT" });
   expect(await readFile(sealed.path)).toEqual(Buffer.from(bytes));
+});
+
+describe("local Resource staging sweep", () => {
+  it("removes an old unreferenced receipt and file but keeps a recent staging file", async () => {
+    const { clashRoot, dataDir, store } = await fixture();
+    const now = Date.now();
+    const old = new Date(now - 2 * 60 * 60 * 1000);
+    const orphanBytes = new TextEncoder().encode("orphaned staging bytes");
+    const orphan = await store.stage({ bytes: orphanBytes });
+    ageStagingRow(dataDir, orphan.resourceId, old.getTime());
+    await utimes(orphan.path, old, old);
+
+    const liveBytes = new TextEncoder().encode("recent staging bytes");
+    const live = await store.stage({ bytes: liveBytes });
+    // A receipt can be old while a concurrent retry just replaced its file.
+    ageStagingRow(dataDir, live.resourceId, old.getTime());
+
+    const result = await sweepLocalResourceStaging({
+      dataDir,
+      clashRoot,
+      olderThanMs: 60 * 60 * 1000,
+      now,
+    });
+
+    expect(result.failed).toEqual([]);
+    expect(result.removed).toEqual([
+      {
+        resourceId: orphan.resourceId,
+        storageKey: orphan.storageKey,
+        reason: "unreferenced",
+      },
+    ]);
+    await expect(
+      store.resolveStaged(orphan.resourceId),
+    ).resolves.toBeUndefined();
+    await expect(stat(orphan.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await store.resolveStaged(live.resourceId))?.path).toBe(live.path);
+    expect(stagingRowCount(dataDir)).toBe(1);
+
+    await store.discardStaged(live.resourceId);
+  });
+
+  it("releases the old staging name after sealing and never removes the sealed original", async () => {
+    const { clashRoot, dataDir, store } = await fixture();
+    const now = Date.now();
+    const old = new Date(now - 2 * 60 * 60 * 1000);
+    const bytes = new TextEncoder().encode("sealed Resource bytes");
+    const staged = await store.stage({ bytes });
+    const sealed = await store.seal({
+      receipt: staged.receipt,
+      kind: "image",
+      contentType: "image/png",
+    });
+    ageStagingRow(dataDir, staged.resourceId, old.getTime());
+    await utimes(staged.path, old, old);
+
+    const result = await sweepLocalResourceStaging({
+      dataDir,
+      clashRoot,
+      olderThanMs: 60 * 60 * 1000,
+      now,
+    });
+
+    expect(result.failed).toEqual([]);
+    expect(result.removed).toContainEqual({
+      resourceId: staged.resourceId,
+      storageKey: staged.storageKey,
+      reason: "sealed",
+    });
+    await expect(
+      store.resolveStaged(staged.resourceId),
+    ).resolves.toBeUndefined();
+    await expect(stat(staged.path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(sealed.path)).toEqual(Buffer.from(bytes));
+    expect((await stat(sealed.path)).nlink).toBe(1);
+  });
+
+  it("removes an old orphan staging file with no receipt and leaves a sealed original alone", async () => {
+    const { clashRoot, dataDir, store } = await fixture();
+    const now = Date.now();
+    const old = new Date(now - 2 * 60 * 60 * 1000);
+    const bytes = new TextEncoder().encode("sealed original bytes");
+    const staged = await store.stage({ bytes });
+    const sealed = await store.seal({ receipt: staged.receipt, kind: "image" });
+    await store.discardStaged(staged.resourceId);
+
+    // Crash shape: the staging directory entry survives while its row is gone.
+    const orphanPath = join(
+      clashRoot,
+      "assets",
+      "blobs",
+      digestOf(bytes),
+      "staging",
+    );
+    await writeFile(orphanPath, bytes, { mode: 0o444 });
+    await utimes(orphanPath, old, old);
+
+    const result = await sweepLocalResourceStaging({
+      dataDir,
+      clashRoot,
+      olderThanMs: 60 * 60 * 1000,
+      now,
+    });
+
+    expect(result.failed).toEqual([]);
+    expect(result.removed).toContainEqual({
+      storageKey: `local-blobs/${digestOf(bytes)}/staging`,
+      reason: "orphan_file",
+    });
+    await expect(stat(orphanPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(sealed.path)).toEqual(Buffer.from(bytes));
+    expect((await stat(sealed.path)).nlink).toBe(1);
+  });
+
+  it("refuses to unlink a receipt whose staging path is the sealed Resource's storage", async () => {
+    const { clashRoot, dataDir, store } = await fixture();
+    const now = Date.now();
+    const old = new Date(now - 2 * 60 * 60 * 1000);
+    const bytes = new TextEncoder().encode("staging is the sealed original");
+    const staged = await store.stage({ bytes });
+    await store.seal({ receipt: staged.receipt, kind: "image" });
+    // Corrupt/legacy shape: the sealed row points at the staging name itself.
+    setSealedStorageKey(dataDir, staged.resourceId, staged.storageKey);
+    ageStagingRow(dataDir, staged.resourceId, old.getTime());
+    await utimes(staged.path, old, old);
+
+    const result = await sweepLocalResourceStaging({
+      dataDir,
+      clashRoot,
+      olderThanMs: 60 * 60 * 1000,
+      now,
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.message).toMatch(/staging storage key/i);
+    expect(stagingRowCount(dataDir)).toBe(1);
+    expect(await readFile(staged.path)).toEqual(Buffer.from(bytes));
+  });
+
+  it("refuses to unlink an orphan staging file that is the sealed Resource's storage", async () => {
+    const { clashRoot, dataDir, store } = await fixture();
+    const now = Date.now();
+    const old = new Date(now - 2 * 60 * 60 * 1000);
+    const bytes = new TextEncoder().encode("staging is the only sealed copy");
+    const staged = await store.stage({ bytes });
+    await store.seal({ receipt: staged.receipt, kind: "image" });
+    // Corrupt/legacy shape with no receipt: only the sealed row names the file.
+    setSealedStorageKey(dataDir, staged.resourceId, staged.storageKey);
+    await store.discardStaged(staged.resourceId);
+    // The discard removed the bytes; put the sealed copy back at that name.
+    await writeFile(staged.path, bytes, { mode: 0o444 });
+    await utimes(staged.path, old, old);
+
+    const result = await sweepLocalResourceStaging({
+      dataDir,
+      clashRoot,
+      olderThanMs: 60 * 60 * 1000,
+      now,
+    });
+
+    expect(result.removed).toEqual([]);
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0]?.message).toMatch(/staging storage key/i);
+    expect(await readFile(staged.path)).toEqual(Buffer.from(bytes));
+  });
+});
+
+it("rejects an over-cap declared import before consuming its source", async () => {
+  const { clashRoot, store } = await fixture();
+  let read = false;
+
+  expect(() =>
+    stageLocalResourceInput(store, {
+      source: (async function* () {
+        read = true;
+        yield new Uint8Array(1);
+      })(),
+      declaredByteLength: PROJECT_ASSET_IMPORT_MAX_BYTES + 1,
+    }),
+  ).toThrow(/maximum byte length/);
+
+  expect(read).toBe(false);
+  expect(await regularFilesUnder(join(clashRoot, "assets", "blobs"))).toEqual(
+    [],
+  );
+});
+
+it("rejects over-cap caller-held bytes without staging anything", async () => {
+  const { clashRoot, dataDir, store } = await fixture();
+  const bytes = new Uint8Array(PROJECT_ASSET_IMPORT_MAX_BYTES + 1);
+
+  let error: unknown;
+  try {
+    stageLocalResourceInput(store, { bytes });
+  } catch (caught) {
+    error = caught;
+  }
+  expect(error).toBeInstanceOf(LocalResourceStreamLimitError);
+  expect(error).toMatchObject({
+    code: "CLOUD_CONTENT_TOO_LARGE",
+    maxBytes: PROJECT_ASSET_IMPORT_MAX_BYTES,
+  });
+  expect(await regularFilesUnder(join(clashRoot, "assets", "blobs"))).toEqual(
+    [],
+  );
+  // The guard throws before the store opens its database or writes a receipt.
+  expect(await regularFilesUnder(dataDir)).toEqual([]);
+});
+
+it("keeps staging bytes when the sealed original is missing", async () => {
+  const { clashRoot, dataDir, store } = await fixture();
+  const now = Date.now();
+  const old = new Date(now - 2 * 60 * 60 * 1000);
+  const bytes = new TextEncoder().encode("only staging copy remains");
+  const staged = await store.stage({ bytes });
+  const sealed = await store.seal({ receipt: staged.receipt, kind: "image" });
+  await unlink(sealed.path);
+  ageStagingRow(dataDir, staged.resourceId, old.getTime());
+  await utimes(staged.path, old, old);
+
+  const result = await sweepLocalResourceStaging({
+    dataDir,
+    clashRoot,
+    olderThanMs: 60 * 60 * 1000,
+    now,
+  });
+
+  expect(result.removed).toEqual([]);
+  expect(result.failed).toHaveLength(1);
+  expect(result.failed[0]?.message).toMatch(/sealed Resource/i);
+  expect((await store.resolveStaged(staged.resourceId))?.path).toBe(
+    staged.path,
+  );
+  expect(await readFile(staged.path)).toEqual(Buffer.from(bytes));
 });

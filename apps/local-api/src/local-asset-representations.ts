@@ -12,6 +12,7 @@ import {
   type DurableRunOperation,
   type DurableRunRecord,
 } from "@clash/shared-runtime";
+import { PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
 import type {
   AssetKind,
   ExecutablePluginJsonValue,
@@ -33,6 +34,7 @@ import {
   createLocalResourceStore,
   type LocalResourceProjection,
   type LocalResourceStore,
+  type LocalResourceStoreEvent,
 } from "./local-resource-store.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 
@@ -816,6 +818,8 @@ export function createLocalAssetRepresentationService(options: {
   /** Resolves the ffmpeg that transcodes proxies; none means no proxies. */
   ffmpegPath?: () => string | null;
   now?: () => number;
+  /** Structured events for Host-private maintenance failures. */
+  onResourceEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalAssetRepresentationService {
   const databasePath = `${options.dataDir}/local.sqlite`;
   const ownerId = options.ownerId ?? DEFAULT_OWNER_ID;
@@ -873,6 +877,27 @@ export function createLocalAssetRepresentationService(options: {
       }
       return parseRepresentation(JSON.parse(row.result_json));
     });
+  }
+
+  /**
+   * A sealed representation Resource makes its staging name redundant. Release
+   * is cleanup, not part of the derivation result: a failure is logged with the
+   * import cleanup code and the periodic staging sweep retries it.
+   */
+  async function releaseStagedQuietly(resourceId: string): Promise<void> {
+    try {
+      await resources.releaseStaged(resourceId);
+    } catch (error) {
+      options.onResourceEvent?.({
+        level: "error",
+        event: "local_resource_staging.release_failed",
+        fields: {
+          resourceId,
+          code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   async function publishRepresentation(input: {
@@ -992,6 +1017,7 @@ export function createLocalAssetRepresentationService(options: {
             kind: candidate.resourceKind,
             contentType: candidate.contentType,
           });
+          await releaseStagedQuietly(finalized.source.resource.id);
           return {
             kind: "resource",
             role: candidate.role,

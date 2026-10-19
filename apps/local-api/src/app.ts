@@ -35,7 +35,11 @@ import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
 import {
   LocalResourceError,
+  LocalResourceStreamLengthMismatchError,
+  LocalResourceStreamLimitError,
   LocalResourceStreamMismatchError,
+  PROJECT_ASSET_IMPORT_STAGING_REMOVED,
+  sweepLocalResourceStaging,
 } from "./local-resource-store.js";
 import { serveImmutableFileProjection } from "./immutable-file-projection.js";
 import {
@@ -85,7 +89,10 @@ import {
   type DurableRunRecord,
   type ProjectRecoveryPolicy,
 } from "@clash/shared-runtime";
-import { AssetSdkContractError } from "@clash/asset-sdk";
+import {
+  AssetSdkContractError,
+  PROJECT_ASSET_IMPORT_MAX_BYTES,
+} from "@clash/asset-sdk";
 import {
   createHmacProjectAssetImportSessionTokens,
   createProjectAssetImportSession,
@@ -95,6 +102,7 @@ import {
   PROJECT_ASSET_IMPORT_FAILED,
   PROJECT_ASSET_IMPORT_REPLAY_HEADER,
   PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+  PROJECT_ASSET_IMPORT_STAGING_SWEEP_OLDER_THAN_MS,
   type ProjectAssetImportSessionPorts,
 } from "@clash/shared-runtime/cloud-project-host/project-asset-import-sessions";
 import { sweepFsProjectAssetImportStaging } from "@clash/shared-runtime/fs-import-staging-sweep";
@@ -1592,6 +1600,25 @@ function localProjectAssetErrorResponse(
 }
 
 function projectAssetImportErrorResponse(error: unknown): Response {
+  if (error instanceof LocalResourceStreamLimitError) {
+    return json(
+      {
+        error: error.message,
+        code: error.code,
+        maxBytes: error.maxBytes,
+      },
+      413,
+    );
+  }
+  if (error instanceof LocalResourceStreamLengthMismatchError) {
+    return json(
+      {
+        error: error.message,
+        code: "PROJECT_ASSET_IMPORT_LENGTH_MISMATCH",
+      },
+      400,
+    );
+  }
   if (
     error instanceof LocalResourceStreamMismatchError ||
     (error instanceof LocalProjectAssetMigrationError &&
@@ -1721,6 +1748,57 @@ interface AssetImportUpload {
 }
 
 /**
+ * Multipart framing (boundaries, part headers, command fields) travels in the
+ * same `Content-Length` as the file, so the transport declaration alone cannot
+ * be held to the exact file cap without falsely rejecting a file at the cap.
+ * The file part is still checked against the exact cap once parsed.
+ */
+export const PROJECT_ASSET_IMPORT_MULTIPART_FRAMING_ALLOWANCE_BYTES =
+  1024 * 1024;
+
+type AssetImportDeclarationRequest = {
+  req: {
+    query(name: string): string | undefined;
+    header(name: string): string | undefined;
+  };
+};
+
+/**
+ * Rejects an oversized declared import before any body is read. `byteLength`
+ * is authoritative for the streaming transport; `Content-Length` is the only
+ * declaration a multipart request has, and it is checked before `formData()`
+ * buffers the whole body. Multipart framing gets a named allowance around the
+ * file cap; raw bodies are held to the exact cap.
+ */
+export function assertAssetImportDeclaredWithinLimit(
+  c: AssetImportDeclarationRequest,
+): void {
+  const maxBytes = BigInt(PROJECT_ASSET_IMPORT_MAX_BYTES);
+  const declaredByteLength = c.req.query("byteLength");
+  if (
+    declaredByteLength !== undefined &&
+    /^\d+$/.test(declaredByteLength.trim())
+  ) {
+    if (BigInt(declaredByteLength.trim()) > maxBytes) {
+      throw new LocalResourceStreamLimitError(PROJECT_ASSET_IMPORT_MAX_BYTES);
+    }
+  }
+  const contentLength = c.req.header("content-length");
+  if (contentLength === undefined || !/^\d+$/.test(contentLength.trim())) {
+    return;
+  }
+  const multipart = /^multipart\/form-data\b/i.test(
+    c.req.header("content-type") ?? "",
+  );
+  const limit = multipart
+    ? maxBytes + BigInt(PROJECT_ASSET_IMPORT_MULTIPART_FRAMING_ALLOWANCE_BYTES)
+    : maxBytes;
+  if (BigInt(contentLength.trim()) > limit) {
+    throw new LocalResourceStreamLimitError(PROJECT_ASSET_IMPORT_MAX_BYTES);
+  }
+}
+
+/**
  * `multipart/form-data` is the compatibility transport: the parser holds the
  * whole file before the route sees it. Any other content type is the streaming
  * transport: the body is the file's raw bytes, and the command fields travel
@@ -1732,6 +1810,7 @@ interface AssetImportUpload {
 async function readAssetImportUpload(
   c: Context,
 ): Promise<AssetImportUpload | undefined> {
+  assertAssetImportDeclaredWithinLimit(c);
   const contentType = c.req.header("content-type") ?? "";
   if (/^multipart\/form-data\b/i.test(contentType)) {
     let form: FormData;
@@ -3900,6 +3979,55 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   );
   importStagingSweepTimer.unref?.();
   void sweepImportStaging();
+  // Local Resource staging is separate from import-session staging: failed
+  // single-shot imports and a crash after sealing can leave a staging receipt
+  // or file with no sealed Resource pointing at it. Sweep on start and
+  // periodically, only after the same safe age the session sweep uses, so an
+  // in-flight import is never touched.
+  let localResourceStagingSweep: Promise<void> | undefined;
+  const sweepLocalResourceStagingNow = () => {
+    if (localResourceStagingSweep) return;
+    localResourceStagingSweep = sweepLocalResourceStaging({
+      dataDir: options.dataDir,
+      clashRoot,
+      olderThanMs: PROJECT_ASSET_IMPORT_STAGING_SWEEP_OLDER_THAN_MS,
+    })
+      .then((result) => {
+        for (const removal of result.removed) {
+          projectAssetImportLog.info("project_asset_import_staging.removed", {
+            code: PROJECT_ASSET_IMPORT_STAGING_REMOVED,
+            ...removal,
+          });
+        }
+        for (const failure of result.failed) {
+          projectAssetImportLog.error(
+            "project_asset_import_staging.cleanup_failed",
+            {
+              code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+              ...failure,
+            },
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        projectAssetImportLog.error(
+          "project_asset_import_staging.sweep_failed",
+          {
+            code: PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        );
+      })
+      .finally(() => {
+        localResourceStagingSweep = undefined;
+      });
+  };
+  const localResourceStagingSweepTimer = setInterval(
+    sweepLocalResourceStagingNow,
+    10 * 60 * 1000,
+  );
+  localResourceStagingSweepTimer.unref?.();
+  sweepLocalResourceStagingNow();
   let importSessionSecret: Promise<string> | undefined;
   const importSessionSecretAt = () =>
     (importSessionSecret ??= resolveProviderSecretKey(options.dataDir).then(
@@ -4160,6 +4288,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       dataDir: options.dataDir,
       clashRoot,
       assetInspection,
+      onResourceEvent: ({ level, event, fields }) => {
+        projectAssetImportLog[level](event, fields);
+      },
     });
   void assetRepresentations.start().catch((error) => {
     console.error(
@@ -5101,7 +5232,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   });
 
   app.post("/api/v1/projects/:projectId/assets/import-file", async (c) => {
-    const upload = await readAssetImportUpload(c);
+    let upload: AssetImportUpload | undefined;
+    try {
+      upload = await readAssetImportUpload(c);
+    } catch (error) {
+      return projectAssetImportErrorResponse(error);
+    }
     if (!upload) {
       return c.json(
         {
@@ -5178,6 +5314,12 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         c.header(PROJECT_ASSET_IMPORT_REPLAY_HEADER, "true");
       return c.json(result.asset, result.replayed ? 200 : 201);
     } catch (error) {
+      if (
+        error instanceof LocalResourceStreamLimitError ||
+        error instanceof LocalResourceStreamLengthMismatchError
+      ) {
+        return projectAssetImportErrorResponse(error);
+      }
       if (error instanceof LocalResourceStreamMismatchError) {
         return c.json(
           { error: error.message, code: "INVALID_PROJECT_ASSET_IMPORT" },
@@ -5593,7 +5735,22 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
   });
 
   app.post("/api/v1/libraries/personal/assets/import-file", async (c) => {
-    const upload = await readAssetImportUpload(c);
+    let upload: AssetImportUpload | undefined;
+    try {
+      upload = await readAssetImportUpload(c);
+    } catch (error) {
+      if (error instanceof LocalResourceStreamLimitError) {
+        return c.json(
+          {
+            error: error.message,
+            code: error.code,
+            maxBytes: error.maxBytes,
+          },
+          413,
+        );
+      }
+      return localGlobalAssetErrorResponse(error);
+    }
     if (!upload) {
       return c.json(
         {
