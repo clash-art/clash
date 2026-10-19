@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   chmod,
   mkdtemp,
@@ -16,6 +16,7 @@ import {
   createProjectAsset,
   createProjectDocumentAsset,
   markDocumentAssetAuthority,
+  type ProjectCloudAdmission,
   type ProjectMetadata,
   type Resource,
 } from "@clash/shared-types";
@@ -29,6 +30,17 @@ import { getLocalReplicaId } from "./local-replica-identity";
 import { LocalLoroRoomHub } from "./sync";
 
 const cleanup: Array<() => Promise<unknown>> = [];
+// Captured before any fake-timer test: file/SQLite work still settles on the
+// real event loop while the schedule under test is driven by fake timers.
+const realSetTimeout = globalThis.setTimeout;
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000) {
+  const attempts = Math.ceil(timeoutMs / 5);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 5));
+  }
+  if (!predicate()) throw new Error("Timed out waiting for condition");
+}
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
@@ -801,5 +813,277 @@ describe("Project tombstone replication", () => {
     await f.service.schedule("project");
     expect(f.localMetadata()).toEqual(restored);
     expect((await f.admission())?.status).toBe("ready");
+  });
+});
+
+async function schedulerFixture(
+  projectIds: string[],
+  maxConcurrent = 2,
+  options: {
+    status?: ProjectCloudAdmission["status"];
+    retryMs?: number;
+    retryJitterMs?: number;
+    snapshotDelayMs?: number;
+  } = {},
+) {
+  const dataDir = await mkdtemp(join(tmpdir(), "cloud-scheduler-"));
+  cleanup.push(() => rm(dataDir, { recursive: true, force: true }));
+  const metadata = createLocalMetadataStore(dataDir);
+  const replicaId = await getLocalReplicaId(dataDir);
+  const now = new Date().toISOString();
+  const localMetadata = new Map<string, ProjectMetadata>();
+  const remoteMetadata = new Map<string, ProjectMetadata>();
+  const remoteDocs = new Map<string, LoroDoc>();
+  cleanup.push(async () => {
+    for (const doc of remoteDocs.values()) doc.free();
+  });
+  const remoteDoc = (projectId: string) => {
+    let doc = remoteDocs.get(projectId);
+    if (!doc) {
+      doc = new LoroDoc();
+      remoteDocs.set(projectId, doc);
+    }
+    return doc;
+  };
+  for (const projectId of projectIds) {
+    localMetadata.set(projectId, {
+      projectId,
+      name: projectId,
+      description: null,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    });
+    await metadata.upsertProjectCloudAdmission({
+      schemaVersion: 1,
+      projectId,
+      localReplicaId: replicaId,
+      userId: "owner",
+      tenantId: "tenant",
+      syncBaseUrl: "https://cloud.test",
+      status: options.status ?? "pending",
+      capabilities: { canvas: true, projectMetadata: true, resources: true },
+      admittedAt: null,
+      updatedAt: now,
+      lastError: null,
+    });
+  }
+  const rooms = new LocalLoroRoomHub(
+    dataDir,
+    undefined,
+    null,
+    undefined,
+    undefined,
+  );
+  cleanup.push(() => rooms.close());
+  let active = 0;
+  let maxActive = 0;
+  let loads = 0;
+  const loaded = new Set<string>();
+  const remote = {
+    async loadSnapshot(projectId: string) {
+      loads += 1;
+      loaded.add(projectId);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        const delay = options.snapshotDelayMs ?? 30;
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        return remoteDocs.get(projectId)?.export({ mode: "snapshot" }) ?? null;
+      } finally {
+        active -= 1;
+      }
+    },
+    async appendUpdate(projectId: string, bytes: Uint8Array) {
+      remoteDoc(projectId).import(bytes);
+    },
+    async loadProjectMetadata(projectId: string) {
+      return remoteMetadata.get(projectId) ?? null;
+    },
+    async saveProjectMetadata(projectId: string, value: ProjectMetadata) {
+      remoteMetadata.set(projectId, value);
+    },
+  };
+  let listAdmissionsCalls = 0;
+  let fetchCalls = 0;
+  let metadataWrites = 0;
+  const service = createLocalProjectCloudSync({
+    dataDir,
+    rooms,
+    remote: async () => remote,
+    metadata: {
+      list: async () => {
+        throw new Error("full metadata load must not run for admission retry");
+      },
+      listAdmissions: async (id) => {
+        listAdmissionsCalls += 1;
+        return metadata.listProjectCloudAdmissions(id);
+      },
+      read: async (projectId) => localMetadata.get(projectId) ?? null,
+      write: async (value) => {
+        metadataWrites += 1;
+        localMetadata.set(value.projectId, value);
+      },
+    },
+    token: async () => "test-cloud-token",
+    inspection: {
+      finalize: async () => {
+        throw new Error("Resource inspection is not used by this fixture");
+      },
+    },
+    fetch: async () => {
+      fetchCalls += 1;
+      return new Response(null, { status: 204 });
+    },
+    maxConcurrent,
+    retryMs: options.retryMs ?? 300_000,
+    retryJitterMs: options.retryJitterMs ?? 0,
+    retryBackoffBaseMs: 1_000,
+    online: () => true,
+  });
+  cleanup.push(() => service.close());
+  return {
+    service,
+    metadata,
+    replicaId,
+    rooms,
+    localMetadata: (projectId: string) => localMetadata.get(projectId),
+    remoteMetadata,
+    remoteDoc,
+    stats: () => ({
+      maxActive,
+      loads,
+      listAdmissionsCalls,
+      fetchCalls,
+      metadataWrites,
+      loaded: [...loaded],
+    }),
+  };
+}
+
+describe("Project cloud sync scheduling", () => {
+  it("a local-only Host performs one scoped admission query and arms no timer", async () => {
+    const f = await schedulerFixture([]);
+    vi.useFakeTimers();
+    try {
+      await f.service.start();
+      expect(f.stats()).toMatchObject({
+        listAdmissionsCalls: 1,
+        loads: 0,
+        fetchCalls: 0,
+      });
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(f.stats()).toMatchObject({
+        listAdmissionsCalls: 1,
+        loads: 0,
+        fetchCalls: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds concurrent Project syncs", async () => {
+    const f = await schedulerFixture(["project-a", "project-b", "project-c"], 2);
+    await Promise.all([
+      f.service.schedule("project-a"),
+      f.service.schedule("project-b"),
+      f.service.schedule("project-c"),
+    ]);
+    expect(f.stats().maxActive).toBe(2);
+    expect(f.stats().loads).toBe(3);
+    for (const projectId of ["project-a", "project-b", "project-c"]) {
+      expect(
+        (await f.metadata.getProjectCloudAdmission(projectId, f.replicaId))
+          ?.status,
+      ).toBe("ready");
+    }
+  });
+
+  it("re-pulls an admitted ready Project after the floor, including a remote metadata rename and snapshot change", async () => {
+    const f = await schedulerFixture(["project"], 2, {
+      status: "ready",
+      snapshotDelayMs: 0,
+    });
+    const renamed = {
+      ...f.localMetadata("project")!,
+      name: "Renamed on another device",
+      updatedAt: new Date(
+        Date.parse(f.localMetadata("project")!.updatedAt) + 60_000,
+      ).toISOString(),
+    };
+    f.remoteMetadata.set("project", renamed);
+    f.remoteDoc("project").getMap("meta").set("remoteEdit", "from-device-b");
+    vi.useFakeTimers();
+    try {
+      await f.service.start();
+      expect(f.stats()).toMatchObject({
+        listAdmissionsCalls: 1,
+        loads: 0,
+        metadataWrites: 0,
+      });
+      // A ready Project keeps the catch-up timer armed, but does not sync yet.
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(300_000 - 1);
+      expect(f.stats().loads).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await waitFor(() => f.stats().metadataWrites > 0);
+      expect(f.stats().loads).toBe(1);
+      expect(f.localMetadata("project")?.name).toBe(
+        "Renamed on another device",
+      );
+      expect(
+        await f.rooms.inspectProject("project", (doc) =>
+          doc.getMap("meta").get("remoteEdit"),
+        ),
+      ).toBe("from-device-b");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("arms the catch-up poll when admission schedules a Project that ends ready", async () => {
+    const f = await schedulerFixture(["newly-admitted"], 2, {
+      snapshotDelayMs: 0,
+    });
+    vi.useFakeTimers();
+    try {
+      await f.service.schedule("newly-admitted");
+      expect(
+        (await f.metadata.getProjectCloudAdmission(
+          "newly-admitted",
+          f.replicaId,
+        ))?.status,
+      ).toBe("ready");
+      expect(f.stats().loads).toBe(1);
+      await vi.advanceTimersByTimeAsync(300_000);
+      await waitFor(() => f.stats().loads >= 2);
+      expect(f.stats().loads).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds concurrent catch-up syncs when many admitted Projects are ready", async () => {
+    const projectIds = [
+      "ready-a",
+      "ready-b",
+      "ready-c",
+      "ready-d",
+      "ready-e",
+      "ready-f",
+    ];
+    // Longer than one bounded wave, so the assertion measures the first
+    // catch-up pass rather than a repeated poll of the same two Projects.
+    const f = await schedulerFixture(projectIds, 2, {
+      status: "ready",
+      retryMs: 1_000,
+    });
+    await f.service.start();
+    expect(f.stats().loads).toBe(0);
+    await waitFor(() => f.stats().loads >= projectIds.length);
+    expect(f.stats().maxActive).toBe(2);
+    expect(f.stats().loaded.sort()).toEqual([...projectIds].sort());
   });
 });

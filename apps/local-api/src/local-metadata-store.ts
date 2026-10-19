@@ -2566,6 +2566,24 @@ export function createLocalMetadataStore(dataDir: string) {
     });
   }
 
+  /** One scoped query for the retry scheduler; never loads Project/Asset/Chat rows. */
+  async function listProjectCloudAdmissions(
+    localReplicaId: string,
+  ): Promise<ProjectCloudAdmission[]> {
+    return withDb((db) => {
+      const rows = db
+        .prepare(
+          `SELECT project_id, tenant_id, user_id, local_replica_id, sync_base_url,
+                  status, capabilities_json, admitted_at, updated_at, last_error
+             FROM project_cloud_admission
+            WHERE local_replica_id = ? AND status <> 'local-only'
+            ORDER BY project_id ASC`,
+        )
+        .all(localReplicaId);
+      return rows.map(cloudAdmissionFromRow);
+    });
+  }
+
   async function getLatestProjectCloudAdmission(
     projectId: string,
   ): Promise<ProjectCloudAdmission | null> {
@@ -2667,6 +2685,7 @@ export function createLocalMetadataStore(dataDir: string) {
     listLegacyAssetMetadataIndex,
     getProjectCloudAdmission,
     getLatestProjectCloudAdmission,
+    listProjectCloudAdmissions,
     upsertProjectCloudAdmission,
     async applyProjectSyncMetadata(metadata: import("@clash/shared-types").ProjectMetadata) {
       await withDb(db => {

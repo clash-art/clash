@@ -2181,6 +2181,56 @@ describe("local API app", () => {
     }
   });
 
+  it("lists projects without reading cloud config or starting a metadata mirror", async () => {
+    const setup = createLocalApiApp({ dataDir, userId: "local-user" });
+    const created = await setup.request("/api/v1/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Local-only list" }),
+    });
+    expect(created.status).toBe(201);
+    const projectId = (await created.json()).id as string;
+
+    const getPublicConfig = vi.fn().mockResolvedValue({
+      mode: "local-only",
+      remote_loro: {
+        enabled: false,
+        url: null,
+        has_token: false,
+        source: "none",
+      },
+      capabilities: {
+        canvas: false,
+        asset_metadata: false,
+        revision_content: false,
+        project_metadata: false,
+      },
+    });
+    const resolveRemotePersistence = vi.fn();
+    const getProjectCloudAdmission = vi.fn();
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      syncConfig: {
+        getPublicConfig,
+        updateFromRequest: vi.fn(),
+        resolveRemotePersistence,
+        getProjectCloudAdmission,
+      },
+    });
+
+    const listed = await app.request("/api/v1/projects");
+    expect(listed.status).toBe(200);
+    expect((await listed.json()).projects).toHaveLength(1);
+    await app.request(`/api/v1/projects/${projectId}`);
+    await app.request(`/api/v1/projects/${projectId}/status`);
+
+    // Reads are local-only: no sync trigger, so not even the config gate runs.
+    expect(getPublicConfig).not.toHaveBeenCalled();
+    expect(resolveRemotePersistence).not.toHaveBeenCalled();
+    expect(getProjectCloudAdmission).not.toHaveBeenCalled();
+  });
+
   it("persists local project metadata in SQLite", async () => {
     const app = createLocalApiApp({ dataDir, userId: "local-user" });
 

@@ -81,4 +81,91 @@ describe("local project metadata replication", () => {
     });
     expect(saveProjectMetadata).toHaveBeenCalledWith("project-1", metadata);
   });
+
+  it("coalesces a mutation burst into one remote sync per Project", async () => {
+    vi.useFakeTimers();
+    try {
+      const pull = vi.fn().mockResolvedValue(null);
+      const push = vi.fn().mockResolvedValue(undefined);
+      const replication = createLocalProjectMetadataReplication({
+        debounceMs: 50,
+        syncConfig: {
+          getPublicConfig: vi.fn().mockResolvedValue({
+            mode: "cloud-sync",
+            remote_loro: {
+              enabled: true,
+              url: "https://cloud.example",
+              has_token: true,
+              source: "config",
+            },
+            capabilities: {
+              canvas: true,
+              asset_metadata: true,
+              revision_content: true,
+              project_metadata: true,
+            },
+          }),
+          resolveRemotePersistence: vi.fn().mockResolvedValue({
+            loadProjectMetadata: pull,
+            saveProjectMetadata: push,
+          }),
+          getProjectCloudAdmission: vi.fn(),
+        },
+        local: {
+          read: vi.fn().mockResolvedValue(metadata),
+          write: vi.fn(),
+        },
+      });
+
+      replication.schedule("project-1");
+      replication.schedule("project-1");
+      replication.schedule("project-1");
+      await vi.advanceTimersByTimeAsync(49);
+      expect(pull).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await replication.idle();
+      expect(pull).toHaveBeenCalledTimes(1);
+      expect(push).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a failed mirror through the coded-status hook", async () => {
+    const failure = new Error("fetch failed");
+    const onError = vi.fn();
+    const replication = createLocalProjectMetadataReplication({
+      onError,
+      syncConfig: {
+        getPublicConfig: vi.fn().mockResolvedValue({
+          mode: "cloud-sync",
+          remote_loro: {
+            enabled: true,
+            url: "https://cloud.example",
+            has_token: true,
+            source: "config",
+          },
+          capabilities: {
+            canvas: true,
+            asset_metadata: true,
+            revision_content: true,
+            project_metadata: true,
+          },
+        }),
+        resolveRemotePersistence: vi.fn().mockResolvedValue({
+          loadProjectMetadata: vi.fn().mockRejectedValue(failure),
+          saveProjectMetadata: vi.fn(),
+        }),
+        getProjectCloudAdmission: vi.fn(),
+      },
+      local: {
+        read: vi.fn().mockResolvedValue(metadata),
+        write: vi.fn(),
+      },
+    });
+
+    replication.schedule("project-1");
+    await replication.idle();
+    expect(onError).toHaveBeenCalledWith("project-1", failure);
+  });
 });
