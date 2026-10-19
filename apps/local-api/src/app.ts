@@ -23,7 +23,7 @@ import {
 } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { delimiter, extname, join, resolve } from "node:path";
+import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Hono, type Context } from "hono";
@@ -35,6 +35,7 @@ import { z } from "zod";
 import { clashHomeForLocalDataDir } from "./local-paths.js";
 import {
   LocalResourceError,
+  LocalResourceImportSourceError,
   LocalResourceStreamLengthMismatchError,
   LocalResourceStreamLimitError,
   LocalResourceStreamMismatchError,
@@ -1533,6 +1534,16 @@ function localProjectAssetErrorResponse(
   error: unknown,
   options: { fallbackCode?: string } = {},
 ): Response {
+  if (error instanceof LocalResourceImportSourceError) {
+    return json(
+      {
+        error: error.message,
+        code: error.code,
+        ...(error.errno ? { errno: error.errno } : {}),
+      },
+      error.code === "ASSET_IMPORT_SOURCE_CHANGED" ? 409 : 400,
+    );
+  }
   if (error instanceof LocalResourceError) {
     return localResourceErrorResponse(error);
   }
@@ -1735,6 +1746,23 @@ function validateProjectAssetImportFile(
   }
   return undefined;
 }
+
+/**
+ * Loopback import by path. The body names a file on this machine instead of
+ * carrying its bytes; the Host opens it, clones or copies it itself.
+ */
+const ProjectAssetImportPathSchema = z
+  .object({
+    sourcePath: z.string().trim().min(1).max(8192),
+    byteLength: z.number().int().positive(),
+    mtimeMs: z.number().nonnegative().optional(),
+    kind: AssetKindSchema,
+    projectAssetId: z.string().trim().min(1).max(512),
+    fileName: z.string().trim().min(1).max(512).optional(),
+    contentType: z.string().trim().min(1).max(256).optional(),
+    duplicateContent: z.enum(["allow", "reject"]).optional(),
+  })
+  .strict();
 
 /** One Asset import command, whichever transport carried it. */
 interface AssetImportUpload {
@@ -5326,6 +5354,63 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           400,
         );
       }
+      return projectAssetImportErrorResponse(error);
+    }
+  });
+
+  // Same-machine callers (the CLI, Desktop) name a local source path so the
+  // Host can ask the filesystem for a copy-on-write clone. The route is
+  // loopback-only because it opens a path on this machine; remote callers keep
+  // the byte-streaming `import-file` and import-session paths.
+  app.post("/api/v1/projects/:projectId/assets/import-path", async (c) => {
+    if (!isLoopbackRemoteAddress(socketRemoteAddress(c.env))) {
+      return c.json(
+        {
+          error: "path import is limited to this machine",
+          code: "ASSET_IMPORT_PATH_LOOPBACK_ONLY",
+        },
+        403,
+      );
+    }
+    const parsed = ProjectAssetImportPathSchema.safeParse(
+      await c.req.json().catch(() => null),
+    );
+    if (!parsed.success || !isAbsolute(parsed.data.sourcePath)) {
+      return c.json(
+        {
+          error:
+            "Project Asset path import requires an absolute sourcePath, byteLength, kind, and projectAssetId",
+          code: "INVALID_PROJECT_ASSET_IMPORT",
+        },
+        400,
+      );
+    }
+    try {
+      const result = await projectAssetServiceAt(
+        requestOrigin(c),
+      ).installOwnedResult({
+        projectId: c.req.param("projectId"),
+        projectAssetId: parsed.data.projectAssetId,
+        ...(parsed.data.duplicateContent
+          ? { duplicateContent: parsed.data.duplicateContent }
+          : {}),
+        kind: parsed.data.kind,
+        sourcePath: parsed.data.sourcePath,
+        declaredByteLength: parsed.data.byteLength,
+        ...(parsed.data.mtimeMs === undefined
+          ? {}
+          : { sourceMtimeMs: parsed.data.mtimeMs }),
+        ...(parsed.data.fileName ? { name: parsed.data.fileName } : {}),
+        ...(parsed.data.contentType
+          ? { contentType: parsed.data.contentType }
+          : {}),
+        metadata: {},
+        provenance: { kind: "import" },
+      });
+      if (result.replayed)
+        c.header(PROJECT_ASSET_IMPORT_REPLAY_HEADER, "true");
+      return c.json(result.asset, result.replayed ? 200 : 201);
+    } catch (error) {
       return projectAssetImportErrorResponse(error);
     }
   });

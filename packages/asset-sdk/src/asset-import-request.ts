@@ -19,6 +19,14 @@ export interface AssetImportFile {
   readonly size: number;
   readonly type: string;
   stream(): ReadableStream<Uint8Array>;
+  /**
+   * Absolute path when the caller and Host share this filesystem. A Node
+   * caller sets it so a loopback Host can clone the file instead of receiving
+   * its bytes; browser Blobs leave it undefined.
+   */
+  readonly sourcePath?: string;
+  /** Source mtime the caller observed, used to reject a changed file. */
+  readonly sourceMtimeMs?: number;
 }
 
 /**

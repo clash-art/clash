@@ -615,4 +615,119 @@ describe("Project Asset HTTP client", () => {
     });
     expect(replayed).toBe(1);
   });
+
+  it("imports a caller-named local path through the loopback route without sending bytes", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const client = createProjectAssetHttpClient({
+      fetch: async (input, init) => {
+        requests.push({ url: String(input), init });
+        return new Response(JSON.stringify(readyAsset), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const sourcePath = "/Users/test/clip.mp4";
+    const file = {
+      size: 4,
+      type: "video/mp4",
+      sourcePath,
+      sourceMtimeMs: 1_700_000_000_123.5,
+      stream: () => new Blob([new Uint8Array([1, 2, 3, 4])]).stream(),
+    };
+
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file,
+        fileName: "clip.mp4",
+        kind: "video",
+        projectAssetId: "asset:one",
+        duplicateContent: "reject",
+      }),
+    ).resolves.toEqual(readyAsset);
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe(
+      "/api/v1/projects/project%2Fone/assets/import-path",
+    );
+    expect(requests[0]?.init?.method).toBe("POST");
+    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({
+      sourcePath,
+      byteLength: 4,
+      mtimeMs: 1_700_000_000_123.5,
+      kind: "video",
+      projectAssetId: "asset:one",
+      fileName: "clip.mp4",
+      contentType: "video/mp4",
+      duplicateContent: "reject",
+    });
+  });
+
+  it("falls back to the streamed import when the Host has no path route", async () => {
+    const urls: string[] = [];
+    const client = createProjectAssetHttpClient({
+      fetch: async (input) => {
+        const url = String(input);
+        urls.push(url.split("?")[0]!);
+        if (url.endsWith("/import-path")) {
+          return new Response("not found", { status: 404 });
+        }
+        return new Response(JSON.stringify(readyAsset), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    await client.importFile({
+      projectId: "project/one",
+      file: {
+        size: 4,
+        type: "image/png",
+        sourcePath: "/Users/test/frame.png",
+        stream: () => new Blob([new Uint8Array([1, 2, 3, 4])]).stream(),
+      },
+      fileName: "frame.png",
+      kind: "image",
+      projectAssetId: "asset:one",
+    });
+
+    expect(urls).toEqual([
+      "/api/v1/projects/project%2Fone/assets/import-path",
+      "/api/v1/projects/project%2Fone/assets/import-file",
+    ]);
+  });
+
+  it("surfaces a coded unreadable-source failure instead of streaming the path", async () => {
+    const urls: string[] = [];
+    const client = createProjectAssetHttpClient({
+      fetch: async (input) => {
+        urls.push(String(input));
+        return Response.json(
+          { code: "ASSET_IMPORT_SOURCE_UNREADABLE", error: "gone" },
+          { status: 400 },
+        );
+      },
+    });
+
+    await expect(
+      client.importFile({
+        projectId: "project/one",
+        file: {
+          size: 4,
+          type: "image/png",
+          sourcePath: "/Users/test/gone.png",
+          stream: () => new Blob([new Uint8Array([1, 2, 3, 4])]).stream(),
+        },
+        fileName: "gone.png",
+        kind: "image",
+        projectAssetId: "asset:one",
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      body: { code: "ASSET_IMPORT_SOURCE_UNREADABLE" },
+    });
+    expect(urls).toHaveLength(1);
+  });
 });
