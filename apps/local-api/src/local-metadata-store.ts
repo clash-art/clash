@@ -77,6 +77,51 @@ export interface LocalMetadataSession {
   updatedAt: string;
 }
 
+/** A scoped patch applied to a runtime session when its transcript advances. */
+export interface LocalMetadataSessionEventPatch {
+  title?: string;
+  status?: LocalMetadataSessionStatus;
+}
+
+/**
+ * Derives only the session columns an ACP event changes. Runs synchronously
+ * inside the event append transaction, so it must be pure and must not touch
+ * the database.
+ */
+export type LocalMetadataSessionEventUpdater = (session: {
+  title: string;
+  agentTemplateId?: string;
+}) => LocalMetadataSessionEventPatch | null | undefined;
+
+export interface LocalMetadataSessionEventAppendOptions {
+  updatedAt?: string;
+  updateSession?: LocalMetadataSessionEventUpdater;
+}
+
+export const SESSION_EVENT_PERSIST_FAILED = "SESSION_EVENT_PERSIST_FAILED";
+
+/**
+ * A transcript event and its session-row update are one transaction. When
+ * either write fails, the caller gets this code instead of a silent gap
+ * between the event log and the session summary.
+ */
+export class LocalSessionEventPersistError extends Error {
+  readonly code = SESSION_EVENT_PERSIST_FAILED;
+
+  constructor(
+    readonly sessionId: string,
+    cause: unknown,
+  ) {
+    super(
+      `Could not persist session event for ${sessionId}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+    );
+    this.name = "LocalSessionEventPersistError";
+    this.cause = cause;
+  }
+}
+
 export interface LocalMetadataSessionMessage {
   session_id: string;
   id: string;
@@ -986,12 +1031,70 @@ export function createLocalMetadataStore(dataDir: string) {
   async function appendSessionEvent(
     sessionId: string,
     event: { type: string; data: unknown; ts: number },
+    options: LocalMetadataSessionEventAppendOptions = {},
   ): Promise<void> {
-    await withDb((db) => {
-      db.prepare(
-        `INSERT INTO session_event (session_id, type, data, ts) VALUES (?, ?, ?, ?)`,
-      ).run(sessionId, event.type, JSON.stringify(event.data), event.ts);
-    });
+    try {
+      await withDb((db) => {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          db.prepare(
+            `INSERT INTO session_event (session_id, type, data, ts) VALUES (?, ?, ?, ?)`,
+          ).run(sessionId, event.type, JSON.stringify(event.data), event.ts);
+          if (options.updateSession) {
+            const row = db
+              .prepare(
+                `SELECT title, agent_template_id FROM runtime_session WHERE id = ?`,
+              )
+              .get(sessionId);
+            // A session can be precreated after its first startup events under a
+            // temporary id; those events are moved by renameSessionEvents later.
+            if (row) {
+              const title = rowString(row, "title");
+              const agentTemplateId = rowOptionalString(
+                row,
+                "agent_template_id",
+              );
+              const patch = options.updateSession({
+                title,
+                ...(agentTemplateId ? { agentTemplateId } : {}),
+              });
+              // Only touch the columns this event actually changes. Rewriting
+              // an untouched column would require selecting it first, and a
+              // missing select silently cleared it.
+              const assignments = ["updated_at = ?"];
+              const values: SqlitePrimitive[] = [
+                options.updatedAt ?? new Date().toISOString(),
+              ];
+              if (patch?.title !== undefined) {
+                assignments.push("title = ?");
+                values.push(patch.title);
+              }
+              if (patch?.status !== undefined) {
+                assignments.push("status = ?");
+                values.push(patch.status);
+              }
+              values.push(sessionId);
+              db.prepare(
+                `UPDATE runtime_session
+                    SET ${assignments.join(", ")}
+                  WHERE id = ?`,
+              ).run(...values);
+            }
+          }
+          db.exec("COMMIT");
+        } catch (error) {
+          try {
+            db.exec("ROLLBACK");
+          } catch {
+            // Keep the original failure; a rolled-back transaction is gone.
+          }
+          throw error;
+        }
+      });
+    } catch (error) {
+      if (error instanceof LocalSessionEventPersistError) throw error;
+      throw new LocalSessionEventPersistError(sessionId, error);
+    }
   }
 
   async function listSessionEvents(sessionId: string): Promise<

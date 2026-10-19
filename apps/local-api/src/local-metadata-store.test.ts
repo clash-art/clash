@@ -848,6 +848,206 @@ describe("typed metadata attachment projection index", () => {
     ]);
   });
 
+  it("applies an event and its scoped session patch in one transaction", async () => {
+    const dataDir = await tempDir();
+    const store = createLocalMetadataStore(dataDir);
+    const at = "2026-10-18T00:00:00.000Z";
+    await store.save({
+      projects: [],
+      assets: [],
+      assetRefs: [],
+      libraryAssetRefs: [],
+      assetNodeRefs: [],
+      sessions: [
+        {
+          id: "session-scoped",
+          projectId: "project-1",
+          title: "New session",
+          type: "runtime",
+          agentTemplateId: "clash",
+          status: "starting",
+          createdAt: at,
+          updatedAt: at,
+        },
+      ],
+      agentMembers: [],
+      sessionMessages: [],
+    });
+
+    await store.appendSessionEvent(
+      "session-scoped",
+      { type: "user_prompt", data: { text: "Fix the render" }, ts: 1_000 },
+      {
+        updatedAt: "2026-10-18T00:00:01.000Z",
+        updateSession: () => ({ title: "Fix the render", status: "error" }),
+      },
+    );
+
+    expect(await store.listSessionEvents("session-scoped")).toEqual([
+      expect.objectContaining({
+        seq: 1,
+        type: "user_prompt",
+        data: { text: "Fix the render" },
+      }),
+    ]);
+    expect((await store.load()).sessions).toEqual([
+      expect.objectContaining({
+        id: "session-scoped",
+        title: "Fix the render",
+        status: "error",
+        updatedAt: "2026-10-18T00:00:01.000Z",
+      }),
+    ]);
+  });
+
+  it("preserves session columns an event patch does not change", async () => {
+    const dataDir = await tempDir();
+    const store = createLocalMetadataStore(dataDir);
+    const createdAt = "2026-10-18T00:00:00.000Z";
+    await store.save({
+      projects: [],
+      assets: [],
+      assetRefs: [],
+      libraryAssetRefs: [],
+      assetNodeRefs: [],
+      sessions: [
+        {
+          id: "session-preserve",
+          projectId: "project-1",
+          title: "New session",
+          type: "runtime",
+          status: "active",
+          createdAt,
+          updatedAt: createdAt,
+        },
+      ],
+      agentMembers: [],
+      sessionMessages: [],
+    });
+
+    const session = async () =>
+      (await store.load()).sessions.find(
+        (candidate) => candidate.id === "session-preserve",
+      );
+    const ordinaryEvent = (ts: number) => ({
+      type: "session.event",
+      data: {
+        turn_id: "turn-preserve",
+        event: { sessionUpdate: "agent_message_chunk" },
+      },
+      ts,
+    });
+
+    for (const [index, updatedAt] of [
+      "2026-10-18T00:00:01.000Z",
+      "2026-10-18T00:00:02.000Z",
+      "2026-10-18T00:00:03.000Z",
+    ].entries()) {
+      await store.appendSessionEvent("session-preserve", ordinaryEvent(index), {
+        updatedAt,
+        updateSession: () => ({}),
+      });
+      expect(await session()).toMatchObject({
+        title: "New session",
+        status: "active",
+        updatedAt,
+      });
+    }
+
+    await store.appendSessionEvent(
+      "session-preserve",
+      { type: "user_prompt", data: { text: "Keep the status" }, ts: 2_000 },
+      {
+        updatedAt: "2026-10-18T00:00:04.000Z",
+        updateSession: () => ({ title: "Keep the status" }),
+      },
+    );
+    expect(await session()).toMatchObject({
+      title: "Keep the status",
+      status: "active",
+      updatedAt: "2026-10-18T00:00:04.000Z",
+    });
+
+    await store.appendSessionEvent(
+      "session-preserve",
+      { type: "turn_failed", data: { message: "boom" }, ts: 3_000 },
+      {
+        updatedAt: "2026-10-18T00:00:05.000Z",
+        updateSession: () => ({ status: "error" }),
+      },
+    );
+    expect(await session()).toMatchObject({
+      title: "Keep the status",
+      status: "error",
+      updatedAt: "2026-10-18T00:00:05.000Z",
+    });
+  });
+
+  it("rolls back the event insert when the session patch fails", async () => {
+    const dataDir = await tempDir();
+    const store = createLocalMetadataStore(dataDir);
+    const at = "2026-10-18T00:00:00.000Z";
+    await store.save({
+      projects: [],
+      assets: [],
+      assetRefs: [],
+      libraryAssetRefs: [],
+      assetNodeRefs: [],
+      sessions: [
+        {
+          id: "session-atomic",
+          projectId: "project-1",
+          title: "Keep this title",
+          type: "runtime",
+          status: "active",
+          createdAt: at,
+          updatedAt: at,
+        },
+      ],
+      agentMembers: [],
+      sessionMessages: [],
+    });
+    const { DatabaseSync } = require("node:sqlite") as {
+      DatabaseSync: new (path: string) => {
+        exec(sql: string): void;
+        close(): void;
+      };
+    };
+    const sqlite = new DatabaseSync(join(dataDir, "local.sqlite"));
+    try {
+      sqlite.exec(`
+        CREATE TRIGGER fail_runtime_session_update
+        BEFORE UPDATE ON runtime_session
+        BEGIN
+          SELECT RAISE(ABORT, 'session update failed');
+        END;
+      `);
+    } finally {
+      sqlite.close();
+    }
+
+    await expect(
+      store.appendSessionEvent(
+        "session-atomic",
+        { type: "turn_failed", data: { message: "boom" }, ts: 2_000 },
+        {
+          updatedAt: "2026-10-18T00:00:02.000Z",
+          updateSession: () => ({ status: "error" }),
+        },
+      ),
+    ).rejects.toMatchObject({ code: "SESSION_EVENT_PERSIST_FAILED" });
+
+    expect(await store.listSessionEvents("session-atomic")).toEqual([]);
+    expect((await store.load()).sessions).toEqual([
+      expect.objectContaining({
+        id: "session-atomic",
+        title: "Keep this title",
+        status: "active",
+        updatedAt: at,
+      }),
+    ]);
+  });
+
   it("moves and deletes the append-only log with its runtime session", async () => {
     const dataDir = await tempDir();
     const store = createLocalMetadataStore(dataDir);

@@ -72,6 +72,7 @@ function openSqlite() {
   const require = createRequire(import.meta.url);
   const { DatabaseSync } = require("node:sqlite") as {
     DatabaseSync: new (path: string) => {
+      exec(sql: string): void;
       prepare(sql: string): {
         run(...params: unknown[]): unknown;
         get(...params: unknown[]): Record<string, unknown> | undefined;
@@ -10484,6 +10485,251 @@ describe("local API app", () => {
     expect(await sessions.json()).toMatchObject({
       sessions: [{ id: "local-session-history", title: "Restore transcript" }],
     });
+  });
+
+  it("appends a session event without rewriting unrelated metadata tables", async () => {
+    let eventStore:
+      | {
+          appendEvent(
+            sessionId: string,
+            event: { type: string; data: unknown; ts: number },
+          ): Promise<void> | void;
+        }
+      | undefined;
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      localAcp: {
+        async listRuntimes() {
+          return { runtimes: [] };
+        },
+        async createSession() {
+          return { session_id: "local-session-scoped" };
+        },
+        async listResumeSessions() {
+          return { sessions: [] };
+        },
+        setSessionEventStore(store: typeof eventStore) {
+          eventStore = store;
+        },
+      } as any,
+    });
+
+    const created = await app.request(
+      "/api/v1/runtimes/desktop-local/sessions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent_id: "codex-acp",
+          project_id: "project-scoped-event",
+        }),
+      },
+    );
+    expect(created.status).toBe(200);
+
+    const sqlite = openSqlite();
+    try {
+      sqlite.exec(`
+        CREATE TRIGGER fail_unrelated_metadata_rewrite
+        BEFORE DELETE ON project
+        BEGIN
+          SELECT RAISE(ABORT, 'unrelated metadata was rewritten');
+        END;
+      `);
+      await expect(
+        eventStore!.appendEvent("local-session-scoped", {
+          type: "session.event",
+          data: {
+            turn_id: "turn-scoped",
+            event: { sessionUpdate: "agent_message_chunk" },
+          },
+          ts: 1_000,
+        }),
+      ).resolves.toBeUndefined();
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("keeps the runtime session status across transcript appends", async () => {
+    let eventStore:
+      | {
+          appendEvent(
+            sessionId: string,
+            event: { type: string; data: unknown; ts: number },
+          ): Promise<void> | void;
+        }
+      | undefined;
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      localAcp: {
+        async listRuntimes() {
+          return { runtimes: [] };
+        },
+        async createSession() {
+          return { session_id: "local-session-status" };
+        },
+        async listResumeSessions() {
+          return { sessions: [] };
+        },
+        setSessionEventStore(store: typeof eventStore) {
+          eventStore = store;
+        },
+      } as any,
+    });
+
+    const created = await app.request(
+      "/api/v1/runtimes/desktop-local/sessions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent_id: "codex-acp",
+          project_id: "project-session-status",
+        }),
+      },
+    );
+    expect(created.status).toBe(200);
+
+    const readSession = () => {
+      const sqlite = openSqlite();
+      try {
+        return sqlite
+          .prepare(
+            "SELECT title, status, updated_at FROM runtime_session WHERE id = ?",
+          )
+          .get("local-session-status");
+      } finally {
+        sqlite.close();
+      }
+    };
+    const sqlite = openSqlite();
+    try {
+      // A session that already moved past "starting" must keep that status.
+      sqlite
+        .prepare(
+          "UPDATE runtime_session SET status = ?, updated_at = ? WHERE id = ?",
+        )
+        .run("active", "2020-01-01T00:00:00.000Z", "local-session-status");
+    } finally {
+      sqlite.close();
+    }
+    const initial = readSession();
+    expect(initial).toMatchObject({ title: "New session", status: "active" });
+
+    for (let index = 0; index < 3; index += 1) {
+      await eventStore!.appendEvent("local-session-status", {
+        type: "session.event",
+        data: {
+          turn_id: "turn-status",
+          event: { sessionUpdate: "agent_message_chunk" },
+        },
+        ts: 1_000 + index,
+      });
+      expect(readSession()).toMatchObject({
+        title: "New session",
+        status: "active",
+      });
+    }
+    expect(
+      String(readSession()!.updated_at) > "2020-01-01T00:00:00.000Z",
+    ).toBe(true);
+
+    await eventStore!.appendEvent("local-session-status", {
+      type: "user_prompt",
+      data: { turn_id: "turn-status", text: "Preserve the running status" },
+      ts: 2_000,
+    });
+    expect(readSession()).toMatchObject({
+      title: "Preserve the running status",
+      status: "active",
+    });
+
+    await eventStore!.appendEvent("local-session-status", {
+      type: "turn_failed",
+      data: { turn_id: "turn-status", message: "boom" },
+      ts: 3_000,
+    });
+    expect(readSession()).toMatchObject({
+      title: "Preserve the running status",
+      status: "error",
+    });
+  });
+
+  it("returns a coded error and no event when the transcript write fails", async () => {
+    let eventStore:
+      | {
+          appendEvent(
+            sessionId: string,
+            event: { type: string; data: unknown; ts: number },
+          ): Promise<void> | void;
+        }
+      | undefined;
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      localAcp: {
+        async listRuntimes() {
+          return { runtimes: [] };
+        },
+        async createSession() {
+          return { session_id: "local-session-failed" };
+        },
+        async listResumeSessions() {
+          return { sessions: [] };
+        },
+        setSessionEventStore(store: typeof eventStore) {
+          eventStore = store;
+        },
+      } as any,
+    });
+
+    const created = await app.request(
+      "/api/v1/runtimes/desktop-local/sessions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          agent_id: "codex-acp",
+          project_id: "project-failed-event",
+        }),
+      },
+    );
+    expect(created.status).toBe(200);
+
+    const sqlite = openSqlite();
+    try {
+      sqlite.exec(`
+        CREATE TRIGGER fail_session_event_insert
+        BEFORE INSERT ON session_event
+        BEGIN
+          SELECT RAISE(ABORT, 'session event insert failed');
+        END;
+      `);
+      await expect(
+        eventStore!.appendEvent("local-session-failed", {
+          type: "session.event",
+          data: {
+            turn_id: "turn-failed",
+            event: { sessionUpdate: "agent_message_chunk" },
+          },
+          ts: 1_000,
+        }),
+      ).rejects.toMatchObject({
+        code: "SESSION_EVENT_PERSIST_FAILED",
+        sessionId: "local-session-failed",
+      });
+      const events = sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM session_event WHERE session_id = ?",
+        )
+        .get("local-session-failed");
+      expect(Number(events?.count)).toBe(0);
+    } finally {
+      sqlite.close();
+    }
   });
 
   it("moves startup events when ACP replaces the precreated runtime session id", async () => {
