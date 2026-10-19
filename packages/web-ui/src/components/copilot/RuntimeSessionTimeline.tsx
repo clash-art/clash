@@ -13,7 +13,6 @@ import type {
 } from "@openma/common/agent-ui";
 import {
   AgentUIStreamingMarkdown,
-  AgentUIStreamingThoughtProjection,
   useAgentUIState,
 } from "@openma/common/agent-ui/react";
 import {
@@ -228,16 +227,10 @@ function RuntimeTurn({
           ) : (
             <AcpAssistantTextInline text={item.text} section={section} />
           ),
-        projectThoughtActivity: ({ item, live, prefixSkip }) =>
-          projectClashThought({ store, turn, item, live, prefixSkip }),
+        projectThoughtActivity: ({ item, live }) =>
+          projectClashThought({ item, live }),
         renderThought: ({ item, live, prefixSkip }) => {
-          const projection = projectClashThought({
-            store,
-            turn,
-            item,
-            live,
-            prefixSkip,
-          });
+          const projection = projectClashThought({ item, live });
           return (
             <ChatThoughtEventRow
               live={live}
@@ -309,32 +302,16 @@ function RuntimeTurn({
 }
 
 function projectClashThought({
-  store,
-  turn,
   item,
   live,
-  prefixSkip,
 }: {
-  store: AgentUIStore;
-  turn: AgentUITurnState;
   item: AgentUIMessageItem;
   live: boolean;
-  prefixSkip: number;
 }): ChatThoughtEventProjection {
   return projectChatThoughtEvent({
-    text: item.text,
     live,
     liveFallback: "正在思考",
     completedLabel: thoughtCompletedLabel(item),
-    renderLiveSummary: (fallback) => (
-      <AgentUIStreamingThoughtProjection
-        store={store}
-        turnId={turn.id}
-        prefixSkip={prefixSkip}
-        fallback={String(fallback)}
-        mode="body"
-      />
-    ),
   });
 }
 

@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { createAgentUIStore, type AgentUIStore } from "@openma/common/agent-ui";
+import { decodeAcpSessionUpdate } from "@openma/common/protocol/acp";
 import {
   createOpenMAEvent,
   type OpenMAEvent,
@@ -122,7 +129,7 @@ describe("RuntimeSessionTimeline", () => {
     expect(screen.getByRole("button", { name: "已思考 5 秒" })).toBeVisible();
   });
 
-  it("renders Markdown in both live thought summaries when grouped with a tool", () => {
+  it("uses the upstream live thought fallback and keeps Markdown in the thought body", () => {
     const store = createAgentUIStore("session-markdown");
     dispatch(store, "user", "user.message", {
       message_id: "user",
@@ -145,17 +152,30 @@ describe("RuntimeSessionTimeline", () => {
         clashEntities={[]}
       />,
     );
-    const summaries = container.querySelectorAll(".activity-disclosure-row");
-    const thoughtSummaries = [...summaries].filter((row) =>
-      row.textContent?.includes("Searching ALL_TOOLS"),
+    const thoughtRows = [
+      ...container.querySelectorAll<HTMLElement>('[data-thought-block="true"]'),
+    ];
+    expect(thoughtRows.length).toBeGreaterThan(0);
+    const liveRow = thoughtRows.find(
+      (row) => row.getAttribute("data-thought-live") === "true",
     );
-    expect(thoughtSummaries.length).toBeGreaterThan(0);
-    for (const row of thoughtSummaries) {
-      expect(row.querySelector("strong")).toHaveTextContent(
-        "Searching ALL_TOOLS",
-      );
-      expect(row.textContent).not.toContain("**");
-    }
+    expect(liveRow).toBeTruthy();
+    const trigger = liveRow!.querySelector<HTMLElement>(
+      "[data-chat-turn-disclosure-trigger]",
+    );
+    // 0.11 projects a live thought as the fallback label; Markdown belongs to
+    // the body it owns, not to the summary row.
+    expect(trigger).toHaveTextContent("正在思考");
+    expect(trigger).not.toHaveTextContent("**");
+    const body = liveRow!.querySelector<HTMLElement>(
+      '[data-thought-stream-body="true"]',
+    );
+    expect(body).toHaveAttribute("hidden");
+    fireEvent.click(trigger!);
+    expect(body).not.toHaveAttribute("hidden");
+    expect(body?.querySelector("strong")).toHaveTextContent(
+      "Searching ALL_TOOLS",
+    );
   });
 
   it("shows restored text immediately instead of replaying it as new tokens", () => {
@@ -726,10 +746,12 @@ describe("RuntimeSessionTimeline", () => {
 
     const group = document.querySelector('[data-tool-group-size="3"]');
     const trigger = group?.querySelector<HTMLElement>(":scope > button");
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
     expect(trigger).toHaveTextContent("搜索中 dialog");
     expect(trigger?.querySelector(".animate-spin")).toBeTruthy();
 
+    fireEvent.click(trigger!);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
     const rows = screen.getAllByTestId("acp-tool-row");
     expect(rows).toHaveLength(3);
     expect(rows.at(-1)).toHaveTextContent("已搜索");
@@ -788,5 +810,174 @@ describe("RuntimeSessionTimeline", () => {
 
     expect(screen.getByText("Visible answer")).toBeVisible();
     expect(screen.queryByRole("button", { name: /已工作/ })).toBeNull();
+  });
+
+  it("keeps the process strip open when a watched turn completes", () => {
+    const store = createAgentUIStore("session-process-open");
+    dispatch(store, "user-process", "user.message", {
+      message_id: "user-process",
+      text: "Inspect the files",
+    });
+    dispatch(store, "running-process", "session.running", {});
+    dispatch(store, "thought-process", "agent.thinking", {
+      message_id: "thought-process",
+      text: "Checking files",
+    });
+
+    render(
+      <RuntimeSessionTimeline
+        store={store}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+
+    const runningActivity = document.querySelector<HTMLElement>(
+      '[data-session-process-state="running"] [data-session-process-activity="true"]',
+    );
+    expect(runningActivity).toBeTruthy();
+    expect(runningActivity).not.toHaveAttribute("hidden");
+
+    act(() => {
+      dispatch(store, "complete-process", "turn.completed", {});
+    });
+
+    const stoppedProcess = document.querySelector<HTMLElement>(
+      '[data-session-process-state="complete"]',
+    );
+    expect(stoppedProcess).toBeTruthy();
+    const stoppedActivity = stoppedProcess?.querySelector<HTMLElement>(
+      '[data-session-process-activity="true"]',
+    );
+    expect(stoppedActivity).toBeTruthy();
+    expect(stoppedActivity).not.toHaveAttribute("hidden");
+    expect(screen.getByRole("button", { name: /已工作/ })).toBeTruthy();
+  });
+
+  it("does not mount a collapsed history process body until opened", () => {
+    render(
+      <RuntimeSessionTimeline
+        store={completedCodexTurn()}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+
+    const process = document.querySelector<HTMLElement>(
+      '[data-session-process-state="complete"]',
+    );
+    expect(process).toBeTruthy();
+    expect(
+      process?.querySelector('[data-session-process-activity="true"]'),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /已工作/ }));
+
+    expect(
+      document.querySelector('[data-session-process-activity="true"]'),
+    ).toBeTruthy();
+  });
+
+  it("reserves the footer slot while running and fades it in when watched to completion", () => {
+    const store = createAgentUIStore("session-footer-live");
+    dispatch(store, "user-footer", "user.message", {
+      message_id: "user-footer",
+      text: "Finish the task",
+    });
+    dispatch(store, "running-footer", "session.running", {});
+
+    render(
+      <RuntimeSessionTimeline
+        store={store}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+
+    const reserved = document.querySelector<HTMLElement>(
+      "[data-session-turn-footer-slot]",
+    );
+    expect(reserved).toHaveAttribute(
+      "data-session-turn-footer-slot",
+      "reserved",
+    );
+    expect(reserved?.querySelector("[data-turn-footer='true']")).toBeNull();
+
+    act(() => {
+      dispatch(store, "complete-footer", "turn.completed", {});
+    });
+
+    const entering = document.querySelector<HTMLElement>(
+      "[data-session-turn-footer-slot]",
+    );
+    expect(entering).toHaveAttribute(
+      "data-session-turn-footer-slot",
+      "entering",
+    );
+    expect(entering?.querySelector("[data-turn-footer='true']")).toBeTruthy();
+  });
+
+  it("renders a history footer settled instead of entering", () => {
+    render(
+      <RuntimeSessionTimeline
+        store={completedCodexTurn()}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+
+    expect(
+      document.querySelector("[data-session-turn-footer-slot]"),
+    ).toHaveAttribute("data-session-turn-footer-slot", "settled");
+  });
+
+  it("concatenates ACP message chunk deltas exactly through the Clash store path", () => {
+    const store = createAgentUIStore("session-acp-fidelity");
+    dispatch(store, "user-acp-fidelity", "user.message", {
+      message_id: "user-acp-fidelity",
+      text: "Print the number",
+    });
+    dispatch(store, "running-acp-fidelity", "session.running", {});
+
+    const expected = "#104\n\n\n\n";
+    for (const [index, text] of ["#10", "4", "\n\n", "\n\n"].entries()) {
+      const decoded = decodeAcpSessionUpdate(
+        "session-acp-fidelity",
+        {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "answer-acp-fidelity",
+          content: { type: "text", text },
+        },
+        {
+          eventId: `acp-fidelity-${index}`,
+          occurredAt: `2026-09-09T00:00:0${index + 1}.000Z`,
+          turnId: "turn-1",
+        },
+      );
+      store.dispatch(decoded.event);
+    }
+
+    const answer = store
+      .getState()
+      .turns["turn-1"]?.items.find(
+        (item) =>
+          item.kind === "message" &&
+          item.role === "assistant" &&
+          item.text.length > 0,
+      );
+    expect(answer?.kind === "message" ? answer.text : undefined).toBe(expected);
+
+    dispatch(store, "complete-acp-fidelity", "turn.completed", {});
+    const { container } = render(
+      <RuntimeSessionTimeline
+        store={store}
+        mentionableNodes={[]}
+        clashEntities={[]}
+      />,
+    );
+
+    expect(
+      container.querySelector('[data-session-turn-answer="true"]'),
+    ).toHaveTextContent("#104");
   });
 });
