@@ -4,6 +4,7 @@ import { createCloudLogin } from "./cloud-login.js";
 import { cloudOrigin } from "./cloud-accounts.js";
 import { LocalProjectUpgradeError } from "./local-project-upgrade.js";
 import { PluginRuntimeUnavailableError } from "./plugin-runtime-unavailable.js";
+import { HostLazyModuleLoadError } from "./host-lazy-module.js";
 import { createLocalMarketplaceRoutes, legacyActionInstallRetired } from "./local-marketplace.js";
 import { getLocalReplicaId } from "./local-replica-identity.js";
 import { isCanvasGeneratorAuthoringPatch, updateLocalCanvasGeneratorNode } from "./local-canvas-generator-update.js";
@@ -4313,6 +4314,9 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
     if (error instanceof PluginRuntimeUnavailableError) {
       return c.json({ error: error.message, code: error.code }, 503);
     }
+    if (error instanceof HostLazyModuleLoadError) {
+      return c.json({ error: error.message, code: error.code, module: error.module }, 503);
+    }
     // Hono's default boundary semantics for route-thrown HTTP errors and unexpected failures.
     if (error instanceof HTTPException) return error.getResponse();
     console.error(error);
@@ -7828,6 +7832,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
       await publicAssetStorage.testConnection();
       return c.json({ ok: true as const });
     } catch (error) {
+      if (error instanceof HostLazyModuleLoadError) throw error;
       const status =
         error instanceof PublicAssetStorageConfigError ? error.status : 502;
       return c.json(

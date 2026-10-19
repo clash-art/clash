@@ -34,7 +34,7 @@ export interface HostTelemetryOptions {
   serviceVersion?: string;
   createExporter?: (
     resolution: Extract<TelemetryExportResolution, { enabled: true }>,
-  ) => SpanExporter;
+  ) => SpanExporter | Promise<SpanExporter>;
   /** Register as the process-global provider (default true). */
   register?: boolean;
 }
@@ -137,7 +137,7 @@ export function createHostTelemetry(
           const next = resolution.enabled
             ? new PendingSpanCounter(
                 new BatchSpanProcessor(
-                  countExportedSpans(createExporter(resolution), (spans) => {
+                  countExportedSpans(await createExporter(resolution), (spans) => {
                     exportedSpans += spans;
                   }),
                 ),

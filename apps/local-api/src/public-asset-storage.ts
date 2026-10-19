@@ -1,15 +1,26 @@
-import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  HeadBucketCommand,
-  PutObjectCommand,
-  S3Client,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import type { S3Client } from "@aws-sdk/client-s3";
+import { createHostLazyModule } from "./host-lazy-module.js";
 import {
   createClashUserConfigStore,
   type ClashUserConfigStore,
 } from "./user-config.js";
+
+// The S3 SDK is the largest dependency in the Host bundle and only BYOS public storage uses it,
+// so it is imported on the first storage operation instead of at Host startup.
+const loadS3Sdk = createHostLazyModule("@aws-sdk/client-s3", async () => {
+  const [s3, presigner] = await Promise.all([
+    import("@aws-sdk/client-s3"),
+    import("@aws-sdk/s3-request-presigner"),
+  ]);
+  return {
+    S3Client: s3.S3Client,
+    HeadBucketCommand: s3.HeadBucketCommand,
+    PutObjectCommand: s3.PutObjectCommand,
+    GetObjectCommand: s3.GetObjectCommand,
+    DeleteObjectCommand: s3.DeleteObjectCommand,
+    getSignedUrl: presigner.getSignedUrl,
+  };
+});
 
 export type PublicAssetStorageMode = "disabled" | "byos" | "managed";
 export type PublicAssetStorageProvider =
@@ -289,33 +300,40 @@ function publicConfig(
 export function createS3PublicAssetStorageBackend(
   config: PublicAssetStorageBackendConfig,
 ): PublicAssetStorageBackend {
-  const client = new S3Client({
-    region: config.region,
-    ...(config.endpoint ? { endpoint: config.endpoint } : {}),
-    forcePathStyle: config.forcePathStyle,
-    credentials: {
-      accessKeyId: config.accessKeyId,
-      secretAccessKey: config.secretAccessKey,
-      ...(config.sessionToken ? { sessionToken: config.sessionToken } : {}),
-    },
-  });
+  let client: S3Client | undefined;
+  const connect = async () => {
+    const sdk = await loadS3Sdk();
+    client ??= new sdk.S3Client({
+      region: config.region,
+      ...(config.endpoint ? { endpoint: config.endpoint } : {}),
+      forcePathStyle: config.forcePathStyle,
+      credentials: {
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        ...(config.sessionToken ? { sessionToken: config.sessionToken } : {}),
+      },
+    });
+    return { sdk, client };
+  };
 
   return {
     async testConnection() {
-      await client.send(new HeadBucketCommand({ Bucket: config.bucket }));
+      const { sdk, client } = await connect();
+      await client.send(new sdk.HeadBucketCommand({ Bucket: config.bucket }));
     },
     async publish({ key, bytes, contentType, expiresInSeconds }) {
+      const { sdk, client } = await connect();
       await client.send(
-        new PutObjectCommand({
+        new sdk.PutObjectCommand({
           Bucket: config.bucket,
           Key: key,
           Body: bytes,
           ...(contentType ? { ContentType: contentType } : {}),
         }),
       );
-      const url = await getSignedUrl(
+      const url = await sdk.getSignedUrl(
         client,
-        new GetObjectCommand({ Bucket: config.bucket, Key: key }),
+        new sdk.GetObjectCommand({ Bucket: config.bucket, Key: key }),
         { expiresIn: expiresInSeconds },
       );
       return {
@@ -325,8 +343,9 @@ export function createS3PublicAssetStorageBackend(
       };
     },
     async delete(key) {
+      const { sdk, client } = await connect();
       await client.send(
-        new DeleteObjectCommand({ Bucket: config.bucket, Key: key }),
+        new sdk.DeleteObjectCommand({ Bucket: config.bucket, Key: key }),
       );
     },
   };

@@ -8,7 +8,7 @@ export {
 } from "./config-store.js";
 export {
   createOtlpTraceExporter,
-  OTLP_TRACE_EXPORTERS,
+  loadOtlpTraceExporters,
   type OtlpTraceExporterConfig,
   type OtlpTraceExporterFactory,
 } from "./exporters.js";

@@ -15,6 +15,7 @@
     "src/plugin-mcp-gateway.ts",
     "src/local-api-entry.ts",
     "scripts/build-host-runtime.ts",
+    "scripts/host-lazy-dependencies.ts",
     "scripts/pack-distribution.ts",
     "scripts/self-contained-runtime.ts",
     "scripts/mac-codesign.ts",
