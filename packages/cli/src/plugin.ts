@@ -7,12 +7,14 @@ const cliEntryPath = fileURLToPath(import.meta.url);
 const runtimeDir = dirname(cliEntryPath);
 
 runCli({
-  beforeAction: async () => {
+  beforeAction: async (program) => {
     await ensureCliLocalDaemon({
       daemonEntryPath: join(runtimeDir, "local-api.cjs"),
       cliEntryPath,
       agentBundleRoot: join(runtimeDir, "agents"),
       builtinPluginRoot: dirname(runtimeDir),
+      replaceForeignHost:
+        program.opts<{ replaceHost?: boolean }>().replaceHost === true,
     });
   },
 });

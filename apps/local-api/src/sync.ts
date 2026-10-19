@@ -2187,6 +2187,7 @@ export class LocalProjectRoomBusyError extends Error {
 export class LocalLoroRoomHub {
   private rooms = new Map<string, Promise<LocalLoroRoom>>();
   private checkpointReadableRooms = new Map<string, LocalLoroRoom>();
+  private readonly attachedPeers = new Map<string, number>();
   private readonly importReservations = new Set<string>();
   private readonly activeImports = new Set<Promise<unknown>>();
   private readonly replicaStore: FileReplicaStore;
@@ -2406,6 +2407,26 @@ export class LocalLoroRoomHub {
     };
   }
 
+  /** Live Project socket clients, across every open room. */
+  attachedClientCount(): number {
+    let total = 0;
+    for (const count of this.attachedPeers.values()) total += count;
+    return total;
+  }
+
+  notePeerAttached(projectId: string): void {
+    this.attachedPeers.set(
+      projectId,
+      (this.attachedPeers.get(projectId) ?? 0) + 1,
+    );
+  }
+
+  notePeerDetached(projectId: string): void {
+    const remaining = (this.attachedPeers.get(projectId) ?? 0) - 1;
+    if (remaining > 0) this.attachedPeers.set(projectId, remaining);
+    else this.attachedPeers.delete(projectId);
+  }
+
   close(): Promise<void> {
     return (this.closePromise ??= this.closeOnce());
   }
@@ -2565,6 +2586,7 @@ async function bindSocket(
       },
     },
   );
+  hub.notePeerAttached(projectId);
   const protocolSession = syncProtocol
     ? new LoroProtocolServerSession({
         roomId: projectId,
@@ -2651,5 +2673,6 @@ async function bindSocket(
   ws.on("close", () => {
     protocolSession?.destroy();
     room.removePeer(peerId);
+    hub.notePeerDetached(projectId);
   });
 }

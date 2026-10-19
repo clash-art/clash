@@ -384,6 +384,7 @@ describe("local API app", () => {
         pid: process.pid,
         profile: "dev",
         protocolVersion: LOCAL_HOST_PROTOCOL_VERSION,
+        attachedClients: 2,
       },
       projectHealth: () => ({
         ok: false,
@@ -414,6 +415,7 @@ describe("local API app", () => {
       const response = await fetch(`${endpoint}/health`);
       await expect(response.json()).resolves.toMatchObject({
         ok: true,
+        host: expect.objectContaining({ hostId, attachedClients: 2 }),
         project: {
           ok: false,
           code: "PROJECT_CHECKPOINT_FAILED",

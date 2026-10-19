@@ -873,14 +873,27 @@ export function createLocalProjectAssetService(options: {
       const inspection = await options.assetInspection.inspect({
         source,
       });
+      const { inspectionError: _previousInspectionError, ...available } =
+        resolved;
       return ResolvedAssetSchema.parse({
-        ...resolved,
+        ...available,
         metadata: { ...resolved.metadata, ...inspection.facts },
       });
-    } catch {
+    } catch (error) {
       // Inspection is enrichment, not Asset availability. A failed probe writes no
       // inspection row, so a later read can retry without hiding immutable media.
-      return resolved;
+      // The failure itself must remain visible so clients do not present missing
+      // dimensions/duration/codec as complete facts.
+      return ResolvedAssetSchema.parse({
+        ...resolved,
+        inspectionError: {
+          code: "ASSET_INSPECTION_FAILED",
+          message:
+            error instanceof Error && error.message.trim()
+              ? error.message.trim()
+              : "Asset inspection failed.",
+        },
+      });
     }
   }
 

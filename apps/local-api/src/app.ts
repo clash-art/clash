@@ -439,6 +439,8 @@ export interface LocalApiOptions {
     profile: "dev" | "prod";
     protocolVersion: number;
     runtimeFingerprint?: string;
+    /** Live Project socket peers; lets a CLI decide whether replacing this Host is safe. */
+    attachedClients?: number;
   };
   localAcp?: LocalAcpAdapter;
   /** Single process-owned cold-start barrier. Runtime/config consumers wait
@@ -2130,6 +2132,12 @@ function etagMatches(header: string | undefined, etag: string): boolean {
   });
 }
 
+interface V1ProjectCardError {
+  code: "PROJECT_UPGRADE_FAILED";
+  message: string;
+  nodeId?: string;
+}
+
 function toV1Project(
   project: LocalProject,
   assets: ResolvedAsset[],
@@ -2138,6 +2146,7 @@ function toV1Project(
   canvasPreview: ProjectCanvasPreview | null = null,
   canvasThumbnail: V1ProjectCanvasThumbnail | null = null,
   canvasThumbnailFailure?: ProjectCanvasThumbnailFailure,
+  error?: V1ProjectCardError,
 ) {
   const projectedAssets =
     assetMode === "all"
@@ -2163,6 +2172,7 @@ function toV1Project(
     canvasPreview,
     canvasThumbnail,
     ...(canvasThumbnailFailure ? { canvasThumbnailFailure } : {}),
+    ...(error ? { error } : {}),
     assets: assetMode === "preview" && canvasThumbnail ? [] : projectedAssets,
     assetCount: assets.length,
     created_at: isoToEpochSeconds(project.createdAt),
@@ -10381,9 +10391,26 @@ const ForkPointBodySchema = z.object({
             );
             } catch (error) {
               // A project's recovery failure must not hide other projects or
-              // prevent navigation to its existing recovery workflow.
+              // prevent navigation to its existing recovery workflow. The card
+              // carries the coded failure so the loss of preview/asset data is
+              // never silent.
               if (!(error instanceof LocalProjectUpgradeError)) throw error;
-              return toV1Project(project, []);
+              return toV1Project(
+                project,
+                [],
+                "preview",
+                null,
+                null,
+                null,
+                undefined,
+                {
+                  code: "PROJECT_UPGRADE_FAILED",
+                  message: error.detail.message,
+                  ...(error.detail.nodeId
+                    ? { nodeId: error.detail.nodeId }
+                    : {}),
+                },
+              );
             }
           }),
         ),

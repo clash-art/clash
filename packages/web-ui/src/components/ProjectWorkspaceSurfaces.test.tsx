@@ -202,6 +202,26 @@ describe("Project workspace surfaces", () => {
     expect(screen.queryByText("1 project assets")).toBeNull();
   });
 
+  it("marks media facts unavailable when inspection failed", () => {
+    const asset = resolvedAsset({
+      id: "asset-uninspected",
+      url: "https://media.clash.test/asset-uninspected.png",
+      kind: "image",
+      metadata: { originalName: "asset-uninspected.png" },
+      inspectionError: {
+        code: "ASSET_INSPECTION_FAILED",
+        message: "ffprobe timed out",
+      },
+    });
+    render(<ProjectAssetSurface asset={asset} />);
+
+    const status = screen.getByRole("status");
+    expect(status.textContent).toContain(
+      "Media facts unavailable (ASSET_INSPECTION_FAILED)",
+    );
+    expect(status.getAttribute("title")).toBe("ffprobe timed out");
+  });
+
   it("renders the Host-projected Project Asset URL without reconstructing a storage path", () => {
     globalThis.__CLASH_RUNTIME_CONFIG__ = {
       mode: "desktop",

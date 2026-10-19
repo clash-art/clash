@@ -444,6 +444,15 @@ export function ProjectAssetSurface({
         >
           {label}
         </span>
+        {asset.inspectionError ? (
+          <span
+            role="status"
+            title={asset.inspectionError.message}
+            className="shrink-0 text-[10px] font-semibold text-amber-700"
+          >
+            Media facts unavailable ({asset.inspectionError.code})
+          </span>
+        ) : null}
         {headerAction}
         {ready &&
         renderEditor &&

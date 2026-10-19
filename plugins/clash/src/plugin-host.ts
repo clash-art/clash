@@ -203,6 +203,7 @@ export function createPluginHostManager(
     profile,
     probe: options.probeHost,
     runtimeFingerprint,
+    startedBy,
     launch: () =>
       startHost({ runDir, dataDir, env, startedBy, runtimeFingerprint }),
   });

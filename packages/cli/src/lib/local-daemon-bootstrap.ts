@@ -4,6 +4,8 @@ import {
   launchDetachedLocalDaemon,
   resolveLocalDaemonRuntimeFingerprint,
   type LocalDaemonLaunchResult,
+  type LocalDaemonProbeResult,
+  type LocalDaemonRetirement,
 } from "@clash/shared-runtime/local-daemon";
 import {
   clashHomeForLocalDataDir,
@@ -12,15 +14,27 @@ import {
 } from "@clash/shared-runtime/local-paths";
 import { join } from "node:path";
 
+function noticeRetiredHost(event: LocalDaemonRetirement): void {
+  console.warn(
+    `Clash Host ${event.pid} (started by ${event.startedBy}) was replaced: ` +
+      `${event.code}, runtime ${event.oldFingerprint ?? "(unknown)"} -> ` +
+      `${event.newFingerprint ?? "(unknown)"}.`,
+  );
+}
+
 export async function ensureCliLocalDaemon(options: {
   env?: NodeJS.ProcessEnv;
   daemonEntryPath: string;
   cliEntryPath: string;
   agentBundleRoot?: string;
   builtinPluginRoot?: string;
-  probeHost?: (record: LocalHostDiscoveryRecord) => Promise<boolean>;
+  probeHost?: (
+    record: LocalHostDiscoveryRecord,
+  ) => Promise<LocalDaemonProbeResult>;
   launch?: () => Promise<LocalDaemonLaunchResult>;
   runtimeFingerprint?: string;
+  /** Explicit CLI opt-in to replace a foreign Host with attached clients. */
+  replaceForeignHost?: boolean;
 }): Promise<LocalHostDiscoveryRecord | undefined> {
   const env = options.env ?? process.env;
   if (env.CLASH_API_URL?.trim()) return undefined;
@@ -37,6 +51,9 @@ export async function ensureCliLocalDaemon(options: {
     profile: resolveClashProfile(env),
     probe: options.probeHost,
     runtimeFingerprint,
+    startedBy: "cli",
+    replaceForeignHost: options.replaceForeignHost,
+    onRetired: noticeRetiredHost,
     launch:
       options.launch ??
       (async () =>

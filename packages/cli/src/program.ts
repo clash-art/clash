@@ -79,6 +79,10 @@ export function createCliProgram(options: CliProgramOptions = {}): Command {
     .description("Clash CLI — find media, run Actions, and edit project timelines")
     .addHelpText("after", TASK_HELP)
     .option("--profile <profile>", "Runtime profile: dev or prod")
+    .option(
+      "--replace-host",
+      "Replace a Host another launcher started while clients are attached",
+    )
     .version(process.env.CLASH_DISTRIBUTION_VERSION ?? "0.1.0");
 
   program.hook("preAction", async (_command, actionCommand) => {

@@ -760,4 +760,35 @@ describe("ProjectCard", () => {
       reference: { id: "project-1", name: "Storyboard draft" },
     });
   });
+
+  it("shows a coded upgrade failure on the affected card", () => {
+    renderCard({
+      error: {
+        code: "PROJECT_UPGRADE_FAILED",
+        message: "Unavailable legacy model",
+      },
+    });
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "PROJECT_UPGRADE_FAILED: Unavailable legacy model",
+    );
+  });
+
+  it("shows that media facts are unavailable when inspection failed", () => {
+    renderCard({
+      assets: [
+        {
+          ...visualAsset("asset-1", 1),
+          inspectionError: {
+            code: "ASSET_INSPECTION_FAILED",
+            message: "ffprobe timed out",
+          },
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText("Media facts unavailable (ASSET_INSPECTION_FAILED)"),
+    ).toBeTruthy();
+  });
 });

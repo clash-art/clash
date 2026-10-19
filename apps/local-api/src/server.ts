@@ -1928,6 +1928,11 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
           pid: sourceWatchLifecyclePid ?? process.pid,
           profile: discoveryProfile,
           protocolVersion: LOCAL_HOST_PROTOCOL_VERSION,
+          // Evaluate per request: a CLI replacing an obsolete Host must see the
+          // rooms that are attached right now, not at startup.
+          get attachedClients() {
+            return roomHub?.attachedClientCount() ?? 0;
+          },
           ...(process.env.CLASH_DAEMON_RUNTIME_FINGERPRINT
             ? {
                 runtimeFingerprint:
