@@ -57,6 +57,26 @@ async function stagingFiles(dataDir: string): Promise<string[]> {
   );
 }
 
+function runFailures(dataDir: string): unknown[] {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { all(...params: unknown[]): unknown[] };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    return database
+      .prepare("SELECT record_json FROM durable_run_journal")
+      .all()
+      .map((row) => JSON.parse((row as { record_json: string }).record_json))
+      .map((record) => (record as { failure?: unknown }).failure)
+      .filter((failure) => failure !== undefined);
+  } finally {
+    database.close();
+  }
+}
+
 async function fixture() {
   const dataDir = await mkdtemp(join(tmpdir(), "clash-representation-run-"));
   temporaryDirectories.push(dataDir);
@@ -104,6 +124,33 @@ describe("Local Asset representation durable runs", () => {
     expect(first).toEqual(second);
     expect(first).toEqual([
       expect.objectContaining({ role: "waveform", peaks: expect.any(Array) }),
+    ]);
+    await service.close();
+  });
+
+  it("records a coded REPRESENTATION_TIMEOUT when a recipe hangs", async () => {
+    const { dataDir, source, assetInspection } = await fixture();
+    const service = createLocalAssetRepresentationService({
+      dataDir,
+      assetInspection,
+      mediaProcessTimeoutsMs: { waveform: 100 },
+      recipeRunner: ({ signal }) =>
+        new Promise<never>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        }),
+    });
+
+    const started = Date.now();
+    await expect(service.ensure(source.resource.id)).resolves.toEqual([]);
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(runFailures(dataDir)).toEqual([
+      expect.objectContaining({
+        code: "deadline_exceeded",
+        providerCode: "REPRESENTATION_TIMEOUT",
+        retryable: false,
+      }),
     ]);
     await service.close();
   });

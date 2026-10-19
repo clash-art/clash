@@ -1,4 +1,12 @@
-import { mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import {
+  chmod,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2273,4 +2281,51 @@ describe("Local Asset inspection", () => {
     });
     expect(probes).toBe(2);
   });
+});
+
+describe("Local Asset inspection deadlines", () => {
+  it.runIf(process.platform !== "win32")(
+    "fails a hung ffprobe with ASSET_INSPECTION_TIMEOUT and leaves no child",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "clash-ffprobe-hang-"));
+      temporaryDirectories.push(directory);
+      const script = join(directory, "ffprobe-hang.mjs");
+      await writeFile(
+        script,
+        `#!${process.execPath}\nsetTimeout(() => {}, 30_000);\n`,
+      );
+      await chmod(script, 0o755);
+      const inspector = createLocalFfprobeAssetInspector({
+        ffprobePath: script,
+        timeoutMs: 100,
+      });
+
+      const started = Date.now();
+      await expect(
+        inspector({
+          sourcePath: "/private/hang.mp4",
+          resource: {
+            id: `sha256:${"9".repeat(64)}`,
+            kind: "video",
+            digest: { algorithm: "sha256", value: "9".repeat(64) },
+            byteLength: 42,
+            contentType: "video/mp4",
+          },
+        }),
+      ).rejects.toMatchObject({ code: "ASSET_INSPECTION_TIMEOUT" });
+      expect(Date.now() - started).toBeLessThan(10_000);
+
+      await vi.waitFor(
+        () => {
+          const children = execFileSync(
+            "ps",
+            ["-o", "pid=,args=", "--ppid", String(process.pid)],
+            { encoding: "utf8" },
+          );
+          expect(children).not.toContain(script);
+        },
+        { timeout: 5_000, interval: 25 },
+      );
+    },
+  );
 });

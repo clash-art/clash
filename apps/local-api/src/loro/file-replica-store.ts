@@ -12,12 +12,14 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { LoroDoc } from "loro-crdt";
 import {
   ProjectCanvasPreviewSchema,
   type ProjectCanvasPreview,
 } from "@clash/shared-types";
+
+import { invalidateLocalProjectAssetCaches } from "../local-project-asset-cache.js";
 
 export interface FileReplicaStoreOptions {
   publishImportedSnapshot?: (
@@ -550,6 +552,7 @@ export class FileReplicaStore {
         // that appeared after the read-side emptiness check.
         await this.publishImportedSnapshot(temporaryPath, finalPath);
         await this.syncDirectory(dir);
+        this.invalidateProjectAssetCaches(projectId);
         return { installed: true };
       } finally {
         await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -666,9 +669,24 @@ export class FileReplicaStore {
     return this.recoverUnsafe(projectId);
   }
 
+  /**
+   * Drops every process-lifetime Project Asset cache for one replica.
+   *
+   * `deleteReplica` and `installSnapshotIfAbsent` call this themselves; Project
+   * metadata delete/restore callers use it because a later same-id replica can
+   * otherwise reuse a materialization fact that describes the old one.
+   */
+  invalidateProjectAssetCaches(projectId: string): void {
+    invalidateLocalProjectAssetCaches({
+      projectsRoot: resolve(this.rootDir),
+      projectId,
+    });
+  }
+
   async deleteReplica(projectId: string): Promise<void> {
     await this.enqueueProjectWrite(projectId, async () => {
       await rm(this.projectDir(projectId), { recursive: true, force: true });
+      this.invalidateProjectAssetCaches(projectId);
     });
   }
 

@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, open, readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
 import {
@@ -22,6 +22,10 @@ import {
   createLocalResourceStore,
   type LocalResourceProjection,
 } from "./local-resource-store.js";
+import {
+  MEDIA_PROCESS_TIMEOUTS_MS,
+  withMediaProcessDeadline,
+} from "./local-media-process.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
 export { localFfprobePath } from "./local-media-binaries.js";
 
@@ -86,6 +90,7 @@ export type LocalAssetInspector = (
 type LocalFfprobeRunner = (
   file: string,
   args: string[],
+  signal: AbortSignal,
 ) => Promise<{ stdout: string }>;
 
 const execFileAsync = promisify(execFile);
@@ -796,13 +801,19 @@ async function inspectSvg(
 export function createLocalFfprobeAssetInspector(options: {
   ffprobePath: string;
   run?: LocalFfprobeRunner;
+  /** Deadline for one probe; tests inject a short one. */
+  timeoutMs?: number;
 }): LocalAssetInspector {
+  const timeoutMs =
+    options.timeoutMs ?? MEDIA_PROCESS_TIMEOUTS_MS.assetInspection;
   const run: LocalFfprobeRunner =
     options.run ??
-    (async (file, args) => {
+    (async (file, args, signal) => {
       const result = await execFileAsync(file, args, {
         encoding: "utf8",
         maxBuffer: 4 * 1024 * 1024,
+        signal,
+        killSignal: "SIGKILL",
       });
       return { stdout: result.stdout };
     });
@@ -830,7 +841,14 @@ export function createLocalFfprobeAssetInspector(options: {
         : []),
       sourcePath,
     ];
-    const { stdout } = await run(options.ffprobePath, ffprobeArgs);
+    const { stdout } = await withMediaProcessDeadline(
+      {
+        code: "ASSET_INSPECTION_TIMEOUT",
+        timeoutMs,
+        task: `inspect ${sourcePath}`,
+      },
+      (signal) => run(options.ffprobePath, ffprobeArgs, signal),
+    );
     let output: unknown;
     try {
       output = JSON.parse(stdout);

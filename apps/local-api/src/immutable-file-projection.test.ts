@@ -83,7 +83,6 @@ describe("serveImmutableFileProjection", () => {
     "bytes=7-2",
     "bytes=-0",
     "bytes=-",
-    "bytes=0-1,4-5",
     "items=0-1",
   ])("rejects %s with 416 and the full length", async (rangeHeader) => {
     const response = await serveImmutableFileProjection({
@@ -96,6 +95,129 @@ describe("serveImmutableFileProjection", () => {
     expect(response.headers.get("accept-ranges")).toBe("bytes");
     expect(response.headers.get("content-range")).toBe("bytes */10");
     expect(response.body).toBeNull();
+  });
+
+  it("answers a satisfiable multi-range request with the full 200 resource", async () => {
+    const response = await serveImmutableFileProjection({
+      path: await digits(),
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=0-1, 4-5",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-range")).toBeNull();
+    expect(response.headers.get("content-length")).toBe("10");
+    await expect(response.text()).resolves.toBe("0123456789");
+  });
+
+  it("keeps 416 for a multi-range request with an unsatisfiable part", async () => {
+    const response = await serveImmutableFileProjection({
+      path: await digits(),
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=0-1, 20-30",
+    });
+
+    expect(response.status).toBe(416);
+    expect(response.headers.get("content-range")).toBe("bytes */10");
+  });
+
+  it("sends strong content-digest validators on 200 and 206 responses", async () => {
+    const path = await digits();
+    const digest = "a".repeat(64);
+    const lastModified = Date.UTC(2025, 0, 2, 3, 4, 5);
+    const full = await serveImmutableFileProjection({
+      path,
+      contentType: "audio/mpeg",
+      contentDigest: digest,
+      lastModified,
+    });
+    const partial = await serveImmutableFileProjection({
+      path,
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=2-5",
+      contentDigest: digest,
+      lastModified,
+    });
+
+    for (const response of [full, partial]) {
+      expect(response.headers.get("etag")).toBe(`"${digest}"`);
+      expect(response.headers.get("last-modified")).toBe(
+        new Date(lastModified).toUTCString(),
+      );
+      expect(response.headers.get("cache-control")).toBe(
+        "private, max-age=31536000, immutable",
+      );
+    }
+  });
+
+  it("returns 304 without a body when If-None-Match names the current digest", async () => {
+    const digest = "b".repeat(64);
+    for (const ifNoneMatch of [
+      `"${digest}"`,
+      `W/"${digest}"`,
+      `"other", "${digest}"`,
+      "*",
+    ]) {
+      const response = await serveImmutableFileProjection({
+        path: await digits(),
+        contentType: "audio/mpeg",
+        contentDigest: digest,
+        lastModified: Date.UTC(2025, 0, 2),
+        ifNoneMatch,
+      });
+
+      expect(response.status).toBe(304);
+      expect(response.body).toBeNull();
+      expect(response.headers.get("etag")).toBe(`"${digest}"`);
+      expect(response.headers.get("content-length")).toBeNull();
+    }
+  });
+
+  it("serves 206 only when If-Range matches the current validator", async () => {
+    const path = await digits();
+    const digest = "c".repeat(64);
+    const lastModified = Date.UTC(2025, 0, 2, 3, 4, 5);
+    const matchingTag = await serveImmutableFileProjection({
+      path,
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=2-5",
+      contentDigest: digest,
+      lastModified,
+      ifRange: `"${digest}"`,
+    });
+    const staleTag = await serveImmutableFileProjection({
+      path,
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=2-5",
+      contentDigest: digest,
+      lastModified,
+      ifRange: '"bogus-etag"',
+    });
+    const matchingDate = await serveImmutableFileProjection({
+      path,
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=2-5",
+      contentDigest: digest,
+      lastModified,
+      ifRange: new Date(lastModified).toUTCString(),
+    });
+    const staleDate = await serveImmutableFileProjection({
+      path,
+      contentType: "audio/mpeg",
+      rangeHeader: "bytes=2-5",
+      contentDigest: digest,
+      lastModified,
+      ifRange: new Date(lastModified - 60_000).toUTCString(),
+    });
+
+    expect(matchingTag.status).toBe(206);
+    await expect(matchingTag.text()).resolves.toBe("2345");
+    expect(matchingDate.status).toBe(206);
+    await expect(matchingDate.text()).resolves.toBe("2345");
+    expect(staleTag.status).toBe(200);
+    await expect(staleTag.text()).resolves.toBe("0123456789");
+    expect(staleDate.status).toBe(200);
+    await expect(staleDate.text()).resolves.toBe("0123456789");
   });
 
   it("serves an empty file without a body", async () => {

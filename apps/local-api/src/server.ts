@@ -123,6 +123,7 @@ import { createLocalProviderStore } from "./local-provider-store.js";
 import { fetchIntoSlot } from "./upload-slot-fetch.js";
 import { openPluginStore } from "./plugin-store.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
+import { invalidateLocalProjectAssetCaches } from "./local-project-asset-cache.js";
 import {
   createLocalProjectAssetService,
   type LocalProjectAssetReplica,
@@ -2198,7 +2199,18 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
         const project = (await cloudSyncMetadata.load()).projects.find(project => project.id === projectId);
         return project ? localProjectSyncMetadata(project) : null;
       },
-      write: metadata => cloudSyncMetadata.applyProjectSyncMetadata(metadata),
+      write: async metadata => {
+        const previous = (await cloudSyncMetadata.load()).projects.find(
+          project => project.id === metadata.projectId,
+        );
+        await cloudSyncMetadata.applyProjectSyncMetadata(metadata);
+        if ((previous?.deletedAt ?? null) !== (metadata.deletedAt ?? null)) {
+          invalidateLocalProjectAssetCaches({
+            projectsRoot: join(options.dataDir, "projects"),
+            projectId: metadata.projectId,
+          });
+        }
+      },
       isProvisional: async projectId => (await cloudSyncMetadata.load()).projects.some(project => project.id === projectId && project.metadataProvisional === true),
     },
     token: (baseUrl,userId) => cloudAccounts.resolveToken(baseUrl,{env:process.env,expectedUserId:userId}),
