@@ -2567,11 +2567,24 @@ describe("local API app", () => {
     const bytes = new Uint8Array(await thumbnail.arrayBuffer());
     expect(new TextDecoder().decode(bytes.slice(0, 4))).toBe("RIFF");
     expect(new TextDecoder().decode(bytes.slice(8, 12))).toBe("WEBP");
+
+    const etag = thumbnail.headers.get("etag");
+    expect(etag).toMatch(/^"[a-f0-9]{64}"$/u);
+    const notModified = await app.request(
+      `${thumbnailUrl.pathname}${thumbnailUrl.search}`,
+      { headers: { "if-none-match": etag! } },
+    );
+    expect(notModified.status).toBe(304);
+    await expect(notModified.arrayBuffer()).resolves.toHaveProperty(
+      "byteLength",
+      0,
+    );
   });
 
   it("keeps Main canvas preview composition on derived still representations", async () => {
     const representations: LocalAssetRepresentationService = {
       schedule() {},
+      scheduleBackground() {},
       async ensure() {
         return [];
       },
@@ -2691,6 +2704,7 @@ describe("local API app", () => {
     };
     const representations: LocalAssetRepresentationService = {
       schedule() {},
+      scheduleBackground() {},
       async ensure() {
         return representationReady ? [representation] : [];
       },

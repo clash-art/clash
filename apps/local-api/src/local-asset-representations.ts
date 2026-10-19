@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { availableParallelism } from "node:os";
 import { basename, join } from "node:path";
 
 import {
@@ -42,8 +43,26 @@ import {
   type LocalResourceStoreEvent,
 } from "./local-resource-store.js";
 import { createLocalSqliteConnection } from "./local-sqlite-connection.js";
+import {
+  createBoundedWorkQueue,
+  WorkQueueClosedError,
+} from "./bounded-work-queue.js";
 
 export type LocalAssetRepresentationRole = "thumbnail" | "waveform" | "proxy";
+
+export type LocalAssetRepresentationFailureCode =
+  "REPRESENTATION_FAILED" | "REPRESENTATION_INTERRUPTED";
+
+/** A coded, user-visible reason a representation is not available yet. */
+export interface LocalAssetRepresentationFailure {
+  role: LocalAssetRepresentationRole;
+  code: LocalAssetRepresentationFailureCode;
+  message: string;
+  /** When the next bounded retry is due; absent after retries are exhausted. */
+  retryAt?: number;
+  attempts: number;
+}
+
 const AUDIO_WAVEFORM_BARS = 128;
 
 export type LocalAssetRepresentation =
@@ -113,12 +132,23 @@ export type LocalAssetRepresentationRecipeRunner = (input: {
 export interface LocalAssetRepresentationService {
   /** Enqueues every current recipe for one immutable source without blocking its Asset read. */
   schedule(sourceResourceId: string): void;
+  /**
+   * Queues a low-priority backstop for a source whose representation is missing
+   * but not failing. Deduped, retry-aware, and never awaited by a request; the
+   * queue runs at most one background derivation at a time.
+   */
+  scheduleBackground?(sourceResourceId: string): void;
   /** Drives current recipes until they are ready or waiting for a durable retry. */
   ensure(sourceResourceId: string): Promise<LocalAssetRepresentation[]>;
   read(
     sourceResourceId: string,
     role: LocalAssetRepresentationRole,
   ): Promise<LocalAssetRepresentation | undefined>;
+  /** Coded state of the last failed or interrupted derivation for one role. */
+  failure?(
+    sourceResourceId: string,
+    role: LocalAssetRepresentationRole,
+  ): Promise<LocalAssetRepresentationFailure | undefined>;
   openThumbnail(
     sourceResourceId: string,
   ): Promise<LocalResourceProjection | undefined>;
@@ -216,7 +246,20 @@ const RUN_LIFETIME_MS = 24 * 60 * 60_000;
  * outlast the encode, or recovery would start a second ffmpeg beside it.
  */
 const PROXY_SUBMIT_TIMEOUT_MS = 6 * 60 * 60_000;
+/**
+ * A Host stop interrupts an encode; retrying every restart would re-read whole
+ * media files forever. Retry deliberately, with a bounded exponential backoff.
+ */
+const INTERRUPTED_RETRY_BASE_MS = 30_000;
+const REPRESENTATION_RETRY_MAX_MS = 5 * 60_000;
 const nodeRequire = createRequire(import.meta.url);
+
+function interruptedRetryDelayMs(attempts: number): number {
+  return Math.min(
+    REPRESENTATION_RETRY_MAX_MS,
+    INTERRUPTED_RETRY_BASE_MS * 2 ** Math.min(Math.max(attempts - 1, 0), 10),
+  );
+}
 
 /** Cheap recipes an Asset read may wait for. */
 function recipesFor(
@@ -233,6 +276,19 @@ function backgroundRecipesFor(
   kind: AssetKind,
 ): readonly LocalAssetRepresentationRecipe[] {
   return kind === "video" ? [VIDEO_PROXY_RECIPE] : [];
+}
+
+/**
+ * What a background backstop derives: the visible representation when a card
+ * request has not already produced it, plus any long encode. `ensureRecipes`
+ * skips recipes that are already ready or still inside their retry backoff.
+ */
+function backgroundRecipeSetFor(
+  kind: AssetKind,
+): readonly LocalAssetRepresentationRecipe[] {
+  return kind === "video"
+    ? [VIDEO_POSTER_RECIPE, VIDEO_PROXY_RECIPE]
+    : recipesFor(kind);
 }
 
 const BROWSER_VIDEO_CODECS: Record<string, readonly string[]> = {
@@ -458,6 +514,40 @@ function parseRepresentation(value: unknown): LocalAssetRepresentation {
     return result as unknown as LocalAssetRepresentation;
   }
   throw new Error("Local Asset representation row is corrupt.");
+}
+
+function parseRepresentationFailure(
+  value: unknown,
+): LocalAssetRepresentationFailure {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Local Asset representation failure row is corrupt.");
+  }
+  const failure = value as Record<string, unknown>;
+  if (
+    (failure.role !== "thumbnail" &&
+      failure.role !== "waveform" &&
+      failure.role !== "proxy") ||
+    (failure.code !== "REPRESENTATION_FAILED" &&
+      failure.code !== "REPRESENTATION_INTERRUPTED") ||
+    typeof failure.message !== "string" ||
+    !failure.message.trim() ||
+    !Number.isSafeInteger(failure.attempts) ||
+    (failure.attempts as number) < 1 ||
+    (failure.retryAt !== undefined &&
+      (!Number.isSafeInteger(failure.retryAt) ||
+        (failure.retryAt as number) < 0))
+  ) {
+    throw new Error("Local Asset representation failure row is corrupt.");
+  }
+  return {
+    role: failure.role,
+    code: failure.code,
+    message: failure.message,
+    attempts: failure.attempts as number,
+    ...(failure.retryAt === undefined
+      ? {}
+      : { retryAt: failure.retryAt as number }),
+  };
 }
 
 function openDatabase(path: string): SqliteDatabase {
@@ -867,6 +957,8 @@ export function createLocalAssetRepresentationService(options: {
     proxy: number;
   }>;
   now?: () => number;
+  /** Hard bound on concurrent derivations; defaults to a core-derived 2–4. */
+  maxConcurrent?: number;
   /** Structured events for Host-private maintenance failures. */
   onResourceEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalAssetRepresentationService {
@@ -893,10 +985,23 @@ export function createLocalAssetRepresentationService(options: {
     options.recipeRunner ??
     defaultRecipeRunner(resources, workRoot, ffmpegPath);
   const inFlight = new Map<string, Promise<LocalAssetRepresentation[]>>();
-  // Proxies transcode one at a time, behind every read-blocking recipe.
+  const maxConcurrent =
+    options.maxConcurrent ??
+    Math.max(2, Math.min(4, availableParallelism() - 1));
+  const workQueue = createBoundedWorkQueue({ concurrency: maxConcurrent });
+  // A drive in progress, so a Host stop can be recorded as an interruption.
+  const activeRuns = new Map<
+    string,
+    {
+      sourceResourceId: string;
+      sourceKind: AssetKind;
+      recipe: LocalAssetRepresentationRecipe;
+    }
+  >();
+  // Proxies transcode behind every read-blocking recipe, never beside them.
   const backgroundPending = new Set<string>();
   const backgroundSettled = new Set<string>();
-  let backgroundQueue: Promise<void> = Promise.resolve();
+  const backgroundRuns = new Set<Promise<void>>();
   const closing = new AbortController();
   let wakeTimer: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
@@ -923,7 +1028,7 @@ export function createLocalAssetRepresentationService(options: {
           `
           SELECT result_json
           FROM local_asset_representations
-          WHERE source_resource_id = ? AND recipe = ?
+          WHERE source_resource_id = ? AND recipe = ? AND role <> 'failure'
         `,
         )
         .get(sourceResourceId, recipeKey(recipe));
@@ -932,6 +1037,78 @@ export function createLocalAssetRepresentationService(options: {
         throw new Error("Local Asset representation row is corrupt.");
       }
       return parseRepresentation(JSON.parse(row.result_json));
+    });
+  }
+
+  /**
+   * Failure state is Host-private, like the derivation itself, and is stored
+   * in the existing representation table (role `failure`) so no schema change
+   * is required. It carries a retry time so a read never restarts a failing
+   * ffmpeg/sharp attempt on every list.
+   */
+  async function readFailure(
+    sourceResourceId: string,
+    recipe: LocalAssetRepresentationRecipe,
+  ): Promise<LocalAssetRepresentationFailure | undefined> {
+    return withDatabase((database) => {
+      const row = database
+        .prepare(
+          `
+          SELECT result_json
+          FROM local_asset_representations
+          WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
+        `,
+        )
+        .get(sourceResourceId, recipeKey(recipe));
+      if (!row) return undefined;
+      if (typeof row.result_json !== "string") {
+        throw new Error("Local Asset representation failure row is corrupt.");
+      }
+      return parseRepresentationFailure(JSON.parse(row.result_json));
+    });
+  }
+
+  async function recordFailure(input: {
+    sourceResourceId: string;
+    recipe: LocalAssetRepresentationRecipe;
+    failure: LocalAssetRepresentationFailure;
+  }): Promise<void> {
+    const failure = parseRepresentationFailure(input.failure);
+    await withDatabase((database) => {
+      database
+        .prepare(
+          `
+          INSERT INTO local_asset_representations (
+            source_resource_id, recipe, role, result_json, created_at
+          ) VALUES (?, ?, 'failure', ?, ?)
+          ON CONFLICT(source_resource_id, recipe) DO UPDATE SET
+            result_json = excluded.result_json,
+            created_at = excluded.created_at
+          WHERE local_asset_representations.role = 'failure'
+        `,
+        )
+        .run(
+          input.sourceResourceId,
+          recipeKey(input.recipe),
+          JSON.stringify(failure),
+          now(),
+        );
+    });
+  }
+
+  async function clearFailure(
+    sourceResourceId: string,
+    recipe: LocalAssetRepresentationRecipe,
+  ): Promise<void> {
+    await withDatabase((database) => {
+      database
+        .prepare(
+          `
+          DELETE FROM local_asset_representations
+          WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
+        `,
+        )
+        .run(sourceResourceId, recipeKey(recipe));
     });
   }
 
@@ -965,6 +1142,15 @@ export function createLocalAssetRepresentationService(options: {
     const result = parseRepresentation(input.result);
     const resultJson = JSON.stringify(result);
     await withDatabase((database) => {
+      // A successful retry replaces the coded failure row for the same recipe.
+      database
+        .prepare(
+          `
+          DELETE FROM local_asset_representations
+          WHERE source_resource_id = ? AND recipe = ? AND role = 'failure'
+        `,
+        )
+        .run(input.sourceResourceId, recipe);
       const inserted = database
         .prepare(
           `
@@ -1194,7 +1380,29 @@ export function createLocalAssetRepresentationService(options: {
     if (closed) return;
     const recoverable = await journal.listRecoverable(ownerId, now());
     for (const run of recoverable) {
-      await drive(run, parseFrozenInput(run.executorInput).recipe.role);
+      const input = parseFrozenInput(run.executorInput);
+      const activeKey = `${input.sourceResourceId}\0${recipeKey(input.recipe)}`;
+      activeRuns.set(activeKey, {
+        sourceResourceId: input.sourceResourceId,
+        sourceKind: input.sourceKind,
+        recipe: input.recipe,
+      });
+      try {
+        await drive(run, input.recipe.role);
+      } catch (error) {
+        await recordFailure({
+          sourceResourceId: input.sourceResourceId,
+          recipe: input.recipe,
+          failure: failedRepresentation(input.recipe, error, now()),
+        });
+      } finally {
+        activeRuns.delete(activeKey);
+      }
+      await recordRunFailure(
+        input.sourceResourceId,
+        input.recipe,
+        await journal.load(run),
+      );
     }
     await scheduleNextWake();
   }
@@ -1221,6 +1429,147 @@ export function createLocalAssetRepresentationService(options: {
     return ffmpegPath() !== null;
   }
 
+  function failedRepresentation(
+    recipe: LocalAssetRepresentationRecipe,
+    error: unknown,
+    retryAt: number,
+  ): LocalAssetRepresentationFailure {
+    return {
+      role: recipe.role,
+      code: "REPRESENTATION_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+      attempts: 1,
+      retryAt,
+    };
+  }
+
+  async function recordRunFailure(
+    sourceResourceId: string,
+    recipe: LocalAssetRepresentationRecipe,
+    run: DurableRunRecord | undefined,
+  ): Promise<void> {
+    if (!run) return;
+    const failure = run.failure ?? run.projectionFailure;
+    if (!failure || run.projectedAt !== undefined) return;
+    const attempts = Math.max(
+      1,
+      run.failureCounts.submit,
+      run.failureCounts.poll,
+      run.failureCounts.stage,
+      run.failureCounts.publish,
+      run.projectionFailureCount ?? 0,
+    );
+    await recordFailure({
+      sourceResourceId,
+      recipe,
+      failure: {
+        role: recipe.role,
+        code: "REPRESENTATION_FAILED",
+        message: failure.message,
+        attempts,
+        ...(run.phase === "failed" && run.nextAttemptAt === undefined
+          ? {}
+          : {
+              retryAt:
+                run.nextAttemptAt ?? now() + interruptedRetryDelayMs(attempts),
+            }),
+      },
+    });
+  }
+
+  const recipeRuns = new Map<
+    string,
+    Promise<LocalAssetRepresentation | undefined>
+  >();
+
+  async function deriveRecipe(
+    source: LocalResourceProjection,
+    sourceResourceId: string,
+    recipe: LocalAssetRepresentationRecipe,
+  ): Promise<LocalAssetRepresentation | undefined> {
+    const failed = await readFailure(sourceResourceId, recipe);
+    if (failed) {
+      if (failed.retryAt !== undefined && failed.retryAt > now())
+        return undefined;
+      await clearFailure(sourceResourceId, recipe);
+    }
+    const ready = await readRecipe(sourceResourceId, recipe);
+    if (ready) return ready;
+    const executorInput: FrozenRepresentationInput = {
+      schemaVersion: 1,
+      targetKind: "representation",
+      sourceResourceId,
+      sourceKind: source.resource.kind,
+      recipe,
+    };
+    const identity = runIdentity(executorInput);
+    const existing = await journal.load(identity);
+    if (!existing) {
+      if (!(await recipeApplies(source, recipe))) return undefined;
+      const createdAt = now();
+      await journal.create(
+        createDurableRunRecord({
+          ...identity,
+          owner: { realm: "local", id: ownerId },
+          executorInput: executorInput as unknown as ExecutablePluginJsonValue,
+          createdAt,
+          deadlineAt: createdAt + RUN_LIFETIME_MS,
+        }),
+      );
+    }
+    const activeKey = `${sourceResourceId}\0${recipeKey(recipe)}`;
+    activeRuns.set(activeKey, {
+      sourceResourceId,
+      sourceKind: source.resource.kind,
+      recipe,
+    });
+    try {
+      await drive(identity, recipe.role);
+    } catch (error) {
+      await recordFailure({
+        sourceResourceId,
+        recipe,
+        failure: failedRepresentation(
+          recipe,
+          error,
+          now() + interruptedRetryDelayMs(1),
+        ),
+      });
+      throw error;
+    } finally {
+      activeRuns.delete(activeKey);
+    }
+    const derived = await readRecipe(sourceResourceId, recipe);
+    if (derived) return derived;
+    await recordRunFailure(
+      sourceResourceId,
+      recipe,
+      await journal.load(identity),
+    );
+    return undefined;
+  }
+
+  /**
+   * A visible card request (foreground) and the resolve backstop (background)
+   * can name the same recipe at the same time. Share one derivation promise so
+   * the request waits for the in-flight poster instead of contending on the
+   * durable run and answering 404.
+   */
+  function deriveRecipeOnce(
+    source: LocalResourceProjection,
+    sourceResourceId: string,
+    recipe: LocalAssetRepresentationRecipe,
+  ): Promise<LocalAssetRepresentation | undefined> {
+    const key = `${sourceResourceId}\0${recipeKey(recipe)}`;
+    const active = recipeRuns.get(key);
+    if (active) return active;
+    const task = deriveRecipe(source, sourceResourceId, recipe).finally(() => {
+      if (recipeRuns.get(key) === task) recipeRuns.delete(key);
+    });
+    recipeRuns.set(key, task);
+    return task;
+  }
+
   async function ensureRecipes(
     sourceResourceId: string,
     recipesOf: (kind: AssetKind) => readonly LocalAssetRepresentationRecipe[],
@@ -1229,43 +1578,14 @@ export function createLocalAssetRepresentationService(options: {
     if (!source) return [];
     const results: LocalAssetRepresentation[] = [];
     for (const recipe of recipesOf(source.resource.kind)) {
-      const ready = await readRecipe(sourceResourceId, recipe);
-      if (ready) {
-        results.push(ready);
-        continue;
-      }
-      const executorInput: FrozenRepresentationInput = {
-        schemaVersion: 1,
-        targetKind: "representation",
-        sourceResourceId,
-        sourceKind: source.resource.kind,
-        recipe,
-      };
-      const identity = runIdentity(executorInput);
-      const existing = await journal.load(identity);
-      if (!existing) {
-        if (!(await recipeApplies(source, recipe))) continue;
-        const createdAt = now();
-        await journal.create(
-          createDurableRunRecord({
-            ...identity,
-            owner: { realm: "local", id: ownerId },
-            executorInput:
-              executorInput as unknown as ExecutablePluginJsonValue,
-            createdAt,
-            deadlineAt: createdAt + RUN_LIFETIME_MS,
-          }),
-        );
-      }
-      await drive(identity, recipe.role);
-      const derived = await readRecipe(sourceResourceId, recipe);
+      const derived = await deriveRecipeOnce(source, sourceResourceId, recipe);
       if (derived) results.push(derived);
     }
     await scheduleNextWake();
     return results;
   }
 
-  function scheduleBackground(sourceResourceId: string): void {
+  function queueBackgroundPass(sourceResourceId: string): void {
     if (
       backgroundPending.has(sourceResourceId) ||
       backgroundSettled.has(sourceResourceId)
@@ -1273,32 +1593,102 @@ export function createLocalAssetRepresentationService(options: {
       return;
     }
     backgroundPending.add(sourceResourceId);
-    backgroundQueue = backgroundQueue
-      .then(async () => {
-        if (closed) return;
-        const derived = await ensureRecipes(
-          sourceResourceId,
-          backgroundRecipesFor,
-        );
-        const source = await resources.resolve(sourceResourceId);
-        // Nothing to derive, or all of it derived: later reads of this
-        // immutable source need not queue another check.
-        if (
-          source &&
-          derived.length === backgroundRecipesFor(source.resource.kind).length
-        ) {
-          backgroundSettled.add(sourceResourceId);
-        }
-      })
-      .catch((error) => {
+    const run = workQueue.enqueue("background", async () => {
+      if (closed) return;
+      await ensureRecipes(sourceResourceId, backgroundRecipeSetFor);
+      const source = await resources.resolve(sourceResourceId);
+      if (!source) return;
+      // Once every recipe is ready or has a coded failure (in backoff or
+      // exhausted), later reads of this immutable source need not queue
+      // another background check: the durable journal owns the retry.
+      for (const recipe of backgroundRecipeSetFor(source.resource.kind)) {
+        if (await readRecipe(sourceResourceId, recipe)) continue;
+        if (await readFailure(sourceResourceId, recipe)) continue;
+        return;
+      }
+      backgroundSettled.add(sourceResourceId);
+    });
+    backgroundRuns.add(run);
+    void run
+      .catch((error: unknown) => {
+        if (error instanceof WorkQueueClosedError) return;
         console.warn(
-          `[local-api] failed to derive a proxy for ${sourceResourceId}`,
+          `[local-api] failed to derive representations for ${sourceResourceId}`,
           error,
         );
       })
       .finally(() => {
         backgroundPending.delete(sourceResourceId);
+        backgroundRuns.delete(run);
       });
+  }
+
+  /**
+   * A graceful Host stop aborts the in-flight encode. Record it as a coded
+   * interruption with a bounded exponential retry instead of letting the next
+   * Host silently re-run the full transcode immediately.
+   */
+  async function markInterrupted(
+    interrupted: Array<{
+      sourceResourceId: string;
+      sourceKind: AssetKind;
+      recipe: LocalAssetRepresentationRecipe;
+    }>,
+  ): Promise<void> {
+    for (const input of interrupted) {
+      if (await readRecipe(input.sourceResourceId, input.recipe)) continue;
+      const executorInput: FrozenRepresentationInput = {
+        schemaVersion: 1,
+        targetKind: "representation",
+        sourceResourceId: input.sourceResourceId,
+        sourceKind: input.sourceKind,
+        recipe: input.recipe,
+      };
+      const identity = runIdentity(executorInput);
+      const run = await journal.load(identity);
+      if (
+        !run ||
+        run.phase === "succeeded" ||
+        run.projectedAt !== undefined ||
+        (run.phase === "failed" &&
+          run.failure !== undefined &&
+          !run.failure.retryable)
+      ) {
+        continue;
+      }
+      const attempts = Math.max(1, run.failureCounts.submit + 1);
+      const retryAt = now() + interruptedRetryDelayMs(attempts);
+      const next: DurableRunRecord = {
+        ...run,
+        revision: run.revision + 1,
+        updatedAt: now(),
+        nextAttemptAt: retryAt,
+        failure: {
+          code: "cancelled",
+          message:
+            "The Host stopped while deriving this representation. The retry is scheduled with backoff.",
+          retryable: true,
+          requestState: run.activeAttempt ? "unknown" : "accepted",
+        },
+        failureCounts: { ...run.failureCounts, submit: attempts },
+      };
+      const recorded = await journal
+        .compareAndSet(identity, run.revision, next)
+        .catch(() => false);
+      if (!recorded) continue;
+      await recordFailure({
+        sourceResourceId: input.sourceResourceId,
+        recipe: input.recipe,
+        failure: {
+          role: input.recipe.role,
+          code: "REPRESENTATION_INTERRUPTED",
+          message:
+            "The Host stopped while deriving this representation. It will retry automatically.",
+          attempts,
+          retryAt,
+        },
+      });
+    }
   }
 
   const service: LocalAssetRepresentationService = {
@@ -1313,18 +1703,36 @@ export function createLocalAssetRepresentationService(options: {
             error,
           );
         })
-        .finally(() => scheduleBackground(normalized));
+        .finally(() => queueBackgroundPass(normalized));
+    },
+    scheduleBackground(sourceResourceId) {
+      const normalized = sourceResourceId.trim();
+      if (closed || !normalized) return;
+      queueBackgroundPass(normalized);
     },
     ensure(sourceResourceId) {
       const normalized = sourceResourceId.trim();
       if (closed || !normalized) return Promise.resolve([]);
       const active = inFlight.get(normalized);
       if (active) return active;
-      const task = ensureRecipes(normalized, recipesFor).finally(() => {
-        if (inFlight.get(normalized) === task) inFlight.delete(normalized);
-      });
+      const task = workQueue
+        .enqueue("foreground", () => ensureRecipes(normalized, recipesFor))
+        .finally(() => {
+          if (inFlight.get(normalized) === task) inFlight.delete(normalized);
+        });
       inFlight.set(normalized, task);
       return task;
+    },
+    async failure(sourceResourceId, role) {
+      const normalized = sourceResourceId.trim();
+      if (!normalized) return undefined;
+      const source = await resources.resolve(normalized);
+      if (!source) return undefined;
+      const recipe = [
+        ...recipesFor(source.resource.kind),
+        ...backgroundRecipesFor(source.resource.kind),
+      ].find((candidate) => candidate.role === role);
+      return recipe ? readFailure(normalized, recipe) : undefined;
     },
     async read(sourceResourceId, role) {
       const source = await resources.resolve(sourceResourceId);
@@ -1352,11 +1760,17 @@ export function createLocalAssetRepresentationService(options: {
     },
     start: recover,
     async close() {
+      // Capture in-flight derivations before aborting: the abort settles their
+      // durable runs, so the interruption must be recorded for the ones that
+      // had actually started.
+      const interrupted = [...activeRuns.values()];
       closed = true;
+      workQueue.close();
       closing.abort();
       if (wakeTimer) clearTimeout(wakeTimer);
       wakeTimer = undefined;
-      await Promise.allSettled([...inFlight.values(), backgroundQueue]);
+      await Promise.allSettled([...inFlight.values(), ...backgroundRuns]);
+      await markInterrupted(interrupted);
     },
   };
 

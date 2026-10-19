@@ -39,7 +39,10 @@ export interface ImportedProjectReservation {
 }
 
 export interface CachedProjectCanvasPreview {
+  /** Content identity of the drawn preview; a timeline edit does not change it. */
   sourceVersion: string;
+  /** Identity of the Project document the preview was derived from. */
+  docVersion: string;
   generatedAt: string;
   preview: ProjectCanvasPreview;
 }
@@ -51,7 +54,9 @@ function parseCachedProjectCanvasPreview(
   const candidate = value as Record<string, unknown>;
   if (
     typeof candidate.sourceVersion !== "string" ||
-    !candidate.sourceVersion.trim() ||
+    !/^[a-f0-9]{64}$/u.test(candidate.sourceVersion) ||
+    typeof candidate.docVersion !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(candidate.docVersion) ||
     typeof candidate.generatedAt !== "string" ||
     !candidate.generatedAt.trim()
   ) {
@@ -61,6 +66,7 @@ function parseCachedProjectCanvasPreview(
   if (!preview.success) return null;
   return {
     sourceVersion: candidate.sourceVersion,
+    docVersion: candidate.docVersion,
     generatedAt: candidate.generatedAt,
     preview: preview.data,
   };
@@ -361,7 +367,8 @@ export class FileReplicaStore {
       ) {
         return null;
       }
-      return exactBytes(persisted.subarray(header.byteLength));
+      // Return a view, not a copy: the route streams these bytes directly.
+      return persisted.subarray(header.byteLength);
     } catch (error) {
       if (isMissingFile(error)) return null;
       throw error;

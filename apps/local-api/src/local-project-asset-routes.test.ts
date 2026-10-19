@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { serve } from "@hono/node-server";
 import { LoroDoc } from "loro-crdt";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createActionAssetBinding,
   listActionAssetBindings,
@@ -27,9 +27,15 @@ import {
 import type { LocalAssetRepresentationService } from "./local-asset-representations.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import { LocalMediaProcessTimeoutError } from "./local-media-process.js";
+import {
+  createLocalAssetRepresentationService,
+  type LocalAssetRepresentationRecipeRunner,
+} from "./local-asset-representations.js";
 import { createSqliteDurableRunJournal } from "./durable-run-journal.js";
+import { createLocalResourceStore } from "./local-resource-store.js";
 import {
   createLocalProjectAssetService,
+  publishLocalProjectAssetWithBindings,
   type LocalProjectAssetReplica,
 } from "./local-project-assets.js";
 import { FileReplicaStore } from "./loro/file-replica-store.js";
@@ -82,6 +88,33 @@ function projectTrashRequest(
   };
 }
 
+/**
+ * Most route tests use placeholder bytes, so a real ffmpeg/sharp derivation
+ * would fail on them. Tests that exercise representations install their own
+ * service and valid recipes.
+ */
+const noRepresentations: LocalAssetRepresentationService = {
+  schedule() {},
+  scheduleBackground() {},
+  async ensure() {
+    return [];
+  },
+  async read() {
+    return undefined;
+  },
+  async failure() {
+    return undefined;
+  },
+  async openThumbnail() {
+    return undefined;
+  },
+  async openProxy() {
+    return undefined;
+  },
+  async start() {},
+  async close() {},
+};
+
 async function fixture() {
   const clashRoot = await mkdtemp(
     join(tmpdir(), "clash-project-asset-routes-"),
@@ -114,6 +147,7 @@ async function fixture() {
     userId: "local-user",
     projectAssetProjectionOrigin: () => "http://127.0.0.1:49152",
     inspectAssetResource: inspectFixtureAsset,
+    assetRepresentations: noRepresentations,
   };
   return {
     app: createLocalApiApp(appOptions),
@@ -566,6 +600,7 @@ describe("Project-scoped ResolvedAsset routes", () => {
     };
     const representations: LocalAssetRepresentationService = {
       schedule() {},
+      scheduleBackground() {},
       async ensure() {
         return [];
       },
@@ -631,6 +666,330 @@ describe("Project-scoped ResolvedAsset routes", () => {
     await expect((await app.request(ready.url)).text()).resolves.toBe(
       "original-video",
     );
+  });
+
+  it("carries a coded representation failure instead of a missing video poster URL", async () => {
+    const { service, clashRoot, dataDir } = await fixture();
+    await service.installOwned({
+      projectId: "project-a",
+      projectAssetId: "clip:interrupted",
+      kind: "video",
+      bytes: new TextEncoder().encode("original-video"),
+      contentType: "video/mp4",
+      name: "clip.mp4",
+      metadata: { durationMs: 2_000 },
+      provenance: { kind: "generation", actionRunId: "run-clip" },
+    });
+    const thumbnail = {
+      role: "thumbnail" as const,
+      recipe: "video-poster/v1:test",
+      resourceId: "resource-poster",
+    };
+    const representations: LocalAssetRepresentationService = {
+      schedule() {},
+      scheduleBackground() {},
+      async ensure() {
+        return [];
+      },
+      async read(_sourceResourceId, role) {
+        return role === "thumbnail" ? thumbnail : undefined;
+      },
+      async failure(_sourceResourceId, role) {
+        return role === "proxy"
+          ? {
+              role: "proxy",
+              code: "REPRESENTATION_INTERRUPTED",
+              message: "The Host stopped while deriving this representation.",
+              retryAt: 1_790_000_000_000,
+              attempts: 2,
+            }
+          : undefined;
+      },
+      async openThumbnail() {
+        return undefined;
+      },
+      async openProxy() {
+        return undefined;
+      },
+      async start() {},
+      async close() {},
+    };
+    const app = createLocalApiApp({
+      dataDir,
+      clashRoot,
+      userId: "local-user",
+      projectAssetProjectionOrigin: () => "http://127.0.0.1:49152",
+      inspectAssetResource: inspectFixtureAsset,
+      assetRepresentations: representations,
+    });
+
+    const response = await app.request(
+      "http://127.0.0.1:49152/api/v1/projects/project-a/assets/clip%3Ainterrupted",
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = (await response.json()) as {
+      thumbnailUrl?: string;
+      proxyUrl?: string;
+      representationFailure?: unknown;
+    };
+    expect(body.thumbnailUrl).toBe(
+      "http://127.0.0.1:49152/api/v1/projects/project-a/assets/clip%3Ainterrupted/thumbnail",
+    );
+    expect(body.proxyUrl).toBeUndefined();
+    expect(body.representationFailure).toEqual({
+      role: "proxy",
+      code: "REPRESENTATION_INTERRUPTED",
+      message: "The Host stopped while deriving this representation.",
+      retryAt: 1_790_000_000_000,
+      attempts: 2,
+    });
+  });
+
+  const inspectLargeVideo: LocalAssetInspector = async ({ resource }) => ({
+    width: 1_920,
+    height: 1_080,
+    rotationDegrees: 0,
+    durationMs: 2_000,
+    frameRate: 24,
+    videoCodec: "h264",
+    hasAudio: false,
+    contentType: resource.contentType ?? "video/mp4",
+  });
+
+  function derivedRecipeRunner(
+    resources: ReturnType<typeof createLocalResourceStore>,
+    ran: string[],
+  ): LocalAssetRepresentationRecipeRunner {
+    return async ({ recipe }) => {
+      ran.push(recipe.id);
+      const staged = await resources.stage({
+        bytes: new TextEncoder().encode(`derived ${recipe.id}`),
+      });
+      return recipe.role === "proxy"
+        ? {
+            kind: "resource",
+            role: "proxy",
+            stagedResourceId: staged.resourceId,
+            resourceKind: "video",
+            contentType: "video/mp4",
+          }
+        : {
+            kind: "resource",
+            role: "thumbnail",
+            stagedResourceId: staged.resourceId,
+            resourceKind: "image",
+            contentType: "image/webp",
+          };
+    };
+  }
+
+  it("advertises a missing poster route for a replica-arrived video and backfills its proxy", async () => {
+    const { clashRoot, dataDir } = await fixture();
+    const resources = createLocalResourceStore({ dataDir, clashRoot });
+    const publication = createLocalProjectAssetService({
+      dataDir,
+      clashRoot,
+      projectionOrigin: "http://seed.invalid",
+      assetInspection: createLocalAssetInspectionService({
+        dataDir,
+        clashRoot,
+        inspectResource: inspectLargeVideo,
+      }),
+    });
+    // Cloud sync/workspace import writes the Project Asset fact straight into
+    // the local replica; nothing calls installOwnedResult, so no derivation is
+    // scheduled at publication time.
+    const source = await resources.install({
+      kind: "video",
+      contentType: "video/mp4",
+      bytes: new TextEncoder().encode("replica-video"),
+    });
+    const entry = await publication.prepareStagedOwnedEntry({
+      projectAssetId: "clip:replica",
+      kind: "video",
+      resourceId: source.resource.id,
+      metadata: { durationMs: 2_000 },
+    });
+    const replicas = new FileReplicaStore(join(dataDir, "projects"));
+    await replicas.updateSnapshotAtomic("project-a", (doc) => {
+      const result = publishLocalProjectAssetWithBindings(doc, entry, []);
+      return { value: result.entry, save: result.changed };
+    });
+    const ran: string[] = [];
+    const representations = createLocalAssetRepresentationService({
+      dataDir,
+      clashRoot,
+      assetInspection: createLocalAssetInspectionService({
+        dataDir,
+        clashRoot,
+        inspectResource: inspectLargeVideo,
+      }),
+      ffmpegPath: () => "/test/bin/ffmpeg",
+      recipeRunner: derivedRecipeRunner(resources, ran),
+    });
+    const app = createLocalApiApp({
+      dataDir,
+      clashRoot,
+      userId: "local-user",
+      projectAssetProjectionOrigin: () => "http://127.0.0.1:49152",
+      inspectAssetResource: inspectLargeVideo,
+      assetRepresentations: representations,
+    });
+    const assetUrl =
+      "http://127.0.0.1:49152/api/v1/projects/project-a/assets/clip%3Areplica";
+    try {
+      const pending = await app.request(assetUrl);
+      expect(pending.status, await pending.clone().text()).toBe(200);
+      const body = (await pending.json()) as {
+        thumbnailUrl?: string;
+        proxyUrl?: string;
+        representationFailure?: unknown;
+      };
+      expect(body.thumbnailUrl).toBe(`${assetUrl}/thumbnail`);
+      expect(body.proxyUrl).toBeUndefined();
+      expect(body.representationFailure).toBeUndefined();
+
+      // The advertised route derives the poster on demand.
+      const poster = await app.request(body.thumbnailUrl!);
+      expect(poster.status, await poster.clone().text()).toBe(200);
+      await expect(poster.text()).resolves.toBe("derived video-poster");
+
+      // The background backstop publishes the proxy without a proxy request.
+      await vi.waitFor(
+        async () => {
+          const read = await app.request(assetUrl);
+          expect(read.status).toBe(200);
+          const current = (await read.json()) as { proxyUrl?: string };
+          expect(current.proxyUrl).toBe(`${assetUrl}/proxy`);
+        },
+        { timeout: 5_000 },
+      );
+      const proxy = await app.request(`${assetUrl}/proxy`);
+      expect(proxy.status, await proxy.clone().text()).toBe(200);
+      await expect(proxy.text()).resolves.toBe("derived video-proxy");
+      expect(ran).toEqual(
+        expect.arrayContaining(["video-poster", "video-proxy"]),
+      );
+    } finally {
+      await representations.close();
+    }
+  });
+
+  it("returns the Asset list without waiting for missing-video backstops and runs one background derivation at a time", async () => {
+    const { clashRoot, dataDir } = await fixture();
+    const resources = createLocalResourceStore({ dataDir, clashRoot });
+    const publication = createLocalProjectAssetService({
+      dataDir,
+      clashRoot,
+      projectionOrigin: "http://seed.invalid",
+      assetInspection: createLocalAssetInspectionService({
+        dataDir,
+        clashRoot,
+        inspectResource: inspectLargeVideo,
+      }),
+    });
+    const assetCount = 4;
+    for (let index = 0; index < assetCount; index += 1) {
+      const source = await resources.install({
+        kind: "video",
+        contentType: "video/mp4",
+        bytes: new TextEncoder().encode(`list-video-${index}`),
+      });
+      await publication.publishStagedOwnedWithBindings({
+        projectId: "project-list",
+        projectAssetId: `clip:list-${index}`,
+        kind: "video",
+        resourceId: source.resource.id,
+        metadata: { durationMs: 2_000 },
+        bindings: [],
+      });
+    }
+    const gates: Array<() => void> = [];
+    const ran: string[] = [];
+    let active = 0;
+    let maximumActive = 0;
+    const recipeRunner: LocalAssetRepresentationRecipeRunner = async ({
+      recipe,
+    }) => {
+      ran.push(recipe.id);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      active -= 1;
+      const staged = await resources.stage({
+        bytes: new TextEncoder().encode(`derived ${recipe.id}`),
+      });
+      return recipe.role === "proxy"
+        ? {
+            kind: "resource",
+            role: "proxy",
+            stagedResourceId: staged.resourceId,
+            resourceKind: "video",
+            contentType: "video/mp4",
+          }
+        : {
+            kind: "resource",
+            role: "thumbnail",
+            stagedResourceId: staged.resourceId,
+            resourceKind: "image",
+            contentType: "image/webp",
+          };
+    };
+    const representations = createLocalAssetRepresentationService({
+      dataDir,
+      clashRoot,
+      assetInspection: createLocalAssetInspectionService({
+        dataDir,
+        clashRoot,
+        inspectResource: inspectLargeVideo,
+      }),
+      ffmpegPath: () => "/test/bin/ffmpeg",
+      recipeRunner,
+    });
+    const app = createLocalApiApp({
+      dataDir,
+      clashRoot,
+      userId: "local-user",
+      projectAssetProjectionOrigin: () => "http://127.0.0.1:49152",
+      inspectAssetResource: inspectLargeVideo,
+      assetRepresentations: representations,
+    });
+    try {
+      // The list must return even though the first background derivation is
+      // still blocked on its gate.
+      const listed = await app.request(
+        "http://127.0.0.1:49152/api/v1/projects/project-list/assets",
+      );
+      expect(listed.status, await listed.clone().text()).toBe(200);
+      const body = (await listed.json()) as {
+        assets: Array<{ thumbnailUrl?: string; proxyUrl?: string }>;
+      };
+      expect(body.assets).toHaveLength(assetCount);
+      for (const asset of body.assets) {
+        expect(asset.thumbnailUrl).toMatch(/\/thumbnail$/u);
+        expect(asset.proxyUrl).toBeUndefined();
+      }
+      await vi.waitFor(() => expect(gates).toHaveLength(1), {
+        timeout: 5_000,
+      });
+      expect(maximumActive).toBe(1);
+
+      // Drain poster then proxy for each source, one background derivation at
+      // a time; the queue never overlaps background agents.
+      for (let index = 0; index < assetCount * 2; index += 1) {
+        await vi.waitFor(() => expect(gates.length).toBeGreaterThan(0), {
+          timeout: 5_000,
+        });
+        gates.shift()?.();
+      }
+      await vi.waitFor(() => expect(ran).toHaveLength(assetCount * 2), {
+        timeout: 5_000,
+      });
+      expect(maximumActive).toBe(1);
+    } finally {
+      for (const release of gates.splice(0)) release();
+      await representations.close();
+    }
   });
 
   it("batch reads only requested Asset entries from the selected Project", async () => {

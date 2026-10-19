@@ -286,7 +286,8 @@ describe("FileReplicaStore", () => {
     const store = new FileReplicaStore(rootDir);
     const projectId = "project/preview cache";
     const first = {
-      sourceVersion: "version-1",
+      sourceVersion: "a".repeat(64),
+      docVersion: "1".repeat(64),
       generatedAt: "2026-08-27T00:00:00.000Z",
       preview: {
         canvasId: "main",
@@ -310,7 +311,8 @@ describe("FileReplicaStore", () => {
     await expect(store.readCanvasPreview(projectId)).resolves.toEqual(first);
 
     const second = {
-      sourceVersion: "version-2",
+      sourceVersion: "b".repeat(64),
+      docVersion: "2".repeat(64),
       generatedAt: "2026-08-27T00:01:00.000Z",
       preview: {
         canvasId: "main",
@@ -342,9 +344,8 @@ describe("FileReplicaStore", () => {
     await expect(
       store.readCanvasThumbnail(projectId, firstRevision),
     ).resolves.toBeNull();
-    await expect(
-      store.readCanvasThumbnail(projectId, secondRevision),
-    ).resolves.toEqual(new Uint8Array([4, 5, 6]));
+    const bytes = await store.readCanvasThumbnail(projectId, secondRevision);
+    expect(bytes && Array.from(bytes)).toEqual([4, 5, 6]);
     await expect(
       readdir(join(rootDir, encodeURIComponent(projectId), "derived")),
     ).resolves.toEqual(["main-canvas-thumbnail.cache"]);

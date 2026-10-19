@@ -261,6 +261,23 @@ export type LocalResourceErrorCode = z.infer<
   typeof LocalResourceErrorCodeSchema
 >;
 
+/** A Host-private derivation that is not available, surfaced as coded Asset state. */
+export let AssetRepresentationFailureSchema = lazySchema(() => (
+z
+  .object({
+    role: z.enum(["thumbnail", "waveform", "proxy"]),
+    code: z.enum(["REPRESENTATION_FAILED", "REPRESENTATION_INTERRUPTED"]),
+    message: z.string().trim().min(1),
+    /** When the next bounded retry is due; absent once retries are exhausted. */
+    retryAt: z.number().int().nonnegative().optional(),
+    attempts: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+), (real) => { AssetRepresentationFailureSchema = real; });
+export type AssetRepresentationFailure = z.infer<
+  typeof AssetRepresentationFailureSchema
+>;
+
 /** One read-only Asset view resolved by the current Host. URLs are projections, never identity. */
 export let ResolvedAssetSchema = lazySchema(() => (
 z
@@ -294,6 +311,11 @@ z
     error: z.string().trim().min(1).optional(),
     /** Coded reason a failed Asset's local bytes cannot be served. */
     errorCode: LocalResourceErrorCodeSchema.optional(),
+    /**
+     * Coded state of a failed/interrupted derivation (poster, thumbnail,
+     * waveform, proxy). The original bytes remain readable.
+     */
+    representationFailure: AssetRepresentationFailureSchema.optional(),
   })
   .strict()
 ), (real) => { ResolvedAssetSchema = real; });

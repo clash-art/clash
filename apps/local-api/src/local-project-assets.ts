@@ -551,7 +551,7 @@ export function createLocalProjectAssetService(options: {
   assetInspection?: LocalAssetInspectionService;
   assetRepresentations?: Pick<
     LocalAssetRepresentationService,
-    "schedule" | "read"
+    "schedule" | "scheduleBackground" | "read" | "failure"
   >;
   replica?: LocalProjectAssetReplica;
   readReceiptVerifier?: AgentReadReceiptVerifier;
@@ -775,21 +775,76 @@ export function createLocalProjectAssetService(options: {
                 "proxy",
               )
             : undefined;
-        options.assetRepresentations?.schedule(entry.source.resourceId);
+        // The original Asset stays readable; only its derived projection is
+        // failing, so carry the coded reason instead of a URL that 404s. A
+        // video can have its poster while an interrupted proxy still reports.
+        // An image without a derived thumbnail still serves its original
+        // bytes as the thumbnail, so only a missing video poster/waveform (or
+        // an interrupted proxy) is a visible derivation failure.
+        const primaryFailure =
+          representation === undefined && entry.kind !== "image"
+            ? await options.assetRepresentations?.failure?.(
+                entry.source.resourceId,
+                representationRole,
+              )
+            : undefined;
+        const proxyFailure =
+          entry.kind === "video" && proxy === undefined
+            ? await options.assetRepresentations?.failure?.(
+                entry.source.resourceId,
+                "proxy",
+              )
+            : undefined;
+        // A missing representation with no recorded failure is not a failure:
+        // it simply has not been derived on this Host yet. The card still gets
+        // the route URL so its request can derive it on demand through the
+        // bounded queue, and resolve queues a background pass so an Asset that
+        // arrived without install scheduling (cloud replica, workspace import,
+        // provider/plugin output) converges even if nothing requests the card.
+        const missingWithoutFailure = [
+          ...(representation === undefined &&
+          entry.kind !== "image" &&
+          primaryFailure === undefined
+            ? [representationRole]
+            : []),
+          ...(entry.kind === "video" &&
+          proxy === undefined &&
+          proxyFailure === undefined
+            ? (["proxy"] as const)
+            : []),
+        ];
+        if (missingWithoutFailure.length > 0) {
+          // Never awaited: the visible card request or this backstop will
+          // derive it; either way the list itself does not block.
+          options.assetRepresentations?.scheduleBackground?.(
+            entry.source.resourceId,
+          );
+        }
+        const thumbnail =
+          representation?.role === "thumbnail"
+            ? thumbnailUrl(origin, projectId, entry.id)
+            : entry.kind === "image"
+              ? url
+              : entry.kind === "video" && primaryFailure === undefined
+                ? thumbnailUrl(origin, projectId, entry.id)
+                : undefined;
+        const waveform =
+          representation?.role === "waveform" ||
+          (entry.kind === "audio" && primaryFailure === undefined)
+            ? waveformUrl(origin, projectId, entry.id)
+            : undefined;
+        const representationFailure = primaryFailure ?? proxyFailure;
         return {
           status: "ready" as const,
           url,
           ...(proxy?.role === "proxy"
             ? { proxyUrl: proxyUrl(origin, projectId, entry.id) }
             : {}),
-          ...(representation?.role === "thumbnail"
-            ? { thumbnailUrl: thumbnailUrl(origin, projectId, entry.id) }
-            : entry.kind === "image"
-              ? { thumbnailUrl: url }
-              : {}),
-          ...(representation?.role === "waveform"
-            ? { waveformUrl: waveformUrl(origin, projectId, entry.id) }
-            : {}),
+          ...(thumbnail === undefined ? {} : { thumbnailUrl: thumbnail }),
+          ...(waveform === undefined ? {} : { waveformUrl: waveform }),
+          ...(representationFailure === undefined
+            ? {}
+            : { representationFailure }),
         };
       },
     },
@@ -933,6 +988,9 @@ export function createLocalProjectAssetService(options: {
       ...(input.provenance ? { provenance: input.provenance } : {}),
     };
     await client.createOwned({ projectId: input.projectId, entry });
+    // Derive the read-facing projection once, at import, instead of making
+    // every dashboard read rediscover it for every Asset.
+    options.assetRepresentations?.schedule(entry.source.resourceId);
     // The commit is the operation. Reading it back is enrichment: a transient
     // read failure must not turn a committed Asset into a failed import.
     const readPublished = async (): Promise<ResolvedAsset | undefined> => {
