@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,9 @@ import {
   listActionAssetBindings,
   listActionAssetReferences,
   listProjectAssets,
+  projectAssetAuthorityVersion,
   readProjectAsset,
+  type Asset,
 } from "@clash/shared-types";
 
 import { managedLocalApiApps } from "./local-api-app.test-fixtures.js";
@@ -22,6 +25,8 @@ import {
   type LocalAssetInspector,
 } from "./local-asset-inspections.js";
 import type { LocalAssetRepresentationService } from "./local-asset-representations.js";
+import { createLocalMetadataStore } from "./local-metadata-store.js";
+import { LocalMediaProcessTimeoutError } from "./local-media-process.js";
 import { createSqliteDurableRunJournal } from "./durable-run-journal.js";
 import {
   createLocalProjectAssetService,
@@ -35,6 +40,7 @@ const { createApp: createLocalApiApp, close: closeApps } =
   managedLocalApiApps();
 const PROJECT_ASSET_RECEIPT_RE =
   /^project-asset-v1:[a-f0-9]{16}:receipt:[A-Za-z0-9._~-]+$/;
+const nodeRequire = createRequire(import.meta.url);
 
 const inspectFixtureAsset: LocalAssetInspector = async ({ resource }) =>
   resource.kind === "image"
@@ -116,6 +122,78 @@ async function fixture() {
     clashRoot,
     dataDir,
   };
+}
+
+function legacyProjectAsset(input: {
+  id: string;
+  storageKey: string;
+  digest: string;
+  bytes: number;
+}): Asset {
+  return {
+    id: input.id,
+    userId: "local-user",
+    kind: "image",
+    srcR2Key: input.storageKey,
+    coverR2Key: null,
+    metadata: {
+      bytes: input.bytes,
+      contentType: "image/png",
+      contentHash: input.digest,
+      originalName: "legacy.png",
+    },
+    sourceModel: null,
+    sourcePrompt: null,
+    sourceTaskId: null,
+    sources: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+async function replaceLegacyProjectAssets(input: {
+  store: ReturnType<typeof createLocalMetadataStore>;
+  projectId: string;
+  asset: Asset;
+  digest: string;
+  bytes: Uint8Array;
+  dataDir: string;
+}): Promise<void> {
+  const state = await input.store.load();
+  state.assets = [input.asset];
+  state.assetRefs = [
+    {
+      assetId: input.asset.id,
+      projectId: input.projectId,
+      importedAt: 1,
+    },
+  ];
+  state.assetNodeRefs = [];
+  state.libraryAssetRefs = [];
+  await input.store.save(state, { replaceLegacyAssetMigrationInput: true });
+  const path = join(input.dataDir, "assets", input.asset.srcR2Key);
+  await mkdir(join(path, ".."), { recursive: true });
+  await writeFile(path, input.bytes);
+}
+
+function ageDeletedProjectForPurge(dataDir: string, projectId: string): void {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { run(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  const agedDeletedAt = new Date(
+    Date.now() - 8 * 24 * 60 * 60 * 1000,
+  ).toISOString();
+  try {
+    database
+      .prepare("UPDATE project SET deleted_at = ?, updated_at = ? WHERE id = ?")
+      .run(agedDeletedAt, agedDeletedAt, projectId);
+  } finally {
+    database.close();
+  }
 }
 
 function editBindingCollisionReplica(input: {
@@ -291,7 +369,7 @@ describe("Project-scoped ResolvedAsset routes", () => {
     expect(await read.json()).toEqual(listedBody.assets[0]);
   });
 
-  it("serves the immutable projection with Resource content type and byte ranges", async () => {
+  it("serves the immutable projection with Resource validators and byte ranges", async () => {
     const { app, asset } = await fixture();
     const mediaUrl = `http://127.0.0.1:49152/api/v1/projects/project-a/assets/${encodeURIComponent(asset.id)}/media`;
 
@@ -301,8 +379,12 @@ describe("Project-scoped ResolvedAsset routes", () => {
     expect(full.headers.get("content-length")).toBe("10");
     expect(full.headers.get("accept-ranges")).toBe("bytes");
     expect(full.headers.get("cache-control")).toBe(
-      "public, max-age=31536000, immutable",
+      "private, max-age=31536000, immutable",
     );
+    const etag = full.headers.get("etag");
+    const lastModified = full.headers.get("last-modified");
+    expect(etag).toMatch(/^"[a-f0-9]{64}"$/);
+    expect(lastModified).not.toBeNull();
     await expect(full.text()).resolves.toBe("0123456789");
 
     const partial = await app.request(mediaUrl, {
@@ -312,7 +394,35 @@ describe("Project-scoped ResolvedAsset routes", () => {
     expect(partial.headers.get("content-type")).toBe("audio/mpeg");
     expect(partial.headers.get("content-length")).toBe("4");
     expect(partial.headers.get("content-range")).toBe("bytes 2-5/10");
+    expect(partial.headers.get("etag")).toBe(etag);
     await expect(partial.text()).resolves.toBe("2345");
+
+    const notModified = await app.request(mediaUrl, {
+      headers: { "if-none-match": etag! },
+    });
+    expect(notModified.status).toBe(304);
+    expect(notModified.body).toBeNull();
+    expect(notModified.headers.get("etag")).toBe(etag);
+
+    const staleRange = await app.request(mediaUrl, {
+      headers: { range: "bytes=2-5", "if-range": '"stale-etag"' },
+    });
+    expect(staleRange.status).toBe(200);
+    expect(staleRange.headers.get("content-range")).toBeNull();
+    await expect(staleRange.text()).resolves.toBe("0123456789");
+
+    const matchingRange = await app.request(mediaUrl, {
+      headers: { range: "bytes=2-5", "if-range": etag! },
+    });
+    expect(matchingRange.status).toBe(206);
+    await expect(matchingRange.text()).resolves.toBe("2345");
+
+    const multiRange = await app.request(mediaUrl, {
+      headers: { range: "bytes=0-1,4-5" },
+    });
+    expect(multiRange.status).toBe(200);
+    expect(multiRange.headers.get("content-range")).toBeNull();
+    await expect(multiRange.text()).resolves.toBe("0123456789");
 
     const unsatisfiable = await app.request(mediaUrl, {
       headers: { range: "bytes=99-100" },
@@ -544,6 +654,65 @@ describe("Project-scoped ResolvedAsset routes", () => {
         }),
       ],
     });
+  });
+
+  it("fails a hung inspection with a coded timeout and leaves no staged bytes", async () => {
+    const clashRoot = await mkdtemp(
+      join(tmpdir(), "clash-project-asset-probe-timeout-"),
+    );
+    temporaryDirectories.push(clashRoot);
+    const dataDir = join(clashRoot, "local-api");
+    const app = createLocalApiApp({
+      dataDir,
+      clashRoot,
+      userId: "local-user",
+      projectAssetProjectionOrigin: () => "http://127.0.0.1:49152",
+      inspectAssetResource: async () => {
+        throw new LocalMediaProcessTimeoutError(
+          "ASSET_INSPECTION_TIMEOUT",
+          "inspect import.mp4",
+          100,
+        );
+      },
+    });
+    const form = new FormData();
+    form.set(
+      "file",
+      new File([new Uint8Array([1, 2, 3])], "hang.mp4", {
+        type: "video/mp4",
+      }),
+    );
+    form.set("kind", "video");
+    form.set("projectAssetId", "import:hang");
+
+    const response = await app.request(
+      "http://127.0.0.1:49152/api/v1/projects/project-a/assets/import-file",
+      { method: "POST", body: form },
+    );
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      code: "ASSET_INSPECTION_TIMEOUT",
+    });
+
+    const { DatabaseSync } = nodeRequire("node:sqlite") as {
+      DatabaseSync: new (path: string) => {
+        prepare(sql: string): { get(): unknown };
+        close(): void;
+      };
+    };
+    const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+    try {
+      expect(
+        database
+          .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
+          .get(),
+      ).toEqual({ count: 0 });
+      expect(
+        database.prepare("SELECT COUNT(*) AS count FROM local_resources").get(),
+      ).toEqual({ count: 0 });
+    } finally {
+      database.close();
+    }
   });
 
   it("imports multipart bytes idempotently under an explicit Project Asset id and rejects conflicting bytes", async () => {
@@ -1778,5 +1947,109 @@ describe("Project-scoped ResolvedAsset routes", () => {
       error: "Project Asset not found",
       code: "PROJECT_ASSET_NOT_FOUND",
     });
+  });
+
+  it("materializes and serves a same-id Project replica re-imported after purge", async () => {
+    const clashRoot = await mkdtemp(
+      join(tmpdir(), "clash-project-asset-reimport-"),
+    );
+    temporaryDirectories.push(clashRoot);
+    const dataDir = join(clashRoot, "local-api");
+    const projectId = "reimported-project";
+    const metadata = createLocalMetadataStore(dataDir);
+    const oldBytes = new TextEncoder().encode("old replica image");
+    const oldDigest = createHash("sha256").update(oldBytes).digest("hex");
+    await replaceLegacyProjectAssets({
+      store: metadata,
+      projectId,
+      dataDir,
+      digest: oldDigest,
+      bytes: oldBytes,
+      asset: legacyProjectAsset({
+        id: "asset:old-replica",
+        storageKey: "generated/old-replica.png",
+        digest: oldDigest,
+        bytes: oldBytes.byteLength,
+      }),
+    });
+
+    const app = createLocalApiApp({
+      dataDir,
+      clashRoot,
+      userId: "local-user",
+      projectAssetProjectionOrigin: "http://127.0.0.1:49152",
+      inspectAssetResource: inspectFixtureAsset,
+    });
+    const initialize = () =>
+      app.request(`/api/v1/projects/${projectId}/initialize`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "Re-imported Project" }),
+      });
+    expect((await initialize()).status).toBe(201);
+
+    const oldMediaUrl = `http://127.0.0.1:49152/api/v1/projects/${projectId}/assets/${encodeURIComponent("asset:old-replica")}/media`;
+    const oldMedia = await app.request(oldMediaUrl);
+    expect(oldMedia.status).toBe(200);
+    expect(await oldMedia.text()).toBe("old replica image");
+
+    expect(
+      (
+        await app.request(`/api/v1/projects/${projectId}`, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(200);
+    ageDeletedProjectForPurge(dataDir, projectId);
+    const purged = await app.request(`/api/v1/projects/${projectId}/purge`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm: "purge" }),
+    });
+    expect(purged.status).toBe(200);
+    expect(await purged.json()).toMatchObject({
+      purged: true,
+      replicaDeleted: true,
+    });
+
+    const newBytes = new TextEncoder().encode("new replica image");
+    const newDigest = createHash("sha256").update(newBytes).digest("hex");
+    await replaceLegacyProjectAssets({
+      store: metadata,
+      projectId,
+      dataDir,
+      digest: newDigest,
+      bytes: newBytes,
+      asset: legacyProjectAsset({
+        id: "asset:new-replica",
+        storageKey: "generated/new-replica.png",
+        digest: newDigest,
+        bytes: newBytes.byteLength,
+      }),
+    });
+    const importedDoc = new LoroDoc();
+    importedDoc.getMap("workspace-import").set("revision", "second");
+    const replicas = new FileReplicaStore(join(dataDir, "projects"));
+    await expect(
+      replicas.installSnapshotIfAbsent(
+        projectId,
+        importedDoc.export({ mode: "snapshot" }),
+      ),
+    ).resolves.toEqual({ installed: true });
+    expect((await initialize()).status).toBe(201);
+
+    const newMediaUrl = `http://127.0.0.1:49152/api/v1/projects/${projectId}/assets/${encodeURIComponent("asset:new-replica")}/media`;
+    const newMedia = await app.request(newMediaUrl);
+    expect(newMedia.status).toBe(200);
+    expect(await newMedia.text()).toBe("new replica image");
+
+    const materialized = await replicas.recover(projectId);
+    expect(projectAssetAuthorityVersion(materialized)).toBe(1);
+    expect(listProjectAssets(materialized)).toEqual([
+      expect.objectContaining({
+        id: "asset:new-replica",
+        source: { kind: "owned", resourceId: `sha256:${newDigest}` },
+      }),
+    ]);
   });
 });

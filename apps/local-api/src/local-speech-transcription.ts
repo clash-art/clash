@@ -15,6 +15,11 @@ import {
 
 import type { LocalAudioConfigStore } from "./audio-config.js";
 import { runFfmpegToFile } from "./local-ffmpeg-run.js";
+import {
+  LocalMediaProcessTimeoutError,
+  MEDIA_PROCESS_TIMEOUTS_MS,
+  withMediaProcessDeadline,
+} from "./local-media-process.js";
 import { localFfmpegPath } from "./local-media-binaries.js";
 
 export interface LocalSpeechTranscriptionRequest {
@@ -100,6 +105,8 @@ export function createLocalSpeechTranscriptionService(options: {
   }) => Promise<LocalSpeechTranscriptionSource>;
   /** Resolves the ffmpeg used to extract a video's audio track. */
   ffmpegPath?: () => string | null;
+  /** Deadline for extracting a video's audio track; tests inject a short one. */
+  audioExtractionTimeoutMs?: number;
 }): (
   input: LocalSpeechTranscriptionRequest,
 ) => Promise<ExecutableSpeechTranscriptionResult> {
@@ -139,16 +146,30 @@ export function createLocalSpeechTranscriptionService(options: {
         const name = `${basename(source.path, extname(source.path))}.flac`;
         const audioPath = join(workDir, name);
         try {
-          await runFfmpegToFile({
-            ffmpeg,
-            args: speechAudioExtractionArgs({
-              sourcePath: source.path,
-              outputPath: audioPath,
-            }),
-            task: `extract audio from ${basename(source.path)}`,
-          });
+          await withMediaProcessDeadline(
+            {
+              code: "SPEECH_AUDIO_EXTRACTION_TIMEOUT",
+              timeoutMs:
+                options.audioExtractionTimeoutMs ??
+                MEDIA_PROCESS_TIMEOUTS_MS.speechAudioExtraction,
+              task: `extract audio from ${basename(source.path)}`,
+            },
+            (signal) =>
+              runFfmpegToFile({
+                ffmpeg,
+                args: speechAudioExtractionArgs({
+                  sourcePath: source.path,
+                  outputPath: audioPath,
+                }),
+                task: `extract audio from ${basename(source.path)}`,
+                signal,
+              }),
+          );
           file = await fileBackedFile(audioPath, name, "audio/flac");
         } catch (error) {
+          // A deadline is a coded failure of the operation, not a format the
+          // runtime can fall back to.
+          if (error instanceof LocalMediaProcessTimeoutError) throw error;
           // The runtime decodes containers itself; extraction only bounds
           // memory, so a source ffmpeg cannot split is transcribed as it is.
           console.warn(

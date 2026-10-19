@@ -6,6 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+import {
+  MEDIA_PROCESS_TIMEOUTS_MS,
+  withMediaProcessDeadline,
+} from "./local-media-process.js";
+
 const execFileAsync = promisify(execFile);
 
 export type FalQueueStatusName = "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED";
@@ -550,34 +555,42 @@ async function makeMp4(record: FalMockRecord): Promise<FalMockMedia> {
     const videoFilter = renderedFrame
       ? `crop=${makeEven(renderedFrame.layout.contentWidth)}:${makeEven(renderedFrame.layout.contentHeight)}:${makeEven(renderedFrame.layout.contentX)}:${makeEven(renderedFrame.layout.contentY)},scale=${record.width}:${record.height},setsar=1`
       : undefined;
-    await execFileAsync(
-      ffmpeg,
-      [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-loop",
-        "1",
-        "-framerate",
-        "30",
-        "-i",
-        inputFramePath,
-        "-t",
-        String(record.durationSec),
-        "-an",
-        ...(videoFilter ? ["-vf", videoFilter] : []),
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        "-metadata",
-        `comment=Mock fal prompt: ${record.prompt}`,
-        "-y",
-        outputPath,
-      ],
-      { timeout: 30_000, maxBuffer: 1024 * 1024 * 10 },
+    await withMediaProcessDeadline(
+      {
+        code: "MEDIA_PROCESS_TIMEOUT",
+        timeoutMs: MEDIA_PROCESS_TIMEOUTS_MS.mockVideo,
+        task: `render mock fal video ${record.modelId}`,
+      },
+      (signal) =>
+        execFileAsync(
+          ffmpeg,
+          [
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-loop",
+            "1",
+            "-framerate",
+            "30",
+            "-i",
+            inputFramePath,
+            "-t",
+            String(record.durationSec),
+            "-an",
+            ...(videoFilter ? ["-vf", videoFilter] : []),
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            "-metadata",
+            `comment=Mock fal prompt: ${record.prompt}`,
+            "-y",
+            outputPath,
+          ],
+          { signal, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 * 10 },
+        ),
     );
     return {
       bytes: await readFile(outputPath),

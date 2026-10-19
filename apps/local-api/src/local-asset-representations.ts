@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 
@@ -26,6 +26,11 @@ import type {
 import { runFfmpegToFile } from "./local-ffmpeg-run.js";
 import { loadSharp } from "./local-image-codec.js";
 import { localFfmpegPath } from "./local-media-binaries.js";
+import {
+  LocalMediaProcessTimeoutError,
+  MEDIA_PROCESS_TIMEOUTS_MS,
+  withMediaProcessDeadline,
+} from "./local-media-process.js";
 import {
   createSqliteDurableRunJournal,
   type SqliteDurableRunJournal,
@@ -546,6 +551,17 @@ function retryableFailure(
   error: unknown,
   operation: DurableRunOperation,
 ): DurableProviderFailure {
+  if (error instanceof LocalMediaProcessTimeoutError) {
+    // A decoder that exceeded its deadline will not recover by repeating the
+    // same recipe; keep the coded failure on the run instead of retrying it.
+    return {
+      code: "deadline_exceeded",
+      message: error.message,
+      retryable: false,
+      requestState: operation === "submit" ? "unknown" : "accepted",
+      providerCode: error.code,
+    };
+  }
   return {
     code:
       operation === "stage"
@@ -559,27 +575,31 @@ function retryableFailure(
   };
 }
 
-async function firstVideoFrame(path: string): Promise<Buffer> {
-  const ffmpeg = localFfmpegPath();
-  if (!ffmpeg) {
-    throw new Error("ffmpeg is required to derive a video poster.");
-  }
+async function firstVideoFrame(
+  path: string,
+  ffmpeg: string,
+  signal: AbortSignal,
+): Promise<Buffer> {
   return new Promise<Buffer>((resolve, reject) => {
-    const child = spawn(ffmpeg, [
-      "-v",
-      "error",
-      "-ss",
-      "0",
-      "-i",
-      path,
-      "-frames:v",
-      "1",
-      "-f",
-      "image2pipe",
-      "-vcodec",
-      "png",
-      "pipe:1",
-    ]);
+    const child = spawn(
+      ffmpeg,
+      [
+        "-v",
+        "error",
+        "-ss",
+        "0",
+        "-i",
+        path,
+        "-frames:v",
+        "1",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "pipe:1",
+      ],
+      { signal, killSignal: "SIGKILL" },
+    );
     const chunks: Buffer[] = [];
     const errors: Buffer[] = [];
     let byteLength = 0;
@@ -596,14 +616,19 @@ async function firstVideoFrame(path: string): Promise<Buffer> {
     });
     child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
     child.once("error", (error) => {
-      if (!settled) reject(error);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
     });
     child.once("close", (code) => {
       if (settled) return;
       if (code === 0 && chunks.length > 0) {
+        settled = true;
         resolve(Buffer.concat(chunks));
         return;
       }
+      settled = true;
       reject(
         new Error(
           `ffmpeg could not decode ${basename(path)}: ${Buffer.concat(errors).toString("utf8").trim() || `exit ${code ?? "unknown"}`}`,
@@ -615,29 +640,31 @@ async function firstVideoFrame(path: string): Promise<Buffer> {
 
 async function waveformPeaks(
   path: string,
+  ffmpeg: string,
   bars: number,
   analysisHeight: number,
+  signal: AbortSignal,
 ): Promise<number[]> {
-  const ffmpeg = localFfmpegPath();
-  if (!ffmpeg) {
-    throw new Error("ffmpeg is required to derive an audio waveform.");
-  }
   const image = await new Promise<Buffer>((resolve, reject) => {
-    const child = spawn(ffmpeg, [
-      "-v",
-      "error",
-      "-i",
-      path,
-      "-filter_complex",
-      `aformat=channel_layouts=mono,showwavespic=s=${bars}x${analysisHeight}:colors=white`,
-      "-frames:v",
-      "1",
-      "-f",
-      "image2pipe",
-      "-vcodec",
-      "png",
-      "pipe:1",
-    ]);
+    const child = spawn(
+      ffmpeg,
+      [
+        "-v",
+        "error",
+        "-i",
+        path,
+        "-filter_complex",
+        `aformat=channel_layouts=mono,showwavespic=s=${bars}x${analysisHeight}:colors=white`,
+        "-frames:v",
+        "1",
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "pipe:1",
+      ],
+      { signal, killSignal: "SIGKILL" },
+    );
     const chunks: Buffer[] = [];
     const errors: Buffer[] = [];
     let byteLength = 0;
@@ -654,14 +681,19 @@ async function waveformPeaks(
     });
     child.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
     child.once("error", (error) => {
-      if (!settled) reject(error);
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
     });
     child.once("close", (code) => {
       if (settled) return;
       if (code === 0 && chunks.length > 0) {
+        settled = true;
         resolve(Buffer.concat(chunks));
         return;
       }
+      settled = true;
       reject(
         new Error(
           `ffmpeg could not analyze ${basename(path)}: ${Buffer.concat(errors).toString("utf8").trim() || `exit ${code ?? "unknown"}`}`,
@@ -703,13 +735,9 @@ async function videoProxy(input: {
   resources: LocalResourceStore;
   sourcePath: string;
   workRoot: string;
-  ffmpegPath: () => string | null;
+  ffmpeg: string;
   signal: AbortSignal;
 }): Promise<LocalAssetRepresentationCandidate> {
-  const ffmpeg = input.ffmpegPath();
-  if (!ffmpeg) {
-    throw new Error("ffmpeg is required to derive a video proxy.");
-  }
   // Encodes run one at a time, so anything already here is debris from an
   // encode that a Host exit interrupted.
   await rm(input.workRoot, { recursive: true, force: true });
@@ -720,7 +748,7 @@ async function videoProxy(input: {
   try {
     const outputPath = join(workDir, "proxy.mp4");
     await runFfmpegToFile({
-      ffmpeg,
+      ffmpeg: input.ffmpeg,
       args: videoProxyFfmpegArgs({
         sourcePath: input.sourcePath,
         outputPath,
@@ -753,12 +781,17 @@ function defaultRecipeRunner(
   ffmpegPath: () => string | null,
 ): LocalAssetRepresentationRecipeRunner {
   return async ({ source, recipe, signal }) => {
+    const ffmpeg = ffmpegPath();
+    const requireFfmpeg = (task: string): string => {
+      if (!ffmpeg) throw new Error(`ffmpeg is required to ${task}.`);
+      return ffmpeg;
+    };
     if (source.resource.kind === "video" && recipe.id === "video-proxy") {
       return videoProxy({
         resources,
         sourcePath: source.path,
         workRoot,
-        ffmpegPath,
+        ffmpeg: requireFfmpeg("derive a video proxy"),
         signal,
       });
     }
@@ -766,7 +799,13 @@ function defaultRecipeRunner(
       return {
         kind: "waveform",
         role: "waveform",
-        peaks: await waveformPeaks(source.path, AUDIO_WAVEFORM_BARS, 64),
+        peaks: await waveformPeaks(
+          source.path,
+          requireFfmpeg("derive an audio waveform"),
+          AUDIO_WAVEFORM_BARS,
+          64,
+          signal,
+        ),
       };
     }
     if (
@@ -779,7 +818,11 @@ function defaultRecipeRunner(
     }
     const input =
       source.resource.kind === "video"
-        ? await firstVideoFrame(source.path)
+        ? await firstVideoFrame(
+            source.path,
+            requireFfmpeg("derive a video poster"),
+            signal,
+          )
         : source.path;
     const sharp = await loadSharp();
     const bytes = await sharp(input, {
@@ -817,6 +860,12 @@ export function createLocalAssetRepresentationService(options: {
   recipeRunner?: LocalAssetRepresentationRecipeRunner;
   /** Resolves the ffmpeg that transcodes proxies; none means no proxies. */
   ffmpegPath?: () => string | null;
+  /** Deadlines for one recipe; tests inject short ones. */
+  mediaProcessTimeoutsMs?: Partial<{
+    poster: number;
+    waveform: number;
+    proxy: number;
+  }>;
   now?: () => number;
   /** Structured events for Host-private maintenance failures. */
   onResourceEvent?: (event: LocalResourceStoreEvent) => void;
@@ -824,6 +873,7 @@ export function createLocalAssetRepresentationService(options: {
   const databasePath = `${options.dataDir}/local.sqlite`;
   const ownerId = options.ownerId ?? DEFAULT_OWNER_ID;
   const now = options.now ?? Date.now;
+  const configuredTimeouts = options.mediaProcessTimeoutsMs ?? {};
   const journal: SqliteDurableRunJournal = createSqliteDurableRunJournal(
     options.dataDir,
   );
@@ -833,6 +883,12 @@ export function createLocalAssetRepresentationService(options: {
   });
   const ffmpegPath = options.ffmpegPath ?? localFfmpegPath;
   const workRoot = join(options.dataDir, "representation-work");
+  const recipeTimeoutMs = (recipe: LocalAssetRepresentationRecipe): number =>
+    recipe.role === "proxy"
+      ? (configuredTimeouts.proxy ?? MEDIA_PROCESS_TIMEOUTS_MS.proxyMaximum)
+      : recipe.role === "waveform"
+        ? (configuredTimeouts.waveform ?? MEDIA_PROCESS_TIMEOUTS_MS.waveform)
+        : (configuredTimeouts.poster ?? MEDIA_PROCESS_TIMEOUTS_MS.poster);
   const runRecipe =
     options.recipeRunner ??
     defaultRecipeRunner(resources, workRoot, ffmpegPath);
@@ -959,11 +1015,20 @@ export function createLocalAssetRepresentationService(options: {
               `Source Resource ${input.sourceResourceId} changed kind.`,
             );
           }
-          const candidate = await runRecipe({
-            source,
-            recipe: input.recipe,
-            signal: closing.signal,
-          });
+          const candidate = await withMediaProcessDeadline(
+            {
+              code: "REPRESENTATION_TIMEOUT",
+              timeoutMs: recipeTimeoutMs(input.recipe),
+              task: `derive ${input.recipe.id} from ${basename(source.path)}`,
+              signal: closing.signal,
+            },
+            (signal) =>
+              runRecipe({
+                source,
+                recipe: input.recipe,
+                signal,
+              }),
+          );
           return {
             status: "completed" as const,
             outputs: [

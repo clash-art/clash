@@ -1,5 +1,13 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, open, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { execFile, execFileSync } from "node:child_process";
+import {
+  chmod,
+  mkdtemp,
+  open,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -329,4 +337,49 @@ describe("Local speech transcription source bytes", () => {
 
     expect(seen[0]).toMatchObject({ name: "long.mp4", size: byteLength });
   });
+
+  it.runIf(process.platform !== "win32")(
+    "fails a hung audio extraction with SPEECH_AUDIO_EXTRACTION_TIMEOUT and leaves no child",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "clash-asr-hang-"));
+      directories.push(directory);
+      const sourcePath = join(directory, "clip.mp4");
+      await writeFile(sourcePath, "original-video-bytes");
+      const script = join(directory, "ffmpeg-hang.mjs");
+      await writeFile(
+        script,
+        `#!${process.execPath}\nsetTimeout(() => {}, 30_000);\n`,
+      );
+      await chmod(script, 0o755);
+      const transcribe = vi.fn<LocalAudioConfigStore["transcribe"]>();
+      const service = createLocalSpeechTranscriptionService({
+        audioConfig: { transcribe },
+        openAsset: async () => ({
+          kind: "video",
+          path: sourcePath,
+          contentType: "video/mp4",
+        }),
+        ffmpegPath: () => script,
+        audioExtractionTimeoutMs: 100,
+      });
+
+      const started = Date.now();
+      await expect(service(videoRequest())).rejects.toMatchObject({
+        code: "SPEECH_AUDIO_EXTRACTION_TIMEOUT",
+      });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(transcribe).not.toHaveBeenCalled();
+      await vi.waitFor(
+        () => {
+          const children = execFileSync(
+            "ps",
+            ["-o", "pid=,args=", "--ppid", String(process.pid)],
+            { encoding: "utf8" },
+          );
+          expect(children).not.toContain(script);
+        },
+        { timeout: 5_000, interval: 25 },
+      );
+    },
+  );
 });

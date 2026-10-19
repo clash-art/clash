@@ -23,7 +23,7 @@ import {
 } from "node:fs/promises";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { delimiter, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, extname, isAbsolute, join, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import { Hono, type Context } from "hono";
@@ -69,6 +69,11 @@ import {
   type LocalAssetRepresentationService,
 } from "./local-asset-representations.js";
 import { localFfmpegPath, localFfprobePath } from "./local-media-binaries.js";
+import {
+  LocalMediaProcessTimeoutError,
+  MEDIA_PROCESS_TIMEOUTS_MS,
+  withMediaProcessDeadline,
+} from "./local-media-process.js";
 import {
   createLocalMediaAnalysisConfigStore,
   type LocalMediaAnalysisConfig,
@@ -1626,6 +1631,9 @@ function localProjectAssetErrorResponse(
       status,
     );
   }
+  if (error instanceof LocalMediaProcessTimeoutError) {
+    return json({ error: error.message, code: error.code }, 500);
+  }
   return json(
     {
       error: errorMessage(error),
@@ -1633,6 +1641,28 @@ function localProjectAssetErrorResponse(
     },
     500,
   );
+}
+
+function immutableProjectionResponseOptions(
+  projection: {
+    resource: { digest: { value: string } };
+    createdAt: number;
+  },
+  header: (name: string) => string | undefined,
+): {
+  contentDigest: string;
+  lastModified: number;
+  ifNoneMatch?: string;
+  ifRange?: string;
+} {
+  const ifNoneMatch = header("if-none-match");
+  const ifRange = header("if-range");
+  return {
+    contentDigest: projection.resource.digest.value,
+    lastModified: projection.createdAt,
+    ...(ifNoneMatch ? { ifNoneMatch } : {}),
+    ...(ifRange ? { ifRange } : {}),
+  };
 }
 
 function projectAssetImportErrorResponse(error: unknown): Response {
@@ -4457,7 +4487,7 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         );
       },
       async write(metadata) {
-        await db.update((state) => {
+        const deletionChanged = await db.update((state) => {
           const project = state.projects.find(
             (candidate) => candidate.id === metadata.projectId,
           );
@@ -4466,13 +4496,18 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
               `Cannot apply remote metadata for unknown Project ${metadata.projectId}`,
             );
           }
+          const previousDeletedAt = project.deletedAt ?? null;
           project.name = metadata.name;
           project.description = metadata.description;
           project.createdAt = metadata.createdAt;
           project.updatedAt = metadata.updatedAt;
           project.deletedAt = metadata.deletedAt;
           delete project.metadataProvisional;
+          return previousDeletedAt !== (metadata.deletedAt ?? null);
         });
+        if (deletionChanged) {
+          replicaStore.invalidateProjectAssetCaches(metadata.projectId);
+        }
       },
     },
     onError: async (projectId, error) => {
@@ -4920,8 +4955,18 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
         origin && isAllowedLocalBrowserOrigin(origin)
           ? origin
           : "http://127.0.0.1",
-      allowHeaders: ["content-type", "x-clash-client-type", "x-clash-if-match"],
-      exposeHeaders: [PROJECT_ASSET_READ_RECEIPT_HEADER],
+      allowHeaders: [
+        "content-type",
+        "x-clash-client-type",
+        "x-clash-if-match",
+        "if-none-match",
+        "if-range",
+      ],
+      exposeHeaders: [
+        PROJECT_ASSET_READ_RECEIPT_HEADER,
+        "etag",
+        "last-modified",
+      ],
       allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
       credentials: true,
     }),
@@ -5689,6 +5734,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             projection.resource.contentType ??
             contentTypeForPath(projection.storageKey),
           expectedByteLength: projection.resource.byteLength,
+          ...immutableProjectionResponseOptions(
+            projection,
+            (name) => c.req.header(name),
+          ),
           ...(c.req.header("range")
             ? { rangeHeader: c.req.header("range") }
             : {}),
@@ -5750,6 +5799,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           path: projection.path,
           contentType: projection.resource.contentType ?? "image/webp",
           expectedByteLength: projection.resource.byteLength,
+          ...immutableProjectionResponseOptions(
+            projection,
+            (name) => c.req.header(name),
+          ),
         });
       } catch (error) {
         return localProjectAssetErrorResponse(error);
@@ -5779,6 +5832,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           path: projection.path,
           contentType: projection.resource.contentType ?? "video/mp4",
           expectedByteLength: projection.resource.byteLength,
+          ...immutableProjectionResponseOptions(
+            projection,
+            (name) => c.req.header(name),
+          ),
           ...(c.req.header("range")
             ? { rangeHeader: c.req.header("range") }
             : {}),
@@ -6082,6 +6139,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
             projection.resource.contentType ??
             contentTypeForPath(projection.storageKey),
           expectedByteLength: projection.resource.byteLength,
+          ...immutableProjectionResponseOptions(
+            projection,
+            (name) => c.req.header(name),
+          ),
           ...(c.req.header("range")
             ? { rangeHeader: c.req.header("range") }
             : {}),
@@ -6113,6 +6174,10 @@ export function createLocalApiApp(options: LocalApiOptions): Hono {
           path: projection.path,
           contentType: projection.resource.contentType ?? "image/webp",
           expectedByteLength: projection.resource.byteLength,
+          ...immutableProjectionResponseOptions(
+            projection,
+            (name) => c.req.header(name),
+          ),
         });
       } catch (error) {
         return localGlobalAssetErrorResponse(error);
@@ -12193,6 +12258,7 @@ const ForkPointBodySchema = z.object({
       };
     });
     if (result.status === 200) {
+      replicaStore.invalidateProjectAssetCaches(projectId);
       const mutation = result.body.mutation as HostMutationRecord | undefined;
       if (mutation?.accepted === true) {
         await db.appendMutationAudit(
@@ -12274,6 +12340,7 @@ const ForkPointBodySchema = z.object({
       };
     });
     if (result.status === 200) {
+      replicaStore.invalidateProjectAssetCaches(projectId);
       const mutation = result.body.mutation as HostMutationRecord | undefined;
       if (mutation?.accepted === true) {
         await db.appendMutationAudit(
@@ -12408,6 +12475,9 @@ const ForkPointBodySchema = z.object({
       };
     });
     if (result.status === 200) {
+      // Invalidate before deleting the replica so a failed deletion cannot
+      // leave a materialized fact that describes the purged Project.
+      replicaStore.invalidateProjectAssetCaches(projectId);
       await replicaStore.deleteReplica(projectId);
       const mutation = result.body.mutation as HostMutationRecord | undefined;
       if (mutation?.accepted === true) {
@@ -13161,6 +13231,8 @@ const ForkPointBodySchema = z.object({
       );
     }
     const assetService = projectAssetServiceAt(requestOrigin(c));
+    const cropStartSec = params.startSec;
+    const cropEndSec = params.endSec;
     const source = await assetService.read(projectId, sourceAssetId);
     if (!source) return c.json({ error: "Source asset not found" }, 404);
     if (source.kind !== "video")
@@ -13180,26 +13252,43 @@ const ForkPointBodySchema = z.object({
     const tempDir = await mkdtemp(join(options.dataDir, "video-crop-"));
     const outputPath = join(tempDir, "output.mp4");
     try {
-      await execFileAsync(ffmpeg, [
-        "-y",
-        "-ss",
-        String(params.startSec),
-        "-i",
-        inputPath,
-        "-t",
-        String(params.endSec - params.startSec),
-        "-map",
-        "0",
-        "-c",
-        "copy",
-        "-movflags",
-        "+faststart",
-        outputPath,
-      ]);
+      await withMediaProcessDeadline(
+        {
+          code: "MEDIA_PROCESS_TIMEOUT",
+          timeoutMs: MEDIA_PROCESS_TIMEOUTS_MS.videoCrop,
+          task: `trim ${basename(inputPath)}`,
+        },
+        (signal) =>
+          execFileAsync(
+            ffmpeg,
+            [
+              "-y",
+              "-ss",
+              String(cropStartSec),
+              "-i",
+              inputPath,
+              "-t",
+              String(cropEndSec - cropStartSec),
+              "-map",
+              "0",
+              "-c",
+              "copy",
+              "-movflags",
+              "+faststart",
+              outputPath,
+            ],
+            { signal, killSignal: "SIGKILL" },
+          ),
+      );
     } catch (error) {
       await rm(tempDir, { recursive: true, force: true });
       return c.json(
-        { error: `Video trim failed: ${errorMessage(error)}` },
+        {
+          error: `Video trim failed: ${errorMessage(error)}`,
+          ...(error instanceof LocalMediaProcessTimeoutError
+            ? { code: error.code }
+            : {}),
+        },
         500,
       );
     }

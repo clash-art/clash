@@ -52,6 +52,11 @@ import {
 } from "@clash/shared-types";
 
 import { assetPathForRead } from "./local-asset-paths.js";
+import {
+  invalidateLocalProjectAssetCaches,
+  localProjectAssetCachesFor,
+  localProjectAssetProjectionKey,
+} from "./local-project-asset-cache.js";
 import { createLocalMetadataStore } from "./local-metadata-store.js";
 import {
   createLocalResourceStore,
@@ -553,7 +558,8 @@ export function createLocalProjectAssetService(options: {
   /** Host log sink for Resource-store events such as an EXDEV copy fallback. */
   onResourceEvent?: (event: LocalResourceStoreEvent) => void;
 }): LocalProjectAssetService {
-  const fileReplicas = new FileReplicaStore(`${options.dataDir}/projects`);
+  const projectsRoot = `${options.dataDir}/projects`;
+  const fileReplicas = new FileReplicaStore(projectsRoot);
   const replica: LocalProjectAssetReplica = options.replica ?? {
     async inspect(projectId, read) {
       return read(await fileReplicas.recover(projectId));
@@ -789,6 +795,15 @@ export function createLocalProjectAssetService(options: {
     },
   };
   const client = createAssetClient({ authority, ...resolverPorts });
+  // Project Asset bytes are immutable and the legacy authority cutover is
+  // one-way. Both are therefore process-lifetime caches: a media range request
+  // must not re-run materialization or re-stat the same Resource. Lifecycle
+  // (trash/restore) still goes through authority.read on every open. Every
+  // replica replacement path invalidates these caches (see
+  // local-project-asset-cache.ts) and the projection cache is bounded.
+  const projectAssetCaches = localProjectAssetCachesFor(projectsRoot);
+  const materializedProjects = projectAssetCaches.materializedProjects;
+  const projections = projectAssetCaches.projections;
 
   async function enrichResolved(
     entry: ProjectAssetEntry,
@@ -1229,6 +1244,7 @@ export function createLocalProjectAssetService(options: {
 
   async function materialize(projectIdInput: string): Promise<void> {
     const projectId = nonEmpty(projectIdInput, "projectId");
+    if (materializedProjects.has(projectId)) return;
     const authoritative = await replica.inspect(
       projectId,
       (doc) =>
@@ -1242,6 +1258,7 @@ export function createLocalProjectAssetService(options: {
         const changed = cover.changed;
         return { value: undefined, save: changed };
       });
+      materializedProjects.add(projectId);
       return;
     }
 
@@ -1253,6 +1270,7 @@ export function createLocalProjectAssetService(options: {
       const changed = applyMaterialization(projectId, doc, entries);
       return { value: undefined, save: changed };
     });
+    materializedProjects.add(projectId);
   }
 
   async function projectionFromEntry(
@@ -1266,6 +1284,13 @@ export function createLocalProjectAssetService(options: {
         `Project Asset ${projectAssetId} is not available in Project ${projectId}.`,
       );
     }
+    const key = localProjectAssetProjectionKey({
+      projectId,
+      projectAssetId: entry.id,
+      resourceId: entry.source.resourceId,
+    });
+    const cached = projections.get(key);
+    if (cached) return cached;
     const projection = await resources.resolve(entry.source.resourceId);
     if (!projection || projection.resource.kind !== entry.kind) {
       throw new LocalProjectAssetMigrationError(
@@ -1273,6 +1298,7 @@ export function createLocalProjectAssetService(options: {
         `Resource ${entry.source.resourceId} is not installed on this Host.`,
       );
     }
+    projections.set(key, projection);
     return projection;
   }
 
@@ -1752,6 +1778,7 @@ export function createLocalProjectAssetService(options: {
         purgeAfter: input.purgeAfter,
         ...(input.observation ? { observation: input.observation } : {}),
       });
+      invalidateLocalProjectAssetCaches({ projectsRoot, projectId });
       const observed = await resolveObserved(projectId, projectAssetId);
       if (!observed) {
         throw new LocalProjectAssetMigrationError(
@@ -1770,6 +1797,7 @@ export function createLocalProjectAssetService(options: {
         projectAssetId: input.projectAssetId,
         ...(input.observation ? { observation: input.observation } : {}),
       });
+      invalidateLocalProjectAssetCaches({ projectsRoot, projectId });
       const observed = await resolveObserved(projectId, input.projectAssetId);
       if (!observed) {
         throw new LocalProjectAssetMigrationError(
