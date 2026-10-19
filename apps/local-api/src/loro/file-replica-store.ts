@@ -1,5 +1,4 @@
 import {
-  appendFile,
   link,
   mkdir,
   open,
@@ -7,8 +6,10 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   truncate,
   writeFile,
+  type FileHandle,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -24,6 +25,8 @@ export interface FileReplicaStoreOptions {
     finalPath: string,
   ) => Promise<void>;
   syncDirectory?: (path: string) => Promise<void>;
+  /** Test/platform seam; the update log is durable only after this resolves. */
+  syncUpdateLog?: (handle: FileHandle) => Promise<void>;
 }
 
 export interface ImportedProjectReservation {
@@ -88,11 +91,13 @@ const CANVAS_THUMBNAIL_CACHE_MAGIC = "CLASH_MAIN_CANVAS_THUMBNAIL_V1\n";
 
 export class FileReplicaStore {
   private readonly writeQueues = new Map<string, Promise<unknown>>();
+  private readonly durableUpdateLogDirectories = new Set<string>();
   private readonly publishImportedSnapshot: (
     temporaryPath: string,
     finalPath: string,
   ) => Promise<void>;
   private readonly syncDirectory: (path: string) => Promise<void>;
+  private readonly syncUpdateLog: (handle: FileHandle) => Promise<void>;
 
   constructor(
     private readonly rootDir: string,
@@ -115,6 +120,8 @@ export class FileReplicaStore {
           await handle.close();
         }
       });
+    this.syncUpdateLog =
+      options.syncUpdateLog ?? ((handle) => handle.datasync());
   }
 
   async readImportReservation(
@@ -401,15 +408,36 @@ export class FileReplicaStore {
     projectId: string,
     update: Uint8Array,
   ): Promise<void> {
+    const dir = this.loroDir(projectId);
     const logPath = this.updateLogPath(projectId);
-    await mkdir(this.loroDir(projectId), { recursive: true });
+    await mkdir(dir, { recursive: true });
     const updateBytes = exactBytes(update);
     const header = Buffer.alloc(4);
     header.writeUInt32BE(updateBytes.byteLength, 0);
-    await appendFile(
-      logPath,
-      Buffer.concat([header, Buffer.from(updateBytes)]),
-    );
+    const handle = await open(logPath, "a", 0o600);
+    try {
+      await handle.writeFile(Buffer.concat([header, Buffer.from(updateBytes)]));
+      // The caller acknowledges the edit only after this resolves. A crash
+      // before it can therefore only drop work the client never saw acked.
+      await this.syncUpdateLog(handle);
+    } finally {
+      await handle.close();
+    }
+    if (!this.durableUpdateLogDirectories.has(dir)) {
+      // The file's data is durable, but a freshly created log also needs its
+      // directory entry. One directory sync per Project/process is enough.
+      await this.syncDirectory(dir);
+      this.durableUpdateLogDirectories.add(dir);
+    }
+  }
+
+  async updateLogSize(projectId: string): Promise<number> {
+    try {
+      return (await stat(this.updateLogPath(projectId))).size;
+    } catch (error) {
+      if (isMissingFile(error)) return 0;
+      throw error;
+    }
   }
 
   async loadUpdateLog(projectId: string): Promise<Uint8Array[]> {
@@ -568,6 +596,9 @@ export class FileReplicaStore {
         await handle.close();
       }
       await rename(tempPath, finalPath);
+      // The snapshot must be durable before a checkpoint truncates its update
+      // log; otherwise a power loss could leave neither copy of the state.
+      await this.syncDirectory(dir);
     } catch (error) {
       await rm(tempPath, { force: true }).catch(() => {});
       throw error;
@@ -575,13 +606,26 @@ export class FileReplicaStore {
   }
 
   private async truncateUpdateLog(projectId: string): Promise<void> {
+    const dir = this.loroDir(projectId);
     const logPath = this.updateLogPath(projectId);
-    await mkdir(this.loroDir(projectId), { recursive: true });
+    await mkdir(dir, { recursive: true });
     try {
-      await truncate(logPath, 0);
+      const handle = await open(logPath, "a", 0o600);
+      try {
+        await handle.truncate(0);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       if (!isMissingFile(error)) throw error;
-      await writeFile(logPath, new Uint8Array(), { mode: 0o600 });
+      const handle = await open(logPath, "w", 0o600);
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await this.syncDirectory(dir);
     }
   }
 

@@ -46,10 +46,17 @@ export function projectCanvasNodeLayout<T extends Record<string, any>>(
 export function assertCanvasLayoutMutation(
   current: LoroDoc,
   candidate: LoroDoc,
+  changedIds?: ReadonlySet<string>,
 ): void {
   const before = current.getMap(CANVAS_NODE_LAYOUTS);
   const after = candidate.getMap(CANVAS_NODE_LAYOUTS);
-  for (const [id, layout] of after.entries()) {
+  const ids = changedIds ?? new Set(after.keys());
+  for (const id of ids) {
+    const layout = after.get(id);
+    // A layout deletion is legal. The whole-map scan only ever visited ids
+    // present in `after`, so an id absent from the candidate is not a layout
+    // record to validate.
+    if (layout === undefined) continue;
     if (JSON.stringify(before.get(id)) === JSON.stringify(layout)) continue;
     CanvasNodeLayoutSchema.parse(layout);
     if (!candidate.getMap("nodes").get(id))

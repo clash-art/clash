@@ -2013,6 +2013,8 @@ export async function startLocalApiServer(options: LocalApiServerOptions) {
       }
       await roomHub.refresh(projectId);
     },
+    projectHealth: () =>
+      roomHub?.projectHealth() ?? { ok: true, failures: [] },
     generatorProjectAuthority: checkpointedProjectAuthority,
     documentProjectAuthority: checkpointedProjectAuthority,
     workspaceProjectAuthority: checkpointedProjectAuthority,

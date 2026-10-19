@@ -12,8 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
+import { serve } from "@hono/node-server";
 import { LoroDoc } from "loro-crdt";
 import sharp from "sharp";
+import { LOCAL_HOST_PROTOCOL_VERSION } from "@clash/shared-runtime";
 import {
   Canvas,
   canvasBatchDeleteReadToken,
@@ -37,6 +39,11 @@ import { openPluginStore } from "./plugin-store";
 import { createLocalMetadataStore } from "./local-metadata-store";
 import { getLocalReplicaId } from "./local-replica-identity";
 import { PluginRuntimeUnavailableError } from "./plugin-runtime-unavailable.js";
+import {
+  createHostDiscoveryRecord,
+  probeHostDiscoveryEndpoint,
+  writeHostDiscovery,
+} from "./host-discovery.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -262,6 +269,74 @@ describe("local API app", () => {
       },
     });
 
+    const checkpointApp = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      projectHealth: () => ({
+        ok: false,
+        code: "PROJECT_CHECKPOINT_FAILED",
+        failures: [
+          {
+            ok: false,
+            projectId: "project/checkpoint-health",
+            code: "PROJECT_CHECKPOINT_FAILED",
+            message: "Project checkpoint failed",
+            cause: "ENOSPC",
+            logBytes: 1024,
+            attempts: 1,
+          },
+        ],
+      }),
+    });
+    const failedHealth = await checkpointApp.request("/health");
+    await expect(failedHealth.json()).resolves.toMatchObject({
+      // `ok` is Host liveness; a Project failure is only the coded degraded
+      // `project` field, so discovery never mistakes a live Host for stale.
+      ok: true,
+      project: {
+        ok: false,
+        code: "PROJECT_CHECKPOINT_FAILED",
+        failures: [
+          expect.objectContaining({
+            projectId: "project/checkpoint-health",
+            cause: "ENOSPC",
+          }),
+        ],
+      },
+    });
+
+    const workApp = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      projectHealth: () => ({
+        ok: false,
+        code: "PROJECT_WORK_FAILED",
+        failures: [
+          {
+            ok: false,
+            projectId: "project/work-health",
+            code: "PROJECT_WORK_FAILED",
+            message: "Project pending work failed: provider unavailable",
+            cause: "provider unavailable",
+          },
+        ],
+      }),
+    });
+    const failedWorkHealth = await workApp.request("/health");
+    await expect(failedWorkHealth.json()).resolves.toMatchObject({
+      ok: true,
+      project: {
+        ok: false,
+        code: "PROJECT_WORK_FAILED",
+        failures: [
+          expect.objectContaining({
+            projectId: "project/work-health",
+            message: "Project pending work failed: provider unavailable",
+          }),
+        ],
+      },
+    });
+
     const session = await app.request("/api/better-auth/get-session");
     expect(await session.json()).toEqual({
       user: {
@@ -296,6 +371,97 @@ describe("local API app", () => {
       logSinkCode: "LOG_SINK_WRITE_FAILED",
       logSinkDropped: 3,
     });
+  });
+
+  it("keeps /health live for host discovery when a Project checkpoint fails", async () => {
+    const hostId = "health-liveness-host";
+    const app = createLocalApiApp({
+      dataDir,
+      userId: "local-user",
+      hostIdentity: {
+        hostId,
+        pid: process.pid,
+        profile: "dev",
+        protocolVersion: LOCAL_HOST_PROTOCOL_VERSION,
+      },
+      projectHealth: () => ({
+        ok: false,
+        code: "PROJECT_CHECKPOINT_FAILED",
+        failures: [
+          {
+            ok: false,
+            projectId: "project/checkpoint-liveness",
+            code: "PROJECT_CHECKPOINT_FAILED",
+            message: "Project checkpoint failed",
+            cause: "ENOSPC",
+          },
+        ],
+      }),
+    });
+    const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
+      const listener = serve(
+        { fetch: app.fetch, hostname: "127.0.0.1", port: 0 },
+        () => resolve(listener),
+      );
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string")
+        throw new Error("Host did not listen");
+      const endpoint = `http://127.0.0.1:${address.port}`;
+
+      const response = await fetch(`${endpoint}/health`);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: true,
+        project: {
+          ok: false,
+          code: "PROJECT_CHECKPOINT_FAILED",
+          failures: [
+            expect.objectContaining({
+              projectId: "project/checkpoint-liveness",
+              code: "PROJECT_CHECKPOINT_FAILED",
+              cause: "ENOSPC",
+            }),
+          ],
+        },
+      });
+
+      // Discovery requires body.ok === true to see a live Host; the coded
+      // Project failure must not make this Host look stale.
+      const record = createHostDiscoveryRecord({
+        endpoint,
+        hostId,
+        launchMode: "desktop",
+        startedBy: "desktop",
+        pid: process.pid,
+      });
+      await expect(probeHostDiscoveryEndpoint(record)).resolves.toEqual({
+        live: true,
+      });
+
+      const runDir = await mkdtemp(join(tmpdir(), "clash-host-liveness-"));
+      try {
+        await writeHostDiscovery(record, { runDir });
+        await expect(
+          writeHostDiscovery(
+            createHostDiscoveryRecord({
+              endpoint: "http://127.0.0.1:1",
+              hostId: "contender",
+              launchMode: "desktop",
+              startedBy: "desktop",
+              pid: 4343,
+            }),
+            { runDir, pidExists: () => true },
+          ),
+        ).rejects.toMatchObject({ code: "HOST_DISCOVERY_ACTIVE" });
+      } finally {
+        await rm(runDir, { recursive: true, force: true });
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("does not expose the in-process plugin SDK broker over HTTP", async () => {

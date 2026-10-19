@@ -2785,9 +2785,17 @@ export function createLocalWorkflowProcessor(
           if (selectedProviderAccountId) {
             await providerExecutionHandoffs.remove(projectId, nodeId);
           }
+          const errorCode =
+            error !== null &&
+            typeof error === "object" &&
+            "code" in error &&
+            typeof (error as { code?: unknown }).code === "string"
+              ? (error as { code: string }).code
+              : undefined;
           const nextData = durableProviderNodeData(data, {
             status: "failed",
             error: error instanceof Error ? error.message : String(error),
+            ...(errorCode ? { errorCode } : {}),
           });
           nodes.set(nodeId, { ...node, data: nextData });
           changed = true;

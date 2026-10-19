@@ -564,6 +564,20 @@ export async function startPluginHostIpcServer(options: {
   });
 }
 
+/**
+ * The plugin-host transport could not answer a request: stopped, hung, or speaking
+ * something other than the expected protocol. Coded so a project edit can report
+ * the affected node's failure instead of a bare message.
+ */
+export class PluginHostUnavailableError extends Error {
+  override readonly name = "PluginHostUnavailableError";
+  readonly code = "PLUGIN_HOST_UNAVAILABLE" as const;
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+  }
+}
+
 export class PluginHostClient {
   private readonly socketPath: string;
   private readonly timeoutMs: number;
@@ -720,7 +734,12 @@ export class PluginHostClient {
           ? Math.max(this.timeoutMs, request.timeoutMs + 1_000)
           : this.timeoutMs;
       const timer = setTimeout(
-        () => finish(new Error("Clash plugin host IPC timed out.")),
+        () =>
+          finish(
+            new PluginHostUnavailableError(
+              `Clash plugin host IPC timed out after ${requestTimeoutMs} ms.`,
+            ),
+          ),
         requestTimeoutMs,
       );
       socket.once("connect", () =>
@@ -738,21 +757,45 @@ export class PluginHostClient {
             response.protocol !== "clash.plugin-host/v1" ||
             response.requestId !== request.requestId
           ) {
-            throw new Error(
+            throw new PluginHostUnavailableError(
               "Clash plugin host returned a mismatched response.",
             );
           }
-          if (response.status === "error")
-            finish(new Error(response.error.message));
-          else finish(undefined, response.result);
+          if (response.status === "error") {
+            const failure = new Error(response.error.message) as Error & {
+              code?: string;
+            };
+            if (response.error.code) failure.code = response.error.code;
+            finish(failure);
+          } else finish(undefined, response.result);
         } catch (error) {
-          finish(error as Error);
+          finish(
+            error instanceof PluginHostUnavailableError
+              ? error
+              : new PluginHostUnavailableError(
+                  `Clash plugin host returned an invalid response: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                  { cause: error },
+                ),
+          );
         }
       });
-      socket.once("error", (error) => finish(error));
+      socket.once("error", (error) =>
+        finish(
+          new PluginHostUnavailableError(
+            `Clash plugin host IPC failed: ${error.message}`,
+            { cause: error },
+          ),
+        ),
+      );
       socket.once("close", () => {
         if (!settled)
-          finish(new Error("Clash plugin host closed without a response."));
+          finish(
+            new PluginHostUnavailableError(
+              "Clash plugin host closed without a response.",
+            ),
+          );
       });
     });
   }

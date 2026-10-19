@@ -144,12 +144,24 @@ export class ReplicaEngine<TState, TUpdate, TCheckpoint, TMetadata = unknown> {
     return read(this.state);
   }
 
-  submit(event: ReplicaEvent<TUpdate, TMetadata>): Promise<{
+  submit(
+    event: ReplicaEvent<TUpdate, TMetadata>,
+    options?: {
+      /**
+       * The caller already applied this update through the adapter (for example
+       * a live document at least as advanced as this replica), so the extra
+       * state-free validation pass can be skipped.
+       */
+      prevalidated?: boolean;
+    },
+  ): Promise<{
     appended: boolean;
     event: StoredReplicaEvent<TUpdate, TMetadata>;
   }> {
     return this.enqueue(async () => {
-      await this.options.adapter.validate(this.state, event.update);
+      if (!options?.prevalidated) {
+        await this.options.adapter.validate(this.state, event.update);
+      }
       const result = await this.options.eventLog.append(event);
       if (!result.appended) return result;
 

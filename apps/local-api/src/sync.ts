@@ -6,7 +6,7 @@ import { LocalProjectUpgradeError, type LocalProjectUpgrade } from "./local-proj
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { LoroDoc } from "loro-crdt";
+import { LoroDoc, type LoroEventBatch } from "loro-crdt";
 import { ReplicaEngine, type ReplicaLinkPort } from "@clash/replica";
 import { LoroStateAdapter } from "@clash/replica/loro";
 import {
@@ -17,12 +17,14 @@ import {
 import {
   ACTION_ASSET_BINDINGS_CONTAINER,
   ACTION_ASSET_BINDING_SCHEMA_CONTAINER,
+  CANVAS_NODE_LAYOUTS,
   ActionAssetBindingSchema,
   Canvas,
   DEFAULT_CANVAS_ID,
   DOCUMENT_ASSET_REVISIONS_CONTAINER,
   DOCUMENT_ASSET_SCHEMA_CONTAINER,
   DOCUMENT_ATTACHMENTS_CONTAINER,
+  EDGE_IDENTITY_CONTAINER,
   GENERATOR_ACTION_RUNS_CONTAINER,
   GENERATOR_OUTPUT_COMMITS_CONTAINER,
   GENERATOR_REVISIONS_CONTAINER,
@@ -31,6 +33,8 @@ import {
   PROJECT_ASSET_SCHEMA_CONTAINER,
   PROJECT_DOCUMENT_ASSETS_CONTAINER,
   PROJECT_GENERATORS_CONTAINER,
+  NODE_UPSTREAMS_CONTAINER,
+  PROJECT_PRESENTATION_CONTAINER,
   canonicalTimelineRenderDsl,
   canvasGraphReconciliationChanged,
   reconcileCanvasGraph,
@@ -107,7 +111,17 @@ type SendPeerJson = (msg: Record<string, unknown>) => void;
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 const LOCAL_LORO_COMPACT_UPDATE_THRESHOLD = 16;
 const LOCAL_LORO_COMPACT_BYTES_THRESHOLD = 1024 * 1024;
+const LOCAL_LORO_COMPACT_MIN_INTERVAL_MS = 5_000;
+const LOCAL_LORO_UPDATE_LOG_HARD_CAP_BYTES = 64 * 1024 * 1024;
+const LOCAL_LORO_CHECKPOINT_RETRY_BASE_MS = 250;
+const LOCAL_LORO_CHECKPOINT_RETRY_MAX_MS = 30_000;
 const PROJECT_CANVAS_PREVIEW_DEBOUNCE_MS = 350;
+/**
+ * Socket edits coalesce their post-commit workflow pass. A 60 Hz drag otherwise
+ * queues one pass per update, and any slow provider/plugin discovery inside the
+ * pass would delay the next edit's acknowledgement.
+ */
+const PROJECT_PENDING_WORK_DEBOUNCE_MS = 100;
 const HOST_OWNED_GENERATOR_AUTHORITY_CONTAINERS = [
   GENERATOR_SCHEMA_CONTAINER,
   PROJECT_GENERATORS_CONTAINER,
@@ -128,6 +142,43 @@ interface LocalPeer {
   runtimeId?: string;
   presence?: PresenceClient;
   syncProtocol?: "loro-v1";
+}
+
+export type LocalProjectHealthCode =
+  | "PROJECT_CHECKPOINT_FAILED"
+  | "PROJECT_WORK_FAILED";
+
+export interface LocalProjectHealth {
+  ok: boolean;
+  projectId: string;
+  code?: LocalProjectHealthCode;
+  message?: string;
+  cause?: string;
+  logBytes?: number;
+  attempts?: number;
+  retryAt?: number;
+}
+
+export interface LocalProjectHealthSummary {
+  ok: boolean;
+  code?: LocalProjectHealthCode;
+  failures: LocalProjectHealth[];
+}
+
+export class LocalProjectCheckpointError extends Error {
+  override name = "LocalProjectCheckpointError";
+  readonly code = "PROJECT_CHECKPOINT_FAILED" as const;
+
+  constructor(
+    readonly projectId: string,
+    readonly logBytes: number,
+    cause: unknown,
+  ) {
+    super(
+      `Project ${projectId} cannot append another update: its checkpoint is failing and updates.log is ${logBytes} bytes.`,
+      { cause },
+    );
+  }
 }
 
 export interface HttpRemoteLoroPersistenceOptions {
@@ -472,17 +523,81 @@ export function createRemoteLoroPersistenceFromEnv(
 }
 
 /** Canvas owns geometry; the Host completes pending placement before publication. */
-function completePendingCanvasLayout(doc: LoroDoc): boolean {
-  const canvasIds = new Set<string>();
-  for (const [, raw] of doc.getMap("nodes").entries()) {
-    const node = raw as Record<string, unknown>;
-    canvasIds.add(typeof node.canvasId === "string" ? node.canvasId : DEFAULT_CANVAS_ID);
+function completePendingCanvasLayout(
+  doc: LoroDoc,
+  canvasIds?: ReadonlySet<string>,
+): boolean {
+  const ids = new Set<string>(canvasIds ?? []);
+  if (!canvasIds) {
+    for (const [, raw] of doc.getMap("nodes").entries()) {
+      const node = raw as Record<string, unknown>;
+      ids.add(typeof node.canvasId === "string" ? node.canvasId : DEFAULT_CANVAS_ID);
+    }
   }
   let changed = false;
-  for (const canvasId of canvasIds) {
+  for (const canvasId of ids) {
     if (new Canvas(doc, () => {}, canvasId).layoutPendingNodes().length > 0) changed = true;
   }
   return changed;
+}
+
+interface TouchedContainers {
+  names: Set<string>;
+  nodeIds: Set<string>;
+  layoutIds: Set<string>;
+}
+
+/** Collect only the containers the imported update actually touched. */
+function collectTouchedContainers(
+  batch: LoroEventBatch,
+  touched: TouchedContainers,
+): void {
+  for (const event of batch.events) {
+    const root = event.path?.[0];
+    if (typeof root !== "string") continue;
+    touched.names.add(root);
+    const nestedId =
+      typeof event.path[1] === "string" ? event.path[1] : undefined;
+    if (root === "nodes" && nestedId) touched.nodeIds.add(nestedId);
+    if (root === CANVAS_NODE_LAYOUTS && nestedId)
+      touched.layoutIds.add(nestedId);
+    if (event.diff.type !== "map") continue;
+    // Only the root map event lists node/layout ids as keys. A nested event
+    // lists the fields of one node/layout (already captured above).
+    if ((event.path?.length ?? 0) > 1) continue;
+    // A deleted map entry has no reachable child container; its key is the id.
+    for (const id of Object.keys(event.diff.updated)) {
+      if (root === "nodes") touched.nodeIds.add(id);
+      if (root === CANVAS_NODE_LAYOUTS) touched.layoutIds.add(id);
+    }
+  }
+}
+
+function intersects(
+  touched: ReadonlySet<string>,
+  containers: readonly string[],
+): boolean {
+  return containers.some((container) => touched.has(container));
+}
+
+/** No pending/generating Canvas node means no workflow or Model discovery is due. */
+function hasRunnableProjectWork(
+  doc: LoroDoc,
+  nodeIds?: ReadonlySet<string>,
+): boolean {
+  // Materializing every node value is O(document); a small peer update can only
+  // change the runnable state of the nodes it touched, so callers that know the
+  // touched ids pass them instead of forcing a whole-map read.
+  const values = nodeIds
+    ? [...nodeIds].map((id) => doc.getMap("nodes").get(id))
+    : [...doc.getMap("nodes").values()];
+  for (const raw of values) {
+    const data = (raw as { data?: unknown } | null | undefined)?.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const status = (data as Record<string, unknown>).status;
+    if (status === "pending" || status === "generating") return true;
+  }
+  return false;
 }
 
 async function loadDoc(options: LocalSyncOptions): Promise<{
@@ -580,8 +695,21 @@ export class LocalLoroRoom {
   private checkpointedDoc: LoroDoc;
   private updatesSinceSnapshot = 0;
   private updateBytesSinceSnapshot = 0;
+  private updateLogBytes = 0;
+  private lastCheckpointAt = 0;
+  private checkpointFailure:
+    | (LocalProjectHealth & {
+        ok: false;
+        code: "PROJECT_CHECKPOINT_FAILED";
+      })
+    | undefined;
+  private workFailure:
+    | (LocalProjectHealth & { ok: false; code: "PROJECT_WORK_FAILED" })
+    | undefined;
+  private checkpointRetryTimer: ReturnType<typeof setTimeout> | undefined;
   private activityThrottle = new Map<string, number>();
   private pendingWorkQueue: Promise<void> = Promise.resolve();
+  private pendingWorkTimer: ReturnType<typeof setTimeout> | undefined;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private pollScheduleVersion = 0;
   private canvasPreviewTimer: ReturnType<typeof setTimeout> | undefined;
@@ -620,6 +748,7 @@ export class LocalLoroRoom {
       options.upgradeProject,
       options.onProjectCommitted,
     );
+    room.updateLogBytes = await loaded.store.updateLogSize(options.projectId);
     if (loaded.importedRemoteSnapshot || loaded.workspaceRepaired)
       await room.saveSnapshot();
     room.attachRemoteLink(loaded.remotePersistence);
@@ -741,7 +870,7 @@ export class LocalLoroRoom {
    */
   async refreshFromStore(): Promise<void> {
     await this.enqueueProjectOperation(() => this.refreshFromStoreUnsafe());
-    await this.processPendingWork();
+    await this.processPendingWork({ onlyIfRunnable: true });
   }
 
   private async refreshFromStoreUnsafe(): Promise<void> {
@@ -805,11 +934,44 @@ export class LocalLoroRoom {
     this.broadcastPresence();
   }
 
-  async receive(sender: PeerId, update: Uint8Array): Promise<void> {
-    await this.enqueueProjectOperation(() =>
+  /**
+   * Imports one peer update and, when required, runs the workflow pass.
+   *
+   * A live-sync acknowledgement must cover durability, not provider/plugin
+   * discovery: `awaitPendingWork: false` lets the socket ack as soon as the
+   * update is persisted, coalescing the pass until the edits stop. The pass
+   * still runs, and reports any coded failure on the affected node.
+   */
+  async receive(
+    sender: PeerId,
+    update: Uint8Array,
+    options?: { awaitPendingWork?: boolean },
+  ): Promise<void> {
+    const runnableNodeIds = await this.enqueueProjectOperation(() =>
       this.receiveUnsafe(sender, update),
     );
-    await this.processPendingWork();
+    if (options?.awaitPendingWork === false) {
+      this.schedulePendingWork();
+      return;
+    }
+    await this.processPendingWork({
+      onlyIfRunnable: true,
+      runnableNodeIds,
+    });
+  }
+
+  private schedulePendingWork(): void {
+    if (this.closed) return;
+    if (this.pendingWorkTimer) clearTimeout(this.pendingWorkTimer);
+    this.pendingWorkTimer = setTimeout(() => {
+      this.pendingWorkTimer = undefined;
+      // The debounce window may have covered many updates; one full scan at
+      // the end of the burst is cheap and cannot use a stale touched set.
+      void this.processPendingWork({ onlyIfRunnable: true }).catch((error) =>
+        this.recordWorkFailure(error),
+      );
+    }, PROJECT_PENDING_WORK_DEBOUNCE_MS);
+    this.pendingWorkTimer.unref?.();
   }
 
   /** Import remote state through the same durable Project mutation queue. */
@@ -862,88 +1024,258 @@ export class LocalLoroRoom {
         this.remoteLink?.publish(repairUpdate);
       }
     });
-    await this.processPendingWork();
+    await this.processPendingWork({ onlyIfRunnable: true });
   }
 
   private async receiveUnsafe(
     sender: PeerId,
     update: Uint8Array,
-  ): Promise<void> {
+  ): Promise<ReadonlySet<string> | "all"> {
     const updateBytes = exactBytes(update);
-    const nodesMap = this.doc.getMap("nodes");
-    const nodesBefore = new Map<string, Record<string, any>>();
-    for (const [id, raw] of nodesMap.entries()) {
-      nodesBefore.set(id, raw as Record<string, any>);
-    }
+    const current = this.checkpointedDoc;
+    const liveVersion = this.doc.version();
+    const beforeNodes = current.getMap("nodes");
     let admittedUpdate = updateBytes;
     let upgraded = false;
-    const candidate = this.doc.fork();
+    let nodeStructureChanged = false;
+    let timelineNodeTouched = false;
+    let directorNodeTouched = false;
+    let changedNodeIds: string[] = [];
+    const nodesBefore = new Map<string, Record<string, any>>();
+    const touched: TouchedContainers = {
+      names: new Set(),
+      nodeIds: new Set(),
+      layoutIds: new Set(),
+    };
+    const unsubscribe = this.doc.subscribe((batch) =>
+      collectTouchedContainers(batch, touched),
+    );
     try {
-      candidate.import(updateBytes);
-      assertLocalPeerHostOwnedAuthorityMutation(
-        this.doc,
-        candidate,
-        "Generator",
-        HOST_OWNED_GENERATOR_AUTHORITY_CONTAINERS,
+      this.doc.import(updateBytes);
+      const nodeTouched = touched.names.has("nodes");
+      const layoutTouched = touched.names.has(CANVAS_NODE_LAYOUTS);
+
+      const generatorContainers = HOST_OWNED_GENERATOR_AUTHORITY_CONTAINERS.filter(
+        (container) => touched.names.has(container),
       );
-      assertLocalPeerHostOwnedAuthorityMutation(
-        this.doc,
-        candidate,
-        "Document Asset",
-        HOST_OWNED_DOCUMENT_ASSET_AUTHORITY_CONTAINERS,
+      if (generatorContainers.length > 0) {
+        assertLocalPeerHostOwnedAuthorityMutation(
+          current,
+          this.doc,
+          "Generator",
+          generatorContainers,
+        );
+      }
+      const documentAssetContainers = HOST_OWNED_DOCUMENT_ASSET_AUTHORITY_CONTAINERS.filter(
+        (container) => touched.names.has(container),
       );
+      if (documentAssetContainers.length > 0) {
+        assertLocalPeerHostOwnedAuthorityMutation(
+          current,
+          this.doc,
+          "Document Asset",
+          documentAssetContainers,
+        );
+      }
+      const projectAssetContainers = [
+        PROJECT_ASSETS_CONTAINER,
+        PROJECT_ASSET_SCHEMA_CONTAINER,
+      ].filter((container) => touched.names.has(container));
       if (
-        !isDeepStrictEqual(
-          candidate.getMap(PROJECT_ASSETS_CONTAINER).toJSON(),
-          this.doc.getMap(PROJECT_ASSETS_CONTAINER).toJSON(),
-        ) ||
-        !isDeepStrictEqual(
-          candidate.getMap(PROJECT_ASSET_SCHEMA_CONTAINER).toJSON(),
-          this.doc.getMap(PROJECT_ASSET_SCHEMA_CONTAINER).toJSON(),
+        projectAssetContainers.some(
+          (container) =>
+            !isDeepStrictEqual(
+              this.doc.getMap(container).toJSON(),
+              current.getMap(container).toJSON(),
+            ),
         )
       ) {
         throw new Error(
           "Local peer updates cannot mutate Host-owned Project Asset authority; use the Asset SDK/Host publication boundary.",
         );
       }
-      assertLocalPeerActionAssetBindingMutation(this.doc, candidate);
-      assertLocalPeerModelProjectionMutation(this.doc, candidate);
-      if (this.upgradeProject && hasLegacyCanvasGeneratorDrafts(candidate)) {
-        upgraded = await this.upgradeProject({ projectId: this.projectId, doc: candidate });
+      if (
+        touched.names.has(ACTION_ASSET_BINDINGS_CONTAINER) ||
+        touched.names.has(ACTION_ASSET_BINDING_SCHEMA_CONTAINER)
+      ) {
+        assertLocalPeerActionAssetBindingMutation(current, this.doc);
       }
-      upgraded = completePendingCanvasLayout(candidate) || upgraded;
+      const graphTouched = intersects(touched.names, [
+        NODE_UPSTREAMS_CONTAINER,
+        "edges",
+        EDGE_IDENTITY_CONTAINER,
+      ]);
+      if (nodeTouched || layoutTouched || graphTouched) {
+        let fullNodeGuard = graphTouched;
+        if (nodeTouched && !fullNodeGuard) {
+          const afterNodes = this.doc.getMap("nodes");
+          for (const nodeId of touched.nodeIds) {
+            const before = beforeNodes.get(nodeId) as
+              | Record<string, any>
+              | undefined;
+            const after = afterNodes.get(nodeId) as
+              | Record<string, any>
+              | undefined;
+            if (
+              !before !== !after ||
+              before?.type !== after?.type ||
+              before?.canvasId !== after?.canvasId ||
+              before?.data?.assetId !== after?.data?.assetId ||
+              before?.data?.generatorId !== after?.data?.generatorId ||
+              before?.data?.documentRevision !== after?.data?.documentRevision
+            ) {
+              fullNodeGuard = true;
+              break;
+            }
+          }
+        }
+        assertLocalPeerModelProjectionMutation(current, this.doc, {
+          ...(fullNodeGuard ? {} : { nodeIds: touched.nodeIds }),
+          ...(layoutTouched ? { layoutIds: touched.layoutIds } : {}),
+          checkLayouts: layoutTouched,
+        });
+      }
+      if (
+        nodeTouched &&
+        this.upgradeProject &&
+        hasLegacyCanvasGeneratorDrafts(this.doc)
+      ) {
+        upgraded = await this.upgradeProject({
+          projectId: this.projectId,
+          doc: this.doc,
+        });
+      }
+      if (nodeTouched) {
+        const addedCanvasIds = new Set<string>();
+        const afterNodes = this.doc.getMap("nodes");
+        for (const nodeId of touched.nodeIds) {
+          if (
+            beforeNodes.get(nodeId) !== undefined ||
+            afterNodes.get(nodeId) === undefined
+          ) {
+            continue;
+          }
+          const raw = afterNodes.get(nodeId) as
+            | Record<string, unknown>
+            | undefined;
+          addedCanvasIds.add(
+            typeof raw?.canvasId === "string"
+              ? raw.canvasId
+              : DEFAULT_CANVAS_ID,
+          );
+        }
+        if (addedCanvasIds.size > 0) {
+          upgraded =
+            completePendingCanvasLayout(this.doc, addedCanvasIds) || upgraded;
+        }
+      }
       if (upgraded) {
-        candidate.commit();
-        const from = this.doc.version();
-        try { admittedUpdate = exactBytes(candidate.export({ mode: "update", from })); }
-        finally { from.free(); }
+        this.doc.commit();
+        admittedUpdate = exactBytes(
+          this.doc.export({ mode: "update", from: liveVersion }),
+        );
       }
-    } finally {
-      candidate.free();
+      if (touched.nodeIds.size > 0) {
+        const afterNodes = this.doc.getMap("nodes");
+        for (const nodeId of touched.nodeIds) {
+          const before = beforeNodes.get(nodeId) as
+            | Record<string, unknown>
+            | undefined;
+          const after = afterNodes.get(nodeId) as
+            | Record<string, unknown>
+            | undefined;
+          if (!before !== !after) nodeStructureChanged = true;
+          const type = after?.type ?? before?.type;
+          if (type === "video-editor") timelineNodeTouched = true;
+          if (type === "director-stage") directorNodeTouched = true;
+        }
+      }
+      changedNodeIds = [...touched.nodeIds];
+      if (changedNodeIds.length > 0 && this.hasActivityAudience(sender)) {
+        for (const nodeId of changedNodeIds) {
+          const raw = beforeNodes.get(nodeId);
+          if (raw !== undefined) {
+            nodesBefore.set(nodeId, raw as Record<string, any>);
+          }
+        }
+      }
+      // The durability append happens only after every authority guard
+      // accepted the already-imported live state, so the replica does not need
+      // to fork the whole document to validate the same bytes again.
+      await this.persistUpdate(admittedUpdate, { prevalidated: true });
+    } catch (error) {
+      unsubscribe();
+      liveVersion.free();
+      this.restoreLiveProjectFromCheckpoint(this.doc);
+      throw error;
     }
-    // Persist before mutating the live replica. The candidate import above
-    // guarantees the durable record can be replayed successfully. A legacy
-    // graph and its Host upgrade enter the journal as one admitted update.
-    await this.persistUpdate(admittedUpdate);
-    this.doc.import(admittedUpdate);
-    const repairVersion = this.doc.version();
-    const graphRepair = reconcileCanvasGraph(this.doc);
-    const timelineRepair = reconcileProjectTimelineOwnership(this.doc);
-    const directorRepair = reconcileProjectDirectorStageOwnership(this.doc);
-    const projectCoverRepair = reconcileProjectCoverBindings(this.doc);
-    const assetBindingRepair = reconcileActionAssetBindingTargets(this.doc);
-    const workspaceRepaired =
-      canvasGraphReconciliationChanged(graphRepair) ||
-      timelineRepair.removedActionNodeIds.length > 0 ||
-      timelineRepair.detachedTimelineIds.length > 0 ||
-      directorRepair.removedActionNodeIds.length > 0 ||
-      directorRepair.detachedStageIds.length > 0 ||
-      projectCoverRepair.changed ||
-      assetBindingRepair.restoredProjectAssetIds.length > 0;
-    const repairUpdate = workspaceRepaired
-      ? exactBytes(this.doc.export({ mode: "update", from: repairVersion }))
-      : null;
-    repairVersion.free();
+    unsubscribe();
+    liveVersion.free();
+    const graphRepairNeeded =
+      nodeStructureChanged ||
+      intersects(touched.names, [
+        "edges",
+        EDGE_IDENTITY_CONTAINER,
+        NODE_UPSTREAMS_CONTAINER,
+        "graphSchema",
+      ]);
+    const timelineRepairNeeded =
+      timelineNodeTouched || touched.names.has("timelines");
+    const directorRepairNeeded =
+      directorNodeTouched || touched.names.has("directorStages");
+    const coverRepairNeeded = intersects(touched.names, [
+      PROJECT_PRESENTATION_CONTAINER,
+      ACTION_ASSET_BINDINGS_CONTAINER,
+      PROJECT_ASSETS_CONTAINER,
+    ]);
+    const bindingRepairNeeded = intersects(touched.names, [
+      ACTION_ASSET_BINDINGS_CONTAINER,
+      ACTION_ASSET_BINDING_SCHEMA_CONTAINER,
+      PROJECT_ASSETS_CONTAINER,
+    ]);
+    // Ordinary layout/node-data edits reconcile nothing; do not allocate a
+    // version or run a repair scan unless a repair is actually due.
+    const repairNeeded =
+      graphRepairNeeded ||
+      timelineRepairNeeded ||
+      directorRepairNeeded ||
+      coverRepairNeeded ||
+      bindingRepairNeeded;
+    const repairVersion = repairNeeded ? this.doc.version() : null;
+    let workspaceRepaired = false;
+    if (graphRepairNeeded) {
+      workspaceRepaired =
+        canvasGraphReconciliationChanged(reconcileCanvasGraph(this.doc)) ||
+        workspaceRepaired;
+    }
+    if (timelineRepairNeeded) {
+      const timelineRepair = reconcileProjectTimelineOwnership(this.doc);
+      workspaceRepaired =
+        timelineRepair.removedActionNodeIds.length > 0 ||
+        timelineRepair.detachedTimelineIds.length > 0 ||
+        workspaceRepaired;
+    }
+    if (directorRepairNeeded) {
+      const directorRepair = reconcileProjectDirectorStageOwnership(this.doc);
+      workspaceRepaired =
+        directorRepair.removedActionNodeIds.length > 0 ||
+        directorRepair.detachedStageIds.length > 0 ||
+        workspaceRepaired;
+    }
+    if (coverRepairNeeded) {
+      workspaceRepaired =
+        reconcileProjectCoverBindings(this.doc).changed || workspaceRepaired;
+    }
+    if (bindingRepairNeeded) {
+      workspaceRepaired =
+        reconcileActionAssetBindingTargets(this.doc).restoredProjectAssetIds
+          .length > 0 || workspaceRepaired;
+    }
+    const repairUpdate =
+      workspaceRepaired && repairVersion
+        ? exactBytes(this.doc.export({ mode: "update", from: repairVersion }))
+        : null;
+    repairVersion?.free();
     if (this.peers.get(sender)?.syncProtocol !== "loro-v1") {
       this.peers.get(sender)?.sendJson?.({
         type: "sync_ack",
@@ -959,28 +1291,38 @@ export class LocalLoroRoom {
       for (const peer of this.peers.values()) peer.sendUpdate(repairUpdate);
       this.mirrorRemoteUpdate(repairUpdate);
     }
-    this.broadcastNodeActivity(sender, nodesBefore);
+    if (changedNodeIds.length > 0) {
+      this.broadcastNodeActivity(sender, changedNodeIds, nodesBefore);
+    }
+    // A small update can only make one of the nodes it touched runnable. Repair
+    // and upgrade passes may synthesize nodes, so those require the full scan.
+    return workspaceRepaired || upgraded ? "all" : touched.nodeIds;
+  }
+
+  private hasActivityAudience(sender: PeerId): boolean {
+    for (const [peerId, peer] of this.peers) {
+      if (peerId !== sender && peer.sendJson) return true;
+    }
+    return false;
   }
 
   private broadcastNodeActivity(
     sender: PeerId,
+    changedNodeIds: readonly string[],
     nodesBefore: Map<string, Record<string, any>>,
   ): void {
-    const nodesAfter = this.doc.getMap("nodes").entries();
-    const seenIds = new Set<string>();
-    for (const [id, raw] of nodesAfter) {
-      seenIds.add(id);
-      const after = raw as Record<string, any>;
+    if (!this.hasActivityAudience(sender)) return;
+    const nodes = this.doc.getMap("nodes");
+    for (const id of changedNodeIds) {
+      const after = nodes.get(id) as Record<string, any> | undefined;
       const before = nodesBefore.get(id);
-      if (!before) {
+      if (!before && after) {
         this.broadcastActivity(sender, "added", id, after);
-      } else if (JSON.stringify(before) !== JSON.stringify(after)) {
+      } else if (before && !after) {
+        this.broadcastActivity(sender, "deleted", id, before);
+      } else if (before && after) {
         this.broadcastActivity(sender, "updated", id, after);
       }
-    }
-    for (const [id, before] of nodesBefore) {
-      if (!seenIds.has(id))
-        this.broadcastActivity(sender, "deleted", id, before);
     }
   }
 
@@ -1049,34 +1391,176 @@ export class LocalLoroRoom {
     }
   }
 
+  projectHealth(): LocalProjectHealthSummary {
+    const failures: LocalProjectHealth[] = [];
+    if (this.checkpointFailure) {
+      failures.push({
+        ...this.checkpointFailure,
+        logBytes: this.updateLogBytes,
+      });
+    }
+    if (this.workFailure) {
+      failures.push({ ...this.workFailure, logBytes: this.updateLogBytes });
+    }
+    return {
+      ok: failures.length === 0,
+      ...(failures[0]?.code ? { code: failures[0].code } : {}),
+      failures,
+    };
+  }
+
   private async saveSnapshot(): Promise<void> {
     await this.replica.checkpoint();
     this.updatesSinceSnapshot = 0;
     this.updateBytesSinceSnapshot = 0;
+    this.updateLogBytes = 0;
+    this.lastCheckpointAt = Date.now();
+    this.clearCheckpointFailure();
   }
 
-  private async persistUpdate(update: Uint8Array): Promise<void> {
-    const result = await this.replica.submit({
-      id: loroSyncUpdateId(update),
-      update,
+  private shouldCheckpoint(): boolean {
+    if (
+      this.updatesSinceSnapshot < LOCAL_LORO_COMPACT_UPDATE_THRESHOLD &&
+      this.updateBytesSinceSnapshot < LOCAL_LORO_COMPACT_BYTES_THRESHOLD
+    ) {
+      return false;
+    }
+    return (
+      Date.now() - this.lastCheckpointAt >= LOCAL_LORO_COMPACT_MIN_INTERVAL_MS
+    );
+  }
+
+  private async ensureUpdateLogCapacity(): Promise<void> {
+    if (this.updateLogBytes < LOCAL_LORO_UPDATE_LOG_HARD_CAP_BYTES) return;
+    try {
+      await this.saveSnapshot();
+    } catch (error) {
+      this.recordCheckpointFailure(error);
+      throw new LocalProjectCheckpointError(
+        this.projectId,
+        this.updateLogBytes,
+        error,
+      );
+    }
+  }
+
+  private recordCheckpointFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const attempts = (this.checkpointFailure?.attempts ?? 0) + 1;
+    const retryDelay = Math.min(
+      LOCAL_LORO_CHECKPOINT_RETRY_MAX_MS,
+      LOCAL_LORO_CHECKPOINT_RETRY_BASE_MS *
+        2 ** Math.min(attempts - 1, 10),
+    );
+    const failure = {
+      ok: false as const,
+      code: "PROJECT_CHECKPOINT_FAILED" as const,
+      projectId: this.projectId,
+      message: `Project ${this.projectId} checkpoint failed: ${message}`,
+      cause: message,
+      logBytes: this.updateLogBytes,
+      attempts,
+      retryAt: Date.now() + retryDelay,
+    };
+    this.checkpointFailure = failure;
+    console.error(
+      "[local-sync] failed to compact committed Project checkpoint",
+      error,
+    );
+    this.broadcastJson({ type: "project_health", ...failure });
+    this.scheduleCheckpointRetry(retryDelay);
+  }
+
+  private scheduleCheckpointRetry(delayMs: number): void {
+    if (this.closed) return;
+    if (this.checkpointRetryTimer) clearTimeout(this.checkpointRetryTimer);
+    this.checkpointRetryTimer = setTimeout(() => {
+      this.checkpointRetryTimer = undefined;
+      void this.enqueueProjectOperation(async () => {
+        if (this.closed) return;
+        try {
+          await this.saveSnapshot();
+        } catch (error) {
+          this.recordCheckpointFailure(error);
+        }
+      }).catch(() => undefined);
+    }, delayMs);
+    this.checkpointRetryTimer.unref?.();
+  }
+
+  private clearCheckpointFailure(): void {
+    if (!this.checkpointFailure) return;
+    this.checkpointFailure = undefined;
+    if (this.checkpointRetryTimer) {
+      clearTimeout(this.checkpointRetryTimer);
+      this.checkpointRetryTimer = undefined;
+    }
+    this.broadcastJson({
+      type: "project_health",
+      ok: true,
+      projectId: this.projectId,
+      logBytes: this.updateLogBytes,
     });
+  }
+
+  private recordWorkFailure(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const failure = {
+      ok: false as const,
+      code: "PROJECT_WORK_FAILED" as const,
+      projectId: this.projectId,
+      message: `Project ${this.projectId} pending work failed: ${message}`,
+      cause: message,
+    };
+    this.workFailure = failure;
+    console.error(
+      "[local-sync] failed to process pending Project work",
+      error,
+    );
+    this.broadcastJson({
+      type: "project_health",
+      ok: false,
+      code: failure.code,
+      projectId: failure.projectId,
+      message: failure.message,
+    });
+  }
+
+  private clearWorkFailure(): void {
+    if (!this.workFailure) return;
+    this.workFailure = undefined;
+    this.broadcastJson({
+      type: "project_health",
+      ok: true,
+      projectId: this.projectId,
+      logBytes: this.updateLogBytes,
+    });
+  }
+
+  private async persistUpdate(
+    update: Uint8Array,
+    options?: { prevalidated?: boolean },
+  ): Promise<void> {
+    await this.ensureUpdateLogCapacity();
+    const result = await this.replica.submit(
+      {
+        id: loroSyncUpdateId(update),
+        update,
+      },
+      options,
+    );
     this.checkpointedDoc = this.replica.read((state) => state);
     if (result.appended) {
       await this.onProjectCommitted?.(this.projectId);
       this.updatesSinceSnapshot += 1;
       this.updateBytesSinceSnapshot += update.byteLength;
+      this.updateLogBytes += update.byteLength + 4;
     }
-    if (
-      this.updatesSinceSnapshot >= LOCAL_LORO_COMPACT_UPDATE_THRESHOLD ||
-      this.updateBytesSinceSnapshot >= LOCAL_LORO_COMPACT_BYTES_THRESHOLD
-    ) {
+    if (this.shouldCheckpoint()) {
       try {
         await this.saveSnapshot();
       } catch (error) {
-        console.error(
-          "[local-sync] failed to compact committed Project checkpoint",
-          error,
-        );
+        this.recordCheckpointFailure(error);
       }
     }
     this.scheduleCanvasPreviewRefresh();
@@ -1114,17 +1598,64 @@ export class LocalLoroRoom {
     this.canvasPreviewWrites = run;
   }
 
-  private restoreLiveProjectFromCheckpoint(): void {
+  private restoreLiveProjectFromCheckpoint(preserveRootsOf?: LoroDoc): void {
+    const emptyRoots: Array<{ name: string; list: boolean }> = [];
+    if (preserveRootsOf) {
+      for (const [name, value] of Object.entries(preserveRootsOf.toJSON())) {
+        if (Array.isArray(value)) {
+          if (value.length === 0) emptyRoots.push({ name, list: true });
+        } else if (
+          value !== null &&
+          typeof value === "object" &&
+          Object.keys(value).length === 0
+        ) {
+          emptyRoots.push({ name, list: false });
+        }
+      }
+    }
     this.doc = LoroDoc.fromSnapshot(
       this.checkpointedDoc.export({ mode: "snapshot" }),
     );
+    // Loro snapshots omit empty roots, but a rejected peer update must leave
+    // the live document byte-for-byte equivalent to what the peer observed.
+    for (const root of emptyRoots) {
+      if (root.list) this.doc.getList(root.name);
+      else this.doc.getMap(root.name);
+    }
   }
 
-  private processPendingWork(): Promise<void> {
-    if (this.closed) return Promise.resolve();
-    const run = this.pendingWorkQueue.then(() =>
-      this.enqueueProjectOperation(() => this.processPendingWorkOnce()),
-    );
+  private processPendingWork(options?: {
+    onlyIfRunnable?: boolean;
+    /** Touched node ids for a small peer update; `"all"` forces a full scan. */
+    runnableNodeIds?: ReadonlySet<string> | "all";
+  }): Promise<void> {
+    return this.enqueuePendingWorkPass(options, false);
+  }
+
+  private enqueuePendingWorkPass(
+    options: {
+      onlyIfRunnable?: boolean;
+      /** Touched node ids for a small peer update; `"all"` forces a full scan. */
+      runnableNodeIds?: ReadonlySet<string> | "all";
+    } | undefined,
+    duringClose: boolean,
+  ): Promise<void> {
+    if (this.closed && !duringClose) return Promise.resolve();
+    const onlyIfRunnable = options?.onlyIfRunnable ?? false;
+    const runnableNodeIds =
+      options?.runnableNodeIds === "all" ? undefined : options?.runnableNodeIds;
+    const run = this.pendingWorkQueue
+      .then(() =>
+        this.enqueueProjectOperation(() => {
+          if (
+            onlyIfRunnable &&
+            !hasRunnableProjectWork(this.doc, runnableNodeIds)
+          )
+            return;
+          return this.processPendingWorkOnce();
+        }),
+      )
+      .then(() => this.clearWorkFailure());
     this.pendingWorkQueue = run.catch(() => undefined);
     void run.then(() => this.scheduleNextPoll()).catch(() => undefined);
     return run;
@@ -1172,11 +1703,32 @@ export class LocalLoroRoom {
   }
 
   private async closeOnce(): Promise<void> {
+    const pendingWorkPassDue = this.pendingWorkTimer !== undefined;
     this.closed = true;
     this.pollScheduleVersion += 1;
+    if (this.pendingWorkTimer) {
+      clearTimeout(this.pendingWorkTimer);
+      this.pendingWorkTimer = undefined;
+    }
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = undefined;
+    }
+    if (this.checkpointRetryTimer) {
+      clearTimeout(this.checkpointRetryTimer);
+      this.checkpointRetryTimer = undefined;
+    }
+    // A close inside the debounce window would otherwise drop work an already
+    // acknowledged edit made runnable. Finish that pass before tearing down.
+    if (pendingWorkPassDue) {
+      try {
+        await this.enqueuePendingWorkPass(
+          { onlyIfRunnable: true },
+          true,
+        );
+      } catch (error) {
+        this.recordWorkFailure(error);
+      }
     }
     if (this.canvasPreviewTimer) {
       clearTimeout(this.canvasPreviewTimer);
@@ -1498,6 +2050,17 @@ export class LocalLoroRoomHub {
     await (await existing).refreshFromStore();
   }
 
+  projectHealth(): LocalProjectHealthSummary {
+    const failures = [...this.checkpointReadableRooms.values()].flatMap(
+      (room) => room.projectHealth().failures,
+    );
+    return {
+      ok: failures.length === 0,
+      ...(failures[0]?.code ? { code: failures[0].code } : {}),
+      failures,
+    };
+  }
+
   close(): Promise<void> {
     return (this.closePromise ??= this.closeOnce());
   }
@@ -1659,11 +2222,32 @@ async function bindSocket(
           if (ws.readyState === ws.OPEN) ws.send(frame);
         },
         commit: async (_batchId, updates) => {
-          for (const update of updates) await room.receive(peerId, update);
+          // Ack after the durable append. Workflow/plugin discovery may be slow
+          // or hung and must not hold the sync acknowledgement.
+          for (const update of updates)
+            await room.receive(peerId, update, { awaitPendingWork: false });
         },
       })
     : undefined;
 
+  const sendSyncError = (error: unknown) => {
+    if (ws.readyState !== ws.OPEN) return;
+    const code =
+      error !== null &&
+      typeof error === "object" &&
+      "code" in error &&
+      typeof (error as { code?: unknown }).code === "string"
+        ? (error as { code: string }).code
+        : "SYNC_UPDATE_FAILED";
+    ws.send(
+      JSON.stringify({
+        type: "sync_error",
+        code,
+        error: error instanceof Error ? error.message : String(error),
+        projectId,
+      }),
+    );
+  };
   const handleMessage = (data: RawData, isBinary: boolean) => {
     if (!isBinary) {
       try {
@@ -1686,6 +2270,7 @@ async function bindSocket(
             "[local-sync] failed to handle sideband message",
             error,
           );
+          sendSyncError(error);
         });
       } catch {
         // Ignore non-JSON sideband chatter.
@@ -1700,9 +2285,10 @@ async function bindSocket(
           : new Uint8Array(data as ArrayBuffer);
     const receive = protocolSession
       ? protocolSession.receive(bytes)
-      : room.receive(peerId, bytes);
+      : room.receive(peerId, bytes, { awaitPendingWork: false });
     void receive.catch((error) => {
       console.error("[local-sync] failed to import update", error);
+      sendSyncError(error);
     });
   };
   ws.off("message", bufferMessage);
