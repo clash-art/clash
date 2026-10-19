@@ -908,16 +908,27 @@ export function createLocalProjectAssetService(options: {
       ...(input.provenance ? { provenance: input.provenance } : {}),
     };
     await client.createOwned({ projectId: input.projectId, entry });
-    const resolved = await client.read({
-      projectId: input.projectId,
-      projectAssetId: entry.id,
-    });
-    if (!resolved) {
-      throw new LocalProjectAssetMigrationError(
-        "PROJECT_ASSET_NOT_FOUND",
-        `Project Asset ${entry.id} disappeared after publication.`,
-      );
-    }
+    // The commit is the operation. Reading it back is enrichment: a transient
+    // read failure must not turn a committed Asset into a failed import.
+    const readPublished = async (): Promise<ResolvedAsset | undefined> => {
+      try {
+        return (
+          (await client.read({
+            projectId: input.projectId,
+            projectAssetId: entry.id,
+          })) ?? undefined
+        );
+      } catch {
+        return undefined;
+      }
+    };
+    const resolved =
+      (await readPublished()) ??
+      (await readPublished()) ??
+      (await resolveProjectAsset(resolverPorts, {
+        projectId: input.projectId,
+        entry,
+      }));
     return enrichResolved(entry, resolved);
   }
 
@@ -1326,6 +1337,27 @@ export function createLocalProjectAssetService(options: {
   }
 
   /**
+   * A successful seal makes the staging name redundant. Releasing it is
+   * cleanup, not part of the import result: a failure is logged and the
+   * periodic staging sweep retries it.
+   */
+  async function releaseStagedQuietly(resourceId: string): Promise<void> {
+    try {
+      await resources.releaseStaged(resourceId);
+    } catch (error) {
+      options.onResourceEvent?.({
+        level: "error",
+        event: "local_resource_staging.release_failed",
+        fields: {
+          resourceId,
+          code: "PROJECT_ASSET_IMPORT_STAGING_CLEANUP_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  /**
    * Decides replay/duplicate/trashed before the Resource store copies, adopts,
    * seals or inspects anything. `resourceId` is already known for an assembled
    * session; a single-shot import only learns it after its one staging pass.
@@ -1449,10 +1481,9 @@ export function createLocalProjectAssetService(options: {
       }
       const staged = await resources.adoptAssembled(input.assembled);
       try {
-        return {
-          asset: await publishInstalledInput(input, staged),
-          replayed: false,
-        };
+        const asset = await publishInstalledInput(input, staged);
+        await releaseStagedQuietly(staged.resourceId);
+        return { asset, replayed: false };
       } catch (error) {
         await discardStagedQuietly(staged.resourceId);
         throw error;
@@ -1468,10 +1499,9 @@ export function createLocalProjectAssetService(options: {
           replayed: true,
         };
       }
-      return {
-        asset: await publishInstalledInput(input, staged),
-        replayed: false,
-      };
+      const asset = await publishInstalledInput(input, staged);
+      await releaseStagedQuietly(staged.resourceId);
+      return { asset, replayed: false };
     } catch (error) {
       await discardStagedQuietly(staged.resourceId);
       throw error;

@@ -3,6 +3,7 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  realpathSync,
   symlinkSync,
   linkSync,
   copyFileSync,
@@ -29,6 +30,7 @@ import {
 } from "@clash/shared-runtime/project-asset-client";
 import {
   downloadAssetById,
+  hostLocalAssetFile,
   replaceCanvasAssetNode,
   resolveAssetFile,
 } from "./canvas";
@@ -52,6 +54,41 @@ import {
 } from "../lib/project-host-client";
 
 export type AssetLinkMethod = "symlink" | "hardlink" | "copy";
+
+/** The link path already names different bytes; nothing was imported. */
+export class AssetLinkConflictError extends Error {
+  readonly code = "ASSET_LINK_CONFLICT";
+
+  constructor(message: string) {
+    super(`ASSET_LINK_CONFLICT: ${message}`);
+    this.name = "AssetLinkConflictError";
+  }
+}
+
+/**
+ * The Host committed the Asset, so the command is a coded partial success: the
+ * message names the Asset and the link failure instead of reporting a bare
+ * import failure that a retry cannot interpret.
+ */
+export class AssetImportLinkError extends Error {
+  readonly code: "ASSET_LINK_CONFLICT" | "ASSET_IMPORT_LINK_FAILED";
+  readonly assetId: string;
+
+  constructor(assetId: string, cause: unknown) {
+    const code =
+      cause instanceof AssetLinkConflictError
+        ? "ASSET_LINK_CONFLICT"
+        : "ASSET_IMPORT_LINK_FAILED";
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `${code}: Project Asset ${assetId} was imported, but its project link failed: ${message}`,
+      { cause },
+    );
+    this.name = "AssetImportLinkError";
+    this.code = code;
+    this.assetId = assetId;
+  }
+}
 
 export interface AssetLinkResult {
   projectId: string;
@@ -172,28 +209,125 @@ async function hashFileSha256(path: string): Promise<string> {
   return digest.digest("hex");
 }
 
+function resolveAssetLinkPath(options: {
+  assetId: string;
+  sourcePath: string;
+  assetLinksRoot: string;
+  name?: string;
+}): string {
+  return join(
+    options.assetLinksRoot,
+    resolveAssetLinkName(options.assetId, options.sourcePath, options.name),
+  );
+}
+
+/** True when the existing link resolves to the same immutable store file. */
+function sameLinkedTarget(linkPath: string, targetPath: string): boolean {
+  try {
+    if (lstatSync(linkPath).isSymbolicLink()) {
+      return realpathSync(linkPath) === realpathSync(targetPath);
+    }
+    const link = statSync(linkPath);
+    const target = statSync(targetPath);
+    return link.dev === target.dev && link.ino === target.ino;
+  } catch {
+    return false;
+  }
+}
+
+function linkedMethod(linkPath: string): AssetLinkMethod {
+  if (lstatSync(linkPath).isSymbolicLink()) return "symlink";
+  return statSync(linkPath).nlink > 1 ? "hardlink" : "copy";
+}
+
+async function defaultResolveExistingAssetPath(
+  assetId: string,
+  projectId: string,
+): Promise<string | null> {
+  try {
+    const local = await hostLocalAssetFile(assetId, projectId);
+    return local?.path ?? null;
+  } catch (error) {
+    // A 404 is the Host saying the Asset does not exist yet. A transport
+    // failure means the preflight cannot decide; let the import surface it.
+    if ((error as { status?: number }).status === 404) return null;
+    throw error;
+  }
+}
+
+/**
+ * Before an import sends bytes, prove an existing link already points at the
+ * Asset identity being re-imported. Anything else is a conflict the CLI must
+ * decide before the Host commits, because the link path is the user-visible
+ * result of this command.
+ */
+async function assertImportLinkAvailable(options: {
+  assetId: string;
+  projectId: string;
+  sourcePath: string;
+  assetLinksRoot: string;
+  name?: string;
+  resolveExistingAssetPath?: (
+    assetId: string,
+    projectId: string,
+  ) => Promise<string | null>;
+}): Promise<void> {
+  const linkPath = resolveAssetLinkPath(options);
+  let info: ReturnType<typeof lstatSync>;
+  try {
+    info = lstatSync(linkPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (info.isDirectory() && !info.isSymbolicLink()) {
+    throw new AssetLinkConflictError(
+      `asset link path is a directory: ${linkPath}`,
+    );
+  }
+  let existingAssetPath: string | null;
+  try {
+    existingAssetPath = await (
+      options.resolveExistingAssetPath ?? defaultResolveExistingAssetPath
+    )(options.assetId, options.projectId);
+  } catch {
+    // The Host could not be asked. The import itself reports that failure.
+    return;
+  }
+  if (!existingAssetPath || !sameLinkedTarget(linkPath, existingAssetPath)) {
+    throw new AssetLinkConflictError(
+      `asset link already exists and points elsewhere: ${linkPath}. Nothing was imported. Remove it or choose a different --name.`,
+    );
+  }
+}
+
 function createAssetLink(options: {
   assetId: string;
   sourcePath: string;
   assetLinksRoot: string;
   name?: string;
+  /** An existing link to the same immutable source is this command's result. */
+  allowExistingTarget?: boolean;
   createSymlink?: (target: string, path: string) => void;
   createHardlink?: (existingPath: string, path: string) => void;
 }): { linkPath: string; method: AssetLinkMethod } {
-  const linkName = resolveAssetLinkName(
-    options.assetId,
-    options.sourcePath,
-    options.name,
-  );
-  const linkPath = join(options.assetLinksRoot, linkName);
+  const linkPath = resolveAssetLinkPath(options);
 
   mkdirSync(options.assetLinksRoot, { recursive: true });
   if (existsSync(linkPath)) {
     const existing = lstatSync(linkPath);
     if (existing.isDirectory() && !existing.isSymbolicLink()) {
-      throw new Error(`asset link path is a directory: ${linkPath}`);
+      throw new AssetLinkConflictError(
+        `asset link path is a directory: ${linkPath}`,
+      );
     }
-    throw new Error(
+    if (
+      options.allowExistingTarget &&
+      sameLinkedTarget(linkPath, options.sourcePath)
+    ) {
+      return { linkPath, method: linkedMethod(linkPath) };
+    }
+    throw new AssetLinkConflictError(
       `asset link already exists: ${linkPath}. Choose a different --name or remove the old link explicitly.`,
     );
   }
@@ -354,6 +488,11 @@ export async function importAssetFile(options: {
   client?: ProjectAssetHostClient;
   download?: (assetId: string, projectId: string) => Promise<string | null>;
   createSymlink?: (target: string, path: string) => void;
+  /** Test seam for the Host store path behind an existing Project Asset. */
+  resolveExistingAssetPath?: (
+    assetId: string,
+    projectId: string,
+  ) => Promise<string | null>;
   /** Test seam; production uses the streamed SHA-256 above. */
   hashFile?: (path: string) => Promise<string>;
 }): Promise<AssetImportResult> {
@@ -414,6 +553,20 @@ export async function importAssetFile(options: {
     snapshot = created;
     projectImports.set(options, snapshot);
   }
+  if (options.link !== false) {
+    await assertImportLinkAvailable({
+      assetId: snapshot.request.projectAssetId,
+      projectId: snapshot.status.projectId,
+      sourcePath: snapshot.sourcePath,
+      assetLinksRoot: snapshot.status.assetLinksRoot,
+      name:
+        options.name ??
+        `${snapshot.request.projectAssetId}${extname(snapshot.sourcePath)}`,
+      ...(options.resolveExistingAssetPath
+        ? { resolveExistingAssetPath: options.resolveExistingAssetPath }
+        : {}),
+    });
+  }
   const imported = await (
     options.client ?? createCliProjectAssetHostClient()
   ).importFile(snapshot.request);
@@ -430,24 +583,31 @@ export async function importAssetFile(options: {
   };
 
   if (options.link !== false) {
-    const projectionPath = await (options.download ?? downloadAssetById)(
-      assetId,
-      snapshot.status.projectId,
-    );
-    if (!projectionPath) {
-      throw new Error(`Unable to resolve imported Project Asset ${assetId}`);
+    try {
+      const projectionPath = await (options.download ?? downloadAssetById)(
+        assetId,
+        snapshot.status.projectId,
+      );
+      if (!projectionPath) {
+        throw new Error(`Unable to resolve imported Project Asset ${assetId}`);
+      }
+      const extension = extname(snapshot.sourcePath);
+      const defaultName = `${assetId}${extension}`;
+      const link = createAssetLink({
+        assetId,
+        sourcePath: projectionPath,
+        assetLinksRoot: snapshot.status.assetLinksRoot,
+        name: options.name ?? defaultName,
+        allowExistingTarget: true,
+        createSymlink: options.createSymlink,
+      });
+      result.linkPath = link.linkPath;
+      result.linkMethod = link.method;
+    } catch (error) {
+      // The Asset is committed. Report it and the link failure as one coded
+      // partial success instead of a failure that reads as "nothing imported".
+      throw new AssetImportLinkError(assetId, error);
     }
-    const extension = extname(snapshot.sourcePath);
-    const defaultName = `${assetId}${extension}`;
-    const link = createAssetLink({
-      assetId,
-      sourcePath: projectionPath,
-      assetLinksRoot: snapshot.status.assetLinksRoot,
-      name: options.name ?? defaultName,
-      createSymlink: options.createSymlink,
-    });
-    result.linkPath = link.linkPath;
-    result.linkMethod = link.method;
   }
 
   return result;

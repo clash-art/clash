@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,8 +24,38 @@ import { createLocalResourceStore } from "./local-resource-store.js";
 const realFfmpeg = localFfmpegPath();
 const realFfprobe = localFfprobePath();
 const run = promisify(execFile);
+const nodeRequire = createRequire(import.meta.url);
 
 const temporaryDirectories: string[] = [];
+
+function stagingRowCount(dataDir: string): number {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { get(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    const row = database
+      .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
+      .get() as { count: number };
+    return row.count;
+  } finally {
+    database.close();
+  }
+}
+
+async function stagingFiles(dataDir: string): Promise<string[]> {
+  const entries = await readdir(join(dataDir, "assets", "blobs"), {
+    recursive: true,
+  }).catch(() => []);
+  return entries.filter(
+    (entry) =>
+      entry.split(/[\\/]/).at(-1) === "staging" ||
+      entry.split(/[\\/]/).at(-1)?.endsWith(".tmp") === true,
+  );
+}
 
 async function fixture() {
   const dataDir = await mkdtemp(join(tmpdir(), "clash-representation-run-"));
@@ -347,6 +378,8 @@ describe("Local Asset video proxy representation", () => {
       contentType: "video/mp4",
       bytes: new TextEncoder().encode("immutable test video"),
     });
+    // Imports release the staging name once the source Resource is sealed.
+    await resources.releaseStaged(source.resource.id);
     const assetInspection = createLocalAssetInspectionService({
       dataDir,
       inspectResource: async ({ resource }) =>
@@ -418,6 +451,26 @@ describe("Local Asset video proxy representation", () => {
     expect(
       (await service.openThumbnail(source.resource.id))?.resource.id,
     ).not.toBe(proxy!.resource.id);
+    await service.close();
+  });
+
+  it("releases every representation staging row and file once it is sealed", async () => {
+    const { dataDir, source, assetInspection, recipeRunner } =
+      await videoFixture(largeVideo);
+    const service = createLocalAssetRepresentationService({
+      dataDir,
+      assetInspection,
+      recipeRunner,
+      ffmpegPath: () => "/test/bin/ffmpeg",
+    });
+
+    service.schedule(source.resource.id);
+    await vi.waitFor(async () => {
+      expect(await service.read(source.resource.id, "proxy")).toBeDefined();
+    });
+
+    expect(stagingRowCount(dataDir)).toBe(0);
+    expect(await stagingFiles(dataDir)).toEqual([]);
     await service.close();
   });
 

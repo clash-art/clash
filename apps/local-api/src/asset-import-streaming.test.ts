@@ -1,10 +1,82 @@
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { createRequire } from "node:module";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { PROJECT_ASSET_IMPORT_MAX_BYTES } from "@clash/asset-sdk";
+import sharp from "sharp";
+
+import {
+  assertAssetImportDeclaredWithinLimit,
+  PROJECT_ASSET_IMPORT_MULTIPART_FRAMING_ALLOWANCE_BYTES,
+} from "./app.js";
 import { managedLocalApiApps } from "./local-api-app.test-fixtures.js";
+
+const nodeRequire = createRequire(import.meta.url);
+
+function stagingRowCount(dataDir: string): number {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { get(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    const row = database
+      .prepare("SELECT COUNT(*) AS count FROM local_resource_staging")
+      .get() as { count: number };
+    return row.count;
+  } finally {
+    database.close();
+  }
+}
+
+async function stagingFiles(clashRoot: string): Promise<string[]> {
+  const entries = await readdir(join(clashRoot, "assets", "blobs"), {
+    recursive: true,
+  }).catch(() => []);
+  return entries.filter(
+    (entry) =>
+      entry.split(/[\\/]/).at(-1) === "staging" ||
+      entry.split(/[\\/]/).at(-1)?.endsWith(".tmp") === true,
+  );
+}
+
+/** The representation table is created lazily, so absence means none yet. */
+function representationRowCount(
+  dataDir: string,
+  sourceResourceId: string,
+): number {
+  const { DatabaseSync } = nodeRequire("node:sqlite") as {
+    DatabaseSync: new (path: string) => {
+      prepare(sql: string): { get(...params: unknown[]): unknown };
+      close(): void;
+    };
+  };
+  const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+  try {
+    const row = database
+      .prepare(
+        "SELECT COUNT(*) AS count FROM local_asset_representations WHERE source_resource_id = ?",
+      )
+      .get(sourceResourceId) as { count: number };
+    return row.count;
+  } catch {
+    return 0;
+  } finally {
+    database.close();
+  }
+}
 
 /**
  * Observes the one Resource store every import stages through: which entry
@@ -65,11 +137,15 @@ afterEach(async () => {
   staging.streamChunkCounts.length = 0;
 });
 
-async function fixture() {
+async function fixture(
+  prepare?: (paths: { clashRoot: string; dataDir: string }) => Promise<void>,
+) {
   const clashRoot = await mkdtemp(join(tmpdir(), "clash-import-streaming-"));
   temporaryDirectories.push(clashRoot);
+  const dataDir = join(clashRoot, "local-api");
+  await prepare?.({ clashRoot, dataDir });
   const app = createApp({
-    dataDir: join(clashRoot, "local-api"),
+    dataDir,
     clashRoot,
     userId: "local-user",
     inspectAssetResource: async ({ resource }) => ({
@@ -79,7 +155,7 @@ async function fixture() {
       contentType: resource.contentType ?? "image/png",
     }),
   });
-  return { app, clashRoot };
+  return { app, clashRoot, dataDir };
 }
 
 /** A request body that only ever exists as separate chunks. */
@@ -126,20 +202,90 @@ const scopes = [
     collection: "http://127.0.0.1:49152/api/v1/projects/project-a/assets",
     idField: "projectAssetId",
     errorCode: "INVALID_PROJECT_ASSET_IMPORT",
+    lengthMismatchCode: "PROJECT_ASSET_IMPORT_LENGTH_MISMATCH",
   },
   {
     name: "global",
     collection: "http://127.0.0.1:49152/api/v1/libraries/personal/assets",
     idField: "globalAssetId",
     errorCode: "INVALID_GLOBAL_ASSET_IMPORT",
+    lengthMismatchCode: "INVALID_GLOBAL_ASSET_IMPORT",
   },
 ] as const;
+
+/** A Context-shaped declaration reader: only query/header are consulted. */
+function declarationLimit(
+  headers: Record<string, string>,
+  query: Record<string, string> = {},
+): () => void {
+  return () =>
+    assertAssetImportDeclaredWithinLimit({
+      req: {
+        query: (name: string) => query[name],
+        header: (name: string) => headers[name.toLowerCase()],
+      },
+    });
+}
+
+describe("asset import declaration limit", () => {
+  const multipart = "multipart/form-data; boundary=frame";
+  const framingAllowance =
+    PROJECT_ASSET_IMPORT_MAX_BYTES +
+    PROJECT_ASSET_IMPORT_MULTIPART_FRAMING_ALLOWANCE_BYTES;
+
+  it("accepts a multipart body exactly at the file cap despite form framing", () => {
+    expect(
+      declarationLimit({
+        "content-type": multipart,
+        "content-length": String(PROJECT_ASSET_IMPORT_MAX_BYTES),
+      }),
+    ).not.toThrow();
+  });
+
+  it("accepts multipart framing up to the named allowance", () => {
+    expect(
+      declarationLimit({
+        "content-type": multipart,
+        "content-length": String(framingAllowance),
+      }),
+    ).not.toThrow();
+    expect(
+      declarationLimit({
+        "content-type": multipart,
+        "content-length": String(framingAllowance + 1),
+      }),
+    ).toThrow(/maximum byte length/);
+  });
+
+  it("holds raw bodies and the streaming byteLength to the exact cap", () => {
+    expect(
+      declarationLimit({
+        "content-type": "video/mp4",
+        "content-length": String(PROJECT_ASSET_IMPORT_MAX_BYTES + 1),
+      }),
+    ).toThrow(/maximum byte length/);
+    expect(
+      declarationLimit(
+        { "content-type": multipart },
+        { byteLength: String(PROJECT_ASSET_IMPORT_MAX_BYTES + 1) },
+      ),
+    ).toThrow(/maximum byte length/);
+  });
+});
 
 describe("import-file accepts the file as a streamed request body", () => {
   for (const scope of scopes) {
     it(`${scope.name}: a multi-chunk body lands on the same content address as the multipart upload`, async () => {
       const { app, clashRoot } = await fixture();
-      const bytes = new Uint8Array(randomBytes(256 * 1024 + 17));
+      // A decodable image lets the default thumbnail representation actually
+      // seal, so this test can wait for that background Resource too.
+      const bytes = new Uint8Array(
+        await sharp(randomBytes(512 * 512 * 3), {
+          raw: { width: 512, height: 512, channels: 3 },
+        })
+          .png({ compressionLevel: 0 })
+          .toBuffer(),
+      );
       const digest = createHash("sha256").update(bytes).digest("hex");
 
       const form = new FormData();
@@ -187,6 +333,25 @@ describe("import-file accepts the file as a streamed request body", () => {
       expect(await contentAddressDirectories(clashRoot, digest)).toHaveLength(
         1,
       );
+      // A successful Project import seals the bytes and releases the staging
+      // name and row instead of retaining a second directory entry forever.
+      // Background representations are sealed Resources too: once the derived
+      // thumbnail exists, every digest must be free of staging rows/files.
+      if (scope.name === "project") {
+        await vi.waitFor(
+          () => {
+            expect(
+              representationRowCount(
+                join(clashRoot, "local-api"),
+                `sha256:${digest}`,
+              ),
+            ).toBeGreaterThan(0);
+          },
+          { timeout: 15_000, interval: 50 },
+        );
+        expect(await stagingFiles(clashRoot)).toEqual([]);
+        expect(stagingRowCount(join(clashRoot, "local-api"))).toBe(0);
+      }
 
       // The file never reached the whole-bytes entry point, and the streamed
       // body was hashed and written as it arrived rather than reassembled.
@@ -196,7 +361,7 @@ describe("import-file accepts the file as a streamed request body", () => {
     });
 
     it(`${scope.name}: a body that contradicts its declared byte length publishes nothing`, async () => {
-      const { app } = await fixture();
+      const { app, clashRoot } = await fixture();
       const bytes = new Uint8Array(randomBytes(64 * 1024));
       const query = {
         kind: "image",
@@ -213,7 +378,7 @@ describe("import-file accepts the file as a streamed request body", () => {
         }),
       );
       expect(longer.status).toBe(400);
-      expect((await longer.json()).code).toBe(scope.errorCode);
+      expect((await longer.json()).code).toBe(scope.lengthMismatchCode);
 
       const undeclared = await app.request(
         ...streamedImport({
@@ -228,12 +393,14 @@ describe("import-file accepts the file as a streamed request body", () => {
 
       const listed = await (await app.request(scope.collection)).json();
       expect(listed.assets).toEqual([]);
+      expect(await stagingFiles(clashRoot)).toEqual([]);
+      expect(stagingRowCount(join(clashRoot, "local-api"))).toBe(0);
     });
   }
 
   for (const scope of scopes) {
     it(`${scope.name}: Content-Length declares the byte length when the query omits byteLength`, async () => {
-      const { app } = await fixture();
+      const { app, clashRoot } = await fixture();
       const bytes = new Uint8Array(randomBytes(64 * 1024));
       const importWith = (id: string, headers: Record<string, string>) =>
         app.request(
@@ -261,7 +428,7 @@ describe("import-file accepts the file as a streamed request body", () => {
         "content-length": String(bytes.byteLength + 1),
       });
       expect(contradicted.status).toBe(400);
-      expect((await contradicted.json()).code).toBe(scope.errorCode);
+      expect((await contradicted.json()).code).toBe(scope.lengthMismatchCode);
 
       // A chunked body carries no Content-Length, so nothing declares it.
       const undeclared = await importWith("asset:undeclared", {});
@@ -272,8 +439,81 @@ describe("import-file accepts the file as a streamed request body", () => {
       expect(listed.assets.map((asset: { id: string }) => asset.id)).toEqual([
         "asset:content-length",
       ]);
+      if (scope.name === "project") {
+        expect(await stagingFiles(clashRoot)).toEqual([]);
+        expect(stagingRowCount(join(clashRoot, "local-api"))).toBe(0);
+      }
     });
   }
+
+  for (const scope of scopes) {
+    it(`${scope.name}: an oversized declared body is rejected before any byte is read`, async () => {
+      const { app, clashRoot } = await fixture();
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(1024));
+        },
+      });
+      const response = await app.request(
+        `${scope.collection}/import-file?${new URLSearchParams({
+          kind: "image",
+          [scope.idField]: "asset:too-large",
+          fileName: "huge.png",
+          byteLength: String(PROJECT_ASSET_IMPORT_MAX_BYTES + 1),
+        })}`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "image/png",
+            "content-length": String(PROJECT_ASSET_IMPORT_MAX_BYTES + 1),
+          },
+          body,
+          duplex: "half",
+        } as RequestInit,
+      );
+
+      expect(response.status).toBe(413);
+      expect(await response.json()).toMatchObject({
+        code: "CLOUD_CONTENT_TOO_LARGE",
+        maxBytes: PROJECT_ASSET_IMPORT_MAX_BYTES,
+      });
+      expect(await stagingFiles(clashRoot)).toEqual([]);
+      expect(stagingRowCount(join(clashRoot, "local-api"))).toBe(0);
+    });
+  }
+
+  it("project: a multipart Content-Length over cap + framing allowance is rejected before formData buffers it", async () => {
+    const { app, clashRoot } = await fixture();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("not multipart"));
+        controller.close();
+      },
+    });
+    const response = await app.request(
+      `${scopes[0].collection}/import-file?kind=image&projectAssetId=asset:multipart-too-large`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "multipart/form-data; boundary=oversized",
+          "content-length": String(
+            PROJECT_ASSET_IMPORT_MAX_BYTES +
+              PROJECT_ASSET_IMPORT_MULTIPART_FRAMING_ALLOWANCE_BYTES +
+              1,
+          ),
+        },
+        body,
+        duplex: "half",
+      } as RequestInit,
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      code: "CLOUD_CONTENT_TOO_LARGE",
+    });
+    expect(await stagingFiles(clashRoot)).toEqual([]);
+    expect(stagingRowCount(join(clashRoot, "local-api"))).toBe(0);
+  });
 
   it("project: the streamed transport honours duplicateContent against a multipart import", async () => {
     const { app } = await fixture();
@@ -311,5 +551,100 @@ describe("import-file accepts the file as a streamed request body", () => {
       code: "PROJECT_ASSET_DUPLICATE_CONTENT",
       existingProjectAssetIds: ["asset:first"],
     });
+  });
+});
+
+describe("Local Resource staging sweep on Host start", () => {
+  it("removes pre-existing receipt and orphan-file shapes before serving", async () => {
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const seeded: string[] = [];
+    const { clashRoot, dataDir } = await fixture(
+      async ({ clashRoot, dataDir }) => {
+        await mkdir(join(clashRoot, "assets", "blobs"), { recursive: true });
+        await mkdir(dataDir, { recursive: true });
+        const { DatabaseSync } = nodeRequire("node:sqlite") as {
+          DatabaseSync: new (path: string) => {
+            exec(sql: string): void;
+            prepare(sql: string): {
+              run(...params: unknown[]): unknown;
+            };
+            close(): void;
+          };
+        };
+        const database = new DatabaseSync(join(dataDir, "local.sqlite"));
+        try {
+          database.exec(`
+          CREATE TABLE IF NOT EXISTS local_resource_staging (
+            resource_id TEXT PRIMARY KEY,
+            digest_sha256 TEXT NOT NULL,
+            byte_length INTEGER NOT NULL,
+            storage_key TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+          );
+        `);
+          const insert = database.prepare(
+            "INSERT OR IGNORE INTO local_resource_staging (resource_id, digest_sha256, byte_length, storage_key, created_at) VALUES (?, ?, ?, ?, ?)",
+          );
+          const [withFile, missingFile, orphanFile] = Array.from(
+            { length: 3 },
+            () => randomBytes(32).toString("hex"),
+          );
+          seeded.push(withFile, missingFile, orphanFile);
+          insert.run(
+            `sha256:${withFile}`,
+            withFile,
+            1024,
+            `local-blobs/${withFile}/staging`,
+            old.getTime(),
+          );
+          const stagedPath = join(
+            clashRoot,
+            "assets",
+            "blobs",
+            withFile,
+            "staging",
+          );
+          await mkdir(join(clashRoot, "assets", "blobs", withFile), {
+            recursive: true,
+          });
+          await writeFile(stagedPath, randomBytes(1024));
+          await utimes(stagedPath, old, old);
+          insert.run(
+            `sha256:${missingFile}`,
+            missingFile,
+            2048,
+            `local-blobs/${missingFile}/staging`,
+            old.getTime(),
+          );
+          const orphanPath = join(
+            clashRoot,
+            "assets",
+            "blobs",
+            orphanFile,
+            "staging",
+          );
+          await mkdir(join(clashRoot, "assets", "blobs", orphanFile), {
+            recursive: true,
+          });
+          await writeFile(orphanPath, randomBytes(1024));
+          await utimes(orphanPath, old, old);
+        } finally {
+          database.close();
+        }
+      },
+    );
+
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && stagingRowCount(dataDir) > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(stagingRowCount(dataDir)).toBe(0);
+    expect(await stagingFiles(clashRoot)).toEqual([]);
+    for (const digest of seeded) {
+      const entries = await readdir(
+        join(clashRoot, "assets", "blobs", digest),
+      ).catch(() => []);
+      expect(entries.filter((entry) => entry === "staging")).toEqual([]);
+    }
   });
 });

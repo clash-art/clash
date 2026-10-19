@@ -948,13 +948,15 @@ describe("Local Project Asset service", () => {
           tracks: [
             {
               id: "track-1",
-              items: [{
-                id: "clip-1",
-                type: "video",
-                assetId: "timeline-source",
-                from: 0,
-                durationInFrames: 30,
-              }],
+              items: [
+                {
+                  id: "clip-1",
+                  type: "video",
+                  assetId: "timeline-source",
+                  from: 0,
+                  durationInFrames: 30,
+                },
+              ],
             },
           ],
         },
@@ -1395,4 +1397,57 @@ describe("Local Project Asset service", () => {
       }),
     ).rejects.toMatchObject({ code: "PROJECT_ASSET_ID_COLLISION" });
   });
+});
+
+it("returns the committed Asset when the post-commit read fails", async () => {
+  const clashRoot = await mkdtemp(join(tmpdir(), "clash-project-assets-read-"));
+  const dataDir = join(clashRoot, "local-api");
+  const replicas = new FileReplicaStore(join(dataDir, "projects"));
+  let readFailures = 0;
+  const service = createLocalProjectAssetService({
+    dataDir,
+    clashRoot,
+    projectionOrigin: "http://127.0.0.1:49152",
+    assetInspection: createLocalAssetInspectionService({
+      dataDir,
+      clashRoot,
+      inspectResource: inspectFixtureAsset,
+    }),
+    replica: {
+      async inspect(projectId, read) {
+        const doc = await replicas.recover(projectId);
+        const committed = listProjectAssets(doc).some(
+          (entry) => entry.id === "asset:read-failure",
+        );
+        if (committed) {
+          readFailures += 1;
+          throw new Error("injected post-commit read failure");
+        }
+        return read(doc);
+      },
+      mutate(projectId, mutation) {
+        return replicas.updateSnapshotAtomic(projectId, mutation);
+      },
+    },
+  });
+
+  const published = await service.installOwned({
+    projectId: "project-read-failure",
+    projectAssetId: "asset:read-failure",
+    kind: "image",
+    bytes: new TextEncoder().encode("committed read failure bytes"),
+    contentType: "image/png",
+    metadata: {},
+  });
+
+  expect(readFailures).toBe(2);
+  expect(published).toMatchObject({
+    id: "asset:read-failure",
+    kind: "image",
+    status: "ready",
+    metadata: { contentType: "image/png" },
+  });
+  await expect(
+    service.readEntry("project-read-failure", "asset:read-failure"),
+  ).rejects.toThrow("injected post-commit read failure");
 });

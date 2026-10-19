@@ -2,11 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   mkdtemp,
+  mkdir,
   readFile,
   writeFile,
   lstat,
   rm,
   stat,
+  symlink,
   truncate,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -52,7 +54,8 @@ test("assets list/get lines carry a failed Asset's coded reason", () => {
     assetCommands.assetStatusLine({
       ...base,
       status: "failed",
-      error: "LOCAL_RESOURCE_MISSING: Local Resource r has no immutable bytes on this Host.",
+      error:
+        "LOCAL_RESOURCE_MISSING: Local Resource r has no immutable bytes on this Host.",
       errorCode: "LOCAL_RESOURCE_MISSING",
     }),
     "asset:one video failed LOCAL_RESOURCE_MISSING: Local Resource r has no immutable bytes on this Host.",
@@ -233,7 +236,11 @@ async function sparseFileOver4GiB(path: string): Promise<number | null> {
 
 /** Reads the file-backed source an import handed to its client back as plain facts. */
 async function sentFile<T extends { file: AssetImportFile }>(input: T) {
-  const { file, onReplay: _onReplay, ...command } = input as T & {
+  const {
+    file,
+    onReplay: _onReplay,
+    ...command
+  } = input as T & {
     onReplay?: () => void;
   };
   return {
@@ -1511,4 +1518,95 @@ test("CLI import rejects duplicate content by default and exposes the explicit o
     });
   }
   assert.deepEqual(policies, ["reject", "allow"]);
+});
+
+test("re-import with the same id accepts an existing link to the same immutable projection", async () => {
+  const homeDir = await tempDir();
+  const cwd = await tempDir();
+  const source = join(await tempDir(), "hero.png");
+  const projection = join(await tempDir(), "immutable-hero.png");
+  await writeFile(source, "asset-bytes", "utf8");
+  await writeFile(projection, "asset-bytes", "utf8");
+  await initProject({ cwd, projectId: "asset_project" });
+  const linkPath = join(cwd, "assets", "links", "asset_hero-command.png");
+  await mkdir(join(cwd, "assets", "links"), { recursive: true });
+  await symlink(projection, linkPath);
+
+  let importCalls = 0;
+  const result = await importAssetFile({
+    filePath: source,
+    projectAssetId: "asset:hero-command",
+    cwd,
+    env: {},
+    homeDir,
+    kind: "image",
+    resolveExistingAssetPath: async () => projection,
+    download: async () => projection,
+    client: {
+      async importFile(input) {
+        importCalls += 1;
+        input.onReplay?.();
+        return {
+          projectId: "asset_project",
+          value: {
+            ...hostReadyAsset,
+            id: "asset:hero-command",
+          },
+        };
+      },
+    } as ProjectAssetHostClient,
+  });
+
+  assert.equal(importCalls, 1);
+  assert.equal(result.replayed, true);
+  assert.equal(result.assetId, "asset:hero-command");
+  assert.equal(result.linkPath, linkPath);
+  assert.equal(result.linkMethod, "symlink");
+  assert.equal(await readFile(linkPath, "utf8"), "asset-bytes");
+});
+
+test("a link conflict is rejected before the import sends bytes", async () => {
+  const homeDir = await tempDir();
+  const cwd = await tempDir();
+  const source = join(await tempDir(), "hero.png");
+  const other = join(await tempDir(), "other.png");
+  await writeFile(source, "asset-bytes", "utf8");
+  await writeFile(other, "different-bytes", "utf8");
+  await initProject({ cwd, projectId: "asset_project" });
+  const linkPath = join(cwd, "assets", "links", "asset_hero-command.png");
+  await mkdir(join(cwd, "assets", "links"), { recursive: true });
+  await symlink(other, linkPath);
+
+  let importCalls = 0;
+  await assert.rejects(
+    importAssetFile({
+      filePath: source,
+      projectAssetId: "asset:hero-command",
+      cwd,
+      env: {},
+      homeDir,
+      kind: "image",
+      resolveExistingAssetPath: async () => null,
+      download: async () => {
+        throw new Error(
+          "the Host must not be asked to resolve after a conflict",
+        );
+      },
+      client: {
+        async importFile(
+          _input: Parameters<ProjectAssetHostClient["importFile"]>[0],
+        ) {
+          importCalls += 1;
+          throw new Error("the Host must not receive the import");
+        },
+      } as unknown as ProjectAssetHostClient,
+    }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "ASSET_LINK_CONFLICT");
+      return true;
+    },
+  );
+
+  assert.equal(importCalls, 0);
+  assert.equal(await readFile(linkPath, "utf8"), "different-bytes");
 });
