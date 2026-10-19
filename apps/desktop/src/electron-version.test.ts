@@ -230,7 +230,25 @@ describe("desktop Electron runtime", () => {
       sourceMatches(release, /uses:\s*actions\/download-artifact@v\d+\b/),
     ).toBe(true);
     expect(release).toContain("gh release upload desktop-preview");
+    expect(release).toContain(
+      "desktop-artifacts/Clash-Desktop-Linux-x64.AppImage",
+    );
     expect(release).toContain("environment: desktop-preview-acceptance");
+  });
+
+  it("publishes the Linux x64 AppImage in stable desktop releases", () => {
+    const stablePublish = readFileSync(
+      new URL(
+        "../../../.github/workflows/publish-desktop-stable.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+
+    expect(stablePublish).toContain("pattern: Clash-Desktop-Linux");
+    expect(stablePublish).toContain("Clash-Desktop-Linux-x64.AppImage");
+    expect(stablePublish).toContain("latest-mac.yml");
+    expect(stablePublish).not.toContain("latest-linux.yml");
   });
 
   it("gives the desktop renderer enough heap on packaging runners", () => {

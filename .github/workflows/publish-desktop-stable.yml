@@ -1,6 +1,7 @@
 name: Publish Desktop Stable
 
 # Version-tagged stable desktop release (separate from rolling desktop-preview).
+# The stable release carries macOS arm64 and the Linux x64 AppImage.
 # Publication stays manual until desktop stable acceptance is enabled.
 on:
   workflow_dispatch:
@@ -37,6 +38,14 @@ jobs:
           merge-multiple: true
           github-token: ${{ github.token }}
 
+      - name: Download packaged Linux x64 AppImage
+        uses: actions/download-artifact@v8
+        with:
+          pattern: Clash-Desktop-Linux
+          path: desktop-artifacts
+          merge-multiple: true
+          github-token: ${{ github.token }}
+
       - name: Prepare previous stable blockmap for differential updates
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,9 +71,14 @@ jobs:
             fi
           fi
           shopt -s nullglob
+          if [ ! -f "${release_root}/Clash-Desktop-Linux-x64.AppImage" ]; then
+            echo "::error::Missing ${release_root}/Clash-Desktop-Linux-x64.AppImage"
+            exit 1
+          fi
           assets=(
             "${release_root}"/Clash-Desktop-*-macOS-arm64.zip
             "${release_root}"/Clash-Desktop-*-macOS-arm64.dmg
+            "${release_root}"/Clash-Desktop-Linux-x64.AppImage
             "${release_root}"/latest-mac.yml
             "${release_root}"/*.zip.blockmap
             "${release_root}"/*.dmg.blockmap

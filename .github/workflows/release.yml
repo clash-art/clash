@@ -85,6 +85,15 @@ jobs:
           path: desktop-artifacts
           merge-multiple: true
 
+      # Fail before moving the tag or editing the release if the Linux
+      # AppImage did not make it into the downloaded installers.
+      - name: Require the Linux x64 AppImage
+        run: |
+          if [ ! -f desktop-artifacts/Clash-Desktop-Linux-x64.AppImage ]; then
+            echo "::error::Missing desktop-artifacts/Clash-Desktop-Linux-x64.AppImage"
+            exit 1
+          fi
+
       - name: Point the rolling preview tag at this build
         run: |
           git tag --force desktop-preview "$GITHUB_SHA"
