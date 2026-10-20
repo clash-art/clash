@@ -28,6 +28,15 @@ function servesFlashOnly(implementation: Implementation): boolean {
   return FLASH.test(implementation.upstreamModel);
 }
 
+/**
+ * The same rule for a price-book row: a model code or upstream naming
+ * DeepSeek must be a Flash model code, so no Pro/Reasoner price can be
+ * published.
+ */
+export function isBlockedDeepSeekModel(modelCode: string, upstreamId = ""): boolean {
+  return (DEEPSEEK.test(modelCode) || DEEPSEEK.test(upstreamId)) && !FLASH.test(modelCode);
+}
+
 export interface GatewayCatalogExclusion {
   modelCode: string;
   reason: "deepseek-not-flash";

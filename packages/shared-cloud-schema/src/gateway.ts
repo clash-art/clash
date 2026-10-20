@@ -240,6 +240,8 @@ export const gatewayPrices = sqliteTable(
     source: text("source").notNull().default("manual"),
     createdByUserId: text("created_by_user_id"),
     createdAt: createdAt(),
+    /** (0035) NULL: draft, never charged. Set once, when the version is published. */
+    publishedAt: integer("published_at"),
   },
   (table) => ({
     rateIdx: uniqueIndex("gateway_price_rate_idx").on(

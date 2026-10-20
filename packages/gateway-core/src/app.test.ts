@@ -149,6 +149,61 @@ describe("createGatewayApp", () => {
     expect(row).toMatchObject({ status: "settled", accountId: plan.attempts[1]!.route.accountId });
   });
 
+  it("prices a failover attempt as of the request's admission, not as of the attempt", async () => {
+    const second = {
+      id: "official-openai-2",
+      providerId: "official",
+      upstreamId: "openai",
+      apiShape: "openai-compatible",
+      configuredCredentials: ["apiKey"],
+    };
+    const accounts = [fixture.providers.official[0]!, second];
+    const catalog: GatewayCatalog = {
+      version: "failover-priced-at",
+      models: buildEffectiveModelCards({
+        baseModels: [],
+        providers: accounts,
+        configs: [
+          {
+            modelId: fixture.textModel,
+            custom: true,
+            name: "Failover chat",
+            kind: "text",
+            providerBindings: accounts.map((account) => ({
+              providerAccountId: account.id!,
+              upstreamModel: `${account.id}-model`,
+            })),
+          },
+        ],
+      }),
+    };
+    let calls = 0;
+    const { app, memory } = gateway({
+      catalog,
+      extraOfficial: [second],
+      upstream: {
+        async fetch() {
+          calls += 1;
+          if (calls > 1) return ok("x");
+          // Time passes while the first route fails; a price published now must not apply.
+          memory.advance(60_000);
+          return new Response("busy", { status: 503 });
+        },
+      },
+    });
+    const pricedAt: Array<number | undefined> = [];
+    const price = memory.ports.routes.price.bind(memory.ports.routes);
+    memory.ports.routes.price = (input) => {
+      pricedAt.push(input.at);
+      return price(input);
+    };
+    const admittedAt = memory.ports.clock.now();
+    const res = await app.fetch(post(chat));
+    expect(res.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(pricedAt).toEqual([admittedAt, admittedAt]);
+  });
+
   it("never sends anthropic-compatible routes the OpenAI wire format", async () => {
     const urls: string[] = [];
     const { app } = gateway({

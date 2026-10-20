@@ -55,11 +55,17 @@ export interface GatewayRoutesPort {
     identity: GatewayIdentity,
     scope: GatewayCredentialScope,
   ): Promise<ProviderAccountAvailability[]>;
-  /** Effective price for a route; rejects with GATEWAY_PRICE_UNAVAILABLE when none is published. */
+  /**
+   * Price for a route effective at `at` (epoch ms; default now). Every attempt
+   * of one request is priced as of its admission, so a version published
+   * mid-request never applies to it. Rejects with GATEWAY_PRICE_UNAVAILABLE
+   * when none is published.
+   */
   price(input: {
     identity: GatewayIdentity;
     catalogVersion: string;
     route: ModelUpstreamRoute;
+    at?: number;
   }): Promise<GatewayPrice>;
 }
 

@@ -37,6 +37,8 @@ export interface GatewayAdmission {
   plan: GatewayRoutePlan;
   /** Price of the first attempt; the hold is computed from it. */
   price: GatewayPrice;
+  /** Epoch ms the request was priced at; failover attempts are priced at the same instant. */
+  pricedAt: number;
   holdMicroCredits: MicroCredits;
   reservation: Reservation;
   leaseId: string;
@@ -87,10 +89,12 @@ async function admit(
     providers,
     requestedParameterIds: request.requestedParameterIds,
   });
+  const pricedAt = ports.clock.now();
   const price = await ports.routes.price({
     identity,
     catalogVersion: catalog.version,
     route: plan.attempts[0]!.route,
+    at: pricedAt,
   });
   assertPriceCovers(price, holdUnits(request));
   const holdMicroCredits = computeHold(request, price);
@@ -120,6 +124,7 @@ async function admit(
       request,
       plan,
       price,
+      pricedAt,
       holdMicroCredits,
       reservation,
       leaseId,

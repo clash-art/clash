@@ -25,7 +25,8 @@
     "src/sse.ts": "WHATWG SSE parser/encoder and a pass-through usage capture TransformStream.",
     "src/admission.ts": "admitGatewayRequest / settleGatewayRequest composed over the ports.",
     "src/app.ts": "createGatewayApp(ports, { basePath }): framework-free fetch handler. Non-stream OpenAI chat completions (stream: true -> 501), failover over openai-compatible routes via nextGatewayAttempt, exactly-once settlement, no upstream error bodies forwarded.",
-    "src/catalog-policy.ts": "applyGatewayCatalogPolicy: DeepSeek Flash only (applied in admission for every adapter).",
+    "src/catalog-policy.ts": "applyGatewayCatalogPolicy: DeepSeek Flash only (applied in admission for every adapter); isBlockedDeepSeekModel applies the same rule to price-book rows.",
+    "src/billing.ts": "Credit billing decisions (#352): anchored calendar billing periods, wallet balance, expiringGrant (period grant consumed first, never below open holds), assertPriceDraftPolicy (units, integer amounts, unique rates, DeepSeek Flash only).",
     "src/contract/index.ts": "describeGatewayContract(name, setup) with capabilities and knownGaps; its data-plane cases drive createGatewayApp with a suite-owned fetch-stub upstream."
   }
 }

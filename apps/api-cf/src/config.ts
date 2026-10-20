@@ -45,6 +45,12 @@ export interface Env {
    */
   GATEWAY_ENCRYPTION_KEY?: string;
   /**
+   * Platform-admin grant for the model gateway control plane (price book,
+   * packages, top-up packs, billing periods): comma-separated Better Auth user
+   * ids. Unset means nobody is a platform admin. Not a tenant role.
+   */
+  GATEWAY_ADMIN_USER_IDS?: string;
+  /**
    * Optional secret: JSON array of operator-registered OAuth Providers,
    * `[{ id, label?, flow }]` where `flow` is a PluginAuthFlow with tokenUrl and
    * clientId. Parsed on first use (services/provider-oauth-config.ts), never at

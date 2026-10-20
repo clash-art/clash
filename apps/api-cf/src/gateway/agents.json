@@ -9,7 +9,10 @@
   ],
   "key_files": {
     "index.ts": "createD1GatewayPorts, workerSecrets, createCloudflareGatewayApp (basePath /gateway).",
-    "d1-routes.ts": "Published catalog from gateway_model.card_json, official accounts from gateway_upstream_account (tenant scope: none), price book from gateway_price.",
+    "d1-routes.ts": "Published catalog from gateway_model.card_json, official accounts from gateway_upstream_account (tenant scope: none), price book from published gateway_price rows effective at the admission instant (newest version first, exact upstream over model-wide).",
+    "d1-price-book.ts": "#352 price-book admin: list, draft (replaced wholly in one batch), publish (one UPDATE; effective_from never before the publish instant). Published rows are immutable; every mutation writes gateway_admin_audit in the same batch.",
+    "d1-billing.ts": "#352 credit billing: packages, top-up packs, subscribe (first-period grant), top-up, cancel, idempotent rollover (expire unused grant + next grant), wallet summary. Each operation is one changes()-chained batch with a CHECK-violation guard; ledger request ids are the idempotency anchors.",
+    "d1-billing.test.ts": "Price book + billing on node:sqlite: draft/publish, effective dates, no repricing through the real data plane, grant/topup/expire idempotency, team wallet, coded atomic refusals.",
     "d1-credentials.ts": "Official credential resolution (secret_ref or sealed envelope), fail closed with GATEWAY_KEY_UNAVAILABLE; sealGatewayUpstreamCredentials.",
     "d1-budgets.ts": "All-or-nothing reserve in one batch (CHECK-violation guard rolls back), single-batch settle writing per-budget settle rows; ledger reads. No budget row = refused.",
     "d1-limits.ts": "rate_limit_json from key / model / subscription, counted in gateway_rate_window and gateway_inflight (0034).",

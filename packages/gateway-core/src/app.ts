@@ -181,6 +181,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           identity: admission.identity,
           catalogVersion: admission.plan.catalogVersion,
           route: attempt.route,
+          at: admission.pricedAt,
         });
 
   async function callAttempt(
