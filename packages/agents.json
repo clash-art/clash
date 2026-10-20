@@ -8,6 +8,7 @@
   ],
   "subdirectories": {
     "shared-replica": "Portable durable replica engine and Loro protocol adapters; infrastructure is supplied through ports.",
+    "gateway-core": "Runtime-neutral model gateway core: GatewayPorts, coded errors, request normalization, integer metering, route plans over shared-types routing, contract suite.",
     "shared-artifact-evals": "Outcome-driven headless creative benchmark runner and artifact graders.",
     "mcp-server": "Internal typed peer capability surface and Canvas App used by the bundled Clash plugin; calls local-api directly and is not a standalone daemon.",
     "shared-mcp": "Shared Clash MCP server and fail-closed wire-schema compatibility boundary.",

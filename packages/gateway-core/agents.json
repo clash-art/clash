@@ -1,0 +1,29 @@
+{
+  "summary": "Runtime-neutral model gateway core shared by every gateway adapter (Workers/D1, Node/PostgreSQL, Node/SQLite). It owns decisions (route plan, holds, settlement, coded errors, usage, SSE metering); adapters own durability and HTTP through GatewayPorts.",
+  "context_hints": [
+    "Boundary: no node:*, cloudflare:*, pg/drizzle/SQLite, Loro, @clash/shared-runtime or Workers Env. Enforced by the gateway-core override in .eslintrc.boundaries.json (pnpm lint:boundaries) and proven by scripts/architecture-boundaries.test.ts, including a transitive check that only zod is reached.",
+    "Import shared-types through loro-free subpaths (`@clash/shared-types/model-routing`); the package root re-exports Loro-backed modules.",
+    "Routing is a facade: planGatewayRoutes returns listModelUpstreamRoutes' order unchanged over the supplied catalog and one credential scope (official or tenant, never mixed), and adds a retry class per attempt. Do not reimplement ordering here.",
+    "Money is integer micro-credits (1 credit = 1_000_000) computed in bigint and rounded up once per line; no floats, no markup. Media/AIGC failures settle at zero; text settles delivered output.",
+    "Every reservation ends in exactly one budgets.settle, which writes the ledger row and closes holds in one adapter transaction, idempotent by request id.",
+    "Every failure is a GatewayError whose code maps to an HTTP status plus OpenAI and Anthropic error bodies (errors.ts). A port a deployment lacks rejects with GATEWAY_CAPABILITY_UNAVAILABLE (501).",
+    "New adapters run describeGatewayContract from @clash/gateway-core/contract; unmet capabilities go in knownGaps and must keep failing until fixed."
+  ],
+  "subdirectories": {
+    "src/contract": "Shared Vitest contract suite over GatewayPorts plus the in-memory stub run.",
+    "src/testing": "In-memory GatewayPorts stub and a catalog fixture built through shared-types."
+  },
+  "key_files": {
+    "src/ports.ts": "GatewayPorts: clock, ids, identity, routes, credentials, budgets, limits, ledger, blobs, scheduler, audit, logger, upstream; unavailablePort.",
+    "src/errors.ts": "Closed GATEWAY_* error table -> HTTP status, OpenAI and Anthropic error bodies, Retry-After.",
+    "src/routing.ts": "planGatewayRoutes over listModelUpstreamRoutes; nextGatewayAttempt failover/exhaustion decisions.",
+    "src/request.ts": "OpenAI chat, Anthropic messages and media request normalization; upstream body preparation (include_usage).",
+    "src/usage.ts": "Usage accumulator for OpenAI and Anthropic payloads/stream events (input, output, cache read, cache write).",
+    "src/pricing.ts": "Integer micro-credit price book arithmetic.",
+    "src/budget.ts": "Hold computation and pure reserve/settle arithmetic, outcome charging rules, invariant checks.",
+    "src/limits.ts": "Rate/concurrency decision shape and fixed-window helpers.",
+    "src/sse.ts": "WHATWG SSE parser/encoder and a pass-through usage capture TransformStream.",
+    "src/admission.ts": "admitGatewayRequest / settleGatewayRequest composed over the ports.",
+    "src/contract/index.ts": "describeGatewayContract(name, setup) with capabilities and knownGaps."
+  }
+}

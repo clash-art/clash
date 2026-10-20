@@ -42,6 +42,15 @@
       "@clash/director-core": [
         "packages/director-core/src/index.ts"
       ],
+      "@clash/gateway-core": [
+        "packages/gateway-core/src/index.ts"
+      ],
+      "@clash/gateway-core/contract": [
+        "packages/gateway-core/src/contract/index.ts"
+      ],
+      "@clash/gateway-core/testing": [
+        "packages/gateway-core/src/testing/memory-ports.ts"
+      ],
       "@clash/gui": [
         "packages/gui/src/index.ts"
       ],
