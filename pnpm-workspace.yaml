@@ -9,6 +9,7 @@ packages:
   - 'packages/remotion-*'
   - 'packages/director-*'
   - 'packages/shared-*'
+  - 'packages/gateway-core'
   - 'packages/action-sdk'
   - 'packages/asset-sdk'
   - 'packages/metadata-service'

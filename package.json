@@ -50,7 +50,7 @@
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "quality:configs:write": "node scripts/source-check-config.ts --write",
     "quality:configs:check": "node scripts/source-check-config.ts --check",
-    "lint:boundaries": "eslint --no-eslintrc --no-inline-config -c .eslintrc.boundaries.json --ext .ts,.tsx packages/web-ui/src packages/remotion-ui/src packages/director-ui/src packages/gui/src packages/remotion-components/src packages/shared-runtime/src packages/asset-sdk/src"
+    "lint:boundaries": "eslint --no-eslintrc --no-inline-config -c .eslintrc.boundaries.json --ext .ts,.tsx packages/web-ui/src packages/remotion-ui/src packages/director-ui/src packages/gui/src packages/remotion-components/src packages/shared-runtime/src packages/asset-sdk/src packages/gateway-core/src"
   },
   "keywords": [
     "creative-platform",

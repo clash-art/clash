@@ -1,0 +1,299 @@
+/**
+ * GatewayPorts: the only surface the core touches. Each runtime (Workers/D1,
+ * Node/PostgreSQL, Node/SQLite, in-memory tests) supplies one implementation;
+ * the core owns decisions, adapters own durability. Every method resolves or
+ * rejects with a `GatewayError`; a port a deployment does not implement
+ * rejects with GATEWAY_CAPABILITY_UNAVAILABLE (see `unavailablePort`).
+ */
+import type {
+  ModelUpstreamRoute,
+  ProviderAccountAvailability,
+} from "@clash/shared-types/model-routing";
+
+import type { BudgetHold, BudgetState, GatewayOutcome } from "./budget.js";
+import { GatewayError } from "./errors.js";
+import type { LimitDecision } from "./limits.js";
+import type { GatewayPrice, MicroCredits } from "./pricing.js";
+import type { GatewayModelKind } from "./request.js";
+import type { GatewayCatalog, GatewayCredentialScope } from "./routing.js";
+import type { Usage } from "./usage.js";
+
+/** Who is calling, derived from a verified credential, never from a header claim. */
+export interface GatewayIdentity {
+  tenantId: string;
+  userId: string;
+  /** Virtual key / gateway token id when the caller used one. */
+  keyId?: string;
+  /** Model codes this credential may use; absent means the whole catalog. */
+  modelAllowlist?: readonly string[];
+  /** Budgets this caller draws on, all reserved together. */
+  budgetIds: readonly string[];
+  /** Which upstream accounts serve this caller. */
+  credentialScope: GatewayCredentialScope;
+}
+
+export interface GatewayClock {
+  /** Epoch milliseconds from the authority that orders windows and expiries. */
+  now(): number;
+}
+
+export interface GatewayIds {
+  /** Globally unique request id; the ledger's idempotency anchor. */
+  requestId(): string;
+}
+
+export interface GatewayIdentityPort {
+  /** Rejects with GATEWAY_AUTH_REQUIRED, GATEWAY_TOKEN_EXPIRED or GATEWAY_TOKEN_REVOKED. */
+  authenticate(request: Request): Promise<GatewayIdentity>;
+}
+
+export interface GatewayRoutesPort {
+  /** Published catalog the caller may route against (configurable data, not compiled cards). */
+  catalog(identity: GatewayIdentity): Promise<GatewayCatalog>;
+  /** Accounts of exactly one scope; official and tenant accounts are never mixed. */
+  providers(
+    identity: GatewayIdentity,
+    scope: GatewayCredentialScope,
+  ): Promise<ProviderAccountAvailability[]>;
+  /** Effective price for a route; rejects with GATEWAY_PRICE_UNAVAILABLE when none is published. */
+  price(input: {
+    identity: GatewayIdentity;
+    catalogVersion: string;
+    route: ModelUpstreamRoute;
+  }): Promise<GatewayPrice>;
+}
+
+export interface GatewayUpstreamCredential {
+  apiKey: string;
+  baseUrl?: string;
+  /** Non-secret id (and version) of the key used; recorded, never the key itself. */
+  keyId: string;
+  keyVersion?: string;
+}
+
+export interface GatewayCredentialPort {
+  /**
+   * Resolve the key for one route within one scope. A route whose account does
+   * not belong to `scope` rejects with GATEWAY_KEY_UNAVAILABLE, so an official
+   * key can never serve tenant BYOK traffic or vice versa.
+   */
+  resolve(input: {
+    route: ModelUpstreamRoute;
+    scope: GatewayCredentialScope;
+    tenantId: string;
+  }): Promise<GatewayUpstreamCredential>;
+}
+
+export interface ReserveInput {
+  requestId: string;
+  tenantId: string;
+  budgetIds: readonly string[];
+  holdMicroCredits: MicroCredits;
+  /** Epoch ms after which the sweeper may expire the hold. */
+  expiresAt: number;
+  idempotencyKey?: string;
+}
+
+export interface Reservation {
+  requestId: string;
+  holds: BudgetHold[];
+  expiresAt: number;
+}
+
+export interface SettleResult {
+  requestId: string;
+  /** Cost recorded by the first settlement; a duplicate returns it unchanged. */
+  costMicroCredits: MicroCredits;
+  duplicate: boolean;
+}
+
+export interface GatewayBudgetPort {
+  /**
+   * Atomically hold on every budget or none. Rejects with GATEWAY_BUDGET_EXCEEDED,
+   * GATEWAY_IDEMPOTENCY_IN_PROGRESS or GATEWAY_IDEMPOTENCY_ALREADY_SETTLED.
+   */
+  reserve(input: ReserveInput): Promise<Reservation>;
+  /**
+   * End a reservation: in one transaction, append the ledger row and move each
+   * open hold from reserved to spent at `event.costMicroCredits` (zero releases
+   * it). Every reservation ends in exactly one settlement; a duplicate is a
+   * no-op keyed by request id. A request id that was never reserved rejects
+   * with GATEWAY_INTERNAL.
+   */
+  settle(event: UsageEvent): Promise<SettleResult>;
+  snapshot(input: { tenantId: string; budgetIds?: readonly string[] }): Promise<BudgetState[]>;
+}
+
+export interface LimitInput {
+  tenantId: string;
+  userId: string;
+  keyId?: string;
+  modelCode: string;
+  estimatedTokens: number;
+}
+
+export interface GatewayLimitPort {
+  /** Count this request against rate windows and in-flight concurrency. */
+  admit(input: LimitInput): Promise<LimitDecision>;
+  /** End the in-flight lease from an allowed decision; idempotent. */
+  release(input: { leaseId: string }): Promise<void>;
+}
+
+export type GatewayLedgerStatus = Exclude<GatewayOutcome, "completed"> | "settled";
+
+/** Ledger statuses for an outcome: a normal completion is `settled`. */
+export function ledgerStatus(outcome: GatewayOutcome): GatewayLedgerStatus {
+  return outcome === "completed" ? "settled" : outcome;
+}
+
+export interface UsageEvent {
+  requestId: string;
+  tenantId: string;
+  userId: string;
+  keyId?: string;
+  modelCode: string;
+  kind: GatewayModelKind;
+  upstreamId: string;
+  accountId?: string;
+  credentialScope: GatewayCredentialScope;
+  usage: Usage;
+  costMicroCredits: MicroCredits;
+  priceVersion: string;
+  catalogVersion: string;
+  status: GatewayLedgerStatus;
+  errorCode?: string;
+  occurredAt: number;
+}
+
+export interface LedgerFilter {
+  tenantId: string;
+  userId?: string;
+  keyId?: string;
+  from?: number;
+  to?: number;
+  limit?: number;
+}
+
+/** Read side of the ledger; rows are written only by `budgets.settle`. */
+export interface GatewayLedgerPort {
+  get(input: { tenantId: string; requestId: string }): Promise<UsageEvent | null>;
+  /** Rows of one tenant only, newest first. */
+  query(filter: LedgerFilter): Promise<UsageEvent[]>;
+}
+
+export interface GatewayBlob {
+  body: Uint8Array;
+  contentType?: string;
+}
+
+/** Media outputs and optional response capture; a subset of AssetDeliveryStore. */
+export interface GatewayBlobPort {
+  put(key: string, blob: GatewayBlob): Promise<void>;
+  get(key: string): Promise<GatewayBlob | null>;
+  delete(key: string): Promise<void>;
+}
+
+export interface GatewayJob {
+  /** Caller-chosen id; enqueueing the same id twice schedules one job. */
+  id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  runAt?: number;
+}
+
+/** Durable work after the response: media polling, settlement retries, sweeps. */
+export interface GatewaySchedulerPort {
+  enqueue(job: GatewayJob): Promise<{ jobId: string; duplicate: boolean }>;
+}
+
+export interface GatewayAuditEvent {
+  id: string;
+  actor: string;
+  tenantId: string;
+  action: string;
+  target: string;
+  /** Redacted snapshots; never key material or prompt content. */
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+  reason?: string;
+  requestId?: string;
+  at: number;
+}
+
+export interface GatewayAuditPort {
+  append(event: GatewayAuditEvent): Promise<void>;
+  query(filter: { tenantId: string; limit?: number }): Promise<GatewayAuditEvent[]>;
+}
+
+export type GatewayLogFields = Record<string, string | number | boolean | null | undefined>;
+
+/** Metadata-only logs: ids, counts, codes and durations; never prompts or keys. Must not throw. */
+export interface GatewayLogger {
+  info(event: string, fields?: GatewayLogFields): void;
+  warn(event: string, fields?: GatewayLogFields): void;
+  error(event: string, fields?: GatewayLogFields): void;
+}
+
+export interface GatewayUpstreamPort {
+  /** Platform fetch, injectable so tests point at a mock upstream. */
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface GatewayPorts {
+  clock: GatewayClock;
+  ids: GatewayIds;
+  identity: GatewayIdentityPort;
+  routes: GatewayRoutesPort;
+  credentials: GatewayCredentialPort;
+  budgets: GatewayBudgetPort;
+  limits: GatewayLimitPort;
+  ledger: GatewayLedgerPort;
+  blobs: GatewayBlobPort;
+  scheduler: GatewaySchedulerPort;
+  audit: GatewayAuditPort;
+  logger: GatewayLogger;
+  upstream: GatewayUpstreamPort;
+}
+
+export type GatewayPortName = keyof GatewayPorts;
+
+export const GATEWAY_PORT_NAMES = [
+  "clock",
+  "ids",
+  "identity",
+  "routes",
+  "credentials",
+  "budgets",
+  "limits",
+  "ledger",
+  "blobs",
+  "scheduler",
+  "audit",
+  "logger",
+  "upstream",
+] as const satisfies readonly GatewayPortName[];
+
+// Compile-time proof that GATEWAY_PORT_NAMES lists every port.
+const _everyPortListed: [
+  Exclude<GatewayPortName, (typeof GATEWAY_PORT_NAMES)[number]>,
+] extends [never]
+  ? true
+  : never = true;
+
+/**
+ * A port this deployment does not implement: every method rejects with
+ * GATEWAY_CAPABILITY_UNAVAILABLE (HTTP 501), never a silent no-op or a 404.
+ */
+export function unavailablePort<T extends object>(name: string): T {
+  return new Proxy({} as T, {
+    get(_target, method) {
+      if (typeof method !== "string" || method === "then") return undefined;
+      return () =>
+        Promise.reject(
+          new GatewayError("GATEWAY_CAPABILITY_UNAVAILABLE", {
+            details: { port: name, method },
+          }),
+        );
+    },
+  });
+}

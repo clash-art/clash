@@ -80,10 +80,15 @@
       "types": "./dist/project-metadata.d.ts",
       "import": "./dist/project-metadata.js",
       "default": "./dist/project-metadata.js"
+    },
+    "./model-routing": {
+      "types": "./dist/model-routing.d.ts",
+      "import": "./dist/model-routing.js",
+      "default": "./dist/model-routing.js"
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts src/project-sync-content.ts src/marketplace-installation.ts src/sync-error-severity.ts src/project-metadata.ts --format esm --dts --clean --target es2020",
+    "build": "tsup src/index.ts src/assets.ts src/actions/asset-edit.ts src/timeline-library.ts src/timeline-contract.ts src/timeline-envelope.ts src/executable-plugin.ts src/model-output-contract.ts src/gpt-image-size.ts src/director-code.ts src/project-sync-content.ts src/marketplace-installation.ts src/sync-error-severity.ts src/project-metadata.ts src/model-routing.ts --format esm --dts --clean --target es2020",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -145,6 +145,93 @@ test("the asset SDK cannot see the platform", async () => {
   }
 });
 
+test("gateway-core cannot see a runtime, a database, Loro or Env", async () => {
+  const file = "packages/gateway-core/src/boundary-probe.ts";
+  for (const source of [
+    'import { readFile } from "node:fs/promises";',
+    'import { createHash } from "crypto";',
+    'import { env } from "cloudflare:workers";',
+    'import type { D1Database } from "@cloudflare/workers-types";',
+    'import pg from "pg";',
+    'import { drizzle } from "drizzle-orm/d1";',
+    'import Database from "better-sqlite3";',
+    'import { LoroDoc } from "loro-crdt";',
+    'import { MODEL_CARDS } from "@clash/shared-types";',
+    'import { logger } from "@clash/shared-runtime/logging";',
+    'import type { Env } from "../../../apps/api-cf/src/config";',
+  ]) {
+    assert.ok(
+      (await violations(file, source)).includes("no-restricted-imports"),
+      source,
+    );
+  }
+  for (const source of [
+    "export function handle(env: Env) { return env; }",
+    "const stage = process.env.STAGE;",
+    "export const put = (db: D1Database) => db;",
+    "const now = Date.now();",
+    "const id = crypto.randomUUID();",
+    "const r = Math.random();",
+    "const credits = parseFloat(amount);",
+    "const shown = cost.toFixed(2);",
+  ]) {
+    assert.ok(
+      (await violations(file, source)).includes("no-restricted-syntax"),
+      source,
+    );
+  }
+  assert.deepEqual(
+    await violations(
+      file,
+      'import { z } from "zod";\nimport { listModelUpstreamRoutes } from "@clash/shared-types/model-routing";\nexport const at = (clock: { now(): number }) => clock.now();',
+    ),
+    [],
+  );
+});
+
+test("gateway-core reaches only zod transitively", async () => {
+  const { build } = await import("esbuild");
+  const reached = new Map<string, string>();
+  await build({
+    entryPoints: [
+      "packages/gateway-core/src/index.ts",
+      "packages/gateway-core/src/testing/memory-ports.ts",
+    ].map((entry) => path.join(root, entry)),
+    absWorkingDir: root,
+    bundle: true,
+    write: false,
+    outdir: "/tmp/clash-gateway-core-boundaries",
+    platform: "neutral",
+    format: "esm",
+    mainFields: ["module", "main"],
+    conditions: ["import"],
+    tsconfig: path.join(root, "tsconfig.source.json"),
+    logLevel: "silent",
+    plugins: [
+      {
+        name: "record-external",
+        setup(pluginBuild) {
+          pluginBuild.onResolve({ filter: /.*/ }, (args) => {
+            if (
+              args.path.startsWith(".") ||
+              args.path.startsWith("/") ||
+              args.path.startsWith("@clash/")
+            )
+              return undefined;
+            reached.set(args.path, path.relative(root, args.importer));
+            return { path: args.path, external: true };
+          });
+        },
+      },
+    ],
+  });
+  assert.deepEqual(
+    [...reached].filter(([specifier]) => specifier !== "zod"),
+    [],
+    "gateway-core reached a module other than zod",
+  );
+});
+
 test("boundary lint exemptions cannot grow (ratchet)", () => {
   const config = JSON.parse(readFileSync(configFile, "utf8")) as {
     overrides: Array<{ files: string[]; rules: Record<string, unknown> }>;

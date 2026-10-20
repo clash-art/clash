@@ -382,6 +382,136 @@
           }
         ]
       }
+    },
+    {
+      "files": [
+        "packages/gateway-core/src/**/*.ts"
+      ],
+      "excludedFiles": [
+        "**/*.test.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": [
+                  "cloudflare:*",
+                  "@cloudflare/*",
+                  "wrangler",
+                  "wrangler/*",
+                  "workerd",
+                  "agents",
+                  "agents/*",
+                  "partyserver",
+                  "partyserver/*"
+                ],
+                "message": "gateway-core is runtime-neutral: Workers bindings live in the api-cf adapter and reach the core through GatewayPorts."
+              },
+              {
+                "group": [
+                  "node:*",
+                  "fs",
+                  "fs/*",
+                  "path",
+                  "os",
+                  "child_process",
+                  "crypto",
+                  "stream",
+                  "worker_threads",
+                  "http",
+                  "https",
+                  "net",
+                  "url",
+                  "buffer",
+                  "events"
+                ],
+                "message": "gateway-core is runtime-neutral: use Web APIs (fetch, Web Streams, TextEncoder) and injected GatewayPorts, never Node modules."
+              },
+              {
+                "group": [
+                  "pg",
+                  "pg/*",
+                  "postgres",
+                  "@electric-sql/*",
+                  "drizzle-orm",
+                  "drizzle-orm/*",
+                  "better-sqlite3",
+                  "sqlite3",
+                  "kysely",
+                  "@clash/shared-cloud-schema",
+                  "@clash/shared-cloud-schema/*"
+                ],
+                "message": "gateway-core owns decisions, not durability: storage arrives through GatewayPorts (budgets, limits, ledger, audit); it must not assume SQLite, D1 or PostgreSQL."
+              },
+              {
+                "group": [
+                  "loro-crdt",
+                  "loro-crdt/*",
+                  "@clash/replica",
+                  "@clash/replica/*",
+                  "@clash/shared-runtime",
+                  "@clash/shared-runtime/*",
+                  "better-auth",
+                  "better-auth/*"
+                ],
+                "message": "gateway-core depends only on zod and loro-free @clash/shared-types subpaths; project replicas, runtime helpers and auth shells belong to adapters."
+              },
+              {
+                "group": [
+                  "**/apps/*",
+                  "**/apps/**",
+                  "@clash/local-api*",
+                  "@clash/api-node*",
+                  "@clash/api-cf*",
+                  "@clash/desktop*",
+                  "@clash/web",
+                  "@clash/web/*"
+                ],
+                "message": "gateway-core is imported by adapters, never the reverse."
+              }
+            ],
+            "paths": [
+              {
+                "name": "@clash/shared-types",
+                "message": "The shared-types root re-exports Loro-backed modules; import @clash/shared-types/model-routing instead."
+              }
+            ]
+          }
+        ],
+        "no-restricted-syntax": [
+          "error",
+          {
+            "selector": "Identifier[name=/^(process|Deno|Bun|caches|WebSocketPair|navigator|DurableObject|DurableObjectState|DurableObjectNamespace|R2Bucket|D1Database|KVNamespace|ExecutionContext)$/]",
+            "message": "gateway-core is runtime-neutral: platform globals and bindings stay in adapters."
+          },
+          {
+            "selector": "TSTypeReference[typeName.name='Env'], ImportSpecifier[imported.name='Env']",
+            "message": "gateway-core never sees a Workers Env; adapters translate bindings into GatewayPorts."
+          },
+          {
+            "selector": "MemberExpression[object.name='Date'][property.name='now']",
+            "message": "Use the injected GatewayPorts.clock."
+          },
+          {
+            "selector": "NewExpression[callee.name='Date'][arguments.length=0]",
+            "message": "Use the injected GatewayPorts.clock."
+          },
+          {
+            "selector": "MemberExpression[property.name='randomUUID']",
+            "message": "Use the injected GatewayPorts.ids."
+          },
+          {
+            "selector": "MemberExpression[object.name='Math'][property.name='random']",
+            "message": "Use the injected GatewayPorts.ids."
+          },
+          {
+            "selector": "CallExpression[callee.name='parseFloat'], CallExpression[callee.property.name='toFixed']",
+            "message": "Money is integer micro-credits; never parse or format it as a float."
+          }
+        ]
+      }
     }
   ]
 }
