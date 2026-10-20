@@ -1,0 +1,20 @@
+{
+  "summary": "Workers/D1 adapter for the model gateway data plane (#347): gateway-core GatewayPorts over D1 and createGatewayApp mounted at /gateway/v1/* by routes/gateway.ts. Guide: apps/docs/guide/gateway-data-plane.md.",
+  "context_hints": [
+    "Decisions (routing, holds, pricing, coded errors, the HTTP flow) live in @clash/gateway-core; these files only make them durable. Never re-implement them here.",
+    "D1 columns are unix seconds, gateway-core is epoch ms: convert through d1-common.ts only.",
+    "Identity is the sk_gw_ token (services/gateway-tokens.ts) with the models:invoke scope; no header, x-user-id included, is identity.",
+    "Official upstream secrets: secret_ref may only name a GATEWAY_UPSTREAM_* Worker secret; envelopes are sealed under GATEWAY_ENCRYPTION_KEY (never ACTION_SECRET_KEY). No key material in errors or logs.",
+    "Unimplemented ports (blobs, scheduler, audit) are unavailablePort (501), never silent no-ops."
+  ],
+  "key_files": {
+    "index.ts": "createD1GatewayPorts, workerSecrets, createCloudflareGatewayApp (basePath /gateway).",
+    "d1-routes.ts": "Published catalog from gateway_model.card_json, official accounts from gateway_upstream_account (tenant scope: none), price book from gateway_price.",
+    "d1-credentials.ts": "Official credential resolution (secret_ref or sealed envelope), fail closed with GATEWAY_KEY_UNAVAILABLE; sealGatewayUpstreamCredentials.",
+    "d1-budgets.ts": "All-or-nothing reserve in one batch (CHECK-violation guard rolls back), single-batch settle writing per-budget settle rows; ledger reads. No budget row = refused.",
+    "d1-limits.ts": "rate_limit_json from key / model / subscription, counted in gateway_rate_window and gateway_inflight (0034).",
+    "d1-common.ts": "Time conversion, monotonic clock, published-catalog subquery, JSON helpers.",
+    "test-support.ts": "Test-only seeding and the shared gateway-core contract harness over these ports (node:sqlite unit run and miniflare run).",
+    "d1-gateway.test.ts": "Contract on node:sqlite, /gateway/v1 through createApp (spoofed x-user-id ignored, coded 401/402/403/404/501/502), credential custody."
+  }
+}

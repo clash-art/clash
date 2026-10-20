@@ -37,6 +37,8 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_package`             | Subscription packages: fiat `price_minor` in `price_currency`, `credits_micro` granted per period.                                                                                                  |
 | `gateway_topup_pack`          | One-off credit packs. A purchase is a ledger `topup` entry.                                                                                                                                         |
 | `gateway_tenant_subscription` | A tenant's package subscription and period.                                                                                                                                                         |
+| `gateway_rate_window`         | (0034) Fixed-window request/token counters per `subject` (`key:…`, `model:…:user:…`, `tenant:…`) for the limits port. See [gateway-data-plane.md](gateway-data-plane.md).                         |
+| `gateway_inflight`            | (0034) In-flight concurrency leases per `subject`; a lease expires on its own if never released.                                                                                                    |
 
 Rate limits are configurable JSON (`rate_limit_json`) on keys, models,
 upstream accounts, packages and tenant subscriptions.

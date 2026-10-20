@@ -1,6 +1,7 @@
 /**
  * Request admission and settlement over GatewayPorts: authenticate -> allowlist
- * -> plan -> price -> hold -> limits -> reserve, then exactly one settlement.
+ * -> catalog policy -> plan -> price -> hold -> limits -> reserve, then exactly
+ * one settlement.
  * Adapters wrap these around the upstream call; HTTP shells live elsewhere.
  */
 import {
@@ -9,6 +10,7 @@ import {
   type GatewayOutcome,
   type Settlement,
 } from "./budget.js";
+import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
 import { GatewayError, toGatewayError } from "./errors.js";
 import { requireAdmission } from "./limits.js";
 import {
@@ -74,7 +76,7 @@ async function admit(
   const identity = await ports.identity.authenticate(input.httpRequest);
   const { request } = input;
   assertModelAllowed(identity, request.model);
-  const catalog = await ports.routes.catalog(identity);
+  const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(identity));
   const providers = await ports.routes.providers(identity, identity.credentialScope);
   const plan = planGatewayRoutes({
     ...options.routing,

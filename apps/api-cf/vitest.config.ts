@@ -38,6 +38,10 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/gateway-core\/contract$/,
+        replacement: resolve(__dirname, "../../packages/gateway-core/src/contract/index.ts"),
+      },
+      {
         find: /^@clash\/gateway-core$/,
         replacement: resolve(__dirname, "../../packages/gateway-core/src/index.ts"),
       },

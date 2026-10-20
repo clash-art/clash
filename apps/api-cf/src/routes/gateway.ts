@@ -2,11 +2,13 @@
  * Gateway surface authenticated by sk_gw_ tokens only (#346), mounted at
  * /gateway outside /api/*: neither the session/clsh_ middleware nor any
  * caller header (x-user-id included) contributes identity here. The data
- * plane (/gateway/v1/*) joins this router and verifies the same way.
+ * plane (/gateway/v1/*, #347) is gateway-core's createGatewayApp over the D1
+ * ports in ../gateway and verifies the same way.
  */
 import { Hono } from "hono";
 
 import type { Env } from "../config";
+import { createCloudflareGatewayApp } from "../gateway";
 import {
   createGatewayTokenStore,
   gatewayErrorResponse,
@@ -34,3 +36,5 @@ gatewayRoutes.get("/me", async (c) => {
     return gatewayErrorResponse(error);
   }
 });
+
+gatewayRoutes.all("/v1/*", (c) => createCloudflareGatewayApp(c.env).fetch(c.req.raw));

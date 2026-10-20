@@ -24,6 +24,8 @@
     "src/limits.ts": "Rate/concurrency decision shape and fixed-window helpers.",
     "src/sse.ts": "WHATWG SSE parser/encoder and a pass-through usage capture TransformStream.",
     "src/admission.ts": "admitGatewayRequest / settleGatewayRequest composed over the ports.",
-    "src/contract/index.ts": "describeGatewayContract(name, setup) with capabilities and knownGaps."
+    "src/app.ts": "createGatewayApp(ports, { basePath }): framework-free fetch handler. Non-stream OpenAI chat completions (stream: true -> 501), failover over openai-compatible routes via nextGatewayAttempt, exactly-once settlement, no upstream error bodies forwarded.",
+    "src/catalog-policy.ts": "applyGatewayCatalogPolicy: DeepSeek Flash only (applied in admission for every adapter).",
+    "src/contract/index.ts": "describeGatewayContract(name, setup) with capabilities and knownGaps; its data-plane cases drive createGatewayApp with a suite-owned fetch-stub upstream."
   }
 }

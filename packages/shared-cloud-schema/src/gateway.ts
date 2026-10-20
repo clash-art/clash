@@ -3,6 +3,7 @@ import {
   check,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -388,6 +389,42 @@ export const gatewayUsageLedger = sqliteTable(
     amountCheck: check(
       "gateway_usage_ledger_amount_check",
       sql`${table.amountMicroCredits} >= 0`,
+    ),
+  }),
+);
+
+/**
+ * Fixed-window request/token counters for the gateway limits port
+ * (web/drizzle/0034_gateway_limits.sql). `subject` names what is counted, e.g.
+ * `key:<gateway_key.id>`; `window_start` is unix seconds.
+ */
+export const gatewayRateWindows = sqliteTable(
+  "gateway_rate_window",
+  {
+    subject: text("subject").notNull(),
+    windowStart: integer("window_start").notNull(),
+    requests: integer("requests").notNull().default(0),
+    tokens: integer("tokens").notNull().default(0),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.subject, table.windowStart] }),
+  }),
+);
+
+/** In-flight concurrency leases; a lease expires on its own if never released. */
+export const gatewayInflight = sqliteTable(
+  "gateway_inflight",
+  {
+    leaseId: text("lease_id").notNull(),
+    subject: text("subject").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.leaseId, table.subject] }),
+    subjectIdx: index("gateway_inflight_subject_idx").on(
+      table.subject,
+      table.expiresAt,
     ),
   }),
 );

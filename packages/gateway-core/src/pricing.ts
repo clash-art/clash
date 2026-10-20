@@ -18,6 +18,23 @@ export type GatewayPriceUnit =
   | "cache_write_token"
   | GatewayMediaUnit;
 
+/** Every unit a price-book row may name; adapters skip rows outside it. */
+export const GATEWAY_PRICE_UNITS = [
+  "input_token",
+  "output_token",
+  "cached_input_token",
+  "cache_write_token",
+  "image",
+  "video_second",
+  "audio_second",
+  "character",
+  "request",
+] as const satisfies readonly GatewayPriceUnit[];
+
+export function isGatewayPriceUnit(value: unknown): value is GatewayPriceUnit {
+  return (GATEWAY_PRICE_UNITS as readonly unknown[]).includes(value);
+}
+
 export interface GatewayPriceRate {
   unit: GatewayPriceUnit;
   /** Price of `per` units, in micro-credits. */

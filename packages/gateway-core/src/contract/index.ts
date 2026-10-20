@@ -21,6 +21,7 @@ import {
   settleGatewayRequest,
   type GatewayAdmission,
 } from "../admission.js";
+import { createGatewayApp, GATEWAY_REQUEST_ID_HEADER, isOpenAIChatRoute } from "../app.js";
 import { GatewayError, isGatewayError, type GatewayErrorCode } from "../errors.js";
 import {
   GATEWAY_PORT_NAMES,
@@ -35,7 +36,7 @@ import {
   type GatewayModelKind,
 } from "../request.js";
 import { planGatewayRoutes, type GatewayCredentialScope } from "../routing.js";
-import { emptyUsage, type GatewayMediaUnit } from "../usage.js";
+import { createUsageAccumulator, emptyUsage, type GatewayMediaUnit } from "../usage.js";
 
 export const GATEWAY_CONTRACT_CAPABILITIES = [
   "identity",
@@ -708,6 +709,209 @@ export function describeGatewayContract(
         "GATEWAY_AUTH_REQUIRED",
       );
       expect(await counters(identity)).toEqual(before);
+    });
+
+    // ─── Data plane: createGatewayApp, non-stream chat ───────────────
+    // The suite owns the upstream: a fetch stub replaces `ports.upstream`, so
+    // no adapter makes a provider call and every expectation is derived from
+    // the adapter's own ports (plan, credential, price), never pinned.
+    const dataPlane = (title: string, body: () => Promise<void>) =>
+      it(`data plane: ${title}`, async (context) => {
+        const needed: GatewayCapabilityId[] = [
+          "identity",
+          "routes",
+          "credentials",
+          "budgets",
+          "ledger",
+          "limits.rate",
+        ];
+        if (needed.some((id) => harness.capabilities[id] !== "supported" || harness.knownGaps?.includes(id)))
+          return context.skip();
+        await body();
+      });
+
+    const completion = (model: string) => ({
+      id: "chatcmpl-contract",
+      object: "chat.completion",
+      created: 0,
+      model,
+      choices: [
+        { index: 0, message: { role: "assistant", content: "contract reply" }, finish_reason: "stop" },
+      ],
+      usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+    });
+
+    const upstreamStub = (answer: (request: Request, body: Record<string, unknown>) => Response) => {
+      const seen: Array<{ request: Request; body: Record<string, unknown> }> = [];
+      return {
+        seen,
+        port: {
+          async fetch(request: Request) {
+            const body = (await request.clone().json()) as Record<string, unknown>;
+            seen.push({ request, body });
+            return answer(request, body);
+          },
+        },
+      };
+    };
+
+    const chat = (
+      upstream: GatewayPorts["upstream"],
+      credential: Request,
+      body: Record<string, unknown>,
+      headers: Record<string, string> = {},
+    ) => {
+      const app = createGatewayApp({ ...ports(), upstream }, { basePath: "/gateway" });
+      const authorization = credential.headers.get("authorization");
+      return app.fetch(
+        new Request("https://gateway.contract/gateway/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(authorization ? { authorization } : {}),
+            ...headers,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+    };
+
+    const chatBody = (model = harness.fixtures.textModel, extra: Record<string, unknown> = {}) => ({
+      model,
+      messages: [{ role: "user", content: "contract" }],
+      max_tokens: 8,
+      ...extra,
+    });
+
+    const firstChatRoute = async (identity: GatewayIdentity) => {
+      const catalog = await ports().routes.catalog(identity);
+      return planGatewayRoutes({
+        modelCode: harness.fixtures.textModel,
+        catalog,
+        scope: identity.credentialScope,
+        providers: await ports().routes.providers(identity, identity.credentialScope),
+        isRouteExecutable: isOpenAIChatRoute,
+      }).attempts[0]!.route;
+    };
+
+    dataPlane("serves a non-stream chat completion and settles it once", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const credential = await ports().credentials.resolve({
+        route,
+        scope: identity.credentialScope,
+        tenantId: identity.tenantId,
+      });
+      const price = await ports().routes.price({
+        identity,
+        catalogVersion: (await ports().routes.catalog(identity)).version,
+        route,
+      });
+      const before = await snapshot(identity);
+      const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+      const callerRequest = harness.fixtures.tenantRequest();
+      const res = await chat(stub.port, callerRequest, chatBody(), {
+        // A spoofed identity claim must have no effect.
+        "x-user-id": unique("spoofed-user"),
+      });
+      expect(res.status, await res.clone().text()).toBe(200);
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER);
+      expect(requestId).toMatch(/\S/);
+      const answer = (await res.json()) as Record<string, unknown>;
+      expect(answer.model).toBe(harness.fixtures.textModel);
+      expect(answer.choices).toEqual(completion("").choices);
+
+      expect(stub.seen).toHaveLength(1);
+      const [sent] = stub.seen;
+      expect(sent!.request.method).toBe("POST");
+      expect(new URL(sent!.request.url).pathname.endsWith("/chat/completions")).toBe(true);
+      expect(sent!.request.headers.get("authorization")).toBe(`Bearer ${credential.apiKey}`);
+      expect(sent!.request.headers.get("authorization")).not.toBe(
+        callerRequest.headers.get("authorization"),
+      );
+      expect(sent!.request.headers.get("x-user-id")).toBeNull();
+      expect(sent!.body.model).toBe(route.upstreamModel);
+
+      const accumulator = createUsageAccumulator("openai-chat");
+      accumulator.observe(completion(route.upstreamModel));
+      const cost = priceUsage(accumulator.snapshot(), price).microCredits;
+      const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId: requestId! });
+      expect(row).toMatchObject({
+        requestId,
+        userId: identity.userId,
+        status: "settled",
+        costMicroCredits: cost,
+        upstreamId: route.upstreamId,
+      });
+      for (const [id, budget] of await snapshot(identity)) {
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + cost);
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+      }
+    });
+
+    dataPlane("rejects stream: true with a coded error before holding anything", async () => {
+      const identity = await tenant();
+      const before = await counters(identity);
+      const stub = upstreamStub(() => Response.json({}));
+      const res = await chat(
+        stub.port,
+        harness.fixtures.tenantRequest(),
+        chatBody(harness.fixtures.textModel, { stream: true }),
+      );
+      expect(res.status).toBe(501);
+      expect(res.headers.get("x-clash-error-code")).toBe("GATEWAY_CAPABILITY_UNAVAILABLE");
+      expect(((await res.json()) as { error: { param: unknown } }).error.param).toBe("stream");
+      expect(stub.seen).toHaveLength(0);
+      expect(await counters(identity)).toEqual(before);
+    });
+
+    dataPlane("maps an upstream failure to a coded 502, leaks nothing and charges zero", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const credential = await ports().credentials.resolve({
+        route,
+        scope: identity.credentialScope,
+        tenantId: identity.tenantId,
+      });
+      const marker = unique("upstream-secret-marker");
+      const before = await counters(identity);
+      const stub = upstreamStub(() =>
+        Response.json({ error: { message: `Incorrect API key ${marker}` } }, { status: 500 }),
+      );
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), chatBody());
+      expect(res.status).toBe(502);
+      expect(["GATEWAY_UPSTREAM_ERROR", "GATEWAY_ROUTES_EXHAUSTED"]).toContain(
+        res.headers.get("x-clash-error-code"),
+      );
+      const text = await res.text();
+      expect(text).not.toContain(marker);
+      expect(text).not.toContain(credential.apiKey);
+      expect(stub.seen.length).toBeGreaterThan(0);
+      expect(await counters(identity)).toEqual(before);
+      const row = await ports().ledger.get({
+        tenantId: identity.tenantId,
+        requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)!,
+      });
+      expect(row).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
+    });
+
+    dataPlane("answers 401 without a credential and 404 for an unknown model", async () => {
+      const stub = upstreamStub(() => Response.json({}));
+      const anonymous = await chat(stub.port, harness.fixtures.anonymousRequest(), chatBody());
+      expect([anonymous.status, anonymous.headers.get("x-clash-error-code")]).toEqual([
+        401,
+        "GATEWAY_AUTH_REQUIRED",
+      ]);
+      const unknown = await chat(
+        stub.port,
+        harness.fixtures.tenantRequest(),
+        chatBody(unique("no-such-model")),
+      );
+      expect([unknown.status, unknown.headers.get("x-clash-error-code")]).toEqual([
+        404,
+        "GATEWAY_MODEL_NOT_FOUND",
+      ]);
+      expect(stub.seen).toHaveLength(0);
     });
   });
 }
