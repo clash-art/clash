@@ -118,21 +118,24 @@ export function createD1GatewayRoutesPort(
     },
 
     /**
-     * The newest effective price version for the route: rows for its exact
-     * upstream win over model-wide rows (`upstream_id = ''`); only credit
-     * rates are charged.
+     * The newest published price version effective at `at` (request time) that
+     * prices the route: a newer version supersedes an older one, and within a
+     * version rows for the exact upstream win over model-wide rows
+     * (`upstream_id = ''`). Drafts (`published_at IS NULL`) are never charged;
+     * only credit rates are.
      */
-    async price({ catalogVersion, route }): Promise<GatewayPrice> {
-      const nowS = toSeconds(deps.clock.now());
+    async price({ catalogVersion, route, at }): Promise<GatewayPrice> {
+      const atS = toSeconds(at ?? deps.clock.now());
       const [prices, model] = await db.batch([
         db
           .prepare(
             `SELECT price_version, upstream_id, unit, amount_micro, per FROM gateway_price
               WHERE model_code = ?1 AND upstream_id IN (?2, '') AND currency = 'credit'
+                AND published_at IS NOT NULL
                 AND effective_from <= ?3 AND (effective_to IS NULL OR effective_to > ?3)
-              ORDER BY upstream_id = '' ASC, effective_from DESC, price_version DESC`,
+              ORDER BY effective_from DESC, price_version DESC, upstream_id = '' ASC`,
           )
-          .bind(route.modelCode, route.upstreamId, nowS),
+          .bind(route.modelCode, route.upstreamId, atS),
         db
           .prepare(
             `SELECT max_output_tokens FROM gateway_model

@@ -90,10 +90,10 @@ export async function seedGateway(db: D1Database): Promise<SeededGateway> {
     ].map(([unit, amount]) =>
       db
         .prepare(
-          `INSERT INTO gateway_price (id, price_version, model_code, upstream_id, unit, amount_micro, per, effective_from)
-           VALUES (?, ?, ?, '', ?, ?, 1000000, ?)`,
+          `INSERT INTO gateway_price (id, price_version, model_code, upstream_id, unit, amount_micro, per, effective_from, published_at)
+           VALUES (?, ?, ?, '', ?, ?, 1000000, ?, ?)`,
         )
-        .bind(`gwp_${run}_${unit}`, `price-${run}`, card.id, unit, amount, nowS - 60),
+        .bind(`gwp_${run}_${unit}`, `price-${run}`, card.id, unit, amount, nowS - 60, nowS - 60),
     ),
     db
       .prepare(

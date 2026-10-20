@@ -30,7 +30,7 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_token`               | Short-lived tokens minted from a session, `clsh_` token or key; `parent_kind`/`parent_id` (0033) name a session or `clsh_` parent. See [gateway-tokens.md](gateway-tokens.md).                     |
 | `gateway_upstream_account`    | Official upstream credentials. No tenant or user column, so it is disjoint from tenant BYOK `provider_account`. Holds a `secret_ref` or a sealed `encrypted_credentials` envelope, never plaintext. |
 | `gateway_model`               | Versioned published catalog: one model card (`card_json`) per model per `catalog_version`.                                                                                                          |
-| `gateway_price`               | Price book: one rate per `(price_version, model_code, upstream_id, unit)`, `amount_micro` per `per` units of `currency` (default `credit`).                                                         |
+| `gateway_price`               | Price book: one rate per `(price_version, model_code, upstream_id, unit)`, `amount_micro` per `per` units of `currency` (default `credit`). `published_at` (0035) is `NULL` for a draft, which is never charged. See [gateway-price-book.md](gateway-price-book.md). |
 | `gateway_budget`              | `tenant` = team wallet, `user` = member budget allocated by the owner (`parent_budget_id`), `key` = per-key cap. `NULL` limit is explicitly unlimited.                                              |
 | `gateway_usage_ledger`        | Append-only money journal (below).                                                                                                                                                                  |
 | `gateway_admin_audit`         | One row per admin mutation with redacted before/after snapshots.                                                                                                                                    |
@@ -57,7 +57,7 @@ from `kind`:
 | `release`                    | Hold returned unused.                                                                                                                                                |
 | `refund`                     | Credit back after a settle; `ref_id` names the refunded entry.                                                                                                       |
 | `adjust`                     | Reconciliation or admin correction, with `actor_user_id` and `reason`.                                                                                               |
-| `grant` / `topup` / `expire` | Subscription credits, purchased credits, and expiry of unused grants.                                                                                                |
+| `grant` / `topup` / `expire` | Subscription credits, purchased credits, and expiry of unused grants, on the tenant wallet with `status = 'posted'`. They move the wallet's `limit_micro_credits` (+, +, −), never its spend. See [gateway-price-book.md](gateway-price-book.md). |
 
 Indexes: `(tenant_id, occurred_at)`, `(key_id, occurred_at)`,
 `(budget_id, status)` (open holds per budget, for the sweeper and invariant
