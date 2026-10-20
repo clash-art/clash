@@ -80,6 +80,9 @@ export const gatewayTokens = sqliteTable(
     revokedAt: integer("revoked_at"),
     lastUsedAt: integer("last_used_at"),
     createdAt: createdAt(),
+    /** `session` (sessions.id) | `api_token` (api_token.id); NULL when minted from `keyId` (0033). */
+    parentKind: text("parent_kind"),
+    parentId: text("parent_id"),
   },
   (table) => ({
     tokenHashIdx: uniqueIndex("gateway_token_token_hash_idx").on(
@@ -90,12 +93,68 @@ export const gatewayTokens = sqliteTable(
       table.userId,
     ),
     expiresAtIdx: index("gateway_token_expires_at_idx").on(table.expiresAt),
+    parentIdx: index("gateway_token_parent_idx").on(
+      table.parentKind,
+      table.parentId,
+    ),
+    parentKindCheck: check(
+      "gateway_token_parent_kind_check",
+      sql`${table.parentKind} IS NULL OR ${table.parentKind} IN ('session', 'api_token')`,
+    ),
     credentialScopeCheck: check(
       "gateway_token_credential_scope_check",
       sql`${table.credentialScope} IN ('official', 'tenant')`,
     ),
   }),
 );
+
+/** The D1 surface the sign-out cascade needs; satisfied by D1Database. */
+export interface GatewayTokenRevocationDb {
+  prepare(query: string): {
+    bind(...values: unknown[]): { run(): Promise<unknown> };
+  };
+}
+
+/**
+ * Sign-out cascade (#346): revoke every live gateway token minted from a
+ * Better Auth session. Both Better Auth instances (web Worker and api-cf)
+ * install it as `databaseHooks`, so sign-out, revoke-session(s) and user
+ * deletion all cascade. Verification also requires the parent session row,
+ * so a failed cascade write can never keep a token alive.
+ */
+export async function revokeSessionGatewayTokens(
+  db: GatewayTokenRevocationDb,
+  sessionId: string,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE gateway_token SET revoked_at = ?1
+        WHERE parent_kind = 'session' AND parent_id = ?2 AND revoked_at IS NULL`,
+    )
+    .bind(nowSeconds, sessionId)
+    .run();
+}
+
+/** Better Auth `databaseHooks` that run the cascade after a session row is deleted. */
+export function gatewaySessionDatabaseHooks(
+  db: () => GatewayTokenRevocationDb,
+  onError: (error: unknown) => void = () => {},
+) {
+  return {
+    session: {
+      delete: {
+        after: async (session: { id: string }) => {
+          try {
+            await revokeSessionGatewayTokens(db(), session.id);
+          } catch (error) {
+            onError(error);
+          }
+        },
+      },
+    },
+  };
+}
 
 /**
  * Official upstream credentials, server-owned and disjoint from tenant BYOK

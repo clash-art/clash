@@ -32,6 +32,7 @@ import { assetDeliveryRoutes } from "./routes/assets";
 import { createAssetCapabilityRoutes } from "./routes/asset-capability";
 import { createPluginOutputSessionRoutes } from "./routes/plugin-output-sessions";
 import { betterAuthRoutes } from "./routes/better-auth";
+import { gatewayRoutes } from "./routes/gateway";
 import { projectsD1Routes } from "./routes/projects-d1";
 import { internalProjectsContextRoutes } from "./routes/internal-projects-context";
 import { settingsD1Routes } from "./routes/settings-d1";
@@ -255,6 +256,9 @@ export function createAppRoutes(
 
   // ─── Public REST API v1 ─────────────────────────────────────
   app.route("/api/v1", v1Routes);
+
+  // ─── Model gateway: sk_gw_ tokens only, outside the /api/* identity ──
+  app.route("/gateway", gatewayRoutes);
 
   // ─── OSS web's /api/* endpoints (ported from apps/web) ──────
   app.route("/api/projects", projectsD1Routes);

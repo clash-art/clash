@@ -20,6 +20,7 @@ import { pluginCatalogRoutes } from "./plugin-catalog";
 import { pluginSettingsRoutes } from "./plugin-settings";
 import { createProjectHostCommandRoutes } from "./project-host-command";
 import { createVoiceInputRoutes } from "./voice-input";
+import { gatewayTokenRoutes } from "./gateway-tokens";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
 
@@ -37,6 +38,8 @@ v1Routes.route("/libraries", createPersonalAssetLibraryRoutes());
 v1Routes.route("/vars", varsRoutes);
 v1Routes.route("/sessions", sessionRoutes);
 v1Routes.route("/cli-auth", cliAuthRoutes);
+// Short-lived sk_gw_ gateway tokens minted from a session or clsh_ token.
+v1Routes.route("/gateway", gatewayTokenRoutes);
 v1Routes.route("/runtimes", runtimesRoutes);
 v1Routes.route("/agents", agentRoutes);
 v1Routes.route("/", modelProviderRoutes);

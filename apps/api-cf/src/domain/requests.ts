@@ -50,3 +50,17 @@ export const TaskSubmitRequestSchema = z.object({
   params: z.record(z.string(), z.any()),
 });
 export type TaskSubmitRequest = z.infer<typeof TaskSubmitRequestSchema>;
+
+/** Gateway token scopes: `models:invoke` calls the data plane; `usage:read` reads the caller's own usage. */
+export const GATEWAY_TOKEN_SCOPES = ["models:invoke", "usage:read"] as const;
+export type GatewayTokenScope = (typeof GATEWAY_TOKEN_SCOPES)[number];
+
+/** POST /api/v1/gateway/tokens. Omitted fields: personal tenant, `models:invoke`, whole catalog. */
+export const MintGatewayTokenRequestSchema = z
+  .object({
+    tenantId: z.string().min(1).max(256).optional(),
+    scopes: z.array(z.enum(GATEWAY_TOKEN_SCOPES)).min(1).max(16).optional(),
+    modelAllowlist: z.array(z.string().min(1).max(256)).min(1).max(256).optional(),
+  })
+  .strict();
+export type MintGatewayTokenRequest = z.infer<typeof MintGatewayTokenRequestSchema>;

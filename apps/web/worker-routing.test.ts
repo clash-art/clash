@@ -40,6 +40,29 @@ describe("web worker Asset routing boundary", () => {
     expect(await response.text()).toBe("static boundary");
   });
 
+  it("routes the model gateway to api-cf without caller identity", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      ...gatewayEnv(),
+      API_CF: {
+        fetch: async (request: Request) => {
+          forwarded = request;
+          return new Response("api boundary", { status: 418 });
+        },
+      },
+    } as unknown as Env;
+    const response = await worker.fetch(
+      new Request("https://clash.test/gateway/me", {
+        headers: { authorization: "Bearer sk_gw_opaque", "x-user-id": "forged" },
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(418);
+    expect(forwarded?.headers.get("x-user-id")).toBeNull();
+    expect(forwarded?.headers.get("authorization")).toBe("Bearer sk_gw_opaque");
+  });
+
   it("keeps signed Asset delivery isolated as a transport route", async () => {
     const response = await worker.fetch(
       new Request("https://clash.test/assets/capability?exp=1&sig=opaque"),

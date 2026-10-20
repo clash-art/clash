@@ -19,6 +19,8 @@
       "@clash/shared-layout": ["../../packages/shared-layout/src/index.ts"],
       "@clash/asset-sdk/delivery": ["../../packages/asset-sdk/src/delivery.ts"],
       "@clash/asset-sdk/upload-service": ["../../packages/asset-sdk/src/upload-service.ts"],
+      "@clash/gateway-core": ["../../packages/gateway-core/src/index.ts"],
+      "@clash/gateway-core/contract": ["../../packages/gateway-core/src/contract/index.ts"],
       "@clash/shared-types": ["../../packages/shared-types/src/index.ts"],
       "@clash/shared-types/*": ["../../packages/shared-types/src/*.ts"],
       "@clash/shared-runtime": ["../../packages/shared-runtime/src/index.ts"],

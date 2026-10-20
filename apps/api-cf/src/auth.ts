@@ -18,6 +18,7 @@ import { emailOTP } from "better-auth/plugins";
 import { withCloudflare } from "better-auth-cloudflare";
 import { drizzle } from "drizzle-orm/d1";
 
+import { gatewaySessionDatabaseHooks } from "@clash/shared-cloud-schema/gateway";
 import * as betterAuthSchema from "./auth-schema";
 import { requireSecret } from "./services/require-secret";
 
@@ -163,6 +164,14 @@ function buildAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
             : []),
         ],
         secret,
+        // Sign-out / session revocation revokes child gateway tokens (#346).
+        databaseHooks: gatewaySessionDatabaseHooks(
+          () => env.DB,
+          (error) =>
+            serverLog.child("auth").warn("auth.gateway_token_cascade_failed", {
+              error_name: error instanceof Error ? error.name : typeof error,
+            }),
+        ),
         emailAndPassword: { enabled: true },
         socialProviders:
           googleClientId && googleClientSecret

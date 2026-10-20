@@ -12,15 +12,28 @@ export interface SessionEnv extends AuthBindings {
   SKIP_LOGIN?: string;
 }
 
-export async function getUserIdFromRequest(
+/** Better Auth session behind a request; `sessionId` is null only for SKIP_LOGIN. */
+export interface SessionIdentity {
+  userId: string;
+  sessionId: string | null;
+}
+
+function stringField(value: unknown, field: string): string | null {
+  if (!value || typeof value !== "object") return null;
+  const found = (value as Record<string, unknown>)[field];
+  return typeof found === "string" ? found : null;
+}
+
+export async function getSessionIdentity(
   request: Request,
   env: SessionEnv,
   cf?: IncomingRequestCfProperties,
-): Promise<string | null> {
-  if (env.SKIP_LOGIN === "true") return DEV_USER_ID;
+): Promise<SessionIdentity | null> {
+  if (env.SKIP_LOGIN === "true") return { userId: DEV_USER_ID, sessionId: null };
   try {
     const fast = await verifySessionFast(request, env);
-    if (fast !== "fallback") return fast?.userId ?? null;
+    if (fast !== "fallback")
+      return fast ? { userId: fast.userId, sessionId: fast.sessionId } : null;
   } catch {
     // fall through to the full Better Auth path
   }
@@ -30,13 +43,25 @@ export async function getUserIdFromRequest(
     const session: unknown = await auth.api.getSession({
       headers: new Headers(request.headers),
     });
-    const user = session && typeof session === "object" && "user" in session ? session.user : null;
-    return user && typeof user === "object" && "id" in user && typeof user.id === "string"
-      ? user.id
+    const record =
+      session && typeof session === "object"
+        ? (session as Record<string, unknown>)
+        : null;
+    const userId = stringField(record?.user, "id");
+    return userId
+      ? { userId, sessionId: stringField(record?.session, "id") }
       : null;
   } catch {
     return null;
   }
+}
+
+export async function getUserIdFromRequest(
+  request: Request,
+  env: SessionEnv,
+  cf?: IncomingRequestCfProperties,
+): Promise<string | null> {
+  return (await getSessionIdentity(request, env, cf))?.userId ?? null;
 }
 
 export async function requireUserId(

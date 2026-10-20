@@ -123,6 +123,9 @@ importers:
       '@clash/asset-sdk':
         specifier: workspace:*
         version: link:../../packages/asset-sdk
+      '@clash/gateway-core':
+        specifier: workspace:*
+        version: link:../../packages/gateway-core
       '@clash/metadata-service':
         specifier: workspace:*
         version: link:../../packages/metadata-service

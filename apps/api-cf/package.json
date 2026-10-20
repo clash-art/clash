@@ -22,6 +22,7 @@
     "@clash-plugin/fal": "workspace:*",
     "@clash/action-sdk": "workspace:*",
     "@clash/asset-sdk": "workspace:*",
+    "@clash/gateway-core": "workspace:*",
     "@clash/metadata-service": "workspace:*",
     "@clash/remotion-core": "workspace:*",
     "@clash/replica": "workspace:*",

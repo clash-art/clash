@@ -27,7 +27,15 @@ export default defineConfig(async () => {
             "../../packages/shared-runtime/src/project-host-contract/index.ts",
           ),
         },
+        {
+          find: /^@clash\/gateway-core\/contract$/,
+          replacement: path.resolve(
+            __dirname,
+            "../../packages/gateway-core/src/contract/index.ts",
+          ),
+        },
         ...[
+          "gateway-core",
           "shared-types",
           "shared-runtime",
           "action-sdk",
