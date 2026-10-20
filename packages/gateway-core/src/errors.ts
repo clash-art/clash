@@ -161,6 +161,12 @@ const definitions = {
     anthropic: "api_error",
     message: "This gateway deployment does not implement the capability.",
   },
+  GATEWAY_SETTLEMENT_FAILED: {
+    status: 500,
+    openai: "server_error",
+    anthropic: "api_error",
+    message: "The request was served but its settlement could not be recorded; it is held for reconciliation.",
+  },
   GATEWAY_INTERNAL: {
     status: 500,
     openai: "server_error",

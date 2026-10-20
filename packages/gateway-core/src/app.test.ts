@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildEffectiveModelCards } from "@clash/shared-types/model-routing";
 
-import { createGatewayApp, GATEWAY_REQUEST_ID_HEADER, isOpenAIChatRoute } from "./app.js";
+import {
+  createGatewayApp,
+  GATEWAY_REQUEST_ID_HEADER,
+  GATEWAY_SETTLEMENT_HEADER,
+  isOpenAIChatRoute,
+} from "./app.js";
 import type { GatewayUpstreamPort } from "./ports.js";
 import { planGatewayRoutes, type GatewayCatalog } from "./routing.js";
 import { catalogFixture } from "./testing/fixtures.js";
@@ -213,6 +218,64 @@ describe("createGatewayApp", () => {
     const res = await app.fetch(post(chat));
     expect([res.status, code(res)]).toEqual([403, "GATEWAY_MODEL_NOT_ALLOWED"]);
     expect(calls).toBe(0);
+  });
+
+  it("still answers a served completion when settlement fails, with the coded settlement header", async () => {
+    const { app, memory } = gateway({ upstream: { fetch: async () => ok("x") } });
+    memory.ports.budgets.settle = () => Promise.reject(new Error("ledger unavailable"));
+    const res = await app.fetch(post(chat));
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { choices: unknown[] }).choices).toHaveLength(1);
+    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBe(
+      `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`,
+    );
+    expect(memory.reservationState(requestId)).toBe("settle_failed");
+    expect(await memory.ports.ledger.get({ tenantId: "tenant-a", requestId })).toBeNull();
+    const logged = memory.logs.find((entry) => entry.event === "gateway.settle_failed");
+    expect(logged).toMatchObject({
+      level: "error",
+      fields: { requestId, code: "GATEWAY_SETTLEMENT_FAILED", cause: "GATEWAY_INTERNAL", marker: "settle_failed" },
+    });
+    expect(JSON.stringify(memory.logs)).not.toContain(fixture.keys["official-openai"]);
+  });
+
+  it("adds the settlement header to a coded failure whose settlement also failed", async () => {
+    const { app, memory } = gateway({ upstream: { fetch: async () => new Response("no", { status: 400 }) } });
+    memory.ports.budgets.settle = () => Promise.reject(new Error("ledger unavailable"));
+    const res = await app.fetch(post(chat));
+    expect(code(res)).toBe("GATEWAY_UPSTREAM_REJECTED");
+    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toContain("code=GATEWAY_SETTLEMENT_FAILED");
+    expect(memory.reservationState(requestId)).toBe("settle_failed");
+  });
+
+  it("keeps the header when even the marker cannot be written, and logs both codes", async () => {
+    const { app, memory } = gateway({ upstream: { fetch: async () => ok("x") } });
+    memory.ports.budgets.settle = () => Promise.reject(new Error("ledger unavailable"));
+    memory.ports.budgets.markSettleFailed = () => Promise.reject(new Error("ledger unavailable"));
+    const res = await app.fetch(post(chat));
+    expect(res.status).toBe(200);
+    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toContain("code=GATEWAY_SETTLEMENT_FAILED");
+    expect(memory.logs.find((entry) => entry.event === "gateway.settle_failed")?.fields).toMatchObject({
+      code: "GATEWAY_SETTLEMENT_FAILED",
+      marker: "unrecorded",
+      markCause: "GATEWAY_INTERNAL",
+    });
+  });
+
+  it("omits the header when a settlement that reported failure was in fact recorded", async () => {
+    const { app, memory } = gateway({ upstream: { fetch: async () => ok("x") } });
+    const settle = memory.ports.budgets.settle.bind(memory.ports.budgets);
+    memory.ports.budgets.settle = async (event) => {
+      await settle(event);
+      throw new Error("response lost after commit");
+    };
+    const res = await app.fetch(post(chat));
+    expect(res.status).toBe(200);
+    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBeNull();
+    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+    expect(memory.reservationState(requestId)).toBe("settled");
   });
 
   it("rejects malformed, oversized and misrouted requests with coded errors", async () => {

@@ -21,6 +21,7 @@ import { listDeclaredModelUpstreamRoutes } from "@clash/shared-types";
 
 import { createApp } from "../app";
 import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
+import { createD1GatewayBudgetPorts } from "./d1-budgets";
 import { createD1GatewayCredentialPort, sealGatewayUpstreamCredentials } from "./d1-credentials";
 import { d1ContractHarness, officialChatCard, seedGateway, type SeededGateway } from "./test-support";
 
@@ -138,6 +139,78 @@ describe("/gateway/v1 through the Worker app", () => {
     const text = await failed.text();
     expect(text).not.toContain(gateway.upstreamApiKey);
     expect(text).not.toContain(caller.token);
+  });
+
+  it("marks the holds settle_failed, not open, when the settle batch fails; reconciliation charges once", async () => {
+    const caller = await gateway.tenantToken();
+    stubUpstream((body) => Response.json(completion(String(body.model))));
+    // The node:sqlite shim exposes each statement's SQL; fail only the settle batch.
+    const failingSettle = new Proxy(d1, {
+      get(target, property, receiver) {
+        if (property === "batch")
+          return (statements: Array<{ sql: string }>) =>
+            statements.some((statement) => statement.sql.includes("':settle:'"))
+              ? Promise.reject(new Error("D1_ERROR: forced settle failure"))
+              : target.batch(statements as never);
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const res = await app.request(
+      "/gateway/v1/chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${caller.token}` },
+        body: JSON.stringify(chat()),
+      },
+      { DB: failingSettle, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey } as never,
+    );
+    expect(res.status, await res.clone().text()).toBe(200);
+    const requestId = res.headers.get("x-clash-request-id")!;
+    expect(res.headers.get("x-gateway-settlement")).toBe(
+      `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`,
+    );
+
+    const ledgerRows = () =>
+      sqlite
+        .prepare(`SELECT budget_id, kind, status, error_code FROM gateway_usage_ledger WHERE request_id = ? ORDER BY budget_id, kind`)
+        .all(requestId) as Array<{ budget_id: string; kind: string; status: string; error_code: string | null }>;
+    const budgetRows = () =>
+      sqlite
+        .prepare(`SELECT id, spent_micro_credits AS spent, reserved_micro_credits AS reserved FROM gateway_budget WHERE tenant_id = ? ORDER BY id`)
+        .all(caller.tenantId) as Array<{ id: string; spent: number; reserved: number }>;
+    const holds = ledgerRows();
+    expect(holds.length).toBeGreaterThan(0);
+    for (const row of holds)
+      expect(row).toMatchObject({ kind: "hold", status: "settle_failed", error_code: "GATEWAY_INTERNAL" });
+    const held = budgetRows();
+    for (const budget of held) expect([budget.spent, budget.reserved > 0]).toEqual([0, true]);
+
+    // Reconciliation (and any retry of it) settles the marked holds exactly once.
+    const { budgets } = createD1GatewayBudgetPorts(d1, { clock: { now: () => Date.now() } });
+    const event = {
+      requestId,
+      tenantId: caller.tenantId,
+      userId: caller.userId,
+      modelCode: gateway.textModel,
+      kind: "text" as const,
+      upstreamId: "openai",
+      credentialScope: "official" as const,
+      usage: { inputTokens: 4, outputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" as const },
+      costMicroCredits: 7,
+      priceVersion: "reconcile",
+      catalogVersion: "reconcile",
+      status: "settled" as const,
+      occurredAt: Date.now(),
+    };
+    expect(await budgets.settle(event)).toMatchObject({ duplicate: false, costMicroCredits: 7 });
+    expect(await budgets.settle({ ...event, costMicroCredits: 99 })).toMatchObject({ duplicate: true, costMicroCredits: 7 });
+    expect(await budgets.markSettleFailed({ requestId, tenantId: caller.tenantId, errorCode: "GATEWAY_INTERNAL" })).toEqual({
+      status: "settled",
+    });
+    for (const budget of budgetRows()) expect([budget.spent, budget.reserved]).toEqual([7, 0]);
+    expect(ledgerRows().filter((row) => row.kind === "hold").map((row) => row.status)).toEqual(
+      holds.map(() => "settled"),
+    );
   });
 
   it("keeps /gateway/me working beside the data plane", async () => {

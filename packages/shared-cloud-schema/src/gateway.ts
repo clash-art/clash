@@ -325,8 +325,10 @@ export const GATEWAY_LEDGER_KINDS = [
 /**
  * Append-only money journal, one entry per (request_id, budget_id, kind).
  * Only a hold's status changes in place, in the batch that appends its
- * closing entry. Operational columns (upstream/account/provider request id,
- * error code) are NULLed after 30 days; rows are kept 13 months.
+ * closing entry, or to `settle_failed` (with error_code) when settlement
+ * failed, pending reconciliation by a later settle. Operational columns
+ * (upstream/account/provider request id, error code) are NULLed after 30
+ * days; rows are kept 13 months.
  */
 export const gatewayUsageLedger = sqliteTable(
   "gateway_usage_ledger",

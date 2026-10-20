@@ -9,7 +9,9 @@
  * limits, hold) -> call the planned upstream routes in failover order ->
  * settle exactly once -> answer. Every failure is a coded GatewayError in the
  * OpenAI error shape; upstream error bodies are never forwarded (they can echo
- * key fragments), and only metadata is logged.
+ * key fragments), and only metadata is logged. A settlement that fails after
+ * the request ran marks the holds `settle_failed` and adds the
+ * GATEWAY_SETTLEMENT_FAILED settlement header to the real answer.
  */
 import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
@@ -23,6 +25,7 @@ import {
   GatewayError,
   gatewayErrorResponseInit,
   toGatewayError,
+  type GatewayErrorCode,
 } from "./errors.js";
 import type { GatewayIdentity, GatewayPorts, GatewayUpstreamCredential } from "./ports.js";
 import type { GatewayPrice } from "./pricing.js";
@@ -39,6 +42,12 @@ import {
 import { createUsageAccumulator, emptyUsage, settledUsage, type Usage } from "./usage.js";
 
 export const GATEWAY_REQUEST_ID_HEADER = "x-clash-request-id";
+/**
+ * Present only when settlement failed after the request ran:
+ * `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=<id>`. The answer itself
+ * is still the request's real outcome.
+ */
+export const GATEWAY_SETTLEMENT_HEADER = "x-gateway-settlement";
 
 export const GATEWAY_APP_DEFAULTS = {
   holdTtlMs: 10 * 60 * 1000,
@@ -144,7 +153,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   const maxBodyBytes = options.maxBodyBytes ?? GATEWAY_APP_DEFAULTS.maxBodyBytes;
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? GATEWAY_APP_DEFAULTS.upstreamTimeoutMs;
 
-  const errorResponse = (error: unknown, requestId?: string): Response => {
+  const errorResponse = (error: unknown, requestId?: string, extraHeaders: Record<string, string> = {}): Response => {
     const coded = toGatewayError(error);
     if (coded.code === "GATEWAY_INTERNAL")
       ports.logger.error("gateway.internal", {
@@ -154,7 +163,11 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     const init = gatewayErrorResponseInit(coded, "openai");
     return json(init.body, {
       status: init.status,
-      headers: { ...init.headers, ...(requestId ? { [GATEWAY_REQUEST_ID_HEADER]: requestId } : {}) },
+      headers: {
+        ...init.headers,
+        ...(requestId ? { [GATEWAY_REQUEST_ID_HEADER]: requestId } : {}),
+        ...extraHeaders,
+      },
     });
   };
 
@@ -248,19 +261,46 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     };
   }
 
+  /**
+   * Settle once. A failed settlement does not change the answer (the upstream
+   * work is done or failed either way); instead the holds are durably marked
+   * `settle_failed` for reconciliation and the answer carries the settlement
+   * header. Returns the headers to add to the answer.
+   */
   async function settle(
     admission: GatewayAdmission,
     input: { attempt: GatewayRouteAttempt; outcome: GatewayOutcome; usage: Usage; price?: GatewayPrice; error?: GatewayError },
-  ): Promise<void> {
+  ): Promise<Record<string, string>> {
+    const { requestId } = admission;
+    let cause: GatewayError;
     try {
       await settleGatewayRequest(ports, admission, input);
+      return {};
     } catch (error) {
-      // The hold stays open for the sweeper; the caller's answer is unaffected.
-      ports.logger.error("gateway.settle_failed", {
-        requestId: admission.requestId,
-        code: toGatewayError(error).code,
-      });
+      cause = toGatewayError(error);
     }
+    let marker: "settled" | "settle_failed" | "unrecorded";
+    let markCause: string | undefined;
+    try {
+      marker = (
+        await ports.budgets.markSettleFailed({
+          requestId,
+          tenantId: admission.identity.tenantId,
+          errorCode: cause.code,
+        })
+      ).status;
+    } catch (error) {
+      marker = "unrecorded";
+      markCause = toGatewayError(error).code;
+    }
+    if (marker === "settled") {
+      // The settlement was recorded after all; nothing is left to reconcile.
+      ports.logger.warn("gateway.settle_recovered", { requestId, cause: cause.code });
+      return {};
+    }
+    const code: GatewayErrorCode = "GATEWAY_SETTLEMENT_FAILED";
+    ports.logger.error("gateway.settle_failed", { requestId, code, cause: cause.code, marker, markCause });
+    return { [GATEWAY_SETTLEMENT_HEADER]: `failed; code=${code}; request_id=${requestId}` };
   }
 
   async function execute(admission: GatewayAdmission, started: number): Promise<Response> {
@@ -284,7 +324,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           inputTokens: admission.request.estimatedInputTokens,
           outputBytes: result.outputBytes,
         });
-        await settle(admission, { attempt, outcome: "completed", usage, price: result.price });
+        const settlement = await settle(admission, { attempt, outcome: "completed", usage, price: result.price });
         ports.logger.info("gateway.chat_completion", {
           requestId,
           model: plan.modelCode,
@@ -297,7 +337,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         // The public model code, not the upstream's, as the caller asked for it.
         return json(
           { ...result.body, model: admission.request.model },
-          { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId } },
+          { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId, ...settlement } },
         );
       }
       if (result.kind === "skipped") {
@@ -323,7 +363,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         cause: error,
       });
     const failure = error ?? new GatewayError("GATEWAY_INTERNAL");
-    await settle(admission, {
+    const settlement = await settle(admission, {
       attempt: last,
       outcome: contacted ? "upstream_failed" : "gateway_failed",
       usage: emptyUsage(),
@@ -340,7 +380,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         typeof failure.details?.upstreamStatus === "number" ? failure.details.upstreamStatus : undefined,
       durationMs: ports.clock.now() - started,
     });
-    return errorResponse(failure, requestId);
+    return errorResponse(failure, requestId, settlement);
   }
 
   async function chatCompletions(request: Request): Promise<Response> {

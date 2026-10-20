@@ -51,12 +51,14 @@ interface OpenReservation {
   tenantId: string;
   holds: BudgetHold[];
   idempotencyKey?: string;
-  state: "open" | "settled";
+  state: "open" | "settle_failed" | "settled";
 }
 
 export interface MemoryGateway {
   ports: GatewayPorts;
   advance(ms: number): void;
+  /** Reservation state of a request, for tests; undefined when never reserved. */
+  reservationState(requestId: string): OpenReservation["state"] | undefined;
   logs: Array<{ level: "info" | "warn" | "error"; event: string; fields?: GatewayLogFields }>;
 }
 
@@ -186,6 +188,17 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
         ledger.set(event.requestId, structuredClone(event));
         return { requestId: event.requestId, costMicroCredits: event.costMicroCredits, duplicate: false };
       },
+      async markSettleFailed({ requestId, tenantId }) {
+        const reservation = reservations.get(requestId);
+        if (!reservation || reservation.tenantId !== tenantId)
+          throw new GatewayError("GATEWAY_INTERNAL", {
+            message: "Settlement failure for a request that was never reserved.",
+            details: { requestId },
+          });
+        if (reservation.state === "settled") return { status: "settled" };
+        reservation.state = "settle_failed";
+        return { status: "settle_failed" };
+      },
       async snapshot({ tenantId, budgetIds }) {
         return [...budgets.values()]
           .filter((budget) => budget.tenantId === tenantId)
@@ -272,6 +285,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
     advance(ms) {
       now += ms;
     },
+    reservationState: (requestId) => reservations.get(requestId)?.state,
     logs,
   };
 }

@@ -14,6 +14,13 @@
  * `settle` row carrying the billing basis is appended, once per budget. A
  * repeated settlement finds no open hold and is a no-op.
  *
+ * markSettleFailed: when settle itself fails, the still-open hold rows move to
+ * status `settle_failed` (error_code = the failure's code) and the budget
+ * keeps the amount reserved. A later settle closes `settle_failed` holds like
+ * open ones, under the same once-per-request guards, so a retry never charges
+ * twice. `gateway_usage_ledger.status` has no CHECK, so this needs no
+ * migration.
+ *
  * A caller without any budget row is refused (GATEWAY_BUDGET_EXCEEDED,
  * reason `no_budget`): a missing budget is never unlimited. Periodic reset of
  * `daily`/`monthly` budgets is not implemented yet; such budgets keep counting
@@ -37,6 +44,9 @@ import {
 import { parseJson, toMs, toSeconds } from "./d1-common";
 
 const IDEMPOTENCY_REF = "idempotency";
+
+/** A hold no settlement has closed yet: open, or marked after a failed settlement. */
+const UNSETTLED_HOLD = "status IN ('open', 'settle_failed')";
 
 interface BudgetRow {
   id: string;
@@ -148,7 +158,7 @@ export function createD1GatewayBudgetPorts(
     if (input.idempotencyKey) {
       const prior = await db
         .prepare(
-          `SELECT request_id, MAX(status = 'open') AS open FROM gateway_usage_ledger
+          `SELECT request_id, MAX(${UNSETTLED_HOLD}) AS open FROM gateway_usage_ledger
             WHERE tenant_id = ? AND kind = 'hold' AND ref_kind = ? AND ref_id = ? AND request_id <> ?
             GROUP BY request_id LIMIT 1`,
         )
@@ -261,7 +271,7 @@ export function createD1GatewayBudgetPorts(
       const { results: holds } = await db
         .prepare(
           `SELECT budget_id FROM gateway_usage_ledger
-            WHERE request_id = ? AND tenant_id = ? AND kind = 'hold' AND status = 'open'
+            WHERE request_id = ? AND tenant_id = ? AND kind = 'hold' AND ${UNSETTLED_HOLD}
             ORDER BY budget_id`,
         )
         .bind(event.requestId, event.tenantId)
@@ -274,7 +284,7 @@ export function createD1GatewayBudgetPorts(
       const nowS = toSeconds(deps.clock.now());
       const holdStatus = event.costMicroCredits > 0 ? "settled" : "released";
       const openHold = `SELECT amount_micro_credits FROM gateway_usage_ledger
-        WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND status = 'open'`;
+        WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND ${UNSETTLED_HOLD}`;
       const statements: D1PreparedStatement[] = [];
       for (const { budget_id: budgetId } of holds)
         statements.push(
@@ -290,7 +300,7 @@ export function createD1GatewayBudgetPorts(
           db
             .prepare(
               `UPDATE gateway_usage_ledger SET status = ?3
-                WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND status = 'open'`,
+                WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND ${UNSETTLED_HOLD}`,
             )
             .bind(budgetId, event.requestId, holdStatus),
           db
@@ -347,6 +357,31 @@ export function createD1GatewayBudgetPorts(
           details: { requestId: event.requestId },
         });
       return { requestId: event.requestId, costMicroCredits: winner.amount_micro_credits, duplicate: true };
+    },
+
+    async markSettleFailed({ requestId, tenantId, errorCode }) {
+      // Only the hold rows change; budget counters keep the hold reserved.
+      const [, state] = await db.batch([
+        db
+          .prepare(
+            `UPDATE gateway_usage_ledger SET status = 'settle_failed', error_code = ?3
+              WHERE request_id = ?1 AND tenant_id = ?2 AND kind = 'hold' AND status = 'open'`,
+          )
+          .bind(requestId, tenantId, errorCode),
+        db
+          .prepare(
+            `SELECT MAX(kind = 'settle') AS settled, MAX(kind = 'hold' AND status = 'settle_failed') AS failed
+               FROM gateway_usage_ledger WHERE request_id = ?1 AND tenant_id = ?2`,
+          )
+          .bind(requestId, tenantId),
+      ]);
+      const row = (state?.results as Array<{ settled: number | null; failed: number | null }> | undefined)?.[0];
+      if (row?.settled) return { status: "settled" };
+      if (row?.failed) return { status: "settle_failed" };
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "Settlement failure for a request with no reservation.",
+        details: { requestId },
+      });
     },
 
     async snapshot({ tenantId, budgetIds }) {

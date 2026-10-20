@@ -52,7 +52,7 @@ from `kind`:
 
 | Kind                         | Meaning                                                                                                                                                              |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hold`                       | Reserve on one budget. `status` moves `open` → `settled`/`released`/`expired`, in the same batch that appends the closing entry. This is the only in-place change.   |
+| `hold`                       | Reserve on one budget. `status` moves `open` → `settled`/`released`/`expired`, in the same batch that appends the closing entry. A failed settlement instead moves it `open` → `settle_failed` (with `error_code`), still reserved, until a later settle closes it. These are the only in-place changes. |
 | `settle`                     | Actual cost; `status` is the outcome (`settled`, `partial`, `client_aborted`, `upstream_failed`, `gateway_failed`, `expired`) and the row carries the billing basis. |
 | `release`                    | Hold returned unused.                                                                                                                                                |
 | `refund`                     | Credit back after a settle; `ref_id` names the refunded entry.                                                                                                       |
@@ -64,7 +64,7 @@ Indexes: `(tenant_id, occurred_at)`, `(key_id, occurred_at)`,
 checks).
 
 At quiescence, `gateway_budget.reserved_micro_credits` equals the sum of its
-open `hold` entries. For usage budgets, `spent_micro_credits` equals the sum
+`open` and `settle_failed` `hold` entries. For usage budgets, `spent_micro_credits` equals the sum
 of its `settle` entries. The integration test
 `apps/api-cf/src/integration/gateway-schema.integration.test.ts` runs a
 hold → settle round trip in workerd D1 with conditional `batch` statements
