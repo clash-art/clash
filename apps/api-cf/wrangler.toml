@@ -29,6 +29,8 @@ compatibility_flags = ["nodejs_compat"]
 "@clash/shared-types/marketplace-installation" = "../../packages/shared-types/src/marketplace-installation.ts"
 "@clash/shared-types/sync-error-severity" = "../../packages/shared-types/src/sync-error-severity.ts"
 "@clash/shared-types/project-metadata" = "../../packages/shared-types/src/project-metadata.ts"
+# @clash/gateway-core imports the shared resolver through this subpath.
+"@clash/shared-types/model-routing" = "../../packages/shared-types/src/model-routing.ts"
 
 # Static `.wasm` imports (loro-crdt/bundler) must be bundled as precompiled
 # WebAssembly modules rather than fetched or eval'd at runtime.

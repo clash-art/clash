@@ -189,6 +189,13 @@ export default {
       return proxyToApiCf(proxied, env);
     }
 
+    // Model gateway: api-cf derives identity from the sk_gw_ token alone.
+    if (path.startsWith("/gateway/")) {
+      const gatewayRequest = new Request(request);
+      gatewayRequest.headers.delete("x-user-id");
+      return proxyToApiCf(gatewayRequest, env);
+    }
+
     // Everything else under /api/* + /sync/* + /agents/* + delivery paths
     // proxies straight to api-cf (projects, settings, marketplace, internal,
     // tasks, describe, generate, signed capability delivery).

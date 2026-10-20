@@ -6,6 +6,7 @@ import { emailOTP } from "better-auth/plugins";
 import { withCloudflare } from "better-auth-cloudflare";
 import { drizzle } from "drizzle-orm/d1";
 
+import { gatewaySessionDatabaseHooks } from "@clash/shared-cloud-schema/gateway";
 import * as betterAuthSchema from "../db/better-auth.schema";
 
 const basePath = "/api/better-auth";
@@ -185,6 +186,13 @@ function buildAuth(env: AuthBindings, cf?: IncomingRequestCfProperties) {
           ...(isLocalAuthBaseUrl(baseURL) ? devTrustedOrigins : []),
         ],
         secret,
+        // Sign-out / session revocation revokes child gateway tokens (#346).
+        // Writes go to the primary binding, never a read-replica scope.
+        databaseHooks: gatewaySessionDatabaseHooks(
+          () => env.DB,
+          (error) =>
+            console.warn("[auth] gateway token cascade failed:", error instanceof Error ? error.name : typeof error),
+        ),
         session: {
           // Issue #154: signed session_data cookie. Sign-out expires it along
           // with session_token. Sensitive endpoints (revoke-*, change-password,

@@ -38,6 +38,10 @@ export default defineConfig({
         ),
       },
       {
+        find: /^@clash\/gateway-core$/,
+        replacement: resolve(__dirname, "../../packages/gateway-core/src/index.ts"),
+      },
+      {
         find: /^@clash\/shared-types\/(.+)$/,
         replacement: resolve(
           __dirname,

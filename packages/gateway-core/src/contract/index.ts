@@ -14,6 +14,7 @@
  * of its own: time and ids come from the adapter's ports.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
 import {
   admitGatewayRequest,
@@ -315,7 +316,12 @@ export function describeGatewayContract(
       ],
       unavailable: async () => {
         const identity = await tenant();
-        const { route } = (await plan(identity)).attempts[0]!;
+        // Without routes there is no planned route; an unavailable port must
+        // reject whatever it is given, so a placeholder route suffices.
+        const route =
+          harness.capabilities.routes === "supported"
+            ? (await plan(identity)).attempts[0]!.route
+            : ({ modelCode: harness.fixtures.textModel, kind: "text" } as ModelUpstreamRoute);
         await expectCode(
           ports().credentials.resolve({ route, scope: identity.credentialScope, tenantId: identity.tenantId }),
           "GATEWAY_CAPABILITY_UNAVAILABLE",

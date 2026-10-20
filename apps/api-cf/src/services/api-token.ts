@@ -6,7 +6,7 @@ import {
 
 // Split from session.ts (issue #130) so token-only callers (the upload Worker)
 // do not load better-auth at startup.
-async function sha256Hex(input: string): Promise<string> {
+export async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const buf = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(buf))
@@ -14,10 +14,16 @@ async function sha256Hex(input: string): Promise<string> {
     .join("");
 }
 
-export async function getUserIdFromApiToken(
+/** The `clsh_` token row behind a request: `id` is the api_token id. */
+export interface ApiTokenIdentity {
+  id: string;
+  userId: string;
+}
+
+export async function getApiTokenIdentity(
   request: Request,
   env: { DB: D1Database },
-): Promise<string | null> {
+): Promise<ApiTokenIdentity | null> {
   const auth = request.headers.get("authorization") ?? "";
   let token: string | null = null;
   if (auth.startsWith("Bearer clsh_")) {
@@ -30,12 +36,12 @@ export async function getUserIdFromApiToken(
   if (!token) return null;
   const hash = await sha256Hex(token);
   const { results } = await env.DB.prepare(
-    "SELECT user_id, last_used_at FROM api_token WHERE token_hash = ? LIMIT 1",
+    "SELECT id, user_id, last_used_at FROM api_token WHERE token_hash = ? LIMIT 1",
   )
     .bind(hash)
-    .all<{ user_id: string; last_used_at: number | null }>();
+    .all<{ id: string; user_id: string; last_used_at: number | null }>();
   const row = results?.[0];
-  if (!row) return null;
+  if (!row?.user_id) return null;
   // Usage is recorded at most every 5 min (#141): every write hits the D1
   // primary, and the guard keeps concurrent first requests to one write.
   if (shouldTouchToken(row.last_used_at == null ? null : row.last_used_at * 1000))
@@ -46,6 +52,12 @@ export async function getUserIdFromApiToken(
       .bind(hash, TOKEN_TOUCH_INTERVAL_S)
       .run()
       .catch(() => {});
-  return row.user_id ?? null;
+  return { id: row.id, userId: row.user_id };
 }
 
+export async function getUserIdFromApiToken(
+  request: Request,
+  env: { DB: D1Database },
+): Promise<string | null> {
+  return (await getApiTokenIdentity(request, env))?.userId ?? null;
+}
