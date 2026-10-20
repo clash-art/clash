@@ -38,6 +38,13 @@ export interface Env {
   /** AES-GCM key for encrypting/decrypting user variables (action secrets) */
   ACTION_SECRET_KEY?: string;
   /**
+   * Key-encryption key for official model-gateway upstream credentials
+   * (`gateway_upstream_account.encrypted_credentials`); deliberately distinct
+   * from ACTION_SECRET_KEY. Rows may instead reference a `GATEWAY_UPSTREAM_*`
+   * Worker secret by name (`secret_ref`).
+   */
+  GATEWAY_ENCRYPTION_KEY?: string;
+  /**
    * Optional secret: JSON array of operator-registered OAuth Providers,
    * `[{ id, label?, flow }]` where `flow` is a PluginAuthFlow with tokenUrl and
    * clientId. Parsed on first use (services/provider-oauth-config.ts), never at

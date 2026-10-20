@@ -6,7 +6,7 @@
     "project-content-transfer.ts": "Shared HTTP glue for Resource and Document all-PUT multipart phases and exact-length streaming responses. Begin reports the part numbers and content hashes a live session already holds so an interrupted sender resumes. No client storage locator, ETag or resource list is accepted as authority.",
     "project-content-transfer.test.ts": "Checks incremental response delivery, actual overflow/truncation failure and explicit unsupported storage without buffered fallback.",
     "v1/project-content.ts": "Project Resource capability issuance and immutable Document body transport; authoritative Loro references and current exact replica admission gate every request.",
-    "gateway.ts": "/gateway/* surface authenticated by sk_gw_ tokens only (outside the /api/* session middleware; x-user-id never read). GET /gateway/me returns the token-derived identity. Guide: apps/docs/guide/gateway-tokens.md.",
+    "gateway.ts": "/gateway/* surface authenticated by sk_gw_ tokens only (outside the /api/* session middleware; x-user-id never read). GET /gateway/me returns the token-derived identity. /gateway/v1/* is gateway-core createGatewayApp over the D1 ports in ../gateway (#347). Guides: apps/docs/guide/gateway-tokens.md, gateway-data-plane.md.",
     "v1/gateway-tokens.ts": "POST /api/v1/gateway/tokens (mint from session or clsh_), POST /tokens/:id/renew (same parent only), DELETE /tokens/:id (owner revoke). Coded GatewayErrors; the token appears only in the no-store mint response."
   }
 }

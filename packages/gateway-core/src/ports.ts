@@ -107,6 +107,13 @@ export interface SettleResult {
   duplicate: boolean;
 }
 
+export interface SettleFailedInput {
+  requestId: string;
+  tenantId: string;
+  /** Code of the settlement failure, recorded on the marked holds. */
+  errorCode: string;
+}
+
 export interface GatewayBudgetPort {
   /**
    * Atomically hold on every budget or none. Rejects with GATEWAY_BUDGET_EXCEEDED,
@@ -121,6 +128,16 @@ export interface GatewayBudgetPort {
    * with GATEWAY_INTERNAL.
    */
   settle(event: UsageEvent): Promise<SettleResult>;
+  /**
+   * Durably record that `settle` failed for this request: every still-open
+   * hold moves to `settle_failed` with `errorCode`, and its amount stays
+   * reserved; no money moves. Idempotent. Answers `settled` when a settlement
+   * was in fact recorded (the failure was spurious) and `settle_failed`
+   * otherwise. A later `settle` closes `settle_failed` holds exactly like open
+   * ones, once. A request id that was never reserved rejects with
+   * GATEWAY_INTERNAL.
+   */
+  markSettleFailed(input: SettleFailedInput): Promise<{ status: "settled" | "settle_failed" }>;
   snapshot(input: { tenantId: string; budgetIds?: readonly string[] }): Promise<BudgetState[]>;
 }
 

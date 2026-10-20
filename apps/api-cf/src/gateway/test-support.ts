@@ -1,0 +1,214 @@
+/**
+ * Test support (not imported by the Worker): seeds a migrated D1 with a
+ * published catalog, a price, a sealed official upstream key, budgets and
+ * limited virtual keys, and returns a gateway-core contract harness over the
+ * real D1 ports. Used by the node:sqlite unit run and the miniflare/workerd
+ * integration run, so both execute the same contract.
+ *
+ * The text model is a built-in shared-types card with an official
+ * OpenAI-compatible route, published through `gateway_model.card_json`: the
+ * catalog stays data. Seeded amounts are fixture inputs; the contract derives
+ * every expectation from the ports, never from these numbers.
+ */
+import type { D1Database } from "@cloudflare/workers-types";
+import type { GatewayContractHarness } from "@clash/gateway-core/contract";
+import type { GatewayClock, GatewayPorts } from "@clash/gateway-core";
+import { listDeclaredModelUpstreamRoutes, MODEL_CARDS, type ModelCard } from "@clash/shared-types";
+
+import { sha256Hex } from "../services/api-token";
+import { createGatewayTokenStore, type GatewayTokenScope } from "../services/gateway-tokens";
+import { toSeconds } from "./d1-common";
+import { sealGatewayUpstreamCredentials } from "./d1-credentials";
+import { createD1GatewayPorts } from "./index";
+
+export const CONTRACT_ORIGIN = "https://gateway.contract";
+
+function hex(bytes: number): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** A built-in text card the official gateway can serve over the OpenAI wire format. */
+export function officialChatCard(): ModelCard {
+  const card = MODEL_CARDS.find(
+    (candidate) =>
+      candidate.kind === "text" &&
+      listDeclaredModelUpstreamRoutes([candidate]).some(
+        (route) =>
+          route.providerId === "official" &&
+          route.apiShape === "openai-compatible" &&
+          route.upstreamId === "openai" &&
+          !route.executorPluginId,
+      ),
+  );
+  if (!card) throw new Error("shared-types has no official OpenAI-compatible text card");
+  return card;
+}
+
+export interface TenantTokenOptions {
+  modelAllowlist?: string[];
+  scopes?: GatewayTokenScope[];
+  budgets?: boolean;
+}
+
+export interface SeededGateway {
+  db: D1Database;
+  clock: GatewayClock;
+  encryptionKey: string;
+  textModel: string;
+  catalogVersion: string;
+  upstreamAccountId: string;
+  upstreamApiKey: string;
+  ports(overrides?: Partial<GatewayPorts>): GatewayPorts;
+  /** Mint a token for a fresh user in their own personal tenant, with limited budgets unless `budgets: false`. */
+  tenantToken(options?: TenantTokenOptions): Promise<{ token: string; userId: string; tenantId: string }>;
+  /** A token minted from a virtual key carrying `rateLimit`. */
+  keyToken(owner: { userId: string; tenantId: string }, rateLimit: Record<string, number>): Promise<string>;
+}
+
+export async function seedGateway(db: D1Database): Promise<SeededGateway> {
+  // A frozen clock keeps every contract step in one rate window.
+  const t0 = Date.now();
+  const clock: GatewayClock = { now: () => t0 };
+  const nowS = toSeconds(t0);
+  const run = hex(6);
+  const encryptionKey = `contract-kek-${hex(16)}`;
+  const card = officialChatCard();
+  const catalogVersion = `contract-${run}`;
+  const upstreamAccountId = `gwu_contract_${run}`;
+  const upstreamApiKey = `sk-contract-${hex(12)}`;
+
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO gateway_model (id, catalog_version, model_code, kind, enabled, card_json, max_output_tokens, published_at)
+         VALUES (?, ?, ?, ?, 1, ?, 4096, ?)`,
+      )
+      .bind(`gwm_${run}`, catalogVersion, card.id, card.kind, JSON.stringify(card), nowS - 60),
+    ...[
+      ["input_token", 3_000_000],
+      ["output_token", 15_000_000],
+    ].map(([unit, amount]) =>
+      db
+        .prepare(
+          `INSERT INTO gateway_price (id, price_version, model_code, upstream_id, unit, amount_micro, per, effective_from)
+           VALUES (?, ?, ?, '', ?, ?, 1000000, ?)`,
+        )
+        .bind(`gwp_${run}_${unit}`, `price-${run}`, card.id, unit, amount, nowS - 60),
+    ),
+    db
+      .prepare(
+        `INSERT INTO gateway_upstream_account
+           (id, provider_id, upstream_id, api_shape, enabled, encrypted_credentials, configured_credentials)
+         VALUES (?, 'official', 'openai', 'openai-compatible', 1, ?, '["apiKey"]')`,
+      )
+      .bind(upstreamAccountId, await sealGatewayUpstreamCredentials({ apiKey: upstreamApiKey }, encryptionKey)),
+  ]);
+
+  const tokens = createGatewayTokenStore(db, { clock });
+
+  async function tenantToken(tokenOptions: TenantTokenOptions = {}) {
+    const userId = `gw-user-${hex(8)}`;
+    const parentId = `gw-parent-${hex(8)}`;
+    await db
+      .prepare(`INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, 'gw', ?, 'clsh_gw')`)
+      .bind(parentId, userId, await sha256Hex(`clsh_${hex(20)}`))
+      .run();
+    const minted = await tokens.mint({
+      userId,
+      parent: { kind: "api_token", id: parentId },
+      ...(tokenOptions.modelAllowlist ? { modelAllowlist: tokenOptions.modelAllowlist } : {}),
+      ...(tokenOptions.scopes ? { scopes: tokenOptions.scopes } : {}),
+    });
+    if (tokenOptions.budgets === false) return { token: minted.token, userId, tenantId: minted.tenantId };
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO gateway_budget (id, tenant_id, scope, scope_id, limit_micro_credits) VALUES (?, ?, 'tenant', ?, 50000000)`,
+        )
+        .bind(`gwb_t_${hex(8)}`, minted.tenantId, minted.tenantId),
+      db
+        .prepare(`INSERT INTO gateway_budget (id, tenant_id, scope, scope_id, limit_micro_credits) VALUES (?, ?, 'user', ?, NULL)`)
+        .bind(`gwb_u_${hex(8)}`, minted.tenantId, userId),
+    ]);
+    return { token: minted.token, userId, tenantId: minted.tenantId };
+  }
+
+  async function keyToken(owner: { userId: string; tenantId: string }, rateLimit: Record<string, number>) {
+    const keyId = `gwk_${hex(8)}`;
+    const publicId = hex(12);
+    const token = `sk_gw_${publicId}.${hex(32)}`;
+    await db.batch([
+      db
+        .prepare(
+          `INSERT INTO gateway_key (id, tenant_id, user_id, name, token_prefix, token_hash, scopes_json, rate_limit_json)
+           VALUES (?, ?, ?, 'contract', 'sk_gw_', ?, '["models:invoke"]', ?)`,
+        )
+        .bind(keyId, owner.tenantId, owner.userId, await sha256Hex(`key-${keyId}`), JSON.stringify(rateLimit)),
+      db
+        .prepare(
+          `INSERT INTO gateway_token (id, token_hash, key_id, tenant_id, user_id, scopes_json, credential_scope, expires_at)
+           VALUES (?, ?, ?, ?, ?, '["models:invoke"]', 'official', ?)`,
+        )
+        .bind(`gwt_${publicId}`, await sha256Hex(token), keyId, owner.tenantId, owner.userId, nowS + 900),
+    ]);
+    return token;
+  }
+
+  return {
+    db,
+    clock,
+    encryptionKey,
+    textModel: card.id,
+    catalogVersion,
+    upstreamAccountId,
+    upstreamApiKey,
+    ports: (overrides = {}) => ({
+      ...createD1GatewayPorts({
+        db,
+        clock,
+        secrets: { encryptionKey, secret: () => undefined },
+        logger: { info() {}, warn() {}, error() {} },
+      }),
+      ...overrides,
+    }),
+    tenantToken,
+    keyToken,
+  };
+}
+
+export const gatewayRequest = (token?: string) =>
+  new Request(`${CONTRACT_ORIGIN}/gateway/v1/chat/completions`, {
+    method: "POST",
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+
+/** The gateway-core contract over the D1 ports: every capability but blobs, scheduler and audit. */
+export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayContractHarness> {
+  const tenantA = await seeded.tenantToken();
+  const tenantB = await seeded.tenantToken();
+  const rateLimited = await seeded.keyToken(tenantA, { requestsPerMinute: 3 });
+  const concurrencyLimited = await seeded.keyToken(tenantA, { concurrency: 2 });
+  return {
+    ports: seeded.ports(),
+    capabilities: {
+      identity: "supported",
+      routes: "supported",
+      credentials: "supported",
+      budgets: "supported",
+      ledger: "supported",
+      "limits.rate": "supported",
+      "limits.concurrency": "supported",
+      blobs: "unavailable",
+      scheduler: "unavailable",
+      audit: "unavailable",
+    },
+    fixtures: {
+      tenantRequest: () => gatewayRequest(tenantA.token),
+      otherTenantRequest: () => gatewayRequest(tenantB.token),
+      anonymousRequest: () => gatewayRequest(),
+      textModel: seeded.textModel,
+      rateLimited: { request: () => gatewayRequest(rateLimited), limit: 3 },
+      concurrencyLimited: { request: () => gatewayRequest(concurrencyLimited), limit: 2 },
+    },
+  };
+}
