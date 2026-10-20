@@ -9,10 +9,11 @@ import { expect, it } from "vitest";
 import * as auth from "./auth";
 import * as app from "./app";
 import * as broker from "./broker";
+import * as gateway from "./gateway";
 import * as runtime from "./runtime";
 
 it("generates executable SQLite schema and preserves auth relations without SQL foreign-key coupling", async () => {
-  const schema = { ...auth, ...app, ...broker, ...runtime };
+  const schema = { ...auth, ...app, ...broker, ...runtime, ...gateway };
   const blank = await generateSQLiteDrizzleJson({});
   const generated = await generateSQLiteDrizzleJson(schema, blank.id);
   const statements = await generateSQLiteMigration(blank, generated);

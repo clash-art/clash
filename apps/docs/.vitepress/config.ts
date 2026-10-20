@@ -26,6 +26,7 @@ export default withMermaid(defineConfig({
               link: "/guide/durable-run-protocol",
             },
             { text: "Asset System", link: "/guide/asset-system" },
+            { text: "Gateway D1 Schema", link: "/guide/gateway-schema" },
             { text: "Build Architecture", link: "/guide/build-architecture" },
             { text: "Release Pipeline", link: "/guide/release-pipeline" },
             {

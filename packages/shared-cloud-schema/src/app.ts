@@ -35,9 +35,46 @@ export const tenants = sqliteTable("tenant", {
   id: text("id").primaryKey(),
   ownerUserId: text("owner_user_id").notNull(),
   name: text("name").notNull(),
+  /** `personal` (lazily created personal:<userId>) or `team` (shared wallet). */
+  kind: text("kind").notNull().default("personal"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
+
+/**
+ * Pending team invitations. Only the SHA-256 of the invite secret is stored.
+ * Terminal rows (accepted/revoked/expired) are deleted after 30 days.
+ */
+export const tenantInvites = sqliteTable(
+  "tenant_invite",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull(),
+    email: text("email").notNull(),
+    role: text("role").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    invitedByUserId: text("invited_by_user_id").notNull(),
+    status: text("status").notNull().default("pending"),
+    acceptedByUserId: text("accepted_by_user_id"),
+    acceptedAt: integer("accepted_at"),
+    expiresAt: integer("expires_at").notNull(),
+    createdAt: integer("created_at")
+      .notNull()
+      .default(sql`(strftime('%s', 'now'))`),
+    updatedAt: integer("updated_at")
+      .notNull()
+      .default(sql`(strftime('%s', 'now'))`),
+  },
+  (table) => ({
+    tokenHashIdx: uniqueIndex("tenant_invite_token_hash_idx").on(
+      table.tokenHash,
+    ),
+    tenantStatusIdx: index("tenant_invite_tenant_status_idx").on(
+      table.tenantId,
+      table.status,
+    ),
+  }),
+);
 
 export const tenantMembers = sqliteTable(
   "tenant_member",

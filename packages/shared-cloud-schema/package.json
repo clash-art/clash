@@ -24,6 +24,11 @@
       "types": "./src/runtime.ts",
       "import": "./src/runtime.ts",
       "default": "./src/runtime.ts"
+    },
+    "./gateway": {
+      "types": "./src/gateway.ts",
+      "import": "./src/gateway.ts",
+      "default": "./src/gateway.ts"
     }
   },
   "scripts": {

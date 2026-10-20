@@ -126,6 +126,9 @@
       "@clash/shared-cloud-schema/runtime": [
         "packages/shared-cloud-schema/src/runtime.ts"
       ],
+      "@clash/shared-cloud-schema/gateway": [
+        "packages/shared-cloud-schema/src/gateway.ts"
+      ],
       "@clash/shared-layout": [
         "packages/shared-layout/src/index.ts"
       ],
