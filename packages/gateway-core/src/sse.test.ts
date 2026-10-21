@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import { GatewayError, toAnthropicErrorBody, toOpenAIErrorBody } from "./errors.js";
 import {
   OPENAI_STREAM_DONE,
+  createSseEventFilter,
   createSseParser,
   createUsageCaptureStream,
+  isOpenAIUsageOnlyChunk,
   encodeSseComment,
   encodeSseError,
   encodeSseEvent,
@@ -113,6 +115,30 @@ describe("usage capture stream", () => {
     expect(result.usage.outputTokens).toBe(15);
   });
 
+  it("reports the end marker, the final output count and content bytes it saw", async () => {
+    const anthropic = await pipe(ANTHROPIC_STREAM, "anthropic-messages");
+    expect(anthropic.result).toMatchObject({ terminated: true, outputReported: true, outputBytes: encoder.encode("Hello").byteLength });
+    // message_start carries only a starting output count.
+    const started = await pipe(ANTHROPIC_STREAM.slice(0, ANTHROPIC_STREAM.indexOf("event: message_delta")), "anthropic-messages");
+    expect(started.result).toMatchObject({ completed: true, terminated: false, reported: true, outputReported: false });
+
+    const content = "héllo ✓";
+    const chunk = { choices: [{ delta: { content, tool_calls: [{ function: { name: "f", arguments: "{}" } }] } }] };
+    const openai = await pipe(
+      [`data: ${JSON.stringify(chunk)}\n\n`, `data: ${OPENAI_STREAM_DONE}\n\n`].join(""),
+      "openai-chat",
+      2,
+    );
+    expect(openai.result).toMatchObject({
+      terminated: true,
+      reported: false,
+      outputReported: false,
+      outputBytes: encoder.encode(`${content}f{}`).byteLength,
+    });
+    const cut = await pipe(`data: ${JSON.stringify(chunk)}\n\n`, "openai-chat");
+    expect(cut.result).toMatchObject({ completed: true, terminated: false });
+  });
+
   it("resolves incomplete with observed usage when stopped", async () => {
     const capture = createUsageCaptureStream("anthropic-messages");
     const writer = capture.stream.writable.getWriter();
@@ -122,5 +148,39 @@ describe("usage capture stream", () => {
     await reader.read();
     capture.stop();
     expect(await capture.done).toMatchObject({ completed: false, reported: true, usage: { inputTokens: 25 } });
+  });
+});
+
+async function filter(text: string, chunkSize: number) {
+  const bytes = encoder.encode(text);
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (let offset = 0; offset < bytes.length; offset += chunkSize)
+        controller.enqueue(bytes.slice(offset, offset + chunkSize));
+      controller.close();
+    },
+  });
+  return new Uint8Array(await new Response(source.pipeThrough(createSseEventFilter(isOpenAIUsageOnlyChunk))).arrayBuffer());
+}
+
+describe("SSE event filter", () => {
+  const content = 'data: {"choices":[{"index":0,"delta":{"content":"hé ✓"}}],"usage":null}\n\n';
+  // OpenAI's include_usage chunk: empty choices, usage set.
+  const usage = 'data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}\n\n';
+  const done = `data: ${OPENAI_STREAM_DONE}\n\n`;
+
+  it("removes exactly the selected events and passes every other byte unchanged, however it is chunked", async () => {
+    for (const eol of ["\n", "\r\n", "\r"]) {
+      const crlf = (text: string) => text.replace(/\n/g, eol);
+      const input = crlf(`: keep-alive\n\n${content}${usage}${done}`);
+      const expected = encoder.encode(crlf(`: keep-alive\n\n${content}${done}`));
+      for (const size of [1, 2, 3, 5, 11, input.length]) expect([...(await filter(input, size))], `${JSON.stringify(eol)}/${size}`).toEqual([...expected]);
+    }
+  });
+
+  it("keeps a usage chunk that also carries choices, and flushes a trailing partial event", async () => {
+    const withChoices = 'data: {"choices":[{"index":0,"delta":{}}],"usage":{"prompt_tokens":1}}\n\n';
+    const input = `${withChoices}data: {"partial"`;
+    expect(new TextDecoder().decode(await filter(input, 4))).toBe(input);
   });
 });

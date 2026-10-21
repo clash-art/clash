@@ -3,7 +3,8 @@
  * A plain WHATWG fetch handler (no framework: gateway-core reaches only zod);
  * each adapter mounts it under its own prefix and supplies the ports.
  *
- * Served today: non-streaming OpenAI-compatible `POST {base}/v1/chat/completions`.
+ * Served today: OpenAI-compatible `POST {base}/v1/chat/completions`, plain or
+ * `stream: true`.
  * Flow: authenticate once (identity comes from the credential only, never a
  * header claim) -> normalize -> admit (allowlist, catalog policy, plan, price,
  * limits, hold) -> call the planned upstream routes in failover order ->
@@ -16,6 +17,16 @@
  * answer bytes are then retained (retention.ts); a retention failure adds the
  * GATEWAY_RETENTION_FAILED retention header and never changes the answer or
  * its billing.
+ *
+ * Streams (#348): the hold is reserved before any byte is sent, so a refusal
+ * (402 and every other admission error) is a plain coded JSON answer. Failover
+ * happens only before the upstream's first byte. The upstream body is then
+ * relayed byte for byte (stream.ts), except the usage chunk the gateway asked
+ * for on a caller's behalf, and settled when it ends: observed usage, partial
+ * on a cut or failed stream, and after the upstream is aborted when the caller
+ * disconnects. Headers are gone by then, so a settlement or retention failure
+ * is reported in-stream (encodeGatewayStreamState) as well as by the
+ * `settle_failed` / `failed` rows and the coded logs.
  */
 import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
@@ -34,6 +45,7 @@ import {
 import type { GatewayIdentity, GatewayPorts, GatewayUpstreamCredential } from "./ports.js";
 import type { GatewayPrice } from "./pricing.js";
 import {
+  callerOmittedStreamUsage,
   normalizeOpenAIChatRequest,
   prepareUpstreamBody,
   type GatewayRequest,
@@ -43,8 +55,18 @@ import {
   type GatewayRouteAttempt,
   type UpstreamFailure,
 } from "./routing.js";
-import { GATEWAY_RETENTION_HEADER, retainGatewayExchange, retentionHeaderValue } from "./retention.js";
-import { createUsageAccumulator, emptyUsage, settledUsage, type Usage } from "./usage.js";
+import {
+  createRetainedBodyCopy,
+  GATEWAY_RETENTION_HEADER,
+  GATEWAY_STREAM_RETENTION_MAX_BYTES,
+  retainGatewayExchange,
+  retentionHeaderValue,
+  type RetainedBodyCopy,
+  type RetainExchangeInput,
+} from "./retention.js";
+import { encodeSseError, isOpenAIUsageOnlyChunk } from "./sse.js";
+import { encodeGatewayStreamState, relayGatewayStream, type StreamEnding, type StreamRelayResult } from "./stream.js";
+import { createUsageAccumulator, emptyUsage, settledUsage, streamedUsage, type Usage } from "./usage.js";
 
 export const GATEWAY_REQUEST_ID_HEADER = "x-clash-request-id";
 /**
@@ -58,6 +80,8 @@ export const GATEWAY_APP_DEFAULTS = {
   holdTtlMs: 10 * 60 * 1000,
   maxBodyBytes: 8 * 1024 * 1024,
   upstreamTimeoutMs: 120 * 1000,
+  /** A stream is aborted and settled partial after this; its hold lives this much longer than `holdTtlMs`. */
+  streamMaxDurationMs: 10 * 60 * 1000,
 } as const;
 
 /**
@@ -74,15 +98,39 @@ export interface GatewayAppOptions {
   basePath?: string;
   holdTtlMs?: number;
   maxBodyBytes?: number;
-  /** Upstream deadline when the route sets no first-byte timeout. */
+  /**
+   * Upstream deadline when the route sets no first-byte timeout. For a stream
+   * it covers the response headers only, never the stream itself.
+   */
   upstreamTimeoutMs?: number;
   maxAttempts?: number;
+  /** Longest a stream may run; see GATEWAY_APP_DEFAULTS.streamMaxDurationMs. */
+  streamMaxDurationMs?: number;
   /**
    * Request/response body retention for admitted requests. Off unless enabled:
    * the deployment opts in (api-cf: hosted-only GATEWAY_STAFF_PROMPT_ACCESS).
+   * `maxStreamBytes` caps a streamed answer's retained copy
+   * (GATEWAY_STREAM_RETENTION_MAX_BYTES by default).
    */
-  retention?: { enabled: boolean; ttlMs?: number };
+  retention?: { enabled: boolean; ttlMs?: number; maxStreamBytes?: number };
+  /**
+   * Keeps work alive past the response (Workers `ctx.waitUntil`): a stream
+   * whose caller disconnected is settled and retained in the background.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
+
+/** How each stream ending is settled, and the in-stream error it reports. */
+const STREAM_SETTLEMENT: Record<
+  StreamEnding,
+  { outcome: GatewayOutcome; error?: { code: GatewayErrorCode; reason: string } }
+> = {
+  completed: { outcome: "completed" },
+  truncated: { outcome: "partial", error: { code: "GATEWAY_UPSTREAM_ERROR", reason: "stream_truncated" } },
+  upstream_error: { outcome: "partial", error: { code: "GATEWAY_UPSTREAM_ERROR", reason: "stream_error" } },
+  timeout: { outcome: "partial", error: { code: "GATEWAY_UPSTREAM_TIMEOUT", reason: "stream_max_duration" } },
+  client_aborted: { outcome: "client_aborted" },
+};
 
 export interface GatewayApp {
   fetch(request: Request): Promise<Response>;
@@ -151,6 +199,8 @@ async function readJsonBody(request: Request, maxBodyBytes: number): Promise<unk
 
 type AttemptResult =
   | { kind: "answered"; body: Record<string, unknown>; outputBytes: number }
+  /** A 2xx event stream; nothing was read from it yet. */
+  | { kind: "streaming"; body: ReadableStream<Uint8Array>; contentType: string; upstream: AbortController }
   /** Nothing reached the upstream (no price, key or base URL for this route). */
   | { kind: "skipped"; error: GatewayError }
   | { kind: "failed"; failure: UpstreamFailure }
@@ -162,6 +212,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   const holdTtlMs = options.holdTtlMs ?? GATEWAY_APP_DEFAULTS.holdTtlMs;
   const maxBodyBytes = options.maxBodyBytes ?? GATEWAY_APP_DEFAULTS.maxBodyBytes;
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? GATEWAY_APP_DEFAULTS.upstreamTimeoutMs;
+  const streamMaxDurationMs = options.streamMaxDurationMs ?? GATEWAY_APP_DEFAULTS.streamMaxDurationMs;
 
   const errorResponse = (error: unknown, requestId?: string, extraHeaders: Record<string, string> = {}): Response => {
     const coded = toGatewayError(error);
@@ -219,6 +270,18 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         }),
       };
 
+    const { stream } = admission.request;
+    const deadlineMs = attempt.firstByteTimeoutMs ?? upstreamTimeoutMs;
+    // A stream's deadline covers the response headers only; once they arrive
+    // the same controller stays with the relay for disconnects and its
+    // duration limit.
+    const upstream = new AbortController();
+    const firstByte = stream
+      ? setTimeout(
+          () => upstream.abort(new DOMException("The upstream did not answer in time.", "TimeoutError")),
+          deadlineMs,
+        )
+      : undefined;
     let response: Response;
     try {
       response = await ports.upstream.fetch(
@@ -228,10 +291,10 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           headers: {
             authorization: `Bearer ${credential.apiKey}`,
             "content-type": "application/json",
-            accept: "application/json",
+            accept: stream ? "text/event-stream" : "application/json",
           },
           body: JSON.stringify(prepareUpstreamBody(admission.request, attempt.route.upstreamModel)),
-          signal: AbortSignal.timeout(attempt.firstByteTimeoutMs ?? upstreamTimeoutMs),
+          signal: stream ? upstream.signal : AbortSignal.timeout(deadlineMs),
         }),
       );
     } catch (error) {
@@ -244,11 +307,27 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         price,
         failure: timedOut ? { state: "unknown", reason: "timeout" } : { state: "not-sent", reason: "network" },
       };
+    } finally {
+      clearTimeout(firstByte);
     }
     if (!response.ok) {
       // Drain without reading into anything the caller or logs can see.
       await response.body?.cancel().catch(() => undefined);
       return { kind: "failed", price, failure: { state: "answered", status: response.status } };
+    }
+    if (stream) {
+      const contentType = response.headers.get("content-type");
+      if (!response.body || (contentType !== null && !contentType.toLowerCase().includes("text/event-stream"))) {
+        await response.body?.cancel().catch(() => undefined);
+        return {
+          kind: "invalid",
+          price,
+          error: new GatewayError("GATEWAY_UPSTREAM_ERROR", {
+            details: { upstreamId: attempt.route.upstreamId, reason: "not_event_stream" },
+          }),
+        };
+      }
+      return { kind: "streaming", price, body: response.body, contentType: contentType ?? "text/event-stream", upstream };
     }
     let body: unknown;
     try {
@@ -285,7 +364,14 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     const { requestId } = admission;
     let cause: GatewayError;
     try {
-      await settleGatewayRequest(ports, admission, input);
+      const { result } = await settleGatewayRequest(ports, admission, input);
+      // Already closed, e.g. by the stale-hold sweeper: the recorded cost stands.
+      if (result.duplicate)
+        ports.logger.warn("gateway.settle_duplicate", {
+          requestId,
+          outcome: input.outcome,
+          recordedMicroCredits: result.costMicroCredits,
+        });
       return {};
     } catch (error) {
       cause = toGatewayError(error);
@@ -314,7 +400,8 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     return { [GATEWAY_SETTLEMENT_HEADER]: `failed; code=${code}; request_id=${requestId}` };
   }
 
-  async function execute(admission: GatewayAdmission, started: number): Promise<Response> {
+  /** The answer, and whether it is a stream (which settles and retains itself when it ends). */
+  async function execute(admission: GatewayAdmission, started: number): Promise<{ response: Response; streaming: boolean }> {
     const { plan, requestId } = admission;
     let attempt: GatewayRouteAttempt | undefined = plan.attempts[0];
     let last: GatewayRouteAttempt = plan.attempts[0]!;
@@ -328,6 +415,11 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       tried += 1;
       const result = await callAttempt(admission, attempt);
       lastPrice = result.price;
+      if (result.kind === "streaming")
+        return {
+          response: streamAnswer(admission, { attempt, price: result.price ?? admission.price, tried, started }, result),
+          streaming: true,
+        };
       if (result.kind === "answered") {
         const accumulator = createUsageAccumulator("openai-chat");
         accumulator.observe(result.body);
@@ -346,10 +438,13 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           durationMs: ports.clock.now() - started,
         });
         // The public model code, not the upstream's, as the caller asked for it.
-        return json(
-          { ...result.body, model: admission.request.model },
-          { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId, ...settlement } },
-        );
+        return {
+          response: json(
+            { ...result.body, model: admission.request.model },
+            { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId, ...settlement } },
+          ),
+          streaming: false,
+        };
       }
       if (result.kind === "skipped") {
         error = result.error;
@@ -391,7 +486,117 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         typeof failure.details?.upstreamStatus === "number" ? failure.details.upstreamStatus : undefined,
       durationMs: ports.clock.now() - started,
     });
-    return errorResponse(failure, requestId, settlement);
+    return { response: errorResponse(failure, requestId, settlement), streaming: false };
+  }
+
+  /**
+   * Relay an accepted upstream stream to the caller. Settlement and retention
+   * run when it ends (finishStream); the response is returned at once.
+   */
+  function streamAnswer(
+    admission: GatewayAdmission,
+    context: { attempt: GatewayRouteAttempt; price: GatewayPrice; tried: number; started: number },
+    result: Extract<AttemptResult, { kind: "streaming" }>,
+  ): Response {
+    const copy = options.retention?.enabled
+      ? createRetainedBodyCopy(options.retention.maxStreamBytes ?? GATEWAY_STREAM_RETENTION_MAX_BYTES)
+      : undefined;
+    const body = relayGatewayStream({
+      body: result.body,
+      shape: "openai-chat",
+      upstream: result.upstream,
+      maxDurationMs: streamMaxDurationMs,
+      // The usage chunk exists because the gateway asked for it; a caller that did not gets the stream it asked for.
+      ...(callerOmittedStreamUsage(admission.request) ? { dropEvent: isOpenAIUsageOnlyChunk } : {}),
+      ...(copy ? { onDelivered: (chunk: Uint8Array) => copy.append(chunk) } : {}),
+      ...(options.waitUntil ? { waitUntil: options.waitUntil } : {}),
+      onEnd: (relay) => finishStream(admission, context, relay, { copy, contentType: result.contentType }),
+    });
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": result.contentType,
+        "cache-control": "no-store",
+        [GATEWAY_REQUEST_ID_HEADER]: admission.requestId,
+      },
+    });
+  }
+
+  /**
+   * Settle an ended stream once, then retain what the caller received. Returns
+   * the stream's tail: the in-stream error of a stream that did not complete,
+   * then the coded state of a failed settlement or retention.
+   */
+  async function finishStream(
+    admission: GatewayAdmission,
+    context: { attempt: GatewayRouteAttempt; price: GatewayPrice; tried: number; started: number },
+    relay: StreamRelayResult,
+    retained: { copy: RetainedBodyCopy | undefined; contentType: string },
+  ): Promise<string> {
+    const { requestId, request } = admission;
+    const { attempt, price } = context;
+    const plan = STREAM_SETTLEMENT[relay.ending];
+    const error = plan.error
+      ? new GatewayError(plan.error.code, {
+          details: { upstreamId: attempt.route.upstreamId, reason: plan.error.reason },
+        })
+      : undefined;
+    const ceilings = [request.maxOutputTokens, price.maxOutputTokens].filter(
+      (value): value is number => value !== undefined,
+    );
+    const usage = streamedUsage(relay.observed, {
+      inputTokens: request.estimatedInputTokens,
+      ...(ceilings.length ? { maxOutputTokens: Math.min(...ceilings) } : {}),
+    });
+    const settlement = await settle(admission, {
+      attempt,
+      outcome: plan.outcome,
+      usage,
+      price,
+      ...(error ? { error } : {}),
+    });
+    const settlementState = settlement[GATEWAY_SETTLEMENT_HEADER];
+    let tail = error ? encodeSseError(error, "openai") : "";
+    if (settlementState)
+      tail += encodeGatewayStreamState({
+        header: GATEWAY_SETTLEMENT_HEADER,
+        value: settlementState,
+        code: "GATEWAY_SETTLEMENT_FAILED",
+        requestId,
+      });
+    const callerGone = relay.ending === "client_aborted";
+    ports.logger[relay.ending === "completed" ? "info" : "warn"]("gateway.chat_completion_stream", {
+      requestId,
+      model: admission.plan.modelCode,
+      upstreamId: attempt.route.upstreamId,
+      accountId: attempt.route.accountId,
+      attempts: context.tried,
+      ending: relay.ending,
+      outcome: plan.outcome,
+      code: error?.code,
+      usageSource: usage.source,
+      forwardedBytes: relay.forwardedBytes,
+      durationMs: ports.clock.now() - context.started,
+    });
+    if (retained.copy) {
+      // The stored answer is what the caller received: a gone caller received no tail.
+      if (!callerGone && tail) retained.copy.append(encoder.encode(tail));
+      const { body, truncated } = retained.copy.result();
+      const failed = await retainAnswer(admission, {
+        status: 200,
+        body,
+        contentType: retained.contentType,
+        ...(truncated ? { truncated } : {}),
+      });
+      if (failed)
+        tail += encodeGatewayStreamState({
+          header: GATEWAY_RETENTION_HEADER,
+          value: retentionHeaderValue(requestId),
+          code: "GATEWAY_RETENTION_FAILED",
+          requestId,
+        });
+    }
+    return callerGone ? "" : tail;
   }
 
   async function chatCompletions(request: Request): Promise<Response> {
@@ -404,17 +609,13 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         idempotencyKey: request.headers.get("idempotency-key"),
         maxBodyBytes,
       });
-      if (gatewayRequest.stream)
-        throw new GatewayError("GATEWAY_CAPABILITY_UNAVAILABLE", {
-          message: "Streaming chat completions are not supported yet; send stream: false.",
-          details: { param: "stream" },
-        });
       admission = await admitGatewayRequest(
         // Authenticated once above; admission reuses that identity.
         { ...ports, identity: { authenticate: async () => identity } },
         { httpRequest: request, request: gatewayRequest },
         {
-          holdTtlMs,
+          // A stream's hold outlives the longest stream, so the sweeper never expires a live one.
+          holdTtlMs: gatewayRequest.stream ? holdTtlMs + streamMaxDurationMs : holdTtlMs,
           routing: {
             isRouteExecutable: isOpenAIChatRoute,
             ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
@@ -424,14 +625,15 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     } catch (error) {
       return errorResponse(error);
     }
-    let response: Response;
+    let answer: { response: Response; streaming: boolean };
     try {
-      response = await execute(admission, started);
+      answer = await execute(admission, started);
     } catch (error) {
       // execute() settles on every path it controls; this is a last resort.
-      response = errorResponse(error, admission.requestId);
+      answer = { response: errorResponse(error, admission.requestId), streaming: false };
     }
-    return options.retention?.enabled ? retain(admission, response) : response;
+    // A stream retains itself when it ends; everything else is retained now.
+    return options.retention?.enabled && !answer.streaming ? retain(admission, answer.response) : answer.response;
   }
 
   /**
@@ -440,20 +642,26 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
    * a failure only adds the retention header.
    */
   async function retain(admission: GatewayAdmission, response: Response): Promise<Response> {
-    let failed = true;
+    const failed = await retainAnswer(admission, {
+      status: response.status,
+      body: new Uint8Array(await response.clone().arrayBuffer()),
+      contentType: response.headers.get("content-type") ?? "application/json",
+    });
+    if (failed) response.headers.set(GATEWAY_RETENTION_HEADER, retentionHeaderValue(admission.requestId));
+    return response;
+  }
+
+  /** Store one exchange; true when retention failed (already recorded and logged). Never throws. */
+  async function retainAnswer(admission: GatewayAdmission, answer: RetainExchangeInput["response"]): Promise<boolean> {
     try {
       const outcome = await retainGatewayExchange(ports, {
         requestId: admission.requestId,
         identity: admission.identity,
         request: { body: encoder.encode(JSON.stringify(admission.request.body)), contentType: "application/json" },
-        response: {
-          status: response.status,
-          body: new Uint8Array(await response.clone().arrayBuffer()),
-          contentType: response.headers.get("content-type") ?? "application/json",
-        },
+        response: answer,
         ...(options.retention?.ttlMs !== undefined ? { ttlMs: options.retention.ttlMs } : {}),
       });
-      failed = outcome.status === "failed";
+      return outcome.status === "failed";
     } catch (error) {
       ports.logger.error("gateway.retention_failed", {
         requestId: admission.requestId,
@@ -461,9 +669,8 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         cause: toGatewayError(error).code,
         marker: "unrecorded",
       });
+      return true;
     }
-    if (failed) response.headers.set(GATEWAY_RETENTION_HEADER, retentionHeaderValue(admission.requestId));
-    return response;
   }
 
   return {

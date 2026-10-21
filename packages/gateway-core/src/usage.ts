@@ -156,6 +156,73 @@ export function createUsageAccumulator(
   };
 }
 
+const utf8 = new TextEncoder();
+const textBytes = (value: unknown): number => (typeof value === "string" ? utf8.encode(value).byteLength : 0);
+
+/**
+ * UTF-8 bytes of generated content in one stream event: text, reasoning,
+ * refusals and tool-call arguments, never SSE or JSON framing. The basis of
+ * the output estimate for a stream that ended before reporting usage.
+ */
+export function streamContentBytes(shape: GatewayUsageShape, payload: unknown): number {
+  const body = record(payload);
+  if (!body) return 0;
+  if (shape === "anthropic-messages") {
+    if (body.type !== "content_block_delta") return 0;
+    const delta = record(body.delta);
+    return delta ? textBytes(delta.text) + textBytes(delta.partial_json) + textBytes(delta.thinking) : 0;
+  }
+  if (!Array.isArray(body.choices)) return 0;
+  let bytes = 0;
+  for (const choice of body.choices) {
+    const delta = record(record(choice)?.delta);
+    if (!delta) continue;
+    bytes += textBytes(delta.content) + textBytes(delta.reasoning_content) + textBytes(delta.refusal);
+    if (Array.isArray(delta.tool_calls))
+      for (const call of delta.tool_calls) {
+        const fn = record(record(call)?.function);
+        bytes += textBytes(fn?.name) + textBytes(fn?.arguments);
+      }
+  }
+  return bytes;
+}
+
+/** What a usage capture saw of one stream. */
+export interface StreamObservation {
+  usage: Usage;
+  /** The upstream reported any usage. */
+  reported: boolean;
+  /**
+   * The upstream reported its final output count (OpenAI's usage chunk,
+   * Anthropic's `message_delta` usage), not only a starting value.
+   */
+  outputReported: boolean;
+  /** Generated content bytes seen (streamContentBytes). */
+  outputBytes: number;
+}
+
+/**
+ * Usage to settle a stream with. The reported usage when the upstream reported
+ * its final output; otherwise reported input (or the admission estimate) plus
+ * the larger of any reported output and the estimate from delivered content,
+ * capped at the request's output ceiling, marked `estimated`. A stream cut
+ * after n tokens is charged about n tokens: never zero output for delivered
+ * content, never the full hold.
+ */
+export function streamedUsage(
+  observed: StreamObservation,
+  estimate: { inputTokens: number; maxOutputTokens?: number },
+): Usage {
+  if (observed.reported && observed.outputReported) return { ...observed.usage, units: { ...observed.usage.units } };
+  const fromBytes = estimateTokensFromBytes(observed.outputBytes);
+  const estimatedOutput =
+    estimate.maxOutputTokens === undefined ? fromBytes : Math.min(fromBytes, estimate.maxOutputTokens);
+  const base = observed.reported
+    ? { ...observed.usage, units: { ...observed.usage.units } }
+    : { ...emptyUsage(), inputTokens: estimate.inputTokens };
+  return { ...base, outputTokens: Math.max(base.outputTokens, estimatedOutput), source: "estimated" };
+}
+
 /**
  * Final usage for settlement: the reported usage when the upstream sent any,
  * otherwise the admission estimate plus observed output, marked `estimated`.

@@ -92,21 +92,124 @@ describe("/gateway/v1/chat/completions in workerd", () => {
     expect(results).toEqual([{ user_id: alice.userId, tenant_id: alice.tenantId }]);
   });
 
-  it("answers coded 401, 403, 501 and 502 without leaking upstream text", async () => {
+  it("answers coded 401, 403, 402 and 502 without leaking upstream text", async () => {
     const caller = await gateway.tenantToken();
     const restricted = await gateway.tenantToken({ modelAllowlist: ["some-other-model"] });
+    const unbudgeted = await gateway.tenantToken({ budgets: false });
     const anonymous = await send(undefined, chat(), { "x-user-id": caller.userId });
     expect([anonymous.status, code(anonymous)]).toEqual([401, "GATEWAY_AUTH_REQUIRED"]);
     const denied = await send(restricted.token, chat());
     expect([denied.status, code(denied)]).toEqual([403, "GATEWAY_MODEL_NOT_ALLOWED"]);
-    const streaming = await send(caller.token, chat({ stream: true }));
-    expect([streaming.status, code(streaming)]).toEqual([501, "GATEWAY_CAPABILITY_UNAVAILABLE"]);
+    // A stream refused at admission is a plain coded JSON answer: nothing was streamed.
+    const refused = await send(unbudgeted.token, chat({ stream: true }));
+    expect([refused.status, code(refused), refused.headers.get("content-type")]).toEqual([
+      402,
+      "GATEWAY_BUDGET_EXCEEDED",
+      "application/json",
+    ]);
+    expect(((await refused.json()) as { error: Record<string, unknown> }).error).toMatchObject({ budget_id: null, reset_at: null });
     expect(upstream).toHaveLength(0);
 
     answer = () => Response.json({ error: { message: `key ${gateway.upstreamApiKey}` } }, { status: 503 });
     const failed = await send(caller.token, chat());
     expect(failed.status).toBe(502);
     expect(await failed.text()).not.toContain(gateway.upstreamApiKey);
+  });
+
+  describe("streaming (#348)", () => {
+    const encoder = new TextEncoder();
+    const events = (model: unknown) =>
+      [
+        { object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { role: "assistant", content: "hel" } }] },
+        { object: "chat.completion.chunk", model, choices: [{ index: 0, delta: { content: "lo" }, finish_reason: "stop" }] },
+        { object: "chat.completion.chunk", model, choices: [], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 } },
+        "[DONE]",
+      ].map((payload) => `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`);
+    /** The events in 5-byte chunks; with `gate`, everything after the first event waits for it. */
+    const sse = (parts: string[], gate?: Promise<unknown>) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            for (const [index, part] of parts.entries()) {
+              if (index === 1 && gate) await gate;
+              const bytes = encoder.encode(part);
+              for (let offset = 0; offset < bytes.length; offset += 5) controller.enqueue(bytes.slice(offset, offset + 5));
+            }
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    const settleRows = async (requestId: string) =>
+      (
+        await env.DB.prepare(
+          `SELECT status, input_tokens, output_tokens, usage_source FROM gateway_usage_ledger WHERE request_id = ? AND kind = 'settle'`,
+        )
+          .bind(requestId)
+          .all<{ status: string; input_tokens: number; output_tokens: number; usage_source: string }>()
+      ).results;
+
+    it("relays the stream byte for byte through the Worker, settles reported usage and retains it in R2", async () => {
+      const retaining = { ...bindings, GATEWAY_STAFF_PROMPT_ACCESS: "enabled" } as Env;
+      const caller = await gateway.tenantToken();
+      let sent = "";
+      answer = (body) => {
+        sent = events(body.model).join("");
+        return sse(events(body.model));
+      };
+      const res = await app.request(
+        "/gateway/v1/chat/completions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${caller.token}` },
+          body: JSON.stringify(chat({ stream: true, stream_options: { include_usage: true } })),
+        },
+        retaining,
+      );
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+      const delivered = await res.text();
+      expect(delivered).toBe(sent);
+      expect(upstream).toHaveLength(1);
+      expect(((await upstream[0]!.json()) as { stream_options: unknown }).stream_options).toEqual({ include_usage: true });
+      const requestId = res.headers.get("x-clash-request-id")!;
+      const rows = await settleRows(requestId);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row).toEqual({ status: "settled", input_tokens: 4, output_tokens: 2, usage_source: "reported" });
+      const object = await env.R2_BUCKET.get(gatewayRetentionKeys(requestId).response);
+      expect(await object?.text()).toBe(delivered);
+    });
+
+    it("aborts the upstream when the caller disconnects and settles client_aborted", async () => {
+      const caller = await gateway.tenantToken();
+      let open!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      let upstreamSignal: AbortSignal | undefined;
+      answer = (body) => sse(events(body.model), gate);
+      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+        const request = new Request(input as RequestInfo, init);
+        upstream.push(request);
+        upstreamSignal = init?.signal ?? request.signal;
+        return answer((await request.clone().json()) as Record<string, unknown>);
+      });
+      const res = await send(caller.token, chat({ stream: true }));
+      expect(res.status).toBe(200);
+      const reader = res.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+      const requestId = res.headers.get("x-clash-request-id")!;
+      let rows = await settleRows(requestId);
+      for (let wait = 0; wait < 200 && (rows.length === 0 || !upstreamSignal?.aborted); wait += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        rows = await settleRows(requestId);
+      }
+      open();
+      expect(upstreamSignal?.aborted).toBe(true);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row).toMatchObject({ status: "client_aborted", usage_source: "estimated" });
+    });
   });
 
   it("retains bodies in R2 with the hosted flag, and platform_admin views the stored bytes, audited", async () => {

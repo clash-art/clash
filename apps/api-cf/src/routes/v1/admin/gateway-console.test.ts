@@ -24,8 +24,9 @@ vi.mock("../../../containers/render", () => ({
 
 import { createApp } from "../../../app";
 import { createSqliteD1 } from "../../../../../web/app/test-support/sqlite-d1";
-import { gatewayRetentionKeys, retainGatewayExchange } from "@clash/gateway-core";
+import { createRetainedBodyCopy, gatewayRetentionKeys, retainGatewayExchange } from "@clash/gateway-core";
 import { monotonicClock } from "../../../gateway/d1-common";
+import { createD1GatewayBudgetPorts } from "../../../gateway/d1-budgets";
 import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
 import { createD1TenantAdmin } from "../../../gateway/d1-tenant-admin";
 import { createMemoryBucket, officialChatCard } from "../../../gateway/test-support";
@@ -200,6 +201,7 @@ describe("permission matrix, enforced by the server", () => {
       ["GET", "/api/v1/admin/gateway/abuse"],
       ["POST", "/api/v1/admin/gateway/prompts/gwr_x/access", { reason: "incident" }],
       ["POST", "/api/v1/admin/gateway/retention/purge", {}],
+      ["POST", "/api/v1/admin/gateway/holds/sweep", {}],
       ["PUT", `${t.base}/subscription/rate-limit`, { rateLimit: null }],
       ["POST", `${t.base}/wallet/adjust`, { deltaMicroCredits: 1, reason: "x", idempotencyKey: "k" }],
       ["POST", `${t.base}/wallet/status`, { status: "suspended", reason: "x" }],
@@ -812,6 +814,39 @@ describe("staff prompt access and body retention", () => {
     expect(JSON.stringify(raw)).not.toContain(marker);
   });
 
+  it("shows a streamed answer cut at the retention cap as truncated, with the size delivered, and audits it", async () => {
+    const t = team();
+    const requestId = `gwr_${hex()}`;
+    const copy = createRetainedBodyCopy(8);
+    const delivered = 'data: {"choices":[{"delta":{"content":"long reply"}}]}\n\ndata: [DONE]\n\n';
+    copy.append(encode(delivered));
+    const { body, truncated } = copy.result();
+    expect(
+      await retainGatewayExchange(gatewayRetentionPorts(enabled), {
+        requestId,
+        identity: { tenantId: t.tenantId, userId: "u-caller" },
+        request: { body: encode('{"model":"m","stream":true}'), contentType: "application/json" },
+        response: { status: 200, body, contentType: "text/event-stream", ...(truncated ? { truncated } : {}) },
+      }),
+    ).toEqual({ status: "stored", truncated: true });
+    const viewed = await json<{ prompt: { response: { body: string; bytes: number; truncated: boolean; observedBytes: number } } }>(
+      await call("POST", access(requestId), platformAdmin.auth, { reason: "stream incident" }, enabled),
+    );
+    expect(viewed.prompt.response).toMatchObject({
+      truncated: true,
+      observedBytes: encode(delivered).byteLength,
+      bytes: body.byteLength,
+      body: new TextDecoder().decode(body),
+    });
+    expect(viewed.prompt.response.body.startsWith(delivered.slice(0, 8))).toBe(true);
+    expect(viewed.prompt.response.body).toContain("code=GATEWAY_RETENTION_TRUNCATED");
+    expect(JSON.parse(audited(requestId)[0]!.after_json!)).toMatchObject({ outcome: "viewed", responseTruncated: true });
+    expect(sqlite.prepare(`SELECT response_truncated, response_observed_bytes FROM gateway_request_retention WHERE request_id = ?`).get(requestId)).toEqual({
+      response_truncated: 1,
+      response_observed_bytes: encode(delivered).byteLength,
+    });
+  });
+
   it("discloses nothing when the audit row cannot be written", async () => {
     const t = team();
     const { requestId, marker } = await retained(t.tenantId);
@@ -866,6 +901,55 @@ describe("staff prompt access and body retention", () => {
       expect.objectContaining({ tenant_id: t.tenantId, actor_user_id: platformAdmin.userId, reason: "incident 42" }),
     ]);
     expect(JSON.parse(audited(requestId)[0]!.after_json!)).toEqual({ outcome: "not_retained", requestFound: true, code: "GATEWAY_PROMPT_NOT_RETAINED" });
+  });
+});
+
+describe("stale-hold sweep", () => {
+  it("is platform_admin-only, expires stale holds once at zero, and audits only a sweep that changed something", async () => {
+    const t = team();
+    const budgetId = `gwb_sweep_${hex()}`;
+    sqlite
+      .prepare(`INSERT INTO gateway_budget (id, tenant_id, scope, scope_id, limit_micro_credits) VALUES (?, ?, 'tenant', ?, 1000000)`)
+      .run(budgetId, t.tenantId, t.tenantId);
+    const { budgets } = createD1GatewayBudgetPorts(d1, { clock: { now: () => Date.now() } });
+    const requestId = `gwr_${hex()}`;
+    await budgets.reserve({ requestId, tenantId: t.tenantId, budgetIds: [budgetId], holdMicroCredits: 9, expiresAt: Date.now() - 5_000 });
+    const sweepAudits = () => auditRows("action = 'holds.sweep'").length;
+    const auditsBefore = sweepAudits();
+
+    for (const role of GATEWAY_TENANT_ROLES)
+      await expectCode(await call("POST", "/api/v1/admin/gateway/holds/sweep", t.members[role].auth, {}), 403, "GATEWAY_FORBIDDEN");
+    expect(sqlite.prepare(`SELECT reserved_micro_credits AS reserved FROM gateway_budget WHERE id = ?`).get(budgetId)).toEqual({ reserved: 9 });
+
+    const first = await json<{ sweep: { expired: number; failed: number } }>(
+      await call("POST", "/api/v1/admin/gateway/holds/sweep", platformAdmin.auth, { limit: 1000 }),
+    );
+    expect(first.sweep.expired).toBeGreaterThan(0);
+    expect(sqlite.prepare(`SELECT reserved_micro_credits AS reserved, spent_micro_credits AS spent FROM gateway_budget WHERE id = ?`).get(budgetId)).toEqual({
+      reserved: 0,
+      spent: 0,
+    });
+    expect(await budgets.settle({
+      requestId,
+      tenantId: t.tenantId,
+      userId: "late",
+      modelCode: "m",
+      kind: "text",
+      upstreamId: "openai",
+      credentialScope: "official",
+      usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" },
+      costMicroCredits: 5,
+      priceVersion: "p",
+      catalogVersion: "c",
+      status: "settled",
+      occurredAt: Date.now(),
+    })).toMatchObject({ duplicate: true, costMicroCredits: 0 });
+    expect(sweepAudits()).toBe(auditsBefore + 1);
+    expect(JSON.parse(auditRows("action = 'holds.sweep'").at(-1)!.after_json!)).toMatchObject({ expired: first.sweep.expired, failed: 0 });
+
+    const second = await json<{ sweep: { expired: number } }>(await call("POST", "/api/v1/admin/gateway/holds/sweep", platformAdmin.auth));
+    expect(second.sweep.expired).toBe(0);
+    expect(sweepAudits()).toBe(auditsBefore + 1);
   });
 });
 

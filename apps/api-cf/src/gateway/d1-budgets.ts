@@ -21,6 +21,14 @@
  * twice. `gateway_usage_ledger.status` has no CHECK, so this needs no
  * migration.
  *
+ * expiredHolds / expire (the stale-hold sweeper, #348): `open` hold rows past
+ * `expires_at` move to `expired`, their amount leaves `reserved`, and a
+ * zero-cost `settle` row of status `expired` is appended in the same batch,
+ * written only when a hold actually moved,
+ * so a concurrent settlement and the sweeper never both close a request.
+ * `sweepGatewayHolds(env)` runs it from the scheduled handler and the admin
+ * route.
+ *
  * A caller without any budget row is refused (GATEWAY_BUDGET_EXCEEDED,
  * reason `no_budget`): a missing budget is never unlimited. Periodic reset of
  * `daily`/`monthly` budgets is not implemented yet; such budgets keep counting
@@ -31,17 +39,22 @@ import {
   GatewayError,
   assertMicroCredits,
   planReserve,
+  sweepExpiredGatewayHolds,
   type BudgetScope,
   type BudgetState,
   type GatewayBudgetPort,
   type GatewayClock,
   type GatewayLedgerPort,
   type GatewayLedgerStatus,
+  type GatewayLogger,
+  type HoldSweepResult,
   type ReserveInput,
   type UsageEvent,
 } from "@clash/gateway-core";
 
-import { parseJson, toMs, toSeconds } from "./d1-common";
+import type { Env } from "../config";
+import { monotonicClock, parseJson, toMs, toSeconds } from "./d1-common";
+import { workersLogger } from "./workers-logger";
 
 const IDEMPOTENCY_REF = "idempotency";
 
@@ -387,6 +400,65 @@ export function createD1GatewayBudgetPorts(
     async snapshot({ tenantId, budgetIds }) {
       return (await budgetRows(tenantId, budgetIds)).map(budgetState);
     },
+
+    async expiredHolds({ before, limit }) {
+      const { results } = await db
+        .prepare(
+          `SELECT request_id, tenant_id, MIN(expires_at) AS expires_at FROM gateway_usage_ledger
+            WHERE kind = 'hold' AND status = 'open' AND expires_at <= ?1
+            GROUP BY request_id, tenant_id
+            ORDER BY expires_at, request_id LIMIT ?2`,
+        )
+        .bind(toSeconds(before), limit)
+        .all<{ request_id: string; tenant_id: string; expires_at: number }>();
+      return results.map((row) => ({ requestId: row.request_id, tenantId: row.tenant_id, expiresAt: toMs(row.expires_at) }));
+    },
+
+    async expire({ requestId, tenantId, before }) {
+      const beforeS = toSeconds(before);
+      // Only `open` holds past their expiry: settle_failed holds wait for reconciliation.
+      const expiredHold = `SELECT amount_micro_credits FROM gateway_usage_ledger
+        WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND status = 'open' AND expires_at <= ?3`;
+      const { results: holds } = await db
+        .prepare(
+          `SELECT budget_id FROM gateway_usage_ledger
+            WHERE request_id = ? AND tenant_id = ? AND kind = 'hold' AND status = 'open' AND expires_at <= ?
+            ORDER BY budget_id`,
+        )
+        .bind(requestId, tenantId, beforeS)
+        .all<{ budget_id: string }>();
+      if (holds.length === 0) return { expired: false };
+      const nowS = toSeconds(deps.clock.now());
+      const statements: D1PreparedStatement[] = [];
+      for (const { budget_id: budgetId } of holds)
+        statements.push(
+          db
+            .prepare(
+              `UPDATE gateway_budget
+                  SET reserved_micro_credits = reserved_micro_credits - (${expiredHold}),
+                      version = version + 1, updated_at = ?4
+                WHERE id = ?1 AND EXISTS (${expiredHold})`,
+            )
+            .bind(budgetId, requestId, beforeS, nowS),
+          db
+            .prepare(
+              `UPDATE gateway_usage_ledger SET status = 'expired'
+                WHERE request_id = ?2 AND budget_id = ?1 AND kind = 'hold' AND status = 'open' AND expires_at <= ?3`,
+            )
+            .bind(budgetId, requestId, beforeS),
+          // The request's one settle row, at zero: a late settlement is a duplicate.
+          db
+            .prepare(
+              `INSERT INTO gateway_usage_ledger
+                 (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits, occurred_at)
+               SELECT ?2 || ':settle:' || ?1, ?2, ?1, 'settle', 'expired', ?3, 0, ?4
+                WHERE changes() = 1`,
+            )
+            .bind(budgetId, requestId, tenantId, nowS),
+        );
+      const results = await db.batch(statements);
+      return { expired: results.some((result, index) => index % 3 === 2 && result.meta.changes > 0) };
+    },
   };
 
   const ledger: GatewayLedgerPort = {
@@ -424,4 +496,20 @@ export function createD1GatewayBudgetPorts(
   };
 
   return { budgets, ledger };
+}
+
+/**
+ * Stale-hold sweep for the Worker `scheduled` handler and the admin route:
+ * gateway-core's sweepExpiredGatewayHolds over these ports. Idempotent.
+ */
+export function sweepGatewayHolds(
+  env: Pick<Env, "DB">,
+  options: { limit?: number; clock?: GatewayClock; logger?: GatewayLogger } = {},
+): Promise<HoldSweepResult> {
+  const clock = options.clock ?? monotonicClock();
+  const { budgets } = createD1GatewayBudgetPorts(env.DB, { clock });
+  return sweepExpiredGatewayHolds(
+    { budgets, clock, logger: options.logger ?? workersLogger() },
+    options.limit !== undefined ? { limit: options.limit } : {},
+  );
 }

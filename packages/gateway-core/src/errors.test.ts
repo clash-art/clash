@@ -39,9 +39,12 @@ describe("gateway error table", () => {
       expect(error.status).toBe(entry.status);
       expect(error.message).toMatch(/\S/);
 
+      // A budget refusal also names the budget and its reset.
+      const budgetKeys = code === "GATEWAY_BUDGET_EXCEEDED" ? ["budget_id", "reset_at"] : [];
+
       // OpenAI error object: { error: { message, type, param, code } }.
       const openai = toOpenAIErrorBody(error);
-      expect(Object.keys(openai.error).sort()).toEqual(["code", "message", "param", "type"]);
+      expect(Object.keys(openai.error).sort()).toEqual([...budgetKeys, "code", "message", "param", "type"].sort());
       expect(openai.error.code).toBe(code);
       expect(openai.error.type).toMatch(/\S/);
       expect(openai.error.param).toBeNull();
@@ -49,7 +52,7 @@ describe("gateway error table", () => {
       // Anthropic error object: { type: "error", error: { type, message } }.
       const anthropic = toAnthropicErrorBody(error);
       expect(anthropic.type).toBe("error");
-      expect(Object.keys(anthropic.error).sort()).toEqual(["message", "type"]);
+      expect(Object.keys(anthropic.error).sort()).toEqual([...budgetKeys, "message", "type"].sort());
       expect(anthropic.error.message).toContain(code);
       expect(Object.values(ANTHROPIC_DOCUMENTED)).toContain(anthropic.error.type);
       const documented = ANTHROPIC_DOCUMENTED[entry.status];
@@ -81,6 +84,22 @@ describe("gateway error table", () => {
     expect(gatewayErrorResponseInit(error, "anthropic").body).toEqual(toAnthropicErrorBody(error));
     expect(gatewayErrorResponseInit(new GatewayError("GATEWAY_INTERNAL"), "openai").headers).not.toHaveProperty(
       "retry-after",
+    );
+  });
+
+  it("names the refusing budget and its reset in a 402 body, in both protocols", () => {
+    const resetAt = Date.UTC(2026, 10, 1);
+    const periodic = new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { budgetId: "gwb_1", resetAt } });
+    const fields = { budget_id: "gwb_1", reset_at: new Date(resetAt).toISOString() };
+    expect(gatewayErrorResponseInit(periodic, "openai")).toMatchObject({ status: 402, body: { error: fields } });
+    expect(gatewayErrorResponseInit(periodic, "anthropic")).toMatchObject({ status: 402, body: { error: fields } });
+    // No budget row at all, or one that never resets: explicit nulls, not absent fields.
+    expect(toOpenAIErrorBody(new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } })).error).toMatchObject({
+      budget_id: null,
+      reset_at: null,
+    });
+    expect(toOpenAIErrorBody(new GatewayError("GATEWAY_RATE_LIMITED", { details: { budgetId: "gwb_1" } })).error).not.toHaveProperty(
+      "budget_id",
     );
   });
 

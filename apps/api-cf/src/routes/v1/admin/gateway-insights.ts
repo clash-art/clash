@@ -9,6 +9,7 @@
  *   GET  /abuse                           live rate-limit counters             abuse.read
  *   POST /prompts/:requestId/access       view a retained prompt + response    prompts.view
  *   POST /retention/purge                 purge expired retained bodies now    retention.purge
+ *   POST /holds/sweep                     expire stale budget holds now        holds.sweep
  *
  * Prompt access is hosted-only behind GATEWAY_STAFF_PROMPT_ACCESS=enabled
  * (default off, self-host unchanged). Every access, whatever its outcome, is
@@ -29,6 +30,7 @@ import { z } from "zod";
 import type { Env } from "../../../config";
 import {
   GatewayAuditQuerySchema,
+  GatewayHoldSweepRequestSchema,
   GatewayPromptAccessRequestSchema,
   GatewayRetentionPurgeRequestSchema,
   GatewayUsageQuerySchema,
@@ -36,6 +38,7 @@ import {
 import { staffPromptAccessEnabled } from "../../../gateway";
 import { adminAuditStatement } from "../../../gateway/d1-admin-audit";
 import { createD1AdminReads } from "../../../gateway/d1-admin-reads";
+import { sweepGatewayHolds } from "../../../gateway/d1-budgets";
 import { monotonicClock, toSeconds } from "../../../gateway/d1-common";
 import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
 import { gatewayParam, gatewayQuery, readGatewayJson } from "../../../services/gateway-admin";
@@ -115,7 +118,10 @@ const bodyView = (part: RetainedBody) => ({
   contentType: part.contentType,
   bytes: part.bytes,
   sha256: part.sha256,
-  // The stored bytes, decoded as the UTF-8 JSON they were written as.
+  // A streamed answer cut at the retention cap: `body` ends in the GATEWAY_RETENTION_TRUNCATED marker.
+  truncated: part.truncated === true,
+  ...(part.truncated ? { observedBytes: part.observedBytes ?? null } : {}),
+  // The stored bytes, decoded as the UTF-8 text (JSON, or a stream's SSE) they were written as.
   body: decoder.decode(part.body),
 });
 
@@ -166,6 +172,7 @@ adminInsightRoutes.post(
             requestSha256: exchange.request.sha256,
             responseBytes: exchange.response.bytes,
             responseSha256: exchange.response.sha256,
+            responseTruncated: exchange.response.truncated === true,
           }
         : { outcome: OUTCOMES[refusal!.code] ?? "failed", requestFound, code: refusal!.code },
       reason: body.reason,
@@ -178,6 +185,26 @@ adminInsightRoutes.post(
         cause: refusal,
       });
     return ok(c, { prompt: promptView(exchange) });
+  }),
+);
+
+adminInsightRoutes.post(
+  "/holds/sweep",
+  platformRoute("holds.sweep", async (c, actor) => {
+    const body = await readGatewayJson(c, GatewayHoldSweepRequestSchema);
+    const result = await sweepGatewayHolds(c.env, body.limit !== undefined ? { limit: body.limit } : {});
+    // Like every mutation, a sweep that changed nothing records nothing.
+    if (result.expired || result.failed)
+      await adminAuditStatement(c.env.DB, {
+        tenantId: "",
+        actor,
+        action: "holds.sweep",
+        targetType: "gateway_hold",
+        targetId: "expired",
+        after: result,
+        nowS: toSeconds(Date.now()),
+      }).run();
+    return ok(c, { sweep: result });
   }),
 );
 

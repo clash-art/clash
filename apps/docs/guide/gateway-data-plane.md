@@ -9,15 +9,15 @@ the ports and is mounted in `apps/api-cf/src/routes/gateway.ts`, next to
 
 ## Endpoint
 
-`POST /gateway/v1/chat/completions` takes an OpenAI-compatible, **non-streaming**
-chat request with `Authorization: Bearer sk_gw_…` ([gateway tokens](gateway-tokens.md)).
-It returns the upstream completion with `model` set to the requested public model
-code, plus `x-clash-request-id`. An optional `Idempotency-Key` header admits a
-request once per tenant.
+`POST /gateway/v1/chat/completions` takes an OpenAI-compatible chat request
+with `Authorization: Bearer sk_gw_…` ([gateway tokens](gateway-tokens.md)).
+Without `stream`, it returns the upstream completion with `model` set to the
+requested public model code, plus `x-clash-request-id`. With `stream: true` it
+streams Server-Sent Events (see [Streaming](#streaming)). An optional
+`Idempotency-Key` header admits a request once per tenant: one upstream call
+and one ledger row, whatever the caller retries.
 
-`stream: true` is rejected with `GATEWAY_CAPABILITY_UNAVAILABLE` (501,
-`param: "stream"`) until SSE support lands. Any other path under `/gateway/v1`
-also answers 501.
+Any other path under `/gateway/v1` answers `GATEWAY_CAPABILITY_UNAVAILABLE` (501).
 
 ## Request flow
 
@@ -40,11 +40,121 @@ also answers 501.
 5. **Settlement** runs exactly once: a completion is charged its reported usage,
    or an estimate when no usage is reported. A failure is charged zero.
 6. **Retention** (hosted only, `GATEWAY_STAFF_PROMPT_ACCESS=enabled`): after
-   settlement, the normalized request body and the exact answer bytes (the
-   completion, or the coded error after an upstream failure) go to R2 for 30
-   days, with a metadata row in `gateway_request_retention`. Headers are never
-   stored, so neither the caller's credential nor the upstream key can be.
+   settlement, the normalized request body and the exact answer bytes go to R2
+   for 30 days, with a metadata row in `gateway_request_retention`. The answer
+   bytes are the completion, the coded error after an upstream failure, or
+   the stream as the caller received it. Headers are never stored, so neither
+   the caller's credential nor the upstream key can be.
    See [gateway-admin.md](gateway-admin.md#staff-prompt-access-and-body-retention).
+
+## Streaming
+
+`stream: true` (#348) uses the same admission, so the hold is reserved before
+any byte is sent. A refusal (`402 GATEWAY_BUDGET_EXCEEDED` and every other
+admission error) is a plain coded JSON answer, never a cut stream.
+
+1. **Upstream.** One `fetch` with `accept: text/event-stream`.
+   `stream_options.include_usage` is always set upstream. The route's
+   first-byte deadline covers only the response headers. Failover happens only
+   before the first byte: an upstream error, a deadline, or a 2xx that is not
+   an event stream still fails over or answers coded JSON.
+2. **Relay** (`relayGatewayStream`, `packages/gateway-core/src/stream.ts`).
+   The upstream body is `tee()`d and never read whole. One branch goes to the
+   caller chunk by chunk, byte for byte. The other branch runs through the SSE
+   usage tap (`createUsageCaptureStream`) and is then discarded. If the caller
+   did not ask for `include_usage`, the usage chunk the gateway asked for is
+   removed (`createSseEventFilter`), so that caller gets the stream it asked
+   for. Upstream chunks keep the upstream `model`; they are not rewritten.
+3. **Settlement** runs once, when the stream ends:
+
+   | Ending | Ledger status | Charged | In-stream |
+   | --- | --- | --- | --- |
+   | `[DONE]` after the body | `settled` | reported usage | none |
+   | Body closed without `[DONE]` | `partial` | observed usage | `GATEWAY_UPSTREAM_ERROR` error frame |
+   | Body failed mid-stream | `partial` | observed usage | `GATEWAY_UPSTREAM_ERROR` error frame |
+   | Stream exceeded `streamMaxDurationMs` (10 min), upstream aborted | `partial` | observed usage | `GATEWAY_UPSTREAM_TIMEOUT` error frame |
+   | Caller disconnected | `client_aborted` | observed usage | (caller gone) |
+
+   **Observed usage** is the upstream's final usage report when one arrived.
+   Otherwise it is the reported input (or the admission estimate) plus an
+   estimate from the generated content bytes delivered (text, reasoning,
+   tool-call arguments; never the SSE framing). The estimate is capped at the
+   output ceiling and marked `estimated`, so a cut stream is never charged
+   zero for content it delivered, and never the full hold. Anthropic usage
+   (`message_start` input, `message_delta` output) is parsed by the same tap,
+   ready for the Messages route.
+4. **Disconnect.** When the caller goes away, both tee branches are cancelled,
+   which releases the upstream body. The upstream fetch is then aborted
+   through its `AbortController`, and the request settles `client_aborted` in
+   the background (the Worker's `ctx.waitUntil`).
+5. **Coded state after the headers.** The status line and headers are already
+   sent, so a failed settlement or retention cannot become a header. It is
+   reported at the end of the stream instead, after `[DONE]`, as:
+   - an SSE comment carrying the exact header line, for example
+     `: x-gateway-settlement: failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=<id>`;
+   - an `event: gateway_error` event with
+     `{"type":"gateway_error","header","state":"failed","code","request_id"}`.
+     The event has no `error` field, so OpenAI clients do not treat it as a
+     failed completion.
+
+   The durable `settle_failed` holds and the retention `failed` row are
+   written exactly as for a plain request, with the same coded logs.
+
+A stream's hold lives `holdTtlMs + streamMaxDurationMs`, so the
+[sweeper](#stale-hold-sweeper) never expires a stream that can still settle.
+A settlement that finds its request already closed is logged as
+`gateway.settle_duplicate` with the recorded cost.
+
+## Media and AIGC
+
+`settleMediaGeneration` (`packages/gateway-core/src/admission.ts`) is the hook
+a media route calls when an accepted job ends. A success is charged its
+delivered units at the price book. A failure after acceptance settles
+`upstream_failed` at cost zero, with the failure's code, whatever was
+requested.
+
+## Stale-hold sweeper
+
+`sweepExpiredGatewayHolds` (`packages/gateway-core/src/holds.ts`) closes
+abandoned reservations: requests with an `open` hold past its `expires_at`
+whose request never settled, for example because the isolate died mid-stream.
+For each one, in one batch:
+
+- every open hold moves to `expired` and its amount leaves `reserved`;
+- one zero-cost `settle` row with status `expired` is written, only if a hold
+  actually moved.
+
+A late settlement for that request is a duplicate and charges nothing.
+`settle_failed` holds are never swept: they stay reserved until
+reconciliation. The sweep is idempotent. It runs:
+
+- from the `scheduled` handler every minute (`sweepGatewayHolds` in
+  `apps/api-cf/src/gateway/d1-budgets.ts`), up to 200 requests per run;
+- on demand through `POST /api/v1/admin/gateway/holds/sweep {limit?}`
+  (`holds.sweep`, `platform_admin` only), audited as `holds.sweep` when it
+  expired something.
+
+## Budget refusals
+
+`GATEWAY_BUDGET_EXCEEDED` (402) names the budget that refused and when that
+budget resets. In the OpenAI body:
+
+```json
+{
+  "error": {
+    "message": "…",
+    "type": "insufficient_quota",
+    "param": null,
+    "code": "GATEWAY_BUDGET_EXCEEDED",
+    "budget_id": "gwb_…",
+    "reset_at": "2026-11-01T00:00:00.000Z"
+  }
+}
+```
+
+The Anthropic body carries the same fields. `budget_id` is `null` when the
+caller has no budget row, and `reset_at` is `null` for a budget that never
+resets.
 
 ## Retention failure
 
@@ -59,6 +169,9 @@ answer or its billing:
 - the `gateway.retention_failed` error log carries `requestId`, `code`,
   `cause` and `marker` (`failed`, or `unrecorded` with `markCause`).
 
+For a stream, the header line is sent at the end of the stream instead (see
+[Streaming](#streaming)).
+
 ## Settlement failure
 
 If settlement fails after the request ran, the gateway does not hide the
@@ -67,7 +180,8 @@ failure, and it does not discard work the upstream already did:
 - The caller still gets the real answer: the completion, or the coded error for
   a failed request. The answer carries
   `x-gateway-settlement: failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=<id>`.
-  The header appears only in this case.
+  The header appears only in this case. A stream carries the same line at its
+  end (see [Streaming](#streaming)).
 - `budgets.markSettleFailed` moves each still-`open` hold of the request to
   `settle_failed`, and sets `error_code` to the code of the settlement failure.
   The amount stays reserved and no money moves, so the budget fails closed until
@@ -117,11 +231,11 @@ Errors use the OpenAI error shape plus `x-clash-error-code`:
 | `identity`    | `gateway_token` (`services/gateway-tokens.ts`)                                              |
 | `routes`      | Catalog: published `gateway_model.card_json` at the newest started `published_at`. Price book: published `gateway_price` rows effective at the request's admission instant; the newest version wins, and within it exact upstream rows win over `''` rows; credits only; drafts are never charged ([gateway-price-book.md](gateway-price-book.md)). Accounts: `gateway_upstream_account` (official only; tenant BYOK returns no accounts). |
 | `credentials` | `gateway_upstream_account`: `secret_ref` names a `GATEWAY_UPSTREAM_*` Worker secret (an API key or `{apiKey, baseUrl}` JSON). Alternatively, `encrypted_credentials` is sealed with the shared secret envelope under `GATEWAY_ENCRYPTION_KEY`, which is distinct from `ACTION_SECRET_KEY`. Failures are `GATEWAY_KEY_UNAVAILABLE`. |
-| `budgets`     | `gateway_budget` + `gateway_usage_ledger`: an all-or-nothing reserve in one D1 batch, and settle in one batch. `markSettleFailed` sets hold rows to status `settle_failed`. `status` has no CHECK constraint, so no migration is needed. A caller with no budget row is refused. |
+| `budgets`     | `gateway_budget` + `gateway_usage_ledger`: an all-or-nothing reserve in one D1 batch, and settle in one batch. `markSettleFailed` sets hold rows to status `settle_failed`. `status` has no CHECK constraint, so no migration is needed. A caller with no budget row is refused. `expiredHolds` / `expire` back the sweeper (open holds by `expires_at`, index 0039). |
 | `ledger`      | Reads `settle` rows of one tenant.                                                          |
 | `limits`      | `rate_limit_json` from the virtual key (per key), the published model (per user and model) and the active subscription (per tenant). Counted in `gateway_rate_window` and `gateway_inflight` (0034). |
 | `blobs`       | R2 `R2_BUCKET` (`r2-blobs.ts`); retained bodies live under `gateway-retention/`. Without a bucket, `unavailablePort` (501), and retention records `failed`. |
-| `retention`   | `gateway_request_retention` (0037, `d1-retention.ts`): first write per request id wins; `expired` lists unpurged rows past `expires_at`; `markPurged` is idempotent. |
+| `retention`   | `gateway_request_retention` (0037, `d1-retention.ts`): first write per request id wins; `expired` lists unpurged rows past `expires_at`; `markPurged` is idempotent. A truncated stream copy is `response_truncated = 1` with `response_observed_bytes` (0039). |
 | `scheduler`, `audit` | `unavailablePort` (501) until their issues land.                                      |
 
 D1 columns are unix seconds; the core is epoch milliseconds. Conversion
@@ -130,12 +244,11 @@ happens in `apps/api-cf/src/gateway/d1-common.ts`.
 **Not yet implemented:**
 
 - reset of periodic (`daily`/`monthly`) budgets, so they keep counting;
-- the hold sweeper, which would expire abandoned `open` holds;
 - the reconciliation job for `settle_failed` holds. Until it lands, they are
   found by hold `status = 'settle_failed'` (or by the log when the mark itself
   failed) and settled manually;
-- streaming;
-- the Anthropic Messages protocol.
+- the Anthropic Messages protocol (its stream usage parsing is in place);
+- media/AIGC routes (their settlement hook is in place).
 
 ## Tests
 
@@ -153,3 +266,22 @@ upstream. It runs against:
 Its `retention` and data-plane retention cases cover storage on success and on
 upstream error, no credential in storage, the coded failure with unchanged
 billing, expiry and idempotent purge.
+
+The streaming cases run on the same three adapters, so the workerd run is the
+end-to-end check against a fetch-stub upstream with no network. They cover:
+
+- byte-exact pass-through, with the hold reserved before the upstream answers;
+- `include_usage` injection, and removal of the usage chunk for a caller that
+  did not ask for it;
+- partial settlement of a truncated and of a failed stream;
+- a caller disconnect aborting the upstream;
+- idempotency: one upstream call and one ledger row;
+- the 402 body;
+- the in-stream coded state when settlement or retention fails;
+- stream retention, and its truncated marker past the cap.
+
+The budgets capability covers the sweeper: it expires a stale hold once,
+leaves `settle_failed` and live holds alone, and turns a late settlement into
+a duplicate. The composed cases cover the media hook. The duration limit, failover
+before the first byte, and a stream's hold outliving the sweeper are memory
+cases in `app.test.ts`.

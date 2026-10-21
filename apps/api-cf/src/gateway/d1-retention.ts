@@ -1,7 +1,9 @@
 /**
  * gateway-core `retention` over D1 `gateway_request_retention` (0037): the
  * metadata of retained request/response bodies, whose bytes are R2 objects
- * (r2-blobs.ts). Columns are unix seconds; the core is epoch ms.
+ * (r2-blobs.ts). Columns are unix seconds; the core is epoch ms. A streamed
+ * answer's copy cut at the cap is `response_truncated = 1` with
+ * `response_observed_bytes` (0039).
  *
  * Also the purge entry point for the Worker `scheduled` handler and the admin
  * purge route: `purgeGatewayRetention(env)` deletes expired bodies and marks
@@ -41,6 +43,8 @@ interface RetentionRow {
   response_sha256: string;
   response_type: string;
   response_status: number;
+  response_truncated: number;
+  response_observed_bytes: number | null;
   stored_at: number;
   expires_at: number;
   purged_at: number | null;
@@ -55,7 +59,15 @@ function fromRow(row: RetentionRow): GatewayRetentionEntry {
     status: row.status,
     ...(row.error_code ? { errorCode: row.error_code } : {}),
     request: { key: row.request_key, bytes: row.request_bytes, sha256: row.request_sha256, contentType: row.request_type },
-    response: { key: row.response_key, bytes: row.response_bytes, sha256: row.response_sha256, contentType: row.response_type },
+    response: {
+      key: row.response_key,
+      bytes: row.response_bytes,
+      sha256: row.response_sha256,
+      contentType: row.response_type,
+      ...(row.response_truncated
+        ? { truncated: true as const, ...(row.response_observed_bytes !== null ? { observedBytes: row.response_observed_bytes } : {}) }
+        : {}),
+    },
     responseStatus: row.response_status,
     storedAt: toMs(row.stored_at),
     expiresAt: toMs(row.expires_at),
@@ -72,8 +84,8 @@ export function createD1GatewayRetentionPort(db: D1Database): GatewayRetentionPo
              (request_id, tenant_id, user_id, key_id, status, error_code,
               request_key, request_bytes, request_sha256, request_type,
               response_key, response_bytes, response_sha256, response_type,
-              response_status, stored_at, expires_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+              response_status, stored_at, expires_at, response_truncated, response_observed_bytes)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
            ON CONFLICT (request_id) DO NOTHING`,
         )
         .bind(
@@ -94,6 +106,8 @@ export function createD1GatewayRetentionPort(db: D1Database): GatewayRetentionPo
           entry.responseStatus,
           toSeconds(entry.storedAt),
           toSeconds(entry.expiresAt),
+          entry.response.truncated ? 1 : 0,
+          entry.response.observedBytes ?? null,
         )
         .run();
     },
