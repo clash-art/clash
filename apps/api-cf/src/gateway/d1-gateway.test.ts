@@ -23,10 +23,12 @@ import { createApp } from "../app";
 import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
 import { createD1GatewayBudgetPorts } from "./d1-budgets";
 import { createD1GatewayCredentialPort, sealGatewayUpstreamCredentials } from "./d1-credentials";
-import { d1ContractHarness, officialChatCard, seedGateway, type SeededGateway } from "./test-support";
+import { gatewayRetentionKeys } from "@clash/gateway-core";
+import { createMemoryBucket, d1ContractHarness, officialChatCard, seedGateway, type SeededGateway } from "./test-support";
 
 const { d1, sqlite } = createSqliteD1();
-const seeded: Promise<SeededGateway> = seedGateway(d1);
+const bucket = createMemoryBucket();
+const seeded: Promise<SeededGateway> = seedGateway(d1, { bucket });
 
 describeGatewayContract("Workers/D1 ports on node:sqlite", async () => d1ContractHarness(await seeded));
 
@@ -211,6 +213,95 @@ describe("/gateway/v1 through the Worker app", () => {
     expect(ledgerRows().filter((row) => row.kind === "hold").map((row) => row.status)).toEqual(
       holds.map(() => "settled"),
     );
+  });
+
+  describe("body retention (GATEWAY_STAFF_PROMPT_ACCESS)", () => {
+    const retainingEnv = (overrides: Record<string, unknown> = {}) =>
+      ({
+        DB: d1,
+        ENVIRONMENT: "test",
+        GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
+        GATEWAY_STAFF_PROMPT_ACCESS: "enabled",
+        R2_BUCKET: bucket,
+        ...overrides,
+      }) as never;
+    const post = (token: string, body: Record<string, unknown>, env: never, headers: Record<string, string> = {}) =>
+      app.request(
+        "/gateway/v1/chat/completions",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${token}`, ...headers },
+          body: JSON.stringify(body),
+        },
+        env,
+      );
+    const row = (requestId: string) =>
+      sqlite.prepare(`SELECT * FROM gateway_request_retention WHERE request_id = ?`).get(requestId) as
+        | Record<string, unknown>
+        | undefined;
+    const object = (key: string) => {
+      const stored = bucket.objects.get(key);
+      return stored ? new TextDecoder().decode(stored.body) : undefined;
+    };
+
+    it("stores the normalized request and the exact answer in R2 with a 30-day metadata row, never a credential", async () => {
+      const caller = await gateway.tenantToken();
+      stubUpstream((body) => Response.json(completion(String(body.model))));
+      const res = await post(caller.token, chat(), retainingEnv(), { "x-api-key": caller.token });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-gateway-retention")).toBeNull();
+      const answered = await res.text();
+      const requestId = res.headers.get("x-clash-request-id")!;
+      const keys = gatewayRetentionKeys(requestId);
+      expect(object(keys.response)).toBe(answered);
+      expect(JSON.parse(object(keys.request)!)).toEqual(chat());
+      const meta = row(requestId)!;
+      expect(meta).toMatchObject({ tenant_id: caller.tenantId, user_id: caller.userId, status: "stored", response_status: 200 });
+      expect(Number(meta.expires_at) - Number(meta.stored_at)).toBe(30 * 24 * 60 * 60);
+      for (const text of [object(keys.request)!, object(keys.response)!, JSON.stringify(meta)]) {
+        expect(text).not.toContain(caller.token);
+        expect(text).not.toContain(gateway.upstreamApiKey);
+      }
+
+      // An upstream error stores the coded answer the caller got, not the upstream body.
+      stubUpstream(() => Response.json({ error: { message: `bad key ${gateway.upstreamApiKey}` } }, { status: 500 }));
+      const failed = await post(caller.token, chat(), retainingEnv());
+      expect(failed.status).toBe(502);
+      const failedId = failed.headers.get("x-clash-request-id")!;
+      expect(object(gatewayRetentionKeys(failedId).response)).toBe(await failed.text());
+      expect(object(gatewayRetentionKeys(failedId).response)).not.toContain(gateway.upstreamApiKey);
+      expect(row(failedId)).toMatchObject({ status: "stored", response_status: 502 });
+    });
+
+    it("stores nothing when the flag is off (the self-host default)", async () => {
+      const caller = await gateway.tenantToken();
+      stubUpstream((body) => Response.json(completion(String(body.model))));
+      const res = await post(caller.token, chat(), retainingEnv({ GATEWAY_STAFF_PROMPT_ACCESS: undefined }));
+      expect(res.status).toBe(200);
+      const requestId = res.headers.get("x-clash-request-id")!;
+      expect(row(requestId)).toBeUndefined();
+      expect(object(gatewayRetentionKeys(requestId).response)).toBeUndefined();
+    });
+
+    it("codes an R2 failure on the answer, records it, and bills exactly as a stored request", async () => {
+      const stored = await gateway.tenantToken();
+      const failing = await gateway.tenantToken();
+      stubUpstream((body) => Response.json(completion(String(body.model))));
+      const brokenBucket = { ...bucket, put: () => Promise.reject(new Error("R2 down")) };
+      const ok = await post(stored.token, chat(), retainingEnv());
+      const res = await post(failing.token, chat(), retainingEnv({ R2_BUCKET: brokenBucket }));
+      expect(res.status).toBe(200);
+      const requestId = res.headers.get("x-clash-request-id")!;
+      expect(res.headers.get("x-gateway-retention")).toBe(`failed; code=GATEWAY_RETENTION_FAILED; request_id=${requestId}`);
+      expect(res.headers.get("x-gateway-settlement")).toBeNull();
+      expect(row(requestId)).toMatchObject({ status: "failed", error_code: "GATEWAY_INTERNAL" });
+      const settled = (id: string) =>
+        sqlite
+          .prepare(`SELECT status, amount_micro_credits AS amount FROM gateway_usage_ledger WHERE request_id = ? AND kind = 'settle' ORDER BY budget_id`)
+          .all(id) as Array<{ status: string; amount: number }>;
+      expect(settled(requestId).length).toBeGreaterThan(0);
+      expect(settled(requestId)).toEqual(settled(ok.headers.get("x-clash-request-id")!));
+    });
   });
 
   it("keeps /gateway/me working beside the data plane", async () => {

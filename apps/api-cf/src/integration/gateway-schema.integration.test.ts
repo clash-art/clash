@@ -75,12 +75,19 @@ describe("gateway D1 schema (web/drizzle migration)", () => {
     }
   });
 
-  it("stores no prompt or response body columns", async () => {
+  it("keeps prompt and response bodies out of D1", async () => {
     for (const table of REQUIRED_TABLES)
       for (const column of await columns(table))
         expect(column, `${table}.${column}`).not.toMatch(
           /prompt|completion|message|body|content|response/,
         );
+    // Retained bodies (0037) are R2 objects; their D1 row is keys, sizes and hashes only.
+    const retention = await columns("gateway_request_retention");
+    expect(retention).not.toEqual([]);
+    for (const column of retention)
+      expect(column, `gateway_request_retention.${column}`).not.toMatch(
+        /prompt|completion|message|body|content/,
+      );
   });
 
   it("indexes the ledger by tenant time, key time and budget status", async () => {

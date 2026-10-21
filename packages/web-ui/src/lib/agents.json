@@ -23,6 +23,7 @@
     "provider-authorization.ts": "ProviderAuthorizationPort bound at the composition root: desktop wraps the shell's authorizeProvider window; web navigates to the provider for callbackType web. Also parses/strips the settings return (providerOAuth, status, code). UI calls providerAuthorization() only and never reads __CLASH_DESKTOP__ for OAuth."
   },
   "files": {
-    "sessionSnapshot.ts": "Cross-tab get-session snapshot (localStorage, 5 min): a new tab's first get-session answers from it; cleared on sign-out, auth mutations, signed-out answers and API 401."
+    "sessionSnapshot.ts": "Cross-tab get-session snapshot (localStorage, 5 min): a new tab's first get-session answers from it; cleared on sign-out, auth mutations, signed-out answers and API 401.",
+    "adminClient.ts": "Typed client for the gateway admin console API (/api/v1/admin/gateway, #353). Failures are AdminApiError with the server's GATEWAY_* code; adminCan/ADMIN_PAGES only decide what the UI offers, api-cf authorizes every call (apps/docs/guide/gateway-admin.md)."
   }
 }

@@ -36,11 +36,14 @@ describe("price book publish -> request -> settle in workerd", () => {
     )
       .bind(`tok-${run}`, adminId, await sha256Hex(raw))
       .run();
+    // The platform grant is a D1 row (0036), never an environment variable.
+    await env.DB.prepare(`INSERT OR IGNORE INTO gateway_platform_role (user_id, role) VALUES (?, 'platform_admin')`)
+      .bind(adminId)
+      .run();
     adminAuth = { authorization: `Bearer ${raw}` };
     bindings = {
       ...env,
       GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
-      GATEWAY_ADMIN_USER_IDS: adminId,
     } as unknown as Env;
   });
   afterAll(async () => {

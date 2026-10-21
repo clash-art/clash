@@ -1,24 +1,29 @@
 /**
- * Model gateway control plane for platform admins (#352), mounted at
- * /api/v1/admin/gateway. Every route requires the platform-admin grant
- * (services/gateway-admin.ts); failures are coded gateway errors.
+ * Model gateway control plane, mounted at /api/v1/admin/gateway (#352, #353;
+ * guide: apps/docs/guide/gateway-admin.md). Every route authorizes through
+ * services/gateway-authz.ts (D1 roles and the permission matrix); failures
+ * are coded gateway errors, whatever the UI shows. Every mutation appends its
+ * redacted `gateway_admin_audit` row in the same D1 batch.
  *
- *   GET  /prices                          price-book versions (?modelCode, ?status)
- *   GET  /prices/versions/:version        one version
- *   PUT  /prices/versions/:version        create or replace a draft
- *   POST /prices/versions/:version/publish
- *   GET  /packages                        subscription packages
- *   POST /packages                        create
- *   POST /packages/:id/archive
- *   GET  /topup-packs                     top-up packs
- *   POST /topup-packs                     create
- *   POST /topup-packs/:id/archive
- *   POST /billing/rollover                close ended subscription periods (idempotent)
+ * Price book, packages and top-up packs (platform_admin):
+ *   GET  /prices                          price-book versions (?modelCode, ?status)     prices.read
+ *   GET  /prices/versions/:version        one version                                     prices.read
+ *   PUT  /prices/versions/:version        create or replace a draft                       prices.write
+ *   POST /prices/versions/:version/publish                                                prices.write
+ *   GET  /packages                        subscription packages                           packages.read
+ *   POST /packages                        create                                          packages.write
+ *   POST /packages/:id/archive                                                            packages.write
+ *   GET  /topup-packs                     top-up packs                                    packages.read
+ *   POST /topup-packs                     create                                          packages.write
+ *   POST /topup-packs/:id/archive                                                         packages.write
+ *   POST /billing/rollover                close ended subscription periods (idempotent)   billing.rollover
  *
- * The admin page is #353; this is its API.
+ * The other routes live in gateway-access.ts (me, platform admins),
+ * gateway-catalog.ts (catalog, upstreams), gateway-tenants.ts (tenants,
+ * members, budgets, keys, limits, wallet) and gateway-insights.ts (overview,
+ * usage, audit, abuse, prompts).
  */
 import { Hono } from "hono";
-import type { Context } from "hono";
 import { z } from "zod";
 
 import type { Env } from "../../../config";
@@ -32,24 +37,12 @@ import {
 import { createD1Billing } from "../../../gateway/d1-billing";
 import { monotonicClock } from "../../../gateway/d1-common";
 import { createD1PriceBook } from "../../../gateway/d1-price-book";
-import { gatewayParam, readGatewayJson, requireGatewayPlatformAdmin } from "../../../services/gateway-admin";
-import { gatewayErrorResponse } from "../../../services/gateway-tokens";
-
-type AdminContext = Context<{ Bindings: Env }>;
-
-const NO_STORE = { "cache-control": "no-store" };
-const ok = (c: AdminContext, body: unknown, status: 200 | 201 = 200) => c.json(body, status, NO_STORE);
-
-/** Run `handler` as a platform admin; any failure becomes its coded error response. */
-const admin =
-  (handler: (c: AdminContext, actor: ReturnType<typeof requireGatewayPlatformAdmin>) => Promise<Response>) =>
-  async (c: AdminContext) => {
-    try {
-      return await handler(c, requireGatewayPlatformAdmin(c));
-    } catch (error) {
-      return gatewayErrorResponse(error);
-    }
-  };
+import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
+import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
+import { adminAccessRoutes } from "./gateway-access";
+import { adminCatalogRoutes } from "./gateway-catalog";
+import { adminInsightRoutes } from "./gateway-insights";
+import { adminTenantRoutes } from "./gateway-tenants";
 
 const PriceStatusSchema = z.enum(["draft", "published"]).optional();
 const IdSchema = z.string().min(1).max(128);
@@ -58,7 +51,7 @@ export const adminGatewayRoutes = new Hono<{ Bindings: Env }>();
 
 adminGatewayRoutes.get(
   "/prices",
-  admin(async (c) => {
+  platformRoute("prices.read", async (c) => {
     const modelCode = c.req.query("modelCode");
     const status = gatewayParam(PriceStatusSchema, c.req.query("status"), "status");
     const versions = await createD1PriceBook(c.env.DB, { clock: monotonicClock() }).list({
@@ -71,7 +64,7 @@ adminGatewayRoutes.get(
 
 adminGatewayRoutes.get(
   "/prices/versions/:version",
-  admin(async (c) => {
+  platformRoute("prices.read", async (c) => {
     const version = gatewayParam(GatewayPriceVersionSchema, c.req.param("version"), "version");
     return ok(c, { version: await createD1PriceBook(c.env.DB, { clock: monotonicClock() }).read(version) });
   }),
@@ -79,7 +72,7 @@ adminGatewayRoutes.get(
 
 adminGatewayRoutes.put(
   "/prices/versions/:version",
-  admin(async (c, actor) => {
+  platformRoute("prices.write", async (c, actor) => {
     const version = gatewayParam(GatewayPriceVersionSchema, c.req.param("version"), "version");
     const body = await readGatewayJson(c, GatewayPriceDraftRequestSchema);
     const draft = await createD1PriceBook(c.env.DB, { clock: monotonicClock() }).putDraft({
@@ -101,7 +94,7 @@ adminGatewayRoutes.put(
 
 adminGatewayRoutes.post(
   "/prices/versions/:version/publish",
-  admin(async (c, actor) => {
+  platformRoute("prices.write", async (c, actor) => {
     const version = gatewayParam(GatewayPriceVersionSchema, c.req.param("version"), "version");
     const published = await createD1PriceBook(c.env.DB, { clock: monotonicClock() }).publish({
       version,
@@ -113,12 +106,14 @@ adminGatewayRoutes.post(
 
 adminGatewayRoutes.get(
   "/packages",
-  admin(async (c) => ok(c, { packages: await createD1Billing(c.env.DB, { clock: monotonicClock() }).listPackages() })),
+  platformRoute("packages.read", async (c) =>
+    ok(c, { packages: await createD1Billing(c.env.DB, { clock: monotonicClock() }).listPackages() }),
+  ),
 );
 
 adminGatewayRoutes.post(
   "/packages",
-  admin(async (c, actor) => {
+  platformRoute("packages.write", async (c, actor) => {
     const body = await readGatewayJson(c, GatewayPackageCreateRequestSchema);
     const created = await createD1Billing(c.env.DB, { clock: monotonicClock() }).createPackage(body, actor);
     return ok(c, { package: created }, 201);
@@ -127,7 +122,7 @@ adminGatewayRoutes.post(
 
 adminGatewayRoutes.post(
   "/packages/:id/archive",
-  admin(async (c, actor) => {
+  platformRoute("packages.write", async (c, actor) => {
     const id = gatewayParam(IdSchema, c.req.param("id"), "id");
     return ok(c, { package: await createD1Billing(c.env.DB, { clock: monotonicClock() }).archivePackage(id, actor) });
   }),
@@ -135,12 +130,14 @@ adminGatewayRoutes.post(
 
 adminGatewayRoutes.get(
   "/topup-packs",
-  admin(async (c) => ok(c, { packs: await createD1Billing(c.env.DB, { clock: monotonicClock() }).listTopupPacks() })),
+  platformRoute("packages.read", async (c) =>
+    ok(c, { packs: await createD1Billing(c.env.DB, { clock: monotonicClock() }).listTopupPacks() }),
+  ),
 );
 
 adminGatewayRoutes.post(
   "/topup-packs",
-  admin(async (c, actor) => {
+  platformRoute("packages.write", async (c, actor) => {
     const body = await readGatewayJson(c, GatewayTopupPackCreateRequestSchema);
     const created = await createD1Billing(c.env.DB, { clock: monotonicClock() }).createTopupPack(body, actor);
     return ok(c, { pack: created }, 201);
@@ -149,7 +146,7 @@ adminGatewayRoutes.post(
 
 adminGatewayRoutes.post(
   "/topup-packs/:id/archive",
-  admin(async (c, actor) => {
+  platformRoute("packages.write", async (c, actor) => {
     const id = gatewayParam(IdSchema, c.req.param("id"), "id");
     return ok(c, { pack: await createD1Billing(c.env.DB, { clock: monotonicClock() }).archiveTopupPack(id, actor) });
   }),
@@ -157,7 +154,7 @@ adminGatewayRoutes.post(
 
 adminGatewayRoutes.post(
   "/billing/rollover",
-  admin(async (c, actor) => {
+  platformRoute("billing.rollover", async (c, actor) => {
     const body = await readGatewayJson(c, GatewayRolloverRequestSchema);
     const subscriptions = await createD1Billing(c.env.DB, { clock: monotonicClock() }).rollover({
       ...(body.tenantId ? { tenantId: body.tenantId } : {}),
@@ -166,3 +163,8 @@ adminGatewayRoutes.post(
     return ok(c, { subscriptions, failed: subscriptions.filter((outcome) => outcome.error).length });
   }),
 );
+
+adminGatewayRoutes.route("/", adminAccessRoutes);
+adminGatewayRoutes.route("/", adminCatalogRoutes);
+adminGatewayRoutes.route("/", adminTenantRoutes);
+adminGatewayRoutes.route("/", adminInsightRoutes);

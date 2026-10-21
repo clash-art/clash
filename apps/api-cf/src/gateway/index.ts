@@ -4,9 +4,12 @@
  * `/gateway/v1/*` (registered in routes/gateway.ts beside `/gateway/me`).
  *
  * Identity: the sk_gw_ token only (services/gateway-tokens.ts); no header,
- * x-user-id included, is read as identity. Ports this deployment does not
- * implement yet (blobs, scheduler, audit) are explicit `unavailablePort`s that
- * answer GATEWAY_CAPABILITY_UNAVAILABLE. Guide: apps/docs/guide/gateway-data-plane.md.
+ * x-user-id included, is read as identity. `blobs` is R2 (`R2_BUCKET`) and
+ * `retention` is D1 metadata; together they retain request/response bodies
+ * for 30 days when the hosted-only GATEWAY_STAFF_PROMPT_ACCESS flag is on.
+ * Ports this deployment does not implement yet (scheduler, audit) are
+ * explicit `unavailablePort`s that answer GATEWAY_CAPABILITY_UNAVAILABLE.
+ * Guide: apps/docs/guide/gateway-data-plane.md.
  */
 import type { D1Database } from "@cloudflare/workers-types";
 import {
@@ -20,36 +23,35 @@ import {
 } from "@clash/gateway-core";
 
 import type { Env } from "../config";
-import { serverLog } from "../logger";
 import { createGatewayTokenStore } from "../services/gateway-tokens";
 import { createD1GatewayBudgetPorts } from "./d1-budgets";
 import { monotonicClock } from "./d1-common";
 import { createD1GatewayCredentialPort, type GatewayCredentialSecrets } from "./d1-credentials";
 import { createD1GatewayLimitPort } from "./d1-limits";
+import { createD1GatewayRetentionPort } from "./d1-retention";
 import { createD1GatewayRoutesPort } from "./d1-routes";
+import { createR2GatewayBlobPort, type GatewayBlobBucket } from "./r2-blobs";
+import { workersLogger } from "./workers-logger";
 
 export const GATEWAY_BASE_PATH = "/gateway";
+
+/**
+ * Hosted-only switch for staff prompt access (#353): `"enabled"` turns on both
+ * body retention in the data plane and the audited staff view. Anything else,
+ * including unset (the OSS default and every self-host), is off.
+ */
+export function staffPromptAccessEnabled(env: Pick<Env, "GATEWAY_STAFF_PROMPT_ACCESS">): boolean {
+  return env.GATEWAY_STAFF_PROMPT_ACCESS === "enabled";
+}
 
 export interface D1GatewayPortsInput {
   db: D1Database;
   secrets: GatewayCredentialSecrets;
+  /** Blob storage (R2); without it `blobs` is unavailable and retention records failures. */
+  bucket?: GatewayBlobBucket;
   clock?: GatewayClock;
   logger?: GatewayLogger;
   upstream?: GatewayUpstreamPort;
-}
-
-function workersLogger(): GatewayLogger {
-  const log = serverLog.child("gateway");
-  const safe =
-    (level: "info" | "warn" | "error"): GatewayLogger["info"] =>
-    (event, fields) => {
-      try {
-        log[level](event, fields ?? {});
-      } catch {
-        // GatewayLogger must never throw.
-      }
-    };
-  return { info: safe("info"), warn: safe("warn"), error: safe("error") };
 }
 
 export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
@@ -66,7 +68,8 @@ export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
     credentials: createD1GatewayCredentialPort(input.db, input.secrets),
     ...createD1GatewayBudgetPorts(input.db, { clock }),
     limits: createD1GatewayLimitPort(input.db, { clock, ids }),
-    blobs: unavailablePort("blobs"),
+    blobs: input.bucket ? createR2GatewayBlobPort(input.bucket) : unavailablePort("blobs"),
+    retention: createD1GatewayRetentionPort(input.db),
     scheduler: unavailablePort("scheduler"),
     audit: unavailablePort("audit"),
     logger,
@@ -92,7 +95,12 @@ export function createCloudflareGatewayApp(
   options: { upstream?: GatewayUpstreamPort } = {},
 ): GatewayApp {
   return createGatewayApp(
-    createD1GatewayPorts({ db: env.DB, secrets: workerSecrets(env), ...options }),
-    { basePath: GATEWAY_BASE_PATH },
+    createD1GatewayPorts({
+      db: env.DB,
+      secrets: workerSecrets(env),
+      ...(env.R2_BUCKET ? { bucket: env.R2_BUCKET } : {}),
+      ...options,
+    }),
+    { basePath: GATEWAY_BASE_PATH, retention: { enabled: staffPromptAccessEnabled(env) } },
   );
 }

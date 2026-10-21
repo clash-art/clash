@@ -8,7 +8,8 @@
   ],
   "subdirectories": {
     "nodes": "Custom React Flow node components (e.g., VideoNode, TextNode). The visual representation of data.",
-    "copilot": "Components for the Chatbot/AI Assistant sidebar interface."
+    "copilot": "Components for the Chatbot/AI Assistant sidebar interface.",
+    "admin": "Gateway admin console pages (#353) rendered by apps/web admin.*.tsx routes: shell, catalog/prices, upstreams (write-only secrets), users/roles, budgets and rate limits, packages, usage and the audited prompt/response viewer (AdminPromptViewer, shared Dialog), abuse, audit. Controls render only with the caller's permission; errors show the server's coded refusal."
   },
   "key_files": {
     "PresenceBar.tsx": "Project header avatar stack grouped by user, with agent overlay and per-session device tooltips; overflow counts users, not sockets.",

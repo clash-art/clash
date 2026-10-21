@@ -11,7 +11,11 @@
  * OpenAI error shape; upstream error bodies are never forwarded (they can echo
  * key fragments), and only metadata is logged. A settlement that fails after
  * the request ran marks the holds `settle_failed` and adds the
- * GATEWAY_SETTLEMENT_FAILED settlement header to the real answer.
+ * GATEWAY_SETTLEMENT_FAILED settlement header to the real answer. With
+ * `retention.enabled`, every admitted request's normalized body and the exact
+ * answer bytes are then retained (retention.ts); a retention failure adds the
+ * GATEWAY_RETENTION_FAILED retention header and never changes the answer or
+ * its billing.
  */
 import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
@@ -39,6 +43,7 @@ import {
   type GatewayRouteAttempt,
   type UpstreamFailure,
 } from "./routing.js";
+import { GATEWAY_RETENTION_HEADER, retainGatewayExchange, retentionHeaderValue } from "./retention.js";
 import { createUsageAccumulator, emptyUsage, settledUsage, type Usage } from "./usage.js";
 
 export const GATEWAY_REQUEST_ID_HEADER = "x-clash-request-id";
@@ -72,6 +77,11 @@ export interface GatewayAppOptions {
   /** Upstream deadline when the route sets no first-byte timeout. */
   upstreamTimeoutMs?: number;
   maxAttempts?: number;
+  /**
+   * Request/response body retention for admitted requests. Off unless enabled:
+   * the deployment opts in (api-cf: hosted-only GATEWAY_STAFF_PROMPT_ACCESS).
+   */
+  retention?: { enabled: boolean; ttlMs?: number };
 }
 
 export interface GatewayApp {
@@ -414,12 +424,46 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     } catch (error) {
       return errorResponse(error);
     }
+    let response: Response;
     try {
-      return await execute(admission, started);
+      response = await execute(admission, started);
     } catch (error) {
       // execute() settles on every path it controls; this is a last resort.
-      return errorResponse(error, admission.requestId);
+      response = errorResponse(error, admission.requestId);
     }
+    return options.retention?.enabled ? retain(admission, response) : response;
+  }
+
+  /**
+   * Retain the normalized request and the answer's exact bytes. Runs after
+   * settlement and never throws, so the answer and its billing are unchanged;
+   * a failure only adds the retention header.
+   */
+  async function retain(admission: GatewayAdmission, response: Response): Promise<Response> {
+    let failed = true;
+    try {
+      const outcome = await retainGatewayExchange(ports, {
+        requestId: admission.requestId,
+        identity: admission.identity,
+        request: { body: encoder.encode(JSON.stringify(admission.request.body)), contentType: "application/json" },
+        response: {
+          status: response.status,
+          body: new Uint8Array(await response.clone().arrayBuffer()),
+          contentType: response.headers.get("content-type") ?? "application/json",
+        },
+        ...(options.retention?.ttlMs !== undefined ? { ttlMs: options.retention.ttlMs } : {}),
+      });
+      failed = outcome.status === "failed";
+    } catch (error) {
+      ports.logger.error("gateway.retention_failed", {
+        requestId: admission.requestId,
+        code: "GATEWAY_RETENTION_FAILED",
+        cause: toGatewayError(error).code,
+        marker: "unrecorded",
+      });
+    }
+    if (failed) response.headers.set(GATEWAY_RETENTION_HEADER, retentionHeaderValue(admission.requestId));
+    return response;
   }
 
   return {

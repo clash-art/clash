@@ -209,11 +209,57 @@ export interface GatewayBlob {
   contentType?: string;
 }
 
-/** Media outputs and optional response capture; a subset of AssetDeliveryStore. */
+/**
+ * Media outputs and retained request/response bodies (retention.ts); a subset
+ * of AssetDeliveryStore. `delete` of a missing key resolves.
+ */
 export interface GatewayBlobPort {
   put(key: string, blob: GatewayBlob): Promise<void>;
   get(key: string): Promise<GatewayBlob | null>;
   delete(key: string): Promise<void>;
+}
+
+/**
+ * `stored`: both bodies are in blobs. `failed`: they could not be stored
+ * (`errorCode`); nothing to show. `purged`: past retention, bodies deleted.
+ */
+export type GatewayRetentionStatus = "stored" | "failed" | "purged";
+
+/** Where and what one retained body is; never the body itself. */
+export interface GatewayRetainedBodyMeta {
+  key: string;
+  bytes: number;
+  /** Lowercase hex SHA-256 of the stored bytes. */
+  sha256: string;
+  contentType: string;
+}
+
+/** Metadata of one request's retained bodies. Bodies live in blobs only. */
+export interface GatewayRetentionEntry {
+  requestId: string;
+  tenantId: string;
+  userId: string;
+  keyId?: string;
+  status: GatewayRetentionStatus;
+  errorCode?: string;
+  request: GatewayRetainedBodyMeta;
+  response: GatewayRetainedBodyMeta;
+  /** HTTP status of the answer the caller received. */
+  responseStatus: number;
+  /** Epoch ms. */
+  storedAt: number;
+  expiresAt: number;
+  purgedAt?: number;
+}
+
+export interface GatewayRetentionPort {
+  /** Write one request's row; the first write per request id wins, a duplicate is a no-op. */
+  record(entry: Omit<GatewayRetentionEntry, "status" | "purgedAt"> & { status: "stored" | "failed" }): Promise<void>;
+  get(input: { requestId: string }): Promise<GatewayRetentionEntry | null>;
+  /** Rows not yet purged whose `expiresAt <= before`, oldest first. */
+  expired(input: { before: number; limit: number }): Promise<GatewayRetentionEntry[]>;
+  /** Mark a row purged; idempotent (an already purged row keeps its first `purgedAt`). */
+  markPurged(input: { requestId: string; at: number }): Promise<void>;
 }
 
 export interface GatewayJob {
@@ -272,6 +318,7 @@ export interface GatewayPorts {
   limits: GatewayLimitPort;
   ledger: GatewayLedgerPort;
   blobs: GatewayBlobPort;
+  retention: GatewayRetentionPort;
   scheduler: GatewaySchedulerPort;
   audit: GatewayAuditPort;
   logger: GatewayLogger;
@@ -290,6 +337,7 @@ export const GATEWAY_PORT_NAMES = [
   "limits",
   "ledger",
   "blobs",
+  "retention",
   "scheduler",
   "audit",
   "logger",

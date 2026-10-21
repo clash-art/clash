@@ -66,6 +66,7 @@ describeGatewayContract("in-memory stub", async () => {
       "limits.rate": "supported",
       "limits.concurrency": "supported",
       blobs: "supported",
+      retention: "supported",
       scheduler: "unavailable",
       audit: "supported",
     },

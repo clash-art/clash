@@ -14,7 +14,8 @@
     "src/testing": "In-memory GatewayPorts stub and a catalog fixture built through shared-types."
   },
   "key_files": {
-    "src/ports.ts": "GatewayPorts: clock, ids, identity, routes, credentials, budgets, limits, ledger, blobs, scheduler, audit, logger, upstream; unavailablePort.",
+    "src/ports.ts": "GatewayPorts: clock, ids, identity, routes, credentials, budgets, limits, ledger, blobs, retention, scheduler, audit, logger, upstream; unavailablePort.",
+    "src/retention.ts": "Body retention (#353): retainGatewayExchange (bodies to blobs, metadata to retention; never throws, coded failure + compensating delete), readRetainedExchange (NOT_RETAINED / EXPIRED / RETENTION_FAILED), purgeExpiredGatewayBodies (idempotent), the x-gateway-retention header.",
     "src/errors.ts": "Closed GATEWAY_* error table -> HTTP status, OpenAI and Anthropic error bodies, Retry-After.",
     "src/routing.ts": "planGatewayRoutes over listModelUpstreamRoutes; nextGatewayAttempt failover/exhaustion decisions.",
     "src/request.ts": "OpenAI chat, Anthropic messages and media request normalization; upstream body preparation (include_usage).",

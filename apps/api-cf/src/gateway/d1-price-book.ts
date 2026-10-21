@@ -24,6 +24,7 @@ import {
   type PriceDraftRate,
 } from "@clash/gateway-core";
 
+import { adminAuditStatement } from "./d1-admin-audit";
 import { toMs, toSeconds } from "./d1-common";
 
 export interface PriceRateView {
@@ -145,22 +146,18 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
     nowS: number;
     when: string;
   }): D1PreparedStatement {
-    return db
-      .prepare(
-        `INSERT INTO gateway_admin_audit
-           (id, tenant_id, actor_user_id, actor_role, action, target_type, target_id,
-            before_json, after_json, occurred_at)
-         SELECT ?1, '', ?2, 'platform_admin', ?3, 'price_version', ?4, ?5, ?6, ?7 WHERE ${input.when}`,
-      )
-      .bind(
-        `gwa_${crypto.randomUUID().replaceAll("-", "")}`,
-        input.actorUserId,
-        input.action,
-        input.version,
-        input.before === undefined ? null : JSON.stringify(input.before),
-        JSON.stringify(input.after),
-        input.nowS,
-      );
+    // Only platform admins hold prices.write (services/gateway-authz.ts).
+    return adminAuditStatement(db, {
+      tenantId: "",
+      actor: { userId: input.actorUserId, role: "platform_admin" },
+      action: input.action,
+      targetType: "price_version",
+      targetId: input.version,
+      before: input.before,
+      after: input.after,
+      nowS: input.nowS,
+      when: input.when,
+    });
   }
 
   return {

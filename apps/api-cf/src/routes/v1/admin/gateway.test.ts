@@ -36,13 +36,14 @@ function user() {
   return { userId, auth: { authorization: `Bearer ${raw}` } };
 }
 
+// The platform grant is a D1 row (0036), never an environment variable.
 const adminUser = user();
+sqlite.prepare(`INSERT INTO gateway_platform_role (user_id, role) VALUES (?, 'platform_admin')`).run(adminUser.userId);
 const env = {
   DB: d1,
   ENVIRONMENT: "test",
   BETTER_AUTH_URL: ORIGIN,
   BETTER_AUTH_SECRET: "test-secret-for-gateway-admin-0123456789",
-  GATEWAY_ADMIN_USER_IDS: ` other-admin , ${adminUser.userId}`,
 } as never;
 
 function call(method: string, path: string, headers: Record<string, string> = {}, body?: unknown) {
@@ -200,12 +201,16 @@ describe("/api/v1/gateway/tenants/:tenantId purchases", () => {
 
   it("lets the owner or a platform admin buy for the team wallet; other members and strangers are refused", async () => {
     const { owner, member, base, tenantId } = team();
+    const viewer = user();
+    sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, 'viewer')`).run(tenantId, viewer.userId);
     const pack = await createPack();
     const body = { packId: pack.id, idempotencyKey: "order-1" };
     await expectCode(await call("POST", `${base}/topups`, {}, body), 401, "GATEWAY_AUTH_REQUIRED");
+    // A tenant admin may read billing but not buy (billing.purchase is owner/finance).
     await expectCode(await call("POST", `${base}/topups`, member.auth, body), 403, "GATEWAY_FORBIDDEN");
     await expectCode(await call("POST", `${base}/topups`, user().auth, body), 403, "GATEWAY_FORBIDDEN");
-    await expectCode(await call("GET", `${base}/billing`, member.auth), 403, "GATEWAY_FORBIDDEN");
+    expect((await call("GET", `${base}/billing`, member.auth)).status).toBe(200);
+    await expectCode(await call("GET", `${base}/billing`, viewer.auth), 403, "GATEWAY_FORBIDDEN");
 
     const bought = await call("POST", `${base}/topups`, owner.auth, body);
     expect(bought.status, await bought.clone().text()).toBe(201);

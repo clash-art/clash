@@ -1,0 +1,213 @@
+/**
+ * Request/response body retention (#353; product decision 2026-10-20): when a
+ * deployment enables it, every admitted data-plane request stores the
+ * normalized request body and the exact response bytes the caller received,
+ * for 30 days, so platform staff can view them through the audited admin
+ * endpoint. Bodies go to `blobs`; `retention` holds metadata only (sizes,
+ * SHA-256, keys, expiry), never content.
+ *
+ * Only bodies are stored, never headers: the caller's credential and the
+ * upstream key (both headers) cannot reach storage.
+ *
+ * A storage failure never changes the answer or its billing (retention runs
+ * after settlement): it is recorded as a `failed` row, logged as
+ * `gateway.retention_failed` and reported on the answer with
+ * `x-gateway-retention: failed; code=GATEWAY_RETENTION_FAILED; request_id=<id>`.
+ */
+import { GatewayError, toGatewayError, type GatewayErrorCode } from "./errors.js";
+import type {
+  GatewayIdentity,
+  GatewayPorts,
+  GatewayRetainedBodyMeta,
+  GatewayRetentionEntry,
+} from "./ports.js";
+
+/** Present only when retention failed: `failed; code=GATEWAY_RETENTION_FAILED; request_id=<id>`. */
+export const GATEWAY_RETENTION_HEADER = "x-gateway-retention";
+
+/** Bodies are kept 30 days from storage, then unreadable and purged. */
+export const GATEWAY_BODY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+export const GATEWAY_RETENTION_KEY_PREFIX = "gateway-retention/";
+
+export function gatewayRetentionKeys(requestId: string): { request: string; response: string } {
+  const base = `${GATEWAY_RETENTION_KEY_PREFIX}${encodeURIComponent(requestId)}`;
+  return { request: `${base}/request.json`, response: `${base}/response.json` };
+}
+
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export interface RetainExchangeInput {
+  requestId: string;
+  identity: Pick<GatewayIdentity, "tenantId" | "userId" | "keyId">;
+  /** The normalized request body (JSON). */
+  request: { body: Uint8Array; contentType: string };
+  /** The answer exactly as the caller receives it. */
+  response: { status: number; body: Uint8Array; contentType: string };
+  ttlMs?: number;
+}
+
+export type RetainOutcome =
+  | { status: "stored" }
+  | {
+      status: "failed";
+      code: Extract<GatewayErrorCode, "GATEWAY_RETENTION_FAILED">;
+      /** Code of what failed (blob write, metadata write). */
+      cause: GatewayErrorCode;
+      /** `failed` when the failed row was written, `unrecorded` when even that failed. */
+      marker: "failed" | "unrecorded";
+      markCause?: GatewayErrorCode;
+    };
+
+export function retentionHeaderValue(requestId: string): string {
+  return `failed; code=GATEWAY_RETENTION_FAILED; request_id=${requestId}`;
+}
+
+/**
+ * Store one exchange: both bodies, then the `stored` row. Never throws. On any
+ * failure the blobs already written are deleted (no body outlives its
+ * metadata, so purge can always find it) and a `failed` row is recorded.
+ */
+export async function retainGatewayExchange(
+  ports: Pick<GatewayPorts, "blobs" | "retention" | "clock" | "logger">,
+  input: RetainExchangeInput,
+): Promise<RetainOutcome> {
+  const keys = gatewayRetentionKeys(input.requestId);
+  const storedAt = ports.clock.now();
+  const meta = async (key: string, part: { body: Uint8Array; contentType: string }): Promise<GatewayRetainedBodyMeta> => ({
+    key,
+    bytes: part.body.byteLength,
+    sha256: await sha256Hex(part.body),
+    contentType: part.contentType,
+  });
+  let cause: GatewayError;
+  let base: Omit<GatewayRetentionEntry, "status"> | undefined;
+  try {
+    base = {
+      requestId: input.requestId,
+      tenantId: input.identity.tenantId,
+      userId: input.identity.userId,
+      ...(input.identity.keyId ? { keyId: input.identity.keyId } : {}),
+      request: await meta(keys.request, input.request),
+      response: await meta(keys.response, input.response),
+      responseStatus: input.response.status,
+      storedAt,
+      expiresAt: storedAt + (input.ttlMs ?? GATEWAY_BODY_RETENTION_MS),
+    };
+    // Both settle before any cleanup, so a late write can never land after the delete below.
+    const writes = await Promise.allSettled([
+      ports.blobs.put(keys.request, { body: input.request.body, contentType: input.request.contentType }),
+      ports.blobs.put(keys.response, { body: input.response.body, contentType: input.response.contentType }),
+    ]);
+    const rejected = writes.find((write): write is PromiseRejectedResult => write.status === "rejected");
+    if (rejected) throw rejected.reason;
+    await ports.retention.record({ ...base, status: "stored" });
+    return { status: "stored" };
+  } catch (error) {
+    cause = toGatewayError(error);
+  }
+  await Promise.allSettled([ports.blobs.delete(keys.request), ports.blobs.delete(keys.response)]);
+  let marker: "failed" | "unrecorded" = "failed";
+  let markCause: GatewayErrorCode | undefined;
+  try {
+    if (!base) throw cause;
+    await ports.retention.record({ ...base, status: "failed", errorCode: cause.code });
+  } catch (error) {
+    marker = "unrecorded";
+    markCause = toGatewayError(error).code;
+  }
+  const code = "GATEWAY_RETENTION_FAILED" as const;
+  ports.logger.error("gateway.retention_failed", {
+    requestId: input.requestId,
+    code,
+    cause: cause.code,
+    marker,
+    markCause,
+  });
+  return { status: "failed", code, cause: cause.code, marker, ...(markCause ? { markCause } : {}) };
+}
+
+export interface RetainedBody extends GatewayRetainedBodyMeta {
+  /** The stored bytes, unchanged. */
+  body: Uint8Array;
+}
+
+export interface RetainedExchange {
+  entry: GatewayRetentionEntry;
+  request: RetainedBody;
+  response: RetainedBody;
+}
+
+/**
+ * Read one request's bodies. Rejects with GATEWAY_PROMPT_NOT_RETAINED (no row,
+ * or storage had failed), GATEWAY_PROMPT_EXPIRED (past `expiresAt`, whether or
+ * not purge has run yet) or GATEWAY_RETENTION_FAILED (a stored body is missing
+ * or does not match its SHA-256).
+ */
+export async function readRetainedExchange(
+  ports: Pick<GatewayPorts, "blobs" | "retention" | "clock">,
+  input: { requestId: string },
+): Promise<RetainedExchange> {
+  const { requestId } = input;
+  const entry = await ports.retention.get({ requestId });
+  if (!entry) throw new GatewayError("GATEWAY_PROMPT_NOT_RETAINED", { details: { requestId, retention: "none" } });
+  if (entry.status === "purged" || entry.expiresAt <= ports.clock.now())
+    throw new GatewayError("GATEWAY_PROMPT_EXPIRED", {
+      details: { requestId, expiredAt: new Date(entry.expiresAt).toISOString() },
+    });
+  if (entry.status === "failed")
+    throw new GatewayError("GATEWAY_PROMPT_NOT_RETAINED", {
+      details: { requestId, retention: "failed", ...(entry.errorCode ? { errorCode: entry.errorCode } : {}) },
+    });
+  const read = async (part: "request" | "response"): Promise<RetainedBody> => {
+    const meta = entry[part];
+    const blob = await ports.blobs.get(meta.key);
+    if (!blob) throw new GatewayError("GATEWAY_RETENTION_FAILED", { details: { requestId, part, reason: "missing" } });
+    if ((await sha256Hex(blob.body)) !== meta.sha256)
+      throw new GatewayError("GATEWAY_RETENTION_FAILED", { details: { requestId, part, reason: "integrity" } });
+    return { ...meta, body: blob.body };
+  };
+  return { entry, request: await read("request"), response: await read("response") };
+}
+
+export interface PurgeResult {
+  /** Rows purged by this call. */
+  purged: number;
+  /** Rows whose purge failed; they stay expired (unreadable) and are retried next run. */
+  failed: number;
+}
+
+/**
+ * Delete the bodies of every expired, not yet purged row (up to `limit`, oldest
+ * first) and mark it purged. Idempotent: a purged row is never selected again,
+ * and deleting an absent blob resolves. Safe to run from a schedule and an
+ * admin action concurrently.
+ */
+export async function purgeExpiredGatewayBodies(
+  ports: Pick<GatewayPorts, "blobs" | "retention" | "clock" | "logger">,
+  options: { limit?: number } = {},
+): Promise<PurgeResult> {
+  const now = ports.clock.now();
+  const entries = await ports.retention.expired({ before: now, limit: options.limit ?? 200 });
+  let purged = 0;
+  let failed = 0;
+  for (const entry of entries) {
+    try {
+      await ports.blobs.delete(entry.request.key);
+      await ports.blobs.delete(entry.response.key);
+      await ports.retention.markPurged({ requestId: entry.requestId, at: now });
+      purged += 1;
+    } catch (error) {
+      failed += 1;
+      ports.logger.warn("gateway.retention_purge_failed", {
+        requestId: entry.requestId,
+        cause: toGatewayError(error).code,
+      });
+    }
+  }
+  if (purged || failed) ports.logger.info("gateway.retention_purged", { purged, failed });
+  return { purged, failed };
+}

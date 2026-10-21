@@ -31,6 +31,7 @@ export default withMermaid(defineConfig({
               text: "Gateway Price Book & Credits",
               link: "/guide/gateway-price-book",
             },
+            { text: "Gateway Admin Console", link: "/guide/gateway-admin" },
             { text: "Build Architecture", link: "/guide/build-architecture" },
             { text: "Release Pipeline", link: "/guide/release-pipeline" },
             {

@@ -20,8 +20,33 @@ import { createGatewayTokenStore, type GatewayTokenScope } from "../services/gat
 import { toSeconds } from "./d1-common";
 import { sealGatewayUpstreamCredentials } from "./d1-credentials";
 import { createD1GatewayPorts } from "./index";
+import type { GatewayBlobBucket } from "./r2-blobs";
 
 export const CONTRACT_ORIGIN = "https://gateway.contract";
+
+/** An in-memory stand-in for the R2 bucket on node:sqlite runs (workerd runs use the real binding). */
+export function createMemoryBucket(): GatewayBlobBucket & { objects: Map<string, { body: Uint8Array; contentType?: string }> } {
+  const objects = new Map<string, { body: Uint8Array; contentType?: string }>();
+  return {
+    objects,
+    async put(key, value, options) {
+      const contentType = options?.httpMetadata?.contentType;
+      objects.set(key, { body: value.slice(), ...(contentType ? { contentType } : {}) });
+      return {};
+    },
+    async get(key) {
+      const object = objects.get(key);
+      if (!object) return null;
+      return {
+        arrayBuffer: async () => object.body.slice().buffer as ArrayBuffer,
+        ...(object.contentType ? { httpMetadata: { contentType: object.contentType } } : {}),
+      };
+    },
+    async delete(key) {
+      objects.delete(key);
+    },
+  };
+}
 
 function hex(bytes: number): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -52,6 +77,8 @@ export interface TenantTokenOptions {
 
 export interface SeededGateway {
   db: D1Database;
+  /** Blob storage behind the seeded ports, when the run has one. */
+  bucket?: GatewayBlobBucket;
   clock: GatewayClock;
   encryptionKey: string;
   textModel: string;
@@ -65,7 +92,7 @@ export interface SeededGateway {
   keyToken(owner: { userId: string; tenantId: string }, rateLimit: Record<string, number>): Promise<string>;
 }
 
-export async function seedGateway(db: D1Database): Promise<SeededGateway> {
+export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlobBucket } = {}): Promise<SeededGateway> {
   // A frozen clock keeps every contract step in one rate window.
   const t0 = Date.now();
   const clock: GatewayClock = { now: () => t0 };
@@ -156,6 +183,7 @@ export async function seedGateway(db: D1Database): Promise<SeededGateway> {
 
   return {
     db,
+    ...(options.bucket ? { bucket: options.bucket } : {}),
     clock,
     encryptionKey,
     textModel: card.id,
@@ -166,6 +194,7 @@ export async function seedGateway(db: D1Database): Promise<SeededGateway> {
       ...createD1GatewayPorts({
         db,
         clock,
+        ...(options.bucket ? { bucket: options.bucket } : {}),
         secrets: { encryptionKey, secret: () => undefined },
         logger: { info() {}, warn() {}, error() {} },
       }),
@@ -182,7 +211,7 @@ export const gatewayRequest = (token?: string) =>
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 
-/** The gateway-core contract over the D1 ports: every capability but blobs, scheduler and audit. */
+/** The gateway-core contract over the D1 ports: every capability but scheduler and audit (blobs when seeded with a bucket). */
 export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayContractHarness> {
   const tenantA = await seeded.tenantToken();
   const tenantB = await seeded.tenantToken();
@@ -198,7 +227,8 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       ledger: "supported",
       "limits.rate": "supported",
       "limits.concurrency": "supported",
-      blobs: "unavailable",
+      blobs: seeded.bucket ? "supported" : "unavailable",
+      retention: "supported",
       scheduler: "unavailable",
       audit: "unavailable",
     },

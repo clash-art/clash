@@ -14,10 +14,12 @@ import {
  * Clash official model gateway tables (web/drizzle/0032_gateway.sql; guide:
  * apps/docs/guide/gateway-schema.md). Timestamps are unix seconds; money is
  * integer micro-credits (1 credit = 1_000_000), matching @clash/gateway-core
- * `MicroCredits`. No column stores prompt, completion or response bodies.
+ * `MicroCredits`. No column stores prompt, completion or response bodies:
+ * retained bodies are R2 objects, described by `gateway_request_retention`.
  *
  * Retention: usage metadata 30 days (operational ledger columns are NULLed,
- * ended tokens deleted); ledger and admin audit 13 months.
+ * ended tokens deleted); retained request/response bodies 30 days (0037);
+ * ledger and admin audit 13 months.
  */
 
 const createdAt = () =>
@@ -433,7 +435,33 @@ export const gatewayInflight = sqliteTable(
   }),
 );
 
-/** One append-only row per admin mutation, with redacted before/after snapshots. */
+/**
+ * Platform staff grants (0036), separate from tenant roles. Bootstrapped
+ * explicitly (apps/api-cf/scripts/gateway-platform-admin.ts); never granted by
+ * an environment variable.
+ */
+export const gatewayPlatformRoles = sqliteTable(
+  "gateway_platform_role",
+  {
+    userId: text("user_id").notNull(),
+    role: text("role").notNull(),
+    /** NULL for the bootstrap grant. */
+    grantedByUserId: text("granted_by_user_id"),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.role] }),
+    roleCheck: check(
+      "gateway_platform_role_role_check",
+      sql`${table.role} IN ('platform_admin')`,
+    ),
+  }),
+);
+
+/**
+ * One append-only row per admin mutation, with redacted before/after
+ * snapshots. 0036 triggers refuse UPDATE, and DELETE before 13 months.
+ */
 export const gatewayAdminAudit = sqliteTable(
   "gateway_admin_audit",
   {
@@ -459,6 +487,51 @@ export const gatewayAdminAudit = sqliteTable(
     targetIdx: index("gateway_admin_audit_target_idx").on(
       table.targetType,
       table.targetId,
+    ),
+    timeIdx: index("gateway_admin_audit_time_idx").on(table.occurredAt),
+  }),
+);
+
+/**
+ * Retained request/response body metadata (0037): where the two R2 objects
+ * are, their sizes and SHA-256. Never the bodies. `expires_at` is
+ * `stored_at` + 30 days; purge deletes the objects and sets `purged`.
+ */
+export const gatewayRequestRetention = sqliteTable(
+  "gateway_request_retention",
+  {
+    requestId: text("request_id").primaryKey(),
+    tenantId: text("tenant_id").notNull(),
+    userId: text("user_id").notNull(),
+    keyId: text("key_id"),
+    /** stored | failed | purged */
+    status: text("status").notNull(),
+    errorCode: text("error_code"),
+    requestKey: text("request_key").notNull(),
+    requestBytes: integer("request_bytes").notNull(),
+    requestSha256: text("request_sha256").notNull(),
+    requestType: text("request_type").notNull(),
+    responseKey: text("response_key").notNull(),
+    responseBytes: integer("response_bytes").notNull(),
+    responseSha256: text("response_sha256").notNull(),
+    responseType: text("response_type").notNull(),
+    responseStatus: integer("response_status").notNull(),
+    storedAt: integer("stored_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+    purgedAt: integer("purged_at"),
+  },
+  (table) => ({
+    statusCheck: check(
+      "gateway_request_retention_status_check",
+      sql`${table.status} IN ('stored', 'failed', 'purged')`,
+    ),
+    expiryIdx: index("gateway_request_retention_expiry_idx").on(
+      table.status,
+      table.expiresAt,
+    ),
+    tenantTimeIdx: index("gateway_request_retention_tenant_time_idx").on(
+      table.tenantId,
+      table.storedAt,
     ),
   }),
 );
