@@ -31,7 +31,8 @@ import { parseJson } from "./d1-common";
 export const GATEWAY_UPSTREAM_CREDENTIALS_SALT = "clash-gateway-upstream-credentials";
 
 export const GATEWAY_UPSTREAM_SECRET_PREFIX = "GATEWAY_UPSTREAM_";
-const SECRET_REF_PATTERN = /^GATEWAY_UPSTREAM_[A-Z0-9_]+$/;
+export const GATEWAY_UPSTREAM_SECRET_REF_PATTERN = /^GATEWAY_UPSTREAM_[A-Z0-9_]+$/;
+const SECRET_REF_PATTERN = GATEWAY_UPSTREAM_SECRET_REF_PATTERN;
 
 export interface GatewayCredentialSecrets {
   /** GATEWAY_ENCRYPTION_KEY, when sealed envelopes are used. */

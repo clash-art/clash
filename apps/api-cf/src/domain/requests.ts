@@ -103,14 +103,20 @@ export const GatewayPriceDraftRequestSchema = z
   })
   .strict();
 
-const RateLimitRequestSchema = z
+/**
+ * A configured rate limit (`rate_limit_json` on keys, catalog models, upstream
+ * accounts, packages and subscriptions), as d1-limits.ts enforces it. At least
+ * one bound; unknown fields are refused so a typo never silently admits.
+ */
+export const GatewayRateLimitSchema = z
   .object({
-    requestsPerMinute: z.number().int().positive().optional(),
-    tokensPerMinute: z.number().int().positive().optional(),
-    concurrency: z.number().int().positive().optional(),
+    requestsPerMinute: safeInt().positive().optional(),
+    tokensPerMinute: safeInt().positive().optional(),
+    concurrency: safeInt().positive().optional(),
   })
   .strict()
   .refine((limits) => Object.keys(limits).length > 0, "empty rate limit");
+const RateLimitRequestSchema = GatewayRateLimitSchema;
 
 const currency = () => z.string().regex(/^[A-Z]{3}$/);
 
@@ -151,4 +157,164 @@ export const GatewayTopupRequestSchema = z
 /** POST /api/v1/admin/gateway/billing/rollover. Omitted tenantId: every due subscription. */
 export const GatewayRolloverRequestSchema = z
   .object({ tenantId: z.string().min(1).max(256).optional() })
+  .strict();
+
+// ─── Gateway admin console (#353) ──────────────────────────────────────────
+// Guide: apps/docs/guide/gateway-admin.md. Authorization is
+// services/gateway-authz.ts; these schemas only shape the requests.
+
+/** Tenant roles with admin-console permissions, most to least privileged. */
+export const GATEWAY_TENANT_ROLES = ["owner", "admin", "finance", "support", "viewer"] as const;
+/** Every role `tenant_member.role` may hold; `member` uses the gateway but has no admin permission. */
+export const GATEWAY_MEMBER_ROLES = [...GATEWAY_TENANT_ROLES, "member"] as const;
+/** Platform staff grants (`gateway_platform_role`), separate from tenant roles. */
+export const GATEWAY_PLATFORM_ROLES = ["platform_admin"] as const;
+
+const reason = () => z.string().trim().min(1).max(500);
+const identifier = () => z.string().regex(/^[A-Za-z0-9._:@/-]{1,256}$/);
+
+/** Catalog version name, e.g. `2026-11-01` or `c12`. */
+export const GatewayCatalogVersionSchema = GatewayPriceVersionSchema;
+export const GatewayModelCodeSchema = z.string().regex(/^[A-Za-z0-9._:/-]{1,256}$/);
+
+/** PUT /api/v1/admin/gateway/catalog/versions/:version/models/:modelCode (draft only). */
+export const GatewayCatalogModelRequestSchema = z
+  .object({
+    /** A shared-types ModelCard whose id is the model code. */
+    card: z.record(z.string(), z.unknown()),
+    displayName: z.string().trim().min(1).max(128).nullable().optional(),
+    enabled: z.boolean().default(true),
+    maxOutputTokens: safeInt().positive().nullable().optional(),
+    rateLimit: GatewayRateLimitSchema.nullable().optional(),
+  })
+  .strict();
+
+/** POST /api/v1/admin/gateway/catalog/versions/:version/clone: a new draft copying `from`. */
+export const GatewayCatalogCloneRequestSchema = z.object({ from: GatewayCatalogVersionSchema }).strict();
+
+/** An upstream secret: a `GATEWAY_UPSTREAM_*` Worker secret name, or a key sealed on receipt. Write-only. */
+export const GatewayUpstreamCredentialSchema = z.union([
+  z.object({ secretRef: z.string().regex(/^GATEWAY_UPSTREAM_[A-Z0-9_]{1,120}$/) }).strict(),
+  z
+    .object({
+      apiKey: z.string().trim().min(8).max(4096),
+      baseUrl: z.url({ protocol: /^https$/ }).max(2048).optional(),
+    })
+    .strict(),
+]);
+
+const upstreamFields = {
+  label: z.string().trim().min(1).max(128).nullable().optional(),
+  enabled: z.boolean().optional(),
+  region: z.string().regex(/^[a-z0-9-]{0,32}$/).optional(),
+  priority: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  weight: z.number().int().min(0).max(1_000_000).nullable().optional(),
+  supportedModelIds: z.array(GatewayModelCodeSchema).max(500).nullable().optional(),
+  modelPriorities: z.record(GatewayModelCodeSchema, z.number().int().min(0).max(1_000_000)).nullable().optional(),
+  rateLimit: GatewayRateLimitSchema.nullable().optional(),
+};
+
+/** POST /api/v1/admin/gateway/upstreams. */
+export const GatewayUpstreamCreateRequestSchema = z
+  .object({
+    providerId: z.string().regex(/^[a-z0-9._-]{1,64}$/),
+    upstreamId: z.string().regex(/^[a-z0-9._-]{0,64}$/).optional(),
+    apiShape: z.string().regex(/^[a-z0-9._-]{1,64}$/).nullable().optional(),
+    ...upstreamFields,
+    credential: GatewayUpstreamCredentialSchema,
+  })
+  .strict();
+
+/** PATCH /api/v1/admin/gateway/upstreams/:id: non-secret fields; `enabled: false` disables. */
+export const GatewayUpstreamUpdateRequestSchema = z
+  .object(upstreamFields)
+  .strict()
+  .refine((patch) => Object.keys(patch).length > 0, "empty update");
+
+/** POST /api/v1/admin/gateway/upstreams/:id/rotate. */
+export const GatewayUpstreamRotateRequestSchema = z
+  .object({ credential: GatewayUpstreamCredentialSchema, reason: reason().optional() })
+  .strict();
+
+/** PUT /api/v1/admin/gateway/tenants/:tenantId/budgets/(user|key)/:scopeId. */
+export const GatewayBudgetSetRequestSchema = z
+  .object({
+    /** null: explicitly unlimited (the tenant wallet still caps it). */
+    limitMicroCredits: safeInt().nullable(),
+    status: z.enum(["active", "suspended"]).optional(),
+    reason: reason().optional(),
+  })
+  .strict();
+
+/** POST /api/v1/admin/gateway/tenants/:tenantId/wallet/adjust (platform correction). */
+export const GatewayWalletAdjustRequestSchema = z
+  .object({
+    deltaMicroCredits: z
+      .number()
+      .int()
+      .min(-Number.MAX_SAFE_INTEGER)
+      .max(Number.MAX_SAFE_INTEGER)
+      .refine((value) => value !== 0, "zero adjustment"),
+    reason: reason(),
+    idempotencyKey: GatewayIdempotencyKeySchema,
+  })
+  .strict();
+
+/** POST /api/v1/admin/gateway/tenants/:tenantId/wallet/status. */
+export const GatewayWalletStatusRequestSchema = z
+  .object({ status: z.enum(["active", "suspended"]), reason: reason() })
+  .strict();
+
+/** PUT …/keys/:keyId/rate-limit and …/subscription/rate-limit; null clears the limit. */
+export const GatewayRateLimitUpdateRequestSchema = z
+  .object({ rateLimit: GatewayRateLimitSchema.nullable(), reason: reason().optional() })
+  .strict();
+
+/** PUT /api/v1/admin/gateway/tenants/:tenantId/members/:userId/role. */
+export const GatewayMemberRoleRequestSchema = z
+  .object({ role: z.enum(GATEWAY_MEMBER_ROLES), reason: reason().optional() })
+  .strict();
+
+/** POST /api/v1/admin/gateway/platform-admins. */
+export const GatewayPlatformAdminGrantRequestSchema = z
+  .object({ userId: z.string().regex(/^[A-Za-z0-9._:@-]{1,128}$/), reason: reason().optional() })
+  .strict();
+
+/** POST /api/v1/admin/gateway/prompts/:requestId/access: break-glass, so a reason is required. */
+export const GatewayPromptAccessRequestSchema = z.object({ reason: reason() }).strict();
+
+const queryLimit = (max: number, fallback: number) => z.coerce.number().int().min(1).max(max).default(fallback);
+const queryInstant = () => isoInstant().optional();
+
+/** GET /api/v1/admin/gateway/usage. */
+export const GatewayUsageQuerySchema = z
+  .object({
+    tenantId: z.string().min(1).max(256).optional(),
+    userId: identifier().optional(),
+    keyId: identifier().optional(),
+    modelCode: GatewayModelCodeSchema.optional(),
+    kind: z.enum(["hold", "settle", "release", "refund", "adjust", "grant", "topup", "expire"]).optional(),
+    from: queryInstant(),
+    to: queryInstant(),
+    limit: queryLimit(500, 100),
+  })
+  .strict();
+
+/** GET /api/v1/admin/gateway/audit. */
+export const GatewayAuditQuerySchema = z
+  .object({
+    tenantId: z.string().min(1).max(256).optional(),
+    actorUserId: identifier().optional(),
+    action: z.string().regex(/^[a-z_.]{1,64}$/).optional(),
+    targetType: z.string().regex(/^[a-z_]{1,64}$/).optional(),
+    targetId: z.string().min(1).max(256).optional(),
+    from: queryInstant(),
+    to: queryInstant(),
+    limit: queryLimit(500, 100),
+  })
+  .strict();
+
+/** GET /api/v1/admin/gateway/tenants. */
+export const GatewayTenantListQuerySchema = z
+  .object({ query: z.string().trim().min(1).max(128).optional(), limit: queryLimit(500, 100) })
   .strict();

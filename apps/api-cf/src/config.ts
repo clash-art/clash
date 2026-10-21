@@ -45,11 +45,13 @@ export interface Env {
    */
   GATEWAY_ENCRYPTION_KEY?: string;
   /**
-   * Platform-admin grant for the model gateway control plane (price book,
-   * packages, top-up packs, billing periods): comma-separated Better Auth user
-   * ids. Unset means nobody is a platform admin. Not a tenant role.
+   * Hosted-only staff prompt access (#353, decision 10): `"enabled"` lets a
+   * platform_admin open the audited prompt-access endpoint. Unset (the
+   * default, and every self-host) keeps it off. The gateway retains no
+   * request or response bodies either way. Admin roles themselves live in D1
+   * (`tenant_member`, `gateway_platform_role`), never in a variable.
    */
-  GATEWAY_ADMIN_USER_IDS?: string;
+  GATEWAY_STAFF_PROMPT_ACCESS?: string;
   /**
    * Optional secret: JSON array of operator-registered OAuth Providers,
    * `[{ id, label?, flow }]` where `flow` is a PluginAuthFlow with tokenUrl and

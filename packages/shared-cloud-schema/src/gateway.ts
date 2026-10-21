@@ -433,7 +433,33 @@ export const gatewayInflight = sqliteTable(
   }),
 );
 
-/** One append-only row per admin mutation, with redacted before/after snapshots. */
+/**
+ * Platform staff grants (0036), separate from tenant roles. Bootstrapped
+ * explicitly (apps/api-cf/scripts/gateway-platform-admin.ts); never granted by
+ * an environment variable.
+ */
+export const gatewayPlatformRoles = sqliteTable(
+  "gateway_platform_role",
+  {
+    userId: text("user_id").notNull(),
+    role: text("role").notNull(),
+    /** NULL for the bootstrap grant. */
+    grantedByUserId: text("granted_by_user_id"),
+    createdAt: createdAt(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.role] }),
+    roleCheck: check(
+      "gateway_platform_role_role_check",
+      sql`${table.role} IN ('platform_admin')`,
+    ),
+  }),
+);
+
+/**
+ * One append-only row per admin mutation, with redacted before/after
+ * snapshots. 0036 triggers refuse UPDATE, and DELETE before 13 months.
+ */
 export const gatewayAdminAudit = sqliteTable(
   "gateway_admin_audit",
   {
@@ -460,6 +486,7 @@ export const gatewayAdminAudit = sqliteTable(
       table.targetType,
       table.targetId,
     ),
+    timeIdx: index("gateway_admin_audit_time_idx").on(table.occurredAt),
   }),
 );
 

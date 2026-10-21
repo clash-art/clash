@@ -5,7 +5,8 @@
  * and the tenant wallet (the `tenant`-scope `gateway_budget`).
  *
  * There is no payment provider. A purchase is recorded by a platform admin or
- * the tenant owner and credits the wallet at once:
+ * a tenant role holding `billing.purchase` (services/gateway-authz.ts) and
+ * credits the wallet at once:
  *
  * - topup:     ledger `topup`, wallet limit += pack credits.
  * - subscribe: subscription row + ledger `grant` for the first period.
@@ -39,14 +40,11 @@ import {
 } from "@clash/gateway-core";
 
 import { sha256Hex } from "../services/api-token";
+import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
 import { parseJson, toMs, toSeconds } from "./d1-common";
 
-export type BillingActorRole = "platform_admin" | "owner";
-
-export interface BillingActor {
-  userId: string;
-  role: BillingActorRole;
-}
+/** The authorized caller (services/gateway-authz.ts): a tenant role or `platform_admin`. */
+export type BillingActor = GatewayAdminActor;
 
 export interface RateLimitConfig {
   requestsPerMinute?: number;
@@ -89,6 +87,8 @@ export interface SubscriptionView {
   currentPeriodEnd: string;
   cancelAt: string | null;
   canceledAt: string | null;
+  /** Tenant rate limits while live (copied from the package, overridable by a platform admin). */
+  rateLimit: RateLimitConfig | null;
 }
 
 export interface WalletView {
@@ -104,7 +104,7 @@ export interface WalletView {
 
 export interface CreditEntryView {
   requestId: string;
-  kind: "grant" | "topup" | "expire";
+  kind: "grant" | "topup" | "expire" | "adjust";
   amountMicroCredits: number;
   refKind: string | null;
   refId: string | null;
@@ -163,6 +163,7 @@ interface SubscriptionRow {
   current_period_end: number;
   cancel_at: number | null;
   canceled_at: number | null;
+  rate_limit_json: string | null;
   created_at: number;
 }
 
@@ -195,7 +196,7 @@ const LIVE_SUBSCRIPTION = "status IN ('trialing', 'active')";
 const MAX_PERIODS_PER_ROLLOVER = 24;
 
 const SUBSCRIPTION_COLUMNS = `id, tenant_id, package_id, status, current_period_start,
-  current_period_end, cancel_at, canceled_at, created_at`;
+  current_period_end, cancel_at, canceled_at, rate_limit_json, created_at`;
 const WALLET_COLUMNS = `id, tenant_id, status, period, limit_micro_credits, spent_micro_credits,
   reserved_micro_credits`;
 const CREDIT_COLUMNS = `request_id, kind, amount_micro_credits, ref_kind, ref_id, actor_user_id, occurred_at`;
@@ -203,6 +204,9 @@ const CREDIT_COLUMNS = `request_id, kind, amount_micro_credits, ref_kind, ref_id
 /** The tenant wallet row, as a subquery over ?t (tenant id). */
 const walletIdSql = (t: string) =>
   `(SELECT id FROM gateway_budget WHERE tenant_id = ${t} AND scope = 'tenant' AND scope_id = ${t})`;
+/** ref_kind of a platform wallet correction: the ledger amount is non-negative, so it carries the direction. */
+const ADMIN_CREDIT = "admin_credit";
+const ADMIN_DEBIT = "admin_debit";
 /** A wallet that can hold credits: limited and not periodic. */
 const FUNDABLE = "limit_micro_credits IS NOT NULL AND period = 'none'";
 
@@ -244,6 +248,7 @@ function subscriptionView(row: SubscriptionRow): SubscriptionView {
     currentPeriodEnd: iso(row.current_period_end),
     cancelAt: row.cancel_at === null ? null : iso(row.cancel_at),
     canceledAt: row.canceled_at === null ? null : iso(row.canceled_at),
+    rateLimit: (parseJson(row.rate_limit_json) as RateLimitConfig | undefined) ?? null,
   };
 }
 
@@ -332,28 +337,11 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     targetId: string;
     before?: unknown;
     after: unknown;
+    reason?: string | null;
     nowS: number;
     when: string;
   }): D1PreparedStatement {
-    return db
-      .prepare(
-        `INSERT INTO gateway_admin_audit
-           (id, tenant_id, actor_user_id, actor_role, action, target_type, target_id,
-            before_json, after_json, occurred_at)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10 WHERE ${input.when}`,
-      )
-      .bind(
-        newId("gwa_"),
-        input.tenantId,
-        input.actor.userId,
-        input.actor.role,
-        input.action,
-        input.targetType,
-        input.targetId,
-        input.before === undefined ? null : JSON.stringify(input.before),
-        JSON.stringify(input.after),
-        input.nowS,
-      );
+    return adminAuditStatement(db, input);
   }
 
   /** Creates the tenant wallet at a zero limit when it does not exist yet. */
@@ -375,6 +363,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     refKind: string;
     refId: string;
     actorUserId: string | null;
+    reason?: string | null;
     nowS: number;
     when: string;
   }) =>
@@ -382,8 +371,8 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       .prepare(
         `INSERT INTO gateway_usage_ledger
            (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits,
-            ref_kind, ref_id, actor_user_id, occurred_at)
-         SELECT ?1 || ':' || ?2 || ':' || w.id, ?1, w.id, ?2, 'posted', ?3, ?4, ?5, ?6, ?7, ?8
+            ref_kind, ref_id, actor_user_id, occurred_at, reason)
+         SELECT ?1 || ':' || ?2 || ':' || w.id, ?1, w.id, ?2, 'posted', ?3, ?4, ?5, ?6, ?7, ?8, ?9
            FROM gateway_budget w
           WHERE w.tenant_id = ?3 AND w.scope = 'tenant' AND w.scope_id = ?3 AND ${input.when}`,
       )
@@ -396,6 +385,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         input.refId,
         input.actorUserId,
         input.nowS,
+        input.reason ?? null,
       );
 
   /**
@@ -949,7 +939,8 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       db
         .prepare(
           `SELECT ${CREDIT_COLUMNS} FROM gateway_usage_ledger
-            WHERE tenant_id = ? AND kind IN ('grant', 'topup', 'expire')
+            WHERE tenant_id = ? AND (kind IN ('grant', 'topup', 'expire')
+                  OR (kind = 'adjust' AND ref_kind IN ('${ADMIN_CREDIT}', '${ADMIN_DEBIT}')))
             ORDER BY occurred_at DESC, request_id DESC LIMIT ?`,
         )
         .bind(tenantId, limit)
@@ -962,7 +953,172 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     };
   }
 
+  // ─── Platform corrections and overrides (platform admin) ───────────────
+
+  /**
+   * Credit correction on the tenant wallet: limit += delta, as a ledger
+   * `adjust` entry (amount |delta|; ref_kind `admin_credit` or `admin_debit`
+   * gives the direction) carrying the operator's reason, plus the audit row,
+   * in one batch. A debit never takes the wallet below spend + open holds
+   * (GATEWAY_BUDGET_BELOW_USAGE). One idempotency key is one correction.
+   */
+  async function adjustWallet(input: {
+    tenantId: string;
+    deltaMicroCredits: number;
+    reason: string;
+    idempotencyKey: string;
+    actor: BillingActor;
+  }): Promise<PurchaseResult<never>> {
+    const requestId = `adjust:${input.tenantId}:${input.idempotencyKey}`;
+    const refKind = input.deltaMicroCredits >= 0 ? ADMIN_CREDIT : ADMIN_DEBIT;
+    const amount = Math.abs(input.deltaMicroCredits);
+    const replay = async (): Promise<PurchaseResult<never> | null> => {
+      const prior = await creditEntry(requestId, "adjust");
+      if (!prior) return null;
+      if (prior.ref_kind !== refKind || prior.amount_micro_credits !== amount)
+        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", { details: { idempotencyKey: input.idempotencyKey } });
+      return { replayed: true, entry: creditView(prior), wallet: await walletOrThrow(input.tenantId) };
+    };
+    const requireCover = async () => {
+      if (input.deltaMicroCredits >= 0) return;
+      const wallet = await walletRow(input.tenantId);
+      const limit = wallet?.limit_micro_credits ?? 0;
+      const used = (wallet?.spent_micro_credits ?? 0) + (wallet?.reserved_micro_credits ?? 0);
+      if (limit - amount < used)
+        throw new GatewayError("GATEWAY_BUDGET_BELOW_USAGE", {
+          details: { tenantId: input.tenantId, ...(wallet ? { budgetId: wallet.id } : {}) },
+        });
+    };
+    await requireTenant(input.tenantId);
+    const prior = await replay();
+    if (prior) return prior;
+    await requireFundableWallet(input.tenantId);
+    await requireCover();
+    const nowS = nowSeconds();
+    try {
+      await db.batch([
+        ensureWallet(input.tenantId, nowS),
+        creditEntryStatement({
+          requestId,
+          kind: "adjust",
+          tenantId: input.tenantId,
+          amount,
+          refKind,
+          refId: input.tenantId,
+          actorUserId: input.actor.userId,
+          reason: input.reason,
+          nowS,
+          when: `w.limit_micro_credits IS NOT NULL AND w.period = 'none'
+            AND NOT EXISTS (SELECT 1 FROM gateway_usage_ledger WHERE request_id = ?1 AND kind = 'adjust')`,
+        }),
+        moveWalletLimit(input.tenantId, input.deltaMicroCredits, nowS),
+        audit({
+          tenantId: input.tenantId,
+          actor: input.actor,
+          action: "wallet.adjust",
+          targetType: "wallet",
+          targetId: requestId,
+          after: { deltaMicroCredits: input.deltaMicroCredits },
+          reason: input.reason,
+          nowS,
+          when: "changes() = 1",
+        }),
+        requirePreviousWrite(requestId, input.tenantId, nowS),
+      ]);
+    } catch (cause) {
+      const raced = await replay();
+      if (raced) return raced;
+      await requireFundableWallet(input.tenantId);
+      await requireCover();
+      throw new GatewayError("GATEWAY_CONFLICT", { details: { tenantId: input.tenantId }, cause });
+    }
+    const entry = await creditEntry(requestId, "adjust");
+    if (!entry) throw new GatewayError("GATEWAY_INTERNAL", { message: "The adjustment entry is missing." });
+    return { replayed: false, entry: creditView(entry), wallet: await walletOrThrow(input.tenantId) };
+  }
+
+  /** Suspend or reactivate the tenant wallet: a suspended wallet admits no request. */
+  async function setWalletStatus(input: {
+    tenantId: string;
+    status: "active" | "suspended";
+    reason: string;
+    actor: BillingActor;
+  }): Promise<WalletView> {
+    await requireTenant(input.tenantId);
+    const before = await walletRow(input.tenantId);
+    if (!before) throw new GatewayError("GATEWAY_BUDGET_NOT_FOUND", { details: { tenantId: input.tenantId, scope: "tenant" } });
+    if (before.status !== input.status) {
+      const nowS = nowSeconds();
+      const [updated] = await db.batch([
+        db
+          .prepare(
+            `UPDATE gateway_budget SET status = ?2, version = version + 1, updated_at = ?3
+              WHERE id = ?1 AND status = ?4`,
+          )
+          .bind(before.id, input.status, nowS, before.status),
+        audit({
+          tenantId: input.tenantId,
+          actor: input.actor,
+          action: "wallet.status",
+          targetType: "budget",
+          targetId: before.id,
+          before: { status: before.status },
+          after: { status: input.status },
+          reason: input.reason,
+          nowS,
+          when: "changes() = 1",
+        }),
+      ]);
+      if (!updated?.meta.changes) throw new GatewayError("GATEWAY_CONFLICT", { details: { budgetId: before.id } });
+    }
+    return walletOrThrow(input.tenantId);
+  }
+
+  /** Override the live subscription's tenant rate limits; null restores no tenant limit. */
+  async function setSubscriptionRateLimit(input: {
+    tenantId: string;
+    rateLimit: RateLimitConfig | null;
+    reason?: string;
+    actor: BillingActor;
+  }): Promise<SubscriptionView> {
+    await requireTenant(input.tenantId);
+    const live = await liveSubscription(input.tenantId);
+    if (!live) throw new GatewayError("GATEWAY_SUBSCRIPTION_NOT_FOUND", { details: { tenantId: input.tenantId } });
+    const nowS = nowSeconds();
+    const next = input.rateLimit ? JSON.stringify(input.rateLimit) : null;
+    const [updated] = await db.batch([
+      db
+        .prepare(
+          `UPDATE gateway_tenant_subscription SET rate_limit_json = ?2, updated_at = ?3
+            WHERE id = ?1 AND ${LIVE_SUBSCRIPTION} AND rate_limit_json IS ?4`,
+        )
+        .bind(live.id, next, nowS, live.rate_limit_json),
+      audit({
+        tenantId: input.tenantId,
+        actor: input.actor,
+        action: "subscription.rate_limit",
+        targetType: "subscription",
+        targetId: live.id,
+        before: { rateLimit: parseJson(live.rate_limit_json) ?? null },
+        after: { rateLimit: input.rateLimit },
+        reason: input.reason ?? null,
+        nowS,
+        when: "changes() = 1",
+      }),
+    ]);
+    if (!updated?.meta.changes) throw new GatewayError("GATEWAY_CONFLICT", { details: { subscriptionId: live.id } });
+    const row = await db
+      .prepare(`SELECT ${SUBSCRIPTION_COLUMNS} FROM gateway_tenant_subscription WHERE id = ?`)
+      .bind(live.id)
+      .first<SubscriptionRow>();
+    if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The subscription is missing." });
+    return subscriptionView(row);
+  }
+
   return {
+    adjustWallet,
+    setWalletStatus,
+    setSubscriptionRateLimit,
     listPackages,
     createPackage,
     archivePackage,

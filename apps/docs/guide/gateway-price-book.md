@@ -7,19 +7,23 @@ packages** and **top-up packs** (#352). Amounts are integer micro-credits
 [gateway-schema.md](gateway-schema.md); the request flow in
 [gateway-data-plane.md](gateway-data-plane.md).
 
-The control-plane API below is the backend for the admin page, which is
-tracked by #353. There is no admin UI yet.
+The control-plane API below backs the `/admin` console's *Models & prices*
+and *Packages* pages ([gateway-admin.md](gateway-admin.md)).
 
 ## Who may call it
 
 Identity is the user the `/api/*` middleware verified (Better Auth session or
 `clsh_` token). Caller headers such as `x-user-id` are never identity.
+Authorization is the shared admin permission matrix described in
+[gateway-admin.md](gateway-admin.md), with roles stored in D1:
 
-- **Platform admin**: a user id listed in the `GATEWAY_ADMIN_USER_IDS` Worker
-  variable (comma-separated). This is a platform grant, not a tenant role. If
-  the variable is unset, nobody is a platform admin.
-- **Tenant owner**: `tenant_member.role = 'owner'` of the tenant. An owner
-  may record purchases for their own tenant only.
+- **Platform admin** (`gateway_platform_role`): the price book, packages,
+  top-up packs and billing rollover, and purchases for any tenant. This is a
+  platform grant, not a tenant role, and is never granted by a Worker
+  variable.
+- **Tenant roles** (`tenant_member.role`): `billing.read` (owner, admin,
+  finance) reads the tenant's billing summary; `billing.purchase` (owner,
+  finance) records purchases for that tenant only.
 
 Anyone else gets `GATEWAY_FORBIDDEN` (403). A request with no credential gets
 `GATEWAY_AUTH_REQUIRED` (401).
@@ -67,8 +71,9 @@ allocated are left unchanged. A member's requests draw on the wallet and on the
 member's own budget together. There is no automatic overage: when the wallet
 is empty, requests fail with `GATEWAY_BUDGET_EXCEEDED`.
 
-There is no payment provider. A platform admin or the tenant owner records the
-purchase, and the credits are posted immediately:
+There is no payment provider. A platform admin, or a tenant role holding
+`billing.purchase` (owner, finance), records the purchase, and the credits are
+posted immediately:
 
 | Ledger kind | Written by                       | Effect on the wallet limit                                                                   |
 | ----------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -144,7 +149,8 @@ Platform admin, `/api/v1/admin/gateway`:
 is the list price of the package or pack. The credits it buys are given
 separately, in micro-credits.
 
-Tenant owner or platform admin, `/api/v1/gateway/tenants/:tenantId`:
+`billing.read` / `billing.purchase` (or platform admin),
+`/api/v1/gateway/tenants/:tenantId`:
 
 | Method and path              | Purpose                                                                  |
 | ---------------------------- | ------------------------------------------------------------------------ |
@@ -159,7 +165,7 @@ Errors use the gateway's OpenAI error shape plus `x-clash-error-code`.
 
 | Condition                                                          | Code                                            |
 | ------------------------------------------------------------------ | ----------------------------------------------- |
-| No credential / not a platform admin or tenant owner               | `GATEWAY_AUTH_REQUIRED` 401 / `GATEWAY_FORBIDDEN` 403 |
+| No credential / the caller's roles lack the permission             | `GATEWAY_AUTH_REQUIRED` 401 / `GATEWAY_FORBIDDEN` 403 |
 | Malformed body, parameter, unit, amount or duplicate rate          | `GATEWAY_INVALID_REQUEST` 400                   |
 | DeepSeek rate that is not Flash                                    | `GATEWAY_PRICE_MODEL_BLOCKED` 400               |
 | Empty window, or publishing a version whose window has ended       | `GATEWAY_PRICE_WINDOW_INVALID` 400              |
@@ -177,7 +183,7 @@ Errors use the gateway's OpenAI error shape plus `x-clash-error-code`.
   draft policy.
 - `apps/api-cf/src/gateway/d1-billing.test.ts`: the D1 adapters on
   node:sqlite, including no repricing through the real data plane.
-- `apps/api-cf/src/routes/v1/admin/gateway.test.ts`: admin-only and owner-only
-  enforcement, and the coded errors.
+- `apps/api-cf/src/routes/v1/admin/gateway.test.ts`: platform-only and
+  tenant-role enforcement, and the coded errors.
 - `apps/api-cf/src/integration/gateway-price-book.integration.test.ts`: the
   publish → request → settle path in workerd.
