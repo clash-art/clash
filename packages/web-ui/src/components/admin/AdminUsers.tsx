@@ -1,27 +1,19 @@
 /**
- * Users & teams page (#353): the tenant list (platform staff), the selected
- * tenant's members and roles, and platform admin grants. Role changes need
- * `roles.write`; the server keeps one owner per tenant and one platform admin.
+ * Users & teams page (#353, #392): the tenant list, the selected tenant's
+ * members and roles (read-only: team owners manage members in team
+ * settings, #354), and platform admin grants. The server keeps one platform
+ * admin.
  */
 import { useState } from "react";
 import { Link } from "react-router";
 
-import {
-  ADMIN_MEMBER_ROLES,
-  adminApi,
-  type PlatformAdmin,
-  type TenantMember,
-  type TenantSummary,
-} from "../../lib/adminClient";
+import { adminApi, type PlatformAdmin, type TenantMember, type TenantSummary } from "../../lib/adminClient";
 import { Button } from "../ui/button";
-import { SelectMenu } from "../ui/select";
 import { AdminCard, AdminErrorAlert, AdminField, AdminSection, AdminTable, formatTime, useAdminAction } from "./AdminKit";
-
-const roleOptions = ADMIN_MEMBER_ROLES.map((role) => ({ value: role, label: role }));
 
 export function AdminTenantList({ tenants, basePath }: { tenants: TenantSummary[]; basePath: string }) {
   return (
-    <AdminSection title="Tenants" description="Open a tenant to manage its members, budgets and limits.">
+    <AdminSection title="Tenants" description="Open a tenant to see its members, budgets and limits.">
       <AdminTable
         label="Tenants"
         rows={tenants}
@@ -46,21 +38,9 @@ export function AdminTenantList({ tenants, basePath }: { tenants: TenantSummary[
   );
 }
 
-export function AdminMembers({
-  tenantId,
-  members,
-  canWriteRoles,
-  onChanged,
-}: {
-  tenantId: string;
-  members: TenantMember[];
-  canWriteRoles: boolean;
-  onChanged: () => void;
-}) {
-  const action = useAdminAction(onChanged);
+export function AdminMembers({ members }: { members: TenantMember[] }) {
   return (
-    <AdminSection title="Members" description="owner · admin · finance · support · viewer have console access; member only uses the gateway.">
-      <AdminErrorAlert error={action.error} />
+    <AdminSection title="Members" description="Team roles are owner or member; the team's owners manage them.">
       <AdminTable
         label="Members"
         rows={members}
@@ -76,27 +56,7 @@ export function AdminMembers({
               </div>
             ),
           },
-          {
-            header: "Role",
-            cell: (row) =>
-              canWriteRoles ? (
-                <div className="w-40">
-                  <SelectMenu
-                    ariaLabel={`Role of ${row.name ?? row.userId}`}
-                    variant="field"
-                    size="sm"
-                    disabled={action.pending}
-                    value={row.role}
-                    options={roleOptions}
-                    onValueChange={(role) => {
-                      if (role !== row.role) void action.run(() => adminApi.setMemberRole(tenantId, row.userId, role));
-                    }}
-                  />
-                </div>
-              ) : (
-                row.role
-              ),
-          },
+          { header: "Role", cell: (row) => row.role },
           { header: "Joined", cell: (row) => formatTime(row.joinedAt) },
         ]}
       />

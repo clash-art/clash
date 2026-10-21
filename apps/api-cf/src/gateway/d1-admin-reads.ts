@@ -349,16 +349,6 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
       }));
     },
 
-    /** Names (and kinds) of the given tenants, for the caller's own memberships. */
-    async tenantNames(ids: readonly string[]): Promise<Map<string, { name: string; kind: string }>> {
-      if (ids.length === 0) return new Map();
-      const { results } = await db
-        .prepare(`SELECT id, name, kind FROM tenant WHERE id IN (SELECT value FROM json_each(?))`)
-        .bind(JSON.stringify(ids))
-        .all<{ id: string; name: string; kind: string }>();
-      return new Map(results.map((row) => [row.id, { name: row.name, kind: row.kind }]));
-    },
-
     /**
      * Abuse signals that exist today: the busiest rate-limit counters of the
      * last minutes and the open in-flight leases. Denied (429/403) requests

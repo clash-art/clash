@@ -8,13 +8,12 @@ import { AdminRouteErrorBoundary, AdminRouteFrame, loadAdminData, loadAdminPage 
 export async function loader({ request }: LoaderFunctionArgs) {
   const context = await loadAdminPage(request, "overview");
   const { overview } = await loadAdminData(context, () => adminApi.overview(context.tenantId));
-  const tenant = context.me.tenants.find((entry) => entry.tenantId === context.tenantId);
   return {
     me: context.me,
     page: context.page,
     tenantId: context.tenantId,
     overview,
-    scopeLabel: context.tenantId ? `Tenant ${tenant?.name ?? context.tenantId}` : "All tenants",
+    scopeLabel: context.tenantId ? `Tenant ${context.tenantId}` : "All tenants",
   };
 }
 

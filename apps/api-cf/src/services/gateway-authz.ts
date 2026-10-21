@@ -1,5 +1,5 @@
 /**
- * Authorization for the model gateway control plane (#353; guide:
+ * Authorization for the model gateway control plane (#353, #392; guide:
  * apps/docs/guide/gateway-admin.md). Every /api/v1/admin/gateway route and
  * every tenant billing route authorizes through this module, so the server
  * refuses with a coded 403 whatever the UI shows.
@@ -7,16 +7,20 @@
  * Identity is the user the `/api/*` middleware verified (Better Auth session
  * or `clsh_` token); no caller header is read as identity.
  *
- * Two separate kinds of grant, both stored in D1:
+ * Checks name a permission (`budgets.read`, `team.members.manage`, ...);
+ * which role holds which permission is data, in the two role tables below
+ * and nowhere else. Two kinds of grant, both stored in D1:
  *
- * - Tenant roles: `tenant_member.role` of one tenant. They act on that tenant
- *   only and never reach platform resources (catalog, price book, upstream
- *   accounts, packages) or another tenant.
- * - Platform roles: `gateway_platform_role` (0036). `platform_admin` holds
- *   every platform permission, and every tenant permission on every tenant.
- *   The first one is bootstrapped explicitly
- *   (apps/api-cf/scripts/gateway-platform-admin.ts); there is no
- *   environment-variable grant.
+ * - Tenant (team) roles: `tenant_member.role`, only `owner` or `member`
+ *   (0038). They act on that tenant only and never reach platform resources
+ *   or another tenant.
+ * - Platform role: `gateway_platform_role.role`, only `platform_admin`
+ *   (0036). It holds every permission, on every tenant. The first one is
+ *   bootstrapped explicitly (apps/api-cf/scripts/gateway-platform-admin.ts);
+ *   there is no environment-variable grant.
+ *
+ * The admin console (`platformRoute`) answers platform grants only; tenant
+ * roles use their permissions through tenant routes (`tenantRoute`).
  *
  * Failures are coded: GATEWAY_AUTH_REQUIRED (401), GATEWAY_FORBIDDEN (403,
  * details.permission names the missing permission).
@@ -27,27 +31,28 @@ import { GatewayError } from "@clash/gateway-core";
 import { z } from "zod";
 
 import type { Env } from "../config";
-import { GATEWAY_MEMBER_ROLES, GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES } from "../domain/requests";
+import { GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES } from "../domain/requests";
 import type { GatewayAdminActor } from "../gateway/d1-admin-audit";
 import { gatewayParam } from "./gateway-admin";
 import { gatewayErrorResponse } from "./gateway-tokens";
 import { getResolvedIdentity } from "./request-identity";
 
-export { GATEWAY_MEMBER_ROLES, GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES };
+export { GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES };
 export type GatewayTenantRole = (typeof GATEWAY_TENANT_ROLES)[number];
-export type GatewayMemberRole = (typeof GATEWAY_MEMBER_ROLES)[number];
 export type GatewayPlatformRole = (typeof GATEWAY_PLATFORM_ROLES)[number];
 
 /** Actions on one tenant's resources. */
 export const GATEWAY_TENANT_PERMISSIONS = [
+  "usage.read_own",
+  "budgets.read_own",
   "tenant.read",
   "usage.read",
   "budgets.read",
-  "budgets.write",
+  "team.budgets.allocate",
   "keys.read",
   "limits.write",
-  "members.read",
-  "roles.write",
+  "team.members.read",
+  "team.members.manage",
   "audit.read",
   "billing.read",
   "billing.purchase",
@@ -81,39 +86,16 @@ export type GatewayPlatformPermission = (typeof GATEWAY_PLATFORM_PERMISSIONS)[nu
 export type GatewayPermission = GatewayTenantPermission | GatewayPlatformPermission;
 
 /**
- * The permission matrix: tenant role -> tenant actions. Owner: everything,
- * including roles. Admin: budgets, keys and limits, no roles or purchases.
- * Finance: budgets and purchases, no limits or roles. Support: read usage,
- * keys and audit. Viewer: read-only overview, usage, budgets and members.
+ * Tenant role -> tenant permissions. Owner: every tenant action (members and
+ * roles, budget allocation, keys and limits, billing). Member: their own
+ * usage and budget only.
  */
 export const GATEWAY_TENANT_ROLE_PERMISSIONS: Readonly<Record<GatewayTenantRole, readonly GatewayTenantPermission[]>> = {
   owner: GATEWAY_TENANT_PERMISSIONS,
-  admin: [
-    "tenant.read",
-    "usage.read",
-    "budgets.read",
-    "budgets.write",
-    "keys.read",
-    "limits.write",
-    "members.read",
-    "audit.read",
-    "billing.read",
-  ],
-  finance: [
-    "tenant.read",
-    "usage.read",
-    "budgets.read",
-    "budgets.write",
-    "keys.read",
-    "members.read",
-    "audit.read",
-    "billing.read",
-    "billing.purchase",
-  ],
-  support: ["tenant.read", "usage.read", "budgets.read", "keys.read", "members.read", "audit.read"],
-  viewer: ["tenant.read", "usage.read", "budgets.read", "members.read"],
+  member: ["usage.read_own", "budgets.read_own"],
 };
 
+/** Platform role -> permissions: platform_admin holds every permission, on every tenant. */
 export const GATEWAY_PLATFORM_ROLE_PERMISSIONS: Readonly<Record<GatewayPlatformRole, readonly GatewayPermission[]>> = {
   platform_admin: [...GATEWAY_PLATFORM_PERMISSIONS, ...GATEWAY_TENANT_PERMISSIONS],
 };
@@ -141,8 +123,6 @@ export interface GatewayAccess {
   platformRoles: GatewayPlatformRole[];
   memberships: GatewayMembership[];
 }
-
-export const isPlatformAdmin = (access: GatewayAccess) => access.platformRoles.includes("platform_admin");
 
 /** Read a user's grants in one round trip. */
 export async function loadGatewayAccess(db: D1Database, userId: string): Promise<GatewayAccess> {
@@ -208,10 +188,14 @@ const TenantIdSchema = z.string().min(1).max(256);
 const NO_STORE = { "cache-control": "no-store" };
 export const adminJson = (c: AdminContext, body: unknown, status: 200 | 201 = 200) => c.json(body, status, NO_STORE);
 
-/** A platform route: `permission` must be a platform grant. Any failure is its coded response. */
+/**
+ * An admin console route: `permission` must come from a platform grant. A
+ * tenant role never opens it, even for a tenant permission (`budgets.read`
+ * of any tenant is the platform admin's). Any failure is its coded response.
+ */
 export const platformRoute =
   (
-    permission: GatewayPlatformPermission,
+    permission: GatewayPermission,
     handler: (c: AdminContext, actor: GatewayAdminActor) => Promise<Response>,
   ) =>
   async (c: AdminContext) => {
@@ -232,30 +216,6 @@ export const tenantRoute =
     try {
       const tenantId = gatewayParam(TenantIdSchema, c.req.param("tenantId"), "tenantId");
       return await handler(c, await requireGatewayPermission(c, permission, tenantId), tenantId);
-    } catch (error) {
-      return gatewayErrorResponse(error);
-    }
-  };
-
-/**
- * A read that is tenant-scoped with `?tenantId=` (tenant permission) and
- * platform-wide without it (platform permission).
- */
-export const scopedRoute =
-  (
-    permissions: { tenant: GatewayTenantPermission; platform: GatewayPlatformPermission },
-    handler: (c: AdminContext, actor: GatewayAdminActor, tenantId: string | undefined) => Promise<Response>,
-  ) =>
-  async (c: AdminContext) => {
-    try {
-      const raw = c.req.query("tenantId");
-      const tenantId = raw === undefined ? undefined : gatewayParam(TenantIdSchema, raw, "tenantId");
-      const actor = await requireGatewayPermission(
-        c,
-        tenantId === undefined ? permissions.platform : permissions.tenant,
-        tenantId,
-      );
-      return await handler(c, actor, tenantId);
     } catch (error) {
       return gatewayErrorResponse(error);
     }

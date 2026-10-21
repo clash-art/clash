@@ -21,7 +21,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
       members,
       tenants,
       admins,
-      canWriteRoles: tenantId ? adminCan(me, "roles.write", tenantId) : false,
       canWritePlatformRoles: adminCan(me, "platform_roles.write"),
     };
   });
@@ -32,9 +31,7 @@ export default function AdminUsersRoute() {
   const refresh = useAdminRefresh();
   return (
     <AdminRouteFrame context={data}>
-      {data.tenantId && data.members ? (
-        <AdminMembers tenantId={data.tenantId} members={data.members} canWriteRoles={data.canWriteRoles} onChanged={refresh} />
-      ) : null}
+      {data.members ? <AdminMembers members={data.members} /> : null}
       {data.tenants ? <AdminTenantList tenants={data.tenants} basePath="/admin/users" /> : null}
       {data.admins ? <AdminPlatformAdmins admins={data.admins} canWrite={data.canWritePlatformRoles} onChanged={refresh} /> : null}
     </AdminRouteFrame>

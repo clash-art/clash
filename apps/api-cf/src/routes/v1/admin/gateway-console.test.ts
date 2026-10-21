@@ -1,12 +1,13 @@
 /**
- * Admin console API (#353) through the Worker app on node:sqlite with every
- * migration applied: the role -> permission matrix enforced server-side
- * (coded 403s), platform_admin vs tenant-role separation, one redacted
- * `gateway_admin_audit` row per mutation that rolls back with it, write-only
- * upstream secrets, rate-limit validation and staff prompt-access gating.
- * Identity is a real clsh_ token row, so the /api/* middleware resolves it as
- * in production. Role expectations are derived from the exported matrix, so
- * the suite proves the server enforces it rather than restating it.
+ * Admin console API (#353, #392) through the Worker app on node:sqlite with
+ * every migration applied: the console answers platform_admin only (team
+ * roles get coded 403s), tenant billing follows the owner/member matrix, one
+ * redacted `gateway_admin_audit` row per mutation that rolls back with it,
+ * write-only upstream secrets, rate-limit validation and staff prompt-access
+ * gating. Identity is a real clsh_ token row, so the /api/* middleware
+ * resolves it as in production. Role expectations are derived from the
+ * exported matrix, so the suite proves the server enforces it rather than
+ * restating it.
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -24,14 +25,11 @@ vi.mock("../../../containers/render", () => ({
 import { createApp } from "../../../app";
 import { createSqliteD1 } from "../../../../../web/app/test-support/sqlite-d1";
 import { gatewayRetentionKeys, retainGatewayExchange } from "@clash/gateway-core";
+import { monotonicClock } from "../../../gateway/d1-common";
 import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
+import { createD1TenantAdmin } from "../../../gateway/d1-tenant-admin";
 import { createMemoryBucket, officialChatCard } from "../../../gateway/test-support";
-import {
-  GATEWAY_TENANT_PERMISSIONS,
-  GATEWAY_TENANT_ROLES,
-  tenantRolePermissions,
-  type GatewayTenantPermission,
-} from "../../../services/gateway-authz";
+import { GATEWAY_TENANT_ROLES, tenantRolePermissions, type GatewayTenantPermission } from "../../../services/gateway-authz";
 
 const ORIGIN = "http://localhost:8789";
 const { d1, sqlite } = createSqliteD1();
@@ -92,12 +90,13 @@ async function json<T>(res: Response, status = 200): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-/** A team tenant with one member per tenant role (plus a plain `member`), and one virtual key. */
+/** A team tenant with one member per team role (owner, member), and one virtual key. */
 function team() {
   const tenantId = `team:${hex()}`;
-  const members = Object.fromEntries(
-    [...GATEWAY_TENANT_ROLES, "member"].map((role) => [role, user()]),
-  ) as Record<(typeof GATEWAY_TENANT_ROLES)[number] | "member", ReturnType<typeof user>>;
+  const members = Object.fromEntries(GATEWAY_TENANT_ROLES.map((role) => [role, user()])) as Record<
+    (typeof GATEWAY_TENANT_ROLES)[number],
+    ReturnType<typeof user>
+  >;
   sqlite.prepare(`INSERT INTO tenant (id, owner_user_id, name, kind) VALUES (?, ?, 'Team', 'team')`).run(tenantId, members.owner.userId);
   for (const [role, member] of Object.entries(members))
     sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, ?)`).run(tenantId, member.userId, role);
@@ -135,19 +134,22 @@ function withAuditFailing<T>(run: () => T | Promise<T>): Promise<T> {
 
 const card = () => officialChatCard();
 
+/** The console's tenant-scoped routes; like every console route they answer platform grants only. */
+const tenantConsoleRoutes = (t: ReturnType<typeof team>): Array<[string, string, unknown?]> => [
+  ["GET", `/api/v1/admin/gateway/overview?tenantId=${encodeURIComponent(t.tenantId)}`],
+  ["GET", `/api/v1/admin/gateway/usage?tenantId=${encodeURIComponent(t.tenantId)}`],
+  ["GET", `/api/v1/admin/gateway/audit?tenantId=${encodeURIComponent(t.tenantId)}`],
+  ["GET", `${t.base}/members`],
+  ["GET", `${t.base}/budgets`],
+  ["PUT", `${t.base}/budgets/key/${t.keyId}`, { limitMicroCredits: 1_000_000 }],
+  ["GET", `${t.base}/keys`],
+  ["PUT", `${t.base}/keys/${t.keyId}/rate-limit`, { rateLimit: { requestsPerMinute: 10 } }],
+];
+
 describe("permission matrix, enforced by the server", () => {
-  // One representative request per tenant permission; an allowed request may
-  // still fail for its own reasons (404 pack), but never with a 403.
-  const actions: Array<[GatewayTenantPermission, (t: ReturnType<typeof team>) => [string, string, unknown?]]> = [
-    ["tenant.read", (t) => ["GET", `/api/v1/admin/gateway/overview?tenantId=${encodeURIComponent(t.tenantId)}`]],
-    ["usage.read", (t) => ["GET", `/api/v1/admin/gateway/usage?tenantId=${encodeURIComponent(t.tenantId)}`]],
-    ["audit.read", (t) => ["GET", `/api/v1/admin/gateway/audit?tenantId=${encodeURIComponent(t.tenantId)}`]],
-    ["members.read", (t) => ["GET", `${t.base}/members`]],
-    ["roles.write", (t) => ["PUT", `${t.base}/members/${t.members.member.userId}/role`, { role: "viewer" }]],
-    ["budgets.read", (t) => ["GET", `${t.base}/budgets`]],
-    ["budgets.write", (t) => ["PUT", `${t.base}/budgets/key/${t.keyId}`, { limitMicroCredits: 1_000_000 }]],
-    ["keys.read", (t) => ["GET", `${t.base}/keys`]],
-    ["limits.write", (t) => ["PUT", `${t.base}/keys/${t.keyId}/rate-limit`, { rateLimit: { requestsPerMinute: 10 } }]],
+  // Tenant billing is the one tenant-role surface (#352). An allowed request
+  // may still fail for its own reasons (404 pack), but never with a 403.
+  const billing: Array<[GatewayTenantPermission, (t: ReturnType<typeof team>) => [string, string, unknown?]]> = [
     ["billing.read", (t) => ["GET", `/api/v1/gateway/tenants/${encodeURIComponent(t.tenantId)}/billing`]],
     [
       "billing.purchase",
@@ -155,14 +157,9 @@ describe("permission matrix, enforced by the server", () => {
     ],
   ];
 
-  it("covers every tenant permission with a request", () => {
-    expect(actions.map(([permission]) => permission).sort()).toEqual([...GATEWAY_TENANT_PERMISSIONS].sort());
-  });
-
-  for (const role of [...GATEWAY_TENANT_ROLES, "member"] as const)
-    it(`answers ${role} per the matrix: allowed actions pass, others are coded 403s`, async () => {
-      for (const [permission, request] of actions) {
-        // A fresh tenant per action, so a role change cannot affect the next one.
+  for (const role of GATEWAY_TENANT_ROLES)
+    it(`answers ${role} on tenant billing per the matrix: allowed actions pass, others are coded 403s`, async () => {
+      for (const [permission, request] of billing) {
         const t = team();
         const [method, path, body] = request(t);
         const res = await call(method, path, t.members[role].auth, body);
@@ -174,15 +171,16 @@ describe("permission matrix, enforced by the server", () => {
   it("never lets a tenant role act on another tenant", async () => {
     const a = team();
     const b = team();
-    for (const [, request] of actions) {
+    for (const [, request] of billing) {
       const [method, path, body] = request(b);
       await expectCode(await call(method, path, a.members.owner.auth, body), 403, "GATEWAY_FORBIDDEN");
     }
   });
 
-  it("keeps every platform route platform_admin-only: tenant owners get 403, anonymous 401", async () => {
+  it("keeps every console route platform_admin-only: team owners and members get 403, anonymous 401", async () => {
     const t = team();
     const platformRoutes: Array<[string, string, unknown?]> = [
+      ...tenantConsoleRoutes(t),
       ["GET", "/api/v1/admin/gateway/catalog"],
       ["POST", "/api/v1/admin/gateway/catalog/versions/v1/clone", { from: "v0" }],
       ["PUT", "/api/v1/admin/gateway/catalog/versions/v1/models/m", { card: {} }],
@@ -219,34 +217,40 @@ describe("permission matrix, enforced by the server", () => {
         "GATEWAY_FORBIDDEN",
       );
     }
-    expect(auditRows("actor_user_id IN (?, ?)", t.members.owner.userId, t.members.admin.userId)).toEqual([]);
+    expect(auditRows("actor_user_id IN (?, ?)", t.members.owner.userId, t.members.member.userId)).toEqual([]);
   });
 
-  it("lets platform_admin act on any tenant without being a member", async () => {
+  it("lets platform_admin use the tenant console routes of any tenant without being a member", async () => {
     const t = team();
-    const members = await json<{ members: Array<{ userId: string }> }>(await call("GET", `${t.base}/members`, platformAdmin.auth));
-    expect(members.members.map((m) => m.userId)).toContain(t.members.owner.userId);
-    await json(await call("PUT", `${t.base}/members/${t.members.viewer.userId}/role`, platformAdmin.auth, { role: "support" }));
-    expect(auditRows("tenant_id = ? AND action = 'member.role'", t.tenantId)[0]?.actor_role).toBe("platform_admin");
+    for (const [method, path, body] of tenantConsoleRoutes(t)) {
+      const res = await call(method, path, platformAdmin.auth, body);
+      expect(res.status, `${method} ${path}: ${await res.clone().text()}`).toBe(200);
+    }
+    const members = await json<{ members: Array<{ userId: string; role: string }> }>(await call("GET", `${t.base}/members`, platformAdmin.auth));
+    expect(members.members.map((m) => [m.userId, m.role])).toEqual(
+      expect.arrayContaining([
+        [t.members.owner.userId, "owner"],
+        [t.members.member.userId, "member"],
+      ]),
+    );
+    expect(auditRows("tenant_id = ? AND action LIKE 'budget.%'", t.tenantId)[0]?.actor_role).toBe("platform_admin");
   });
 
-  it("describes the caller's own access on /me", async () => {
+  it("has no team role assignment in the console (team settings own it, #354)", async () => {
+    const t = team();
+    expect((await call("PUT", `${t.base}/members/${t.members.member.userId}/role`, platformAdmin.auth, { role: "owner" })).status).toBe(404);
+    expect(sqlite.prepare(`SELECT role FROM tenant_member WHERE tenant_id = ? AND user_id = ?`).get(t.tenantId, t.members.member.userId)).toEqual({
+      role: "member",
+    });
+  });
+
+  it("describes the caller's platform access on /me, and nothing for team roles", async () => {
     const t = team();
     await expectCode(await call("GET", "/api/v1/admin/gateway/me"), 401, "GATEWAY_AUTH_REQUIRED");
-    const finance = await json<{
-      platformRoles: string[];
-      platformPermissions: string[];
-      tenants: Array<{ tenantId: string; role: string; permissions: string[] }>;
-      promptAccess: boolean;
-    }>(await call("GET", "/api/v1/admin/gateway/me", t.members.finance.auth));
-    expect(finance.platformRoles).toEqual([]);
-    expect(finance.platformPermissions).toEqual([]);
-    expect(finance.tenants).toEqual([
-      expect.objectContaining({ tenantId: t.tenantId, role: "finance", permissions: [...tenantRolePermissions("finance")] }),
-    ]);
-    // A plain member has no console access at all.
-    const member = await json<{ tenants: unknown[] }>(await call("GET", "/api/v1/admin/gateway/me", t.members.member.auth));
-    expect(member.tenants).toEqual([]);
+    for (const role of GATEWAY_TENANT_ROLES) {
+      const me = await json<Record<string, unknown>>(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth));
+      expect(me, role).toEqual({ userId: t.members[role].userId, platformRoles: [], platformPermissions: [], promptAccess: false });
+    }
     const staff = await json<{ platformRoles: string[]; platformPermissions: string[] }>(
       await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth),
     );
@@ -258,9 +262,9 @@ describe("permission matrix, enforced by the server", () => {
 describe("tenant administration", () => {
   it("sets member and key budgets with audit, refuses limits below usage and unknown subjects", async () => {
     const t = team();
-    const actor = t.members.finance;
+    const actor = platformAdmin;
     const created = await json<{ budget: { id: string; scope: string; limitMicroCredits: number } }>(
-      await call("PUT", `${t.base}/budgets/user/${t.members.viewer.userId}`, actor.auth, {
+      await call("PUT", `${t.base}/budgets/user/${t.members.member.userId}`, actor.auth, {
         limitMicroCredits: 5_000_000,
         reason: "allocation",
       }),
@@ -268,11 +272,11 @@ describe("tenant administration", () => {
     expect(created.budget).toMatchObject({ scope: "user", limitMicroCredits: 5_000_000 });
     sqlite.prepare(`UPDATE gateway_budget SET spent_micro_credits = 4000000 WHERE id = ?`).run(created.budget.id);
     await expectCode(
-      await call("PUT", `${t.base}/budgets/user/${t.members.viewer.userId}`, actor.auth, { limitMicroCredits: 3_000_000 }),
+      await call("PUT", `${t.base}/budgets/user/${t.members.member.userId}`, actor.auth, { limitMicroCredits: 3_000_000 }),
       409,
       "GATEWAY_BUDGET_BELOW_USAGE",
     );
-    await json(await call("PUT", `${t.base}/budgets/user/${t.members.viewer.userId}`, actor.auth, { limitMicroCredits: null }));
+    await json(await call("PUT", `${t.base}/budgets/user/${t.members.member.userId}`, actor.auth, { limitMicroCredits: null }));
     await expectCode(
       await call("PUT", `${t.base}/budgets/user/nobody`, actor.auth, { limitMicroCredits: 1 }),
       404,
@@ -286,9 +290,9 @@ describe("tenant administration", () => {
     expect(sqlite.prepare(`SELECT budget_id FROM gateway_key WHERE id = ?`).get(t.keyId)).toEqual({ budget_id: key.budget.id });
     const audit = auditRows("tenant_id = ? AND action LIKE 'budget.%'", t.tenantId);
     expect(audit.map((row) => [row.action, row.actor_role])).toEqual([
-      ["budget.create", "finance"],
-      ["budget.update", "finance"],
-      ["budget.create", "finance"],
+      ["budget.create", "platform_admin"],
+      ["budget.update", "platform_admin"],
+      ["budget.create", "platform_admin"],
     ]);
     expect(audit[0]?.reason).toBe("allocation");
     expect(JSON.parse(audit[1]!.before_json!)).toEqual({ limitMicroCredits: 5_000_000, status: "active" });
@@ -305,44 +309,52 @@ describe("tenant administration", () => {
       { requestsPerMinutes: 10 },
       { concurrency: "4" },
     ])
-      await expectCode(await call("PUT", path, t.members.admin.auth, { rateLimit }), 400, "GATEWAY_INVALID_REQUEST");
-    await expectCode(await call("PUT", path, t.members.admin.auth, {}), 400, "GATEWAY_INVALID_REQUEST");
+      await expectCode(await call("PUT", path, platformAdmin.auth, { rateLimit }), 400, "GATEWAY_INVALID_REQUEST");
+    await expectCode(await call("PUT", path, platformAdmin.auth, {}), 400, "GATEWAY_INVALID_REQUEST");
     const limits = { requestsPerMinute: 60, tokensPerMinute: 200_000, concurrency: 4 };
-    const set = await json<{ key: { rateLimit: unknown } }>(await call("PUT", path, t.members.admin.auth, { rateLimit: limits }));
+    const set = await json<{ key: { rateLimit: unknown } }>(await call("PUT", path, platformAdmin.auth, { rateLimit: limits }));
     expect(set.key.rateLimit).toEqual(limits);
     expect(JSON.parse((sqlite.prepare(`SELECT rate_limit_json FROM gateway_key WHERE id = ?`).get(t.keyId) as { rate_limit_json: string }).rate_limit_json)).toEqual(limits);
-    await json(await call("PUT", path, t.members.admin.auth, { rateLimit: null }));
+    await json(await call("PUT", path, platformAdmin.auth, { rateLimit: null }));
     expect(sqlite.prepare(`SELECT rate_limit_json FROM gateway_key WHERE id = ?`).get(t.keyId)).toEqual({ rate_limit_json: null });
-    const keys = await json<{ keys: Array<Record<string, unknown>> }>(await call("GET", `${t.base}/keys`, t.members.support.auth));
+    const keys = await json<{ keys: Array<Record<string, unknown>> }>(await call("GET", `${t.base}/keys`, platformAdmin.auth));
     expect(JSON.stringify(keys)).not.toContain(sha256(t.keyId));
     expect(auditRows("tenant_id = ? AND action = 'key.rate_limit'", t.tenantId)).toHaveLength(2);
   });
 
-  it("changes roles but keeps one owner", async () => {
+  it("changes team roles through the D1 port (team settings, #354): one owner kept, audited in the same batch", async () => {
     const t = team();
-    await expectCode(
-      await call("PUT", `${t.base}/members/${t.members.owner.userId}/role`, t.members.owner.auth, { role: "admin" }),
-      409,
-      "GATEWAY_LAST_OWNER",
+    const admin = createD1TenantAdmin(d1, { clock: monotonicClock() });
+    const actor = { userId: t.members.owner.userId, role: "owner" };
+    const roleOf = (userId: string) =>
+      (sqlite.prepare(`SELECT role FROM tenant_member WHERE tenant_id = ? AND user_id = ?`).get(t.tenantId, userId) as { role: string }).role;
+    await expect(admin.setMemberRole({ tenantId: t.tenantId, userId: t.members.owner.userId, role: "member", actor })).rejects.toMatchObject({
+      code: "GATEWAY_LAST_OWNER",
+    });
+    await expect(admin.setMemberRole({ tenantId: t.tenantId, userId: "nobody", role: "owner", actor })).rejects.toMatchObject({
+      code: "GATEWAY_MEMBER_NOT_FOUND",
+    });
+    // No audit row, no change: the promotion rolls back whole.
+    await withAuditFailing(() =>
+      expect(admin.setMemberRole({ tenantId: t.tenantId, userId: t.members.member.userId, role: "owner", actor })).rejects.toThrow(),
     );
-    await expectCode(await call("PUT", `${t.base}/members/nobody/role`, t.members.owner.auth, { role: "admin" }), 404, "GATEWAY_MEMBER_NOT_FOUND");
-    await expectCode(
-      await call("PUT", `${t.base}/members/${t.members.viewer.userId}/role`, t.members.owner.auth, { role: "platform_admin" }),
-      400,
-      "GATEWAY_INVALID_REQUEST",
-    );
-    await json(await call("PUT", `${t.base}/members/${t.members.admin.userId}/role`, t.members.owner.auth, { role: "owner" }));
-    await json(await call("PUT", `${t.base}/members/${t.members.owner.userId}/role`, t.members.owner.auth, { role: "viewer" }));
-    // The demoted owner lost roles.write at once.
-    await expectCode(
-      await call("PUT", `${t.base}/members/${t.members.viewer.userId}/role`, t.members.owner.auth, { role: "admin" }),
-      403,
-      "GATEWAY_FORBIDDEN",
-    );
-    expect(auditRows("tenant_id = ? AND action = 'member.role'", t.tenantId).map((row) => JSON.parse(row.after_json!))).toEqual([
-      { role: "owner" },
-      { role: "viewer" },
+    expect(roleOf(t.members.member.userId)).toBe("member");
+    await admin.setMemberRole({ tenantId: t.tenantId, userId: t.members.member.userId, role: "owner", actor });
+    await admin.setMemberRole({ tenantId: t.tenantId, userId: t.members.owner.userId, role: "member", actor, reason: "handover" });
+    expect([roleOf(t.members.owner.userId), roleOf(t.members.member.userId)]).toEqual(["member", "owner"]);
+    expect(
+      auditRows("tenant_id = ? AND action = 'member.role'", t.tenantId).map((row) => [JSON.parse(row.after_json!), row.actor_role, row.reason]),
+    ).toEqual([
+      [{ role: "owner" }, "owner", null],
+      [{ role: "member" }, "owner", "handover"],
     ]);
+    // D1 refuses any other team role (0038), however it is written.
+    expect(() =>
+      sqlite.prepare(`UPDATE tenant_member SET role = 'platform_admin' WHERE tenant_id = ? AND user_id = ?`).run(t.tenantId, t.members.owner.userId),
+    ).toThrow(/owner or member/);
+    expect(() => sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, 'u-x', 'root')`).run(t.tenantId)).toThrow(
+      /owner or member/,
+    );
   });
 
   it("adjusts and suspends the wallet (platform only), idempotently and with a reason", async () => {
@@ -552,18 +564,13 @@ describe("audit is atomic with every mutation", () => {
       ],
       [
         "budget",
-        () => call("PUT", `${t.base}/budgets/user/${t.members.viewer.userId}`, t.members.owner.auth, { limitMicroCredits: 1 }),
+        () => call("PUT", `${t.base}/budgets/user/${t.members.member.userId}`, platformAdmin.auth, { limitMicroCredits: 1 }),
         () => count(`SELECT COUNT(*) AS n FROM gateway_budget WHERE tenant_id = ? AND scope = 'user'`, t.tenantId),
       ],
       [
         "rate limit",
-        () => call("PUT", `${t.base}/keys/${t.keyId}/rate-limit`, t.members.owner.auth, { rateLimit: { concurrency: 1 } }),
+        () => call("PUT", `${t.base}/keys/${t.keyId}/rate-limit`, platformAdmin.auth, { rateLimit: { concurrency: 1 } }),
         () => count(`SELECT COUNT(*) AS n FROM gateway_key WHERE id = ? AND rate_limit_json IS NOT NULL`, t.keyId),
-      ],
-      [
-        "role",
-        () => call("PUT", `${t.base}/members/${t.members.viewer.userId}/role`, t.members.owner.auth, { role: "admin" }),
-        () => count(`SELECT COUNT(*) AS n FROM tenant_member WHERE tenant_id = ? AND user_id = ? AND role = 'admin'`, t.tenantId, t.members.viewer.userId),
       ],
       [
         "wallet",
@@ -675,12 +682,12 @@ describe("audit is atomic with every mutation", () => {
       ],
       [
         "subscription cancel",
-        () => call("POST", `/api/v1/gateway/tenants/${encodeURIComponent(t.tenantId)}/subscription/cancel`, t.members.finance.auth),
+        () => call("POST", `/api/v1/gateway/tenants/${encodeURIComponent(t.tenantId)}/subscription/cancel`, t.members.owner.auth),
         () => count(`SELECT COUNT(*) AS n FROM gateway_tenant_subscription WHERE tenant_id = ? AND cancel_at IS NOT NULL`, t.tenantId),
       ],
       [
         "top-up purchase",
-        () => call("POST", `/api/v1/gateway/tenants/${encodeURIComponent(t.tenantId)}/topups`, t.members.finance.auth, { packId: pack.id, idempotencyKey: "atomic-topup" }),
+        () => call("POST", `/api/v1/gateway/tenants/${encodeURIComponent(t.tenantId)}/topups`, t.members.owner.auth, { packId: pack.id, idempotencyKey: "atomic-topup" }),
         () => count(`SELECT COUNT(*) AS n FROM gateway_usage_ledger WHERE tenant_id = ? AND kind = 'topup'`, t.tenantId),
       ],
       [
@@ -716,7 +723,7 @@ describe("audit is atomic with every mutation", () => {
 
   it("is append-only: the schema refuses UPDATE and in-retention DELETE, and no route edits rows", async () => {
     const t = team();
-    await json(await call("PUT", `${t.base}/keys/${t.keyId}/rate-limit`, t.members.owner.auth, { rateLimit: { concurrency: 2 } }));
+    await json(await call("PUT", `${t.base}/keys/${t.keyId}/rate-limit`, platformAdmin.auth, { rateLimit: { concurrency: 2 } }));
     const [row] = auditRows("tenant_id = ?", t.tenantId);
     expect(() => sqlite.prepare(`UPDATE gateway_admin_audit SET reason = 'x' WHERE id = ?`).run((row as unknown as { id: string }).id)).toThrow(/append-only/);
     expect(() => sqlite.prepare(`DELETE FROM gateway_admin_audit WHERE tenant_id = ?`).run(t.tenantId)).toThrow(/13 months/);
@@ -724,13 +731,13 @@ describe("audit is atomic with every mutation", () => {
       expect((await call(method, "/api/v1/admin/gateway/audit", platformAdmin.auth, {})).status).toBe(404);
   });
 
-  it("filters audit reads by tenant for tenant roles and redacts secret-shaped values", async () => {
+  it("filters audit reads by tenant", async () => {
     const a = team();
     const b = team();
-    await json(await call("PUT", `${a.base}/keys/${a.keyId}/rate-limit`, a.members.owner.auth, { rateLimit: { concurrency: 2 } }));
-    await json(await call("PUT", `${b.base}/keys/${b.keyId}/rate-limit`, b.members.owner.auth, { rateLimit: { concurrency: 3 } }));
+    await json(await call("PUT", `${a.base}/keys/${a.keyId}/rate-limit`, platformAdmin.auth, { rateLimit: { concurrency: 2 } }));
+    await json(await call("PUT", `${b.base}/keys/${b.keyId}/rate-limit`, platformAdmin.auth, { rateLimit: { concurrency: 3 } }));
     const scoped = await json<{ entries: Array<{ tenantId: string }> }>(
-      await call("GET", `/api/v1/admin/gateway/audit?tenantId=${encodeURIComponent(a.tenantId)}`, a.members.support.auth),
+      await call("GET", `/api/v1/admin/gateway/audit?tenantId=${encodeURIComponent(a.tenantId)}`, platformAdmin.auth),
     );
     expect(scoped.entries.length).toBeGreaterThan(0);
     expect(new Set(scoped.entries.map((entry) => entry.tenantId))).toEqual(new Set([a.tenantId]));
@@ -772,7 +779,7 @@ describe("staff prompt access and body retention", () => {
     await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "incident 42" }, { ...enabled, GATEWAY_STAFF_PROMPT_ACCESS: undefined }), 403, "GATEWAY_PROMPT_ACCESS_DISABLED");
     expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth))).promptAccess).toBe(false);
     expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth, undefined, enabled))).promptAccess).toBe(true);
-    // The tenant's own owner and admin may not read its prompts.
+    // The tenant's own owner and members may not read its prompts.
     for (const role of GATEWAY_TENANT_ROLES) {
       await expectCode(await call("POST", access(requestId), t.members[role].auth, { reason: "x" }, enabled), 403, "GATEWAY_FORBIDDEN");
       expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth, undefined, enabled))).promptAccess).toBe(false);
@@ -821,7 +828,7 @@ describe("staff prompt access and body retention", () => {
     await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "late" }, enabled), 410, "GATEWAY_PROMPT_EXPIRED");
     expect(JSON.parse(audited(requestId)[0]!.after_json!)).toMatchObject({ outcome: "expired", code: "GATEWAY_PROMPT_EXPIRED" });
 
-    for (const role of ["owner", "admin"] as const)
+    for (const role of GATEWAY_TENANT_ROLES)
       await expectCode(await call("POST", "/api/v1/admin/gateway/retention/purge", t.members[role].auth, {}, enabled), 403, "GATEWAY_FORBIDDEN");
     const first = await json<{ purge: { purged: number; failed: number } }>(
       await call("POST", "/api/v1/admin/gateway/retention/purge", platformAdmin.auth, { limit: 1000 }, enabled),
@@ -873,11 +880,11 @@ describe("console reads", () => {
       .run(`l_${hex()}`, `gwr_${hex()}`, t.tenantId, Math.floor(Date.now() / 1000));
     const enc = encodeURIComponent(t.tenantId);
     const overview = await json<{ overview: { requests: number; spentMicroCredits: number; tenant: { members: number } } }>(
-      await call("GET", `/api/v1/admin/gateway/overview?tenantId=${enc}`, t.members.viewer.auth),
+      await call("GET", `/api/v1/admin/gateway/overview?tenantId=${enc}`, platformAdmin.auth),
     );
-    expect(overview.overview).toMatchObject({ requests: 1, spentMicroCredits: 1500, tenant: { members: 6 } });
+    expect(overview.overview).toMatchObject({ requests: 1, spentMicroCredits: 1500, tenant: { members: GATEWAY_TENANT_ROLES.length } });
     const usage = await json<{ entries: Array<{ tenantId: string }>; byModel: Array<{ modelCode: string; amountMicroCredits: number }> }>(
-      await call("GET", `/api/v1/admin/gateway/usage?tenantId=${enc}&kind=settle`, t.members.viewer.auth),
+      await call("GET", `/api/v1/admin/gateway/usage?tenantId=${enc}&kind=settle`, platformAdmin.auth),
     );
     expect(usage.entries).toHaveLength(1);
     expect(usage.byModel).toEqual([expect.objectContaining({ modelCode: "model-a", amountMicroCredits: 1500 })]);
@@ -885,6 +892,6 @@ describe("console reads", () => {
     expect(platform.overview.platform.tenants).toBeGreaterThan(0);
     const abuse = await json<{ abuse: { events: { available: boolean } } }>(await call("GET", "/api/v1/admin/gateway/abuse", platformAdmin.auth));
     expect(abuse.abuse.events.available).toBe(false);
-    await expectCode(await call("GET", `/api/v1/admin/gateway/usage?tenantId=${enc}&from=yesterday`, t.members.viewer.auth), 400, "GATEWAY_INVALID_REQUEST");
+    await expectCode(await call("GET", `/api/v1/admin/gateway/usage?tenantId=${enc}&from=yesterday`, platformAdmin.auth), 400, "GATEWAY_INVALID_REQUEST");
   });
 });

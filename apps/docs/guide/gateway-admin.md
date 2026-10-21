@@ -2,42 +2,59 @@
 
 The `/admin` console configures and observes the Clash official model gateway
 (#353): the model catalog, prices, upstream accounts, packages and top-up
-packs, budgets and rate limits, usage, abuse signals, users and roles, and the
-admin audit log. The tables are in [gateway-schema.md](gateway-schema.md);
-prices, packages and wallets in [gateway-price-book.md](gateway-price-book.md).
+packs, budgets and rate limits, usage, abuse signals, teams and their members
+(read-only), platform admins, and the admin audit log. It is for the platform
+admin only. The tables are in [gateway-schema.md](gateway-schema.md); prices,
+packages and wallets in [gateway-price-book.md](gateway-price-book.md).
 
 ## Roles
 
-Roles live in D1. There is no environment-variable grant.
+Roles live in D1. There is no environment-variable grant, and there are no
+job roles (#392):
 
-- **Tenant roles** (`tenant_member.role`): `owner`, `admin`, `finance`,
-  `support`, `viewer`. A tenant role acts on its own tenant only. `member`
-  uses the gateway but has no console permission.
+- **Team roles** (`tenant_member.role`, migration 0038): `owner` or `member`,
+  nothing else. A team role acts on its own team only. The owner runs the
+  team (members, budget allocation, keys and limits, billing); a member uses
+  the gateway and reads their own usage and budget. Team settings, where
+  owners manage members and allocate budgets, are #354; the admin console has
+  no team role assignment.
 - **Platform role** (`gateway_platform_role`, migration 0036):
-  `platform_admin`. A separate grant, never a tenant role. It holds every
-  platform permission, and every tenant permission on every tenant.
+  `platform_admin`, nothing else. A separate grant, never a team role. It
+  holds every permission: every platform permission, and every tenant
+  permission on every tenant.
+
+Migration 0038 rewrote every team row (and pending invite) holding an earlier
+role to `member` (idempotently), and D1 triggers refuse any role other than
+`owner` or `member` from then on.
 
 ### Permission matrix
 
 `apps/api-cf/src/services/gateway-authz.ts` is the one authorization module.
-Every `/api/v1/admin/gateway/*` route and every tenant billing route
+Every check names a permission (`authorizeGatewayAccess(access,
+"team.budgets.allocate", tenantId)`); which role holds which permission is
+data in that module (`GATEWAY_TENANT_ROLE_PERMISSIONS`,
+`GATEWAY_PLATFORM_ROLE_PERMISSIONS`) and nowhere else, so configurable
+permission groups could later replace the role tables without touching a
+check. Every `/api/v1/admin/gateway/*` route and every tenant billing route
 (`/api/v1/gateway/tenants/:tenantId/*`) authorizes through it. The server
 answers `GATEWAY_FORBIDDEN` (403, `details.permission`) whatever the UI
 shows, and `GATEWAY_AUTH_REQUIRED` (401) without a credential.
 
-| Tenant permission  | owner | admin | finance | support | viewer |
-| ------------------ | :---: | :---: | :-----: | :-----: | :----: |
-| `tenant.read`      |   ✓   |   ✓   |    ✓    |    ✓    |   ✓    |
-| `usage.read`       |   ✓   |   ✓   |    ✓    |    ✓    |   ✓    |
-| `budgets.read`     |   ✓   |   ✓   |    ✓    |    ✓    |   ✓    |
-| `members.read`     |   ✓   |   ✓   |    ✓    |    ✓    |   ✓    |
-| `keys.read`        |   ✓   |   ✓   |    ✓    |    ✓    |        |
-| `audit.read`       |   ✓   |   ✓   |    ✓    |    ✓    |        |
-| `billing.read`     |   ✓   |   ✓   |    ✓    |         |        |
-| `budgets.write`    |   ✓   |   ✓   |    ✓    |         |        |
-| `limits.write`     |   ✓   |   ✓   |         |         |        |
-| `billing.purchase` |   ✓   |       |    ✓    |         |        |
-| `roles.write`      |   ✓   |       |         |         |        |
+| Tenant permission       | owner | member | platform_admin | Used by                         |
+| ----------------------- | :---: | :----: | :------------: | ------------------------------- |
+| `usage.read_own`        |   ✓   |   ✓    |       ✓        | team settings (#354)            |
+| `budgets.read_own`      |   ✓   |   ✓    |       ✓        | team settings (#354)            |
+| `tenant.read`           |   ✓   |        |       ✓        | team settings (#354)            |
+| `usage.read`            |   ✓   |        |       ✓        | team settings (#354)            |
+| `audit.read`            |   ✓   |        |       ✓        | team settings (#354)            |
+| `team.members.read`     |   ✓   |        |       ✓        | team settings; console members  |
+| `team.members.manage`   |   ✓   |        |       ✓        | team settings (#354)            |
+| `budgets.read`          |   ✓   |        |       ✓        | team settings; console budgets  |
+| `team.budgets.allocate` |   ✓   |        |       ✓        | team settings; console budgets  |
+| `keys.read`             |   ✓   |        |       ✓        | team settings; console keys     |
+| `limits.write`          |   ✓   |        |       ✓        | team settings; console limits   |
+| `billing.read`          |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
+| `billing.purchase`      |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 
 Platform permissions, `platform_admin` only: `tenants.list`, `catalog.read`,
 `catalog.write`, `prices.read`, `prices.write`, `packages.read`,
@@ -46,8 +63,12 @@ Platform permissions, `platform_admin` only: `tenants.list`, `catalog.read`,
 `platform_roles.write`, `usage.read_all`, `audit.read_all`, `abuse.read`,
 `prompts.view`, `retention.purge`.
 
-Reads such as usage and audit are tenant-scoped with `?tenantId=` (tenant
-permission) and platform-wide without it (platform permission).
+The admin console authorizes with `platformRoute`: the permission must come
+from a platform grant, so a team owner is refused there even for a tenant
+permission they hold in their own team. Tenant billing uses `tenantRoute`
+(the caller's role in that team, or `platform_admin`). Console reads such as
+usage and audit are platform-wide, and `?tenantId=` narrows them to one
+tenant.
 
 ### Bootstrapping the first platform admin
 
@@ -84,14 +105,16 @@ Every admin mutation appends one `gateway_admin_audit` row:
   `"[redacted]"`. Upstream secrets are never put into a snapshot in the first
   place: only the credential kind, field names and key version.
 - with a `reason` for overrides, rotations, wallet corrections and role
-  changes, and the actor's role (`platform_admin` or the tenant role).
+  changes, and the actor's role (`platform_admin` or the team role).
 
 Covered mutations: price drafts and publishes, packages, top-up packs,
 billing rollover, subscriptions and top-ups, catalog clone/model
 upsert/remove/publish, upstream create/update/disable/rotate, member and key
 budgets, wallet corrections and status, key and subscription rate limits,
-tenant roles, platform role grants and revocations, retention purges that
-deleted something, and every staff prompt view (whatever its outcome).
+team role changes (`setMemberRole` in `d1-tenant-admin.ts`, for team
+settings; the last owner is kept, `GATEWAY_LAST_OWNER`), platform role grants
+and revocations, retention purges that deleted something, and every staff
+prompt view (whatever its outcome).
 
 The log is append-only: there is no update or delete API, and 0036 triggers
 refuse `UPDATE` and any `DELETE` of a row younger than 13 months (the
@@ -107,7 +130,7 @@ All under `/api/v1/admin/gateway`. Errors are coded (`x-clash-error-code`).
 | Catalog        | `GET /catalog`; `GET /catalog/versions/:v`; `POST …/:v/clone {from}`; `PUT/DELETE …/:v/models/:modelCode`; `POST …/:v/publish`                 |
 | Prices, packs  | see [gateway-price-book.md](gateway-price-book.md)                                                                                              |
 | Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate`                                                                     |
-| Tenants        | `GET /tenants`; `GET /tenants/:t/members`; `PUT /tenants/:t/members/:userId/role`                                                               |
+| Tenants        | `GET /tenants`; `GET /tenants/:t/members` (read-only)                                                                                           |
 | Budgets        | `GET /tenants/:t/budgets`; `PUT /tenants/:t/budgets/(user\|key)/:id`; `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`         |
 | Rate limits    | `GET /tenants/:t/keys`; `PUT /tenants/:t/keys/:keyId/rate-limit`; `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts     |
 | Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide); `GET /abuse`                                                   |
@@ -128,8 +151,9 @@ credential kind, field names and `key_version`. `enabled: false` disables an
 account for routing; rotation replaces the secret, bumps the key version and
 stamps `rotated_at`.
 
-**Budgets.** Tenant roles with `budgets.write` set member (`user`) and key
-budgets under the tenant wallet; a limit below spend + open holds is
+**Budgets.** `team.budgets.allocate` (the team owner in team settings, the
+platform admin in the console) sets member (`user`) and key budgets under the
+tenant wallet; a limit below spend + open holds is
 `GATEWAY_BUDGET_BELOW_USAGE`, `null` is explicitly unlimited (the wallet still
 caps it). The wallet itself changes only through purchases and platform
 corrections: `wallet/adjust` posts a ledger `adjust` entry (`ref_kind`
@@ -205,7 +229,7 @@ billing (storage runs after settlement):
 ### Viewing
 
 `POST /prompts/:requestId/access {reason}` requires `prompts.view`
-(`platform_admin` only; tenant owners and admins get `GATEWAY_FORBIDDEN`) and
+(`platform_admin` only; team owners and members get `GATEWAY_FORBIDDEN`) and
 a `reason`. Every call, whatever its outcome, first writes one
 `gateway_admin_audit` row: action `prompt.view`, the actor, the request id
 (`target_id` and `request_id`), the reason, and an `after` snapshot with the
@@ -260,27 +284,28 @@ is not implemented yet ([gateway-schema.md](gateway-schema.md#retention)).
 loader-guarded through `apps/web/app/lib/adminRoute.tsx`: each loader calls
 `/api/v1/admin/gateway/me` before the page's API, redirects to
 `/login?returnTo=` on 401, throws a coded 403 route error
-(`GATEWAY_FORBIDDEN`) when the caller holds none of the page's permissions
-(the page's API is then never called), and a 404 route error
-(`ADMIN_CONSOLE_UNAVAILABLE`) where the deployment has no admin API. The
-server still authorizes every call. Tenant-scoped pages read `?tenant=`; a
-tenant the caller holds no role in falls back to one that grants the page.
+(`GATEWAY_FORBIDDEN`) when the caller's platform grants do not include the
+page's permission (every team owner and member; the page's API is then never
+called), and a 404 route error (`ADMIN_CONSOLE_UNAVAILABLE`) where the
+deployment has no admin API. The server still authorizes every call.
+Tenant-scoped pages read `?tenant=` (chosen from the tenant list) and show it
+with a way back to all tenants.
 
-| Path               | Page                                        | Opens with                      |
-| ------------------ | ------------------------------------------- | ------------------------------- |
-| `/admin`           | Overview                                    | `tenant.read` / `usage.read_all` |
-| `/admin/models`    | Catalog versions and price book             | `catalog.read`                  |
-| `/admin/upstreams` | Upstream accounts                           | `upstreams.read`                |
-| `/admin/users`     | Tenants, members and roles, platform admins | `members.read` / `tenants.list` |
-| `/admin/budgets`   | Wallet, budgets, key and tenant rate limits | `budgets.read` / `tenants.list` |
-| `/admin/packages`  | Packages and top-up packs                   | `packages.read`                 |
-| `/admin/usage`     | Ledger, per-model totals, prompt viewer     | `usage.read` / `usage.read_all` |
-| `/admin/abuse`     | Live rate-limit counters                    | `abuse.read`                    |
-| `/admin/audit`     | Audit log                                   | `audit.read` / `audit.read_all` |
+| Path               | Page                                                  | Opens with       |
+| ------------------ | ----------------------------------------------------- | ---------------- |
+| `/admin`           | Overview                                              | `usage.read_all` |
+| `/admin/models`    | Catalog versions and price book                       | `catalog.read`   |
+| `/admin/upstreams` | Upstream accounts                                     | `upstreams.read` |
+| `/admin/users`     | Tenants, their members and roles (read-only), platform admins | `tenants.list`   |
+| `/admin/budgets`   | Wallet, budgets, key and tenant rate limits           | `tenants.list`   |
+| `/admin/packages`  | Packages and top-up packs                             | `packages.read`  |
+| `/admin/usage`     | Ledger, per-model totals, prompt viewer               | `usage.read_all` |
+| `/admin/abuse`     | Live rate-limit counters                              | `abuse.read`     |
+| `/admin/audit`     | Audit log                                             | `audit.read_all` |
 
 Components live in `packages/web-ui/src/components/admin/` with the typed
-client `packages/web-ui/src/lib/adminClient.ts`; controls a role cannot use
-are not rendered, and failed actions show the coded error inline.
+client `packages/web-ui/src/lib/adminClient.ts`; controls the caller's grants
+cannot use are not rendered, and failed actions show the coded error inline.
 
 On `/admin/usage`, when `/me` reports `promptAccess` (the flag is on and the
 caller holds `prompts.view`), each `settle` row has a **View** button and a
@@ -292,9 +317,13 @@ or the coded error (expired, not retained).
 ## Tests
 
 - `apps/api-cf/src/services/gateway-authz.test.ts`: matrix properties; the
-  retired environment-variable grant is gone from code, config and docs.
-- `apps/api-cf/src/routes/v1/admin/gateway-console.test.ts`: every role ×
-  every tenant action through the Worker, platform-only routes, audit per
+  retired environment-variable grant and the removed team roles are gone
+  from code, tests and docs.
+- `apps/api-cf/src/gateway/team-roles-migration.test.ts`: 0038 maps earlier
+  team roles to `member`, is idempotent, and D1 refuses any other role.
+- `apps/api-cf/src/routes/v1/admin/gateway-console.test.ts`: every console
+  route refused to team owners and members, tenant billing per role through
+  the Worker, team role changes keeping one owner, audit per
   mutation and rollback when the audit write fails, upstream secret custody,
   rate-limit validation; staff prompt view (platform_admin only, the stored
   bytes, every view audited without the body, nothing disclosed when the
@@ -310,6 +339,6 @@ or the coded error (expired, not retained).
 - `apps/web/app/routes/admin.test.ts`: loader guard (401 redirect, 403
   without calling the page API, unavailable deployment, tenant scoping).
 - `packages/web-ui/src/components/admin/*.test.tsx`,
-  `packages/web-ui/src/lib/adminClient.test.ts`: role-gated controls,
+  `packages/web-ui/src/lib/adminClient.test.ts`: permission-gated controls,
   write-only secrets, coded errors shown inline, request shapes, the prompt
   viewer (reason required, stored bytes shown unchanged, coded expiry).

@@ -1,8 +1,9 @@
 /**
- * The /admin loaders ask api-cf for the caller's roles before loading a page
- * (#353): no session redirects to /login, a caller without the page's
- * permission gets a coded 403 route error (and the page's API is never
- * called), and the server's coded refusals surface as route errors.
+ * The /admin loaders ask api-cf for the caller's platform grants before
+ * loading a page (#353, #392): no session redirects to /login, a caller
+ * without the page's permission (every team owner or member) gets a coded 403
+ * route error (and the page's API is never called), and the server's coded
+ * refusals surface as route errors.
  */
 import type { LoaderFunctionArgs } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -21,36 +22,8 @@ import { loader as usersLoader } from "./admin.users";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const VIEWER_PERMISSIONS = ["tenant.read", "usage.read", "budgets.read", "members.read"];
-const OWNER_PERMISSIONS = [
-  "tenant.read",
-  "usage.read",
-  "budgets.read",
-  "budgets.write",
-  "keys.read",
-  "limits.write",
-  "members.read",
-  "roles.write",
-  "audit.read",
-  "billing.read",
-  "billing.purchase",
-];
-
-const viewer: AdminMe = {
-  userId: "u-viewer",
-  platformRoles: [],
-  platformPermissions: [],
-  tenants: [{ tenantId: "team:a", name: "A", kind: "team", role: "viewer", permissions: VIEWER_PERMISSIONS }],
-  promptAccess: false,
-};
-const owner: AdminMe = {
-  ...viewer,
-  userId: "u-owner",
-  tenants: [
-    { tenantId: "team:a", name: "A", kind: "team", role: "viewer", permissions: VIEWER_PERMISSIONS },
-    { tenantId: "team:b", name: "B", kind: "team", role: "owner", permissions: OWNER_PERMISSIONS },
-  ],
-};
+/** What /me answers a team owner or member: no platform grant. */
+const teamUser: AdminMe = { userId: "u-owner", platformRoles: [], platformPermissions: [], promptAccess: false };
 const staff: AdminMe = {
   userId: "u-staff",
   platformRoles: ["platform_admin"],
@@ -73,9 +46,14 @@ const staff: AdminMe = {
     "audit.read_all",
     "abuse.read",
     "prompts.view",
-    ...OWNER_PERMISSIONS,
+    "retention.purge",
+    "budgets.read",
+    "team.budgets.allocate",
+    "keys.read",
+    "limits.write",
+    "team.members.read",
+    "team.members.manage",
   ],
-  tenants: [],
   promptAccess: true,
 };
 
@@ -125,16 +103,11 @@ describe("admin loader guard", () => {
     });
   });
 
-  it("refuses with a coded 403, without calling the page's API, when no role opens the page", async () => {
-    const paths = stubApi(viewer);
-    for (const loader of [modelsLoader, upstreamsLoader, packagesLoader, abuseLoader, auditLoader])
-      expect(await thrown(loader(args("/admin/x")))).toMatchObject({ status: 403, code: "GATEWAY_FORBIDDEN" });
+  it("refuses a team owner or member every page with a coded 403, without calling the page's API", async () => {
+    const paths = stubApi(teamUser);
+    for (const loader of [overviewLoader, modelsLoader, upstreamsLoader, usersLoader, budgetsLoader, packagesLoader, usageLoader, abuseLoader, auditLoader])
+      expect(await thrown(loader(args("/admin/x?tenant=team%3Aa")))).toMatchObject({ status: 403, code: "GATEWAY_FORBIDDEN" });
     expect(paths.every((path) => path === "/api/v1/admin/gateway/me")).toBe(true);
-  });
-
-  it("refuses a signed-in user with no console role at all", async () => {
-    stubApi({ ...viewer, tenants: [] });
-    expect(await thrown(overviewLoader(args("/admin")))).toMatchObject({ status: 403, code: "GATEWAY_FORBIDDEN" });
   });
 
   it("reports a deployment without the admin API as unavailable", async () => {
@@ -153,25 +126,19 @@ describe("admin loader guard", () => {
 });
 
 describe("admin page scope", () => {
-  it("scopes a tenant role's overview to its own tenant", async () => {
-    const paths = stubApi(viewer, () => Response.json({ overview: { windowDays: 30, requests: 0, spentMicroCredits: 0, failedRequests: 0, topModels: [] } }));
-    const data = await overviewLoader(args("/admin"));
-    expect(data.tenantId).toBe("team:a");
-    expect(paths).toContain("/api/v1/admin/gateway/overview?tenantId=team%3Aa");
-  });
-
-  it("never requests a tenant the caller holds no role in; it falls back to one that grants the page", async () => {
-    const paths = stubApi(owner, () => Response.json({ entries: [] }));
-    // team:a grants this caller no audit.read, and team:z nothing at all.
-    for (const tenant of ["team:a", "team:z"]) {
-      const data = await auditLoader(args(`/admin/audit?tenant=${encodeURIComponent(tenant)}&action=key`));
-      expect(data.tenantId).toBe("team:b");
-      expect(data.filters).toEqual({ action: "key", tenantId: "team:b" });
-    }
-    expect(paths.filter((path) => path.startsWith("/api/v1/admin/gateway/audit"))).toEqual([
-      "/api/v1/admin/gateway/audit?action=key&tenantId=team%3Ab",
-      "/api/v1/admin/gateway/audit?action=key&tenantId=team%3Ab",
-    ]);
+  it("narrows a tenant-scoped page to the tenant asked for", async () => {
+    const paths = stubApi(staff, (path) =>
+      path.startsWith("/api/v1/admin/gateway/overview")
+        ? Response.json({ overview: { windowDays: 30, requests: 0, spentMicroCredits: 0, failedRequests: 0, topModels: [] } })
+        : Response.json({ entries: [] }),
+    );
+    const overview = await overviewLoader(args("/admin?tenant=team%3Aa"));
+    expect(overview).toMatchObject({ tenantId: "team:a", scopeLabel: "Tenant team:a" });
+    const audit = await auditLoader(args("/admin/audit?tenant=team%3Ab&action=key"));
+    expect(audit.filters).toEqual({ action: "key", tenantId: "team:b" });
+    expect(paths).toEqual(
+      expect.arrayContaining(["/api/v1/admin/gateway/overview?tenantId=team%3Aa", "/api/v1/admin/gateway/audit?action=key&tenantId=team%3Ab"]),
+    );
   });
 
   it("gives platform staff the platform-wide view, and any tenant they ask for", async () => {
@@ -192,17 +159,19 @@ describe("admin page scope", () => {
     expect(paths).toContain("/api/v1/admin/gateway/tenants/team%3Az/budgets");
   });
 
-  it("derives write affordances from the caller's role in the shown tenant", async () => {
-    stubApi(owner, (path) => {
-      if (path.endsWith("/budgets")) return Response.json({ budgets: [], wallet: null, subscription: null });
-      if (path.endsWith("/keys")) return Response.json({ keys: [] });
-      if (path.endsWith("/members")) return Response.json({ members: [] });
+  it("shows a tenant's members read-only, with no role-change call", async () => {
+    const members = [{ userId: "u1", role: "owner", name: null, email: null, joinedAt: null }];
+    const paths = stubApi(staff, (path) => {
+      if (path === "/api/v1/admin/gateway/tenants") return Response.json({ tenants: [] });
+      if (path === "/api/v1/admin/gateway/platform-admins") return Response.json({ admins: [] });
+      if (path.endsWith("/members")) return Response.json({ members });
       return undefined;
     });
-    const asViewer = await budgetsLoader(args("/admin/budgets?tenant=team%3Aa"));
-    expect(asViewer.tenant?.can).toEqual({ budgetsWrite: false, limitsWrite: false, walletAdjust: false, subscriptionLimits: false });
-    const asOwner = await budgetsLoader(args("/admin/budgets?tenant=team%3Ab"));
-    expect(asOwner.tenant?.can).toEqual({ budgetsWrite: true, limitsWrite: true, walletAdjust: false, subscriptionLimits: false });
+    const data = await usersLoader(args("/admin/users?tenant=team%3Az"));
+    expect(data).toMatchObject({ tenantId: "team:z", members });
+    expect(data).not.toHaveProperty("canWriteRoles");
+    expect(paths).toContain("/api/v1/admin/gateway/tenants/team%3Az/members");
+    expect(paths.some((path) => path.endsWith("/role"))).toBe(false);
   });
 
   it("loads the platform pages for staff with their write affordances", async () => {

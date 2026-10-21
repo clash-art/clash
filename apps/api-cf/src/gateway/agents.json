@@ -24,7 +24,7 @@
     "d1-admin-audit.ts": "#353 the one gateway_admin_audit writer: adminAuditStatement (a statement for the mutation's own batch, chained on changes()) and redactAuditValue (secret keys and credential-shaped values become [redacted]). Rows are append-only (0036 triggers).",
     "d1-catalog-admin.ts": "#353 catalog admin over gateway_model: list (live marked), clone into a draft, upsert/remove draft models (ModelCardSchema + DeepSeek Flash-only policy), publish (the whole version, then immutable).",
     "d1-upstream-admin.ts": "#353 official upstream accounts: list/create/update/disable/rotate. Secrets are write-only (secret_ref name or sealed at once); views and audit carry kind, field names and key_version only.",
-    "d1-tenant-admin.ts": "#353 member/key budgets (below-usage refused), key rate limits, members and roles (last owner kept). Each write + audit in one CAS batch.",
+    "d1-tenant-admin.ts": "#353/#392 member/key budgets (below-usage refused), key rate limits, members and owner/member roles (last owner kept; role changes are for team settings #354, not the console). Each write + audit in one CAS batch.",
     "d1-platform-roles.ts": "#353 platform_admin grants (gateway_platform_role): list, grant, revoke (never the last one), audited.",
     "platform-admin-bootstrap.ts": "#353 dependency-free bootstrap SQL and argument parsing for scripts/gateway-platform-admin.ts (local or staging only, idempotent).",
     "d1-admin-reads.ts": "#353 console reads: ledger usage + per-model totals, audit filter, overview metrics, tenants, abuse rate-window counters (denied events not recorded yet).",

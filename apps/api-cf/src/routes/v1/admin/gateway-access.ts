@@ -1,7 +1,7 @@
 /**
  * Who may use the admin console (#353), under /api/v1/admin/gateway:
  *
- *   GET  /me                                 the caller's roles and permissions (any signed-in user)
+ *   GET  /me                                 the caller's platform roles and permissions (any signed-in user)
  *   GET  /platform-admins                    platform staff grants                platform_roles.read
  *   POST /platform-admins                    grant platform_admin                 platform_roles.write
  *   POST /platform-admins/:userId/revoke     revoke (never the last one)          platform_roles.write
@@ -13,7 +13,6 @@ import { Hono } from "hono";
 
 import type { Env } from "../../../config";
 import { GatewayPlatformAdminGrantRequestSchema, GatewayPromptAccessRequestSchema } from "../../../domain/requests";
-import { createD1AdminReads } from "../../../gateway/d1-admin-reads";
 import { monotonicClock } from "../../../gateway/d1-common";
 import { createD1PlatformRoles } from "../../../gateway/d1-platform-roles";
 import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
@@ -21,11 +20,9 @@ import {
   GATEWAY_PLATFORM_ROLE_PERMISSIONS,
   adminJson as ok,
   authorizeGatewayAccess,
-  isPlatformAdmin,
   loadGatewayAccess,
   platformRoute,
   requireGatewayUserId,
-  tenantRolePermissions,
 } from "../../../services/gateway-authz";
 import { staffPromptAccessEnabled } from "../../../gateway";
 import { gatewayErrorResponse } from "../../../services/gateway-tokens";
@@ -38,9 +35,6 @@ export const adminAccessRoutes = new Hono<{ Bindings: Env }>();
 adminAccessRoutes.get("/me", async (c) => {
   try {
     const access = await loadGatewayAccess(c.env.DB, requireGatewayUserId(c));
-    const names = await createD1AdminReads(c.env.DB, { clock: monotonicClock() }).tenantNames(
-      access.memberships.map((entry) => entry.tenantId),
-    );
     const platformPermissions = [
       ...new Set(access.platformRoles.flatMap((role) => GATEWAY_PLATFORM_ROLE_PERMISSIONS[role])),
     ];
@@ -48,15 +42,6 @@ adminAccessRoutes.get("/me", async (c) => {
       userId: access.userId,
       platformRoles: access.platformRoles,
       platformPermissions,
-      tenants: access.memberships
-        .map((entry) => ({
-          tenantId: entry.tenantId,
-          name: names.get(entry.tenantId)?.name ?? entry.tenantId,
-          kind: names.get(entry.tenantId)?.kind ?? "personal",
-          role: entry.role,
-          permissions: isPlatformAdmin(access) ? [...tenantRolePermissions("owner")] : [...tenantRolePermissions(entry.role)],
-        }))
-        .filter((entry) => entry.permissions.length > 0),
       promptAccess: staffPromptAccessEnabled(c.env) && authorizeGatewayAccess(access, "prompts.view") !== null,
     });
   } catch (error) {

@@ -81,7 +81,7 @@ function team() {
   const member = user();
   sqlite.prepare(`INSERT INTO tenant (id, owner_user_id, name, kind) VALUES (?, ?, 'Team', 'team')`).run(tenantId, owner.userId);
   sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, 'owner')`).run(tenantId, owner.userId);
-  sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, 'admin')`).run(tenantId, member.userId);
+  sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, 'member')`).run(tenantId, member.userId);
   return { tenantId, owner, member, base: `/api/v1/gateway/tenants/${encodeURIComponent(tenantId)}` };
 }
 
@@ -201,16 +201,14 @@ describe("/api/v1/gateway/tenants/:tenantId purchases", () => {
 
   it("lets the owner or a platform admin buy for the team wallet; other members and strangers are refused", async () => {
     const { owner, member, base, tenantId } = team();
-    const viewer = user();
-    sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, 'viewer')`).run(tenantId, viewer.userId);
     const pack = await createPack();
     const body = { packId: pack.id, idempotencyKey: "order-1" };
     await expectCode(await call("POST", `${base}/topups`, {}, body), 401, "GATEWAY_AUTH_REQUIRED");
-    // A tenant admin may read billing but not buy (billing.purchase is owner/finance).
+    // A team member neither reads billing nor buys (both are the owner's).
     await expectCode(await call("POST", `${base}/topups`, member.auth, body), 403, "GATEWAY_FORBIDDEN");
     await expectCode(await call("POST", `${base}/topups`, user().auth, body), 403, "GATEWAY_FORBIDDEN");
-    expect((await call("GET", `${base}/billing`, member.auth)).status).toBe(200);
-    await expectCode(await call("GET", `${base}/billing`, viewer.auth), 403, "GATEWAY_FORBIDDEN");
+    await expectCode(await call("GET", `${base}/billing`, member.auth), 403, "GATEWAY_FORBIDDEN");
+    expect((await call("GET", `${base}/billing`, owner.auth)).status).toBe(200);
 
     const bought = await call("POST", `${base}/topups`, owner.auth, body);
     expect(bought.status, await bought.clone().text()).toBe(201);
