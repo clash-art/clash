@@ -6,13 +6,13 @@
     "Identity is the sk_gw_ token (services/gateway-tokens.ts) with the models:invoke scope; no header, x-user-id included, is identity.",
     "Official upstream secrets: secret_ref may only name a GATEWAY_UPSTREAM_* Worker secret; envelopes are sealed under GATEWAY_ENCRYPTION_KEY (never ACTION_SECRET_KEY). No key material in errors or logs.",
     "Unimplemented ports (scheduler, audit) are unavailablePort (501), never silent no-ops.",
-    "Body retention (#353, decision 2026-10-20): blobs = R2 (R2_BUCKET, prefix gateway-retention/), retention = D1 gateway_request_retention metadata only. On only when GATEWAY_STAFF_PROMPT_ACCESS=enabled (hosted); purge runs regardless from the scheduled handler. Never store headers or upstream credentials. Streams are retained as delivered, capped; a cut copy is response_truncated = 1 (0038).",
+    "Body retention (#353, decision 2026-10-20): blobs = R2 (R2_BUCKET, prefix gateway-retention/), retention = D1 gateway_request_retention metadata only. On only when GATEWAY_STAFF_PROMPT_ACCESS=enabled (hosted); purge runs regardless from the scheduled handler. Never store headers or upstream credentials. Streams are retained as delivered, capped; a cut copy is response_truncated = 1 (0039).",
     "Stale holds (#348): sweepGatewayHolds (d1-budgets.ts) runs from the scheduled handler and POST /api/v1/admin/gateway/holds/sweep; it never touches settle_failed holds."
   ],
   "key_files": {
     "index.ts": "createD1GatewayPorts, workerSecrets, staffPromptAccessEnabled, createCloudflareGatewayApp (basePath /gateway, retention per the flag).",
     "r2-blobs.ts": "gateway-core blobs over the R2 bucket; failures are GATEWAY_INTERNAL.",
-    "d1-retention.ts": "gateway-core retention over gateway_request_retention (0037, truncation columns 0038); gatewayRetentionPorts and purgeGatewayRetention for the scheduled handler and the admin purge route.",
+    "d1-retention.ts": "gateway-core retention over gateway_request_retention (0037, truncation columns 0039); gatewayRetentionPorts and purgeGatewayRetention for the scheduled handler and the admin purge route.",
     "workers-logger.ts": "GatewayLogger over serverLog; never throws.",
     "d1-routes.ts": "Published catalog from gateway_model.card_json, official accounts from gateway_upstream_account (tenant scope: none), price book from published gateway_price rows effective at the admission instant (newest version first, exact upstream over model-wide).",
     "d1-price-book.ts": "#352 price-book admin: list, draft (replaced wholly in one batch), publish (one UPDATE; effective_from never before the publish instant). Published rows are immutable; every mutation writes gateway_admin_audit in the same batch.",

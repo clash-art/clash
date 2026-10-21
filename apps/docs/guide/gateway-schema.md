@@ -38,7 +38,7 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_usage_ledger`        | Append-only money journal (below).                                                                                                                                                                  |
 | `gateway_admin_audit`         | One row per admin mutation with redacted before/after snapshots. Append-only: 0036 triggers refuse `UPDATE` and any `DELETE` inside the 13-month retention. See [gateway-admin.md](gateway-admin.md). |
 | `gateway_platform_role`       | (0036) Platform staff grants (`platform_admin`), separate from `tenant_member.role`. Bootstrapped explicitly; never an environment variable.                                                        |
-| `gateway_request_retention`   | (0037) One row per retained gateway request: tenant, user and key ids, the R2 keys, sizes, SHA-256 and content types of the request and response bodies, the answer status, `status` (`stored`, `failed` with `error_code`, `purged`), `stored_at`, `expires_at` (+30 days), `purged_at`. (0038) `response_truncated` = 1 for a streamed answer whose copy was cut at the retention cap, with `response_observed_bytes` delivered. Never the bodies. |
+| `gateway_request_retention`   | (0037) One row per retained gateway request: tenant, user and key ids, the R2 keys, sizes, SHA-256 and content types of the request and response bodies, the answer status, `status` (`stored`, `failed` with `error_code`, `purged`), `stored_at`, `expires_at` (+30 days), `purged_at`. (0039) `response_truncated` = 1 for a streamed answer whose copy was cut at the retention cap, with `response_observed_bytes` delivered. Never the bodies. |
 | `gateway_package`             | Subscription packages: fiat `price_minor` in `price_currency`, `credits_micro` granted per period.                                                                                                  |
 | `gateway_topup_pack`          | One-off credit packs. A purchase is a ledger `topup` entry.                                                                                                                                         |
 | `gateway_tenant_subscription` | A tenant's package subscription and period.                                                                                                                                                         |
@@ -66,7 +66,7 @@ from `kind`:
 
 Indexes: `(tenant_id, occurred_at)`, `(key_id, occurred_at)`,
 `(budget_id, status)` (open holds per budget, for invariant checks), and
-`(kind, status, expires_at)` (0038, open holds by expiry for the stale-hold
+`(kind, status, expires_at)` (0039, open holds by expiry for the stale-hold
 sweeper, which moves them `open` → `expired` with a zero-cost `expired`
 settle entry; see [gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper)).
 

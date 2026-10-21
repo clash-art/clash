@@ -388,7 +388,7 @@ export const gatewayUsageLedger = sqliteTable(
       table.budgetId,
       table.status,
     ),
-    /** Stale-hold sweeper: open holds by expiry (0038). */
+    /** Stale-hold sweeper: open holds by expiry (0039). */
     holdExpiryIdx: index("gateway_usage_ledger_hold_expiry_idx").on(
       table.kind,
       table.status,
@@ -499,7 +499,7 @@ export const gatewayAdminAudit = sqliteTable(
 );
 
 /**
- * Retained request/response body metadata (0037, 0038): where the two R2
+ * Retained request/response body metadata (0037, 0039): where the two R2
  * objects are, their sizes and SHA-256, and whether a streamed answer's copy
  * was truncated at the cap. Never the bodies. `expires_at` is `stored_at` + 30
  * days; purge deletes the objects and sets `purged`.
@@ -525,7 +525,7 @@ export const gatewayRequestRetention = sqliteTable(
     responseStatus: integer("response_status").notNull(),
     /**
      * 1: a streamed answer's copy was cut at the retention cap and ends in the
-     * GATEWAY_RETENTION_TRUNCATED marker (0038).
+     * GATEWAY_RETENTION_TRUNCATED marker (0039).
      */
     responseTruncated: integer("response_truncated").notNull().default(0),
     /** With responseTruncated: bytes the caller actually received. */

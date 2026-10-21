@@ -3,7 +3,7 @@
  * metadata of retained request/response bodies, whose bytes are R2 objects
  * (r2-blobs.ts). Columns are unix seconds; the core is epoch ms. A streamed
  * answer's copy cut at the cap is `response_truncated = 1` with
- * `response_observed_bytes` (0038).
+ * `response_observed_bytes` (0039).
  *
  * Also the purge entry point for the Worker `scheduled` handler and the admin
  * purge route: `purgeGatewayRetention(env)` deletes expired bodies and marks

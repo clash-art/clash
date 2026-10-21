@@ -215,7 +215,7 @@ default). A longer stream is stored cut at the cap, and:
 
 - the object ends in
   `: x-gateway-retention: truncated; code=GATEWAY_RETENTION_TRUNCATED; stored_bytes=<n>; observed_bytes=<m>`;
-- the row has `response_truncated = 1` and `response_observed_bytes` (0038);
+- the row has `response_truncated = 1` and `response_observed_bytes` (0039);
 - `gateway.retention_truncated` is logged.
 
 A truncated copy is never silent. A stream whose caller disconnected is

@@ -917,7 +917,7 @@ describe("stale-hold sweep", () => {
     const sweepAudits = () => auditRows("action = 'holds.sweep'").length;
     const auditsBefore = sweepAudits();
 
-    for (const role of ["owner", "admin", "finance"] as const)
+    for (const role of GATEWAY_TENANT_ROLES)
       await expectCode(await call("POST", "/api/v1/admin/gateway/holds/sweep", t.members[role].auth, {}), 403, "GATEWAY_FORBIDDEN");
     expect(sqlite.prepare(`SELECT reserved_micro_credits AS reserved FROM gateway_budget WHERE id = ?`).get(budgetId)).toEqual({ reserved: 9 });
 
