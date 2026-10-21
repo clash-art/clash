@@ -1,7 +1,8 @@
 /**
  * Tenant administration over D1 (guide: apps/docs/guide/gateway-admin.md):
  * member and key budgets (`gateway_budget`), virtual key rate limits
- * (`gateway_key.rate_limit_json`) and tenant roles (`tenant_member.role`).
+ * (`gateway_key.rate_limit_json`) and tenant roles (`tenant_member.role`:
+ * owner or member, 0038).
  *
  * Every mutation is one D1 batch holding the change and its
  * `gateway_admin_audit` row, chained on `changes()`, so both are written or
@@ -12,11 +13,13 @@
 import type { D1Database } from "@cloudflare/workers-types";
 import { GatewayError, walletAvailable, type GatewayClock } from "@clash/gateway-core";
 
+import type { GATEWAY_TENANT_ROLES } from "../domain/requests";
 import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
 import type { RateLimitConfig } from "./d1-billing";
 import { parseJson, stringList, toMs, toSeconds } from "./d1-common";
 
 export type AllocatedBudgetScope = "user" | "key";
+type GatewayTenantRole = (typeof GATEWAY_TENANT_ROLES)[number];
 
 export interface BudgetView {
   id: string;
@@ -177,8 +180,7 @@ export function createD1TenantAdmin(db: D1Database, deps: { clock: GatewayClock 
         `SELECT m.user_id, m.role, m.created_at, u.name, u.email
            FROM tenant_member m LEFT JOIN users u ON u.id = m.user_id
           WHERE m.tenant_id = ?
-          ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'finance' THEN 2
-                   WHEN 'support' THEN 3 WHEN 'viewer' THEN 4 ELSE 5 END, m.user_id`,
+          ORDER BY m.role <> 'owner', m.user_id`,
       )
       .bind(tenantId)
       .all<{ user_id: string; role: string; created_at: number | null; name: string | null; email: string | null }>();
@@ -347,11 +349,15 @@ export function createD1TenantAdmin(db: D1Database, deps: { clock: GatewayClock 
 
     listMembers,
 
-    /** Change a member's role. A tenant always keeps one owner (GATEWAY_LAST_OWNER). */
+    /**
+     * Change a member's role (`team.members.manage`; the team settings UI is
+     * #354, the admin console has no role changes). A tenant always keeps one
+     * owner (GATEWAY_LAST_OWNER).
+     */
     async setMemberRole(input: {
       tenantId: string;
       userId: string;
-      role: string;
+      role: GatewayTenantRole;
       reason?: string;
       actor: GatewayAdminActor;
     }): Promise<MemberView> {

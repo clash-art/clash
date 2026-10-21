@@ -24,7 +24,7 @@
     "provider-oauth-config.ts": "Operator-registered hosted OAuth Providers from the optional PROVIDER_OAUTH_PROVIDERS secret ([{ id, label?, flow }], flow = PluginAuthFlowSchema with tokenUrl + clientId). Parsed lazily on first use, never at Worker startup; an invalid entry fails that flow with PROVIDER_OAUTH_NOT_CONFIGURED and never echoes the client secret.",
     "public-origin.ts": "Browser-visible origin from WORKER_PUBLIC_URL, falling back to the request origin; shared by cloud sync URLs and the OAuth redirect_uri.",
     "gateway-admin.ts": "Coded JSON body, path-param and query parsing for the gateway control plane (GATEWAY_INVALID_REQUEST).",
-    "gateway-authz.ts": "#353 the one gateway admin authorization module: D1 roles (tenant_member.role owner/admin/finance/support/viewer; gateway_platform_role platform_admin), the explicit role -> permission matrix, and platformRoute/tenantRoute/scopedRoute wrappers that answer coded 401/403. No env-var grant.",
+    "gateway-authz.ts": "#353/#392 the one gateway admin authorization module: D1 roles (tenant_member.role owner/member; gateway_platform_role platform_admin), checks by named permission with the role -> permission sets as data in one place, and platformRoute (admin console, platform grants only)/tenantRoute wrappers that answer coded 401/403. No env-var grant.",
     "gateway-tokens.ts": "15-minute sk_gw_ tokens: mint/renew/revoke on gateway_token (SHA-256 only, unix seconds) and the one-query D1 verifier that is the gateway-core identity port. Identity comes from the row only; parent session/clsh_/key liveness and tenant membership are checked on every verify."
   }
 }

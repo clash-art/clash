@@ -1,7 +1,8 @@
 /**
- * The admin console frame (#353): navigation to the pages the caller can open
- * and the tenant switcher for tenant-scoped pages. Pages the caller cannot
- * open are not listed; the server refuses them anyway.
+ * The admin console frame (#353, #392): navigation to the pages the caller's
+ * platform grants open, and the tenant a tenant-scoped page is narrowed to
+ * (chosen from the tenant list) with a way back to all tenants. Pages the
+ * caller cannot open are not listed; the server refuses them anyway.
  */
 import type { ReactNode } from "react";
 import { Link, NavLink } from "react-router";
@@ -9,9 +10,7 @@ import { ArrowLeft, ShieldCheck } from "@phosphor-icons/react";
 
 import { ADMIN_PAGES, canOpenAdminPage, type AdminMe } from "../../lib/adminClient";
 import { AppPage, AppPageInset } from "../AppPage";
-import { SelectMenu } from "../ui/select";
-
-export const PLATFORM_SCOPE = "__platform__";
+import { Button } from "../ui/button";
 
 export function AdminShell({
   me,
@@ -29,13 +28,6 @@ export function AdminShell({
   children: ReactNode;
 }) {
   const pages = ADMIN_PAGES.filter((page) => canOpenAdminPage(me, page));
-  const platform = me.platformRoles.includes("platform_admin");
-  const options = [
-    ...(platform ? [{ value: PLATFORM_SCOPE, label: "All tenants (platform)" }] : []),
-    ...me.tenants.map((tenant) => ({ value: tenant.tenantId, label: `${tenant.name} · ${tenant.role}` })),
-    // A tenant opened from the platform tenant list need not be one of the caller's own.
-    ...(tenantId && !me.tenants.some((tenant) => tenant.tenantId === tenantId) ? [{ value: tenantId, label: tenantId }] : []),
-  ];
   return (
     <div className="min-h-screen bg-warm-page text-slate-950 dark:text-slate-50">
       <div className="sticky top-0 z-10 border-b border-warm-border bg-warm-surface/85 backdrop-blur">
@@ -45,17 +37,14 @@ export function AdminShell({
           </Link>
           <ShieldCheck size={20} weight="duotone" className="text-red-500" />
           <h1 className="font-display text-xl font-semibold tracking-tight">Gateway admin</h1>
-          <span className="text-xs text-stone-500">{platform ? "Platform admin" : "Tenant admin"}</span>
-          {tenantScoped && options.length > 0 ? (
-            <div className="ml-auto w-64">
-              <SelectMenu
-                ariaLabel="Tenant"
-                variant="field"
-                size="sm"
-                value={tenantId ?? PLATFORM_SCOPE}
-                options={options}
-                onValueChange={(value) => onTenantChange(value === PLATFORM_SCOPE ? undefined : value)}
-              />
+          <span className="text-xs text-stone-500">Platform admin</span>
+          {tenantScoped && tenantId ? (
+            <div className="ml-auto flex items-center gap-2 text-sm">
+              <span className="text-stone-500">Tenant</span>
+              <code className="text-xs">{tenantId}</code>
+              <Button size="sm" onClick={() => onTenantChange(undefined)}>
+                All tenants
+              </Button>
             </div>
           ) : null}
         </AppPageInset>

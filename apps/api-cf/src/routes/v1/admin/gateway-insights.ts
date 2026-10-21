@@ -1,11 +1,11 @@
 /**
  * Read-only console views, staff prompt access and retention purge (#353),
- * under /api/v1/admin/gateway. Reads with `?tenantId=` use the caller's tenant
- * role; without it they are platform-wide and platform_admin only.
+ * under /api/v1/admin/gateway. Platform grants only (#392); `?tenantId=`
+ * narrows a platform-wide read to one tenant.
  *
- *   GET  /overview   (?tenantId)          30-day spend, requests, failures     tenant.read | usage.read_all
- *   GET  /usage      (?tenantId, filters) ledger entries + per-model totals    usage.read  | usage.read_all
- *   GET  /audit      (?tenantId, filters) admin audit rows                     audit.read  | audit.read_all
+ *   GET  /overview   (?tenantId)          30-day spend, requests, failures     usage.read_all
+ *   GET  /usage      (?tenantId, filters) ledger entries + per-model totals    usage.read_all
+ *   GET  /audit      (?tenantId, filters) admin audit rows                     audit.read_all
  *   GET  /abuse                           live rate-limit counters             abuse.read
  *   POST /prompts/:requestId/access       view a retained prompt + response    prompts.view
  *   POST /retention/purge                 purge expired retained bodies now    retention.purge
@@ -39,9 +39,10 @@ import { createD1AdminReads } from "../../../gateway/d1-admin-reads";
 import { monotonicClock, toSeconds } from "../../../gateway/d1-common";
 import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
 import { gatewayParam, gatewayQuery, readGatewayJson } from "../../../services/gateway-admin";
-import { adminJson as ok, platformRoute, scopedRoute } from "../../../services/gateway-authz";
+import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
 
 const RequestIdSchema = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
+const TenantIdSchema = z.string().min(1).max(256).optional();
 
 const reads = (env: Env) => createD1AdminReads(env.DB, { clock: monotonicClock() });
 const ms = (value: string | undefined) => (value === undefined ? undefined : Date.parse(value));
@@ -50,21 +51,23 @@ export const adminInsightRoutes = new Hono<{ Bindings: Env }>();
 
 adminInsightRoutes.get(
   "/overview",
-  scopedRoute({ tenant: "tenant.read", platform: "usage.read_all" }, async (c, _actor, tenantId) =>
-    ok(c, { overview: await reads(c.env).overview(tenantId) }),
+  platformRoute("usage.read_all", async (c) =>
+    ok(c, {
+      overview: await reads(c.env).overview(gatewayParam(TenantIdSchema, c.req.query("tenantId"), "tenantId")),
+    }),
   ),
 );
 
 adminInsightRoutes.get(
   "/usage",
-  scopedRoute({ tenant: "usage.read", platform: "usage.read_all" }, async (c, _actor, tenantId) => {
+  platformRoute("usage.read_all", async (c) => {
     const query = gatewayQuery(c, GatewayUsageQuerySchema);
     const from = ms(query.from);
     const to = ms(query.to);
     return ok(
       c,
       await reads(c.env).usage({
-        ...(tenantId ? { tenantId } : {}),
+        ...(query.tenantId ? { tenantId: query.tenantId } : {}),
         ...(query.userId ? { userId: query.userId } : {}),
         ...(query.keyId ? { keyId: query.keyId } : {}),
         ...(query.modelCode ? { modelCode: query.modelCode } : {}),
@@ -79,12 +82,12 @@ adminInsightRoutes.get(
 
 adminInsightRoutes.get(
   "/audit",
-  scopedRoute({ tenant: "audit.read", platform: "audit.read_all" }, async (c, _actor, tenantId) => {
+  platformRoute("audit.read_all", async (c) => {
     const query = gatewayQuery(c, GatewayAuditQuerySchema);
     const from = ms(query.from);
     const to = ms(query.to);
     const entries = await reads(c.env).audit({
-      ...(tenantId ? { tenantId } : {}),
+      ...(query.tenantId ? { tenantId: query.tenantId } : {}),
       ...(query.actorUserId ? { actorUserId: query.actorUserId } : {}),
       ...(query.action ? { action: query.action } : {}),
       ...(query.targetType ? { targetType: query.targetType } : {}),

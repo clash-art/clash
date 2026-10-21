@@ -21,9 +21,9 @@ Authorization is the shared admin permission matrix described in
   top-up packs and billing rollover, and purchases for any tenant. This is a
   platform grant, not a tenant role, and is never granted by a Worker
   variable.
-- **Tenant roles** (`tenant_member.role`): `billing.read` (owner, admin,
-  finance) reads the tenant's billing summary; `billing.purchase` (owner,
-  finance) records purchases for that tenant only.
+- **Team roles** (`tenant_member.role`, `owner` or `member`): the owner holds
+  `billing.read` (reads the tenant's billing summary) and `billing.purchase`
+  (records purchases for that tenant only); a member holds neither.
 
 Anyone else gets `GATEWAY_FORBIDDEN` (403). A request with no credential gets
 `GATEWAY_AUTH_REQUIRED` (401).
@@ -71,8 +71,8 @@ allocated are left unchanged. A member's requests draw on the wallet and on the
 member's own budget together. There is no automatic overage: when the wallet
 is empty, requests fail with `GATEWAY_BUDGET_EXCEEDED`.
 
-There is no payment provider. A platform admin, or a tenant role holding
-`billing.purchase` (owner, finance), records the purchase, and the credits are
+There is no payment provider. A platform admin, or the team owner
+(`billing.purchase`), records the purchase, and the credits are
 posted immediately:
 
 | Ledger kind | Written by                       | Effect on the wallet limit                                                                   |

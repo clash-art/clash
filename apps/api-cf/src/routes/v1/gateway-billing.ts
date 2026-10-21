@@ -1,8 +1,8 @@
 /**
  * Tenant credit purchases (#352), mounted at /api/v1/gateway. Authorization
- * is services/gateway-authz.ts: `billing.read` (owner, admin, finance) reads,
- * `billing.purchase` (owner, finance) buys; platform_admin may do both for
- * any tenant. There is no payment provider. The credits fund the tenant
+ * is services/gateway-authz.ts: the tenant owner holds `billing.read` and
+ * `billing.purchase`, a member neither; platform_admin may do both for any
+ * tenant. There is no payment provider. The credits fund the tenant
  * wallet (for a team tenant, the team wallet); member and key budgets are
  * unchanged. Every purchase takes an idempotency key: a repeat answers the
  * original purchase (200, `replayed: true`), the same key for a different

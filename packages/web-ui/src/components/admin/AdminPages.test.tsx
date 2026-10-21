@@ -32,7 +32,7 @@ describe("AdminBudgets", () => {
     reservedMicroCredits: 500_000,
     availableMicroCredits: 7_500_000,
   };
-  const members: TenantMember[] = [{ userId: "u-ann", role: "viewer", name: "Ann", email: null, joinedAt: null }];
+  const members: TenantMember[] = [{ userId: "u-ann", role: "member", name: "Ann", email: null, joinedAt: null }];
   const keys: GatewayKey[] = [
     { id: "gwk_1", userId: "u-ann", name: "ci", tokenPrefix: "sk_gw_ab", budgetId: null, rateLimit: null, revokedAt: null, lastUsedAt: null },
   ];
@@ -284,21 +284,17 @@ describe("AdminPackages", () => {
 describe("AdminMembers and AdminPlatformAdmins", () => {
   const members: TenantMember[] = [
     { userId: "u-own", role: "owner", name: "Olga", email: "o@example.test", joinedAt: null },
-    { userId: "u-vic", role: "viewer", name: "Vic", email: null, joinedAt: null },
+    { userId: "u-max", role: "member", name: "Max", email: null, joinedAt: null },
   ];
 
-  it("assigns a role through roles.write and shows GATEWAY_LAST_OWNER when refused", async () => {
-    const calls = stubAdminFetch(() => gatewayError(409, "GATEWAY_LAST_OWNER", "A tenant must keep at least one owner."));
-    render(<AdminMembers tenantId="team:a" members={members} canWriteRoles onChanged={() => undefined} />);
-    chooseOption("Role of Olga", "viewer");
-    expect(await screen.findByText("GATEWAY_LAST_OWNER")).toBeInTheDocument();
-    expect(calls[0]).toEqual({ method: "PUT", path: "/api/v1/admin/gateway/tenants/team%3Aa/members/u-own/role", body: { role: "viewer" } });
-  });
-
-  it("shows roles as text without roles.write", () => {
-    render(<AdminMembers tenantId="team:a" members={members} canWriteRoles={false} onChanged={() => undefined} />);
-    expect(screen.queryByRole("combobox")).toBeNull();
+  it("shows a team's members and roles read-only: team owners manage them in team settings", () => {
+    const calls = stubAdminFetch(() => Response.json({}));
+    render(<AdminMembers members={members} />);
     expect(screen.getByText("owner")).toBeInTheDocument();
+    expect(screen.getByText("member")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(calls).toEqual([]);
   });
 
   it("grants platform admin by user id, labelling the bootstrap grant", async () => {

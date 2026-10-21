@@ -15,23 +15,14 @@ import {
 
 afterEach(() => vi.unstubAllGlobals());
 
-const viewerMe: AdminMe = {
-  userId: "u-viewer",
-  platformRoles: [],
-  platformPermissions: [],
-  tenants: [
-    { tenantId: "team:a", name: "A", kind: "team", role: "viewer", permissions: ["tenant.read", "usage.read", "budgets.read", "members.read"] },
-    { tenantId: "team:b", name: "B", kind: "team", role: "support", permissions: ["tenant.read", "usage.read", "budgets.read", "keys.read", "members.read", "audit.read"] },
-  ],
-  promptAccess: false,
-};
+/** A team owner or member: no platform grant, so no console access. */
+const teamMe: AdminMe = { userId: "u-owner", platformRoles: [], platformPermissions: [], promptAccess: false };
 
 const platformMe: AdminMe = {
   userId: "u-staff",
   platformRoles: ["platform_admin"],
   // /me lists every tenant permission for platform_admin too (it holds them on every tenant).
-  platformPermissions: ["tenants.list", "catalog.read", "usage.read_all", "audit.read_all", "audit.read", "budgets.read", "budgets.write"],
-  tenants: [],
+  platformPermissions: ["tenants.list", "catalog.read", "usage.read_all", "audit.read_all", "budgets.read", "team.budgets.allocate"],
   promptAccess: false,
 };
 
@@ -67,27 +58,23 @@ describe("adminRequest", () => {
 });
 
 describe("console permissions (UI affordance only)", () => {
-  it("scopes tenant permissions to the tenant that grants them", () => {
-    expect(adminCan(viewerMe, "audit.read", "team:b")).toBe(true);
-    expect(adminCan(viewerMe, "audit.read", "team:a")).toBe(false);
-    expect(adminCan(viewerMe, "audit.read")).toBe(false);
-    expect(adminCan(platformMe, "budgets.write", "team:anything")).toBe(true);
+  it("offers only what the caller's platform grants hold", () => {
+    expect(adminCan(platformMe, "team.budgets.allocate")).toBe(true);
+    expect(adminCan(platformMe, "upstreams.write")).toBe(false);
+    expect(adminCan(teamMe, "team.budgets.allocate")).toBe(false);
   });
 
-  it("opens a page through a tenant permission in some tenant, or its platform permission", () => {
+  it("opens a page through its platform permission only; a team role opens none", () => {
     const openable = (me: AdminMe) => ADMIN_PAGES.filter((page) => canOpenAdminPage(me, page)).map((page) => page.key);
-    expect(openable(viewerMe)).toEqual(["overview", "users", "budgets", "usage", "audit"]);
+    expect(openable(teamMe)).toEqual([]);
     expect(openable(platformMe)).toEqual(["overview", "models", "users", "budgets", "usage", "audit"]);
   });
 
-  it("shows a requested tenant only when the caller may see it there", () => {
+  it("narrows tenant-scoped pages to the requested tenant, and only those", () => {
     const audit = adminPage("audit");
-    expect(resolveAdminTenant(viewerMe, audit, "team:b")).toBe("team:b");
-    // team:a grants no audit.read, so the page falls back to the first tenant that does.
-    expect(resolveAdminTenant(viewerMe, audit, "team:a")).toBe("team:b");
-    expect(resolveAdminTenant(platformMe, audit, null)).toBeUndefined();
-    expect(resolveAdminTenant(platformMe, audit, "team:z")).toBe("team:z");
-    expect(resolveAdminTenant(platformMe, adminPage("models"), "team:z")).toBeUndefined();
+    expect(resolveAdminTenant(audit, null)).toBeUndefined();
+    expect(resolveAdminTenant(audit, "team:z")).toBe("team:z");
+    expect(resolveAdminTenant(adminPage("models"), "team:z")).toBeUndefined();
   });
 });
 

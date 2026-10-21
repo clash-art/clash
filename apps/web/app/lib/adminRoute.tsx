@@ -68,7 +68,7 @@ export async function loadAdminPage(request: Request, key: AdminPageKey): Promis
   const page = adminPage(key);
   if (!canOpenAdminPage(me, page))
     routeError(403, "GATEWAY_FORBIDDEN", `Your roles do not include access to ${page.label}.`);
-  return { me, page, tenantId: resolveAdminTenant(me, page, url.searchParams.get("tenant")), url };
+  return { me, page, tenantId: resolveAdminTenant(page, url.searchParams.get("tenant")), url };
 }
 
 /** Run the page's data calls; their failures become the same redirect or coded route error. */
@@ -93,7 +93,7 @@ export function AdminRouteFrame({
     <AdminShell
       me={context.me}
       tenantId={context.tenantId}
-      tenantScoped={context.page.tenant !== undefined}
+      tenantScoped={context.page.tenantScoped === true}
       // A new tenant starts from unfiltered views.
       onTenantChange={(tenantId) => setSearchParams(tenantId ? { tenant: tenantId } : {})}
     >

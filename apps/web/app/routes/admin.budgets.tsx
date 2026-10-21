@@ -17,8 +17,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     }
     const [budgets, keys, members] = await Promise.all([
       adminApi.budgets(tenantId),
-      adminCan(me, "keys.read", tenantId) ? adminApi.keys(tenantId).then((result) => result.keys) : Promise.resolve([]),
-      adminCan(me, "members.read", tenantId) ? adminApi.members(tenantId).then((result) => result.members) : Promise.resolve([]),
+      adminCan(me, "keys.read") ? adminApi.keys(tenantId).then((result) => result.keys) : Promise.resolve([]),
+      adminCan(me, "team.members.read") ? adminApi.members(tenantId).then((result) => result.members) : Promise.resolve([]),
     ]);
     return {
       me,
@@ -31,8 +31,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
         keys,
         members,
         can: {
-          budgetsWrite: adminCan(me, "budgets.write", tenantId),
-          limitsWrite: adminCan(me, "limits.write", tenantId),
+          budgetsWrite: adminCan(me, "team.budgets.allocate"),
+          limitsWrite: adminCan(me, "limits.write"),
           walletAdjust: adminCan(me, "wallet.adjust"),
           subscriptionLimits: adminCan(me, "subscription.limits.write"),
         },

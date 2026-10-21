@@ -42,6 +42,12 @@ export const tenants = sqliteTable("tenant", {
 });
 
 /**
+ * Team roles (#392): `owner` or `member`. Platform staff are not a team
+ * role (`gateway_platform_role`, gateway.ts).
+ */
+export const TENANT_MEMBER_ROLES = ["owner", "member"] as const;
+
+/**
  * Pending team invitations. Only the SHA-256 of the invite secret is stored.
  * Terminal rows (accepted/revoked/expired) are deleted after 30 days.
  */
@@ -51,7 +57,8 @@ export const tenantInvites = sqliteTable(
     id: text("id").primaryKey(),
     tenantId: text("tenant_id").notNull(),
     email: text("email").notNull(),
-    role: text("role").notNull(),
+    /** Owner or member only; 0038 triggers refuse any other role. */
+    role: text("role", { enum: TENANT_MEMBER_ROLES }).notNull(),
     tokenHash: text("token_hash").notNull(),
     invitedByUserId: text("invited_by_user_id").notNull(),
     status: text("status").notNull().default("pending"),
@@ -81,7 +88,8 @@ export const tenantMembers = sqliteTable(
   {
     tenantId: text("tenant_id").notNull(),
     userId: text("user_id").notNull(),
-    role: text("role").notNull(),
+    /** Owner or member only; 0038 triggers refuse any other role. */
+    role: text("role", { enum: TENANT_MEMBER_ROLES }).notNull(),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },

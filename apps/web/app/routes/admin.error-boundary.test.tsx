@@ -15,7 +15,7 @@ describe("admin route error boundary", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        Response.json({ userId: "u1", platformRoles: [], platformPermissions: [], tenants: [], promptAccess: false }),
+        Response.json({ userId: "u1", platformRoles: [], platformPermissions: [], promptAccess: false }),
       ),
     );
     const router = createMemoryRouter([{ path: "/admin/upstreams", loader, Component: AdminUpstreamsRoute, ErrorBoundary }], {

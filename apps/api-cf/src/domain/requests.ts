@@ -163,11 +163,9 @@ export const GatewayRolloverRequestSchema = z
 // Guide: apps/docs/guide/gateway-admin.md. Authorization is
 // services/gateway-authz.ts; these schemas only shape the requests.
 
-/** Tenant roles with admin-console permissions, most to least privileged. */
-export const GATEWAY_TENANT_ROLES = ["owner", "admin", "finance", "support", "viewer"] as const;
-/** Every role `tenant_member.role` may hold; `member` uses the gateway but has no admin permission. */
-export const GATEWAY_MEMBER_ROLES = [...GATEWAY_TENANT_ROLES, "member"] as const;
-/** Platform staff grants (`gateway_platform_role`), separate from tenant roles. */
+/** Every role `tenant_member.role` may hold (#392; enforced in D1 by 0038). */
+export const GATEWAY_TENANT_ROLES = ["owner", "member"] as const;
+/** Platform grants (`gateway_platform_role`), separate from tenant roles. */
 export const GATEWAY_PLATFORM_ROLES = ["platform_admin"] as const;
 
 const reason = () => z.string().trim().min(1).max(500);
@@ -268,11 +266,6 @@ export const GatewayWalletStatusRequestSchema = z
 /** PUT …/keys/:keyId/rate-limit and …/subscription/rate-limit; null clears the limit. */
 export const GatewayRateLimitUpdateRequestSchema = z
   .object({ rateLimit: GatewayRateLimitSchema.nullable(), reason: reason().optional() })
-  .strict();
-
-/** PUT /api/v1/admin/gateway/tenants/:tenantId/members/:userId/role. */
-export const GatewayMemberRoleRequestSchema = z
-  .object({ role: z.enum(GATEWAY_MEMBER_ROLES), reason: reason().optional() })
   .strict();
 
 /** POST /api/v1/admin/gateway/platform-admins. */

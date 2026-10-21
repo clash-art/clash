@@ -62,14 +62,11 @@ const seg = encodeURIComponent;
 
 // ─── Types (server views) ─────────────────────────────────────────────────
 
-export type TenantRole = "owner" | "admin" | "finance" | "support" | "viewer";
-export const ADMIN_MEMBER_ROLES = ["owner", "admin", "finance", "support", "viewer", "member"] as const;
-
+/** The caller's platform grants: the console is for `platform_admin` only (#392). */
 export interface AdminMe {
   userId: string;
   platformRoles: string[];
   platformPermissions: string[];
-  tenants: Array<{ tenantId: string; name: string; kind: string; role: string; permissions: string[] }>;
   promptAccess: boolean;
 }
 
@@ -323,15 +320,9 @@ export interface AuditFilters {
 
 // ─── Permissions (UI affordance only; the server decides) ─────────────────
 
-export function adminCan(me: AdminMe, permission: string, tenantId?: string): boolean {
-  if (me.platformPermissions.includes(permission)) return true;
-  if (tenantId === undefined) return false;
-  return me.tenants.some((tenant) => tenant.tenantId === tenantId && tenant.permissions.includes(permission));
-}
-
-/** The first tenant where the caller holds `permission`. */
-export function firstTenantWith(me: AdminMe, permission: string): string | undefined {
-  return me.tenants.find((tenant) => tenant.permissions.includes(permission))?.tenantId;
+/** Whether the caller's platform grants hold `permission`; tenant roles never open the console. */
+export function adminCan(me: AdminMe, permission: string): boolean {
+  return me.platformPermissions.includes(permission);
 }
 
 export type AdminPageKey =
@@ -349,47 +340,36 @@ export interface AdminPage {
   key: AdminPageKey;
   path: string;
   label: string;
-  /** Opens with this permission in a tenant the caller belongs to. */
-  tenant?: string;
-  /** Opens with this platform permission (platform-wide view). */
-  platform?: string;
+  /** The platform permission that opens the page. */
+  permission: string;
+  /** Whether `?tenant=` narrows the page to one tenant. */
+  tenantScoped?: boolean;
 }
 
-/** The console pages and the permission each needs (one of). */
+/** The console pages and the platform permission each needs. */
 export const ADMIN_PAGES: readonly AdminPage[] = [
-  { key: "overview", path: "/admin", label: "Overview", tenant: "tenant.read", platform: "usage.read_all" },
-  { key: "models", path: "/admin/models", label: "Models & prices", platform: "catalog.read" },
-  { key: "upstreams", path: "/admin/upstreams", label: "Upstreams", platform: "upstreams.read" },
-  { key: "users", path: "/admin/users", label: "Users & teams", tenant: "members.read", platform: "tenants.list" },
-  { key: "budgets", path: "/admin/budgets", label: "Budgets & limits", tenant: "budgets.read", platform: "tenants.list" },
-  { key: "packages", path: "/admin/packages", label: "Packages", platform: "packages.read" },
-  { key: "usage", path: "/admin/usage", label: "Usage", tenant: "usage.read", platform: "usage.read_all" },
-  { key: "abuse", path: "/admin/abuse", label: "Abuse", platform: "abuse.read" },
-  { key: "audit", path: "/admin/audit", label: "Audit log", tenant: "audit.read", platform: "audit.read_all" },
+  { key: "overview", path: "/admin", label: "Overview", permission: "usage.read_all", tenantScoped: true },
+  { key: "models", path: "/admin/models", label: "Models & prices", permission: "catalog.read" },
+  { key: "upstreams", path: "/admin/upstreams", label: "Upstreams", permission: "upstreams.read" },
+  { key: "users", path: "/admin/users", label: "Users & teams", permission: "tenants.list", tenantScoped: true },
+  { key: "budgets", path: "/admin/budgets", label: "Budgets & limits", permission: "tenants.list", tenantScoped: true },
+  { key: "packages", path: "/admin/packages", label: "Packages", permission: "packages.read" },
+  { key: "usage", path: "/admin/usage", label: "Usage", permission: "usage.read_all", tenantScoped: true },
+  { key: "abuse", path: "/admin/abuse", label: "Abuse", permission: "abuse.read" },
+  { key: "audit", path: "/admin/audit", label: "Audit log", permission: "audit.read_all", tenantScoped: true },
 ];
 
 export function adminPage(key: AdminPageKey): AdminPage {
   return ADMIN_PAGES.find((page) => page.key === key)!;
 }
 
-/** Whether the caller can open `page` at all (platform-wide or in some tenant). */
 export function canOpenAdminPage(me: AdminMe, page: AdminPage): boolean {
-  return (
-    (page.platform !== undefined && me.platformPermissions.includes(page.platform)) ||
-    (page.tenant !== undefined && firstTenantWith(me, page.tenant) !== undefined)
-  );
+  return adminCan(me, page.permission);
 }
 
-/**
- * The tenant a tenant-scoped page shows: the requested one when the caller
- * may see it there, else their first tenant with the permission. Undefined
- * means the platform-wide view (platform staff) or no access.
- */
-export function resolveAdminTenant(me: AdminMe, page: AdminPage, requested: string | null): string | undefined {
-  if (!page.tenant) return undefined;
-  if (requested && adminCan(me, page.tenant, requested)) return requested;
-  if (page.platform && me.platformPermissions.includes(page.platform)) return undefined;
-  return firstTenantWith(me, page.tenant);
+/** The tenant a tenant-scoped page shows: the requested one, else undefined (all tenants). */
+export function resolveAdminTenant(page: AdminPage, requested: string | null): string | undefined {
+  return page.tenantScoped && requested ? requested : undefined;
 }
 
 // ─── Calls ────────────────────────────────────────────────────────────────
@@ -452,11 +432,6 @@ export const adminApi = {
 
   tenants: (query?: string) => adminRequest<{ tenants: TenantSummary[] }>("GET", `/tenants${q({ query })}`),
   members: (tenantId: string) => adminRequest<{ members: TenantMember[] }>("GET", `/tenants/${seg(tenantId)}/members`),
-  setMemberRole: (tenantId: string, userId: string, role: string, reason?: string) =>
-    adminRequest<{ member: TenantMember }>("PUT", `/tenants/${seg(tenantId)}/members/${seg(userId)}/role`, {
-      role,
-      ...(reason ? { reason } : {}),
-    }),
   platformAdmins: () => adminRequest<{ admins: PlatformAdmin[] }>("GET", "/platform-admins"),
   grantPlatformAdmin: (userId: string, reason?: string) =>
     adminRequest<{ granted: boolean }>("POST", "/platform-admins", { userId, ...(reason ? { reason } : {}) }),
