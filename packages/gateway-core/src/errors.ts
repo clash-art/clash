@@ -344,6 +344,14 @@ const definitions = {
     anthropic: "api_error",
     message: "The request or response body could not be retained.",
   },
+  // A streamed answer longer than the retention cap: only its first bytes are
+  // kept. A marker in the stored copy and its metadata; never an error answer.
+  GATEWAY_RETENTION_TRUNCATED: {
+    status: 500,
+    openai: "server_error",
+    anthropic: "api_error",
+    message: "The streamed response exceeded the retention cap; only its first bytes are retained.",
+  },
   GATEWAY_CONFLICT: {
     status: 409,
     openai: "invalid_request_error",
@@ -422,18 +430,39 @@ export function toGatewayError(error: unknown): GatewayError {
   return new GatewayError("GATEWAY_INTERNAL", { cause: error });
 }
 
+/**
+ * Which budget refused a GATEWAY_BUDGET_EXCEEDED request and when it resets:
+ * `budget_id` is null when the caller has no budget at all, `reset_at`
+ * (ISO 8601) is null for a budget that never resets.
+ */
+export interface BudgetErrorFields {
+  budget_id: string | null;
+  reset_at: string | null;
+}
+
 export interface OpenAIErrorBody {
   error: {
     message: string;
     type: OpenAIErrorType;
     param: string | null;
     code: GatewayErrorCode;
-  };
+  } & Partial<BudgetErrorFields>;
 }
 
 export interface AnthropicErrorBody {
   type: "error";
-  error: { type: AnthropicErrorType; message: string };
+  error: { type: AnthropicErrorType; message: string } & Partial<BudgetErrorFields>;
+}
+
+/** The budget fields of a GATEWAY_BUDGET_EXCEEDED body; nothing for any other code. */
+function budgetFields(error: GatewayError): BudgetErrorFields | Record<string, never> {
+  if (error.code !== "GATEWAY_BUDGET_EXCEEDED") return {};
+  const budgetId = error.details?.budgetId;
+  const resetAt = error.details?.resetAt;
+  return {
+    budget_id: typeof budgetId === "string" ? budgetId : null,
+    reset_at: typeof resetAt === "number" && Number.isFinite(resetAt) ? new Date(resetAt).toISOString() : null,
+  };
 }
 
 export function toOpenAIErrorBody(error: GatewayError): OpenAIErrorBody {
@@ -444,6 +473,7 @@ export function toOpenAIErrorBody(error: GatewayError): OpenAIErrorBody {
       type: definitions[error.code].openai,
       param: typeof param === "string" ? param : null,
       code: error.code,
+      ...budgetFields(error),
     },
   };
 }
@@ -454,6 +484,7 @@ export function toAnthropicErrorBody(error: GatewayError): AnthropicErrorBody {
     error: {
       type: definitions[error.code].anthropic,
       message: `${error.code}: ${error.message}`,
+      ...budgetFields(error),
     },
   };
 }

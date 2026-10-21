@@ -61,7 +61,7 @@ Platform permissions, `platform_admin` only: `tenants.list`, `catalog.read`,
 `packages.write`, `billing.rollover`, `upstreams.read`, `upstreams.write`,
 `wallet.adjust`, `subscription.limits.write`, `platform_roles.read`,
 `platform_roles.write`, `usage.read_all`, `audit.read_all`, `abuse.read`,
-`prompts.view`, `retention.purge`.
+`prompts.view`, `retention.purge`, `holds.sweep`.
 
 The admin console authorizes with `platformRoute`: the permission must come
 from a platform grant, so a team owner is refused there even for a tenant
@@ -113,8 +113,8 @@ upsert/remove/publish, upstream create/update/disable/rotate, member and key
 budgets, wallet corrections and status, key and subscription rate limits,
 team role changes (`setMemberRole` in `d1-tenant-admin.ts`, for team
 settings; the last owner is kept, `GATEWAY_LAST_OWNER`), platform role grants
-and revocations, retention purges that deleted something, and every staff
-prompt view (whatever its outcome).
+and revocations, retention purges that deleted something, hold sweeps that
+expired something, and every staff prompt view (whatever its outcome).
 
 The log is append-only: there is no update or delete API, and 0036 triggers
 refuse `UPDATE` and any `DELETE` of a row younger than 13 months (the
@@ -135,6 +135,7 @@ All under `/api/v1/admin/gateway`. Errors are coded (`x-clash-error-code`).
 | Rate limits    | `GET /tenants/:t/keys`; `PUT /tenants/:t/keys/:keyId/rate-limit`; `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts     |
 | Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide); `GET /abuse`                                                   |
 | Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`                                                                    |
+| Holds          | `POST /holds/sweep {limit?}`: the stale-hold sweeper now ([gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper))                       |
 
 **Catalog.** The data plane routes the newest published catalog version as a
 whole, so a change is: clone the live version into a draft, upsert or remove
@@ -205,6 +206,21 @@ entry), after settlement, the data plane stores two R2 objects in the
   answer the caller received. That is the completion, or the coded gateway
   error after an upstream failure, never the upstream's own error body.
 
+Streamed answers are retained too (product decision 2026-10-20, #348). The
+object holds the event stream as the caller received it, including any coded
+trailer. It is copied beside the stream as each chunk is handed over, so the
+caller is never held back, and it is stored when the stream ends, after
+settlement. The copy is capped (`retention.maxStreamBytes`, 8 MiB by
+default). A longer stream is stored cut at the cap, and:
+
+- the object ends in
+  `: x-gateway-retention: truncated; code=GATEWAY_RETENTION_TRUNCATED; stored_bytes=<n>; observed_bytes=<m>`;
+- the row has `response_truncated = 1` and `response_observed_bytes` (0038);
+- `gateway.retention_truncated` is logged.
+
+A truncated copy is never silent. A stream whose caller disconnected is
+stored with what the caller received up to that point.
+
 It also writes one `gateway_request_retention` row (migration 0037) with the
 request, tenant, user and key ids, the object keys, sizes, SHA-256, content
 types, the answer's HTTP status, `stored_at` and `expires_at = stored_at +
@@ -245,8 +261,10 @@ nothing is returned.
 | An object is missing or fails its SHA-256      | `GATEWAY_RETENTION_FAILED` (500)                   |
 
 `prompt.request.body` and `prompt.response.body` are the stored bytes,
-decoded as the UTF-8 JSON they were written as, with `bytes` and `sha256`
-so they can be checked against the original.
+decoded as the UTF-8 text they were written as (JSON, or a stream's SSE), with
+`bytes` and `sha256` so they can be checked against the original. Each body
+also has `truncated`; a truncated stream copy adds `observedBytes`, and the
+view's audit `after` records `responseTruncated`.
 
 ### Purge
 
@@ -327,7 +345,9 @@ or the coded error (expired, not retained).
   mutation and rollback when the audit write fails, upstream secret custody,
   rate-limit validation; staff prompt view (platform_admin only, the stored
   bytes, every view audited without the body, nothing disclosed when the
-  audit fails, expiry before purge, idempotent purge).
+  audit fails, expiry before purge, idempotent purge, a truncated stream
+  copy); the hold sweep (platform_admin only, expires once, audited only
+  when it changed something).
 - `packages/gateway-core/src/retention.test.ts` and the contract cases
   (`retention`, data plane): body stored on success and on upstream error,
   credentials never stored, coded failure with unchanged billing, expiry,

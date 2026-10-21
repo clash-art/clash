@@ -1,5 +1,5 @@
 /**
- * Workers/D1 adapter for the model gateway data plane (#347). Builds
+ * Workers/D1 adapter for the model gateway data plane (#347, streaming #348). Builds
  * gateway-core's GatewayPorts over D1 and mounts `createGatewayApp` at
  * `/gateway/v1/*` (registered in routes/gateway.ts beside `/gateway/me`).
  *
@@ -89,18 +89,27 @@ export function workerSecrets(env: Env): GatewayCredentialSecrets {
   };
 }
 
-/** The data plane for one request's bindings. Cheap: ports are plain closures. */
+/**
+ * The data plane for one request's bindings. Cheap: ports are plain closures.
+ * `waitUntil` (the request's `ctx.waitUntil`) keeps a stream's settlement and
+ * retention alive after its caller disconnects.
+ */
 export function createCloudflareGatewayApp(
   env: Env,
-  options: { upstream?: GatewayUpstreamPort } = {},
+  options: { upstream?: GatewayUpstreamPort; waitUntil?: (promise: Promise<unknown>) => void } = {},
 ): GatewayApp {
+  const { waitUntil, ...ports } = options;
   return createGatewayApp(
     createD1GatewayPorts({
       db: env.DB,
       secrets: workerSecrets(env),
       ...(env.R2_BUCKET ? { bucket: env.R2_BUCKET } : {}),
-      ...options,
+      ...ports,
     }),
-    { basePath: GATEWAY_BASE_PATH, retention: { enabled: staffPromptAccessEnabled(env) } },
+    {
+      basePath: GATEWAY_BASE_PATH,
+      retention: { enabled: staffPromptAccessEnabled(env) },
+      ...(waitUntil ? { waitUntil } : {}),
+    },
   );
 }

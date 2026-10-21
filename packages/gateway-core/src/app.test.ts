@@ -3,11 +3,15 @@ import { buildEffectiveModelCards } from "@clash/shared-types/model-routing";
 
 import {
   createGatewayApp,
+  GATEWAY_APP_DEFAULTS,
   GATEWAY_REQUEST_ID_HEADER,
   GATEWAY_SETTLEMENT_HEADER,
   isOpenAIChatRoute,
+  type GatewayAppOptions,
 } from "./app.js";
+import { sweepExpiredGatewayHolds } from "./holds.js";
 import type { GatewayUpstreamPort } from "./ports.js";
+import { createSseParser, OPENAI_STREAM_DONE } from "./sse.js";
 import { planGatewayRoutes, type GatewayCatalog } from "./routing.js";
 import { catalogFixture } from "./testing/fixtures.js";
 import { createMemoryGatewayPorts, type MemoryIdentity } from "./testing/memory-ports.js";
@@ -20,6 +24,7 @@ function gateway(options: {
   catalog?: GatewayCatalog;
   /** Extra official accounts, e.g. a second OpenAI-compatible route. */
   extraOfficial?: typeof fixture.providers.official;
+  app?: GatewayAppOptions;
 }) {
   const official = [...fixture.providers.official, ...(options.extraOfficial ?? [])];
   const memory = createMemoryGatewayPorts({
@@ -61,7 +66,7 @@ function gateway(options: {
     ],
     upstream: options.upstream,
   });
-  return { memory, app: createGatewayApp(memory.ports, { basePath: "/gateway", upstreamTimeoutMs: 50 }) };
+  return { memory, app: createGatewayApp(memory.ports, { basePath: "/gateway", upstreamTimeoutMs: 50, ...options.app }) };
 }
 
 const post = (body: unknown, init: { token?: string; path?: string; method?: string; raw?: string } = {}) =>
@@ -346,5 +351,153 @@ describe("createGatewayApp", () => {
     const unknownPath = await app.fetch(post(chat, { path: "/gateway/v1/embeddings" }));
     expect([unknownPath.status, code(unknownPath)]).toEqual([501, "GATEWAY_CAPABILITY_UNAVAILABLE"]);
     expect(code(await app.fetch(post(chat, { token: "" })))).toBe("GATEWAY_AUTH_REQUIRED");
+  });
+});
+
+describe("createGatewayApp streaming", () => {
+  const encoder = new TextEncoder();
+  const streamChat = { ...chat, stream: true };
+  const event = (payload: unknown) => `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`;
+  const first = event({ choices: [{ index: 0, delta: { content: "partial answer" } }] });
+  const rest = [
+    event({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }),
+    event({ choices: [], usage: { prompt_tokens: 2, completion_tokens: 3 } }),
+    event(OPENAI_STREAM_DONE),
+  ];
+  /** First event at once; the rest after `gate` (if any). An abort errors the body like a fetch would. */
+  const sse = (gate?: Promise<unknown>, signal?: AbortSignal) =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          signal?.addEventListener("abort", () => {
+            try {
+              controller.error(signal.reason);
+            } catch {
+              // Already closed.
+            }
+          });
+          controller.enqueue(encoder.encode(first));
+          if (gate) await gate;
+          if (signal?.aborted) return;
+          for (const part of rest) controller.enqueue(encoder.encode(part));
+          controller.close();
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    );
+  const lastEvent = (text: string) => {
+    const parser = createSseParser();
+    return [...parser.push(text), ...parser.end()].at(-1)!;
+  };
+  const ledger = (memory: ReturnType<typeof gateway>["memory"], res: Response) =>
+    memory.ports.ledger.get({ tenantId: "tenant-a", requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! });
+
+  it("aborts a stream past its duration limit and settles it partial with a coded in-stream timeout", async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    const { app, memory } = gateway({
+      app: { streamMaxDurationMs: 20 },
+      upstream: {
+        async fetch(request) {
+          upstreamSignal = request.signal;
+          return sse(new Promise(() => undefined), request.signal);
+        },
+      },
+    });
+    const res = await app.fetch(post(streamChat));
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text.startsWith(first)).toBe(true);
+    expect(JSON.parse(lastEvent(text).data)).toMatchObject({ error: { code: "GATEWAY_UPSTREAM_TIMEOUT" } });
+    expect(upstreamSignal?.aborted).toBe(true);
+    const row = await ledger(memory, res);
+    expect(row).toMatchObject({ status: "partial", errorCode: "GATEWAY_UPSTREAM_TIMEOUT", usage: { source: "estimated" } });
+    expect(row!.costMicroCredits).toBeGreaterThan(0);
+  });
+
+  it("fails over before the first byte, and answers a coded JSON error when no route streams", async () => {
+    const second = {
+      id: "official-openai-2",
+      providerId: "official",
+      upstreamId: "openai",
+      apiShape: "openai-compatible",
+      configuredCredentials: ["apiKey"],
+    };
+    const accounts = [fixture.providers.official[0]!, second];
+    const catalog: GatewayCatalog = {
+      version: "stream-failover-1",
+      models: buildEffectiveModelCards({
+        baseModels: [],
+        providers: accounts,
+        configs: [
+          {
+            modelId: fixture.textModel,
+            custom: true,
+            name: "Failover chat",
+            kind: "text",
+            providerBindings: accounts.map((account) => ({ providerAccountId: account.id!, upstreamModel: `${account.id}-model` })),
+          },
+        ],
+      }),
+    };
+    let calls = 0;
+    const failover = gateway({
+      catalog,
+      extraOfficial: [second],
+      upstream: { fetch: async () => ((calls += 1) === 1 ? new Response("busy", { status: 503 }) : sse()) },
+    });
+    const res = await failover.app.fetch(post(streamChat));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe([first, ...rest.filter((part) => !part.includes('"usage"'))].join(""));
+    expect(calls).toBe(2);
+    expect(await ledger(failover.memory, res)).toMatchObject({ status: "settled" });
+
+    // A 2xx that is not an event stream, and an upstream that never answers.
+    for (const upstream of [
+      { fetch: async () => Response.json({ choices: [] }) },
+      {
+        fetch: (request: Request) =>
+          new Promise<Response>((_resolve, reject) => request.signal.addEventListener("abort", () => reject(request.signal.reason))),
+      },
+    ]) {
+      const { app, memory } = gateway({ upstream });
+      const refused = await app.fetch(post(streamChat));
+      expect(refused.headers.get("content-type")).toContain("application/json");
+      expect(["GATEWAY_UPSTREAM_ERROR", "GATEWAY_UPSTREAM_TIMEOUT", "GATEWAY_ROUTES_EXHAUSTED"]).toContain(code(refused));
+      expect(await ledger(memory, refused)).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
+    }
+  });
+
+  it("holds a stream's reservation past the plain hold TTL, so the sweeper never expires a live stream", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const { app, memory } = gateway({ upstream: { fetch: async (request) => sse(gate, request.signal) } });
+    const res = await app.fetch(post(streamChat));
+    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+    memory.advance(GATEWAY_APP_DEFAULTS.holdTtlMs + 1);
+    expect(await sweepExpiredGatewayHolds(memory.ports)).toEqual({ expired: 0, failed: 0 });
+    expect(memory.reservationState(requestId)).toBe("open");
+    open();
+    await res.text();
+    expect(await ledger(memory, res)).toMatchObject({ status: "settled" });
+  });
+
+  it("settles a stream whose hold the sweeper already expired as a logged duplicate, charging nothing", async () => {
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const { app, memory } = gateway({ upstream: { fetch: async (request) => sse(gate, request.signal) } });
+    const res = await app.fetch(post(streamChat));
+    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+    memory.advance(GATEWAY_APP_DEFAULTS.holdTtlMs + GATEWAY_APP_DEFAULTS.streamMaxDurationMs + 1);
+    expect(await sweepExpiredGatewayHolds(memory.ports)).toEqual({ expired: 1, failed: 0 });
+    open();
+    await res.text();
+    expect(await ledger(memory, res)).toMatchObject({ status: "expired", costMicroCredits: 0 });
+    expect(memory.logs).toContainEqual(
+      expect.objectContaining({ level: "warn", event: "gateway.settle_duplicate", fields: expect.objectContaining({ requestId }) }),
+    );
   });
 });

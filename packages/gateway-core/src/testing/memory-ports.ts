@@ -27,6 +27,7 @@ import {
 } from "../ports.js";
 import type { GatewayPrice } from "../pricing.js";
 import type { GatewayCatalog, GatewayCredentialScope } from "../routing.js";
+import { emptyUsage } from "../usage.js";
 
 export interface MemoryIdentity extends GatewayIdentity {
   /** Epoch ms after which the bearer token is expired. */
@@ -52,6 +53,7 @@ interface OpenReservation {
   tenantId: string;
   holds: BudgetHold[];
   idempotencyKey?: string;
+  expiresAt: number;
   state: "open" | "settle_failed" | "settled";
 }
 
@@ -162,6 +164,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
           tenantId: input.tenantId,
           holds: planned.holds,
           ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
+          expiresAt: input.expiresAt,
           state: "open",
         });
         if (idempotencyId) idempotency.set(idempotencyId, input.requestId);
@@ -206,6 +209,39 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
           .filter((budget) => budget.tenantId === tenantId)
           .filter((budget) => !budgetIds || budgetIds.includes(budget.id))
           .map(({ tenantId: _tenantId, ...budget }) => budget);
+      },
+      async expiredHolds({ before, limit }) {
+        return [...reservations.entries()]
+          .filter(([, reservation]) => reservation.state === "open" && reservation.expiresAt <= before)
+          .sort(([, a], [, b]) => a.expiresAt - b.expiresAt)
+          .slice(0, limit)
+          .map(([requestId, reservation]) => ({ requestId, tenantId: reservation.tenantId, expiresAt: reservation.expiresAt }));
+      },
+      async expire({ requestId, tenantId, before }) {
+        const reservation = reservations.get(requestId);
+        if (!reservation || reservation.tenantId !== tenantId || reservation.state !== "open" || reservation.expiresAt > before)
+          return { expired: false };
+        for (const hold of reservation.holds) {
+          const budget = budgets.get(hold.budgetId)!;
+          budgets.set(budget.id, { ...planSettle(budget, hold, 0).budget, tenantId: budget.tenantId });
+        }
+        reservation.state = "settled";
+        ledger.set(requestId, {
+          requestId,
+          tenantId,
+          userId: "",
+          modelCode: "",
+          kind: "text",
+          upstreamId: "",
+          credentialScope: "official",
+          usage: emptyUsage(),
+          costMicroCredits: 0,
+          priceVersion: "",
+          catalogVersion: "",
+          status: "expired",
+          occurredAt: now,
+        });
+        return { expired: true };
       },
     },
     limits: {

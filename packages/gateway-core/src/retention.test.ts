@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import { GatewayError } from "./errors.js";
 import type { GatewayPorts } from "./ports.js";
 import {
+  createRetainedBodyCopy,
   gatewayRetentionKeys,
   purgeExpiredGatewayBodies,
   readRetainedExchange,
   retainGatewayExchange,
+  retentionTruncationMarker,
   type RetainExchangeInput,
 } from "./retention.js";
 import { catalogFixture } from "./testing/fixtures.js";
@@ -97,5 +99,47 @@ describe("body retention", () => {
     expect(await purgeExpiredGatewayBodies(broken)).toEqual({ purged: 0, failed: 1 });
     expect((await gateway.ports.retention.get({ requestId: "r4" }))?.status).toBe("stored");
     expect(await purgeExpiredGatewayBodies(gateway.ports)).toEqual({ purged: 1, failed: 0 });
+  });
+});
+
+describe("streamed answer copy", () => {
+  it("keeps every byte under the cap, unmarked", () => {
+    const copy = createRetainedBodyCopy(64);
+    for (const part of ["data: a\n\n", "data: b\n\n"]) copy.append(bytes(part));
+    expect(copy.result()).toEqual({ body: bytes("data: a\n\ndata: b\n\n") });
+  });
+
+  it("cuts at the cap across chunks, counts everything delivered, and ends in the coded marker", () => {
+    const copy = createRetainedBodyCopy(5);
+    for (const part of ["abc", "defg", "hij"]) copy.append(bytes(part));
+    const { body, truncated } = copy.result();
+    expect(truncated).toEqual({ observedBytes: 10 });
+    expect(copy.observedBytes).toBe(10);
+    expect(new TextDecoder().decode(body)).toBe(`abcde${retentionTruncationMarker({ storedBytes: 5, observedBytes: 10 })}`);
+    expect(retentionTruncationMarker({ storedBytes: 5, observedBytes: 10 })).toContain("code=GATEWAY_RETENTION_TRUNCATED");
+  });
+
+  it("records a truncated copy as stored and truncated, logged with its code, and reads it back intact", async () => {
+    const gateway = memory();
+    const copy = createRetainedBodyCopy(4);
+    copy.append(bytes("data: long\n\n"));
+    const { body, truncated } = copy.result();
+    const base = exchange("r5");
+    expect(
+      await retainGatewayExchange(gateway.ports, {
+        ...base,
+        response: { status: 200, body, contentType: "text/event-stream", ...(truncated ? { truncated } : {}) },
+      }),
+    ).toEqual({ status: "stored", truncated: true });
+    const read = await readRetainedExchange(gateway.ports, { requestId: "r5" });
+    expect([...read.response.body]).toEqual([...body]);
+    expect(read.entry.response).toMatchObject({ truncated: true, observedBytes: copy.observedBytes, bytes: body.byteLength });
+    expect(gateway.logs).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        event: "gateway.retention_truncated",
+        fields: expect.objectContaining({ requestId: "r5", code: "GATEWAY_RETENTION_TRUNCATED", observedBytes: copy.observedBytes }),
+      }),
+    );
   });
 });

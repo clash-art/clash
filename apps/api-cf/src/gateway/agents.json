@@ -1,24 +1,25 @@
 {
-  "summary": "Workers/D1 adapter for the model gateway data plane (#347): gateway-core GatewayPorts over D1 and createGatewayApp mounted at /gateway/v1/* by routes/gateway.ts. Guide: apps/docs/guide/gateway-data-plane.md.",
+  "summary": "Workers/D1 adapter for the model gateway data plane (#347, streaming #348): gateway-core GatewayPorts over D1 and createGatewayApp mounted at /gateway/v1/* by routes/gateway.ts, which passes ctx.waitUntil so a disconnected stream still settles. Guide: apps/docs/guide/gateway-data-plane.md.",
   "context_hints": [
     "Decisions (routing, holds, pricing, coded errors, the HTTP flow) live in @clash/gateway-core; these files only make them durable. Never re-implement them here.",
     "D1 columns are unix seconds, gateway-core is epoch ms: convert through d1-common.ts only.",
     "Identity is the sk_gw_ token (services/gateway-tokens.ts) with the models:invoke scope; no header, x-user-id included, is identity.",
     "Official upstream secrets: secret_ref may only name a GATEWAY_UPSTREAM_* Worker secret; envelopes are sealed under GATEWAY_ENCRYPTION_KEY (never ACTION_SECRET_KEY). No key material in errors or logs.",
     "Unimplemented ports (scheduler, audit) are unavailablePort (501), never silent no-ops.",
-    "Body retention (#353, decision 2026-10-20): blobs = R2 (R2_BUCKET, prefix gateway-retention/), retention = D1 gateway_request_retention metadata only. On only when GATEWAY_STAFF_PROMPT_ACCESS=enabled (hosted); purge runs regardless from the scheduled handler. Never store headers or upstream credentials."
+    "Body retention (#353, decision 2026-10-20): blobs = R2 (R2_BUCKET, prefix gateway-retention/), retention = D1 gateway_request_retention metadata only. On only when GATEWAY_STAFF_PROMPT_ACCESS=enabled (hosted); purge runs regardless from the scheduled handler. Never store headers or upstream credentials. Streams are retained as delivered, capped; a cut copy is response_truncated = 1 (0038).",
+    "Stale holds (#348): sweepGatewayHolds (d1-budgets.ts) runs from the scheduled handler and POST /api/v1/admin/gateway/holds/sweep; it never touches settle_failed holds."
   ],
   "key_files": {
     "index.ts": "createD1GatewayPorts, workerSecrets, staffPromptAccessEnabled, createCloudflareGatewayApp (basePath /gateway, retention per the flag).",
     "r2-blobs.ts": "gateway-core blobs over the R2 bucket; failures are GATEWAY_INTERNAL.",
-    "d1-retention.ts": "gateway-core retention over gateway_request_retention (0037); gatewayRetentionPorts and purgeGatewayRetention for the scheduled handler and the admin purge route.",
+    "d1-retention.ts": "gateway-core retention over gateway_request_retention (0037, truncation columns 0038); gatewayRetentionPorts and purgeGatewayRetention for the scheduled handler and the admin purge route.",
     "workers-logger.ts": "GatewayLogger over serverLog; never throws.",
     "d1-routes.ts": "Published catalog from gateway_model.card_json, official accounts from gateway_upstream_account (tenant scope: none), price book from published gateway_price rows effective at the admission instant (newest version first, exact upstream over model-wide).",
     "d1-price-book.ts": "#352 price-book admin: list, draft (replaced wholly in one batch), publish (one UPDATE; effective_from never before the publish instant). Published rows are immutable; every mutation writes gateway_admin_audit in the same batch.",
     "d1-billing.ts": "#352 credit billing: packages, top-up packs, subscribe (first-period grant), top-up, cancel, idempotent rollover (expire unused grant + next grant), wallet summary. Each operation is one changes()-chained batch with a CHECK-violation guard; ledger request ids are the idempotency anchors.",
     "d1-billing.test.ts": "Price book + billing on node:sqlite: draft/publish, effective dates, no repricing through the real data plane, grant/topup/expire idempotency, team wallet, coded atomic refusals.",
     "d1-credentials.ts": "Official credential resolution (secret_ref or sealed envelope), fail closed with GATEWAY_KEY_UNAVAILABLE; sealGatewayUpstreamCredentials.",
-    "d1-budgets.ts": "All-or-nothing reserve in one batch (CHECK-violation guard rolls back), single-batch settle writing per-budget settle rows; ledger reads. No budget row = refused.",
+    "d1-budgets.ts": "All-or-nothing reserve in one batch (CHECK-violation guard rolls back), single-batch settle writing per-budget settle rows; ledger reads. No budget row = refused. expiredHolds/expire + sweepGatewayHolds: open holds past expires_at -> expired with a zero-cost expired settle row, once.",
     "d1-limits.ts": "rate_limit_json from key / model / subscription, counted in gateway_rate_window and gateway_inflight (0034).",
     "d1-common.ts": "Time conversion, monotonic clock, published-catalog subquery, JSON helpers.",
     "d1-admin-audit.ts": "#353 the one gateway_admin_audit writer: adminAuditStatement (a statement for the mutation's own batch, chained on changes()) and redactAuditValue (secret keys and credential-shaped values become [redacted]). Rows are append-only (0036 triggers).",
@@ -29,6 +30,6 @@
     "platform-admin-bootstrap.ts": "#353 dependency-free bootstrap SQL and argument parsing for scripts/gateway-platform-admin.ts (local or staging only, idempotent).",
     "d1-admin-reads.ts": "#353 console reads: ledger usage + per-model totals, audit filter, overview metrics, tenants, abuse rate-window counters (denied events not recorded yet).",
     "test-support.ts": "Test-only seeding and the shared gateway-core contract harness over these ports (node:sqlite unit run and miniflare run).",
-    "d1-gateway.test.ts": "Contract on node:sqlite, /gateway/v1 through createApp (spoofed x-user-id ignored, coded 401/402/403/404/501/502), body retention (flag on/off, R2 failure coded and billing unchanged, no credentials stored), credential custody."
+    "d1-gateway.test.ts": "Contract on node:sqlite, /gateway/v1 through createApp (spoofed x-user-id ignored, coded 401/402/403/404/502, a stream byte for byte with settlement and retention), body retention (flag on/off, R2 failure coded and billing unchanged, no credentials stored), the hold sweep, credential custody."
   }
 }

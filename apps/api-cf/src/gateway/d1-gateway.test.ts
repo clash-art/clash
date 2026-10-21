@@ -21,10 +21,17 @@ import { listDeclaredModelUpstreamRoutes } from "@clash/shared-types";
 
 import { createApp } from "../app";
 import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
-import { createD1GatewayBudgetPorts } from "./d1-budgets";
+import { createD1GatewayBudgetPorts, sweepGatewayHolds } from "./d1-budgets";
 import { createD1GatewayCredentialPort, sealGatewayUpstreamCredentials } from "./d1-credentials";
 import { gatewayRetentionKeys } from "@clash/gateway-core";
-import { createMemoryBucket, d1ContractHarness, officialChatCard, seedGateway, type SeededGateway } from "./test-support";
+import {
+  createMemoryBucket,
+  d1ContractHarness,
+  gatewayRequest,
+  officialChatCard,
+  seedGateway,
+  type SeededGateway,
+} from "./test-support";
 
 const { d1, sqlite } = createSqliteD1();
 const bucket = createMemoryBucket();
@@ -114,7 +121,51 @@ describe("/gateway/v1 through the Worker app", () => {
       });
   });
 
-  it("answers coded 401/403/404/402/501/502 without calling or leaking the upstream", async () => {
+  it("streams through the Worker mount byte for byte, settles it, and retains the delivered bytes", async () => {
+    const caller = await gateway.tenantToken();
+    const events = (model: string) =>
+      [
+        { choices: [{ index: 0, delta: { role: "assistant", content: "hi" } }], model },
+        { choices: [{ index: 0, delta: {}, finish_reason: "stop" }], model },
+        { choices: [], usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }, model },
+        "[DONE]",
+      ]
+        .map((payload) => `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`)
+        .join("");
+    let sent = "";
+    stubUpstream((body) => {
+      sent = events(String(body.model));
+      return new Response(sent, { headers: { "content-type": "text/event-stream" } });
+    });
+    const res = await app.request(
+      "/gateway/v1/chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${caller.token}` },
+        body: JSON.stringify(chat(gateway.textModel, { stream: true, stream_options: { include_usage: true } })),
+      },
+      { DB: d1, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey, GATEWAY_STAFF_PROMPT_ACCESS: "enabled", R2_BUCKET: bucket } as never,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const delivered = await res.text();
+    expect(delivered).toBe(sent);
+    expect(((await upstream[0]!.json()) as { stream_options: unknown }).stream_options).toEqual({ include_usage: true });
+    const requestId = res.headers.get("x-clash-request-id")!;
+    const settled = sqlite
+      .prepare(`SELECT status, input_tokens, output_tokens, usage_source FROM gateway_usage_ledger WHERE request_id = ? AND kind = 'settle'`)
+      .all(requestId);
+    expect(settled.length).toBeGreaterThan(0);
+    for (const row of settled) expect(row).toEqual({ status: "settled", input_tokens: 4, output_tokens: 2, usage_source: "reported" });
+    const stored = bucket.objects.get(gatewayRetentionKeys(requestId).response);
+    expect(stored && new TextDecoder().decode(stored.body)).toBe(delivered);
+    expect(sqlite.prepare(`SELECT status, response_truncated FROM gateway_request_retention WHERE request_id = ?`).get(requestId)).toEqual({
+      status: "stored",
+      response_truncated: 0,
+    });
+  });
+
+  it("answers coded 401/403/404/402/502 without calling or leaking the upstream", async () => {
     const allowed = await gateway.tenantToken({ modelAllowlist: ["some-other-model"] });
     const readOnly = await gateway.tenantToken({ scopes: ["usage:read"] });
     const unbudgeted = await gateway.tenantToken({ budgets: false });
@@ -129,10 +180,10 @@ describe("/gateway/v1 through the Worker app", () => {
     expect([noScope.status, code(noScope)]).toEqual([403, "GATEWAY_FORBIDDEN"]);
     const unknown = await send(caller.token, chat("no-such-gateway-model"));
     expect([unknown.status, code(unknown)]).toEqual([404, "GATEWAY_MODEL_NOT_FOUND"]);
-    const noBudget = await send(unbudgeted.token, chat());
+    const noBudget = await send(unbudgeted.token, chat(gateway.textModel, { stream: true }));
     expect([noBudget.status, code(noBudget)]).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
-    const streaming = await send(caller.token, chat(gateway.textModel, { stream: true }));
-    expect([streaming.status, code(streaming)]).toEqual([501, "GATEWAY_CAPABILITY_UNAVAILABLE"]);
+    // No budget row at all: the 402 names no budget and no reset.
+    expect(((await noBudget.json()) as { error: Record<string, unknown> }).error).toMatchObject({ budget_id: null, reset_at: null });
     expect(upstream).toHaveLength(0);
 
     stubUpstream(() => Response.json({ error: { message: `bad key ${gateway.upstreamApiKey}` } }, { status: 500 }));
@@ -302,6 +353,42 @@ describe("/gateway/v1 through the Worker app", () => {
       expect(settled(requestId).length).toBeGreaterThan(0);
       expect(settled(requestId)).toEqual(settled(ok.headers.get("x-clash-request-id")!));
     });
+  });
+
+  it("sweeps stale holds through the scheduled entry point, idempotently, and leaves settle_failed holds reserved", async () => {
+    const caller = await gateway.tenantToken();
+    const ports = gateway.ports();
+    const identity = await ports.identity.authenticate(gatewayRequest(caller.token));
+    const now = gateway.clock.now();
+    const reserve = (requestId: string) =>
+      ports.budgets.reserve({ requestId, tenantId: identity.tenantId, budgetIds: identity.budgetIds, holdMicroCredits: 7, expiresAt: now - 5_000 });
+    const stale = `gwr_sweep_${crypto.randomUUID()}`;
+    const failed = `gwr_sweep_${crypto.randomUUID()}`;
+    await reserve(stale);
+    await reserve(failed);
+    await ports.budgets.markSettleFailed({ requestId: failed, tenantId: identity.tenantId, errorCode: "GATEWAY_INTERNAL" });
+    const rows = (requestId: string) =>
+      sqlite
+        .prepare(`SELECT kind, status, amount_micro_credits AS amount FROM gateway_usage_ledger WHERE request_id = ? ORDER BY kind, budget_id`)
+        .all(requestId) as Array<{ kind: string; status: string; amount: number }>;
+    const reserved = () =>
+      (sqlite.prepare(`SELECT SUM(reserved_micro_credits) AS reserved FROM gateway_budget WHERE tenant_id = ?`).get(identity.tenantId) as {
+        reserved: number;
+      }).reserved;
+    const heldBoth = reserved();
+
+    const first = await sweepGatewayHolds({ DB: d1 }, { clock: gateway.clock, logger: { info() {}, warn() {}, error() {} } });
+    expect(first.expired).toBeGreaterThan(0);
+    const closed = rows(stale);
+    expect(closed.filter((row) => row.kind === "hold").map((row) => row.status)).toEqual(identity.budgetIds.map(() => "expired"));
+    expect(closed.filter((row) => row.kind === "settle")).toEqual(identity.budgetIds.map(() => ({ kind: "settle", status: "expired", amount: 0 })));
+    expect(rows(failed).map((row) => row.status)).toEqual(identity.budgetIds.map(() => "settle_failed"));
+    expect(heldBoth - reserved()).toBe(7 * identity.budgetIds.length);
+
+    // Again: nothing left for these requests, nothing changes.
+    await sweepGatewayHolds({ DB: d1 }, { clock: gateway.clock, logger: { info() {}, warn() {}, error() {} } });
+    expect(rows(stale)).toEqual(closed);
+    expect(reserved()).toBe(heldBoth - 7 * identity.budgetIds.length);
   });
 
   it("keeps /gateway/me working beside the data plane", async () => {

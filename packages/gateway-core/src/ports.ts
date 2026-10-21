@@ -145,6 +145,28 @@ export interface GatewayBudgetPort {
    */
   markSettleFailed(input: SettleFailedInput): Promise<{ status: "settled" | "settle_failed" }>;
   snapshot(input: { tenantId: string; budgetIds?: readonly string[] }): Promise<BudgetState[]>;
+  /**
+   * Requests with an `open` hold whose `expiresAt <= before`, oldest first, at
+   * most `limit`. `settle_failed` holds are never listed: they stay reserved
+   * until reconciliation.
+   */
+  expiredHolds(input: { before: number; limit: number }): Promise<ExpiredHold[]>;
+  /**
+   * Close one abandoned request (the stale-hold sweeper): in one transaction,
+   * release each `open` hold past `before` and append a zero-cost ledger row
+   * with status `expired`, once. A later `settle` for the request is a
+   * duplicate and charges nothing. Answers `expired: false` when there was
+   * nothing to expire (settled, settle_failed, not yet due, or already
+   * expired), so repeating it is a no-op.
+   */
+  expire(input: { requestId: string; tenantId: string; before: number }): Promise<{ expired: boolean }>;
+}
+
+export interface ExpiredHold {
+  requestId: string;
+  tenantId: string;
+  /** Epoch ms. */
+  expiresAt: number;
 }
 
 export interface LimitInput {
@@ -232,6 +254,13 @@ export interface GatewayRetainedBodyMeta {
   /** Lowercase hex SHA-256 of the stored bytes. */
   sha256: string;
   contentType: string;
+  /**
+   * The stored bytes are the first part of a longer streamed answer, cut at
+   * the retention cap and followed by the GATEWAY_RETENTION_TRUNCATED marker.
+   */
+  truncated?: true;
+  /** With `truncated`: how many bytes the caller actually received. */
+  observedBytes?: number;
 }
 
 /** Metadata of one request's retained bodies. Bodies live in blobs only. */

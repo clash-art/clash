@@ -52,6 +52,11 @@ export default {
     ctx.waitUntil(
       import("./gateway/d1-retention").then((m) => m.purgeGatewayRetention(env)),
     );
+    // Gateway stale holds (#348): release reservations whose request never
+    // settled, at zero cost. Idempotent; settle_failed holds are left alone.
+    ctx.waitUntil(
+      import("./gateway/d1-budgets").then((m) => m.sweepGatewayHolds(env)),
+    );
     // Lazy like the other cron graphs; abandoned import staging has no hero
     // request to piggyback on.
     ctx.waitUntil(

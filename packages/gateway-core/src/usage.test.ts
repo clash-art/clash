@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { addUsage, createUsageAccumulator, emptyUsage, settledUsage, type Usage } from "./usage.js";
+import {
+  addUsage,
+  createUsageAccumulator,
+  emptyUsage,
+  estimateTokensFromBytes,
+  settledUsage,
+  streamContentBytes,
+  streamedUsage,
+  type StreamObservation,
+  type Usage,
+} from "./usage.js";
 
 const integers = (usage: Usage) =>
   [usage.inputTokens, usage.outputTokens, usage.cachedInputTokens, usage.cacheWriteTokens, ...Object.values(usage.units)].every(
@@ -102,5 +112,48 @@ describe("settled usage", () => {
       units: { image: 3, video_second: 4 },
       source: "estimated",
     });
+  });
+});
+
+describe("streamed usage", () => {
+  const observed = (overrides: Partial<StreamObservation> = {}): StreamObservation => ({
+    usage: emptyUsage(),
+    reported: false,
+    outputReported: false,
+    outputBytes: 0,
+    ...overrides,
+  });
+
+  it("settles the upstream's final report unchanged", () => {
+    const usage = { ...emptyUsage(), inputTokens: 11, outputTokens: 7 };
+    expect(streamedUsage(observed({ usage, reported: true, outputReported: true, outputBytes: 9_999 }), { inputTokens: 1 })).toEqual(usage);
+  });
+
+  it("estimates a cut stream from delivered content, never below a reported start, never above the ceiling", () => {
+    const bytes = 30;
+    const unreported = streamedUsage(observed({ outputBytes: bytes }), { inputTokens: 5 });
+    expect(unreported).toMatchObject({ inputTokens: 5, outputTokens: estimateTokensFromBytes(bytes), source: "estimated" });
+    // Anthropic: message_start reported input, the stream was cut before message_delta.
+    const started = { ...emptyUsage(), inputTokens: 25, outputTokens: 1 };
+    expect(streamedUsage(observed({ usage: started, reported: true, outputBytes: bytes }), { inputTokens: 5 })).toMatchObject({
+      inputTokens: 25,
+      outputTokens: estimateTokensFromBytes(bytes),
+      source: "estimated",
+    });
+    expect(streamedUsage(observed({ usage: started, reported: true }), { inputTokens: 5 }).outputTokens).toBe(1);
+    expect(streamedUsage(observed({ outputBytes: 3_000 }), { inputTokens: 5, maxOutputTokens: 4 }).outputTokens).toBe(4);
+    expect(integers(unreported)).toBe(true);
+  });
+
+  it("counts generated content only, in UTF-8 bytes", () => {
+    const text = "hé ✓";
+    expect(streamContentBytes("openai-chat", { choices: [{ delta: { content: text, reasoning_content: "r" } }] })).toBe(
+      new TextEncoder().encode(`${text}r`).byteLength,
+    );
+    expect(streamContentBytes("openai-chat", { choices: [], usage: { prompt_tokens: 1 } })).toBe(0);
+    expect(streamContentBytes("anthropic-messages", { type: "content_block_delta", delta: { type: "text_delta", text } })).toBe(
+      new TextEncoder().encode(text).byteLength,
+    );
+    expect(streamContentBytes("anthropic-messages", { type: "message_start", message: { content: [] } })).toBe(0);
   });
 });

@@ -9,6 +9,12 @@
  * Only bodies are stored, never headers: the caller's credential and the
  * upstream key (both headers) cannot reach storage.
  *
+ * Streamed answers (#348) are retained the same way: the bytes the caller was
+ * handed, copied beside the stream (createRetainedBodyCopy) up to a cap. A
+ * copy cut at the cap ends in a GATEWAY_RETENTION_TRUNCATED marker, its
+ * metadata says `truncated` with the size actually delivered, and
+ * `gateway.retention_truncated` is logged.
+ *
  * A storage failure never changes the answer or its billing (retention runs
  * after settlement): it is recorded as a `failed` row, logged as
  * `gateway.retention_failed` and reported on the answer with
@@ -40,18 +46,78 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+const encoder = new TextEncoder();
+
+/** Default cap on a streamed answer's retained copy; the stream itself is never capped. */
+export const GATEWAY_STREAM_RETENTION_MAX_BYTES = 8 * 1024 * 1024;
+
+/** Line appended to a retained copy cut at the cap (an SSE comment, so the copy still parses). */
+export function retentionTruncationMarker(input: { storedBytes: number; observedBytes: number }): string {
+  return `\n\n: x-gateway-retention: truncated; code=GATEWAY_RETENTION_TRUNCATED; stored_bytes=${input.storedBytes}; observed_bytes=${input.observedBytes}\n\n`;
+}
+
+export interface RetainedBodyCopy {
+  /** Copy a chunk the caller was handed; past the cap only its size is counted. */
+  append(chunk: Uint8Array): void;
+  /** Every byte appended so far, kept or not. */
+  readonly observedBytes: number;
+  /** The copy to store: the first `maxBytes` and, if cut, the truncation marker. */
+  result(): { body: Uint8Array; truncated?: { observedBytes: number } };
+}
+
+/**
+ * Side copy of a streamed answer for retention. The caller's stream is never
+ * held back for it: chunks are copied after they are handed over, and at most
+ * `maxBytes` are kept. A copy cut at the cap is stored with a coded marker and
+ * recorded as truncated, never silently shortened.
+ */
+export function createRetainedBodyCopy(maxBytes: number): RetainedBodyCopy {
+  const parts: Uint8Array[] = [];
+  let kept = 0;
+  let observed = 0;
+  return {
+    append(chunk) {
+      observed += chunk.byteLength;
+      const room = maxBytes - kept;
+      if (room <= 0) return;
+      const part = chunk.byteLength <= room ? chunk.slice() : chunk.slice(0, room);
+      parts.push(part);
+      kept += part.byteLength;
+    },
+    get observedBytes() {
+      return observed;
+    },
+    result() {
+      const truncated = observed > kept;
+      const marker = truncated ? encoder.encode(retentionTruncationMarker({ storedBytes: kept, observedBytes: observed })) : new Uint8Array(0);
+      const body = new Uint8Array(kept + marker.byteLength);
+      let offset = 0;
+      for (const part of parts) {
+        body.set(part, offset);
+        offset += part.byteLength;
+      }
+      body.set(marker, offset);
+      return truncated ? { body, truncated: { observedBytes: observed } } : { body };
+    },
+  };
+}
+
 export interface RetainExchangeInput {
   requestId: string;
   identity: Pick<GatewayIdentity, "tenantId" | "userId" | "keyId">;
   /** The normalized request body (JSON). */
   request: { body: Uint8Array; contentType: string };
-  /** The answer exactly as the caller receives it. */
-  response: { status: number; body: Uint8Array; contentType: string };
+  /**
+   * The answer exactly as the caller receives it. `truncated`: a streamed
+   * answer cut at the retention cap (createRetainedBodyCopy), with the size
+   * the caller actually received.
+   */
+  response: { status: number; body: Uint8Array; contentType: string; truncated?: { observedBytes: number } };
   ttlMs?: number;
 }
 
 export type RetainOutcome =
-  | { status: "stored" }
+  | { status: "stored"; truncated?: true }
   | {
       status: "failed";
       code: Extract<GatewayErrorCode, "GATEWAY_RETENTION_FAILED">;
@@ -77,11 +143,15 @@ export async function retainGatewayExchange(
 ): Promise<RetainOutcome> {
   const keys = gatewayRetentionKeys(input.requestId);
   const storedAt = ports.clock.now();
-  const meta = async (key: string, part: { body: Uint8Array; contentType: string }): Promise<GatewayRetainedBodyMeta> => ({
+  const meta = async (
+    key: string,
+    part: { body: Uint8Array; contentType: string; truncated?: { observedBytes: number } },
+  ): Promise<GatewayRetainedBodyMeta> => ({
     key,
     bytes: part.body.byteLength,
     sha256: await sha256Hex(part.body),
     contentType: part.contentType,
+    ...(part.truncated ? { truncated: true as const, observedBytes: part.truncated.observedBytes } : {}),
   });
   let cause: GatewayError;
   let base: Omit<GatewayRetentionEntry, "status"> | undefined;
@@ -105,7 +175,14 @@ export async function retainGatewayExchange(
     const rejected = writes.find((write): write is PromiseRejectedResult => write.status === "rejected");
     if (rejected) throw rejected.reason;
     await ports.retention.record({ ...base, status: "stored" });
-    return { status: "stored" };
+    if (!input.response.truncated) return { status: "stored" };
+    ports.logger.warn("gateway.retention_truncated", {
+      requestId: input.requestId,
+      code: "GATEWAY_RETENTION_TRUNCATED",
+      storedBytes: base.response.bytes,
+      observedBytes: input.response.truncated.observedBytes,
+    });
+    return { status: "stored", truncated: true };
   } catch (error) {
     cause = toGatewayError(error);
   }

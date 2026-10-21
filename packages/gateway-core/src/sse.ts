@@ -12,8 +12,9 @@ import {
 } from "./errors.js";
 import {
   createUsageAccumulator,
+  streamContentBytes,
   type GatewayUsageShape,
-  type Usage,
+  type StreamObservation,
   type UsageAccumulator,
 } from "./usage.js";
 
@@ -135,6 +136,102 @@ function parseData(data: string): unknown {
   }
 }
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * The event carries the stream's final output count: OpenAI's usage chunk
+ * (cumulative, sent once at the end), or Anthropic's `message_delta` usage
+ * (`message_start` only carries a starting output count).
+ */
+function finalOutputReported(shape: GatewayUsageShape, payload: unknown): boolean {
+  if (!isRecord(payload)) return false;
+  const usage = isRecord(payload.usage) ? payload.usage : undefined;
+  if (shape === "openai-chat") return typeof usage?.completion_tokens === "number";
+  return payload.type === "message_delta" && typeof usage?.output_tokens === "number";
+}
+
+/**
+ * OpenAI's `stream_options.include_usage` chunk: `choices` is always empty and
+ * `usage` is set. The gateway injects the option for metering, so a caller
+ * that did not ask for it gets this event removed (callerOmittedStreamUsage).
+ */
+export function isOpenAIUsageOnlyChunk(event: SseEvent): boolean {
+  const payload = parseData(event.data);
+  return isRecord(payload) && Array.isArray(payload.choices) && payload.choices.length === 0 && isRecord(payload.usage);
+}
+
+const LF = 0x0a;
+const CR = 0x0d;
+
+/**
+ * End of the first complete event in `bytes` (the index after its blank
+ * line), or -1. A lone CR at the very end may be the first half of CRLF, so it
+ * waits for more input unless `final`.
+ */
+function eventEnd(bytes: Uint8Array, final: boolean): number {
+  let lineEmpty = true;
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = bytes[index];
+    if (byte !== LF && byte !== CR) {
+      lineEmpty = false;
+      continue;
+    }
+    if (byte === CR) {
+      if (index + 1 === bytes.length && !final) return -1;
+      if (bytes[index + 1] === LF) index += 1;
+    }
+    if (lineEmpty) return index + 1;
+    lineEmpty = true;
+  }
+  return -1;
+}
+
+/**
+ * Pass an SSE byte stream through, dropping whole events `drop` selects. Kept
+ * events leave as their original bytes, unchanged, as soon as their blank
+ * line arrives; at most one partial event is held. Comments are kept.
+ */
+export function createSseEventFilter(drop: (event: SseEvent) => boolean): TransformStream<Uint8Array, Uint8Array> {
+  let pending = new Uint8Array(0);
+  const decoder = new TextDecoder();
+  const emit = (controller: TransformStreamDefaultController<Uint8Array>, final: boolean) => {
+    for (;;) {
+      const end = eventEnd(pending, final);
+      if (end === -1) return;
+      const raw = pending.subarray(0, end);
+      // The event is known complete here, so end() also takes a final lone CR.
+      const parser = createSseParser();
+      const events = [...parser.push(decoder.decode(raw)), ...parser.end()];
+      if (!(events.length === 1 && drop(events[0]!))) controller.enqueue(raw.slice());
+      pending = pending.slice(end);
+    }
+  };
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const joined = new Uint8Array(pending.byteLength + chunk.byteLength);
+      joined.set(pending);
+      joined.set(chunk, pending.byteLength);
+      pending = joined;
+      emit(controller, false);
+    },
+    flush(controller) {
+      emit(controller, true);
+      if (pending.byteLength) controller.enqueue(pending);
+    },
+  });
+}
+
+export interface UsageCaptureResult extends StreamObservation {
+  /** The upstream body ended (it was not stopped). */
+  completed: boolean;
+  /**
+   * The protocol's own end marker was seen (OpenAI `data: [DONE]`, Anthropic
+   * `message_stop`). A body that ended without it was cut short.
+   */
+  terminated: boolean;
+}
+
 export interface UsageCaptureStream {
   /** Pass-through stream: bytes leave exactly as they arrived. */
   stream: TransformStream<Uint8Array, Uint8Array>;
@@ -142,7 +239,7 @@ export interface UsageCaptureStream {
   /** Bytes forwarded so far; >0 means retrying this attempt is no longer safe. */
   readonly forwardedBytes: number;
   /** Resolves once: complete when the upstream body ends, incomplete on `stop()`. */
-  readonly done: Promise<{ usage: Usage; reported: boolean; completed: boolean }>;
+  readonly done: Promise<UsageCaptureResult>;
   /**
    * Resolve `done` as incomplete with the usage observed so far. The adapter
    * calls it on client abort or upstream error; a TransformStream gets no
@@ -160,22 +257,38 @@ export function createUsageCaptureStream(shape: GatewayUsageShape): UsageCapture
   const parser = createSseParser();
   const decoder = new TextDecoder();
   let forwardedBytes = 0;
-  let settle!: (value: { usage: Usage; reported: boolean; completed: boolean }) => void;
-  const done = new Promise<{ usage: Usage; reported: boolean; completed: boolean }>(
-    (resolve) => {
-      settle = resolve;
-    },
-  );
+  let outputBytes = 0;
+  let outputReported = false;
+  let terminated = false;
+  let settle!: (value: UsageCaptureResult) => void;
+  const done = new Promise<UsageCaptureResult>((resolve) => {
+    settle = resolve;
+  });
   let finished = false;
   const finish = (completed: boolean) => {
     if (finished) return;
     finished = true;
-    settle({ usage: accumulator.snapshot(), reported: accumulator.reported, completed });
+    settle({
+      usage: accumulator.snapshot(),
+      reported: accumulator.reported,
+      outputReported,
+      outputBytes,
+      completed,
+      terminated,
+    });
   };
   const observe = (events: SseEvent[]) => {
     for (const event of events) {
+      if (event.data === OPENAI_STREAM_DONE) {
+        if (shape === "openai-chat") terminated = true;
+        continue;
+      }
       const payload = parseData(event.data);
-      if (payload !== undefined) accumulator.observe(payload);
+      if (payload === undefined) continue;
+      accumulator.observe(payload);
+      outputBytes += streamContentBytes(shape, payload);
+      if (finalOutputReported(shape, payload)) outputReported = true;
+      if (shape === "anthropic-messages" && (payload as { type?: unknown }).type === "message_stop") terminated = true;
     }
   };
   const stream = new TransformStream<Uint8Array, Uint8Array>({

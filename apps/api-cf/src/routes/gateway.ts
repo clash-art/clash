@@ -37,4 +37,14 @@ gatewayRoutes.get("/me", async (c) => {
   }
 });
 
-gatewayRoutes.all("/v1/*", (c) => createCloudflareGatewayApp(c.env).fetch(c.req.raw));
+gatewayRoutes.all("/v1/*", (c) => {
+  // Hono throws when there is no ExecutionContext (unit tests calling app.request).
+  let waitUntil: ((promise: Promise<unknown>) => void) | undefined;
+  try {
+    const ctx = c.executionCtx;
+    waitUntil = (promise) => ctx.waitUntil(promise);
+  } catch {
+    waitUntil = undefined;
+  }
+  return createCloudflareGatewayApp(c.env, waitUntil ? { waitUntil } : {}).fetch(c.req.raw);
+});

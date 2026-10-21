@@ -28,7 +28,7 @@ import {
   type GatewayRoutePlan,
   type PlanGatewayRoutesInput,
 } from "./routing.js";
-import type { Usage } from "./usage.js";
+import { emptyUsage, type Usage } from "./usage.js";
 
 export interface GatewayAdmission {
   requestId: string;
@@ -144,6 +144,42 @@ export interface SettleGatewayInput {
   /** Price of `attempt` when it differs from the admission price. */
   price?: GatewayPrice;
   error?: GatewayError;
+}
+
+/**
+ * How an accepted media/AIGC generation ended. `units` are what the upstream
+ * delivered (for example images produced), priced from the price book.
+ */
+export type MediaGenerationResult =
+  | { status: "succeeded"; units: Usage["units"] }
+  | { status: "failed"; error: GatewayError };
+
+/**
+ * Settle a media/AIGC generation after the upstream accepted it (the hook a
+ * media route calls when its job ends). Only a success is charged; a failure
+ * after acceptance settles `upstream_failed` at cost zero, whatever units were
+ * requested or partly produced, and records the failure's code.
+ */
+export function settleMediaGeneration(
+  ports: GatewayPorts,
+  admission: GatewayAdmission,
+  input: { attempt: GatewayRouteAttempt; result: MediaGenerationResult; price?: GatewayPrice },
+): Promise<{ settlement: Settlement; result: SettleResult }> {
+  if (admission.request.protocol !== "media")
+    return Promise.reject(
+      new GatewayError("GATEWAY_INTERNAL", {
+        message: "settleMediaGeneration settles media requests only.",
+        details: { protocol: admission.request.protocol },
+      }),
+    );
+  const { result } = input;
+  return settleGatewayRequest(ports, admission, {
+    attempt: input.attempt,
+    ...(input.price ? { price: input.price } : {}),
+    ...(result.status === "succeeded"
+      ? { outcome: "completed" as const, usage: { ...emptyUsage(), units: result.units } }
+      : { outcome: "upstream_failed" as const, usage: emptyUsage(), error: result.error }),
+  });
 }
 
 /** Settle exactly once and end the concurrency lease, whatever happens. */

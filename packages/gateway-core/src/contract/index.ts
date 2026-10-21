@@ -19,8 +19,13 @@ import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 import {
   admitGatewayRequest,
   settleGatewayRequest,
+  settleMediaGeneration,
   type GatewayAdmission,
 } from "../admission.js";
+import { computeHold } from "../budget.js";
+import { sweepExpiredGatewayHolds } from "../holds.js";
+import { createSseParser, OPENAI_STREAM_DONE, type SseEvent } from "../sse.js";
+import { GATEWAY_STREAM_STATE_EVENT } from "../stream.js";
 import {
   createGatewayApp,
   GATEWAY_REQUEST_ID_HEADER,
@@ -382,13 +387,13 @@ export function describeGatewayContract(
       occurredAt: ports().clock.now(),
     });
 
-    const reserve = (identity: GatewayIdentity, hold: number, idempotencyKey?: string) =>
+    const reserve = (identity: GatewayIdentity, hold: number, idempotencyKey?: string, expiresAt?: number) =>
       ports().budgets.reserve({
         requestId: ports().ids.requestId(),
         tenantId: identity.tenantId,
         budgetIds: identity.budgetIds,
         holdMicroCredits: hold,
-        expiresAt: ports().clock.now() + 60_000,
+        expiresAt: expiresAt ?? ports().clock.now() + 60_000,
         ...(idempotencyKey ? { idempotencyKey } : {}),
       });
 
@@ -501,6 +506,58 @@ export function describeGatewayContract(
             await expectCode(
               ports().budgets.markSettleFailed({ ...mark, requestId: unique("never-reserved") }),
               "GATEWAY_INTERNAL",
+            );
+          },
+        ],
+        [
+          "the sweeper expires an open hold past its expiry once, at zero, and never a settle_failed or live one",
+          async () => {
+            const identity = await tenant();
+            const before = await snapshot(identity);
+            const now = ports().clock.now();
+            const stale = await reserve(identity, 3, undefined, now - 5_000);
+            const failed = await reserve(identity, 2, undefined, now - 5_000);
+            await ports().budgets.markSettleFailed({
+              requestId: failed.requestId,
+              tenantId: identity.tenantId,
+              errorCode: "GATEWAY_INTERNAL",
+            });
+            const live = await reserve(identity, 1);
+            const listed = (await ports().budgets.expiredHolds({ before: now, limit: 1000 })).map((hold) => hold.requestId);
+            expect(listed).toContain(stale.requestId);
+            expect(listed).not.toContain(failed.requestId);
+            expect(listed).not.toContain(live.requestId);
+
+            expect((await sweepExpiredGatewayHolds(ports(), { limit: 1000 })).expired).toBeGreaterThan(0);
+            expect(
+              await ports().ledger.get({ tenantId: identity.tenantId, requestId: stale.requestId }),
+            ).toMatchObject({ status: "expired", costMicroCredits: 0 });
+            for (const held of [failed, live])
+              expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId: held.requestId })).toBeNull();
+            for (const [id, budget] of await snapshot(identity)) {
+              expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits + 2 + 1);
+              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
+            }
+
+            // Idempotent: nothing left to expire for it, and a late settlement charges nothing.
+            const after = await counters(identity);
+            expect(
+              await ports().budgets.expire({ requestId: stale.requestId, tenantId: identity.tenantId, before: now }),
+            ).toEqual({ expired: false });
+            await sweepExpiredGatewayHolds(ports(), { limit: 1000 });
+            expect((await ports().budgets.expiredHolds({ before: now, limit: 1000 })).map((hold) => hold.requestId)).not.toContain(
+              stale.requestId,
+            );
+            expect(await ports().budgets.settle(settlementEvent(identity, stale.requestId, 5))).toMatchObject({
+              duplicate: true,
+              costMicroCredits: 0,
+            });
+            expect(await counters(identity)).toEqual(after);
+
+            for (const held of [failed, live])
+              await ports().budgets.settle(settlementEvent(identity, held.requestId, 0, "upstream_failed"));
+            expect(await counters(identity)).toEqual(
+              [...before.values()].map((budget) => [budget.id, budget.spentMicroCredits, budget.reservedMicroCredits]).sort(),
             );
           },
         ],
@@ -827,6 +884,53 @@ export function describeGatewayContract(
       ).toMatchObject({ status: "upstream_failed", costMicroCredits: 0, errorCode: "GATEWAY_UPSTREAM_ERROR" });
     });
 
+    composed("a media generation that fails after acceptance is never charged; a success is charged its units", async (skip) => {
+      const media = harness.fixtures.mediaModel;
+      if (!media) return skip();
+      const admit = () =>
+        admitGatewayRequest(
+          ports(),
+          {
+            httpRequest: harness.fixtures.tenantRequest(),
+            request: normalizeMediaGenerationRequest({ model: media.code, kind: media.kind, units: media.units }),
+          },
+          { holdTtlMs: 60_000 },
+        );
+      const before = await counters(await tenant());
+      const failed = await admit();
+      const { result } = await settleMediaGeneration(ports(), failed, {
+        attempt: failed.plan.attempts[0]!,
+        result: { status: "failed", error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
+      });
+      expect(result.costMicroCredits).toBe(0);
+      expect(await counters(failed.identity)).toEqual(before);
+      expect(await ports().ledger.get({ tenantId: failed.identity.tenantId, requestId: failed.requestId })).toMatchObject({
+        status: "upstream_failed",
+        costMicroCredits: 0,
+        errorCode: "GATEWAY_UPSTREAM_ERROR",
+      });
+
+      const served = await admit();
+      const { settlement } = await settleMediaGeneration(ports(), served, {
+        attempt: served.plan.attempts[0]!,
+        result: { status: "succeeded", units: media.units },
+      });
+      expect(settlement.costMicroCredits).toBe(priceUsage({ ...emptyUsage(), units: media.units }, served.price).microCredits);
+      expect(await ports().ledger.get({ tenantId: served.identity.tenantId, requestId: served.requestId })).toMatchObject({
+        status: "settled",
+        costMicroCredits: settlement.costMicroCredits,
+      });
+      const text = await admitText();
+      await expectCode(
+        settleMediaGeneration(ports(), text, {
+          attempt: text.plan.attempts[0]!,
+          result: { status: "failed", error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
+        }),
+        "GATEWAY_INTERNAL",
+      );
+      await settleGatewayRequest(ports(), text, { attempt: text.plan.attempts[0]!, outcome: "gateway_failed", usage: emptyUsage() });
+    });
+
     composed("an unauthenticated request is rejected before anything is held", async () => {
       const identity = await tenant();
       const before = await counters(identity);
@@ -878,7 +982,7 @@ export function describeGatewayContract(
       usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
     });
 
-    const upstreamStub = (answer: (request: Request, body: Record<string, unknown>) => Response) => {
+    const upstreamStub = (answer: (request: Request, body: Record<string, unknown>) => Response | Promise<Response>) => {
       const seen: Array<{ request: Request; body: Record<string, unknown> }> = [];
       return {
         seen,
@@ -1095,20 +1199,346 @@ export function describeGatewayContract(
         expect(await ports().blobs.get(gatewayRetentionKeys(requestId).response)).toBeNull();
     });
 
-    dataPlane("rejects stream: true with a coded error before holding anything", async () => {
-      const identity = await tenant();
-      const before = await counters(identity);
-      const stub = upstreamStub(() => Response.json({}));
-      const res = await chat(
-        stub.port,
-        harness.fixtures.tenantRequest(),
-        chatBody(harness.fixtures.textModel, { stream: true }),
+    // ─── Data plane: streaming chat (#348) ───────────────────────────
+    // Upstream streams are fetch stubs in the OpenAI chunk format, delivered in
+    // small chunks so events straddle chunk boundaries.
+    const bytesOf = (value: string) => new TextEncoder().encode(value);
+    const sseText = (payloads: Array<Record<string, unknown> | string>) =>
+      payloads.map((payload) => `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`).join("");
+    const streamChunk = (model: string, delta: Record<string, unknown>, finishReason: string | null = null) => ({
+      id: "chatcmpl-contract-stream",
+      object: "chat.completion.chunk",
+      created: 0,
+      model,
+      choices: [{ index: 0, delta, finish_reason: finishReason }],
+    });
+    const usageChunk = (model: string) => ({
+      id: "chatcmpl-contract-stream",
+      object: "chat.completion.chunk",
+      created: 0,
+      model,
+      choices: [],
+      usage: completion(model).usage,
+    });
+    const streamText = (model: string, shape: { usage?: boolean; done?: boolean } = {}) =>
+      sseText([
+        streamChunk(model, { role: "assistant", content: "" }),
+        streamChunk(model, { content: "contract " }),
+        streamChunk(model, { content: "reply" }),
+        streamChunk(model, {}, "stop"),
+        ...(shape.usage === false ? [] : [usageChunk(model)]),
+        ...(shape.done === false ? [] : [OPENAI_STREAM_DONE]),
+      ]);
+    const split = (text: string, size = 7) => {
+      const parts: string[] = [];
+      for (let offset = 0; offset < text.length; offset += size) parts.push(text.slice(offset, offset + size));
+      return parts;
+    };
+    /**
+     * An upstream event stream. With `gate`, only the first part is sent until
+     * it resolves; with `signal`, an abort errors the body as a fetch would.
+     */
+    const eventStream = (
+      parts: string[],
+      control: { gate?: Promise<unknown>; signal?: AbortSignal; fail?: boolean } = {},
+    ) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            const error = (reason: unknown) => {
+              try {
+                controller.error(reason);
+              } catch {
+                // Already closed.
+              }
+            };
+            control.signal?.addEventListener("abort", () => error(control.signal!.reason));
+            for (const [index, part] of parts.entries()) {
+              if (index === 1 && control.gate) await control.gate;
+              if (control.signal?.aborted) return;
+              controller.enqueue(bytesOf(part));
+            }
+            if (control.fail) error(new Error("upstream connection reset"));
+            else controller.close();
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream; charset=utf-8" } },
       );
-      expect(res.status).toBe(501);
-      expect(res.headers.get("x-clash-error-code")).toBe("GATEWAY_CAPABILITY_UNAVAILABLE");
-      expect(((await res.json()) as { error: { param: unknown } }).error.param).toBe("stream");
+    const gate = () => {
+      let open!: () => void;
+      const opened = new Promise<void>((resolve) => {
+        open = resolve;
+      });
+      return { opened, open };
+    };
+    const events = (text: string): SseEvent[] => {
+      const parser = createSseParser();
+      return [...parser.push(text), ...parser.end()];
+    };
+    const streamBody = (extra: Record<string, unknown> = {}) =>
+      chatBody(harness.fixtures.textModel, { stream: true, ...extra });
+    const priceFor = async (identity: GatewayIdentity) =>
+      ports().routes.price({
+        identity,
+        catalogVersion: (await ports().routes.catalog(identity)).version,
+        route: await firstChatRoute(identity),
+      });
+    const reportedCost = async (identity: GatewayIdentity, model: string) => {
+      const accumulator = createUsageAccumulator("openai-chat");
+      accumulator.observe(usageChunk(model));
+      return priceUsage(accumulator.snapshot(), await priceFor(identity)).microCredits;
+    };
+
+    dataPlane("streams the upstream event stream byte for byte, reserved before the first byte, and settles its usage once", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const before = await snapshot(identity);
+      const upstreamText = streamText(route.upstreamModel);
+      let reservedAtUpstream: Map<string, { reservedMicroCredits: number }> | undefined;
+      const stub = upstreamStub(async () => {
+        reservedAtUpstream = await snapshot(identity);
+        return eventStream(split(upstreamText));
+      });
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody({ stream_options: { include_usage: true } }));
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      expect(requestId).toMatch(/\S/);
+      expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([...bytesOf(upstreamText)]);
+
+      expect(stub.seen).toHaveLength(1);
+      expect(stub.seen[0]!.request.headers.get("accept")).toBe("text/event-stream");
+      expect(stub.seen[0]!.body).toMatchObject({ stream: true, model: route.upstreamModel, stream_options: { include_usage: true } });
+      // The hold was in place before the upstream produced anything.
+      for (const [id, budget] of reservedAtUpstream!)
+        expect(budget.reservedMicroCredits).toBeGreaterThan(before.get(id)!.reservedMicroCredits);
+
+      const cost = await reportedCost(identity, route.upstreamModel);
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+        status: "settled",
+        costMicroCredits: cost,
+        usage: { source: "reported" },
+      });
+      for (const [id, budget] of await snapshot(identity)) {
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + cost);
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+      }
+    });
+
+    dataPlane("injects include_usage for a caller that omitted it and removes only that usage chunk", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const stub = upstreamStub(() => eventStream(split(streamText(route.upstreamModel), 5)));
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody());
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(stub.seen[0]!.body.stream_options).toEqual({ include_usage: true });
+      expect(await res.text()).toBe(streamText(route.upstreamModel, { usage: false }));
+      expect(
+        await ports().ledger.get({ tenantId: identity.tenantId, requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! }),
+      ).toMatchObject({ status: "settled", costMicroCredits: await reportedCost(identity, route.upstreamModel) });
+    });
+
+    for (const cut of [
+      { title: "closes before its end marker", fail: false },
+      { title: "fails mid-stream", fail: true },
+    ])
+      dataPlane(`a stream that ${cut.title} settles partial at its observed output and ends with a coded error`, async () => {
+        const identity = await tenant();
+        const route = await firstChatRoute(identity);
+        const price = await priceFor(identity);
+        const before = await snapshot(identity);
+        const upstreamText = streamText(route.upstreamModel, { usage: false, done: false });
+        const stub = upstreamStub(() => eventStream(split(upstreamText), { fail: cut.fail }));
+        const body = streamBody();
+        const res = await chat(stub.port, harness.fixtures.tenantRequest(), body);
+        expect(res.status).toBe(200);
+        const text = await res.text();
+        expect(text.startsWith(cut.fail ? "" : upstreamText)).toBe(true);
+        const last = events(text).at(-1)!;
+        expect((JSON.parse(last.data) as { error: { code: string } }).error.code).toBe("GATEWAY_UPSTREAM_ERROR");
+
+        const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+        const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId });
+        expect(row).toMatchObject({ status: "partial", errorCode: "GATEWAY_UPSTREAM_ERROR", usage: { source: "estimated" } });
+        const hold = computeHold(normalizeOpenAIChatRequest(body), price);
+        expect(row!.costMicroCredits).toBeGreaterThan(0);
+        expect(row!.costMicroCredits).toBeLessThan(hold);
+        for (const [id, budget] of await snapshot(identity)) {
+          expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + row!.costMicroCredits);
+          expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+        }
+      });
+
+    dataPlane("a caller that disconnects aborts the upstream, which then settles client_aborted at observed usage", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const before = await snapshot(identity);
+      const parts = streamText(route.upstreamModel).split(/(?<=\n\n)/);
+      const held = gate();
+      let upstreamSignal: AbortSignal | undefined;
+      const stub = upstreamStub((request) => {
+        upstreamSignal = request.signal;
+        return eventStream([parts.slice(0, 2).join(""), ...parts.slice(2)], { gate: held.opened, signal: request.signal });
+      });
+      const background: Array<Promise<unknown>> = [];
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), {}, {}, {
+        waitUntil: (promise) => void background.push(promise),
+      });
+      expect(res.status).toBe(200);
+      const reader = res.body!.getReader();
+      expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+      for (let wait = 0; wait < 200 && (background.length === 0 || !upstreamSignal?.aborted); wait += 1)
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      expect(upstreamSignal?.aborted).toBe(true);
+      expect(background.length).toBeGreaterThan(0);
+      await Promise.all(background);
+      held.open();
+
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId });
+      expect(row).toMatchObject({ status: "client_aborted", usage: { source: "estimated" } });
+      expect(row!.costMicroCredits).toBeGreaterThan(0);
+      for (const [id, budget] of await snapshot(identity)) {
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + row!.costMicroCredits);
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+      }
+    });
+
+    dataPlane("an Idempotency-Key admits one stream: one upstream call and one ledger row", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const parts = split(streamText(route.upstreamModel));
+      const held = gate();
+      const stub = upstreamStub(() => eventStream(parts, { gate: held.opened }));
+      const key = { "idempotency-key": unique("idem-stream") };
+      const first = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), key);
+      expect(first.status).toBe(200);
+      const concurrent = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), key);
+      expect([concurrent.status, concurrent.headers.get("x-clash-error-code")]).toEqual([409, "GATEWAY_IDEMPOTENCY_IN_PROGRESS"]);
+      held.open();
+      expect(await first.text()).toBe(streamText(route.upstreamModel, { usage: false }));
+      const replay = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), key);
+      expect([replay.status, replay.headers.get("x-clash-error-code")]).toEqual([409, "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED"]);
+      expect(stub.seen).toHaveLength(1);
+      const requestId = first.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const rows = await ports().ledger.query({ tenantId: identity.tenantId, limit: 1000 });
+      expect(rows.filter((row) => row.requestId === requestId)).toHaveLength(1);
+    });
+
+    dataPlane("refuses an over-budget stream with a coded 402 naming the budget, before any upstream call", async () => {
+      const identity = await ports().identity.authenticate(harness.fixtures.otherTenantRequest());
+      const budgets = await snapshot(identity);
+      const limited = [...budgets.values()].filter((budget) => budget.limitMicroCredits !== null);
+      expect(limited.length, "fixture needs a limited budget").toBeGreaterThan(0);
+      const remaining = (budget: (typeof limited)[number]) =>
+        budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits;
+      const filler = await reserve(identity, Math.min(...limited.map(remaining)));
+      const exhausted = [...(await snapshot(identity)).values()].filter(
+        (budget) => budget.limitMicroCredits !== null && remaining(budget) === 0,
+      );
+      const stub = upstreamStub(() => eventStream([streamText("unused")]));
+      const res = await chat(stub.port, harness.fixtures.otherTenantRequest(), streamBody());
+      expect([res.status, res.headers.get("x-clash-error-code")]).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const { error } = (await res.json()) as { error: { code: string; type: string; budget_id: string | null; reset_at: string | null } };
+      expect(error).toMatchObject({ code: "GATEWAY_BUDGET_EXCEEDED", type: "insufficient_quota" });
+      const refusing = exhausted.find((budget) => budget.id === error.budget_id);
+      expect(refusing, `budget_id ${error.budget_id}`).toBeDefined();
+      expect(error.reset_at).toBe(refusing!.resetAt === undefined ? null : new Date(refusing!.resetAt).toISOString());
       expect(stub.seen).toHaveLength(0);
-      expect(await counters(identity)).toEqual(before);
+      await ports().budgets.settle(settlementEvent(identity, filler.requestId, 0, "upstream_failed"));
+    });
+
+    dataPlane("a failed settlement is reported inside the stream, coded, and leaves the hold to reconcile", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const before = await snapshot(identity);
+      const upstreamText = streamText(route.upstreamModel);
+      const stub = upstreamStub(() => eventStream(split(upstreamText)));
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody({ stream_options: { include_usage: true } }), {}, {
+        budgets: { ...ports().budgets, settle: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
+      });
+      expect(res.status).toBe(200);
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const value = `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`;
+      const text = await res.text();
+      expect(text.startsWith(upstreamText)).toBe(true);
+      expect(text).toContain(`: ${GATEWAY_SETTLEMENT_HEADER}: ${value}\n\n`);
+      const state = events(text).find((event) => event.event === GATEWAY_STREAM_STATE_EVENT);
+      expect(JSON.parse(state!.data)).toEqual({
+        type: GATEWAY_STREAM_STATE_EVENT,
+        header: GATEWAY_SETTLEMENT_HEADER,
+        state: "failed",
+        code: "GATEWAY_SETTLEMENT_FAILED",
+        request_id: requestId,
+      });
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
+      for (const [id, budget] of await snapshot(identity))
+        expect(budget.reservedMicroCredits).toBeGreaterThan(before.get(id)!.reservedMicroCredits);
+      expect(await ports().budgets.markSettleFailed({ requestId, tenantId: identity.tenantId, errorCode: "GATEWAY_INTERNAL" })).toEqual({
+        status: "settle_failed",
+      });
+      expect(await ports().budgets.settle(settlementEvent(identity, requestId, 1))).toMatchObject({ duplicate: false });
+      for (const [id, budget] of await snapshot(identity))
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+    });
+
+    retaining("retains a streamed answer exactly as delivered, and marks a copy cut at the cap as truncated", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const credential = await ports().credentials.resolve({ route, scope: identity.credentialScope, tenantId: identity.tenantId });
+      const callerRequest = harness.fixtures.tenantRequest();
+      const callerToken = callerRequest.headers.get("authorization")!.replace(/^Bearer\s+/i, "");
+      const stub = upstreamStub(() => eventStream(split(streamText(route.upstreamModel))));
+      const sent = streamBody({ user: unique("end-user") });
+      const res = await chat(stub.port, callerRequest, sent, {}, {}, retain);
+      const delivered = new Uint8Array(await res.arrayBuffer());
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const stored = await readRetainedExchange(ports(), { requestId });
+      expect([...stored.response.body]).toEqual([...delivered]);
+      expect(stored.entry).toMatchObject({ status: "stored", responseStatus: 200, tenantId: identity.tenantId });
+      expect(stored.entry.response.truncated).toBeUndefined();
+      expect(JSON.parse(text(stored.request.body))).toEqual(sent);
+      for (const secret of [callerToken, credential.apiKey]) {
+        expect(text(stored.request.body)).not.toContain(secret);
+        expect(text(stored.response.body)).not.toContain(secret);
+      }
+
+      const cap = 32;
+      const cut = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), {}, {}, {
+        retention: { enabled: true, maxStreamBytes: cap },
+      });
+      const cutDelivered = new Uint8Array(await cut.arrayBuffer());
+      expect(cutDelivered.byteLength).toBeGreaterThan(cap);
+      const cutStored = await readRetainedExchange(ports(), { requestId: cut.headers.get(GATEWAY_REQUEST_ID_HEADER)! });
+      expect(cutStored.entry.response).toMatchObject({ truncated: true, observedBytes: cutDelivered.byteLength });
+      expect([...cutStored.response.body.slice(0, cap)]).toEqual([...cutDelivered.slice(0, cap)]);
+      expect(text(cutStored.response.body.slice(cap))).toContain("code=GATEWAY_RETENTION_TRUNCATED");
+      expect(cut.headers.get(GATEWAY_RETENTION_HEADER)).toBeNull();
+    });
+
+    retaining("a stream's retention failure is reported inside the stream, coded, and billing is unchanged", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const upstreamText = streamText(route.upstreamModel);
+      const stub = upstreamStub(() => eventStream(split(upstreamText)));
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody({ stream_options: { include_usage: true } }), {}, {
+        blobs: { ...ports().blobs, put: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
+      }, retain);
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const streamed = await res.text();
+      expect(streamed.startsWith(upstreamText)).toBe(true);
+      expect(streamed).toContain(`: ${GATEWAY_RETENTION_HEADER}: failed; code=GATEWAY_RETENTION_FAILED; request_id=${requestId}\n\n`);
+      expect(events(streamed).find((event) => event.event === GATEWAY_STREAM_STATE_EVENT)?.data).toContain(
+        '"code":"GATEWAY_RETENTION_FAILED"',
+      );
+      expect(streamed).not.toContain(GATEWAY_SETTLEMENT_HEADER);
+      expect(await ports().retention.get({ requestId })).toMatchObject({ status: "failed", errorCode: "GATEWAY_INTERNAL" });
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+        status: "settled",
+        costMicroCredits: await reportedCost(identity, route.upstreamModel),
+      });
     });
 
     dataPlane("maps an upstream failure to a coded 502, leaks nothing and charges zero", async () => {
