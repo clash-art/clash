@@ -23,7 +23,9 @@ vi.mock("../../../containers/render", () => ({
 
 import { createApp } from "../../../app";
 import { createSqliteD1 } from "../../../../../web/app/test-support/sqlite-d1";
-import { officialChatCard } from "../../../gateway/test-support";
+import { gatewayRetentionKeys, retainGatewayExchange } from "@clash/gateway-core";
+import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
+import { createMemoryBucket, officialChatCard } from "../../../gateway/test-support";
 import {
   GATEWAY_TENANT_PERMISSIONS,
   GATEWAY_TENANT_ROLES,
@@ -199,6 +201,7 @@ describe("permission matrix, enforced by the server", () => {
       ["GET", "/api/v1/admin/gateway/audit"],
       ["GET", "/api/v1/admin/gateway/abuse"],
       ["POST", "/api/v1/admin/gateway/prompts/gwr_x/access", { reason: "incident" }],
+      ["POST", "/api/v1/admin/gateway/retention/purge", {}],
       ["PUT", `${t.base}/subscription/rate-limit`, { rateLimit: null }],
       ["POST", `${t.base}/wallet/adjust`, { deltaMicroCredits: 1, reason: "x", idempotencyKey: "k" }],
       ["POST", `${t.base}/wallet/status`, { status: "suspended", reason: "x" }],
@@ -739,10 +742,110 @@ describe("audit is atomic with every mutation", () => {
   });
 });
 
-describe("staff prompt access (decision 10)", () => {
-  const enabled = { ...baseEnv, GATEWAY_STAFF_PROMPT_ACCESS: "enabled" };
+describe("staff prompt access and body retention", () => {
+  const bucket = createMemoryBucket();
+  const enabled = { ...baseEnv, R2_BUCKET: bucket, GATEWAY_STAFF_PROMPT_ACCESS: "enabled" };
+  const access = (requestId: string) => `/api/v1/admin/gateway/prompts/${requestId}/access`;
+  const audited = (requestId: string) => auditRows("action = 'prompt.view' AND target_id = ?", requestId);
+  const encode = (text: string) => new TextEncoder().encode(text);
 
-  it("is off by default, platform_admin-only when on, always audited, and reports that nothing is retained", async () => {
+  /** Retain one exchange through the same ports the data plane uses. */
+  async function retained(tenantId: string, options: { ttlMs?: number } = {}) {
+    const requestId = `gwr_${hex()}`;
+    const marker = `secret-prompt-${hex()}`;
+    const request = JSON.stringify({ model: "m", messages: [{ role: "user", content: marker }] });
+    const response = JSON.stringify({ choices: [{ message: { role: "assistant", content: `reply to ${marker}` } }] });
+    const outcome = await retainGatewayExchange(gatewayRetentionPorts(enabled), {
+      requestId,
+      identity: { tenantId, userId: "u-caller", keyId: "gwk_caller" },
+      request: { body: encode(request), contentType: "application/json" },
+      response: { status: 200, body: encode(response), contentType: "application/json" },
+      ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+    });
+    expect(outcome).toEqual({ status: "stored" });
+    return { requestId, marker, request, response };
+  }
+
+  it("is off without the hosted flag and platform_admin-only with it; refusals write no audit row", async () => {
+    const t = team();
+    const { requestId } = await retained(t.tenantId);
+    await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "incident 42" }, { ...enabled, GATEWAY_STAFF_PROMPT_ACCESS: undefined }), 403, "GATEWAY_PROMPT_ACCESS_DISABLED");
+    expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth))).promptAccess).toBe(false);
+    expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth, undefined, enabled))).promptAccess).toBe(true);
+    // The tenant's own owner and admin may not read its prompts.
+    for (const role of GATEWAY_TENANT_ROLES) {
+      await expectCode(await call("POST", access(requestId), t.members[role].auth, { reason: "x" }, enabled), 403, "GATEWAY_FORBIDDEN");
+      expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth, undefined, enabled))).promptAccess).toBe(false);
+    }
+    await expectCode(await call("POST", access(requestId), platformAdmin.auth, {}, enabled), 400, "GATEWAY_INVALID_REQUEST");
+    expect(audited(requestId)).toEqual([]);
+  });
+
+  it("returns the stored bytes and audits every view with who, request id and reason, never the body", async () => {
+    const t = team();
+    const { requestId, marker, request, response } = await retained(t.tenantId);
+    for (const reason of ["incident 42", "follow-up 43"]) {
+      const viewed = await json<{
+        prompt: { requestId: string; tenantId: string; keyId: string; request: { body: string; sha256: string; bytes: number }; response: { body: string; sha256: string } };
+      }>(await call("POST", access(requestId), platformAdmin.auth, { reason }, enabled));
+      expect(viewed.prompt).toMatchObject({ requestId, tenantId: t.tenantId, keyId: "gwk_caller" });
+      expect(viewed.prompt.request.body).toBe(request);
+      expect(viewed.prompt.response.body).toBe(response);
+      expect(viewed.prompt.request.bytes).toBe(encode(request).byteLength);
+      expect(viewed.prompt.response.sha256).toBe(sha256(response));
+    }
+    const rows = audited(requestId);
+    expect(rows.map((row) => [row.actor_user_id, row.actor_role, row.tenant_id, row.reason])).toEqual([
+      [platformAdmin.userId, "platform_admin", t.tenantId, "incident 42"],
+      [platformAdmin.userId, "platform_admin", t.tenantId, "follow-up 43"],
+    ]);
+    expect(JSON.parse(rows[0]!.after_json!)).toMatchObject({ outcome: "viewed", requestFound: true, responseSha256: sha256(response) });
+    const raw = sqlite.prepare(`SELECT * FROM gateway_admin_audit WHERE target_id = ?`).all(requestId) as Array<Record<string, unknown>>;
+    expect(raw.every((row) => row.request_id === requestId)).toBe(true);
+    expect(JSON.stringify(raw)).not.toContain(marker);
+  });
+
+  it("discloses nothing when the audit row cannot be written", async () => {
+    const t = team();
+    const { requestId, marker } = await retained(t.tenantId);
+    const res = await withAuditFailing(() => call("POST", access(requestId), platformAdmin.auth, { reason: "incident" }, enabled));
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain(marker);
+  });
+
+  it("answers GATEWAY_PROMPT_EXPIRED past the 30 days even before purge, and purge is idempotent", async () => {
+    const t = team();
+    const { requestId } = await retained(t.tenantId, { ttlMs: 0 });
+    const keys = gatewayRetentionKeys(requestId);
+    expect(bucket.objects.has(keys.request)).toBe(true);
+    await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "late" }, enabled), 410, "GATEWAY_PROMPT_EXPIRED");
+    expect(JSON.parse(audited(requestId)[0]!.after_json!)).toMatchObject({ outcome: "expired", code: "GATEWAY_PROMPT_EXPIRED" });
+
+    for (const role of ["owner", "admin"] as const)
+      await expectCode(await call("POST", "/api/v1/admin/gateway/retention/purge", t.members[role].auth, {}, enabled), 403, "GATEWAY_FORBIDDEN");
+    const first = await json<{ purge: { purged: number; failed: number } }>(
+      await call("POST", "/api/v1/admin/gateway/retention/purge", platformAdmin.auth, { limit: 1000 }, enabled),
+    );
+    expect(first.purge.purged).toBeGreaterThan(0);
+    expect(bucket.objects.has(keys.request)).toBe(false);
+    expect(bucket.objects.has(keys.response)).toBe(false);
+    const row = () => sqlite.prepare(`SELECT status, purged_at FROM gateway_request_retention WHERE request_id = ?`).get(requestId);
+    const purged = row();
+    expect(purged).toMatchObject({ status: "purged" });
+    const purgeAudits = () => auditRows("action = 'retention.purge'").length;
+    const auditsAfterFirst = purgeAudits();
+    expect(auditsAfterFirst).toBeGreaterThan(0);
+
+    // Again, through the scheduled entry point and the route: nothing left, nothing recorded.
+    expect(await purgeGatewayRetention(enabled as never)).toEqual({ purged: 0, failed: 0 });
+    const second = await json<{ purge: { purged: number } }>(await call("POST", "/api/v1/admin/gateway/retention/purge", platformAdmin.auth, undefined, enabled));
+    expect(second.purge.purged).toBe(0);
+    expect(purgeAudits()).toBe(auditsAfterFirst);
+    expect(row()).toEqual(purged);
+    await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "later" }, enabled), 410, "GATEWAY_PROMPT_EXPIRED");
+  });
+
+  it("reports a request that has no retained body as not retained, audited", async () => {
     const t = team();
     const requestId = `gwr_${hex()}`;
     sqlite
@@ -751,22 +854,11 @@ describe("staff prompt access (decision 10)", () => {
          VALUES (?, ?, 'settle', 'settled', ?, 10, 1)`,
       )
       .run(`l_${requestId}`, requestId, t.tenantId);
-    const path = `/api/v1/admin/gateway/prompts/${requestId}/access`;
-    const audited = () => auditRows("action = 'prompt.view' AND target_id = ?", requestId);
-
-    await expectCode(await call("POST", path, platformAdmin.auth, { reason: "incident 42" }), 403, "GATEWAY_PROMPT_ACCESS_DISABLED");
-    expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth))).promptAccess).toBe(false);
-    for (const role of GATEWAY_TENANT_ROLES)
-      await expectCode(await call("POST", path, t.members[role].auth, { reason: "x" }, enabled), 403, "GATEWAY_FORBIDDEN");
-    expect(audited()).toEqual([]);
-
-    await expectCode(await call("POST", path, platformAdmin.auth, {}, enabled), 400, "GATEWAY_INVALID_REQUEST");
-    await expectCode(await call("POST", path, platformAdmin.auth, { reason: "incident 42" }, enabled), 404, "GATEWAY_PROMPT_NOT_RETAINED");
-    expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth, undefined, enabled))).promptAccess).toBe(true);
-    expect(audited()).toEqual([
-      expect.objectContaining({ tenant_id: t.tenantId, actor_user_id: platformAdmin.userId, actor_role: "platform_admin", reason: "incident 42" }),
+    await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "incident 42" }, enabled), 404, "GATEWAY_PROMPT_NOT_RETAINED");
+    expect(audited(requestId)).toEqual([
+      expect.objectContaining({ tenant_id: t.tenantId, actor_user_id: platformAdmin.userId, reason: "incident 42" }),
     ]);
-    expect(JSON.parse(audited()[0]!.after_json!)).toEqual({ outcome: "not_retained", requestFound: true });
+    expect(JSON.parse(audited(requestId)[0]!.after_json!)).toEqual({ outcome: "not_retained", requestFound: true, code: "GATEWAY_PROMPT_NOT_RETAINED" });
   });
 });
 

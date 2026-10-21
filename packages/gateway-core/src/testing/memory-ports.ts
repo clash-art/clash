@@ -21,6 +21,7 @@ import {
   type GatewayIdentity,
   type GatewayLogFields,
   type GatewayPorts,
+  type GatewayRetentionEntry,
   type GatewayUpstreamPort,
   type UsageEvent,
 } from "../ports.js";
@@ -71,6 +72,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
   const ledger = new Map<string, UsageEvent>();
   const windows = new Map<string, number>();
   const blobs = new Map<string, GatewayBlob>();
+  const retention = new Map<string, GatewayRetentionEntry>();
   const audit: GatewayAuditEvent[] = [];
   const logs: MemoryGateway["logs"] = [];
 
@@ -257,6 +259,26 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
       },
       async delete(key) {
         blobs.delete(key);
+      },
+    },
+    retention: {
+      async record(entry) {
+        if (!retention.has(entry.requestId)) retention.set(entry.requestId, structuredClone(entry));
+      },
+      async get({ requestId }) {
+        const entry = retention.get(requestId);
+        return entry ? structuredClone(entry) : null;
+      },
+      async expired({ before, limit }) {
+        return [...retention.values()]
+          .filter((entry) => entry.status !== "purged" && entry.expiresAt <= before)
+          .sort((a, b) => a.expiresAt - b.expiresAt)
+          .slice(0, limit)
+          .map((entry) => structuredClone(entry));
+      },
+      async markPurged({ requestId, at }) {
+        const entry = retention.get(requestId);
+        if (entry && entry.status !== "purged") retention.set(requestId, { ...entry, status: "purged", purgedAt: at });
       },
     },
     scheduler: unavailablePort("scheduler"),

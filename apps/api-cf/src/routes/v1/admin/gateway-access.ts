@@ -27,8 +27,8 @@ import {
   requireGatewayUserId,
   tenantRolePermissions,
 } from "../../../services/gateway-authz";
+import { staffPromptAccessEnabled } from "../../../gateway";
 import { gatewayErrorResponse } from "../../../services/gateway-tokens";
-import { staffPromptAccessEnabled } from "./gateway-insights";
 
 const UserIdSchema = GatewayPlatformAdminGrantRequestSchema.shape.userId;
 const RevokeRequestSchema = GatewayPromptAccessRequestSchema.partial();

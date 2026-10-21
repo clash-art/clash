@@ -93,26 +93,80 @@ describe("AdminBudgets", () => {
 
 describe("AdminUsage", () => {
   const usage = { entries: [], byModel: [] };
+  const entry = (requestId: string, kind: string) => ({
+    requestId,
+    kind,
+    status: "settled",
+    tenantId: "team:a",
+    userId: "u-ann",
+    keyId: "gwk_1",
+    amountMicroCredits: 1500,
+    modelCode: "gpt-x",
+    inputTokens: 4,
+    outputTokens: 2,
+    priceVersion: "p1",
+    errorCode: null,
+    occurredAt: "2026-10-20T10:00:00.000Z",
+  });
+  const ledger = { entries: [entry("gwr_1", "settle"), entry("gwr_1", "hold")], byModel: [] };
+  // The stored bytes, deliberately not pretty-printed: the viewer must show them unchanged.
+  const stored = {
+    request: '{"model":"gpt-x","messages":[{"role":"user","content":"why is the sky blue?"}]}',
+    response: '{"choices":[{"message":{"role":"assistant","content":"Rayleigh scattering."}}],"model":"gpt-x"}',
+  };
+  const retained = {
+    requestId: "gwr_1",
+    tenantId: "team:a",
+    userId: "u-ann",
+    keyId: "gwk_1",
+    responseStatus: 200,
+    storedAt: "2026-10-20T10:00:00.000Z",
+    expiresAt: "2026-11-19T10:00:00.000Z",
+    request: { contentType: "application/json", bytes: stored.request.length, sha256: "a".repeat(64), body: stored.request },
+    response: { contentType: "application/json", bytes: stored.response.length, sha256: "b".repeat(64), body: stored.response },
+  };
 
   it("offers staff prompt access only when the deployment enables it for the caller", () => {
-    const { rerender } = render(<AdminUsage usage={usage} filters={{}} onFiltersChange={() => undefined} promptAccess={false} />);
+    const { rerender } = render(<AdminUsage usage={ledger} filters={{}} onFiltersChange={() => undefined} promptAccess={false} />);
     expect(screen.queryByRole("region", { name: "Staff prompt access" })).toBeNull();
-    rerender(<AdminUsage usage={usage} filters={{}} onFiltersChange={() => undefined} promptAccess />);
+    expect(screen.queryByRole("button", { name: "View prompt for gwr_1" })).toBeNull();
+    rerender(<AdminUsage usage={ledger} filters={{}} onFiltersChange={() => undefined} promptAccess />);
     expect(screen.getByRole("region", { name: "Staff prompt access" })).toBeInTheDocument();
+    // One viewer per request: on its settle row, not on the hold.
+    expect(screen.getAllByRole("button", { name: "View prompt for gwr_1" })).toHaveLength(1);
   });
 
-  it("reports the coded not-retained state of an audited prompt request", async () => {
-    const calls = stubAdminFetch(() =>
-      gatewayError(404, "GATEWAY_PROMPT_NOT_RETAINED", "The gateway does not retain request or response bodies, so there is no prompt to show."),
-    );
-    render(<AdminUsage usage={usage} filters={{}} onFiltersChange={() => undefined} promptAccess />);
-    const region = screen.getByRole("region", { name: "Staff prompt access" });
-    const form = region.querySelector("form")!;
-    type(form, "Gateway request id", "gwr_1");
+  it("opens a row's prompt and response with a reason and shows the stored bytes unchanged", async () => {
+    const calls = stubAdminFetch(() => Response.json({ prompt: retained }));
+    render(<AdminUsage usage={ledger} filters={{}} onFiltersChange={() => undefined} promptAccess />);
+    fireEvent.click(screen.getByRole("button", { name: "View prompt for gwr_1" }));
+    const dialog = await screen.findByRole("dialog", { name: "Prompt and response" });
+    const submit = within(dialog).getByRole("button", { name: "View prompt and response" });
+    expect(submit).toBeDisabled();
+    const form = within(dialog).getByRole("form", { name: "Prompt access" });
     type(form, "Reason", "incident 42");
     fireEvent.submit(form);
-    expect(await within(region).findAllByText(/GATEWAY_PROMPT_NOT_RETAINED/)).not.toHaveLength(0);
-    expect(calls[0]).toEqual({ method: "POST", path: "/api/v1/admin/gateway/prompts/gwr_1/access", body: { reason: "incident 42" } });
+    const request = await within(dialog).findByRole("region", { name: "Request" });
+    expect(calls).toEqual([{ method: "POST", path: "/api/v1/admin/gateway/prompts/gwr_1/access", body: { reason: "incident 42" } }]);
+    expect(request.querySelector("pre")!.textContent).toBe(stored.request);
+    expect(within(dialog).getByRole("region", { name: "Response" }).querySelector("pre")!.textContent).toBe(stored.response);
+    expect(within(dialog).getByText("b".repeat(64))).toBeInTheDocument();
+  });
+
+  it("shows an expired or unretained request's coded error in the viewer", async () => {
+    const calls = stubAdminFetch(() =>
+      gatewayError(410, "GATEWAY_PROMPT_EXPIRED", "The retained request and response bodies are past their retention and can no longer be viewed."),
+    );
+    render(<AdminUsage usage={usage} filters={{}} onFiltersChange={() => undefined} promptAccess />);
+    const lookup = screen.getByRole("region", { name: "Staff prompt access" }).querySelector("form")!;
+    type(lookup, "Gateway request id", "gwr_old");
+    fireEvent.submit(lookup);
+    const dialog = await screen.findByRole("dialog", { name: "Prompt and response" });
+    type(within(dialog).getByRole("form", { name: "Prompt access" }), "Reason", "audit request");
+    fireEvent.submit(within(dialog).getByRole("form", { name: "Prompt access" }));
+    expect(await within(dialog).findByText("GATEWAY_PROMPT_EXPIRED")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("region", { name: "Request" })).toBeNull();
+    expect(calls[0]).toEqual({ method: "POST", path: "/api/v1/admin/gateway/prompts/gwr_old/access", body: { reason: "audit request" } });
   });
 
   it("applies filters, keeping the tenant scope", () => {

@@ -45,10 +45,13 @@ export interface Env {
    */
   GATEWAY_ENCRYPTION_KEY?: string;
   /**
-   * Hosted-only staff prompt access (#353, decision 10): `"enabled"` lets a
-   * platform_admin open the audited prompt-access endpoint. Unset (the
-   * default, and every self-host) keeps it off. The gateway retains no
-   * request or response bodies either way. Admin roles themselves live in D1
+   * Hosted-only staff prompt access (#353; product decision 2026-10-20):
+   * `"enabled"` turns on both 30-day request/response body retention in the
+   * data plane (R2 objects + `gateway_request_retention`) and the audited,
+   * platform_admin-only staff view. Unset (the OSS wrangler.toml default, and
+   * every self-host) stores no bodies and refuses the view. Hosted configs
+   * (`[env.staging.vars]`, the clash-hosted overlay) set it. Purge of expired
+   * bodies runs regardless. Admin roles themselves live in D1
    * (`tenant_member`, `gateway_platform_role`), never in a variable.
    */
   GATEWAY_STAFF_PROMPT_ACCESS?: string;

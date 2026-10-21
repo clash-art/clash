@@ -18,7 +18,10 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 - **`''` instead of `NULL`** for optional columns that take part in a unique
   index (`gateway_price.upstream_id`, `gateway_usage_ledger.budget_id`), because
   SQLite treats NULLs as distinct.
-- **No prompt, completion or response bodies** in any column.
+- **No prompt, completion or response bodies in D1.** Retained bodies
+  (30 days, hosted only) are R2 objects; D1 holds only their metadata in
+  `gateway_request_retention` (0037). See
+  [gateway-admin.md](gateway-admin.md#staff-prompt-access-and-body-retention).
 
 ## Tables
 
@@ -35,6 +38,7 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_usage_ledger`        | Append-only money journal (below).                                                                                                                                                                  |
 | `gateway_admin_audit`         | One row per admin mutation with redacted before/after snapshots. Append-only: 0036 triggers refuse `UPDATE` and any `DELETE` inside the 13-month retention. See [gateway-admin.md](gateway-admin.md). |
 | `gateway_platform_role`       | (0036) Platform staff grants (`platform_admin`), separate from `tenant_member.role`. Bootstrapped explicitly; never an environment variable.                                                        |
+| `gateway_request_retention`   | (0037) One row per retained gateway request: tenant, user and key ids, the R2 keys, sizes, SHA-256 and content types of the request and response bodies, the answer status, `status` (`stored`, `failed` with `error_code`, `purged`), `stored_at`, `expires_at` (+30 days), `purged_at`. Never the bodies. |
 | `gateway_package`             | Subscription packages: fiat `price_minor` in `price_currency`, `credits_micro` granted per period.                                                                                                  |
 | `gateway_topup_pack`          | One-off credit packs. A purchase is a ledger `topup` entry.                                                                                                                                         |
 | `gateway_tenant_subscription` | A tenant's package subscription and period.                                                                                                                                                         |
@@ -73,10 +77,18 @@ and checks both invariants.
 
 ## Retention
 
-The gateway retention job enforces these limits. SQLite does not.
+SQLite does not enforce these limits; jobs do.
 
-| Data                                                                                                                                               | Retention                        |
-| -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| Prompt / response bodies                                                                                                                           | Never stored.                    |
-| Usage metadata: ledger `upstream_id`, `account_id`, `provider_request_id`, `error_code`; ended `gateway_token` rows; terminal `tenant_invite` rows | 30 days, then NULLed or deleted. |
-| Ledger rows (money, kind, status, model, versions, token counts) and `gateway_admin_audit`                                                         | 13 months.                       |
+| Data                                                                                                                                                                                         | Retention                        |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| Prompt and response bodies (R2 `gateway-retention/<requestId>/…`, hosted only)                                                                                                             | 30 days, then purged.            |
+| Usage metadata: ledger `upstream_id`, `account_id`, `provider_request_id`, `error_code`; ended `gateway_token` rows; terminal `tenant_invite` rows; `gateway_request_retention` rows | 30 days, then NULLed or deleted. |
+| Ledger rows (money, kind, status, model, versions, token counts) and `gateway_admin_audit`                                                                                                 | 13 months.                       |
+
+Bodies are enforced today: `purgeExpiredGatewayBodies` runs from the api-cf
+`scheduled` handler every minute (and `POST /api/v1/admin/gateway/retention/purge`),
+deletes the R2 objects of every row past `expires_at` and marks it `purged`;
+a row past `expires_at` is unreadable even before that. The 0036 triggers keep
+`gateway_admin_audit` for 13 months. The job that NULLs or deletes the other
+30-day metadata (including purged `gateway_request_retention` markers) is not
+implemented yet.

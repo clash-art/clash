@@ -4,8 +4,9 @@
  * signals. Read-only; every query is tenant-filtered when a tenant is given,
  * and the routes only omit the tenant for platform permissions.
  *
- * Nothing here returns key material, token hashes or request content: the
- * gateway stores no bodies.
+ * Nothing here returns key material, token hashes or request content.
+ * Retained bodies are read only through the audited staff view
+ * (routes/v1/admin/gateway-insights.ts over d1-retention.ts).
  */
 import type { D1Database } from "@cloudflare/workers-types";
 import type { GatewayClock } from "@clash/gateway-core";
@@ -401,7 +402,7 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
       };
     },
 
-    /** Whether any ledger row carries this gateway request id (the prompt itself is never stored). */
+    /** The tenant of the ledger rows carrying this gateway request id, if any. */
     async requestTenant(requestId: string): Promise<string | null> {
       const row = await db
         .prepare(`SELECT tenant_id FROM gateway_usage_ledger WHERE request_id = ? LIMIT 1`)

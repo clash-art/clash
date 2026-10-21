@@ -56,6 +56,8 @@ export interface AdminAuditInput {
   after?: unknown;
   /** Operator note for overrides, rotations and role changes; never request content. */
   reason?: string | null;
+  /** Gateway request the action concerns (a staff prompt view). */
+  requestId?: string;
   nowS: number;
   /** SQL condition the row is written under, usually chained on the mutation; default always. */
   when?: string;
@@ -68,8 +70,8 @@ export function adminAuditStatement(db: D1Database, input: AdminAuditInput): D1P
     .prepare(
       `INSERT INTO gateway_admin_audit
          (id, tenant_id, actor_user_id, actor_role, action, target_type, target_id,
-          before_json, after_json, reason, occurred_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11 WHERE ${input.when ?? "1"}`,
+          before_json, after_json, reason, request_id, occurred_at)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 WHERE ${input.when ?? "1"}`,
     )
     .bind(
       `gwa_${crypto.randomUUID().replaceAll("-", "")}`,
@@ -82,6 +84,7 @@ export function adminAuditStatement(db: D1Database, input: AdminAuditInput): D1P
       snapshot(input.before),
       snapshot(input.after),
       input.reason ?? null,
+      input.requestId ?? null,
       input.nowS,
     );
 }

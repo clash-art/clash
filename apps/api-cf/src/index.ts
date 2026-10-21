@@ -47,6 +47,11 @@ export default {
         m.cleanupProjectContentUploads(env.R2_BUCKET),
       ),
     );
+    // Gateway body retention (#353): delete bodies past their 30 days. Runs
+    // whatever GATEWAY_STAFF_PROMPT_ACCESS says, so turning it off strands none.
+    ctx.waitUntil(
+      import("./gateway/d1-retention").then((m) => m.purgeGatewayRetention(env)),
+    );
     // Lazy like the other cron graphs; abandoned import staging has no hero
     // request to piggyback on.
     ctx.waitUntil(

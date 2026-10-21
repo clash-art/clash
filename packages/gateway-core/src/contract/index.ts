@@ -26,6 +26,7 @@ import {
   GATEWAY_REQUEST_ID_HEADER,
   GATEWAY_SETTLEMENT_HEADER,
   isOpenAIChatRoute,
+  type GatewayAppOptions,
 } from "../app.js";
 import { GatewayError, isGatewayError, type GatewayErrorCode } from "../errors.js";
 import {
@@ -40,6 +41,15 @@ import {
   normalizeOpenAIChatRequest,
   type GatewayModelKind,
 } from "../request.js";
+import {
+  GATEWAY_BODY_RETENTION_MS,
+  GATEWAY_RETENTION_HEADER,
+  gatewayRetentionKeys,
+  purgeExpiredGatewayBodies,
+  readRetainedExchange,
+  retainGatewayExchange,
+  sha256Hex,
+} from "../retention.js";
 import { planGatewayRoutes, type GatewayCredentialScope } from "../routing.js";
 import { createUsageAccumulator, emptyUsage, type GatewayMediaUnit } from "../usage.js";
 
@@ -52,6 +62,7 @@ export const GATEWAY_CONTRACT_CAPABILITIES = [
   "limits.rate",
   "limits.concurrency",
   "blobs",
+  "retention",
   "scheduler",
   "audit",
 ] as const;
@@ -610,6 +621,90 @@ export function describeGatewayContract(
       unavailable: unavailable(() => ports().blobs.get(unique("blob"))),
     });
 
+    capability("retention", {
+      supported: [
+        [
+          "records metadata once per request id",
+          async () => {
+            const identity = await tenant();
+            const requestId = unique("retention");
+            const keys = gatewayRetentionKeys(requestId);
+            const meta = (key: string) => ({ key, bytes: 2, sha256: "00".repeat(32), contentType: "application/json" });
+            const entry = {
+              requestId,
+              tenantId: identity.tenantId,
+              userId: identity.userId,
+              status: "stored" as const,
+              request: meta(keys.request),
+              response: meta(keys.response),
+              responseStatus: 200,
+              storedAt: ports().clock.now(),
+              expiresAt: ports().clock.now() + GATEWAY_BODY_RETENTION_MS,
+            };
+            await ports().retention.record(entry);
+            await ports().retention.record({ ...entry, status: "failed", errorCode: "GATEWAY_INTERNAL" });
+            expect(await ports().retention.get({ requestId })).toMatchObject({
+              requestId,
+              tenantId: identity.tenantId,
+              status: "stored",
+              request: entry.request,
+              response: entry.response,
+              responseStatus: 200,
+            });
+            expect(await ports().retention.get({ requestId: unique("retention-missing") })).toBeNull();
+          },
+        ],
+        [
+          "retains an exchange, reads back the stored bytes, and purges an expired one once",
+          async () => {
+            const identity = await tenant();
+            const body = (text: string) => new TextEncoder().encode(text);
+            const kept = unique("retention-kept");
+            const exchange = (requestId: string, ttlMs?: number) =>
+              retainGatewayExchange(ports(), {
+                requestId,
+                identity,
+                request: { body: body(`{"prompt":"${requestId}"}`), contentType: "application/json" },
+                response: { status: 200, body: body(`{"answer":"${requestId}"}`), contentType: "application/json" },
+                ...(ttlMs !== undefined ? { ttlMs } : {}),
+              });
+            if (harness.capabilities.blobs !== "supported") {
+              // Without blob storage nothing is kept, and that is recorded, not silent.
+              expect(await exchange(kept)).toMatchObject({ status: "failed", code: "GATEWAY_RETENTION_FAILED", marker: "failed" });
+              expect(await ports().retention.get({ requestId: kept })).toMatchObject({
+                status: "failed",
+                errorCode: "GATEWAY_CAPABILITY_UNAVAILABLE",
+              });
+              await expectCode(readRetainedExchange(ports(), { requestId: kept }), "GATEWAY_PROMPT_NOT_RETAINED");
+              return;
+            }
+            expect(await exchange(kept)).toEqual({ status: "stored" });
+            const read = await readRetainedExchange(ports(), { requestId: kept });
+            expect(new TextDecoder().decode(read.request.body)).toBe(`{"prompt":"${kept}"}`);
+            expect(new TextDecoder().decode(read.response.body)).toBe(`{"answer":"${kept}"}`);
+            expect(read.response.sha256).toBe(await sha256Hex(body(`{"answer":"${kept}"}`)));
+
+            // ttl 0: expired at once, so no clock has to move.
+            const gone = unique("retention-expired");
+            expect(await exchange(gone, 0)).toEqual({ status: "stored" });
+            await expectCode(readRetainedExchange(ports(), { requestId: gone }), "GATEWAY_PROMPT_EXPIRED");
+            await purgeExpiredGatewayBodies(ports(), { limit: 1000 });
+            const purged = await ports().retention.get({ requestId: gone });
+            expect(purged).toMatchObject({ status: "purged" });
+            expect(await ports().blobs.get(gatewayRetentionKeys(gone).response)).toBeNull();
+            // Idempotent: a purged row is not selected again and keeps its first purge time.
+            expect((await ports().retention.expired({ before: ports().clock.now(), limit: 1000 })).map((e) => e.requestId)).not.toContain(gone);
+            await ports().retention.markPurged({ requestId: gone, at: ports().clock.now() + 1 });
+            expect((await ports().retention.get({ requestId: gone }))?.purgedAt).toBe(purged?.purgedAt);
+            await expectCode(readRetainedExchange(ports(), { requestId: gone }), "GATEWAY_PROMPT_EXPIRED");
+            // The unexpired exchange is untouched.
+            expect((await ports().retention.get({ requestId: kept }))?.status).toBe("stored");
+          },
+        ],
+      ],
+      unavailable: unavailable(() => ports().retention.get({ requestId: unique("retention") })),
+    });
+
     capability("scheduler", {
       supported: [
         [
@@ -756,7 +851,7 @@ export function describeGatewayContract(
     // The suite owns the upstream: a fetch stub replaces `ports.upstream`, so
     // no adapter makes a provider call and every expectation is derived from
     // the adapter's own ports (plan, credential, price), never pinned.
-    const dataPlane = (title: string, body: () => Promise<void>) =>
+    const dataPlane = (title: string, body: () => Promise<void>, also: GatewayCapabilityId[] = []) =>
       it(`data plane: ${title}`, async (context) => {
         const needed: GatewayCapabilityId[] = [
           "identity",
@@ -765,6 +860,7 @@ export function describeGatewayContract(
           "budgets",
           "ledger",
           "limits.rate",
+          ...also,
         ];
         if (needed.some((id) => harness.capabilities[id] !== "supported" || harness.knownGaps?.includes(id)))
           return context.skip();
@@ -802,8 +898,9 @@ export function describeGatewayContract(
       body: Record<string, unknown>,
       headers: Record<string, string> = {},
       overrides: Partial<GatewayPorts> = {},
+      options: Omit<GatewayAppOptions, "basePath"> = {},
     ) => {
-      const app = createGatewayApp({ ...ports(), upstream, ...overrides }, { basePath: "/gateway" });
+      const app = createGatewayApp({ ...ports(), upstream, ...overrides }, { basePath: "/gateway", ...options });
       const authorization = credential.headers.get("authorization");
       return app.fetch(
         new Request("https://gateway.contract/gateway/v1/chat/completions", {
@@ -918,6 +1015,84 @@ export function describeGatewayContract(
         expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
         expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + 1);
       }
+    });
+
+    const retaining = (title: string, body: () => Promise<void>) => dataPlane(title, body, ["blobs", "retention"]);
+    const retain = { retention: { enabled: true } };
+    const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+    retaining("retains the normalized request and the exact answer, on success and on upstream error, without credentials", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const credential = await ports().credentials.resolve({ route, scope: identity.credentialScope, tenantId: identity.tenantId });
+      const callerRequest = harness.fixtures.tenantRequest();
+      const callerToken = callerRequest.headers.get("authorization")!.replace(/^Bearer\s+/i, "");
+      const secrets = [callerToken, credential.apiKey];
+
+      const ok = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+      const sent = chatBody(harness.fixtures.textModel, { user: unique("end-user") });
+      const res = await chat(ok.port, callerRequest, sent, { "x-api-key": callerToken }, {}, retain);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(res.headers.get(GATEWAY_RETENTION_HEADER)).toBeNull();
+      const answered = await res.text();
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const stored = await readRetainedExchange(ports(), { requestId });
+      expect(text(stored.response.body)).toBe(answered);
+      expect(stored.entry).toMatchObject({ tenantId: identity.tenantId, userId: identity.userId, status: "stored", responseStatus: 200 });
+      expect(JSON.parse(text(stored.request.body))).toEqual(sent);
+      expect(stored.entry.expiresAt - stored.entry.storedAt).toBe(GATEWAY_BODY_RETENTION_MS);
+
+      const failing = upstreamStub(() => new Response(`{"error":"echo ${credential.apiKey}"}`, { status: 500 }));
+      const failed = await chat(failing.port, harness.fixtures.tenantRequest(), chatBody(), {}, {}, { ...retain, maxAttempts: 1 });
+      expect(failed.status).toBeGreaterThanOrEqual(500);
+      const failedText = await failed.text();
+      const failedId = failed.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const storedError = await readRetainedExchange(ports(), { requestId: failedId });
+      expect(text(storedError.response.body)).toBe(failedText);
+      expect(storedError.entry.responseStatus).toBe(failed.status);
+
+      for (const exchange of [stored, storedError])
+        for (const secret of secrets) {
+          expect(text(exchange.request.body)).not.toContain(secret);
+          expect(text(exchange.response.body)).not.toContain(secret);
+        }
+    });
+
+    retaining("a retention failure is coded on the answer and leaves billing as it would be", async () => {
+      const identity = await tenant();
+      const route = await firstChatRoute(identity);
+      const price = await ports().routes.price({ identity, catalogVersion: (await ports().routes.catalog(identity)).version, route });
+      const before = await snapshot(identity);
+      const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), chatBody(), {}, {
+        blobs: { ...ports().blobs, put: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
+      }, retain);
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(((await res.json()) as Record<string, unknown>).choices).toEqual(completion("").choices);
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      expect(res.headers.get(GATEWAY_RETENTION_HEADER)).toBe(`failed; code=GATEWAY_RETENTION_FAILED; request_id=${requestId}`);
+      expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBeNull();
+      expect(await ports().retention.get({ requestId })).toMatchObject({ status: "failed", errorCode: "GATEWAY_INTERNAL" });
+      await expectCode(readRetainedExchange(ports(), { requestId }), "GATEWAY_PROMPT_NOT_RETAINED");
+
+      const accumulator = createUsageAccumulator("openai-chat");
+      accumulator.observe(completion(route.upstreamModel));
+      const cost = priceUsage(accumulator.snapshot(), price).microCredits;
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({ status: "settled", costMicroCredits: cost });
+      for (const [id, budget] of await snapshot(identity)) {
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + cost);
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+      }
+    });
+
+    dataPlane("stores nothing when retention is not enabled", async () => {
+      const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), chatBody());
+      expect(res.status).toBe(200);
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      if (harness.capabilities.retention === "supported") expect(await ports().retention.get({ requestId })).toBeNull();
+      if (harness.capabilities.blobs === "supported")
+        expect(await ports().blobs.get(gatewayRetentionKeys(requestId).response)).toBeNull();
     });
 
     dataPlane("rejects stream: true with a coded error before holding anything", async () => {

@@ -329,7 +329,20 @@ const definitions = {
     status: 404,
     openai: "not_found_error",
     anthropic: "not_found_error",
-    message: "The gateway does not retain request or response bodies, so there is no prompt to show.",
+    message: "No request or response body is retained for this request.",
+  },
+  GATEWAY_PROMPT_EXPIRED: {
+    status: 410,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "The retained request and response bodies are past their retention and can no longer be viewed.",
+  },
+  // Body retention (#353): a request whose bodies could not be stored or read back.
+  GATEWAY_RETENTION_FAILED: {
+    status: 500,
+    openai: "server_error",
+    anthropic: "api_error",
+    message: "The request or response body could not be retained.",
   },
   GATEWAY_CONFLICT: {
     status: 409,

@@ -283,6 +283,11 @@ export const GatewayPlatformAdminGrantRequestSchema = z
 /** POST /api/v1/admin/gateway/prompts/:requestId/access: break-glass, so a reason is required. */
 export const GatewayPromptAccessRequestSchema = z.object({ reason: reason() }).strict();
 
+/** POST /api/v1/admin/gateway/retention/purge: purge expired retained bodies now. */
+export const GatewayRetentionPurgeRequestSchema = z
+  .object({ limit: z.number().int().min(1).max(1000).optional() })
+  .strict();
+
 const queryLimit = (max: number, fallback: number) => z.coerce.number().int().min(1).max(max).default(fallback);
 const queryInstant = () => isoInstant().optional();
 

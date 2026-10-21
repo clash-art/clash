@@ -7,15 +7,18 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { describeGatewayContract } from "@clash/gateway-core/contract";
+import { gatewayRetentionKeys } from "@clash/gateway-core";
 
 import { createApp } from "../app";
 import type { Env } from "../config";
+import { sha256Hex } from "../services/api-token";
 import { d1ContractHarness, seedGateway, type SeededGateway } from "../gateway/test-support";
 
 const ORIGIN = "https://clash.test";
 // Seeded on first use: the setup file applies the migrations before any hook runs.
 let seeding: Promise<SeededGateway> | undefined;
-const seeded = () => (seeding ??= seedGateway(env.DB));
+// The real workerd R2 binding backs `blobs`, so the contract runs retention end to end.
+const seeded = () => (seeding ??= seedGateway(env.DB, { bucket: env.R2_BUCKET }));
 
 describeGatewayContract("Workers/D1 gateway ports (miniflare)", async () => d1ContractHarness(await seeded()));
 
@@ -104,5 +107,58 @@ describe("/gateway/v1/chat/completions in workerd", () => {
     const failed = await send(caller.token, chat());
     expect(failed.status).toBe(502);
     expect(await failed.text()).not.toContain(gateway.upstreamApiKey);
+  });
+
+  it("retains bodies in R2 with the hosted flag, and platform_admin views the stored bytes, audited", async () => {
+    const retaining = { ...bindings, GATEWAY_STAFF_PROMPT_ACCESS: "enabled" } as Env;
+    const caller = await gateway.tenantToken();
+    const prompt = `workerd prompt ${crypto.randomUUID()}`;
+    const res = await app.request(
+      "/gateway/v1/chat/completions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${caller.token}` },
+        body: JSON.stringify(chat({ messages: [{ role: "user", content: prompt }] })),
+      },
+      retaining,
+    );
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(res.headers.get("x-gateway-retention")).toBeNull();
+    const answered = await res.text();
+    const requestId = res.headers.get("x-clash-request-id")!;
+    const object = await env.R2_BUCKET.get(gatewayRetentionKeys(requestId).response);
+    expect(await object?.text()).toBe(answered);
+
+    // A platform admin's clsh_ token, resolved by the /api/* middleware as in production.
+    const staffId = `staff-${crypto.randomUUID()}`;
+    const raw = `clsh_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, 'staff', ?, 'clsh_st')`).bind(
+        `tok-${staffId}`,
+        staffId,
+        await sha256Hex(raw),
+      ),
+      env.DB.prepare(`INSERT INTO gateway_platform_role (user_id, role) VALUES (?, 'platform_admin')`).bind(staffId),
+    ]);
+    const viewed = await app.request(
+      `/api/v1/admin/gateway/prompts/${requestId}/access`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${raw}` },
+        body: JSON.stringify({ reason: "workerd incident" }),
+      },
+      retaining,
+    );
+    expect(viewed.status, await viewed.clone().text()).toBe(200);
+    const view = (await viewed.json()) as { prompt: { request: { body: string }; response: { body: string } } };
+    expect(view.prompt.response.body).toBe(answered);
+    expect(view.prompt.request.body).toContain(prompt);
+    const audit = await env.DB.prepare(
+      `SELECT actor_user_id, reason, after_json FROM gateway_admin_audit WHERE action = 'prompt.view' AND target_id = ?`,
+    )
+      .bind(requestId)
+      .all<{ actor_user_id: string; reason: string; after_json: string }>();
+    expect(audit.results).toEqual([expect.objectContaining({ actor_user_id: staffId, reason: "workerd incident" })]);
+    expect(audit.results[0]!.after_json).not.toContain(prompt);
   });
 });

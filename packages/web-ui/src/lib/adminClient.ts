@@ -73,6 +73,27 @@ export interface AdminMe {
   promptAccess: boolean;
 }
 
+/** One retained body: the stored bytes as text, with their size and SHA-256. */
+export interface RetainedBody {
+  contentType: string;
+  bytes: number;
+  sha256: string;
+  body: string;
+}
+
+/** A gateway request's retained prompt and response (staff view; every read is audited). */
+export interface RetainedPrompt {
+  requestId: string;
+  tenantId: string;
+  userId: string;
+  keyId: string | null;
+  responseStatus: number;
+  storedAt: string;
+  expiresAt: string;
+  request: RetainedBody;
+  response: RetainedBody;
+}
+
 export interface RateLimit {
   requestsPerMinute?: number;
   tokensPerMinute?: number;
@@ -381,7 +402,7 @@ export const adminApi = {
   audit: (filters: AuditFilters) => adminRequest<{ entries: AuditEntry[] }>("GET", `/audit${q({ ...filters })}`),
   abuse: () => adminRequest<{ abuse: AbuseSignals }>("GET", "/abuse"),
   promptAccess: (requestId: string, reason: string) =>
-    adminRequest<never>("POST", `/prompts/${seg(requestId)}/access`, { reason }),
+    adminRequest<{ prompt: RetainedPrompt }>("POST", `/prompts/${seg(requestId)}/access`, { reason }),
 
   catalog: () => adminRequest<{ versions: CatalogVersionSummary[] }>("GET", "/catalog"),
   catalogVersion: (version: string) => adminRequest<{ version: CatalogVersion }>("GET", `/catalog/versions/${seg(version)}`),

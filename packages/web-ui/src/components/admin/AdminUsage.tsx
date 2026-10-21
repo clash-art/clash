@@ -1,16 +1,16 @@
 /**
  * Usage page (#353): the ledger with filters applied through the URL, per-model
  * totals, and — only when the deployment enables it for platform staff — the
- * audited prompt-access request (decision 10). The gateway keeps no bodies, so
- * that request answers its coded "not retained" state.
+ * audited viewer of a request's retained prompt and response (30 days), opened
+ * from a settled row or by request id.
  */
 import { useState } from "react";
 
-import { adminApi, formatCredits, type UsageFilters, type UsageResult } from "../../lib/adminClient";
+import { formatCredits, type UsageFilters, type UsageResult } from "../../lib/adminClient";
 import { Button } from "../ui/button";
-import { InlineAlert } from "../ui/feedback";
 import { SelectMenu } from "../ui/select";
-import { AdminErrorAlert, AdminField, AdminSection, AdminTable, formatTime, useAdminAction } from "./AdminKit";
+import { AdminField, AdminSection, AdminTable, formatTime } from "./AdminKit";
+import { AdminPromptViewer } from "./AdminPromptViewer";
 
 const ALL_KINDS = "all";
 const LEDGER_KINDS = ["settle", "refund", "adjust", "grant", "topup", "expire", "hold", "release"] as const;
@@ -32,6 +32,7 @@ export function AdminUsage({
     modelCode: filters.modelCode ?? "",
     kind: filters.kind ?? "",
   });
+  const [viewing, setViewing] = useState<string | null>(null);
   return (
     <>
       <AdminSection title="Filters">
@@ -84,7 +85,7 @@ export function AdminUsage({
           ]}
         />
       </AdminSection>
-      <AdminSection title="Ledger entries" description="Newest first. Request and response bodies are never stored.">
+      <AdminSection title="Ledger entries" description="Newest first.">
         <AdminTable
           label="Ledger entries"
           rows={usage.entries}
@@ -97,42 +98,54 @@ export function AdminUsage({
             { header: "User / key", cell: (row) => [row.userId, row.keyId].filter(Boolean).join(" / ") || "—" },
             { header: "Tokens in/out", cell: (row) => `${row.inputTokens} / ${row.outputTokens}`, align: "right" },
             { header: "Credits", cell: (row) => formatCredits(row.amountMicroCredits), align: "right" },
-            { header: "Request", cell: (row) => <code className="text-xs">{row.requestId}</code> },
+            {
+              header: "Request",
+              cell: (row) => (
+                <span className="flex items-center gap-2">
+                  <code className="text-xs">{row.requestId}</code>
+                  {/* A settle row is one gateway request; its bodies are what the viewer shows. */}
+                  {promptAccess && row.kind === "settle" ? (
+                    <Button size="sm" aria-label={`View prompt for ${row.requestId}`} onClick={() => setViewing(row.requestId)}>
+                      View
+                    </Button>
+                  ) : null}
+                </span>
+              ),
+            },
           ]}
         />
       </AdminSection>
-      {promptAccess ? <PromptAccess /> : null}
+      {promptAccess ? (
+        <>
+          <PromptLookup onOpen={setViewing} />
+          <AdminPromptViewer requestId={viewing} onClose={() => setViewing(null)} />
+        </>
+      ) : null}
     </>
   );
 }
 
-function PromptAccess() {
+function PromptLookup({ onOpen }: { onOpen: (requestId: string) => void }) {
   const [requestId, setRequestId] = useState("");
-  const [reason, setReason] = useState("");
-  const action = useAdminAction();
   return (
     <AdminSection
       title="Staff prompt access"
-      description="Break-glass, platform admins only. Every request is audited with its reason."
+      description="Platform admins only. Prompts and responses are kept 30 days; every view is audited with its reason."
     >
       <form
-        className="grid gap-3 sm:grid-cols-[1fr_2fr_auto]"
-        onSubmit={action.submit(() => adminApi.promptAccess(requestId.trim(), reason.trim()))}
+        className="grid gap-3 sm:grid-cols-[1fr_auto]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (requestId.trim()) onOpen(requestId.trim());
+        }}
       >
         <AdminField label="Gateway request id" value={requestId} onChange={(e) => setRequestId(e.target.value)} required />
-        <AdminField label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} required />
         <div className="flex items-end">
-          <Button type="submit" size="sm" disabled={action.pending || !requestId.trim() || !reason.trim()}>
-            Request access
+          <Button type="submit" size="sm" disabled={!requestId.trim()}>
+            Open
           </Button>
         </div>
       </form>
-      {action.error ? <AdminErrorAlert error={action.error} /> : null}
-      <InlineAlert
-        tone="info"
-        title="No prompts are retained"
-        message="The gateway stores no request or response bodies, so an allowed request is audited and reports GATEWAY_PROMPT_NOT_RETAINED."
-      />
     </AdminSection>
   );
 }

@@ -39,6 +39,25 @@ also answers 501.
    are discarded because they can echo key fragments.
 5. **Settlement** runs exactly once: a completion is charged its reported usage,
    or an estimate when no usage is reported. A failure is charged zero.
+6. **Retention** (hosted only, `GATEWAY_STAFF_PROMPT_ACCESS=enabled`): after
+   settlement, the normalized request body and the exact answer bytes (the
+   completion, or the coded error after an upstream failure) go to R2 for 30
+   days, with a metadata row in `gateway_request_retention`. Headers are never
+   stored, so neither the caller's credential nor the upstream key can be.
+   See [gateway-admin.md](gateway-admin.md#staff-prompt-access-and-body-retention).
+
+## Retention failure
+
+Retention follows the settlement-failure pattern, and it never changes the
+answer or its billing:
+
+- the answer carries
+  `x-gateway-retention: failed; code=GATEWAY_RETENTION_FAILED; request_id=<id>`
+  (only in this case);
+- objects already written are deleted, and the metadata row is recorded as
+  `status = 'failed'` with `error_code`;
+- the `gateway.retention_failed` error log carries `requestId`, `code`,
+  `cause` and `marker` (`failed`, or `unrecorded` with `markCause`).
 
 ## Settlement failure
 
@@ -101,7 +120,9 @@ Errors use the OpenAI error shape plus `x-clash-error-code`:
 | `budgets`     | `gateway_budget` + `gateway_usage_ledger`: an all-or-nothing reserve in one D1 batch, and settle in one batch. `markSettleFailed` sets hold rows to status `settle_failed`. `status` has no CHECK constraint, so no migration is needed. A caller with no budget row is refused. |
 | `ledger`      | Reads `settle` rows of one tenant.                                                          |
 | `limits`      | `rate_limit_json` from the virtual key (per key), the published model (per user and model) and the active subscription (per tenant). Counted in `gateway_rate_window` and `gateway_inflight` (0034). |
-| `blobs`, `scheduler`, `audit` | `unavailablePort` (501) until their issues land.                                 |
+| `blobs`       | R2 `R2_BUCKET` (`r2-blobs.ts`); retained bodies live under `gateway-retention/`. Without a bucket, `unavailablePort` (501), and retention records `failed`. |
+| `retention`   | `gateway_request_retention` (0037, `d1-retention.ts`): first write per request id wins; `expired` lists unpurged rows past `expires_at`; `markPurged` is idempotent. |
+| `scheduler`, `audit` | `unavailablePort` (501) until their issues land.                                      |
 
 D1 columns are unix seconds; the core is epoch milliseconds. Conversion
 happens in `apps/api-cf/src/gateway/d1-common.ts`.
@@ -123,6 +144,12 @@ non-stream chat cases that drive `createGatewayApp` with a fetch-stub
 upstream. It runs against:
 
 - the in-memory stub (`packages/gateway-core`);
-- the D1 ports on node:sqlite (`apps/api-cf/src/gateway/d1-gateway.test.ts`);
+- the D1 ports on node:sqlite (`apps/api-cf/src/gateway/d1-gateway.test.ts`),
+  with an in-memory bucket for `blobs`;
 - the D1 ports in miniflare/workerd
-  (`apps/api-cf/src/integration/gateway-data-plane.integration.test.ts`).
+  (`apps/api-cf/src/integration/gateway-data-plane.integration.test.ts`),
+  with the real R2 binding.
+
+Its `retention` and data-plane retention cases cover storage on success and on
+upstream error, no credential in storage, the coded failure with unchanged
+billing, expiry and idempotent purge.
