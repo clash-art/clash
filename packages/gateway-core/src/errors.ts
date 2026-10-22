@@ -313,11 +313,30 @@ const definitions = {
     anthropic: "invalid_request_error",
     message: "A tenant must keep at least one owner.",
   },
-  GATEWAY_LAST_PLATFORM_ADMIN: {
+  // Admin identity (#394): the console takes an admin account session only.
+  GATEWAY_ADMIN_SESSION_REQUIRED: {
+    status: 403,
+    openai: "permission_error",
+    anthropic: "permission_error",
+    message: "The admin console accepts an admin account session only; product sessions and tokens are refused.",
+  },
+  GATEWAY_ADMIN_ACCOUNT_EXISTS: {
     status: 409,
     openai: "invalid_request_error",
     anthropic: "invalid_request_error",
-    message: "The last platform admin cannot be revoked.",
+    message: "An admin account with this email already exists.",
+  },
+  GATEWAY_ADMIN_ACCOUNT_NOT_FOUND: {
+    status: 404,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "The admin account does not exist.",
+  },
+  GATEWAY_LAST_ADMIN_ACCOUNT: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The last enabled admin account cannot be disabled.",
   },
   GATEWAY_PROMPT_ACCESS_DISABLED: {
     status: 403,

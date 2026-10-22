@@ -49,7 +49,8 @@ export interface UsageEntryView {
 
 export interface AuditFilter {
   tenantId?: string;
-  actorUserId?: string;
+  actorKind?: string;
+  actorId?: string;
   action?: string;
   targetType?: string;
   targetId?: string;
@@ -61,7 +62,10 @@ export interface AuditFilter {
 export interface AuditEntryView {
   id: string;
   tenantId: string;
-  actorUserId: string;
+  /** `admin` (an admin account), `user` (a team role), `bootstrap` or `migration` (#394). */
+  actorKind: string;
+  /** The admin account id for `admin`, the product user id for `user`. */
+  actorId: string;
   actorRole: string | null;
   action: string;
   targetType: string;
@@ -95,7 +99,8 @@ interface UsageRow {
 interface AuditRow {
   id: string;
   tenant_id: string;
-  actor_user_id: string;
+  actor_kind: string;
+  actor_id: string;
   actor_role: string | null;
   action: string;
   target_type: string;
@@ -200,30 +205,33 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
     async audit(filter: AuditFilter): Promise<AuditEntryView[]> {
       const { results } = await db
         .prepare(
-          `SELECT id, tenant_id, actor_user_id, actor_role, action, target_type, target_id,
+          `SELECT id, tenant_id, actor_kind, actor_id, actor_role, action, target_type, target_id,
                   before_json, after_json, reason, occurred_at
              FROM gateway_admin_audit
-            WHERE (?1 IS NULL OR tenant_id = ?1) AND (?2 IS NULL OR actor_user_id = ?2)
+            WHERE (?1 IS NULL OR tenant_id = ?1) AND (?2 IS NULL OR actor_id = ?2)
               AND (?3 IS NULL OR action = ?3 OR action LIKE ?3 || '.%')
               AND (?4 IS NULL OR target_type = ?4) AND (?5 IS NULL OR target_id = ?5)
               AND (?6 IS NULL OR occurred_at >= ?6) AND (?7 IS NULL OR occurred_at < ?7)
+              AND (?9 IS NULL OR actor_kind = ?9)
             ORDER BY occurred_at DESC, rowid DESC LIMIT ?8`,
         )
         .bind(
           filter.tenantId ?? null,
-          filter.actorUserId ?? null,
+          filter.actorId ?? null,
           filter.action ?? null,
           filter.targetType ?? null,
           filter.targetId ?? null,
           seconds(filter.from),
           seconds(filter.to),
           filter.limit,
+          filter.actorKind ?? null,
         )
         .all<AuditRow>();
       return results.map((row) => ({
         id: row.id,
         tenantId: row.tenant_id,
-        actorUserId: row.actor_user_id,
+        actorKind: row.actor_kind,
+        actorId: row.actor_id,
         actorRole: row.actor_role,
         action: row.action,
         targetType: row.target_type,
@@ -266,7 +274,7 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
                     (SELECT COUNT(*) FROM gateway_upstream_account WHERE enabled = 1) AS upstreams_enabled,
                     (SELECT COUNT(*) FROM gateway_upstream_account) AS upstreams,
                     (SELECT COUNT(*) FROM gateway_package WHERE status = 'active') AS packages,
-                    (SELECT COUNT(*) FROM gateway_platform_role WHERE role = 'platform_admin') AS platform_admins`,
+                    (SELECT COUNT(*) FROM admin_accounts WHERE disabled_at IS NULL) AS admin_accounts`,
           )
           .bind(now),
         db
@@ -290,7 +298,7 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
             upstreams_enabled: number;
             upstreams: number;
             packages: number;
-            platform_admins: number;
+            admin_accounts: number;
           }
         | undefined;
       const tenantRow = scoped?.results?.[0] as { members: number; keys: number; suspended_budgets: number } | undefined;
@@ -311,7 +319,7 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
                 upstreamsEnabled: platformRow.upstreams_enabled,
                 upstreams: platformRow.upstreams,
                 activePackages: platformRow.packages,
-                platformAdmins: platformRow.platform_admins,
+                adminAccounts: platformRow.admin_accounts,
               },
             }
           : {}),

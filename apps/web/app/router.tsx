@@ -50,7 +50,9 @@ export const router = createBrowserRouter([
         lazy: lazyRoute(() => import("./routes/project.$id")),
       },
       { path: "billing", lazy: lazyRoute(() => import("./routes/billing")) },
-      // Gateway admin console (#353): every page's loader asks api-cf for the caller's roles.
+      // Gateway admin console (#353): every page's loader asks api-cf for the
+      // signed-in admin account (#394), whose own sign-in is /admin/login.
+      { path: "admin/login", lazy: lazyRoute(() => import("./routes/admin.login")) },
       { path: "admin", lazy: lazyRoute(() => import("./routes/admin._index")) },
       { path: "admin/models", lazy: lazyRoute(() => import("./routes/admin.models")) },
       { path: "admin/upstreams", lazy: lazyRoute(() => import("./routes/admin.upstreams")) },

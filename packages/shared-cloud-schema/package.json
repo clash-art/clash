@@ -25,6 +25,11 @@
       "import": "./src/runtime.ts",
       "default": "./src/runtime.ts"
     },
+    "./admin-auth": {
+      "types": "./src/admin-auth.ts",
+      "import": "./src/admin-auth.ts",
+      "default": "./src/admin-auth.ts"
+    },
     "./gateway": {
       "types": "./src/gateway.ts",
       "import": "./src/gateway.ts",

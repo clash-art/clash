@@ -1,16 +1,18 @@
 /**
- * The admin console frame (#353, #392): navigation to the pages the caller's
- * platform grants open, and the tenant a tenant-scoped page is narrowed to
- * (chosen from the tenant list) with a way back to all tenants. Pages the
- * caller cannot open are not listed; the server refuses them anyway.
+ * The admin console frame (#353, #392, #394): the signed-in admin account and
+ * its sign-out, navigation to the pages the account's role opens, and the
+ * tenant a tenant-scoped page is narrowed to (chosen from the tenant list)
+ * with a way back to all tenants. Pages the account cannot open are not
+ * listed; the server refuses them anyway.
  */
 import type { ReactNode } from "react";
-import { Link, NavLink } from "react-router";
-import { ArrowLeft, ShieldCheck } from "@phosphor-icons/react";
+import { Link, NavLink, useNavigate } from "react-router";
+import { ArrowLeft, ShieldCheck, SignOut } from "@phosphor-icons/react";
 
-import { ADMIN_PAGES, canOpenAdminPage, type AdminMe } from "../../lib/adminClient";
+import { ADMIN_PAGES, adminAuthApi, adminLoginPath, canOpenAdminPage, type AdminMe } from "../../lib/adminClient";
 import { AppPage, AppPageInset } from "../AppPage";
 import { Button } from "../ui/button";
+import { AdminErrorAlert, useAdminAction } from "./AdminKit";
 
 export function AdminShell({
   me,
@@ -28,6 +30,8 @@ export function AdminShell({
   children: ReactNode;
 }) {
   const pages = ADMIN_PAGES.filter((page) => canOpenAdminPage(me, page));
+  const navigate = useNavigate();
+  const signOut = useAdminAction(() => void navigate(adminLoginPath()));
   return (
     <div className="min-h-screen bg-warm-page text-slate-950 dark:text-slate-50">
       <div className="sticky top-0 z-10 border-b border-warm-border bg-warm-surface/85 backdrop-blur">
@@ -37,9 +41,9 @@ export function AdminShell({
           </Link>
           <ShieldCheck size={20} weight="duotone" className="text-red-500" />
           <h1 className="font-display text-xl font-semibold tracking-tight">Gateway admin</h1>
-          <span className="text-xs text-stone-500">Platform admin</span>
+          <span className="text-xs text-stone-500">{me.admin.email}</span>
           {tenantScoped && tenantId ? (
-            <div className="ml-auto flex items-center gap-2 text-sm">
+            <div className="flex items-center gap-2 text-sm">
               <span className="text-stone-500">Tenant</span>
               <code className="text-xs">{tenantId}</code>
               <Button size="sm" onClick={() => onTenantChange(undefined)}>
@@ -47,7 +51,16 @@ export function AdminShell({
               </Button>
             </div>
           ) : null}
+          <Button className="ml-auto" size="sm" disabled={signOut.pending} onClick={() => void signOut.run(() => adminAuthApi.signOut())}>
+            <SignOut size={16} weight="bold" />
+            Sign out
+          </Button>
         </AppPageInset>
+        {signOut.error ? (
+          <AppPageInset width="wide" className="pb-3">
+            <AdminErrorAlert error={signOut.error} />
+          </AppPageInset>
+        ) : null}
       </div>
       <AppPage width="wide" className="grid gap-6 md:grid-cols-[12rem_1fr]">
         <nav aria-label="Admin sections" className="flex flex-row flex-wrap gap-1 md:flex-col">

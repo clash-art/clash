@@ -1,11 +1,13 @@
 /**
- * Model gateway control plane, mounted at /api/v1/admin/gateway (#352, #353;
- * guide: apps/docs/guide/gateway-admin.md). Every route authorizes through
- * services/gateway-authz.ts (D1 roles and the permission matrix); failures
- * are coded gateway errors, whatever the UI shows. Every mutation appends its
- * redacted `gateway_admin_audit` row in the same D1 batch.
+ * Model gateway control plane, mounted at /api/v1/admin/gateway (#352, #353,
+ * #394; guide: apps/docs/guide/gateway-admin.md). Only a signed-in admin
+ * account reaches these routes (services/admin-identity.ts, before any route);
+ * each authorizes through services/gateway-authz.ts (the account role's
+ * permissions). Failures are coded gateway errors, whatever the UI shows.
+ * Every mutation appends its redacted `gateway_admin_audit` row, actor = the
+ * admin account, in the same D1 batch.
  *
- * Price book, packages and top-up packs (platform_admin):
+ * Price book, packages and top-up packs (admin accounts):
  *   GET  /prices                          price-book versions (?modelCode, ?status)     prices.read
  *   GET  /prices/versions/:version        one version                                     prices.read
  *   PUT  /prices/versions/:version        create or replace a draft                       prices.write
@@ -18,7 +20,7 @@
  *   POST /topup-packs/:id/archive                                                         packages.write
  *   POST /billing/rollover                close ended subscription periods (idempotent)   billing.rollover
  *
- * The other routes live in gateway-access.ts (me, platform admins),
+ * The other routes live in gateway-access.ts (me, admin accounts),
  * gateway-catalog.ts (catalog, upstreams), gateway-tenants.ts (tenants,
  * members, budgets, keys, limits, wallet) and gateway-insights.ts (overview,
  * usage, audit, abuse, prompts).
@@ -86,7 +88,7 @@ adminGatewayRoutes.put(
         microCredits: rate.amountMicroCredits,
         per: rate.per,
       })),
-      actorUserId: actor.userId,
+      actor,
     });
     return ok(c, { version: draft });
   }),
@@ -98,7 +100,7 @@ adminGatewayRoutes.post(
     const version = gatewayParam(GatewayPriceVersionSchema, c.req.param("version"), "version");
     const published = await createD1PriceBook(c.env.DB, { clock: monotonicClock() }).publish({
       version,
-      actorUserId: actor.userId,
+      actor,
     });
     return ok(c, { version: published });
   }),

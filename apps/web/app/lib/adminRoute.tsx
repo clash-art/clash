@@ -1,13 +1,15 @@
 /**
- * Loader guard and page frame shared by the `/admin` routes (#353; guide:
- * apps/docs/guide/gateway-admin.md).
+ * Loader guard and page frame shared by the `/admin` routes (#353, #394;
+ * guide: apps/docs/guide/gateway-admin.md).
  *
  * Every admin loader asks api-cf who the caller is (`/api/v1/admin/gateway/me`,
- * D1 roles) before it loads the page's data: no session is a redirect to
- * /login, a caller who cannot open the page is a 403 route error, and a
- * deployment without the gateway admin API (local Host, self-host without it)
- * is a 404 route error. api-cf still authorizes every call the page makes;
- * this guard only decides what is rendered.
+ * the admin account session) before it loads the page's data: no admin
+ * session (none at all, or only a product session) is a redirect to the admin
+ * sign-in at /admin/login, never the product /login; an account that cannot
+ * open the page is a 403 route error; and a deployment without the gateway
+ * admin API (local Host, self-host without it) is a 404 route error. api-cf
+ * still authorizes every call the page makes; this guard only decides what is
+ * rendered.
  */
 import type { ReactNode } from "react";
 import { data, isRouteErrorResponse, Link, redirect, useRevalidator, useRouteError, useSearchParams } from "react-router";
@@ -15,6 +17,7 @@ import { AdminShell } from "@clash/web-ui/components/admin/AdminShell";
 import {
   AdminApiError,
   adminApi,
+  adminLoginPath,
   adminPage,
   canOpenAdminPage,
   resolveAdminTenant,
@@ -41,10 +44,20 @@ function routeError(status: number, code: string, message: string): never {
   throw data<AdminRouteErrorData>({ code, message }, { status });
 }
 
+/**
+ * The admin API refused the caller's identity, not their permission: no
+ * admin session (401), or a product session or token where an admin session
+ * is required (403 GATEWAY_ADMIN_SESSION_REQUIRED). Either way, sign in as an
+ * admin account.
+ */
+export function isAdminSignInRequired(error: AdminApiError): boolean {
+  return error.status === 401 || (error.status === 403 && error.code === "GATEWAY_ADMIN_SESSION_REQUIRED");
+}
+
 /** Turn an admin API failure inside a loader into a redirect or a coded route error. */
 export function rethrowAdminLoaderError(error: unknown, url: URL): never {
   if (error instanceof AdminApiError) {
-    if (error.status === 401) throw redirect(`/login?returnTo=${encodeURIComponent(url.pathname + url.search)}`);
+    if (isAdminSignInRequired(error)) throw redirect(adminLoginPath(url.pathname + url.search));
     if (error.status === 404 && error.code === "HTTP_404")
       routeError(404, "ADMIN_CONSOLE_UNAVAILABLE", "This deployment does not serve the gateway admin console.");
     routeError(error.status, error.code, error.message);
@@ -53,9 +66,9 @@ export function rethrowAdminLoaderError(error: unknown, url: URL): never {
 }
 
 /**
- * Resolve the caller and the page: redirects to /login without a session,
- * throws a 403 route error when the caller holds none of the page's
- * permissions.
+ * Resolve the admin account and the page: redirects to /admin/login without
+ * an admin session, throws a 403 route error when the account's role does
+ * not hold the page's permission.
  */
 export async function loadAdminPage(request: Request, key: AdminPageKey): Promise<AdminPageContext> {
   const url = new URL(request.url);
@@ -67,7 +80,7 @@ export async function loadAdminPage(request: Request, key: AdminPageKey): Promis
   }
   const page = adminPage(key);
   if (!canOpenAdminPage(me, page))
-    routeError(403, "GATEWAY_FORBIDDEN", `Your roles do not include access to ${page.label}.`);
+    routeError(403, "GATEWAY_FORBIDDEN", `Your admin account's role does not include access to ${page.label}.`);
   return { me, page, tenantId: resolveAdminTenant(page, url.searchParams.get("tenant")), url };
 }
 

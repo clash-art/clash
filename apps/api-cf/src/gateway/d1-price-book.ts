@@ -24,7 +24,7 @@ import {
   type PriceDraftRate,
 } from "@clash/gateway-core";
 
-import { adminAuditStatement } from "./d1-admin-audit";
+import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
 import { toMs, toSeconds } from "./d1-common";
 
 export interface PriceRateView {
@@ -54,7 +54,7 @@ export interface PriceDraftInput {
   /** Epoch ms; null: open-ended. */
   effectiveTo: number | null;
   rates: readonly PriceDraftRate[];
-  actorUserId: string;
+  actor: GatewayAdminActor;
 }
 
 interface PriceRow {
@@ -140,16 +140,16 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
   function audit(input: {
     action: string;
     version: string;
-    actorUserId: string;
+    actor: GatewayAdminActor;
     before: unknown;
     after: unknown;
     nowS: number;
     when: string;
   }): D1PreparedStatement {
-    // Only platform admins hold prices.write (services/gateway-authz.ts).
+    // Only admin accounts hold prices.write (services/gateway-authz.ts).
     return adminAuditStatement(db, {
       tenantId: "",
-      actor: { userId: input.actorUserId, role: "platform_admin" },
+      actor: input.actor,
       action: input.action,
       targetType: "price_version",
       targetId: input.version,
@@ -214,14 +214,14 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
               rate.per,
               fromS,
               toS,
-              input.actorUserId,
+              input.actor.id,
               nowS,
             ),
         ),
         audit({
           action: "price.draft",
           version: input.version,
-          actorUserId: input.actorUserId,
+          actor: input.actor,
           before,
           after: {
             effectiveFrom: input.effectiveFrom,
@@ -249,7 +249,7 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
      * Publish a draft: every row of the version at once, effective from
      * max(effectiveFrom, now). Publishing twice is GATEWAY_PRICE_VERSION_PUBLISHED.
      */
-    async publish(input: { version: string; actorUserId: string }): Promise<PriceVersionView> {
+    async publish(input: { version: string; actor: GatewayAdminActor }): Promise<PriceVersionView> {
       const before = await read(input.version);
       if (before.status === "published")
         throw new GatewayError("GATEWAY_PRICE_VERSION_PUBLISHED", {
@@ -272,7 +272,7 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
         audit({
           action: "price.publish",
           version: input.version,
-          actorUserId: input.actorUserId,
+          actor: input.actor,
           before: { status: "draft" },
           after: { status: "published", publishedAt: nowS },
           nowS,

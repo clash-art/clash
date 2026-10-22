@@ -14,9 +14,15 @@
  */
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 
-/** Who performed an admin action, and under which role (tenant role or `platform_admin`). */
+/**
+ * Who performed an admin action (#394): an admin account (`admin`, its
+ * `adm_…` id, its account role) or a product user acting through a team role
+ * (`user`, the user id, `owner`/`member`). The bootstrap script and
+ * migrations write `bootstrap` / `migration` rows in SQL.
+ */
 export interface GatewayAdminActor {
-  userId: string;
+  kind: "admin" | "user";
+  id: string;
   role: string;
 }
 
@@ -69,14 +75,14 @@ export function adminAuditStatement(db: D1Database, input: AdminAuditInput): D1P
   return db
     .prepare(
       `INSERT INTO gateway_admin_audit
-         (id, tenant_id, actor_user_id, actor_role, action, target_type, target_id,
+         (id, tenant_id, actor_id, actor_kind, actor_role, action, target_type, target_id,
           before_json, after_json, reason, request_id, occurred_at)
-       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 WHERE ${input.when ?? "1"}`,
+       SELECT ?1, ?2, ?3, ?13, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12 WHERE ${input.when ?? "1"}`,
     )
     .bind(
       `gwa_${crypto.randomUUID().replaceAll("-", "")}`,
       input.tenantId,
-      input.actor.userId,
+      input.actor.id,
       input.actor.role,
       input.action,
       input.targetType,
@@ -86,5 +92,6 @@ export function adminAuditStatement(db: D1Database, input: AdminAuditInput): D1P
       input.reason ?? null,
       input.requestId ?? null,
       input.nowS,
+      input.actor.kind,
     );
 }

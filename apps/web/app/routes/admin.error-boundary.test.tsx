@@ -11,11 +11,15 @@ afterEach(() => {
 });
 
 describe("admin route error boundary", () => {
-  it("shows the coded 403 when the caller's roles do not open the page", async () => {
+  it("shows the coded 403 when the admin account's role does not open the page", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
-        Response.json({ userId: "u1", platformRoles: [], platformPermissions: [], promptAccess: false }),
+        Response.json({
+          admin: { id: "adm_1", email: "a@admin.test", name: "A", role: "platform_admin" },
+          permissions: [],
+          promptAccess: false,
+        }),
       ),
     );
     const router = createMemoryRouter([{ path: "/admin/upstreams", loader, Component: AdminUpstreamsRoute, ErrorBoundary }], {

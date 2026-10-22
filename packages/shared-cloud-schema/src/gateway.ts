@@ -442,31 +442,10 @@ export const gatewayInflight = sqliteTable(
 );
 
 /**
- * Platform staff grants (0036), separate from tenant roles. Bootstrapped
- * explicitly (apps/api-cf/scripts/gateway-platform-admin.ts); never granted by
- * an environment variable.
- */
-export const gatewayPlatformRoles = sqliteTable(
-  "gateway_platform_role",
-  {
-    userId: text("user_id").notNull(),
-    role: text("role").notNull(),
-    /** NULL for the bootstrap grant. */
-    grantedByUserId: text("granted_by_user_id"),
-    createdAt: createdAt(),
-  },
-  (table) => ({
-    pk: primaryKey({ columns: [table.userId, table.role] }),
-    roleCheck: check(
-      "gateway_platform_role_role_check",
-      sql`${table.role} IN ('platform_admin')`,
-    ),
-  }),
-);
-
-/**
  * One append-only row per admin mutation, with redacted before/after
- * snapshots. 0036 triggers refuse UPDATE, and DELETE before 13 months.
+ * snapshots. 0036 triggers refuse UPDATE, and DELETE before 13 months. The
+ * actor is an identity kind plus its id (0040): admin accounts live in
+ * ./admin-auth, never in the product users table (#394).
  */
 export const gatewayAdminAudit = sqliteTable(
   "gateway_admin_audit",
@@ -474,7 +453,10 @@ export const gatewayAdminAudit = sqliteTable(
     id: text("id").primaryKey(),
     /** '' for platform-wide changes. */
     tenantId: text("tenant_id").notNull().default(""),
-    actorUserId: text("actor_user_id").notNull(),
+    /** An admin account id for `admin`, a product user id for `user`. */
+    actorId: text("actor_id").notNull(),
+    /** `admin`, `user` (a team role), `bootstrap` or `migration`. */
+    actorKind: text("actor_kind").notNull().default("user"),
     actorRole: text("actor_role"),
     action: text("action").notNull(),
     targetType: text("target_type").notNull(),
@@ -495,6 +477,11 @@ export const gatewayAdminAudit = sqliteTable(
       table.targetId,
     ),
     timeIdx: index("gateway_admin_audit_time_idx").on(table.occurredAt),
+    actorIdx: index("gateway_admin_audit_actor_idx").on(
+      table.actorKind,
+      table.actorId,
+      table.occurredAt,
+    ),
   }),
 );
 

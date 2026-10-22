@@ -12,15 +12,19 @@ and *Packages* pages ([gateway-admin.md](gateway-admin.md)).
 
 ## Who may call it
 
-Identity is the user the `/api/*` middleware verified (Better Auth session or
-`clsh_` token). Caller headers such as `x-user-id` are never identity.
+On tenant routes, identity is the product user the `/api/*` middleware
+verified (Better Auth session or `clsh_` token); on the admin console routes,
+it is the admin account session (#394, [gateway-admin.md](gateway-admin.md)).
+Caller headers such as `x-user-id` are never identity.
 Authorization is the shared admin permission matrix described in
 [gateway-admin.md](gateway-admin.md), with roles stored in D1:
 
-- **Platform admin** (`gateway_platform_role`): the price book, packages,
-  top-up packs and billing rollover, and purchases for any tenant. This is a
-  platform grant, not a tenant role, and is never granted by a Worker
-  variable.
+- **Admin accounts** (`admin_accounts`, #394): the price book, packages,
+  top-up packs and billing rollover, through the admin console. An admin
+  account is its own identity with its own session, never a product user or
+  a tenant role, and never granted by a Worker variable. It cannot use the
+  tenant purchase routes, which are product routes; it corrects a wallet with
+  `wallet/adjust` in the console instead.
 - **Team roles** (`tenant_member.role`, `owner` or `member`): the owner holds
   `billing.read` (reads the tenant's billing summary) and `billing.purchase`
   (records purchases for that tenant only); a member holds neither.
@@ -71,9 +75,8 @@ allocated are left unchanged. A member's requests draw on the wallet and on the
 member's own budget together. There is no automatic overage: when the wallet
 is empty, requests fail with `GATEWAY_BUDGET_EXCEEDED`.
 
-There is no payment provider. A platform admin, or the team owner
-(`billing.purchase`), records the purchase, and the credits are
-posted immediately:
+There is no payment provider. The team owner (`billing.purchase`) records
+the purchase, and the credits are posted immediately:
 
 | Ledger kind | Written by                       | Effect on the wallet limit                                                                   |
 | ----------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -149,8 +152,8 @@ Platform admin, `/api/v1/admin/gateway`:
 is the list price of the package or pack. The credits it buys are given
 separately, in micro-credits.
 
-`billing.read` / `billing.purchase` (or platform admin),
-`/api/v1/gateway/tenants/:tenantId`:
+`billing.read` / `billing.purchase` (the team owner; product credentials
+only), `/api/v1/gateway/tenants/:tenantId`:
 
 | Method and path              | Purpose                                                                  |
 | ---------------------------- | ------------------------------------------------------------------------ |

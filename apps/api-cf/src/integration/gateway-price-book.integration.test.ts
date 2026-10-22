@@ -13,6 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createApp } from "../app";
 import type { Env } from "../config";
 import { sha256Hex } from "../services/api-token";
+import { signedInAdmin } from "../services/admin-session.test-support";
 import { seedGateway, type SeededGateway } from "../gateway/test-support";
 
 const ORIGIN = "https://clash.test";
@@ -29,22 +30,13 @@ describe("price book publish -> request -> settle in workerd", () => {
 
   beforeAll(async () => {
     gateway = await seedGateway(env.DB);
-    const adminId = `gw-admin-${run}`;
-    const raw = `clsh_${crypto.randomUUID().replaceAll("-", "")}`;
-    await env.DB.prepare(
-      `INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, 'admin', ?, 'clsh_ad')`,
-    )
-      .bind(`tok-${run}`, adminId, await sha256Hex(raw))
-      .run();
-    // The platform grant is a D1 row (0036), never an environment variable.
-    await env.DB.prepare(`INSERT OR IGNORE INTO gateway_platform_role (user_id, role) VALUES (?, 'platform_admin')`)
-      .bind(adminId)
-      .run();
-    adminAuth = { authorization: `Bearer ${raw}` };
     bindings = {
       ...env,
+      BETTER_AUTH_URL: ORIGIN,
       GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
     } as unknown as Env;
+    // An admin account signed in through /api/admin-auth (#394), never a product-user grant.
+    adminAuth = (await signedInAdmin(app, bindings as never, ORIGIN)).auth;
   });
   afterAll(async () => {
     await env.DB.prepare(`DELETE FROM gateway_price WHERE price_version IN (?, ?, ?)`)
@@ -67,16 +59,24 @@ describe("price book publish -> request -> settle in workerd", () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
-  const api = (method: string, path: string, body?: unknown) =>
+  const api = (method: string, path: string, body?: unknown, auth: Record<string, string> = adminAuth) =>
     app.request(
       path,
       {
         method,
-        headers: { origin: ORIGIN, ...adminAuth, ...(body ? { "content-type": "application/json" } : {}) },
+        headers: { origin: ORIGIN, ...auth, ...(body ? { "content-type": "application/json" } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       },
       bindings,
     );
+  /** A clsh_ token of the tenant owner: tenant billing is a product route, never an admin one (#394). */
+  async function ownerAuth(userId: string) {
+    const raw = `clsh_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(`INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, 'owner', ?, 'clsh_ow')`)
+      .bind(`tok-owner-${run}`, userId, await sha256Hex(raw))
+      .run();
+    return { authorization: `Bearer ${raw}` };
+  }
   const draft = (version: string, input: number, output: number) =>
     api("PUT", `/api/v1/admin/gateway/prices/versions/${version}`, {
       effectiveFrom: new Date().toISOString(),
@@ -151,15 +151,14 @@ describe("price book publish -> request -> settle in workerd", () => {
     )
       .bind(caller.tenantId)
       .first<{ id: string; limit_micro_credits: number }>();
-    const topup = await api("POST", `/api/v1/gateway/tenants/${encodeURIComponent(caller.tenantId)}/topups`, {
-      packId: pack.pack.id,
-      idempotencyKey: `itest-${run}`,
-    });
+    const owner = await ownerAuth(caller.userId);
+    const topupPath = `/api/v1/gateway/tenants/${encodeURIComponent(caller.tenantId)}/topups`;
+    const order = { packId: pack.pack.id, idempotencyKey: `itest-${run}` };
+    // The admin session buys nothing on the product route.
+    expect((await api("POST", topupPath, order)).status).toBe(401);
+    const topup = await api("POST", topupPath, order, owner);
     expect(topup.status, await topup.clone().text()).toBe(201);
-    const replay = await api("POST", `/api/v1/gateway/tenants/${encodeURIComponent(caller.tenantId)}/topups`, {
-      packId: pack.pack.id,
-      idempotencyKey: `itest-${run}`,
-    });
+    const replay = await api("POST", topupPath, order, owner);
     expect(((await replay.json()) as { replayed: boolean }).replayed).toBe(true);
     const walletAfter = await env.DB.prepare(`SELECT limit_micro_credits FROM gateway_budget WHERE id = ?`)
       .bind(walletBefore!.id)

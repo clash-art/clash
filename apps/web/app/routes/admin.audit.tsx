@@ -6,7 +6,7 @@ import { adminApi, type AuditFilters } from "@clash/web-ui/lib/adminClient";
 import { AdminRouteErrorBoundary, AdminRouteFrame, loadAdminData, loadAdminPage } from "../lib/adminRoute";
 import { filtersFromSearch, searchFromFilters } from "../lib/adminFilters";
 
-const AUDIT_FILTERS = ["actorUserId", "action", "targetType", "targetId"] as const;
+const AUDIT_FILTERS = ["actorId", "action", "targetType", "targetId"] as const;
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const context = await loadAdminPage(request, "audit");

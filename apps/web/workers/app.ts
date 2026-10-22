@@ -5,6 +5,7 @@
  * Routing:
  *   /health                     → 200 OK
  *   /api/better-auth/*          → handled in-worker via better-auth handler
+ *   /api/admin-auth/*           → api-cf (the separate admin identity, #394)
  *   /api/v1/provider-oauth/callback (GET)
  *                               → api-cf (session-resolved, answers by redirect)
  *   /api/v1/*                   → api-cf (auth-gated, x-user-id injected)
@@ -118,6 +119,16 @@ export default {
     }
     if (path.startsWith("/api/better-auth/")) {
       return createAuth(env).handler(request);
+    }
+
+    // Issue #394: admin accounts sign in through their own Better Auth
+    // instance in api-cf (own tables, `clash-admin` cookies). The product
+    // handler above never sees these requests, and /api/v1/admin/* below only
+    // ever accepts that admin session.
+    if (path.startsWith("/api/admin-auth/")) {
+      const adminAuthRequest = new Request(request);
+      adminAuthRequest.headers.delete("x-user-id");
+      return proxyToApiCf(adminAuthRequest, env);
     }
 
     // Discovery and PKCE code exchange must work before the client has a token.

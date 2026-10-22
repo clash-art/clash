@@ -1,15 +1,17 @@
 /**
- * The gateway permission matrix (#353, #392): team roles are `owner` and
- * `member` only, the platform role is `platform_admin` only; owner holds
- * every tenant permission, member reads only their own usage and budget, a
- * tenant role never reaches another tenant or a platform resource, and
- * platform_admin holds everything. The route suite
- * (routes/v1/admin/gateway-console.test.ts) proves the server enforces this
+ * The gateway permission matrix (#353, #392, #394): team roles are `owner`
+ * and `member` only, held by product users; the platform role is
+ * `platform_admin` only, held by admin accounts. Owner holds every tenant
+ * permission, member reads only their own usage and budget, a tenant role
+ * never reaches another tenant or a platform resource, and an admin account
+ * holds everything. The route suites (routes/v1/admin/gateway-console.test.ts,
+ * routes/v1/admin/admin-identity.test.ts) prove the server enforces this
  * module.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { ADMIN_ACCOUNT_ROLES } from "@clash/shared-cloud-schema/admin-auth";
 import { TENANT_MEMBER_ROLES } from "@clash/shared-cloud-schema/app";
 
 import {
@@ -17,6 +19,8 @@ import {
   GATEWAY_PLATFORM_ROLES,
   GATEWAY_TENANT_PERMISSIONS,
   GATEWAY_TENANT_ROLES,
+  adminRolePermissions,
+  authorizeAdminAccess,
   authorizeGatewayAccess,
   tenantRolePermissions,
   type GatewayAccess,
@@ -24,22 +28,22 @@ import {
 
 const access = (role: string, tenantId = "team:a"): GatewayAccess => ({
   userId: "u",
-  platformRoles: [],
   memberships: [{ tenantId, role }],
 });
 
 describe("gateway permission matrix", () => {
-  it("has exactly two team roles and one platform role", () => {
+  it("has exactly two team roles and one admin account role", () => {
     expect([...GATEWAY_TENANT_ROLES]).toEqual(["owner", "member"]);
-    // The Drizzle mirror of the D1 column (0038) holds the same roles.
+    // The Drizzle mirrors of the D1 columns (0038, 0040) hold the same roles.
     expect([...TENANT_MEMBER_ROLES]).toEqual([...GATEWAY_TENANT_ROLES]);
     expect([...GATEWAY_PLATFORM_ROLES]).toEqual(["platform_admin"]);
+    expect([...ADMIN_ACCOUNT_ROLES]).toEqual([...GATEWAY_PLATFORM_ROLES]);
   });
 
   it("gives the owner every tenant permission, including member management and budget allocation", () => {
     expect([...tenantRolePermissions("owner")].sort()).toEqual([...GATEWAY_TENANT_PERMISSIONS].sort());
     for (const permission of ["team.members.manage", "team.budgets.allocate"] as const)
-      expect(authorizeGatewayAccess(access("owner"), permission, "team:a")).toEqual({ userId: "u", role: "owner" });
+      expect(authorizeGatewayAccess(access("owner"), permission, "team:a")).toEqual({ kind: "user", id: "u", role: "owner" });
   });
 
   it("lets a member read only their own usage and budget", () => {
@@ -63,10 +67,43 @@ describe("gateway permission matrix", () => {
         expect(authorizeGatewayAccess(access(role), permission, "team:a"), `${role} ${permission}`).toBeNull();
   });
 
-  it("gives platform_admin every permission on every tenant, under its own role", () => {
-    const staff: GatewayAccess = { userId: "s", platformRoles: ["platform_admin"], memberships: [] };
+  it("gives an admin account every permission, as an admin actor under its account role", () => {
     for (const permission of [...GATEWAY_PLATFORM_PERMISSIONS, ...GATEWAY_TENANT_PERMISSIONS])
-      expect(authorizeGatewayAccess(staff, permission, "team:any")).toEqual({ userId: "s", role: "platform_admin" });
+      expect(authorizeAdminAccess({ id: "adm_s", role: "platform_admin" }, permission)).toEqual({
+        kind: "admin",
+        id: "adm_s",
+        role: "platform_admin",
+      });
+    expect([...adminRolePermissions("platform_admin")].sort()).toEqual(
+      [...GATEWAY_PLATFORM_PERMISSIONS, ...GATEWAY_TENANT_PERMISSIONS].sort(),
+    );
+  });
+
+  it("grants nothing to an admin account with an unknown role, and no platform role to a product user", () => {
+    for (const role of ["owner", "member", "root", ""]) {
+      expect(adminRolePermissions(role), role).toEqual([]);
+      expect(authorizeAdminAccess({ id: "adm_x", role }, "catalog.read"), role).toBeNull();
+    }
+    // A product user's grants are team memberships only: no shape carries a platform role.
+    expect(Object.keys(access("owner")).sort()).toEqual(["memberships", "userId"]);
+  });
+});
+
+describe("platform_admin is no longer a grant on product users (#394)", () => {
+  // Built from parts so this file does not match itself.
+  const retiredTable = ["gateway", "platform", "role"].join("_");
+  const roots = ["apps/api-cf/src", "apps/api-cf/scripts", "apps/web/app", "apps/web/workers", "packages/gateway-core/src", "packages/shared-cloud-schema/src", "packages/web-ui/src"];
+  // The migration test seeds the dropped table on purpose.
+  const allowed = new Set(["apps/api-cf/src/gateway/admin-accounts-migration.test.ts"]);
+
+  it("is not read or written anywhere outside the migration that drops it", () => {
+    const hits = roots
+      .flatMap((root) => files(resolve(repo, root)))
+      .filter((path) => /\.(ts|tsx)$/.test(path))
+      .filter((path) => !allowed.has(relative(repo, path)))
+      .filter((path) => readFileSync(path, "utf8").includes(retiredTable))
+      .map((path) => relative(repo, path));
+    expect(hits).toEqual([]);
   });
 });
 

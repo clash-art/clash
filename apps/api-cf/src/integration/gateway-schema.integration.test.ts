@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { is, Table } from "drizzle-orm";
 import { getTableConfig, type SQLiteTable } from "drizzle-orm/sqlite-core";
 import * as gateway from "@clash/shared-cloud-schema/gateway";
+import * as adminAuth from "@clash/shared-cloud-schema/admin-auth";
 import { tenantInvites, tenants } from "@clash/shared-cloud-schema/app";
 import { describe, expect, it } from "vitest";
 
@@ -25,6 +26,10 @@ const drizzleTables: SQLiteTable[] = [
   tenants,
   tenantInvites,
   ...Object.values(gateway as Record<string, unknown>).filter(
+    (value): value is SQLiteTable => is(value, Table),
+  ),
+  // The admin identity store (0040, #394).
+  ...Object.values(adminAuth as Record<string, unknown>).filter(
     (value): value is SQLiteTable => is(value, Table),
   ),
 ];

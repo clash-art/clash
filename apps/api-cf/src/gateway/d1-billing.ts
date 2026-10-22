@@ -4,8 +4,8 @@
  * (`gateway_topup_pack`), tenant subscriptions (`gateway_tenant_subscription`)
  * and the tenant wallet (the `tenant`-scope `gateway_budget`).
  *
- * There is no payment provider. A purchase is recorded by a platform admin or
- * a tenant role holding `billing.purchase` (services/gateway-authz.ts) and
+ * There is no payment provider. A purchase is recorded by a tenant role
+ * holding `billing.purchase` (services/gateway-authz.ts) and
  * credits the wallet at once:
  *
  * - topup:     ledger `topup`, wallet limit += pack credits.
@@ -43,7 +43,11 @@ import { sha256Hex } from "../services/api-token";
 import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
 import { parseJson, toMs, toSeconds } from "./d1-common";
 
-/** The authorized caller (services/gateway-authz.ts): a tenant role or `platform_admin`. */
+/**
+ * The authorized caller (services/gateway-authz.ts): a product user through a
+ * team role, or an admin account. Ledger `actor_user_id` holds its id (`adm_…`
+ * for an admin account, #394).
+ */
 export type BillingActor = GatewayAdminActor;
 
 export interface RateLimitConfig {
@@ -585,7 +589,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount: pack.credits_micro,
           refKind: "topup_pack",
           refId: pack.id,
-          actorUserId: input.actor.userId,
+          actorUserId: input.actor.id,
           nowS,
           when: `w.limit_micro_credits IS NOT NULL AND w.period = 'none'
             AND EXISTS (SELECT 1 FROM gateway_topup_pack WHERE id = ?6 AND status = 'active')
@@ -684,7 +688,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount: pkg.credits_micro,
           refKind: "subscription",
           refId: subscriptionId,
-          actorUserId: input.actor.userId,
+          actorUserId: input.actor.id,
           nowS,
           when: "changes() = 1",
         }),
@@ -824,7 +828,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         amount: expired,
         refKind: "subscription",
         refId: sub.id,
-        actorUserId: actor.userId,
+        actorUserId: actor.id,
         nowS,
         when: "changes() = 1",
       }),
@@ -839,7 +843,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount: grantNext,
           refKind: "subscription",
           refId: sub.id,
-          actorUserId: actor.userId,
+          actorUserId: actor.id,
           nowS,
           when: "changes() = 1",
         }),
@@ -1005,7 +1009,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount,
           refKind,
           refId: input.tenantId,
-          actorUserId: input.actor.userId,
+          actorUserId: input.actor.id,
           reason: input.reason,
           nowS,
           when: `w.limit_micro_credits IS NOT NULL AND w.period = 'none'

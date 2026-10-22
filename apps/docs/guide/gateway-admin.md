@@ -3,9 +3,57 @@
 The `/admin` console configures and observes the Clash official model gateway
 (#353): the model catalog, prices, upstream accounts, packages and top-up
 packs, budgets and rate limits, usage, abuse signals, teams and their members
-(read-only), platform admins, and the admin audit log. It is for the platform
-admin only. The tables are in [gateway-schema.md](gateway-schema.md); prices,
-packages and wallets in [gateway-price-book.md](gateway-price-book.md).
+(read-only), admin accounts, and the admin audit log. It is for admin
+accounts only: a separate identity with its own sign-in (#394, below). The
+tables are in [gateway-schema.md](gateway-schema.md); prices, packages and
+wallets in [gateway-price-book.md](gateway-price-book.md).
+
+## Admin identity
+
+Admins are not product users (#394). An **admin account** lives in its own
+store (`admin_accounts`, `admin_sessions`, `admin_credentials`,
+`admin_verifications`, migration 0040; Drizzle mirror
+`packages/shared-cloud-schema/src/admin-auth.ts`) and signs in through its
+own Better Auth instance, `apps/api-cf/src/admin-auth.ts`, configured the way
+Better Auth runs a second, independent auth:
+
+| Setting       | Admin instance                                         | Product instance              |
+| ------------- | ------------------------------------------------------ | ----------------------------- |
+| Base path     | `/api/admin-auth` (api-cf; the web Worker proxies it)  | `/api/better-auth`            |
+| Tables        | `admin_*` (model names `adminAccounts`, …)             | `users`, `sessions`, …        |
+| Cookies       | `clash-admin.*`, `SameSite=Strict`, no cookie cache    | `better-auth.*`               |
+| Sign-in       | email and password only; sign-up disabled              | email/OTP/Google, sign-up     |
+| Session       | 12 hours, refreshed hourly                             | Better Auth defaults          |
+| Account ids   | `adm_…`                                                | Better Auth ids               |
+| Secret        | `ADMIN_AUTH_SECRET`, else the product auth secret      | `BETTER_AUTH_SECRET`          |
+
+Sign-in is rate limited (5 attempts a minute per client address). A disabled
+account cannot sign in (`ADMIN_ACCOUNT_DISABLED`, 403) and has no sessions or
+password left. Better Auth hashes and checks passwords, signs cookies and
+stores sessions; nothing here re-implements them.
+
+**Isolation, enforced by api-cf before any route runs**
+(`apps/api-cf/src/services/admin-identity.ts`, called by the `/api/*`
+middleware):
+
+- `/api/v1/admin/*` resolves the admin session only, never a product
+  identity. No credential is `GATEWAY_AUTH_REQUIRED` (401). A product
+  session, a `clsh_` or `sk_gw_` token, any other `Authorization` or
+  `x-api-key` header is `GATEWAY_ADMIN_SESSION_REQUIRED` (403,
+  `details.presented` = `token` or `product_session`), even next to a valid
+  admin cookie for a token. A browser signed in to both carries both cookies;
+  the admin cookie decides there.
+- Product routes never resolve an admin session as a user: the product
+  verifiers read only the product cookie and tables. Where the web gateway
+  asks api-cf to fail closed (every `/api/v1/*` but the two public
+  endpoints), a request whose only credential is an admin session is
+  `ADMIN_SESSION_NOT_ACCEPTED` (403, `x-clash-error-code`); elsewhere the
+  route's own 401 answers, as for any caller without a product identity. The
+  lean metadata Worker likewise answers its own 401.
+- In the browser, an admin 401 never signs the product session out
+  (`runtimeFetch` in `packages/web-ui/src/lib/runtimeConfig.ts`), and the
+  admin sign-out (`/api/admin-auth/sign-out`) leaves the product session
+  alone.
 
 ## Roles
 
@@ -13,15 +61,16 @@ Roles live in D1. There is no environment-variable grant, and there are no
 job roles (#392):
 
 - **Team roles** (`tenant_member.role`, migration 0038): `owner` or `member`,
-  nothing else. A team role acts on its own team only. The owner runs the
-  team (members, budget allocation, keys and limits, billing); a member uses
-  the gateway and reads their own usage and budget. Team settings, where
-  owners manage members and allocate budgets, are #354; the admin console has
-  no team role assignment.
-- **Platform role** (`gateway_platform_role`, migration 0036):
-  `platform_admin`, nothing else. A separate grant, never a team role. It
-  holds every permission: every platform permission, and every tenant
-  permission on every tenant.
+  nothing else, held by product users. A team role acts on its own team
+  only. The owner runs the team (members, budget allocation, keys and
+  limits, billing); a member uses the gateway and reads their own usage and
+  budget. Team settings, where owners manage members and allocate budgets,
+  are #354; the admin console has no team role assignment.
+- **Admin account role** (`admin_accounts.role`, migration 0040):
+  `platform_admin`, nothing else, held by admin accounts only. It holds every
+  permission: every platform permission, and every tenant permission on
+  every tenant. Until #394 this was a grant on product users
+  (`gateway_platform_role`, 0036); 0040 dropped every such grant (below).
 
 Migration 0038 rewrote every team row (and pending invite) holding an earlier
 role to `member` (idempotently), and D1 triggers refuse any role other than
@@ -31,14 +80,16 @@ role to `member` (idempotently), and D1 triggers refuse any role other than
 
 `apps/api-cf/src/services/gateway-authz.ts` is the one authorization module.
 Every check names a permission (`authorizeGatewayAccess(access,
-"team.budgets.allocate", tenantId)`); which role holds which permission is
-data in that module (`GATEWAY_TENANT_ROLE_PERMISSIONS`,
-`GATEWAY_PLATFORM_ROLE_PERMISSIONS`) and nowhere else, so configurable
-permission groups could later replace the role tables without touching a
-check. Every `/api/v1/admin/gateway/*` route and every tenant billing route
-(`/api/v1/gateway/tenants/:tenantId/*`) authorizes through it. The server
-answers `GATEWAY_FORBIDDEN` (403, `details.permission`) whatever the UI
-shows, and `GATEWAY_AUTH_REQUIRED` (401) without a credential.
+"team.budgets.allocate", tenantId)` for a product user's team role,
+`authorizeAdminAccess(admin, "catalog.write")` for an admin account); which
+role holds which permission is data in that module
+(`GATEWAY_TENANT_ROLE_PERMISSIONS`, `GATEWAY_PLATFORM_ROLE_PERMISSIONS`) and
+nowhere else, so configurable permission groups could later replace the role
+tables without touching a check. Every `/api/v1/admin/gateway/*` route and
+every tenant billing route (`/api/v1/gateway/tenants/:tenantId/*`)
+authorizes through it. The server answers `GATEWAY_FORBIDDEN` (403,
+`details.permission`) whatever the UI shows, and `GATEWAY_AUTH_REQUIRED`
+(401) without a credential.
 
 | Tenant permission       | owner | member | platform_admin | Used by                         |
 | ----------------------- | :---: | :----: | :------------: | ------------------------------- |
@@ -56,41 +107,65 @@ shows, and `GATEWAY_AUTH_REQUIRED` (401) without a credential.
 | `billing.read`          |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 | `billing.purchase`      |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 
-Platform permissions, `platform_admin` only: `tenants.list`, `catalog.read`,
-`catalog.write`, `prices.read`, `prices.write`, `packages.read`,
-`packages.write`, `billing.rollover`, `upstreams.read`, `upstreams.write`,
-`wallet.adjust`, `subscription.limits.write`, `platform_roles.read`,
-`platform_roles.write`, `usage.read_all`, `audit.read_all`, `abuse.read`,
-`prompts.view`, `retention.purge`, `holds.sweep`.
+Platform permissions, admin accounts (`platform_admin`) only: `tenants.list`,
+`catalog.read`, `catalog.write`, `prices.read`, `prices.write`,
+`packages.read`, `packages.write`, `billing.rollover`, `upstreams.read`,
+`upstreams.write`, `wallet.adjust`, `subscription.limits.write`,
+`admin_accounts.read`, `admin_accounts.write`, `usage.read_all`,
+`audit.read_all`, `abuse.read`, `prompts.view`, `retention.purge`,
+`holds.sweep`.
 
-The admin console authorizes with `platformRoute`: the permission must come
-from a platform grant, so a team owner is refused there even for a tenant
-permission they hold in their own team. Tenant billing uses `tenantRoute`
-(the caller's role in that team, or `platform_admin`). Console reads such as
-usage and audit are platform-wide, and `?tenantId=` narrows them to one
-tenant.
+The admin console authorizes with `platformRoute`: the caller is the admin
+account the middleware verified, and the permission must come from its role.
+A team owner never reaches it (a product credential is refused before the
+route). Tenant billing uses `tenantRoute`: the product user's role in that
+team; admin accounts never reach it (a product route), and correct a wallet
+with `wallet/adjust` in the console instead. Console reads such as usage and
+audit are platform-wide, and `?tenantId=` narrows them to one tenant.
 
-### Bootstrapping the first platform admin
+### Bootstrapping the first admin account
 
-Nobody can grant `platform_admin` through the API until someone holds it. The
-first grant is an explicit, idempotent statement, run against a **local or
-staging** D1 only; production is refused:
+Nobody can create an admin account through the API until one can sign in.
+The first is an explicit, idempotent statement, run against a **local or
+staging** D1 only; production (`--remote`, `--production`, `--env
+production`) is refused:
 
 ```bash
 # Local dev D1 (apps/web wrangler config, as `make db-local` uses)
-node apps/api-cf/scripts/gateway-platform-admin.ts --user <better-auth user id> --local
-# Staging
-node apps/api-cf/scripts/gateway-platform-admin.ts --user <id> --env staging
-# Print the SQL and the wrangler command without running them
-node apps/api-cf/scripts/gateway-platform-admin.ts --user <id> --local --dry-run
+node apps/api-cf/scripts/gateway-admin-account.ts --email ops@example.com --local
+# Staging, password from the environment instead of the prompt
+CLASH_ADMIN_PASSWORD=… node apps/api-cf/scripts/gateway-admin-account.ts --email ops@example.com --name Ops --env staging
+# Print the SQL (password hash redacted) and the wrangler command without running them
+node apps/api-cf/scripts/gateway-admin-account.ts --email ops@example.com --local --dry-run
 ```
 
-The script runs `wrangler d1 execute` with `INSERT OR IGNORE` into
-`gateway_platform_role` plus one `gateway_admin_audit` row (actor
-`bootstrap`) written only when the grant is new, so repeating it changes
-nothing. Every later grant or revocation goes through the audited API
-(`POST /platform-admins`, `POST /platform-admins/:userId/revoke`). The last
-platform admin cannot be revoked (`GATEWAY_LAST_PLATFORM_ADMIN`).
+The password comes from `CLASH_ADMIN_PASSWORD` or a prompt that echoes
+nothing (12 to 128 characters), never from the command line (`--password`
+is refused), and is never printed. The script hashes it with Better Auth's
+own hasher (`better-auth/crypto`) and runs `wrangler d1 execute --file` (so
+the hash stays out of the process list) with `INSERT OR IGNORE` into
+`admin_accounts` on the unique email, plus the credential row and one
+`gateway_admin_audit` row (actor kind `bootstrap`) written only when the
+account is new: repeating it changes nothing, the password included. It
+never touches the product `users` table. Sign in at `/admin/login`.
+
+Every later account goes through the audited API: `POST /admin-accounts`
+creates one, `POST /admin-accounts/:id/disable` signs it out everywhere and
+deletes its password. The last enabled admin account cannot be disabled
+(`GATEWAY_LAST_ADMIN_ACCOUNT`).
+
+### Migration from product-user grants (0040)
+
+Migration 0040 drops `gateway_platform_role`: `platform_admin` is no longer
+stored on product users, and no product user keeps console access. Each
+dropped grant is recorded as one audit row (`platform_role.drop`, actor kind
+`migration`, the user id as target, the grant as `before`), so who held it
+stays on record. The grants are not converted into admin accounts (an admin
+account needs its own email and password). To restore access, re-create the
+people who need the console as admin accounts: the first with the bootstrap
+script above (local or staging), the rest through `POST /admin-accounts`.
+Production's first admin account is created by an operator outside this
+repository's tooling, as before.
 
 ## Audit
 
@@ -105,16 +180,23 @@ Every admin mutation appends one `gateway_admin_audit` row:
   `"[redacted]"`. Upstream secrets are never put into a snapshot in the first
   place: only the credential kind, field names and key version.
 - with a `reason` for overrides, rotations, wallet corrections and role
-  changes, and the actor's role (`platform_admin` or the team role).
+  changes, and the actor: `actor_kind` plus `actor_id` (0040) and
+  `actor_role`. Console mutations are `admin` with the admin account's
+  `adm_…` id and role; team owners' mutations (purchases, team settings) are
+  `user` with the product user id and team role; the bootstrap script writes
+  `bootstrap`, migration 0040 `migration`. Rows written before 0040 keep
+  their actor id and read `user` (or `bootstrap`). Other columns that record
+  who acted (the ledger's `actor_user_id`, budget `allocated_by_user_id`,
+  price `created_by`) hold the same actor id.
 
 Covered mutations: price drafts and publishes, packages, top-up packs,
 billing rollover, subscriptions and top-ups, catalog clone/model
 upsert/remove/publish, upstream create/update/disable/rotate, member and key
 budgets, wallet corrections and status, key and subscription rate limits,
 team role changes (`setMemberRole` in `d1-tenant-admin.ts`, for team
-settings; the last owner is kept, `GATEWAY_LAST_OWNER`), platform role grants
-and revocations, retention purges that deleted something, hold sweeps that
-expired something, and every staff prompt view (whatever its outcome).
+settings; the last owner is kept, `GATEWAY_LAST_OWNER`), admin account
+creation and disabling, retention purges that deleted something, hold sweeps
+that expired something, and every staff prompt view (whatever its outcome).
 
 The log is append-only: there is no update or delete API, and 0036 triggers
 refuse `UPDATE` and any `DELETE` of a row younger than 13 months (the
@@ -122,18 +204,20 @@ retention job may delete older rows).
 
 ## API
 
-All under `/api/v1/admin/gateway`. Errors are coded (`x-clash-error-code`).
+All under `/api/v1/admin/gateway`, with an admin account session only.
+Errors are coded (`x-clash-error-code`).
 
 | Area           | Routes                                                                                                                                          |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Access         | `GET /me`; `GET/POST /platform-admins`; `POST /platform-admins/:userId/revoke`                                                                   |
+| Sign-in        | `POST /api/admin-auth/sign-in/email {email, password}`, `POST /api/admin-auth/sign-out`, `GET /api/admin-auth/get-session` (Better Auth)        |
+| Access         | `GET /me` (the account, its permissions); `GET/POST /admin-accounts {email, name, password, reason?}`; `POST /admin-accounts/:id/disable`        |
 | Catalog        | `GET /catalog`; `GET /catalog/versions/:v`; `POST …/:v/clone {from}`; `PUT/DELETE …/:v/models/:modelCode`; `POST …/:v/publish`                 |
 | Prices, packs  | see [gateway-price-book.md](gateway-price-book.md)                                                                                              |
 | Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate`                                                                     |
 | Tenants        | `GET /tenants`; `GET /tenants/:t/members` (read-only)                                                                                           |
 | Budgets        | `GET /tenants/:t/budgets`; `PUT /tenants/:t/budgets/(user\|key)/:id`; `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`         |
 | Rate limits    | `GET /tenants/:t/keys`; `PUT /tenants/:t/keys/:keyId/rate-limit`; `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts     |
-| Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide); `GET /abuse`                                                   |
+| Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide; audit also `?actorKind=&actorId=`); `GET /abuse`               |
 | Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`                                                                    |
 | Holds          | `POST /holds/sweep {limit?}`: the stale-hold sweeper now ([gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper))                       |
 
@@ -152,8 +236,8 @@ credential kind, field names and `key_version`. `enabled: false` disables an
 account for routing; rotation replaces the secret, bumps the key version and
 stamps `rotated_at`.
 
-**Budgets.** `team.budgets.allocate` (the team owner in team settings, the
-platform admin in the console) sets member (`user`) and key budgets under the
+**Budgets.** `team.budgets.allocate` (the team owner in team settings, an
+admin account in the console) sets member (`user`) and key budgets under the
 tenant wallet; a limit below spend + open holds is
 `GATEWAY_BUDGET_BELOW_USAGE`, `null` is explicitly unlimited (the wallet still
 caps it). The wallet itself changes only through purchases and platform
@@ -176,8 +260,8 @@ showing an empty list as if nothing happened.
 
 Product decision 2026-10-20 (it replaces the earlier "no body storage"
 rule): the hosted gateway keeps each request's prompt **and** response for 30
-days so platform staff can view them. Viewing is `platform_admin`-only and
-audited.
+days so platform staff can view them. Viewing is for admin accounts only
+(`platform_admin`) and audited.
 
 ### The switch
 
@@ -245,7 +329,8 @@ billing (storage runs after settlement):
 ### Viewing
 
 `POST /prompts/:requestId/access {reason}` requires `prompts.view`
-(`platform_admin` only; team owners and members get `GATEWAY_FORBIDDEN`) and
+(admin accounts only; team owners' and members' product credentials get
+`GATEWAY_ADMIN_SESSION_REQUIRED`) and
 a `reason`. Every call, whatever its outcome, first writes one
 `gateway_admin_audit` row: action `prompt.view`, the actor, the request id
 (`target_id` and `request_id`), the reason, and an `after` snapshot with the
@@ -278,7 +363,7 @@ runs:
   (`purgeGatewayRetention` in `apps/api-cf/src/gateway/d1-retention.ts`, on
   the existing `* * * * *` cron), up to 200 rows per run;
 - on demand through `POST /retention/purge {limit?}` (`retention.purge`,
-  `platform_admin` only), audited as `retention.purge` when it deleted
+  admin accounts only), audited as `retention.purge` when it deleted
   something.
 
 ### Retention summary
@@ -300,21 +385,30 @@ is not implemented yet ([gateway-schema.md](gateway-schema.md#retention)).
 
 `apps/web/app/routes/admin._index.tsx` and `admin.<page>.tsx` are
 loader-guarded through `apps/web/app/lib/adminRoute.tsx`: each loader calls
-`/api/v1/admin/gateway/me` before the page's API, redirects to
-`/login?returnTo=` on 401, throws a coded 403 route error
-(`GATEWAY_FORBIDDEN`) when the caller's platform grants do not include the
-page's permission (every team owner and member; the page's API is then never
-called), and a 404 route error (`ADMIN_CONSOLE_UNAVAILABLE`) where the
-deployment has no admin API. The server still authorizes every call.
-Tenant-scoped pages read `?tenant=` (chosen from the tenant list) and show it
-with a way back to all tenants.
+`/api/v1/admin/gateway/me` before the page's API, redirects to the admin
+sign-in `/admin/login?returnTo=` (never the product `/login`) on 401 or on
+`GATEWAY_ADMIN_SESSION_REQUIRED` (only a product session), throws a coded 403
+route error (`GATEWAY_FORBIDDEN`) when the admin account's permissions do not
+include the page's (the page's API is then never called), and a 404 route
+error (`ADMIN_CONSOLE_UNAVAILABLE`) where the deployment has no admin API.
+The server still authorizes every call. Tenant-scoped pages read `?tenant=`
+(chosen from the tenant list) and show it with a way back to all tenants.
+
+`/admin/login` (`admin.login.tsx`, `AdminLogin`) signs in through
+`/api/admin-auth/sign-in/email` and shows Better Auth's coded refusal
+(`INVALID_EMAIL_OR_PASSWORD`, `ADMIN_ACCOUNT_DISABLED`, `HTTP_429`). An
+already signed-in admin is sent back to `returnTo`, which must be a console
+page (`/admin…`, never another origin, a product page or the sign-in itself);
+otherwise to `/admin`. The console header shows the signed-in account and a
+**Sign out** button (`/api/admin-auth/sign-out`, then `/admin/login`).
 
 | Path               | Page                                                  | Opens with       |
 | ------------------ | ----------------------------------------------------- | ---------------- |
+| `/admin/login`     | Admin account sign-in                                 | (no session)     |
 | `/admin`           | Overview                                              | `usage.read_all` |
 | `/admin/models`    | Catalog versions and price book                       | `catalog.read`   |
 | `/admin/upstreams` | Upstream accounts                                     | `upstreams.read` |
-| `/admin/users`     | Tenants, their members and roles (read-only), platform admins | `tenants.list`   |
+| `/admin/users`     | Tenants, their members and roles (read-only), admin accounts | `tenants.list`   |
 | `/admin/budgets`   | Wallet, budgets, key and tenant rate limits           | `tenants.list`   |
 | `/admin/packages`  | Packages and top-up packs                             | `packages.read`  |
 | `/admin/usage`     | Ledger, per-model totals, prompt viewer               | `usage.read_all` |
@@ -335,30 +429,52 @@ or the coded error (expired, not retained).
 ## Tests
 
 - `apps/api-cf/src/services/gateway-authz.test.ts`: matrix properties; the
-  retired environment-variable grant and the removed team roles are gone
-  from code, tests and docs.
+  retired environment-variable grant, the removed team roles and the dropped
+  product-user grant table are gone from code, tests and docs.
+- `apps/api-cf/src/routes/v1/admin/admin-identity.test.ts`: admin sign-in,
+  session and sign-out on the admin instance (only `clash-admin` cookies,
+  rows in `admin_sessions`, never `users`/`sessions`), closed sign-up, the
+  sign-in rate limit, a disabled account refused; every
+  `/api/v1/admin/*` route **read from the route table** answers 401 without a
+  credential and 403 `GATEWAY_ADMIN_SESSION_REQUIRED` to a product session,
+  `clsh_`, `sk_gw_`, `x-api-key` or a spoofed `x-user-id`; every product
+  `/api/v1` route from its route table answers 403
+  `ADMIN_SESSION_NOT_ACCEPTED` to an admin session; admin accounts created
+  and disabled through the API with the admin account as audit actor, and
+  the last enabled one kept.
+- `apps/api-cf/src/gateway/admin-accounts-migration.test.ts`: 0040 drops every
+  product-user `platform_admin` grant with one `migration` audit row each,
+  keeps earlier audit rows (actor kind backfilled) and the log append-only,
+  and starts the admin store empty.
 - `apps/api-cf/src/gateway/team-roles-migration.test.ts`: 0038 maps earlier
   team roles to `member`, is idempotent, and D1 refuses any other role.
 - `apps/api-cf/src/routes/v1/admin/gateway-console.test.ts`: every console
-  route refused to team owners and members, tenant billing per role through
-  the Worker, team role changes keeping one owner, audit per
-  mutation and rollback when the audit write fails, upstream secret custody,
-  rate-limit validation; staff prompt view (platform_admin only, the stored
-  bytes, every view audited without the body, nothing disclosed when the
-  audit fails, expiry before purge, idempotent purge, a truncated stream
-  copy); the hold sweep (platform_admin only, expires once, audited only
-  when it changed something).
+  route refused to team owners' and members' product credentials, tenant
+  billing per role through the Worker, team role changes keeping one owner,
+  audit per mutation (actor = the admin account) and rollback when the audit
+  write fails, upstream secret custody, rate-limit validation; staff prompt
+  view (admin accounts only, the stored bytes, every view audited without
+  the body, nothing disclosed when the audit fails, expiry before purge,
+  idempotent purge, a truncated stream copy); the hold sweep (admin accounts
+  only, expires once, audited only when it changed something).
 - `packages/gateway-core/src/retention.test.ts` and the contract cases
   (`retention`, data plane): body stored on success and on upstream error,
   credentials never stored, coded failure with unchanged billing, expiry,
   integrity, purge retry. They run on the memory stub, D1 on node:sqlite and
   D1 + R2 in workerd (`gateway-data-plane.integration.test.ts`, which also
   views a stored request through the Worker).
-- `apps/api-cf/src/gateway/platform-admin-bootstrap.test.ts`: bootstrap
-  idempotency and target refusal.
-- `apps/web/app/routes/admin.test.ts`: loader guard (401 redirect, 403
-  without calling the page API, unavailable deployment, tenant scoping).
+- `apps/api-cf/src/gateway/admin-account-bootstrap.test.ts`: the bootstrap
+  creates one admin account (never a product user) whose password Better
+  Auth verifies, is idempotent, refuses production and `--password`, and
+  never prints the hash.
+- `apps/web/app/routes/admin.test.ts`: loader guard (redirect to
+  `/admin/login` without an admin session or with only a product session,
+  403 without calling the page API, unavailable deployment, tenant scoping)
+  and the sign-in route (form without a session, safe `returnTo`).
 - `packages/web-ui/src/components/admin/*.test.tsx`,
   `packages/web-ui/src/lib/adminClient.test.ts`: permission-gated controls,
   write-only secrets, coded errors shown inline, request shapes, the prompt
-  viewer (reason required, stored bytes shown unchanged, coded expiry).
+  viewer (reason required, stored bytes shown unchanged, coded expiry); the
+  admin sign-in form and sign-out (admin endpoints only, coded refusals),
+  admin accounts create/disable, and an admin 401 never signing the product
+  session out.

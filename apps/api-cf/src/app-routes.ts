@@ -44,6 +44,16 @@ import {
 } from "./services/session";
 import { authenticateRequest } from "./loro/auth";
 import { setResolvedIdentity } from "./services/request-identity";
+import {
+  adminSessionOnProductResponse,
+  isAdminApiPath,
+  isAdminAuthPath,
+  presentsAdminSession,
+  resolveAdminRequest,
+  setAdminIdentity,
+} from "./services/admin-identity";
+import { gatewayErrorResponse } from "./services/gateway-tokens";
+import { adminAuthRoutes } from "./routes/admin-auth";
 import { createD1ProjectMetadataStore } from "./services/cloud-project-metadata";
 import { cloudSyncBaseUrl } from "./services/cloud-project-admission";
 
@@ -104,11 +114,27 @@ export function createAppRoutes(
   app.use("/api/*", async (c, next) => {
     if (
       c.req.path === "/api/better-auth" ||
-      c.req.path.startsWith("/api/better-auth/")
+      c.req.path.startsWith("/api/better-auth/") ||
+      isAdminAuthPath(c.req.path)
     ) {
       const request = new Request(c.req.raw);
       request.headers.delete("x-user-id");
       c.req.raw = request;
+      await next();
+      return;
+    }
+    // Issue #394: the admin API takes an admin account session only. Product
+    // identity is never resolved here, so no admin route can see a product
+    // user, and every refusal is coded before any route runs.
+    if (isAdminApiPath(c.req.path)) {
+      const request = new Request(c.req.raw);
+      request.headers.delete("x-user-id");
+      request.headers.delete(REQUIRE_IDENTITY_HEADER);
+      c.req.raw = request;
+      setResolvedIdentity(c, { via: "none", userId: null });
+      const resolved = await resolveAdminRequest(request, c.env);
+      if ("error" in resolved) return gatewayErrorResponse(resolved.error);
+      setAdminIdentity(c, resolved.admin);
       await next();
       return;
     }
@@ -117,7 +143,11 @@ export function createAppRoutes(
     c.req.raw.headers.delete(REQUIRE_IDENTITY_HEADER);
     // Issue #136: the web gateway no longer pre-authenticates /api/v1/*; it
     // asks this Worker to fail closed instead (one identity check, not two).
-    if (required && !userId) return c.json({ error: "Unauthorized" }, 401);
+    // Issue #394: an admin session is never a product identity; say so.
+    if (required && !userId)
+      return presentsAdminSession(c.req.raw)
+        ? adminSessionOnProductResponse()
+        : c.json({ error: "Unauthorized" }, 401);
     await next();
   });
 
@@ -204,6 +234,8 @@ export function createAppRoutes(
 
   // ─── Better Auth — runs server-side so frontends just proxy ──
   app.route("/api/better-auth", betterAuthRoutes);
+  // ─── Admin accounts (#394): a separate Better Auth instance ──
+  app.route("/api/admin-auth", adminAuthRoutes);
 
   // A Node/SaaS deployment can supply the same admission contract without
   // binding the control plane to D1. Mount these specific paths before the
