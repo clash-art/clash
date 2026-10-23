@@ -165,7 +165,7 @@ export const GatewayRolloverRequestSchema = z
 
 /** Every role `tenant_member.role` may hold (#392; enforced in D1 by 0038). */
 export const GATEWAY_TENANT_ROLES = ["owner", "member"] as const;
-/** Platform grants (`gateway_platform_role`), separate from tenant roles. */
+/** Admin account roles (`admin_accounts.role`, 0040): admin accounts, never product users (#394). */
 export const GATEWAY_PLATFORM_ROLES = ["platform_admin"] as const;
 
 const reason = () => z.string().trim().min(1).max(500);
@@ -268,9 +268,17 @@ export const GatewayRateLimitUpdateRequestSchema = z
   .object({ rateLimit: GatewayRateLimitSchema.nullable(), reason: reason().optional() })
   .strict();
 
-/** POST /api/v1/admin/gateway/platform-admins. */
-export const GatewayPlatformAdminGrantRequestSchema = z
-  .object({ userId: z.string().regex(/^[A-Za-z0-9._:@-]{1,128}$/), reason: reason().optional() })
+/** An admin account id (`adm_…`, admin_accounts.id). */
+export const GatewayAdminAccountIdSchema = z.string().regex(/^adm_[A-Za-z0-9]{1,64}$/);
+
+/** POST /api/v1/admin/gateway/admin-accounts: a new admin account (#394). The password is never echoed or audited. */
+export const GatewayAdminAccountCreateRequestSchema = z
+  .object({
+    email: z.email().max(254),
+    name: z.string().trim().min(1).max(100),
+    password: z.string().min(12).max(128),
+    reason: reason().optional(),
+  })
   .strict();
 
 /** POST /api/v1/admin/gateway/prompts/:requestId/access: break-glass, so a reason is required. */
@@ -307,7 +315,8 @@ export const GatewayUsageQuerySchema = z
 export const GatewayAuditQuerySchema = z
   .object({
     tenantId: z.string().min(1).max(256).optional(),
-    actorUserId: identifier().optional(),
+    actorKind: z.enum(["admin", "user", "bootstrap", "migration"]).optional(),
+    actorId: identifier().optional(),
     action: z.string().regex(/^[a-z_.]{1,64}$/).optional(),
     targetType: z.string().regex(/^[a-z_]{1,64}$/).optional(),
     targetId: z.string().min(1).max(256).optional(),

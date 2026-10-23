@@ -43,7 +43,7 @@ export const tenants = sqliteTable("tenant", {
 
 /**
  * Team roles (#392): `owner` or `member`. Platform staff are not a team
- * role (`gateway_platform_role`, gateway.ts).
+ * role, nor product users: they are admin accounts (admin-auth.ts, #394).
  */
 export const TENANT_MEMBER_ROLES = ["owner", "member"] as const;
 

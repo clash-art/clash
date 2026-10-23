@@ -343,7 +343,7 @@ MEDIA_GATEWAY_URL = ""
 # one. Production keeps setting WORKER_PUBLIC_URL as a secret (see above).
 WORKER_PUBLIC_URL = "https://clash-web-staging.hrhrngxy.workers.dev"
 # Hosted deployments retain gateway request/response bodies for 30 days and
-# let platform_admin view them, audited (#353; apps/docs/guide/gateway-admin.md).
+# let admin accounts view them, audited (#353, #394; apps/docs/guide/gateway-admin.md).
 # The OSS top-level [vars] leaves this unset, so a self-host stores no bodies.
 GATEWAY_STAFF_PROMPT_ACCESS = "enabled"
 

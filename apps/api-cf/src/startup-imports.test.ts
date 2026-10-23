@@ -125,17 +125,22 @@ function lazyOnlyOffenders(graph: ReturnType<typeof eagerGraph>): string[] {
   ];
 }
 
+/** The two Better Auth instances (product, admin #394); each is reached by `import()` only. */
+const BETTER_AUTH_MODULES = ["auth", "admin-auth"];
+
 describe("Worker startup import graph", () => {
-  it("never statically imports Better Auth outside src/auth.ts", () => {
+  it("never statically imports Better Auth outside src/auth.ts and src/admin-auth.ts", () => {
     const offenders = sources(SRC).flatMap((file) => {
       const rel = relative(SRC, file);
-      if (rel === "auth.ts") return [];
+      if (BETTER_AUTH_MODULES.some((name) => rel === `${name}.ts`)) return [];
       return staticImports(file)
         .filter(
           (s) =>
             /^(better-auth|@better-auth\/)/.test(s) ||
             (s.startsWith(".") &&
-              resolve(dirname(file), s) === join(SRC, "auth")),
+              BETTER_AUTH_MODULES.some(
+                (name) => resolve(dirname(file), s) === join(SRC, name),
+              )),
         )
         .map((s) => `${rel} -> ${s}`);
     });

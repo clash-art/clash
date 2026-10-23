@@ -1,9 +1,11 @@
 /**
- * The /admin loaders ask api-cf for the caller's platform grants before
- * loading a page (#353, #392): no session redirects to /login, a caller
- * without the page's permission (every team owner or member) gets a coded 403
- * route error (and the page's API is never called), and the server's coded
- * refusals surface as route errors.
+ * The /admin loaders ask api-cf for the signed-in admin account before
+ * loading a page (#353, #392, #394): no admin session, or only a product
+ * session, redirects to the admin sign-in (/admin/login, never the product
+ * /login); an account whose role lacks the page's permission gets a coded 403
+ * route error (and the page's API is never called); and the server's coded
+ * refusals surface as route errors. The sign-in route itself sends an
+ * already signed-in admin back to a console page, and only ever to one.
  */
 import type { LoaderFunctionArgs } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -14,6 +16,7 @@ import { loader as abuseLoader } from "./admin.abuse";
 import { loader as auditLoader } from "./admin.audit";
 import { loader as budgetsLoader } from "./admin.budgets";
 import { loader as overviewLoader } from "./admin._index";
+import { loader as loginLoader } from "./admin.login";
 import { loader as modelsLoader } from "./admin.models";
 import { loader as packagesLoader } from "./admin.packages";
 import { loader as upstreamsLoader } from "./admin.upstreams";
@@ -22,12 +25,17 @@ import { loader as usersLoader } from "./admin.users";
 
 afterEach(() => vi.unstubAllGlobals());
 
-/** What /me answers a team owner or member: no platform grant. */
-const teamUser: AdminMe = { userId: "u-owner", platformRoles: [], platformPermissions: [], promptAccess: false };
+const ALL_LOADERS = [overviewLoader, modelsLoader, upstreamsLoader, usersLoader, budgetsLoader, packagesLoader, usageLoader, abuseLoader, auditLoader];
+
+/** An admin account whose role holds no console permission. */
+const noPermissions: AdminMe = {
+  admin: { id: "adm_none", email: "none@admin.test", name: "None", role: "platform_admin" },
+  permissions: [],
+  promptAccess: false,
+};
 const staff: AdminMe = {
-  userId: "u-staff",
-  platformRoles: ["platform_admin"],
-  platformPermissions: [
+  admin: { id: "adm_staff", email: "staff@admin.test", name: "Staff", role: "platform_admin" },
+  permissions: [
     "tenants.list",
     "catalog.read",
     "catalog.write",
@@ -40,8 +48,8 @@ const staff: AdminMe = {
     "upstreams.write",
     "wallet.adjust",
     "subscription.limits.write",
-    "platform_roles.read",
-    "platform_roles.write",
+    "admin_accounts.read",
+    "admin_accounts.write",
     "usage.read_all",
     "audit.read_all",
     "abuse.read",
@@ -95,17 +103,29 @@ async function thrown(promise: Promise<unknown>) {
 }
 
 describe("admin loader guard", () => {
-  it("redirects a caller without a session to /login, returning to the page", async () => {
-    stubApi(coded(401, "GATEWAY_AUTH_REQUIRED"));
-    expect(await thrown(usageLoader(args("/admin/usage?kind=settle")))).toEqual({
-      status: 302,
-      location: `/login?returnTo=${encodeURIComponent("/admin/usage?kind=settle")}`,
-    });
+  it("redirects a caller without an admin session to the admin sign-in, returning to the page", async () => {
+    const paths = stubApi(coded(401, "GATEWAY_AUTH_REQUIRED"));
+    for (const loader of ALL_LOADERS)
+      expect(await thrown(loader(args("/admin/usage?kind=settle")))).toEqual({
+        status: 302,
+        location: `/admin/login?returnTo=${encodeURIComponent("/admin/usage?kind=settle")}`,
+      });
+    expect(paths.every((path) => path === "/api/v1/admin/gateway/me")).toBe(true);
   });
 
-  it("refuses a team owner or member every page with a coded 403, without calling the page's API", async () => {
-    const paths = stubApi(teamUser);
-    for (const loader of [overviewLoader, modelsLoader, upstreamsLoader, usersLoader, budgetsLoader, packagesLoader, usageLoader, abuseLoader, auditLoader])
+  it("sends a product session or token (refused by the server as the wrong identity) to the admin sign-in, never the product /login", async () => {
+    const paths = stubApi(coded(403, "GATEWAY_ADMIN_SESSION_REQUIRED"));
+    for (const loader of ALL_LOADERS)
+      expect(await thrown(loader(args("/admin/x?tenant=team%3Aa")))).toEqual({
+        status: 302,
+        location: `/admin/login?returnTo=${encodeURIComponent("/admin/x?tenant=team%3Aa")}`,
+      });
+    expect(paths.every((path) => path === "/api/v1/admin/gateway/me")).toBe(true);
+  });
+
+  it("refuses an admin account whose role lacks the page's permission with a coded 403, without calling the page's API", async () => {
+    const paths = stubApi(noPermissions);
+    for (const loader of ALL_LOADERS)
       expect(await thrown(loader(args("/admin/x?tenant=team%3Aa")))).toMatchObject({ status: 403, code: "GATEWAY_FORBIDDEN" });
     expect(paths.every((path) => path === "/api/v1/admin/gateway/me")).toBe(true);
   });
@@ -163,7 +183,7 @@ describe("admin page scope", () => {
     const members = [{ userId: "u1", role: "owner", name: null, email: null, joinedAt: null }];
     const paths = stubApi(staff, (path) => {
       if (path === "/api/v1/admin/gateway/tenants") return Response.json({ tenants: [] });
-      if (path === "/api/v1/admin/gateway/platform-admins") return Response.json({ admins: [] });
+      if (path === "/api/v1/admin/gateway/admin-accounts") return Response.json({ accounts: [] });
       if (path.endsWith("/members")) return Response.json({ members });
       return undefined;
     });
@@ -180,12 +200,39 @@ describe("admin page scope", () => {
       if (path === "/api/v1/admin/gateway/catalog/versions/c1") return Response.json({ version: { version: "c1", status: "published", models: [] } });
       if (path === "/api/v1/admin/gateway/prices") return Response.json({ versions: [] });
       if (path === "/api/v1/admin/gateway/tenants") return Response.json({ tenants: [] });
-      if (path === "/api/v1/admin/gateway/platform-admins") return Response.json({ admins: [] });
+      if (path === "/api/v1/admin/gateway/admin-accounts") return Response.json({ accounts: [] });
       if (path.startsWith("/api/v1/admin/gateway/usage")) return Response.json({ entries: [], byModel: [] });
       return undefined;
     });
     expect(await modelsLoader(args("/admin/models"))).toMatchObject({ selected: { version: "c1" }, prices: [], canWriteCatalog: true, canWritePrices: true });
-    expect(await usersLoader(args("/admin/users"))).toMatchObject({ tenantId: undefined, members: null, tenants: [], admins: [], canWritePlatformRoles: true });
+    expect(await usersLoader(args("/admin/users"))).toMatchObject({ tenantId: undefined, members: null, tenants: [], accounts: [], canWriteAdminAccounts: true });
     expect((await usageLoader(args("/admin/usage"))).me.promptAccess).toBe(true);
+  });
+});
+
+describe("admin sign-in route", () => {
+  it("shows the sign-in form without an admin session, or with only a product session", async () => {
+    for (const refusal of [coded(401, "GATEWAY_AUTH_REQUIRED"), coded(403, "GATEWAY_ADMIN_SESSION_REQUIRED")]) {
+      stubApi(refusal);
+      expect(await loginLoader(args("/admin/login?returnTo=%2Fadmin%2Fusage"))).toBeNull();
+    }
+  });
+
+  it("sends a signed-in admin back to the console page asked for, and only to a console page", async () => {
+    stubApi(staff);
+    expect(await thrown(loginLoader(args(`/admin/login?returnTo=${encodeURIComponent("/admin/usage?kind=settle")}`)))).toEqual({
+      status: 302,
+      location: "/admin/usage?kind=settle",
+    });
+    for (const returnTo of ["https://evil.example/admin", "//evil.example/admin", "/settings", "/admin/login", "/administrator"])
+      expect(await thrown(loginLoader(args(`/admin/login?returnTo=${encodeURIComponent(returnTo)}`))), returnTo).toEqual({
+        status: 302,
+        location: "/admin",
+      });
+  });
+
+  it("reports a deployment without the admin API as unavailable", async () => {
+    stubApi(new Response("Not Found", { status: 404 }));
+    expect(await thrown(loginLoader(args("/admin/login")))).toMatchObject({ status: 404, code: "ADMIN_CONSOLE_UNAVAILABLE" });
   });
 });

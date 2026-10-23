@@ -1,13 +1,15 @@
 /**
- * Admin console API (#353, #392) through the Worker app on node:sqlite with
- * every migration applied: the console answers platform_admin only (team
- * roles get coded 403s), tenant billing follows the owner/member matrix, one
- * redacted `gateway_admin_audit` row per mutation that rolls back with it,
- * write-only upstream secrets, rate-limit validation and staff prompt-access
- * gating. Identity is a real clsh_ token row, so the /api/* middleware
- * resolves it as in production. Role expectations are derived from the
- * exported matrix, so the suite proves the server enforces it rather than
- * restating it.
+ * Admin console API (#353, #392, #394) through the Worker app on node:sqlite
+ * with every migration applied: the console answers admin accounts only
+ * (team roles' product credentials get coded 403s), tenant billing follows
+ * the owner/member matrix, one redacted `gateway_admin_audit` row per
+ * mutation that rolls back with it, write-only upstream secrets, rate-limit
+ * validation and staff prompt-access gating. Product identity is a real clsh_
+ * token row and the admin a real admin session (signed in through
+ * /api/admin-auth), so the /api/* middleware resolves both as in production.
+ * Role expectations are derived from the exported matrix, so the suite
+ * proves the server enforces it rather than restating it. Admin login and
+ * the full isolation route table are routes/v1/admin/admin-identity.test.ts.
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -30,6 +32,7 @@ import { createD1GatewayBudgetPorts } from "../../../gateway/d1-budgets";
 import { gatewayRetentionPorts, purgeGatewayRetention } from "../../../gateway/d1-retention";
 import { createD1TenantAdmin } from "../../../gateway/d1-tenant-admin";
 import { createMemoryBucket, officialChatCard } from "../../../gateway/test-support";
+import { signedInAdmin } from "../../../services/admin-session.test-support";
 import { GATEWAY_TENANT_ROLES, tenantRolePermissions, type GatewayTenantPermission } from "../../../services/gateway-authz";
 
 const ORIGIN = "http://localhost:8789";
@@ -57,8 +60,9 @@ function user() {
   return { userId, auth: { authorization: `Bearer ${raw}` } };
 }
 
-const platformAdmin = user();
-sqlite.prepare(`INSERT INTO gateway_platform_role (user_id, role) VALUES (?, 'platform_admin')`).run(platformAdmin.userId);
+// The console's caller is an admin account signed in through the admin Better
+// Auth instance (#394), never a product user with a grant.
+const platformAdmin = await signedInAdmin(app, baseEnv, ORIGIN);
 
 function call(
   method: string,
@@ -115,7 +119,8 @@ function auditRows(where: string, ...args: unknown[]) {
     .prepare(`SELECT * FROM gateway_admin_audit WHERE ${where} ORDER BY occurred_at, rowid`)
     .all(...(args as never[])) as Array<{
     action: string;
-    actor_user_id: string;
+    actor_kind: string;
+    actor_id: string;
     actor_role: string;
     tenant_id: string;
     target_id: string;
@@ -178,7 +183,7 @@ describe("permission matrix, enforced by the server", () => {
     }
   });
 
-  it("keeps every console route platform_admin-only: team owners and members get 403, anonymous 401", async () => {
+  it("keeps every console route admin-account-only: team owners and members get 403, anonymous 401", async () => {
     const t = team();
     const platformRoutes: Array<[string, string, unknown?]> = [
       ...tenantConsoleRoutes(t),
@@ -192,9 +197,9 @@ describe("permission matrix, enforced by the server", () => {
       ["PATCH", "/api/v1/admin/gateway/upstreams/gwu_x", { enabled: false }],
       ["POST", "/api/v1/admin/gateway/upstreams/gwu_x/rotate", { credential: { secretRef: "GATEWAY_UPSTREAM_X" } }],
       ["GET", "/api/v1/admin/gateway/tenants"],
-      ["GET", "/api/v1/admin/gateway/platform-admins"],
-      ["POST", "/api/v1/admin/gateway/platform-admins", { userId: "u" }],
-      ["POST", `/api/v1/admin/gateway/platform-admins/${platformAdmin.userId}/revoke`, {}],
+      ["GET", "/api/v1/admin/gateway/admin-accounts"],
+      ["POST", "/api/v1/admin/gateway/admin-accounts", { email: "x@admin.test", name: "x", password: "a-long-password-1" }],
+      ["POST", `/api/v1/admin/gateway/admin-accounts/${platformAdmin.id}/disable`, {}],
       ["GET", "/api/v1/admin/gateway/overview"],
       ["GET", "/api/v1/admin/gateway/usage"],
       ["GET", "/api/v1/admin/gateway/audit"],
@@ -211,18 +216,19 @@ describe("permission matrix, enforced by the server", () => {
     for (const [method, path, body] of platformRoutes) {
       await expectCode(await call(method, path, {}, body), 401, "GATEWAY_AUTH_REQUIRED");
       for (const role of GATEWAY_TENANT_ROLES)
-        await expectCode(await call(method, path, t.members[role].auth, body), 403, "GATEWAY_FORBIDDEN");
+        await expectCode(await call(method, path, t.members[role].auth, body), 403, "GATEWAY_ADMIN_SESSION_REQUIRED");
       // A caller header is never identity.
       await expectCode(
-        await call(method, path, { ...t.members.owner.auth, "x-user-id": platformAdmin.userId }, body),
+        await call(method, path, { ...t.members.owner.auth, "x-user-id": platformAdmin.id }, body),
         403,
-        "GATEWAY_FORBIDDEN",
+        "GATEWAY_ADMIN_SESSION_REQUIRED",
       );
+      await expectCode(await call(method, path, { "x-user-id": platformAdmin.id }, body), 401, "GATEWAY_AUTH_REQUIRED");
     }
-    expect(auditRows("actor_user_id IN (?, ?)", t.members.owner.userId, t.members.member.userId)).toEqual([]);
+    expect(auditRows("actor_id IN (?, ?)", t.members.owner.userId, t.members.member.userId)).toEqual([]);
   });
 
-  it("lets platform_admin use the tenant console routes of any tenant without being a member", async () => {
+  it("lets an admin account use the tenant console routes of any tenant without being a member", async () => {
     const t = team();
     for (const [method, path, body] of tenantConsoleRoutes(t)) {
       const res = await call(method, path, platformAdmin.auth, body);
@@ -235,7 +241,11 @@ describe("permission matrix, enforced by the server", () => {
         [t.members.member.userId, "member"],
       ]),
     );
-    expect(auditRows("tenant_id = ? AND action LIKE 'budget.%'", t.tenantId)[0]?.actor_role).toBe("platform_admin");
+    expect(auditRows("tenant_id = ? AND action LIKE 'budget.%'", t.tenantId)[0]).toMatchObject({
+      actor_kind: "admin",
+      actor_id: platformAdmin.id,
+      actor_role: "platform_admin",
+    });
   });
 
   it("has no team role assignment in the console (team settings own it, #354)", async () => {
@@ -246,18 +256,16 @@ describe("permission matrix, enforced by the server", () => {
     });
   });
 
-  it("describes the caller's platform access on /me, and nothing for team roles", async () => {
+  it("describes the signed-in admin account on /me, and refuses team roles' product credentials", async () => {
     const t = team();
     await expectCode(await call("GET", "/api/v1/admin/gateway/me"), 401, "GATEWAY_AUTH_REQUIRED");
-    for (const role of GATEWAY_TENANT_ROLES) {
-      const me = await json<Record<string, unknown>>(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth));
-      expect(me, role).toEqual({ userId: t.members[role].userId, platformRoles: [], platformPermissions: [], promptAccess: false });
-    }
-    const staff = await json<{ platformRoles: string[]; platformPermissions: string[] }>(
+    for (const role of GATEWAY_TENANT_ROLES)
+      await expectCode(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth), 403, "GATEWAY_ADMIN_SESSION_REQUIRED");
+    const staff = await json<{ admin: { id: string; role: string }; permissions: string[] }>(
       await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth),
     );
-    expect(staff.platformRoles).toEqual(["platform_admin"]);
-    expect(staff.platformPermissions).toContain("catalog.write");
+    expect(staff.admin).toMatchObject({ id: platformAdmin.id, role: "platform_admin" });
+    expect(staff.permissions).toContain("catalog.write");
   });
 });
 
@@ -327,7 +335,7 @@ describe("tenant administration", () => {
   it("changes team roles through the D1 port (team settings, #354): one owner kept, audited in the same batch", async () => {
     const t = team();
     const admin = createD1TenantAdmin(d1, { clock: monotonicClock() });
-    const actor = { userId: t.members.owner.userId, role: "owner" };
+    const actor = { kind: "user" as const, id: t.members.owner.userId, role: "owner" };
     const roleOf = (userId: string) =>
       (sqlite.prepare(`SELECT role FROM tenant_member WHERE tenant_id = ? AND user_id = ?`).get(t.tenantId, userId) as { role: string }).role;
     await expect(admin.setMemberRole({ tenantId: t.tenantId, userId: t.members.owner.userId, role: "member", actor })).rejects.toMatchObject({
@@ -511,30 +519,30 @@ describe("platform catalog and upstreams", () => {
     await expectCode(await call("PATCH", "/api/v1/admin/gateway/upstreams/gwu_none", platformAdmin.auth, { enabled: false }), 404, "GATEWAY_UPSTREAM_NOT_FOUND");
   });
 
-  it("grants and revokes platform admins with audit, never the last one", async () => {
-    const staff = user();
-    const granted = await json<{ granted: boolean }>(
-      await call("POST", "/api/v1/admin/gateway/platform-admins", platformAdmin.auth, { userId: staff.userId, reason: "on-call" }),
+  it("creates and disables admin accounts with audit, never the last enabled one", async () => {
+    const email = `staff-${hex()}@admin.test`;
+    const created = await json<{ account: { id: string } }>(
+      await call("POST", "/api/v1/admin/gateway/admin-accounts", platformAdmin.auth, { email, name: "Staff", password: "staff-password-1", reason: "on-call" }),
       201,
     );
-    expect(granted.granted).toBe(true);
-    expect((await json<{ granted: boolean }>(await call("POST", "/api/v1/admin/gateway/platform-admins", platformAdmin.auth, { userId: staff.userId }))).granted).toBe(false);
-    // The new admin can now use platform routes, and revoke themselves while another admin remains.
-    await json(await call("GET", "/api/v1/admin/gateway/catalog", staff.auth));
-    await json(await call("POST", `/api/v1/admin/gateway/platform-admins/${staff.userId}/revoke`, staff.auth, {}));
-    await expectCode(await call("GET", "/api/v1/admin/gateway/catalog", staff.auth), 403, "GATEWAY_FORBIDDEN");
-    expect(auditRows("target_id = ? AND target_type = 'platform_role'", staff.userId).map((row) => row.action)).toEqual([
-      "platform_role.grant",
-      "platform_role.revoke",
-    ]);
-    // Revoking every other admin leaves the last one protected.
-    const others = sqlite.prepare(`SELECT user_id FROM gateway_platform_role WHERE user_id <> ?`).all(platformAdmin.userId) as Array<{ user_id: string }>;
-    for (const { user_id } of others)
-      await json(await call("POST", `/api/v1/admin/gateway/platform-admins/${user_id}/revoke`, platformAdmin.auth, {}));
+    const staffId = created.account.id;
     await expectCode(
-      await call("POST", `/api/v1/admin/gateway/platform-admins/${platformAdmin.userId}/revoke`, platformAdmin.auth, {}),
+      await call("POST", "/api/v1/admin/gateway/admin-accounts", platformAdmin.auth, { email, name: "Staff", password: "staff-password-1" }),
       409,
-      "GATEWAY_LAST_PLATFORM_ADMIN",
+      "GATEWAY_ADMIN_ACCOUNT_EXISTS",
+    );
+    await json(await call("POST", `/api/v1/admin/gateway/admin-accounts/${staffId}/disable`, platformAdmin.auth, {}));
+    expect(auditRows("target_id = ? AND target_type = 'admin_account'", staffId).map((row) => [row.action, row.actor_kind, row.actor_id])).toEqual([
+      ["admin_account.create", "admin", platformAdmin.id],
+      ["admin_account.disable", "admin", platformAdmin.id],
+    ]);
+    // Disabling every other account leaves the last enabled one protected.
+    const others = sqlite.prepare(`SELECT id FROM admin_accounts WHERE id <> ? AND disabled_at IS NULL`).all(platformAdmin.id) as Array<{ id: string }>;
+    for (const { id } of others) await json(await call("POST", `/api/v1/admin/gateway/admin-accounts/${id}/disable`, platformAdmin.auth, {}));
+    await expectCode(
+      await call("POST", `/api/v1/admin/gateway/admin-accounts/${platformAdmin.id}/disable`, platformAdmin.auth, {}),
+      409,
+      "GATEWAY_LAST_ADMIN_ACCOUNT",
     );
   });
 });
@@ -580,9 +588,14 @@ describe("audit is atomic with every mutation", () => {
         () => count(`SELECT COUNT(*) AS n FROM gateway_usage_ledger WHERE tenant_id = ? AND kind = 'adjust'`, t.tenantId),
       ],
       [
-        "platform role",
-        () => call("POST", "/api/v1/admin/gateway/platform-admins", platformAdmin.auth, { userId: "atomic-staff" }),
-        () => count(`SELECT COUNT(*) AS n FROM gateway_platform_role WHERE user_id = 'atomic-staff'`),
+        "admin account",
+        () =>
+          call("POST", "/api/v1/admin/gateway/admin-accounts", platformAdmin.auth, {
+            email: "atomic-staff@admin.test",
+            name: "Atomic",
+            password: "atomic-password-1",
+          }),
+        () => count(`SELECT COUNT(*) AS n FROM admin_accounts WHERE email = 'atomic-staff@admin.test'`),
       ],
     ];
     for (const [name, mutate, state] of mutations) {
@@ -633,8 +646,11 @@ describe("audit is atomic with every mutation", () => {
     const modelPath = (version: string) => `/api/v1/admin/gateway/catalog/versions/${version}/models/${encodeURIComponent(model.id)}`;
     await json(await call("PUT", modelPath(live), admin, { card: model }));
     const draft = `atomic-draft-${hex()}`;
-    const staff = user();
-    await created(call("POST", "/api/v1/admin/gateway/platform-admins", admin, { userId: staff.userId }));
+    const staff = (
+      await created<{ account: { id: string } }>(
+        call("POST", "/api/v1/admin/gateway/admin-accounts", admin, { email: `atomic-${hex()}@admin.test`, name: "Atomic", password: "atomic-password-2" }),
+      )
+    ).account;
 
     const mutations: Array<[string, () => Response | Promise<Response>, () => number]> = [
       [
@@ -703,9 +719,9 @@ describe("audit is atomic with every mutation", () => {
         () => count(`SELECT COUNT(*) AS n FROM gateway_package WHERE id = ? AND status = 'archived'`, pkg.id),
       ],
       [
-        "platform revoke",
-        () => call("POST", `/api/v1/admin/gateway/platform-admins/${staff.userId}/revoke`, admin, {}),
-        () => count(`SELECT COUNT(*) AS n FROM gateway_platform_role WHERE user_id = ?`, staff.userId),
+        "admin account disable",
+        () => call("POST", `/api/v1/admin/gateway/admin-accounts/${staff.id}/disable`, admin, {}),
+        () => count(`SELECT COUNT(*) AS n FROM admin_accounts WHERE id = ? AND disabled_at IS NULL`, staff.id),
       ],
     ];
     for (const [name, mutate, state] of mutations) {
@@ -775,7 +791,7 @@ describe("staff prompt access and body retention", () => {
     return { requestId, marker, request, response };
   }
 
-  it("is off without the hosted flag and platform_admin-only with it; refusals write no audit row", async () => {
+  it("is off without the hosted flag and admin-account-only with it; refusals write no audit row", async () => {
     const t = team();
     const { requestId } = await retained(t.tenantId);
     await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "incident 42" }, { ...enabled, GATEWAY_STAFF_PROMPT_ACCESS: undefined }), 403, "GATEWAY_PROMPT_ACCESS_DISABLED");
@@ -783,8 +799,8 @@ describe("staff prompt access and body retention", () => {
     expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", platformAdmin.auth, undefined, enabled))).promptAccess).toBe(true);
     // The tenant's own owner and members may not read its prompts.
     for (const role of GATEWAY_TENANT_ROLES) {
-      await expectCode(await call("POST", access(requestId), t.members[role].auth, { reason: "x" }, enabled), 403, "GATEWAY_FORBIDDEN");
-      expect((await json<{ promptAccess: boolean }>(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth, undefined, enabled))).promptAccess).toBe(false);
+      await expectCode(await call("POST", access(requestId), t.members[role].auth, { reason: "x" }, enabled), 403, "GATEWAY_ADMIN_SESSION_REQUIRED");
+      await expectCode(await call("GET", "/api/v1/admin/gateway/me", t.members[role].auth, undefined, enabled), 403, "GATEWAY_ADMIN_SESSION_REQUIRED");
     }
     await expectCode(await call("POST", access(requestId), platformAdmin.auth, {}, enabled), 400, "GATEWAY_INVALID_REQUEST");
     expect(audited(requestId)).toEqual([]);
@@ -804,9 +820,9 @@ describe("staff prompt access and body retention", () => {
       expect(viewed.prompt.response.sha256).toBe(sha256(response));
     }
     const rows = audited(requestId);
-    expect(rows.map((row) => [row.actor_user_id, row.actor_role, row.tenant_id, row.reason])).toEqual([
-      [platformAdmin.userId, "platform_admin", t.tenantId, "incident 42"],
-      [platformAdmin.userId, "platform_admin", t.tenantId, "follow-up 43"],
+    expect(rows.map((row) => [row.actor_kind, row.actor_id, row.actor_role, row.tenant_id, row.reason])).toEqual([
+      ["admin", platformAdmin.id, "platform_admin", t.tenantId, "incident 42"],
+      ["admin", platformAdmin.id, "platform_admin", t.tenantId, "follow-up 43"],
     ]);
     expect(JSON.parse(rows[0]!.after_json!)).toMatchObject({ outcome: "viewed", requestFound: true, responseSha256: sha256(response) });
     const raw = sqlite.prepare(`SELECT * FROM gateway_admin_audit WHERE target_id = ?`).all(requestId) as Array<Record<string, unknown>>;
@@ -864,7 +880,7 @@ describe("staff prompt access and body retention", () => {
     expect(JSON.parse(audited(requestId)[0]!.after_json!)).toMatchObject({ outcome: "expired", code: "GATEWAY_PROMPT_EXPIRED" });
 
     for (const role of GATEWAY_TENANT_ROLES)
-      await expectCode(await call("POST", "/api/v1/admin/gateway/retention/purge", t.members[role].auth, {}, enabled), 403, "GATEWAY_FORBIDDEN");
+      await expectCode(await call("POST", "/api/v1/admin/gateway/retention/purge", t.members[role].auth, {}, enabled), 403, "GATEWAY_ADMIN_SESSION_REQUIRED");
     const first = await json<{ purge: { purged: number; failed: number } }>(
       await call("POST", "/api/v1/admin/gateway/retention/purge", platformAdmin.auth, { limit: 1000 }, enabled),
     );
@@ -898,14 +914,14 @@ describe("staff prompt access and body retention", () => {
       .run(`l_${requestId}`, requestId, t.tenantId);
     await expectCode(await call("POST", access(requestId), platformAdmin.auth, { reason: "incident 42" }, enabled), 404, "GATEWAY_PROMPT_NOT_RETAINED");
     expect(audited(requestId)).toEqual([
-      expect.objectContaining({ tenant_id: t.tenantId, actor_user_id: platformAdmin.userId, reason: "incident 42" }),
+      expect.objectContaining({ tenant_id: t.tenantId, actor_kind: "admin", actor_id: platformAdmin.id, reason: "incident 42" }),
     ]);
     expect(JSON.parse(audited(requestId)[0]!.after_json!)).toEqual({ outcome: "not_retained", requestFound: true, code: "GATEWAY_PROMPT_NOT_RETAINED" });
   });
 });
 
 describe("stale-hold sweep", () => {
-  it("is platform_admin-only, expires stale holds once at zero, and audits only a sweep that changed something", async () => {
+  it("is admin-account-only, expires stale holds once at zero, and audits only a sweep that changed something", async () => {
     const t = team();
     const budgetId = `gwb_sweep_${hex()}`;
     sqlite
@@ -918,7 +934,7 @@ describe("stale-hold sweep", () => {
     const auditsBefore = sweepAudits();
 
     for (const role of GATEWAY_TENANT_ROLES)
-      await expectCode(await call("POST", "/api/v1/admin/gateway/holds/sweep", t.members[role].auth, {}), 403, "GATEWAY_FORBIDDEN");
+      await expectCode(await call("POST", "/api/v1/admin/gateway/holds/sweep", t.members[role].auth, {}), 403, "GATEWAY_ADMIN_SESSION_REQUIRED");
     expect(sqlite.prepare(`SELECT reserved_micro_credits AS reserved FROM gateway_budget WHERE id = ?`).get(budgetId)).toEqual({ reserved: 9 });
 
     const first = await json<{ sweep: { expired: number; failed: number } }>(

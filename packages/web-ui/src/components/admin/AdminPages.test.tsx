@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AbuseSignals, Budget, CatalogVersion, GatewayKey, TenantMember } from "../../lib/adminClient";
+import type { AbuseSignals, AdminAccount, Budget, CatalogVersion, GatewayKey, TenantMember } from "../../lib/adminClient";
 import { chooseOption, gatewayError, stubAdminFetch } from "../../test-support/admin";
 import { AdminAbuse } from "./AdminAbuse";
 import { AdminAudit } from "./AdminAudit";
@@ -11,7 +11,7 @@ import { AdminBudgets, type BudgetPermissions } from "./AdminBudgets";
 import { AdminCatalog, AdminPrices } from "./AdminCatalog";
 import { AdminPackages } from "./AdminPackages";
 import { AdminUsage } from "./AdminUsage";
-import { AdminMembers, AdminPlatformAdmins } from "./AdminUsers";
+import { AdminAccounts, AdminMembers } from "./AdminUsers";
 
 afterEach(() => {
   cleanup();
@@ -281,7 +281,7 @@ describe("AdminPackages", () => {
   });
 });
 
-describe("AdminMembers and AdminPlatformAdmins", () => {
+describe("AdminMembers and AdminAccounts", () => {
   const members: TenantMember[] = [
     { userId: "u-own", role: "owner", name: "Olga", email: "o@example.test", joinedAt: null },
     { userId: "u-max", role: "member", name: "Max", email: null, joinedAt: null },
@@ -297,21 +297,51 @@ describe("AdminMembers and AdminPlatformAdmins", () => {
     expect(calls).toEqual([]);
   });
 
-  it("grants platform admin by user id, labelling the bootstrap grant", async () => {
-    const calls = stubAdminFetch(() => Response.json({ granted: true }, { status: 201 }));
-    render(
-      <AdminPlatformAdmins
-        admins={[{ userId: "u-first", name: null, email: null, grantedByUserId: null, grantedAt: "2026-10-01T00:00:00Z" }]}
-        canWrite
-        onChanged={() => undefined}
-      />,
-    );
-    expect(screen.getByText("bootstrap")).toBeInTheDocument();
-    const form = screen.getByRole("form", { name: "Grant platform admin" });
-    type(form, "User id", "u-next");
-    fireEvent.submit(form);
+  const accounts: AdminAccount[] = [
+    { id: "adm_me", email: "me@admin.test", name: "Me", role: "platform_admin", disabledAt: null, createdAt: "2026-10-01T00:00:00Z" },
+    { id: "adm_ops", email: "ops@admin.test", name: "Ops", role: "platform_admin", disabledAt: null, createdAt: "2026-10-02T00:00:00Z" },
+    { id: "adm_old", email: "old@admin.test", name: "Old", role: "platform_admin", disabledAt: "2026-10-03T00:00:00Z", createdAt: "2026-09-01T00:00:00Z" },
+  ];
+
+  it("creates an admin account by email, name and password, and disables another enabled one", async () => {
+    const onChanged = vi.fn();
+    const calls = stubAdminFetch(() => Response.json({ account: accounts[1], accounts }, { status: 201 }));
+    render(<AdminAccounts accounts={accounts} currentAdminId="adm_me" canWrite onChanged={onChanged} />);
+    const table = screen.getByRole("table", { name: "Admin accounts" });
+    // Only another enabled account can be disabled from here: not yourself, not a disabled one.
+    expect(within(table).getAllByRole("button", { name: "Disable" })).toHaveLength(1);
+    fireEvent.click(within(table).getByRole("button", { name: "Disable" }));
     await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toEqual({ method: "POST", path: "/api/v1/admin/gateway/platform-admins", body: { userId: "u-next" } });
+    expect(calls[0]).toEqual({ method: "POST", path: "/api/v1/admin/gateway/admin-accounts/adm_ops/disable", body: {} });
+
+    const form = screen.getByRole("form", { name: "Create admin account" });
+    type(form, "Email", "new@admin.test");
+    type(form, "Name", "New");
+    type(form, "Password", "a-long-password-1");
+    fireEvent.submit(form);
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]).toEqual({
+      method: "POST",
+      path: "/api/v1/admin/gateway/admin-accounts",
+      body: { email: "new@admin.test", name: "New", password: "a-long-password-1" },
+    });
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+    // The password field is cleared after the account is created.
+    expect((within(form).getByLabelText("Password") as HTMLInputElement).value).toBe("");
+  });
+
+  it("shows the coded refusal inline, such as the last enabled account", async () => {
+    stubAdminFetch(() => gatewayError(409, "GATEWAY_LAST_ADMIN_ACCOUNT", "The last enabled admin account cannot be disabled."));
+    render(<AdminAccounts accounts={accounts} currentAdminId="adm_me" canWrite onChanged={() => undefined} />);
+    fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+    expect(await screen.findByText("GATEWAY_LAST_ADMIN_ACCOUNT")).toBeInTheDocument();
+  });
+
+  it("is read-only without admin_accounts.write", () => {
+    stubAdminFetch();
+    render(<AdminAccounts accounts={accounts} currentAdminId="adm_me" canWrite={false} onChanged={() => undefined} />);
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("form", { name: "Create admin account" })).toBeNull();
   });
 });
 
@@ -338,7 +368,8 @@ describe("AdminAbuse and AdminAudit", () => {
             {
               id: "gwa_1",
               tenantId: "",
-              actorUserId: "u-staff",
+              actorKind: "admin",
+              actorId: "adm_staff",
               actorRole: "platform_admin",
               action: "upstream.rotate",
               targetType: "upstream_account",
@@ -356,11 +387,14 @@ describe("AdminAbuse and AdminAudit", () => {
     );
     const log = screen.getByRole("table", { name: "Audit log" });
     expect(within(log).getByText("upstream.rotate")).toBeInTheDocument();
+    // The actor is the admin account: its kind and id.
+    expect(within(log).getByText("admin adm_staff (platform_admin)")).toBeInTheDocument();
     expect(within(log).getByText("reason: scheduled")).toBeInTheDocument();
     expect(within(log).queryByRole("button")).toBeNull();
     const form = screen.getByRole("region", { name: "Filters" }).querySelector("form")!;
     type(form, "Action", "upstream");
+    type(form, "Actor id", "adm_staff");
     fireEvent.submit(form);
-    expect(onFiltersChange).toHaveBeenCalledWith({ action: "upstream" });
+    expect(onFiltersChange).toHaveBeenCalledWith({ action: "upstream", actorId: "adm_staff" });
   });
 });

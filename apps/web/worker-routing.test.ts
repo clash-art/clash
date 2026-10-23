@@ -63,6 +63,32 @@ describe("web worker Asset routing boundary", () => {
     expect(forwarded?.headers.get("authorization")).toBe("Bearer sk_gw_opaque");
   });
 
+  it("sends admin sign-in to api-cf's admin auth, never the product Better Auth handler (#394)", async () => {
+    let forwarded: Request | undefined;
+    const env = {
+      ...gatewayEnv(),
+      API_CF: {
+        fetch: async (request: Request) => {
+          forwarded = request;
+          return new Response("admin auth", { status: 418 });
+        },
+      },
+    } as unknown as Env;
+    const response = await worker.fetch(
+      new Request("https://clash.test/api/admin-auth/sign-in/email", {
+        method: "POST",
+        headers: { "x-user-id": "forged", "content-type": "application/json" },
+        body: "{}",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(418);
+    expect(new URL(forwarded!.url).pathname).toBe("/api/admin-auth/sign-in/email");
+    expect(forwarded?.headers.get("x-user-id")).toBeNull();
+    expect(forwarded?.headers.get("x-clash-require-identity")).toBeNull();
+  });
+
   it("keeps signed Asset delivery isolated as a transport route", async () => {
     const response = await worker.fetch(
       new Request("https://clash.test/assets/capability?exp=1&sig=opaque"),

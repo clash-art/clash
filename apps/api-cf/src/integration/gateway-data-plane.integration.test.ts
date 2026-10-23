@@ -11,7 +11,7 @@ import { gatewayRetentionKeys } from "@clash/gateway-core";
 
 import { createApp } from "../app";
 import type { Env } from "../config";
-import { sha256Hex } from "../services/api-token";
+import { signedInAdmin } from "../services/admin-session.test-support";
 import { d1ContractHarness, seedGateway, type SeededGateway } from "../gateway/test-support";
 
 const ORIGIN = "https://clash.test";
@@ -212,7 +212,7 @@ describe("/gateway/v1/chat/completions in workerd", () => {
     });
   });
 
-  it("retains bodies in R2 with the hosted flag, and platform_admin views the stored bytes, audited", async () => {
+  it("retains bodies in R2 with the hosted flag, and an admin account views the stored bytes, audited", async () => {
     const retaining = { ...bindings, GATEWAY_STAFF_PROMPT_ACCESS: "enabled" } as Env;
     const caller = await gateway.tenantToken();
     const prompt = `workerd prompt ${crypto.randomUUID()}`;
@@ -232,36 +232,29 @@ describe("/gateway/v1/chat/completions in workerd", () => {
     const object = await env.R2_BUCKET.get(gatewayRetentionKeys(requestId).response);
     expect(await object?.text()).toBe(answered);
 
-    // A platform admin's clsh_ token, resolved by the /api/* middleware as in production.
-    const staffId = `staff-${crypto.randomUUID()}`;
-    const raw = `clsh_${crypto.randomUUID().replaceAll("-", "")}`;
-    await env.DB.batch([
-      env.DB.prepare(`INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, 'staff', ?, 'clsh_st')`).bind(
-        `tok-${staffId}`,
-        staffId,
-        await sha256Hex(raw),
-      ),
-      env.DB.prepare(`INSERT INTO gateway_platform_role (user_id, role) VALUES (?, 'platform_admin')`).bind(staffId),
-    ]);
+    // An admin account's session (#394), resolved by the /api/* middleware as in production.
+    const adminEnv = { ...retaining, BETTER_AUTH_URL: ORIGIN } as Env;
+    const staff = await signedInAdmin(app, adminEnv as never, ORIGIN);
+    const staffId = staff.id;
     const viewed = await app.request(
       `/api/v1/admin/gateway/prompts/${requestId}/access`,
       {
         method: "POST",
-        headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${raw}` },
+        headers: { "content-type": "application/json", origin: ORIGIN, ...staff.auth },
         body: JSON.stringify({ reason: "workerd incident" }),
       },
-      retaining,
+      adminEnv,
     );
     expect(viewed.status, await viewed.clone().text()).toBe(200);
     const view = (await viewed.json()) as { prompt: { request: { body: string }; response: { body: string } } };
     expect(view.prompt.response.body).toBe(answered);
     expect(view.prompt.request.body).toContain(prompt);
     const audit = await env.DB.prepare(
-      `SELECT actor_user_id, reason, after_json FROM gateway_admin_audit WHERE action = 'prompt.view' AND target_id = ?`,
+      `SELECT actor_kind, actor_id, reason, after_json FROM gateway_admin_audit WHERE action = 'prompt.view' AND target_id = ?`,
     )
       .bind(requestId)
-      .all<{ actor_user_id: string; reason: string; after_json: string }>();
-    expect(audit.results).toEqual([expect.objectContaining({ actor_user_id: staffId, reason: "workerd incident" })]);
+      .all<{ actor_kind: string; actor_id: string; reason: string; after_json: string }>();
+    expect(audit.results).toEqual([expect.objectContaining({ actor_kind: "admin", actor_id: staffId, reason: "workerd incident" })]);
     expect(audit.results[0]!.after_json).not.toContain(prompt);
   });
 });

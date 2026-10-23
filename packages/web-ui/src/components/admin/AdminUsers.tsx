@@ -1,13 +1,13 @@
 /**
- * Users & teams page (#353, #392): the tenant list, the selected tenant's
- * members and roles (read-only: team owners manage members in team
- * settings, #354), and platform admin grants. The server keeps one platform
- * admin.
+ * Users & teams page (#353, #392, #394): the tenant list, the selected
+ * tenant's members and roles (read-only: team owners manage members in team
+ * settings, #354), and the admin accounts (a separate identity, never product
+ * users). The server keeps one enabled admin account.
  */
 import { useState } from "react";
 import { Link } from "react-router";
 
-import { adminApi, type PlatformAdmin, type TenantMember, type TenantSummary } from "../../lib/adminClient";
+import { adminApi, type AdminAccount, type TenantMember, type TenantSummary } from "../../lib/adminClient";
 import { Button } from "../ui/button";
 import { AdminCard, AdminErrorAlert, AdminField, AdminSection, AdminTable, formatTime, useAdminAction } from "./AdminKit";
 
@@ -64,36 +64,45 @@ export function AdminMembers({ members }: { members: TenantMember[] }) {
   );
 }
 
-export function AdminPlatformAdmins({
-  admins,
+export function AdminAccounts({
+  accounts,
+  currentAdminId,
   canWrite,
   onChanged,
 }: {
-  admins: PlatformAdmin[];
+  accounts: AdminAccount[];
+  /** The signed-in account, which cannot disable itself from here. */
+  currentAdminId: string;
   canWrite: boolean;
   onChanged: () => void;
 }) {
-  const [userId, setUserId] = useState("");
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
   const [reason, setReason] = useState("");
   const action = useAdminAction(onChanged);
   return (
-    <AdminSection title="Platform admins" description="Staff grants, separate from tenant roles. The last platform admin cannot be revoked.">
+    <AdminSection
+      title="Admin accounts"
+      description="Console sign-ins, separate from product users. Disabling one signs it out everywhere; the last enabled account cannot be disabled."
+    >
       <AdminErrorAlert error={action.error} />
       <AdminTable
-        label="Platform admins"
-        rows={admins}
-        rowKey={(row) => row.userId}
-        empty="No platform admins."
+        label="Admin accounts"
+        rows={accounts}
+        rowKey={(row) => row.id}
+        empty="No admin accounts."
         columns={[
-          { header: "User", cell: (row) => `${row.name ?? row.userId}${row.email ? ` · ${row.email}` : ""}` },
-          { header: "Granted by", cell: (row) => row.grantedByUserId ?? "bootstrap" },
-          { header: "Since", cell: (row) => formatTime(row.grantedAt) },
+          { header: "Account", cell: (row) => `${row.name} · ${row.email}` },
+          { header: "Role", cell: (row) => row.role },
+          { header: "Since", cell: (row) => formatTime(row.createdAt) },
+          { header: "Status", cell: (row) => (row.disabledAt ? `Disabled ${formatTime(row.disabledAt)}` : "Enabled") },
           {
             header: "",
             cell: (row) =>
-              canWrite ? (
-                <Button size="sm" variant="destructive" disabled={action.pending} onClick={() => void action.run(() => adminApi.revokePlatformAdmin(row.userId))}>
-                  Revoke
+              canWrite && !row.disabledAt && row.id !== currentAdminId ? (
+                <Button size="sm" variant="destructive" disabled={action.pending} onClick={() => void action.run(() => adminApi.disableAdminAccount(row.id))}>
+                  Disable
                 </Button>
               ) : null,
           },
@@ -102,19 +111,36 @@ export function AdminPlatformAdmins({
       {canWrite ? (
         <AdminCard>
           <form
-            aria-label="Grant platform admin"
-            className="grid gap-3 sm:grid-cols-[1fr_2fr_auto]"
+            aria-label="Create admin account"
+            className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]"
             onSubmit={action.submit(async () => {
-              await adminApi.grantPlatformAdmin(userId.trim(), reason.trim() || undefined);
-              setUserId("");
+              await adminApi.createAdminAccount({
+                email: email.trim(),
+                name: name.trim(),
+                password,
+                ...(reason.trim() ? { reason: reason.trim() } : {}),
+              });
+              setEmail("");
+              setName("");
+              setPassword("");
               setReason("");
             })}
           >
-            <AdminField label="User id" value={userId} onChange={(e) => setUserId(e.target.value)} required />
+            <AdminField label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            <AdminField label="Name" value={name} onChange={(e) => setName(e.target.value)} required />
+            <AdminField
+              label="Password"
+              type="password"
+              autoComplete="new-password"
+              hint="12 to 128 characters"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
             <AdminField label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
             <div className="flex items-end">
-              <Button type="submit" size="sm" variant="primary" disabled={action.pending || !userId.trim()}>
-                Grant
+              <Button type="submit" size="sm" variant="primary" disabled={action.pending || !email.trim() || !name.trim() || !password}>
+                Create
               </Button>
             </div>
           </form>

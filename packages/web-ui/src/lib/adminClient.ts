@@ -1,8 +1,10 @@
 /**
  * Typed client for the gateway admin console API, /api/v1/admin/gateway (#353;
- * guide: apps/docs/guide/gateway-admin.md). Every failure is an
- * `AdminApiError` carrying the server's coded error (`GATEWAY_*`), so forms
- * can show exactly what the server refused. The server authorizes every call;
+ * guide: apps/docs/guide/gateway-admin.md), and for the admin sign-in
+ * (/api/admin-auth, #394: an admin account session, separate from product
+ * sessions). Every failure is an `AdminApiError` carrying the server's coded
+ * error (`GATEWAY_*`, or Better Auth's code at sign-in), so forms can show
+ * exactly what the server refused. The server authorizes every call;
  * `adminCan` only decides what the UI offers.
  */
 import { runtimeFetch } from "./runtimeConfig";
@@ -51,6 +53,42 @@ export async function adminRequest<T>(method: string, path: string, body?: unkno
   return parsed as T;
 }
 
+/** The admin identity's own Better Auth instance (#394); never the product /api/better-auth. */
+export const ADMIN_AUTH_BASE = "/api/admin-auth";
+
+async function adminAuthRequest(path: string, body: unknown): Promise<void> {
+  const response = await runtimeFetch(`${ADMIN_AUTH_BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (response.ok) return;
+  // Better Auth answers `{ code, message }`; a rate-limited attempt has a message only.
+  const parsed = (await response.json().catch(() => null)) as { code?: unknown; message?: unknown } | null;
+  throw new AdminApiError(
+    response.status,
+    typeof parsed?.code === "string" ? parsed.code : `HTTP_${response.status}`,
+    typeof parsed?.message === "string" ? parsed.message : response.statusText || "Request failed",
+  );
+}
+
+/** Admin sign-in and sign-out: the `clash-admin` session, separate from any product session. */
+export const adminAuthApi = {
+  signIn: (email: string, password: string) => adminAuthRequest("/sign-in/email", { email, password }),
+  signOut: () => adminAuthRequest("/sign-out", {}),
+};
+
+/** The console's sign-in page, returning to `returnTo` (a same-origin /admin path only). */
+export function adminLoginPath(returnTo?: string): string {
+  return returnTo && isAdminReturnPath(returnTo) ? `/admin/login?returnTo=${encodeURIComponent(returnTo)}` : "/admin/login";
+}
+
+/** Only console pages are valid return targets: never another origin or a product page. */
+export function isAdminReturnPath(path: string): boolean {
+  return /^\/admin(?:[/?#]|$)/.test(path) && !path.startsWith("/admin/login");
+}
+
 const q = (params: Record<string, string | number | undefined | null>) => {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params))
@@ -62,11 +100,14 @@ const seg = encodeURIComponent;
 
 // ─── Types (server views) ─────────────────────────────────────────────────
 
-/** The caller's platform grants: the console is for `platform_admin` only (#392). */
+/**
+ * The signed-in admin account (#394): admin accounts are their own identity,
+ * never product users, and the console takes nothing else.
+ */
 export interface AdminMe {
-  userId: string;
-  platformRoles: string[];
-  platformPermissions: string[];
+  admin: { id: string; email: string; name: string; role: string };
+  /** Every permission the account's role holds. */
+  permissions: string[];
   promptAccess: boolean;
 }
 
@@ -200,12 +241,14 @@ export interface TenantMember {
   joinedAt: string | null;
 }
 
-export interface PlatformAdmin {
-  userId: string;
-  name: string | null;
-  email: string | null;
-  grantedByUserId: string | null;
-  grantedAt: string;
+/** An admin account (admin store, #394). */
+export interface AdminAccount {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  disabledAt: string | null;
+  createdAt: string;
 }
 
 export interface Budget {
@@ -251,7 +294,7 @@ export interface Overview {
     upstreamsEnabled: number;
     upstreams: number;
     activePackages: number;
-    platformAdmins: number;
+    adminAccounts: number;
   };
   tenant?: { members: number; activeKeys: number; suspendedBudgets: number };
 }
@@ -280,7 +323,9 @@ export interface UsageResult {
 export interface AuditEntry {
   id: string;
   tenantId: string;
-  actorUserId: string;
+  /** `admin` (an admin account), `user` (a team role), `bootstrap` or `migration`. */
+  actorKind: string;
+  actorId: string;
   actorRole: string | null;
   action: string;
   targetType: string;
@@ -311,7 +356,7 @@ export interface UsageFilters {
 
 export interface AuditFilters {
   tenantId?: string;
-  actorUserId?: string;
+  actorId?: string;
   action?: string;
   targetType?: string;
   targetId?: string;
@@ -320,9 +365,9 @@ export interface AuditFilters {
 
 // ─── Permissions (UI affordance only; the server decides) ─────────────────
 
-/** Whether the caller's platform grants hold `permission`; tenant roles never open the console. */
+/** Whether the signed-in admin account's role holds `permission`. */
 export function adminCan(me: AdminMe, permission: string): boolean {
-  return me.platformPermissions.includes(permission);
+  return me.permissions.includes(permission);
 }
 
 export type AdminPageKey =
@@ -432,11 +477,11 @@ export const adminApi = {
 
   tenants: (query?: string) => adminRequest<{ tenants: TenantSummary[] }>("GET", `/tenants${q({ query })}`),
   members: (tenantId: string) => adminRequest<{ members: TenantMember[] }>("GET", `/tenants/${seg(tenantId)}/members`),
-  platformAdmins: () => adminRequest<{ admins: PlatformAdmin[] }>("GET", "/platform-admins"),
-  grantPlatformAdmin: (userId: string, reason?: string) =>
-    adminRequest<{ granted: boolean }>("POST", "/platform-admins", { userId, ...(reason ? { reason } : {}) }),
-  revokePlatformAdmin: (userId: string, reason?: string) =>
-    adminRequest<{ revoked: boolean }>("POST", `/platform-admins/${seg(userId)}/revoke`, reason ? { reason } : {}),
+  adminAccounts: () => adminRequest<{ accounts: AdminAccount[] }>("GET", "/admin-accounts"),
+  createAdminAccount: (body: { email: string; name: string; password: string; reason?: string }) =>
+    adminRequest<{ account: AdminAccount; accounts: AdminAccount[] }>("POST", "/admin-accounts", body),
+  disableAdminAccount: (id: string, reason?: string) =>
+    adminRequest<{ disabled: boolean }>("POST", `/admin-accounts/${seg(id)}/disable`, reason ? { reason } : {}),
 
   budgets: (tenantId: string) =>
     adminRequest<{ budgets: Budget[]; wallet: Budget | null; subscription: Subscription | null }>("GET", `/tenants/${seg(tenantId)}/budgets`),

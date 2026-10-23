@@ -33,7 +33,7 @@ export function AdminOverview({ overview, scopeLabel }: { overview: Overview; sc
             />
             <Stat label="Upstreams enabled" value={`${overview.platform.upstreamsEnabled} / ${overview.platform.upstreams}`} />
             <Stat label="Active packages" value={overview.platform.activePackages} />
-            <Stat label="Platform admins" value={overview.platform.platformAdmins} />
+            <Stat label="Admin accounts" value={overview.platform.adminAccounts} />
           </div>
         </AdminSection>
       ) : null}

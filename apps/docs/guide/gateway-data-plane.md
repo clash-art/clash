@@ -131,7 +131,7 @@ reconciliation. The sweep is idempotent. It runs:
 - from the `scheduled` handler every minute (`sweepGatewayHolds` in
   `apps/api-cf/src/gateway/d1-budgets.ts`), up to 200 requests per run;
 - on demand through `POST /api/v1/admin/gateway/holds/sweep {limit?}`
-  (`holds.sweep`, `platform_admin` only), audited as `holds.sweep` when it
+  (`holds.sweep`, admin accounts only), audited as `holds.sweep` when it
   expired something.
 
 ## Budget refusals

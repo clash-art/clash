@@ -10,10 +10,11 @@ import * as auth from "./auth";
 import * as app from "./app";
 import * as broker from "./broker";
 import * as gateway from "./gateway";
+import * as adminAuth from "./admin-auth";
 import * as runtime from "./runtime";
 
 it("generates executable SQLite schema and preserves auth relations without SQL foreign-key coupling", async () => {
-  const schema = { ...auth, ...app, ...broker, ...runtime, ...gateway };
+  const schema = { ...auth, ...app, ...broker, ...runtime, ...gateway, ...adminAuth };
   const blank = await generateSQLiteDrizzleJson({});
   const generated = await generateSQLiteDrizzleJson(schema, blank.id);
   const statements = await generateSQLiteMigration(blank, generated);

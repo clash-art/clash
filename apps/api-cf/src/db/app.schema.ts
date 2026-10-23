@@ -2,3 +2,4 @@
 export * from "@clash/shared-cloud-schema/app";
 export * from "@clash/shared-cloud-schema/broker";
 export * from "@clash/shared-cloud-schema/gateway";
+export * from "@clash/shared-cloud-schema/admin-auth";

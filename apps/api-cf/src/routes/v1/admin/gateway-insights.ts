@@ -91,7 +91,8 @@ adminInsightRoutes.get(
     const to = ms(query.to);
     const entries = await reads(c.env).audit({
       ...(query.tenantId ? { tenantId: query.tenantId } : {}),
-      ...(query.actorUserId ? { actorUserId: query.actorUserId } : {}),
+      ...(query.actorKind ? { actorKind: query.actorKind } : {}),
+      ...(query.actorId ? { actorId: query.actorId } : {}),
       ...(query.action ? { action: query.action } : {}),
       ...(query.targetType ? { targetType: query.targetType } : {}),
       ...(query.targetId ? { targetId: query.targetId } : {}),

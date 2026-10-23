@@ -28,7 +28,7 @@ import { CONTRACT_ORIGIN, seedGateway, type SeededGateway } from "./test-support
 const { d1, sqlite } = createSqliteD1();
 const seeded: Promise<SeededGateway> = seedGateway(d1);
 
-const admin: BillingActor = { userId: "platform-admin", role: "platform_admin" };
+const admin: BillingActor = { kind: "admin", id: "adm_billing", role: "platform_admin" };
 const hex = (bytes: number) =>
   Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
 const credits = (n: number) => n * 1_000_000;
@@ -146,17 +146,17 @@ describe("price book and billing over D1 (node:sqlite)", () => {
         effectiveFrom: t,
         effectiveTo: null,
         rates: textRates(7, 9),
-        actorUserId: admin.userId,
+        actor: admin,
       });
       expect(view).toMatchObject({ version: draft, status: "draft", publishedAt: null });
       await expectCode(ports.routes.price(route), "GATEWAY_PRICE_UNAVAILABLE");
       const older = version("older");
-      await priceBook().putDraft({ version: older, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 1), actorUserId: admin.userId });
-      await priceBook().publish({ version: older, actorUserId: admin.userId });
+      await priceBook().putDraft({ version: older, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 1), actor: admin });
+      await priceBook().publish({ version: older, actor: admin });
       expect((await ports.routes.price(route)).version).toBe(older);
 
       t += 5_000;
-      const published = await priceBook().publish({ version: draft, actorUserId: admin.userId });
+      const published = await priceBook().publish({ version: draft, actor: admin });
       expect(published.status).toBe("published");
       // A start already past moves to the publish instant: nothing is backdated.
       expect(Date.parse(published.effectiveFrom)).toBe(toSeconds(t) * 1000);
@@ -174,8 +174,8 @@ describe("price book and billing over D1 (node:sqlite)", () => {
     it("selects by effective date: a future version applies only from its start", async () => {
       const route = routeOf();
       const current = version("current");
-      await priceBook().putDraft({ version: current, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 2), actorUserId: admin.userId });
-      await priceBook().publish({ version: current, actorUserId: admin.userId });
+      await priceBook().putDraft({ version: current, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 2), actor: admin });
+      await priceBook().publish({ version: current, actor: admin });
       const future = version("future");
       const startsAt = t + 100_000;
       await priceBook().putDraft({
@@ -183,9 +183,9 @@ describe("price book and billing over D1 (node:sqlite)", () => {
         effectiveFrom: startsAt,
         effectiveTo: startsAt + 50_000,
         rates: textRates(3, 4),
-        actorUserId: admin.userId,
+        actor: admin,
       });
-      await priceBook().publish({ version: future, actorUserId: admin.userId });
+      await priceBook().publish({ version: future, actor: admin });
       expect((await ports.routes.price(route)).version).toBe(current);
       expect((await ports.routes.price({ ...route, at: startsAt - 1_000 })).version).toBe(current);
       expect((await ports.routes.price({ ...route, at: startsAt })).version).toBe(future);
@@ -201,46 +201,46 @@ describe("price book and billing over D1 (node:sqlite)", () => {
         effectiveFrom: t,
         effectiveTo: null,
         rates: textRates(1, 2).map((rate) => ({ ...rate, upstreamId: "openai" })),
-        actorUserId: admin.userId,
+        actor: admin,
       });
-      await priceBook().publish({ version: exact, actorUserId: admin.userId });
+      await priceBook().publish({ version: exact, actor: admin });
       expect((await ports.routes.price(route)).version).toBe(exact);
       t += 2_000;
       const wide = version("wide");
-      await priceBook().putDraft({ version: wide, effectiveFrom: t, effectiveTo: null, rates: textRates(5, 6), actorUserId: admin.userId });
-      await priceBook().publish({ version: wide, actorUserId: admin.userId });
+      await priceBook().putDraft({ version: wide, effectiveFrom: t, effectiveTo: null, rates: textRates(5, 6), actor: admin });
+      await priceBook().publish({ version: wide, actor: admin });
       expect((await ports.routes.price(route)).version).toBe(wide);
     });
 
     it("replaces a draft wholly and refuses to change a published version", async () => {
       const name = version("edit");
-      await priceBook().putDraft({ version: name, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 2), actorUserId: admin.userId });
+      await priceBook().putDraft({ version: name, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 2), actor: admin });
       const replaced = await priceBook().putDraft({
         version: name,
         effectiveFrom: t,
         effectiveTo: null,
         rates: textRates(3, 4).slice(0, 1),
-        actorUserId: admin.userId,
+        actor: admin,
       });
       expect(replaced.rates).toEqual([
         { modelCode: model, upstreamId: "", unit: "input_token", amountMicroCredits: 3, per: 1 },
       ]);
-      await priceBook().publish({ version: name, actorUserId: admin.userId });
+      await priceBook().publish({ version: name, actor: admin });
       const rowsBefore = rows(`SELECT * FROM gateway_price WHERE price_version = ? ORDER BY id`, name);
       await expectCode(
-        priceBook().putDraft({ version: name, effectiveFrom: t, effectiveTo: null, rates: textRates(8, 8), actorUserId: admin.userId }),
+        priceBook().putDraft({ version: name, effectiveFrom: t, effectiveTo: null, rates: textRates(8, 8), actor: admin }),
         "GATEWAY_PRICE_VERSION_PUBLISHED",
       );
-      await expectCode(priceBook().publish({ version: name, actorUserId: admin.userId }), "GATEWAY_PRICE_VERSION_PUBLISHED");
+      await expectCode(priceBook().publish({ version: name, actor: admin }), "GATEWAY_PRICE_VERSION_PUBLISHED");
       expect(rows(`SELECT * FROM gateway_price WHERE price_version = ? ORDER BY id`, name)).toEqual(rowsBefore);
     });
 
     it("answers every refusal with a coded error and writes nothing", async () => {
       const audits = () => row<{ n: number }>(`SELECT COUNT(*) AS n FROM gateway_admin_audit`)!.n;
       const before = audits();
-      await expectCode(priceBook().publish({ version: "missing", actorUserId: admin.userId }), "GATEWAY_PRICE_VERSION_NOT_FOUND");
+      await expectCode(priceBook().publish({ version: "missing", actor: admin }), "GATEWAY_PRICE_VERSION_NOT_FOUND");
       await expectCode(
-        priceBook().putDraft({ version: version("w"), effectiveFrom: t, effectiveTo: t, rates: textRates(1, 1), actorUserId: admin.userId }),
+        priceBook().putDraft({ version: version("w"), effectiveFrom: t, effectiveTo: t, rates: textRates(1, 1), actor: admin }),
         "GATEWAY_PRICE_WINDOW_INVALID",
       );
       const blocked = await expectCode(
@@ -249,15 +249,15 @@ describe("price book and billing over D1 (node:sqlite)", () => {
           effectiveFrom: t,
           effectiveTo: null,
           rates: [{ modelCode: "deepseek-v4-pro", upstreamId: "", unit: "input_token", microCredits: 1, per: 1 }],
-          actorUserId: admin.userId,
+          actor: admin,
         }),
         "GATEWAY_PRICE_MODEL_BLOCKED",
       );
       expect(blocked.details).toMatchObject({ modelCode: "deepseek-v4-pro" });
       const ended = version("ended");
-      await priceBook().putDraft({ version: ended, effectiveFrom: t, effectiveTo: t + 1_000, rates: textRates(1, 1), actorUserId: admin.userId });
+      await priceBook().putDraft({ version: ended, effectiveFrom: t, effectiveTo: t + 1_000, rates: textRates(1, 1), actor: admin });
       t += 5_000;
-      await expectCode(priceBook().publish({ version: ended, actorUserId: admin.userId }), "GATEWAY_PRICE_WINDOW_INVALID");
+      await expectCode(priceBook().publish({ version: ended, actor: admin }), "GATEWAY_PRICE_WINDOW_INVALID");
       expect((await priceBook().read(ended)).status).toBe("draft");
       // Only the successful draft of `ended` was audited.
       expect(audits()).toBe(before + 1);
@@ -265,13 +265,13 @@ describe("price book and billing over D1 (node:sqlite)", () => {
 
     it("lists versions newest effective first, filtered by model and status", async () => {
       const name = version("listed");
-      await priceBook().putDraft({ version: name, effectiveFrom: t + 500_000, effectiveTo: null, rates: textRates(1, 1), actorUserId: admin.userId });
+      await priceBook().putDraft({ version: name, effectiveFrom: t + 500_000, effectiveTo: null, rates: textRates(1, 1), actor: admin });
       const drafts = await priceBook().list({ status: "draft" });
       expect(drafts.every((entry) => entry.status === "draft")).toBe(true);
       expect(drafts.map((entry) => entry.version)).toContain(name);
       const live = version("live");
-      await priceBook().putDraft({ version: live, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 1), actorUserId: admin.userId });
-      await priceBook().publish({ version: live, actorUserId: admin.userId });
+      await priceBook().putDraft({ version: live, effectiveFrom: t, effectiveTo: null, rates: textRates(1, 1), actor: admin });
+      await priceBook().publish({ version: live, actor: admin });
       const published = await priceBook().list({ status: "published", modelCode: model });
       expect(published.map((entry) => entry.version)).toEqual([live]);
       const all = await priceBook().list();
@@ -290,9 +290,9 @@ describe("price book and billing over D1 (node:sqlite)", () => {
         effectiveFrom: t,
         effectiveTo: null,
         rates: textRates(1, 2, gateway.textModel),
-        actorUserId: admin.userId,
+        actor: admin,
       });
-      await priceBook().publish({ version: cheap, actorUserId: admin.userId });
+      await priceBook().publish({ version: cheap, actor: admin });
       const first = await settled(await chat(caller.token));
       expect(new Set(first.map((entry) => entry.price_version))).toEqual(new Set([cheap]));
       const firstRows = rows(`SELECT * FROM gateway_usage_ledger WHERE kind = 'settle' ORDER BY id`);
@@ -304,9 +304,9 @@ describe("price book and billing over D1 (node:sqlite)", () => {
         effectiveFrom: t,
         effectiveTo: null,
         rates: textRates(10, 20, gateway.textModel),
-        actorUserId: admin.userId,
+        actor: admin,
       });
-      await priceBook().publish({ version: dear, actorUserId: admin.userId });
+      await priceBook().publish({ version: dear, actor: admin });
       expect(rows(`SELECT * FROM gateway_usage_ledger WHERE kind = 'settle' ORDER BY id`).slice(0, firstRows.length)).toEqual(firstRows);
 
       const second = await settled(await chat(caller.token));
@@ -321,7 +321,7 @@ describe("price book and billing over D1 (node:sqlite)", () => {
       const ownerId = `owner-${hex(4)}`;
       sqlite.prepare(`INSERT INTO tenant (id, owner_user_id, name, kind) VALUES (?, ?, 'Team', ?)`).run(tenantId, ownerId, kind);
       sqlite.prepare(`INSERT INTO tenant_member (tenant_id, user_id, role) VALUES (?, ?, 'owner')`).run(tenantId, ownerId);
-      return { tenantId, ownerId, owner: { userId: ownerId, role: "owner" } as BillingActor };
+      return { tenantId, ownerId, owner: { kind: "user", id: ownerId, role: "owner" } as BillingActor };
     }
     const pack = (microCredits = credits(20)) =>
       billing().createTopupPack({ name: "Pack", priceMinor: 1000, priceCurrency: "USD", microCredits }, admin);

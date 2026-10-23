@@ -135,6 +135,8 @@ let unauthorizedListener: (() => void) | undefined;
 /**
  * Issue #160: an API 401 means the browser session is gone. The session store
  * registers here so runtimeFetch callers sign the app out without a refetch.
+ * The admin console's own identity (#394: /api/admin-auth, /api/v1/admin) is
+ * separate, so its 401s never sign the product session out.
  */
 export function setApiUnauthorizedListener(
   listener: (() => void) | undefined,
@@ -147,6 +149,8 @@ function noticeUnauthorized(path: string, response: Response): Response {
     response.status === 401 &&
     path.startsWith("/api/") &&
     !path.startsWith("/api/better-auth/") &&
+    !path.startsWith("/api/admin-auth/") &&
+    !path.startsWith("/api/v1/admin/") &&
     getRuntimeCapabilities().auth.mode === "better-auth"
   ) {
     unauthorizedListener?.();

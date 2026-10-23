@@ -17,7 +17,7 @@ export function AdminAudit({
   onFiltersChange: (filters: AuditFilters) => void;
 }) {
   const [draft, setDraft] = useState({
-    actorUserId: filters.actorUserId ?? "",
+    actorId: filters.actorId ?? "",
     action: filters.action ?? "",
     targetType: filters.targetType ?? "",
     targetId: filters.targetId ?? "",
@@ -35,7 +35,12 @@ export function AdminAudit({
             });
           }}
         >
-          <AdminField label="Actor user id" value={draft.actorUserId} onChange={(e) => setDraft({ ...draft, actorUserId: e.target.value })} />
+          <AdminField
+            label="Actor id"
+            hint="admin account (adm_…) or user id"
+            value={draft.actorId}
+            onChange={(e) => setDraft({ ...draft, actorId: e.target.value })}
+          />
           <AdminField label="Action" hint="e.g. upstream or budget.update" value={draft.action} onChange={(e) => setDraft({ ...draft, action: e.target.value })} />
           <AdminField label="Target type" value={draft.targetType} onChange={(e) => setDraft({ ...draft, targetType: e.target.value })} />
           <AdminField label="Target id" value={draft.targetId} onChange={(e) => setDraft({ ...draft, targetId: e.target.value })} />
@@ -54,7 +59,7 @@ export function AdminAudit({
           empty="No audit entries match."
           columns={[
             { header: "When", cell: (row) => formatTime(row.occurredAt) },
-            { header: "Actor", cell: (row) => `${row.actorUserId}${row.actorRole ? ` (${row.actorRole})` : ""}` },
+            { header: "Actor", cell: (row) => `${row.actorKind} ${row.actorId}${row.actorRole ? ` (${row.actorRole})` : ""}` },
             { header: "Action", cell: (row) => <code className="text-xs">{row.action}</code> },
             { header: "Target", cell: (row) => `${row.targetType}:${row.targetId}` },
             {

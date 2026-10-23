@@ -1,78 +1,89 @@
 /**
- * Who may use the admin console (#353), under /api/v1/admin/gateway:
+ * Who may use the admin console (#353, #394), under /api/v1/admin/gateway.
+ * Every route here, like every /api/v1/admin/* route, runs only for a signed-in
+ * admin account (services/admin-identity.ts); product sessions and tokens are
+ * refused before any of them.
  *
- *   GET  /me                                 the caller's platform roles and permissions (any signed-in user)
- *   GET  /platform-admins                    platform staff grants                platform_roles.read
- *   POST /platform-admins                    grant platform_admin                 platform_roles.write
- *   POST /platform-admins/:userId/revoke     revoke (never the last one)          platform_roles.write
+ *   GET  /me                               the signed-in admin account, its permissions
+ *   GET  /admin-accounts                   admin accounts                          admin_accounts.read
+ *   POST /admin-accounts                   create one (email, name, password)      admin_accounts.write
+ *   POST /admin-accounts/:id/disable       sign out and lock (never the last one)  admin_accounts.write
  *
- * The first platform admin is bootstrapped by
- * apps/api-cf/scripts/gateway-platform-admin.ts, never by an env variable.
+ * The first admin account is bootstrapped by
+ * apps/api-cf/scripts/gateway-admin-account.ts, never by an env variable.
  */
 import { Hono } from "hono";
 
 import type { Env } from "../../../config";
-import { GatewayPlatformAdminGrantRequestSchema, GatewayPromptAccessRequestSchema } from "../../../domain/requests";
+import {
+  GatewayAdminAccountCreateRequestSchema,
+  GatewayAdminAccountIdSchema,
+  GatewayPromptAccessRequestSchema,
+} from "../../../domain/requests";
+import { staffPromptAccessEnabled } from "../../../gateway";
+import { createD1AdminAccounts } from "../../../gateway/d1-admin-accounts";
 import { monotonicClock } from "../../../gateway/d1-common";
-import { createD1PlatformRoles } from "../../../gateway/d1-platform-roles";
+import { requireAdminIdentity } from "../../../services/admin-identity";
 import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
 import {
-  GATEWAY_PLATFORM_ROLE_PERMISSIONS,
   adminJson as ok,
-  authorizeGatewayAccess,
-  loadGatewayAccess,
+  adminRolePermissions,
+  authorizeAdminAccess,
   platformRoute,
-  requireGatewayUserId,
 } from "../../../services/gateway-authz";
-import { staffPromptAccessEnabled } from "../../../gateway";
 import { gatewayErrorResponse } from "../../../services/gateway-tokens";
 
-const UserIdSchema = GatewayPlatformAdminGrantRequestSchema.shape.userId;
-const RevokeRequestSchema = GatewayPromptAccessRequestSchema.partial();
+const DisableRequestSchema = GatewayPromptAccessRequestSchema.partial();
 
 export const adminAccessRoutes = new Hono<{ Bindings: Env }>();
 
 adminAccessRoutes.get("/me", async (c) => {
   try {
-    const access = await loadGatewayAccess(c.env.DB, requireGatewayUserId(c));
-    const platformPermissions = [
-      ...new Set(access.platformRoles.flatMap((role) => GATEWAY_PLATFORM_ROLE_PERMISSIONS[role])),
-    ];
+    const admin = requireAdminIdentity(c);
     return ok(c, {
-      userId: access.userId,
-      platformRoles: access.platformRoles,
-      platformPermissions,
-      promptAccess: staffPromptAccessEnabled(c.env) && authorizeGatewayAccess(access, "prompts.view") !== null,
+      admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
+      permissions: [...adminRolePermissions(admin.role)],
+      promptAccess: staffPromptAccessEnabled(c.env) && authorizeAdminAccess(admin, "prompts.view") !== null,
     });
   } catch (error) {
     return gatewayErrorResponse(error);
   }
 });
 
+const accounts = (env: Env) => createD1AdminAccounts(env.DB, { clock: monotonicClock() });
+
 adminAccessRoutes.get(
-  "/platform-admins",
-  platformRoute("platform_roles.read", async (c) =>
-    ok(c, { admins: await createD1PlatformRoles(c.env.DB, { clock: monotonicClock() }).list() }),
-  ),
+  "/admin-accounts",
+  platformRoute("admin_accounts.read", async (c) => ok(c, { accounts: await accounts(c.env).list() })),
 );
 
 adminAccessRoutes.post(
-  "/platform-admins",
-  platformRoute("platform_roles.write", async (c, actor) => {
-    const body = await readGatewayJson(c, GatewayPlatformAdminGrantRequestSchema);
-    const roles = createD1PlatformRoles(c.env.DB, { clock: monotonicClock() });
-    const result = await roles.grant({ userId: body.userId, ...(body.reason ? { reason: body.reason } : {}), actor });
-    return ok(c, { ...result, admins: await roles.list() }, result.granted ? 201 : 200);
+  "/admin-accounts",
+  platformRoute("admin_accounts.write", async (c, actor) => {
+    const body = await readGatewayJson(c, GatewayAdminAccountCreateRequestSchema);
+    // Better Auth's own hasher, the one admin sign-in verifies with.
+    const { createAdminAuth } = await import("../../../admin-auth");
+    const passwordHash = await (await createAdminAuth(c.env).$context).password.hash(body.password);
+    const store = accounts(c.env);
+    const account = await store.create({
+      email: body.email,
+      name: body.name,
+      role: "platform_admin",
+      passwordHash,
+      ...(body.reason ? { reason: body.reason } : {}),
+      actor,
+    });
+    return ok(c, { account, accounts: await store.list() }, 201);
   }),
 );
 
 adminAccessRoutes.post(
-  "/platform-admins/:userId/revoke",
-  platformRoute("platform_roles.write", async (c, actor) => {
-    const userId = gatewayParam(UserIdSchema, c.req.param("userId"), "userId");
-    const body = await readGatewayJson(c, RevokeRequestSchema);
-    const roles = createD1PlatformRoles(c.env.DB, { clock: monotonicClock() });
-    const result = await roles.revoke({ userId, ...(body.reason ? { reason: body.reason } : {}), actor });
-    return ok(c, { ...result, admins: await roles.list() });
+  "/admin-accounts/:id/disable",
+  platformRoute("admin_accounts.write", async (c, actor) => {
+    const id = gatewayParam(GatewayAdminAccountIdSchema, c.req.param("id"), "id");
+    const body = await readGatewayJson(c, DisableRequestSchema);
+    const store = accounts(c.env);
+    const result = await store.disable({ id, ...(body.reason ? { reason: body.reason } : {}), actor });
+    return ok(c, { ...result, accounts: await store.list() });
   }),
 );

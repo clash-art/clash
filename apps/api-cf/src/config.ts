@@ -48,13 +48,19 @@ export interface Env {
    * Hosted-only staff prompt access (#353; product decision 2026-10-20):
    * `"enabled"` turns on both 30-day request/response body retention in the
    * data plane (R2 objects + `gateway_request_retention`) and the audited,
-   * platform_admin-only staff view. Unset (the OSS wrangler.toml default, and
+   * admin-account-only staff view. Unset (the OSS wrangler.toml default, and
    * every self-host) stores no bodies and refuses the view. Hosted configs
    * (`[env.staging.vars]`, the clash-hosted overlay) set it. Purge of expired
-   * bodies runs regardless. Admin roles themselves live in D1
-   * (`tenant_member`, `gateway_platform_role`), never in a variable.
+   * bodies runs regardless. Roles themselves live in D1 (`tenant_member`,
+   * `admin_accounts`), never in a variable.
    */
   GATEWAY_STAFF_PROMPT_ACCESS?: string;
+  /**
+   * Optional secret signing the admin session cookies (#394,
+   * src/admin-auth.ts). Unset: the product auth secret signs them; the
+   * sessions stay separate either way (own tables, cookie names, base path).
+   */
+  ADMIN_AUTH_SECRET?: string;
   /**
    * Optional secret: JSON array of operator-registered OAuth Providers,
    * `[{ id, label?, flow }]` where `flow` is a PluginAuthFlow with tokenUrl and

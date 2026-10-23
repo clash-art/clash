@@ -261,7 +261,7 @@ export function createD1TenantAdmin(db: D1Database, deps: { clock: GatewayClock 
                        (SELECT id FROM gateway_budget WHERE tenant_id = ?2 AND scope = 'tenant' AND scope_id = ?2),
                        ?5, 'none', ?6, ?7, ?8, ?8)`,
             )
-            .bind(id, input.tenantId, input.scope, input.scopeId, input.actor.userId, limit, status, nowS);
+            .bind(id, input.tenantId, input.scope, input.scopeId, input.actor.id, limit, status, nowS);
       const statements = [
         write,
         adminAuditStatement(db, {
