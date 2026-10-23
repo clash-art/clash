@@ -19,6 +19,49 @@ and one ledger row, whatever the caller retries.
 
 Any other path under `/gateway/v1` answers `GATEWAY_CAPABILITY_UNAVAILABLE` (501).
 
+## Anthropic Messages
+
+`POST /gateway/anthropic/v1/messages` (#349) serves the Anthropic Messages
+API to Anthropic clients such as Claude Code through `claude-agent-acp`
+(`ANTHROPIC_BASE_URL=<origin>/gateway/anthropic`). It runs the same flow as
+chat completions: identity, admission, hold, limits, failover, exactly-once
+settlement and retention. Only the protocol differs (`ANTHROPIC_MESSAGES` in
+`app.ts`, pieces in `packages/gateway-core/src/anthropic.ts`):
+
+- **Credential.** The same `sk_gw_` token, as `Authorization: Bearer` or as
+  `x-api-key` (the Anthropic SDK default). A Bearer header with no token
+  (`claude-agent-acp` gateway auth sets a blank `ANTHROPIC_AUTH_TOKEN`) falls
+  back to `x-api-key`. Only the token reaches the identity port.
+- **Model.** Agents send Anthropic model ids, so `resolveAnthropicModelCode`
+  maps the id onto a catalog public code before the allowlist: an exact card
+  id, then a card alias, then the card whose `anthropic-compatible`
+  implementation has that upstream model. Each rule is tried for the id and
+  for its undated form (a `-YYYYMMDD` suffix removed). An id several cards
+  match is `GATEWAY_MODEL_NOT_FOUND`, so a call is never billed to a model the
+  caller did not pick. The ledger, limits and answers all see the public code.
+- **Routes.** Only `anthropic-compatible` text routes without an executor
+  plugin, and never a DeepSeek route; an OpenAI-compatible route never
+  receives the Anthropic wire format.
+- **Upstream headers.** The gateway's own `x-api-key`, the caller's
+  `anthropic-version` (default `2023-06-01`) and `anthropic-beta`, and nothing
+  else. The body (`system`, `tools`, `tool_use`/`tool_result` blocks,
+  `cache_control`, `thinking`) is forwarded as sent, with `model` replaced by
+  the route's upstream model.
+- **Answers.** A plain answer has `model` set to the public code. A stream is
+  relayed event by event (`message_start`, `content_block_*`, `ping`,
+  `message_delta`, `message_stop`), with `model` and `message.model` set to the
+  public code. Usage comes from `message_start` (input, cache read, cache
+  write) and `message_delta` (output); a stream that ends without
+  `message_delta` settles `partial` and ends with an Anthropic `error` event.
+  Errors use the Anthropic error body (`{"type":"error","error":{…}}`) with
+  the same codes and `x-clash-error-code`.
+
+`POST /gateway/anthropic/v1/messages/count_tokens` is authenticated,
+model-mapped, allowlisted and rate-limited the same way, then proxied to the
+planned routes in failover order. It generates nothing, so it reserves no hold
+and writes no ledger row. Any other path under `/gateway/anthropic/v1` answers
+`GATEWAY_CAPABILITY_UNAVAILABLE` (501) in the Anthropic shape.
+
 ## Request flow
 
 1. **Identity** comes only from the `sk_gw_` token row, which must carry the
@@ -38,8 +81,9 @@ Any other path under `/gateway/v1` answers `GATEWAY_CAPABILITY_UNAVAILABLE` (501
      header ([gateway-teams.md](gateway-teams.md)).
 4. **Upstream** calls go through the `upstream.fetch` port and follow the plan's
    failover order. Only `openai-compatible` text routes without an executor
-   plugin can serve this protocol. The upstream receives the gateway's
-   `Authorization` header and nothing from the caller. Upstream error bodies
+   plugin can serve chat completions (see [Anthropic Messages](#anthropic-messages)
+   for that protocol). The upstream receives the gateway's `Authorization`
+   header and nothing from the caller. Upstream error bodies
    are discarded because they can echo key fragments.
 5. **Settlement** runs exactly once: a completion is charged its reported usage,
    or an estimate when no usage is reported. A failure is charged zero.
@@ -95,8 +139,9 @@ admission error) is a plain coded JSON answer, never a cut stream.
    tool-call arguments; never the SSE framing). The estimate is capped at the
    output ceiling and marked `estimated`, so a cut stream is never charged
    zero for content it delivered, and never the full hold. Anthropic usage
-   (`message_start` input, `message_delta` output) is parsed by the same tap,
-   ready for the Messages route.
+   (`message_start` input, `message_delta` output) is parsed by the same tap
+   for the [Messages route](#anthropic-messages).
+
 4. **Disconnect.** When the caller goes away, both tee branches are cancelled,
    which releases the upstream body. The upstream fetch is then aborted
    through its `AbortController`, and the request settles `client_aborted` in
@@ -223,7 +268,8 @@ a Flash card.
 
 ## Error codes
 
-Errors use the OpenAI error shape plus `x-clash-error-code`:
+Errors use the OpenAI error shape (the Anthropic error shape under
+`/gateway/anthropic/v1`) plus `x-clash-error-code`:
 
 | Condition                                          | Code                                    |
 | -------------------------------------------------- | --------------------------------------- |
@@ -261,7 +307,6 @@ happens in `apps/api-cf/src/gateway/d1-common.ts`.
 - the reconciliation job for `settle_failed` holds. Until it lands, they are
   found by hold `status = 'settle_failed'` (or by the log when the mark itself
   failed) and settled manually;
-- the Anthropic Messages protocol (its stream usage parsing is in place);
 - media/AIGC routes (their settlement hook is in place).
 
 ## Tests
@@ -302,3 +347,18 @@ leaves `settle_failed` and live holds alone, and turns a late settlement into
 a duplicate. The composed cases cover the media hook. The duration limit, failover
 before the first byte, and a stream's hold outliving the sweeper are memory
 cases in `app.test.ts`.
+
+The `anthropic:` contract cases run on the same three adapters: Bearer and
+`x-api-key` callers, model mapping, forwarded `anthropic-*` headers and
+`cache_control`/`tool_use`/`tool_result` bodies, the stream with the public
+model and settled `message_delta` usage, a cut stream, the 402 and 429 bodies,
+and `count_tokens` without a charge.
+
+`pnpm --filter @clash/gateway-core test:e2e` (excluded from `pnpm test`) runs
+the real `claude-agent-acp` adapter and its Claude Code binary against
+`createGatewayApp` on a loopback port with a mock Anthropic upstream, once per
+token handoff (ACP gateway auth with `x-api-key`, and
+`ANTHROPIC_AUTH_TOKEN` as Bearer). One prompt drives a full tool turn
+(`tool_use` of Read, then `tool_result`), and the run checks headers, bodies,
+public model codes and one settled ledger row per call. The agent's
+environment is built from scratch and no network endpoint is called.

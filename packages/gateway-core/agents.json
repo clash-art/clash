@@ -11,7 +11,8 @@
   ],
   "subdirectories": {
     "src/contract": "Shared Vitest contract suite over GatewayPorts plus the in-memory stub run.",
-    "src/testing": "In-memory GatewayPorts stub and a catalog fixture built through shared-types."
+    "src/testing": "In-memory GatewayPorts stub and a catalog fixture built through shared-types.",
+    "src/e2e": "Agent E2E (`pnpm test:e2e`, excluded from `pnpm test`): real claude-agent-acp + Claude Code against createGatewayApp on loopback with a mock Anthropic upstream; environment built from scratch, no network."
   },
   "key_files": {
     "src/ports.ts": "GatewayPorts: clock, ids, identity, routes, credentials, budgets, limits, ledger, blobs, retention, scheduler, audit, logger, upstream; unavailablePort.",
@@ -27,7 +28,8 @@
     "src/stream.ts": "#348 relayGatewayStream: tee() the upstream body, one branch to the caller unbuffered, one through the usage tap; ends once (completed/truncated/upstream_error/timeout/client_aborted), aborting the upstream on disconnect; encodeGatewayStreamState for coded in-stream failures.",
     "src/holds.ts": "#348 sweepExpiredGatewayHolds: idempotent stale-hold sweeper over budgets.expiredHolds/expire; never settle_failed holds.",
     "src/admission.ts": "admitGatewayRequest / settleGatewayRequest composed over the ports; settleMediaGeneration (accepted media job: success charged its units, failure zero).",
-    "src/app.ts": "createGatewayApp(ports, { basePath, waitUntil }): framework-free fetch handler. OpenAI chat completions, plain and streamed (hold before the first byte, failover only before it, observed-usage settlement, coded in-stream settlement/retention failures), exactly-once settlement, no upstream error bodies forwarded.",
+    "src/anthropic.ts": "#349 Anthropic Messages protocol pieces: Bearer-or-x-api-key credential request, anthropic-compatible (never DeepSeek) route filter, upstream headers (gateway x-api-key + caller anthropic-version/anthropic-beta), agent model id -> catalog public code (resolveAnthropicModelCode).",
+    "src/app.ts": "createGatewayApp(ports, { basePath, waitUntil }): framework-free fetch handler. OpenAI chat completions and Anthropic Messages (one shared flow; WireProtocol holds the differences) plus unmetered count_tokens, plain and streamed (hold before the first byte, failover only before it, observed-usage settlement, coded in-stream settlement/retention failures), exactly-once settlement, no upstream error bodies forwarded.",
     "src/catalog-policy.ts": "applyGatewayCatalogPolicy: DeepSeek Flash only (applied in admission for every adapter); isBlockedDeepSeekModel applies the same rule to price-book rows.",
     "src/billing.ts": "Credit billing decisions (#352): anchored calendar billing periods, wallet balance, expiringGrant (period grant consumed first, never below open holds), assertPriceDraftPolicy (units, integer amounts, unique rates, DeepSeek Flash only).",
     "src/contract/index.ts": "describeGatewayContract(name, setup) with capabilities and knownGaps; its data-plane cases drive createGatewayApp with a suite-owned fetch-stub upstream."

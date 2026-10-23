@@ -78,6 +78,8 @@ describeGatewayContract("in-memory stub", async () => {
       otherTenantRequest: () => bearer("tenant-b"),
       anonymousRequest: () => bearer(),
       textModel: fixture.textModel,
+      // The fixture card is bound to an OpenAI-compatible and an anthropic-compatible account.
+      messagesModel: fixture.textModel,
       ...(fixture.mediaModel
         ? { mediaModel: { ...fixture.mediaModel, units: { image: 2 } } }
         : {}),

@@ -173,6 +173,27 @@ export function normalizeAnthropicMessagesRequest(
   };
 }
 
+const anthropicCountTokensSchema = z.looseObject({
+  model: z.string().trim().min(1),
+  messages: z.array(messageSchema).min(1),
+});
+
+/** An Anthropic `messages/count_tokens` body: nothing is generated, so nothing is held or metered. */
+export interface CountTokensRequest {
+  model: string;
+  /** Original JSON body, forwarded as-is except for `model`. */
+  body: Record<string, unknown>;
+}
+
+export function normalizeAnthropicCountTokensRequest(
+  body: unknown,
+  options: NormalizeOptions = {},
+): CountTokensRequest {
+  measure(body, options);
+  const parsed = parse(anthropicCountTokensSchema, body);
+  return { model: parsed.model, body: parsed };
+}
+
 /**
  * Media/AIGC generation (image, video, audio, ...). The caller states the
  * billable quantities it is asking for; the hold prices exactly those.
