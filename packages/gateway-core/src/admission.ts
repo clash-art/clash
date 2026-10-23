@@ -106,6 +106,7 @@ async function admit(
       ...(identity.keyId ? { keyId: identity.keyId } : {}),
       modelCode: plan.modelCode,
       estimatedTokens: request.estimatedInputTokens + (request.maxOutputTokens ?? 0),
+      ...(request.protocol === "media" ? { media: true } : {}),
     }),
   );
   const admittedAt = ports.clock.now();
@@ -118,6 +119,19 @@ async function admit(
       expiresAt: admittedAt + options.holdTtlMs,
       ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     });
+    // Admitted past a soft limit, or across an alert threshold: recorded by
+    // the budgets port, logged here, and reported on the answer.
+    for (const flag of reservation.flags ?? [])
+      ports.logger.warn(flag.kind === "soft_exceeded" ? "gateway.budget_soft_exceeded" : "gateway.budget_alert", {
+        requestId,
+        tenantId: identity.tenantId,
+        budgetId: flag.budgetId,
+        scope: flag.scope,
+        enforcement: flag.enforcement,
+        limitMicroCredits: flag.limitMicroCredits,
+        usedMicroCredits: flag.usedMicroCredits,
+        thresholdPct: flag.thresholdPct,
+      });
     return {
       requestId,
       identity,

@@ -10,7 +10,7 @@ import type {
   ProviderAccountAvailability,
 } from "@clash/shared-types/model-routing";
 
-import type { BudgetHold, BudgetState, GatewayOutcome } from "./budget.js";
+import type { BudgetFlag, BudgetHold, BudgetState, GatewayOutcome } from "./budget.js";
 import { GatewayError } from "./errors.js";
 import type { LimitDecision } from "./limits.js";
 import type { GatewayPrice, MicroCredits } from "./pricing.js";
@@ -104,6 +104,12 @@ export interface Reservation {
   requestId: string;
   holds: BudgetHold[];
   expiresAt: number;
+  /**
+   * Budget states this reservation recorded instead of refusing (a soft
+   * budget past its limit, a newly crossed alert threshold). Empty or absent:
+   * none.
+   */
+  flags?: BudgetFlag[];
 }
 
 export interface SettleResult {
@@ -122,8 +128,13 @@ export interface SettleFailedInput {
 
 export interface GatewayBudgetPort {
   /**
-   * Atomically hold on every budget or none. Rejects with GATEWAY_BUDGET_EXCEEDED,
-   * GATEWAY_IDEMPOTENCY_IN_PROGRESS or GATEWAY_IDEMPOTENCY_ALREADY_SETTLED.
+   * Atomically hold on every budget or none. Rejects with GATEWAY_BUDGET_EXCEEDED
+   * (a `hard` budget the hold does not fit), GATEWAY_IDEMPOTENCY_IN_PROGRESS or
+   * GATEWAY_IDEMPOTENCY_ALREADY_SETTLED. `soft` and `alert` budgets hold past
+   * their limit; in the same transaction the adapter records each flag
+   * `planReserve` raises (`soft_exceeded` once per request and budget,
+   * `alert_threshold` once per budget and dedupe key) and returns the flags
+   * it recorded.
    */
   reserve(input: ReserveInput): Promise<Reservation>;
   /**
@@ -175,10 +186,15 @@ export interface LimitInput {
   keyId?: string;
   modelCode: string;
   estimatedTokens: number;
+  /** A media/AIGC generation: also counted against `mediaJobs`. */
+  media?: boolean;
 }
 
 export interface GatewayLimitPort {
-  /** Count this request against rate windows and in-flight concurrency. */
+  /**
+   * Count this request against rate windows and in-flight concurrency. Every
+   * counter is tenant-scoped: one tenant's traffic never throttles another's.
+   */
   admit(input: LimitInput): Promise<LimitDecision>;
   /** End the in-flight lease from an allowed decision; idempotent. */
   release(input: { leaseId: string }): Promise<void>;

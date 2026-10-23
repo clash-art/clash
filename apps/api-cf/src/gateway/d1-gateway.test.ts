@@ -132,11 +132,9 @@ describe("/gateway/v1 through the Worker app", () => {
       ]
         .map((payload) => `data: ${typeof payload === "string" ? payload : JSON.stringify(payload)}\n\n`)
         .join("");
-    let sent = "";
-    stubUpstream((body) => {
-      sent = events(String(body.model));
-      return new Response(sent, { headers: { "content-type": "text/event-stream" } });
-    });
+    // The upstream names its own model; the caller must only ever see the public code.
+    const vendorModel = "vendor-internal-model-name";
+    stubUpstream(() => new Response(events(vendorModel), { headers: { "content-type": "text/event-stream" } }));
     const res = await app.request(
       "/gateway/v1/chat/completions",
       {
@@ -149,7 +147,8 @@ describe("/gateway/v1 through the Worker app", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
     const delivered = await res.text();
-    expect(delivered).toBe(sent);
+    expect(delivered).toBe(events(gateway.textModel));
+    expect(delivered).not.toContain(vendorModel);
     expect(((await upstream[0]!.json()) as { stream_options: unknown }).stream_options).toEqual({ include_usage: true });
     const requestId = res.headers.get("x-clash-request-id")!;
     const settled = sqlite

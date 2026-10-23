@@ -37,6 +37,7 @@ import {
   walletAvailable,
   type GatewayBillingPeriod,
   type GatewayClock,
+  type GatewayRateLimit,
 } from "@clash/gateway-core";
 
 import { sha256Hex } from "../services/api-token";
@@ -50,11 +51,8 @@ import { parseJson, toMs, toSeconds } from "./d1-common";
  */
 export type BillingActor = GatewayAdminActor;
 
-export interface RateLimitConfig {
-  requestsPerMinute?: number;
-  tokensPerMinute?: number;
-  concurrency?: number;
-}
+/** A stored rate limit (gateway-core GatewayRateLimitSchema). */
+export type RateLimitConfig = Partial<GatewayRateLimit>;
 
 export interface PackageView {
   id: string;

@@ -30,9 +30,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
         ...budgets,
         keys,
         members,
+        // Teams are read-only here: their owners allocate budgets and set limits in team settings (#354).
         can: {
-          budgetsWrite: adminCan(me, "team.budgets.allocate"),
-          limitsWrite: adminCan(me, "limits.write"),
           walletAdjust: adminCan(me, "wallet.adjust"),
           subscriptionLimits: adminCan(me, "subscription.limits.write"),
         },

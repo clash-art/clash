@@ -3,8 +3,10 @@
  * conditional statement per budget, idempotent by request id); this module
  * owns the decisions so every store charges identically.
  *
- * Invariants for every limited budget: `spent + reserved <= limit` at admission;
- * at quiescence `reserved == sum(open holds)` and `spent == sum(settled costs)`.
+ * Invariants for every limited `hard` budget: `spent + reserved <= limit` at
+ * admission (a `soft` or `alert` budget may pass its limit, flagged); for
+ * every budget at quiescence `reserved == sum(open holds)` and
+ * `spent == sum(settled costs)`.
  * A settlement may push `spent` past the limit (an upstream that ignored
  * `max_tokens`): refusing it would lose money and leave the hold open.
  */
@@ -24,6 +26,18 @@ import { emptyUsage, type Usage } from "./usage.js";
 
 export type BudgetScope = "tenant" | "user" | "key";
 
+/**
+ * What a budget's limit does when a hold does not fit under it (#354):
+ * - `hard`: the request is refused (GATEWAY_BUDGET_EXCEEDED, 402);
+ * - `soft`: the request is admitted and flagged `soft_exceeded`;
+ * - `alert`: the request is admitted; crossing the alert threshold (100% of
+ *   the limit unless `alertThresholdPct` says otherwise) raises one
+ *   `alert_threshold` notification per limit and threshold.
+ * A tenant wallet is always hard: purchased credits are the hard ceiling.
+ */
+export const GATEWAY_BUDGET_ENFORCEMENTS = ["hard", "soft", "alert"] as const;
+export type BudgetEnforcement = (typeof GATEWAY_BUDGET_ENFORCEMENTS)[number];
+
 export interface BudgetState {
   id: string;
   scope: BudgetScope;
@@ -36,11 +50,68 @@ export interface BudgetState {
   version: number;
   /** Epoch ms when the period resets, if periodic. */
   resetAt?: number;
+  /** Absent: `hard`. */
+  enforcement?: BudgetEnforcement;
+  /** Percent of the limit (1-100) at which an alert is raised, whatever the enforcement. */
+  alertThresholdPct?: number;
 }
 
 export interface BudgetHold {
   budgetId: string;
   microCredits: MicroCredits;
+}
+
+export type BudgetFlagKind = "soft_exceeded" | "alert_threshold";
+
+/**
+ * A budget state a reservation made visible instead of refusing: never
+ * silent. Adapters record each one (`soft_exceeded` once per request and
+ * budget, `alert_threshold` once per budget and `dedupeKey`) and the data
+ * plane reports the recorded ones on the answer (GATEWAY_BUDGET_HEADER).
+ */
+export interface BudgetFlag {
+  budgetId: string;
+  scope: BudgetScope;
+  kind: BudgetFlagKind;
+  enforcement: BudgetEnforcement;
+  limitMicroCredits: MicroCredits;
+  /** Spent plus reserved, this request's hold included. */
+  usedMicroCredits: MicroCredits;
+  /** For `alert_threshold`: the threshold crossed, percent of the limit. */
+  thresholdPct?: number;
+  /** `soft_exceeded`: the request id. `alert_threshold`: the limit and threshold, so one alert per configuration. */
+  dedupeKey: string;
+}
+
+export const budgetEnforcement = (budget: Pick<BudgetState, "enforcement">): BudgetEnforcement => budget.enforcement ?? "hard";
+
+/** The alert threshold in effect, percent of the limit; undefined when the budget raises no alerts. */
+export function alertThresholdPct(budget: Pick<BudgetState, "enforcement" | "alertThresholdPct">): number | undefined {
+  return budget.alertThresholdPct ?? (budgetEnforcement(budget) === "alert" ? 100 : undefined);
+}
+
+/** One alert per limit and threshold: a changed limit or threshold may alert again. */
+export const budgetAlertKey = (limitMicroCredits: MicroCredits, thresholdPct: number) =>
+  `limit=${limitMicroCredits};pct=${thresholdPct}`;
+
+/**
+ * The flags a reservation of `hold` raises on `budget` (its state before the
+ * hold): a soft budget pushed past its limit, and any budget at or past its
+ * alert threshold. Alerts are candidates: an adapter reports one only the
+ * first time it records its `dedupeKey`.
+ */
+export function budgetFlags(budget: BudgetState, hold: MicroCredits, requestId: string): BudgetFlag[] {
+  const limit = budget.limitMicroCredits;
+  if (limit === null) return [];
+  const used = budget.spentMicroCredits + budget.reservedMicroCredits + hold;
+  const enforcement = budgetEnforcement(budget);
+  const base = { budgetId: budget.id, scope: budget.scope, enforcement, limitMicroCredits: limit, usedMicroCredits: used };
+  const flags: BudgetFlag[] = [];
+  if (enforcement === "soft" && used > limit) flags.push({ ...base, kind: "soft_exceeded", dedupeKey: requestId });
+  const pct = alertThresholdPct(budget);
+  if (pct !== undefined && used * 100 >= limit * pct)
+    flags.push({ ...base, kind: "alert_threshold", thresholdPct: pct, dedupeKey: budgetAlertKey(limit, pct) });
+  return flags;
 }
 
 /**
@@ -84,17 +155,19 @@ export function remainingMicroCredits(budget: BudgetState): MicroCredits | null 
 /**
  * Reserve `hold` on every applicable budget, all or nothing. Each budget is a
  * cap, so each one is held for the full amount. Budgets are processed in id
- * order, the same order a SQL adapter must lock them in.
+ * order, the same order a SQL adapter must lock them in. Only a `hard` budget
+ * refuses; `soft` and `alert` budgets hold past their limit and raise flags.
  */
 export function planReserve(
   budgets: readonly BudgetState[],
   hold: MicroCredits,
-): { budgets: BudgetState[]; holds: BudgetHold[] } {
+  requestId = "",
+): { budgets: BudgetState[]; holds: BudgetHold[]; flags: BudgetFlag[] } {
   assertMicroCredits(hold, "hold");
   const ordered = [...budgets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   for (const budget of ordered) {
     const remaining = remainingMicroCredits(budget);
-    if (remaining !== null && hold > remaining)
+    if (budgetEnforcement(budget) === "hard" && remaining !== null && hold > remaining)
       throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", {
         details: {
           budgetId: budget.id,
@@ -112,6 +185,7 @@ export function planReserve(
       version: budget.version + 1,
     })),
     holds: ordered.map((budget) => ({ budgetId: budget.id, microCredits: hold })),
+    flags: ordered.flatMap((budget) => budgetFlags(budget, hold, requestId)),
   };
 }
 

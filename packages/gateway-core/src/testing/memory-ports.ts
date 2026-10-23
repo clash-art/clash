@@ -62,6 +62,8 @@ export interface MemoryGateway {
   advance(ms: number): void;
   /** Reservation state of a request, for tests; undefined when never reserved. */
   reservationState(requestId: string): OpenReservation["state"] | undefined;
+  /** Add a credential and its budgets after creation (fresh fixtures per test). */
+  addIdentity(token: string, identity: MemoryIdentity, budgets: Array<BudgetState & { tenantId: string }>): void;
   logs: Array<{ level: "info" | "warn" | "error"; event: string; fields?: GatewayLogFields }>;
 }
 
@@ -73,6 +75,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
   const idempotency = new Map<string, string>();
   const ledger = new Map<string, UsageEvent>();
   const windows = new Map<string, number>();
+  const budgetEvents = new Set<string>();
   const blobs = new Map<string, GatewayBlob>();
   const retention = new Map<string, GatewayRetentionEntry>();
   const audit: GatewayAuditEvent[] = [];
@@ -157,9 +160,16 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
             });
           return budget;
         });
-        const planned = planReserve(rows, input.holdMicroCredits);
+        const planned = planReserve(rows, input.holdMicroCredits, input.requestId);
         for (const budget of planned.budgets)
           budgets.set(budget.id, { ...budget, tenantId: input.tenantId });
+        // Recorded flags only: an alert once per budget and dedupe key.
+        const flags = planned.flags.filter((flag) => {
+          const key = `${flag.budgetId}\u0000${flag.kind}\u0000${flag.dedupeKey}`;
+          if (budgetEvents.has(key)) return false;
+          budgetEvents.add(key);
+          return true;
+        });
         reservations.set(input.requestId, {
           tenantId: input.tenantId,
           holds: planned.holds,
@@ -168,7 +178,12 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
           state: "open",
         });
         if (idempotencyId) idempotency.set(idempotencyId, input.requestId);
-        return { requestId: input.requestId, holds: planned.holds, expiresAt: input.expiresAt };
+        return {
+          requestId: input.requestId,
+          holds: planned.holds,
+          expiresAt: input.expiresAt,
+          ...(flags.length ? { flags } : {}),
+        };
       },
       async settle(event) {
         const existing = ledger.get(event.requestId);
@@ -344,6 +359,10 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
       now += ms;
     },
     reservationState: (requestId) => reservations.get(requestId)?.state,
+    addIdentity(token, identity, added) {
+      options.identities[token] = identity;
+      for (const budget of added) budgets.set(budget.id, { ...budget });
+    },
     logs,
   };
 }

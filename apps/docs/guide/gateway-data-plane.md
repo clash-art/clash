@@ -30,8 +30,12 @@ Any other path under `/gateway/v1` answers `GATEWAY_CAPABILITY_UNAVAILABLE` (501
    - plan routes over the published catalog and official accounts;
    - price the first route;
    - compute the hold;
-   - check rate and concurrency limits;
-   - reserve the hold on every budget.
+   - check rate and concurrency limits (tenant-scoped counters; media jobs for
+     a media generation);
+   - reserve the hold on every budget: the wallet, the member's and the key's.
+     A `hard` budget the hold does not fit refuses (402); a `soft` or `alert`
+     budget admits and records a flag, reported as the `x-gateway-budget`
+     header ([gateway-teams.md](gateway-teams.md)).
 4. **Upstream** calls go through the `upstream.fetch` port and follow the plan's
    failover order. Only `openai-compatible` text routes without an executor
    plugin can serve this protocol. The upstream receives the gateway's
@@ -60,11 +64,21 @@ admission error) is a plain coded JSON answer, never a cut stream.
    an event stream still fails over or answers coded JSON.
 2. **Relay** (`relayGatewayStream`, `packages/gateway-core/src/stream.ts`).
    The upstream body is `tee()`d and never read whole. One branch goes to the
-   caller chunk by chunk, byte for byte. The other branch runs through the SSE
-   usage tap (`createUsageCaptureStream`) and is then discarded. If the caller
-   did not ask for `include_usage`, the usage chunk the gateway asked for is
-   removed (`createSseEventFilter`), so that caller gets the stream it asked
-   for. Upstream chunks keep the upstream `model`; they are not rewritten.
+   caller event by event, byte for byte, except two things
+   (`createSseEventTransform`):
+   - each event's `model` is set to the public model code the caller asked
+     for, as in a plain answer, so an upstream model name never reaches the
+     caller (`sseModelRewrite`). Only the bytes of the model's JSON string
+     value change; spacing, key order, other fields, comments and line endings
+     stay as the upstream sent them. A JSON payload split over several
+     `data:` lines (no known upstream sends one) is re-encoded instead;
+   - if the caller did not ask for `include_usage`, the usage chunk the
+     gateway asked for is removed, so that caller gets the stream it asked
+     for.
+
+   The other branch runs through the SSE usage tap
+   (`createUsageCaptureStream`) over the upstream's own bytes and is then
+   discarded.
 3. **Settlement** runs once, when the stream ends:
 
    | Ending | Ledger status | Charged | In-stream |
@@ -217,7 +231,7 @@ Errors use the OpenAI error shape plus `x-clash-error-code`:
 | Missing `models:invoke` scope, tenant mismatch     | `GATEWAY_FORBIDDEN` 403                 |
 | Model outside the token allowlist                  | `GATEWAY_MODEL_NOT_ALLOWED` 403         |
 | Model not in the published catalog                 | `GATEWAY_MODEL_NOT_FOUND` 404           |
-| No budget row, or the budget is exhausted or suspended | `GATEWAY_BUDGET_EXCEEDED` 402      |
+| No budget row, or a hard budget is exhausted, or one is suspended | `GATEWAY_BUDGET_EXCEEDED` 402 |
 | Rate or concurrency limit                          | `GATEWAY_RATE_LIMITED` / `GATEWAY_CONCURRENCY_LIMITED` 429 |
 | Upstream 5xx/429, network error or invalid body    | `GATEWAY_UPSTREAM_ERROR` / `GATEWAY_ROUTES_EXHAUSTED` 502 |
 | Upstream deadline                                  | `GATEWAY_UPSTREAM_TIMEOUT` 504          |
@@ -231,9 +245,9 @@ Errors use the OpenAI error shape plus `x-clash-error-code`:
 | `identity`    | `gateway_token` (`services/gateway-tokens.ts`)                                              |
 | `routes`      | Catalog: published `gateway_model.card_json` at the newest started `published_at`. Price book: published `gateway_price` rows effective at the request's admission instant; the newest version wins, and within it exact upstream rows win over `''` rows; credits only; drafts are never charged ([gateway-price-book.md](gateway-price-book.md)). Accounts: `gateway_upstream_account` (official only; tenant BYOK returns no accounts). |
 | `credentials` | `gateway_upstream_account`: `secret_ref` names a `GATEWAY_UPSTREAM_*` Worker secret (an API key or `{apiKey, baseUrl}` JSON). Alternatively, `encrypted_credentials` is sealed with the shared secret envelope under `GATEWAY_ENCRYPTION_KEY`, which is distinct from `ACTION_SECRET_KEY`. Failures are `GATEWAY_KEY_UNAVAILABLE`. |
-| `budgets`     | `gateway_budget` + `gateway_usage_ledger`: an all-or-nothing reserve in one D1 batch, and settle in one batch. `markSettleFailed` sets hold rows to status `settle_failed`. `status` has no CHECK constraint, so no migration is needed. A caller with no budget row is refused. `expiredHolds` / `expire` back the sweeper (open holds by `expires_at`, index 0039). |
+| `budgets`     | `gateway_budget` + `gateway_usage_ledger`: an all-or-nothing reserve in one D1 batch (only `hard` budgets refuse; the same batch writes `gateway_budget_event` flags for `soft`/`alert` budgets, 0041), and settle in one batch. `markSettleFailed` sets hold rows to status `settle_failed`. `status` has no CHECK constraint, so no migration is needed. A caller with no budget row is refused. `expiredHolds` / `expire` back the sweeper (open holds by `expires_at`, index 0039). |
 | `ledger`      | Reads `settle` rows of one tenant.                                                          |
-| `limits`      | `rate_limit_json` from the virtual key (per key), the published model (per user and model) and the active subscription (per tenant). Counted in `gateway_rate_window` and `gateway_inflight` (0034). |
+| `limits`      | `rate_limit_json` from the virtual key (per key), the member (`tenant_member`, per member), the published model (per member and model) and the tenant (the tightest of the active subscription's and `tenant.rate_limit_json`). Every subject starts with its tenant (`tenant:<t>…`). `mediaJobs` bounds media generations in flight. Counted in `gateway_rate_window` and `gateway_inflight` (0034). |
 | `blobs`       | R2 `R2_BUCKET` (`r2-blobs.ts`); retained bodies live under `gateway-retention/`. Without a bucket, `unavailablePort` (501), and retention records `failed`. |
 | `retention`   | `gateway_request_retention` (0037, `d1-retention.ts`): first write per request id wins; `expired` lists unpurged rows past `expires_at`; `markPurged` is idempotent. A truncated stream copy is `response_truncated = 1` with `response_observed_bytes` (0039). |
 | `scheduler`, `audit` | `unavailablePort` (501) until their issues land.                                      |
@@ -270,7 +284,10 @@ billing, expiry and idempotent purge.
 The streaming cases run on the same three adapters, so the workerd run is the
 end-to-end check against a fetch-stub upstream with no network. They cover:
 
-- byte-exact pass-through, with the hold reserved before the upstream answers;
+- byte-exact pass-through but for the public model code, with the hold
+  reserved before the upstream answers;
+- no upstream model name in any chunk, whatever its spacing or line endings;
+- member budgets enforced hard, soft and alert on plain and streamed requests;
 - `include_usage` injection, and removal of the usage chunk for a caller that
   did not ask for it;
 - partial settlement of a truncated and of a failed stream;

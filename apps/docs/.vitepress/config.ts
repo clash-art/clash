@@ -32,6 +32,7 @@ export default withMermaid(defineConfig({
               link: "/guide/gateway-price-book",
             },
             { text: "Gateway Admin Console", link: "/guide/gateway-admin" },
+            { text: "Gateway Teams, Budgets & Limits", link: "/guide/gateway-teams" },
             { text: "Build Architecture", link: "/guide/build-architecture" },
             { text: "Release Pipeline", link: "/guide/release-pipeline" },
             {

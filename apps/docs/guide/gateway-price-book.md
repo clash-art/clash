@@ -76,7 +76,9 @@ member's own budget together. There is no automatic overage: when the wallet
 is empty, requests fail with `GATEWAY_BUDGET_EXCEEDED`.
 
 There is no payment provider. The team owner (`billing.purchase`) records
-the purchase, and the credits are posted immediately:
+the purchase from team settings ([gateway-teams.md](gateway-teams.md), which
+lists the active packages and packs through `GET /billing/offers`), and the
+credits are posted immediately:
 
 | Ledger kind | Written by                       | Effect on the wallet limit                                                                   |
 | ----------- | -------------------------------- | --------------------------------------------------------------------------------------------- |

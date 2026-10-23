@@ -22,12 +22,13 @@ import {
   settleMediaGeneration,
   type GatewayAdmission,
 } from "../admission.js";
-import { computeHold } from "../budget.js";
+import { computeHold, type BudgetEnforcement, type BudgetFlag } from "../budget.js";
 import { sweepExpiredGatewayHolds } from "../holds.js";
 import { createSseParser, OPENAI_STREAM_DONE, type SseEvent } from "../sse.js";
 import { GATEWAY_STREAM_STATE_EVENT } from "../stream.js";
 import {
   createGatewayApp,
+  GATEWAY_BUDGET_HEADER,
   GATEWAY_REQUEST_ID_HEADER,
   GATEWAY_SETTLEMENT_HEADER,
   isOpenAIChatRoute,
@@ -99,6 +100,12 @@ export interface GatewayContractHarness {
     rateLimited?: { request(): Request; limit: number };
     /** A credential whose key admits exactly `limit` concurrent requests. */
     concurrencyLimited?: { request(): Request; limit: number };
+    /**
+     * A fresh credential (a new tenant each call) whose member (`user`) budget
+     * has a zero limit with `enforcement`, under an ample hard wallet.
+     * Required when `budgets` is supported.
+     */
+    memberBudget?: (enforcement: BudgetEnforcement) => Promise<Request>;
   };
   close?: () => Promise<void>;
 }
@@ -559,6 +566,56 @@ export function describeGatewayContract(
             expect(await counters(identity)).toEqual(
               [...before.values()].map((budget) => [budget.id, budget.spentMicroCredits, budget.reservedMicroCredits]).sort(),
             );
+          },
+        ],
+        [
+          "a hard member budget refuses; soft admits past its limit and flags every request; alert admits and alerts once per limit",
+          async () => {
+            const fixture = harness.fixtures.memberBudget;
+            expect(fixture, "fixture memberBudget is required").toBeDefined();
+            const member = async (enforcement: BudgetEnforcement) => {
+              const identity = await ports().identity.authenticate(await fixture!(enforcement));
+              const budget = [...(await snapshot(identity)).values()].find((entry) => entry.scope === "user");
+              expect(budget, `${enforcement} fixture needs a member budget`).toBeDefined();
+              expect(budget!.limitMicroCredits).not.toBeNull();
+              return { identity, budget: budget! };
+            };
+            const flagsOn = (flags: BudgetFlag[] | undefined, budgetId: string) =>
+              (flags ?? []).filter((flag) => flag.budgetId === budgetId).map((flag) => flag.kind);
+            const over = (budget: { limitMicroCredits: number | null; spentMicroCredits: number; reservedMicroCredits: number }) =>
+              budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits + 1;
+
+            const hard = await member("hard");
+            const hardBefore = await snapshot(hard.identity);
+            await expectCode(reserve(hard.identity, over(hard.budget)), "GATEWAY_BUDGET_EXCEEDED");
+            expect(await snapshot(hard.identity)).toEqual(hardBefore);
+
+            const soft = await member("soft");
+            const first = await reserve(soft.identity, over(soft.budget));
+            expect(flagsOn(first.flags, soft.budget.id)).toEqual(["soft_exceeded"]);
+            const softHeld = (await snapshot(soft.identity)).get(soft.budget.id)!;
+            expect(softHeld.spentMicroCredits + softHeld.reservedMicroCredits).toBeGreaterThan(softHeld.limitMicroCredits!);
+            const second = await reserve(soft.identity, 1);
+            expect(flagsOn(second.flags, soft.budget.id)).toEqual(["soft_exceeded"]);
+
+            const alert = await member("alert");
+            const crossing = await reserve(alert.identity, over(alert.budget));
+            expect(flagsOn(crossing.flags, alert.budget.id)).toEqual(["alert_threshold"]);
+            expect(crossing.flags!.find((flag) => flag.budgetId === alert.budget.id)).toMatchObject({
+              enforcement: "alert",
+              limitMicroCredits: alert.budget.limitMicroCredits,
+            });
+            const again = await reserve(alert.identity, 1);
+            expect(flagsOn(again.flags, alert.budget.id)).toEqual([]);
+
+            for (const [identity, reservation] of [
+              [soft.identity, first],
+              [soft.identity, second],
+              [alert.identity, crossing],
+              [alert.identity, again],
+            ] as const)
+              await ports().budgets.settle(settlementEvent(identity, reservation.requestId, 0, "upstream_failed"));
+            expect((await snapshot(soft.identity)).get(soft.budget.id)!.reservedMicroCredits).toBe(soft.budget.reservedMicroCredits);
           },
         ],
       ],
@@ -1304,7 +1361,8 @@ export function describeGatewayContract(
       expect(res.headers.get("content-type")).toContain("text/event-stream");
       const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
       expect(requestId).toMatch(/\S/);
-      expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([...bytesOf(upstreamText)]);
+      // Every byte the upstream sent, with the public model code in place of the upstream's.
+      expect([...new Uint8Array(await res.arrayBuffer())]).toEqual([...bytesOf(streamText(harness.fixtures.textModel))]);
 
       expect(stub.seen).toHaveLength(1);
       expect(stub.seen[0]!.request.headers.get("accept")).toBe("text/event-stream");
@@ -1332,7 +1390,7 @@ export function describeGatewayContract(
       const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody());
       expect(res.status, await res.clone().text()).toBe(200);
       expect(stub.seen[0]!.body.stream_options).toEqual({ include_usage: true });
-      expect(await res.text()).toBe(streamText(route.upstreamModel, { usage: false }));
+      expect(await res.text()).toBe(streamText(harness.fixtures.textModel, { usage: false }));
       expect(
         await ports().ledger.get({ tenantId: identity.tenantId, requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! }),
       ).toMatchObject({ status: "settled", costMicroCredits: await reportedCost(identity, route.upstreamModel) });
@@ -1353,7 +1411,7 @@ export function describeGatewayContract(
         const res = await chat(stub.port, harness.fixtures.tenantRequest(), body);
         expect(res.status).toBe(200);
         const text = await res.text();
-        expect(text.startsWith(cut.fail ? "" : upstreamText)).toBe(true);
+        expect(text.startsWith(cut.fail ? "" : streamText(harness.fixtures.textModel, { usage: false, done: false }))).toBe(true);
         const last = events(text).at(-1)!;
         expect((JSON.parse(last.data) as { error: { code: string } }).error.code).toBe("GATEWAY_UPSTREAM_ERROR");
 
@@ -1417,7 +1475,7 @@ export function describeGatewayContract(
       const concurrent = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), key);
       expect([concurrent.status, concurrent.headers.get("x-clash-error-code")]).toEqual([409, "GATEWAY_IDEMPOTENCY_IN_PROGRESS"]);
       held.open();
-      expect(await first.text()).toBe(streamText(route.upstreamModel, { usage: false }));
+      expect(await first.text()).toBe(streamText(harness.fixtures.textModel, { usage: false }));
       const replay = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody(), key);
       expect([replay.status, replay.headers.get("x-clash-error-code")]).toEqual([409, "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED"]);
       expect(stub.seen).toHaveLength(1);
@@ -1450,6 +1508,69 @@ export function describeGatewayContract(
       await ports().budgets.settle(settlementEvent(identity, filler.requestId, 0, "upstream_failed"));
     });
 
+    dataPlane("sets every streamed chunk's model to the public code: no upstream model name reaches the caller, every other byte unchanged", async () => {
+      const upstreamName = unique("upstream-model-name");
+      // Hand-written spacing, a nested "model" key and a CRLF event: only the top-level value may change.
+      const odd = `data: {"id":"chatcmpl-odd" , "model" :  "${upstreamName}","choices":[{"index":0,"delta":{"content":"model"},"model":"keep"}]}\r\n\r\n`;
+      const upstreamText = odd + streamText(upstreamName);
+      const stub = upstreamStub(() => eventStream(split(upstreamText, 3)));
+      const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody({ stream_options: { include_usage: true } }));
+      expect(res.status, await res.clone().text()).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain(upstreamName);
+      expect(text).toBe(upstreamText.replaceAll(JSON.stringify(upstreamName), JSON.stringify(harness.fixtures.textModel)));
+      const payloads = events(text)
+        .filter((event) => event.data !== OPENAI_STREAM_DONE)
+        .map((event) => JSON.parse(event.data) as { model: string });
+      expect(payloads.length).toBeGreaterThan(0);
+      for (const payload of payloads) expect(payload.model).toBe(harness.fixtures.textModel);
+    });
+
+    dataPlane(
+      "enforces member budgets on plain and streamed requests: hard is a coded 402 naming the member budget, soft and alert answer flagged",
+      async () => {
+        const fixture = harness.fixtures.memberBudget;
+        expect(fixture, "fixture memberBudget is required").toBeDefined();
+        const memberBudgetId = async (credential: Request) => {
+          const identity = await ports().identity.authenticate(credential);
+          return [...(await snapshot(identity)).values()].find((budget) => budget.scope === "user")!.id;
+        };
+        for (const stream of [false, true]) {
+          const body = stream ? streamBody() : chatBody();
+          const answer = () => (stream ? eventStream(split(streamText("upstream"))) : Response.json(completion("upstream")));
+
+          const hard = await fixture!("hard");
+          const hardStub = upstreamStub(answer);
+          const refused = await chat(hardStub.port, hard, body);
+          expect([refused.status, refused.headers.get("x-clash-error-code")], `stream=${stream}`).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
+          expect(((await refused.json()) as { error: { budget_id: string } }).error.budget_id).toBe(await memberBudgetId(hard));
+          expect(hardStub.seen).toHaveLength(0);
+
+          for (const enforcement of ["soft", "alert"] as const) {
+            const credential = await fixture!(enforcement);
+            const budgetId = await memberBudgetId(credential);
+            const kind = enforcement === "soft" ? "soft_exceeded" : "alert_threshold";
+            const stub = upstreamStub(answer);
+            const res = await chat(stub.port, credential, body);
+            expect(res.status, `${enforcement} stream=${stream}: ${await res.clone().text()}`).toBe(200);
+            expect(res.headers.get(GATEWAY_BUDGET_HEADER)).toContain(`${kind}; budget_id=${budgetId}; scope=user`);
+            await res.arrayBuffer();
+            expect(
+              await ports().ledger.get({ tenantId: (await ports().identity.authenticate(credential)).tenantId, requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! }),
+            ).toMatchObject({ status: "settled" });
+            // The member budget was charged past its limit, never refused.
+            const after = (await snapshot(await ports().identity.authenticate(credential))).get(budgetId)!;
+            expect(after.spentMicroCredits).toBeGreaterThan(after.limitMicroCredits!);
+            const next = await chat(stub.port, credential, body);
+            await next.arrayBuffer();
+            // Soft flags every request; an alert is raised once per limit.
+            if (enforcement === "soft") expect(next.headers.get(GATEWAY_BUDGET_HEADER)).toContain(kind);
+            else expect(next.headers.get(GATEWAY_BUDGET_HEADER)).toBeNull();
+          }
+        }
+      },
+    );
+
     dataPlane("a failed settlement is reported inside the stream, coded, and leaves the hold to reconcile", async () => {
       const identity = await tenant();
       const route = await firstChatRoute(identity);
@@ -1463,7 +1584,7 @@ export function describeGatewayContract(
       const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
       const value = `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`;
       const text = await res.text();
-      expect(text.startsWith(upstreamText)).toBe(true);
+      expect(text.startsWith(streamText(harness.fixtures.textModel))).toBe(true);
       expect(text).toContain(`: ${GATEWAY_SETTLEMENT_HEADER}: ${value}\n\n`);
       const state = events(text).find((event) => event.event === GATEWAY_STREAM_STATE_EVENT);
       expect(JSON.parse(state!.data)).toEqual({
@@ -1528,7 +1649,7 @@ export function describeGatewayContract(
       }, retain);
       const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
       const streamed = await res.text();
-      expect(streamed.startsWith(upstreamText)).toBe(true);
+      expect(streamed.startsWith(streamText(harness.fixtures.textModel))).toBe(true);
       expect(streamed).toContain(`: ${GATEWAY_RETENTION_HEADER}: failed; code=GATEWAY_RETENTION_FAILED; request_id=${requestId}\n\n`);
       expect(events(streamed).find((event) => event.event === GATEWAY_STREAM_STATE_EVENT)?.data).toContain(
         '"code":"GATEWAY_RETENTION_FAILED"',

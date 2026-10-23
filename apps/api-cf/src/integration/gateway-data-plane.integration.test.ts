@@ -152,11 +152,9 @@ describe("/gateway/v1/chat/completions in workerd", () => {
     it("relays the stream byte for byte through the Worker, settles reported usage and retains it in R2", async () => {
       const retaining = { ...bindings, GATEWAY_STAFF_PROMPT_ACCESS: "enabled" } as Env;
       const caller = await gateway.tenantToken();
-      let sent = "";
-      answer = (body) => {
-        sent = events(body.model).join("");
-        return sse(events(body.model));
-      };
+      // The upstream names its own model; the caller must only ever see the public code.
+      const vendorModel = "vendor-internal-model-name";
+      answer = () => sse(events(vendorModel));
       const res = await app.request(
         "/gateway/v1/chat/completions",
         {
@@ -169,7 +167,8 @@ describe("/gateway/v1/chat/completions in workerd", () => {
       expect(res.status, await res.clone().text()).toBe(200);
       expect(res.headers.get("content-type")).toContain("text/event-stream");
       const delivered = await res.text();
-      expect(delivered).toBe(sent);
+      expect(delivered).toBe(events(gateway.textModel).join(""));
+      expect(delivered).not.toContain(vendorModel);
       expect(upstream).toHaveLength(1);
       expect(((await upstream[0]!.json()) as { stream_options: unknown }).stream_options).toEqual({ include_usage: true });
       const requestId = res.headers.get("x-clash-request-id")!;

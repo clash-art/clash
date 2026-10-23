@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { GatewayError, toAnthropicErrorBody, toOpenAIErrorBody } from "./errors.js";
 import {
   OPENAI_STREAM_DONE,
+  SSE_MODEL_PATHS,
   createSseEventFilter,
+  createSseEventTransform,
+  rewriteJsonStringMembers,
+  sseModelRewrite,
   createSseParser,
   createUsageCaptureStream,
   isOpenAIUsageOnlyChunk,
@@ -151,7 +155,7 @@ describe("usage capture stream", () => {
   });
 });
 
-async function filter(text: string, chunkSize: number) {
+async function filter(text: string, chunkSize: number, transform: TransformStream<Uint8Array, Uint8Array> = createSseEventFilter(isOpenAIUsageOnlyChunk)) {
   const bytes = encoder.encode(text);
   const source = new ReadableStream<Uint8Array>({
     start(controller) {
@@ -160,8 +164,56 @@ async function filter(text: string, chunkSize: number) {
       controller.close();
     },
   });
-  return new Uint8Array(await new Response(source.pipeThrough(createSseEventFilter(isOpenAIUsageOnlyChunk))).arrayBuffer());
+  return new Uint8Array(await new Response(source.pipeThrough(transform)).arrayBuffer());
 }
+
+describe("model rewrite", () => {
+  const upstream = "vendor-internal-model-name";
+  const pub = "public-model";
+  const rewrite = () => createSseEventTransform(sseModelRewrite(pub, SSE_MODEL_PATHS["openai-chat"]));
+
+  it("changes only the top-level model value's bytes, whatever the spacing, escapes or chunking", async () => {
+    const events = [
+      `data: {"id":"a","model":"${upstream}","choices":[{"delta":{"content":"model \\"x\\""},"model":"nested"}]}\n\n`,
+      `data:{ "id" : "b" ,\t"model" :  "${upstream}" , "choices" : [ ] , "usage" : {"prompt_tokens":1} }\n\n`,
+      `: comment "model":"${upstream}" kept as sent\n\n`,
+      `event: chunk\nid: 7\ndata: {"model":"${pub}","choices":[]}\n\n`,
+      `data: not json "model":"${upstream}"\n\n`,
+      `data: ${OPENAI_STREAM_DONE}\n\n`,
+    ];
+    for (const eol of ["\n", "\r\n"]) {
+      const input = events.join("").replace(/\n/g, eol);
+      const expected = [
+        events[0]!.replace(`"${upstream}"`, `"${pub}"`),
+        events[1]!.replace(`"${upstream}"`, `"${pub}"`),
+        ...events.slice(2),
+      ]
+        .join("")
+        .replace(/\n/g, eol);
+      for (const size of [1, 3, 7, input.length])
+        expect(new TextDecoder().decode(await filter(input, size, rewrite())), `${JSON.stringify(eol)}/${size}`).toBe(expected);
+    }
+  });
+
+  it("rewrites duplicate and nested paths and leaves non-string values alone", () => {
+    expect(rewriteJsonStringMembers(`{"model":"a","x":1,"model":"b"}`, [["model"]], pub)).toBe(`{"model":"${pub}","x":1,"model":"${pub}"}`);
+    expect(
+      rewriteJsonStringMembers(`{"type":"message_start","message":{"id":"m","model":"${upstream}"}}`, SSE_MODEL_PATHS["anthropic-messages"], pub),
+    ).toBe(`{"type":"message_start","message":{"id":"m","model":"${pub}"}}`);
+    expect(rewriteJsonStringMembers(`{"model":null}`, [["model"]], pub)).toBeUndefined();
+    expect(rewriteJsonStringMembers(`{"model":"${pub}"}`, [["model"]], pub)).toBeUndefined();
+    expect(rewriteJsonStringMembers(`{"models":"${upstream}"}`, [["model"]], pub)).toBeUndefined();
+  });
+
+  it("re-encodes a JSON payload split over several data lines", async () => {
+    const input = `data: {"model":\ndata: "${upstream}"}\n\n`;
+    const out = new TextDecoder().decode(await filter(input, 4, rewrite()));
+    expect(out).not.toContain(upstream);
+    const parsed = parseAll(out);
+    expect(parsed).toHaveLength(1);
+    expect(JSON.parse(parsed[0]!.data)).toEqual({ model: pub });
+  });
+});
 
 describe("SSE event filter", () => {
   const content = 'data: {"choices":[{"index":0,"delta":{"content":"hé ✓"}}],"usage":null}\n\n';

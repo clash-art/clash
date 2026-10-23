@@ -12,7 +12,7 @@
  */
 import type { D1Database } from "@cloudflare/workers-types";
 import type { GatewayContractHarness } from "@clash/gateway-core/contract";
-import type { GatewayClock, GatewayPorts } from "@clash/gateway-core";
+import type { BudgetEnforcement, GatewayClock, GatewayPorts } from "@clash/gateway-core";
 import { listDeclaredModelUpstreamRoutes, MODEL_CARDS, type ModelCard } from "@clash/shared-types";
 
 import { sha256Hex } from "../services/api-token";
@@ -88,6 +88,8 @@ export interface SeededGateway {
   ports(overrides?: Partial<GatewayPorts>): GatewayPorts;
   /** Mint a token for a fresh user in their own personal tenant, with limited budgets unless `budgets: false`. */
   tenantToken(options?: TenantTokenOptions): Promise<{ token: string; userId: string; tenantId: string }>;
+  /** A fresh tenant whose member budget has a zero limit with `enforcement`, under an ample hard wallet. */
+  memberBudgetToken(enforcement: BudgetEnforcement): Promise<{ token: string; userId: string; tenantId: string }>;
   /** A token minted from a virtual key carrying `rateLimit`. */
   keyToken(owner: { userId: string; tenantId: string }, rateLimit: Record<string, number>): Promise<string>;
 }
@@ -160,6 +162,22 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
     return { token: minted.token, userId, tenantId: minted.tenantId };
   }
 
+  /** A fresh tenant whose member budget has a zero limit with `enforcement`, under an ample hard wallet. */
+  async function memberBudgetToken(enforcement: BudgetEnforcement) {
+    const minted = await tenantToken({ budgets: false });
+    await db.batch([
+      db
+        .prepare(`INSERT INTO gateway_budget (id, tenant_id, scope, scope_id, limit_micro_credits) VALUES (?, ?, 'tenant', ?, 1000000000)`)
+        .bind(`gwb_t_${hex(8)}`, minted.tenantId, minted.tenantId),
+      db
+        .prepare(
+          `INSERT INTO gateway_budget (id, tenant_id, scope, scope_id, limit_micro_credits, enforcement) VALUES (?, ?, 'user', ?, 0, ?)`,
+        )
+        .bind(`gwb_u_${hex(8)}`, minted.tenantId, minted.userId, enforcement),
+    ]);
+    return minted;
+  }
+
   async function keyToken(owner: { userId: string; tenantId: string }, rateLimit: Record<string, number>) {
     const keyId = `gwk_${hex(8)}`;
     const publicId = hex(12);
@@ -201,6 +219,7 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
       ...overrides,
     }),
     tenantToken,
+    memberBudgetToken,
     keyToken,
   };
 }
@@ -239,6 +258,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       textModel: seeded.textModel,
       rateLimited: { request: () => gatewayRequest(rateLimited), limit: 3 },
       concurrencyLimited: { request: () => gatewayRequest(concurrencyLimited), limit: 2 },
+      memberBudget: async (enforcement) => gatewayRequest((await seeded.memberBudgetToken(enforcement)).token),
     },
   };
 }

@@ -64,8 +64,10 @@ job roles (#392):
   nothing else, held by product users. A team role acts on its own team
   only. The owner runs the team (members, budget allocation, keys and
   limits, billing); a member uses the gateway and reads their own usage and
-  budget. Team settings, where owners manage members and allocate budgets,
-  are #354; the admin console has no team role assignment.
+  budget. Owners do all of it in team settings, in the product
+  ([gateway-teams.md](gateway-teams.md), #354); the admin console only views
+  teams: no role assignment, member or key budget allocation, or key, member
+  and team rate limits.
 - **Admin account role** (`admin_accounts.role`, migration 0040):
   `platform_admin`, nothing else, held by admin accounts only. It holds every
   permission: every platform permission, and every tenant permission on
@@ -101,9 +103,9 @@ authorizes through it. The server answers `GATEWAY_FORBIDDEN` (403,
 | `team.members.read`     |   ✓   |        |       ✓        | team settings; console members  |
 | `team.members.manage`   |   ✓   |        |       ✓        | team settings (#354)            |
 | `budgets.read`          |   ✓   |        |       ✓        | team settings; console budgets  |
-| `team.budgets.allocate` |   ✓   |        |       ✓        | team settings; console budgets  |
+| `team.budgets.allocate` |   ✓   |        |       ✓        | team settings (#354)            |
 | `keys.read`             |   ✓   |        |       ✓        | team settings; console keys     |
-| `limits.write`          |   ✓   |        |       ✓        | team settings; console limits   |
+| `limits.write`          |   ✓   |        |       ✓        | team settings (#354)            |
 | `billing.read`          |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 | `billing.purchase`      |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 
@@ -191,12 +193,14 @@ Every admin mutation appends one `gateway_admin_audit` row:
 
 Covered mutations: price drafts and publishes, packages, top-up packs,
 billing rollover, subscriptions and top-ups, catalog clone/model
-upsert/remove/publish, upstream create/update/disable/rotate, member and key
-budgets, wallet corrections and status, key and subscription rate limits,
-team role changes (`setMemberRole` in `d1-tenant-admin.ts`, for team
-settings; the last owner is kept, `GATEWAY_LAST_OWNER`), admin account
-creation and disabling, retention purges that deleted something, hold sweeps
-that expired something, and every staff prompt view (whatever its outcome).
+upsert/remove/publish, upstream create/update/disable/rotate, wallet
+corrections and status, subscription rate limits, admin account creation and
+disabling, retention purges that deleted something, hold sweeps that expired
+something, and every staff prompt view (whatever its outcome). Team settings
+(#354, written by team owners, [gateway-teams.md](gateway-teams.md)) audit the
+same way: team creation, invites, role changes and removals (the last owner
+is kept, `GATEWAY_LAST_OWNER`), member and key budgets and their overrides,
+and key, member and team rate limits.
 
 The log is append-only: there is no update or delete API, and 0036 triggers
 refuse `UPDATE` and any `DELETE` of a row younger than 13 months (the
@@ -215,8 +219,8 @@ Errors are coded (`x-clash-error-code`).
 | Prices, packs  | see [gateway-price-book.md](gateway-price-book.md)                                                                                              |
 | Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate`                                                                     |
 | Tenants        | `GET /tenants`; `GET /tenants/:t/members` (read-only)                                                                                           |
-| Budgets        | `GET /tenants/:t/budgets`; `PUT /tenants/:t/budgets/(user\|key)/:id`; `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`         |
-| Rate limits    | `GET /tenants/:t/keys`; `PUT /tenants/:t/keys/:keyId/rate-limit`; `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts     |
+| Budgets        | `GET /tenants/:t/budgets` (read-only); `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`                                      |
+| Rate limits    | `GET /tenants/:t/keys` (read-only); `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts                                   |
 | Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide; audit also `?actorKind=&actorId=`); `GET /abuse`               |
 | Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`                                                                    |
 | Holds          | `POST /holds/sweep {limit?}`: the stale-hold sweeper now ([gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper))                       |
@@ -236,25 +240,27 @@ credential kind, field names and `key_version`. `enabled: false` disables an
 account for routing; rotation replaces the secret, bumps the key version and
 stamps `rotated_at`.
 
-**Budgets.** `team.budgets.allocate` (the team owner in team settings, an
-admin account in the console) sets member (`user`) and key budgets under the
-tenant wallet; a limit below spend + open holds is
-`GATEWAY_BUDGET_BELOW_USAGE`, `null` is explicitly unlimited (the wallet still
-caps it). The wallet itself changes only through purchases and platform
-corrections: `wallet/adjust` posts a ledger `adjust` entry (`ref_kind`
-`admin_credit`/`admin_debit`, the reason, one idempotency key per correction)
-and `wallet/status` suspends or reactivates it.
+**Budgets.** The console shows the wallet and the member and key budgets
+(enforcement, limit, spent, held). The team owner allocates them in team
+settings ([gateway-teams.md](gateway-teams.md)). The wallet itself changes
+only through purchases and platform corrections: `wallet/adjust` posts a
+ledger `adjust` entry (`ref_kind` `admin_credit`/`admin_debit`, the reason,
+one idempotency key per correction) and `wallet/status` suspends or
+reactivates it.
 
-**Rate limits.** `rate_limit_json` on keys, catalog models, upstream accounts,
-packages and subscriptions is validated with one schema
-(`GatewayRateLimitSchema`: `requestsPerMinute`, `tokensPerMinute`,
-`concurrency`, positive integers, at least one, no unknown fields) and
-enforced by `d1-limits.ts`. `null` clears a limit.
+**Rate limits.** `rate_limit_json` on keys, members, teams, catalog models,
+upstream accounts, packages and subscriptions is validated with one schema
+(`GatewayRateLimitSchema` in `@clash/gateway-core`: `requestsPerMinute`,
+`tokensPerMinute`, `concurrency`, `mediaJobs`, positive integers, at least
+one, no unknown fields) and enforced by `d1-limits.ts`. `null` clears a
+limit. The console sets the catalog's, the upstreams' and the
+subscription's; key, member and team limits are the owner's.
 
 **Abuse.** Only live counters exist today (`gateway_rate_window`,
-`gateway_inflight`). Denied requests (rate-limited, forbidden) are not
-recorded, so the response states `events.available: false` rather than
-showing an empty list as if nothing happened.
+`gateway_inflight`, every subject prefixed with its tenant: `tenant:<t>…`).
+Denied requests (rate-limited, forbidden) are not recorded, so the response
+states `events.available: false` rather than showing an empty list as if
+nothing happened.
 
 ## Staff prompt access and body retention
 
@@ -409,7 +415,7 @@ otherwise to `/admin`. The console header shows the signed-in account and a
 | `/admin/models`    | Catalog versions and price book                       | `catalog.read`   |
 | `/admin/upstreams` | Upstream accounts                                     | `upstreams.read` |
 | `/admin/users`     | Tenants, their members and roles (read-only), admin accounts | `tenants.list`   |
-| `/admin/budgets`   | Wallet, budgets, key and tenant rate limits           | `tenants.list`   |
+| `/admin/budgets`   | Wallet and its corrections, budgets and key limits (read-only), subscription rate limit | `tenants.list`   |
 | `/admin/packages`  | Packages and top-up packs                             | `packages.read`  |
 | `/admin/usage`     | Ledger, per-model totals, prompt viewer               | `usage.read_all` |
 | `/admin/abuse`     | Live rate-limit counters                              | `abuse.read`     |
@@ -451,8 +457,10 @@ or the coded error (expired, not retained).
 - `apps/api-cf/src/routes/v1/admin/gateway-console.test.ts`: every console
   route refused to team owners' and members' product credentials, tenant
   billing per role through the Worker, team role changes keeping one owner,
-  audit per mutation (actor = the admin account) and rollback when the audit
-  write fails, upstream secret custody, rate-limit validation; staff prompt
+  teams view-only (every team write route is absent from the console),
+  audit per mutation (actor = the admin account, or the team owner for team
+  settings) and rollback when the audit write fails, upstream secret
+  custody, rate-limit validation; staff prompt
   view (admin accounts only, the stored bytes, every view audited without
   the body, nothing disclosed when the audit fails, expiry before purge,
   idempotent purge, a truncated stream copy); the hold sweep (admin accounts

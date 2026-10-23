@@ -9,7 +9,8 @@
   "subdirectories": {
     "nodes": "Custom React Flow node components (e.g., VideoNode, TextNode). The visual representation of data.",
     "copilot": "Components for the Chatbot/AI Assistant sidebar interface.",
-    "admin": "Gateway admin console pages (#353, platform_admin only since #392) rendered by apps/web admin.*.tsx routes: shell, catalog/prices, upstreams (write-only secrets), tenants with read-only members and platform admins, budgets and rate limits, packages, usage and the audited prompt/response viewer (AdminPromptViewer, shared Dialog), abuse, audit. Controls render only with the caller's platform permission; errors show the server's coded refusal. No team role assignment (team settings, #354)."
+    "admin": "Gateway admin console pages (#353, platform_admin only since #392) rendered by apps/web admin.*.tsx routes: shell, catalog/prices, upstreams (write-only secrets), tenants with read-only members and platform admins, budgets and rate limits, packages, usage and the audited prompt/response viewer (AdminPromptViewer, shared Dialog), abuse, audit. Controls render only with the caller's platform permission; errors show the server's coded refusal. Teams are view-only: no role assignment, member/key budget allocation or key limits (team settings, #354).",
+    "team": "Team settings (#354) rendered by apps/web team.tsx and team.invite.tsx: the owner manages members and roles, invites, the team wallet's packages and top-ups, member and key budgets (hard/soft/alert, override with reason), key/member/team rate limits, usage and audit; a member sees only their own budget, keys and usage. Reuses the admin kit and RateLimitForm."
   },
   "key_files": {
     "PresenceBar.tsx": "Project header avatar stack grouped by user, with agent overlay and per-session device tooltips; overflow counts users, not sockets.",

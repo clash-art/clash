@@ -1,13 +1,15 @@
 /**
- * Budgets & limits page (#353): the tenant wallet, member and key budgets,
- * virtual key rate limits and (platform staff) wallet corrections and the
- * subscription's tenant rate limit. Owner allocation UI is #354; this is the
- * admin side over the same API.
+ * Budgets & limits page (#353): the tenant wallet, member and key budgets and
+ * virtual key rate limits, read-only, plus the platform levers (wallet
+ * corrections and status, the subscription's tenant rate limit). Team owners
+ * allocate member and key budgets and set key, member and tenant limits in
+ * team settings (#354, TeamSettings); the console only views them.
  */
 import { useState } from "react";
 
 import {
   adminApi,
+  describeRateLimit,
   formatCredits,
   parseCredits,
   type Budget,
@@ -16,13 +18,10 @@ import {
   type TenantMember,
 } from "../../lib/adminClient";
 import { Button } from "../ui/button";
-import { SelectMenu } from "../ui/select";
 import { AdminCard, AdminErrorAlert, AdminField, AdminSection, AdminTable, StatusPill, formatTime, useAdminAction } from "./AdminKit";
 import { RateLimitForm } from "./RateLimitForm";
 
 export interface BudgetPermissions {
-  budgetsWrite: boolean;
-  limitsWrite: boolean;
   walletAdjust: boolean;
   subscriptionLimits: boolean;
 }
@@ -47,6 +46,10 @@ export function AdminBudgets({
   onChanged: () => void;
 }) {
   const allocated = budgets.filter((budget) => budget.scope !== "tenant");
+  const subjectName = (budget: Budget) =>
+    budget.scope === "user"
+      ? (members.find((member) => member.userId === budget.scopeId)?.name ?? budget.scopeId)
+      : (keys.find((key) => key.id === budget.scopeId)?.name ?? budget.scopeId);
   return (
     <>
       <AdminSection title="Tenant wallet" description="Funded by purchases and platform corrections; every request also draws on it.">
@@ -72,24 +75,24 @@ export function AdminBudgets({
         {can.walletAdjust ? <WalletForms tenantId={tenantId} wallet={wallet} onChanged={onChanged} /> : null}
       </AdminSection>
 
-      <AdminSection title="Member and key budgets" description="Caps drawn alongside the wallet. A limit cannot go below spend plus open holds.">
+      <AdminSection title="Member and key budgets" description="Allocated by the team owner in team settings; drawn alongside the wallet.">
         <AdminTable
           label="Budgets"
           rows={allocated}
           rowKey={(row) => row.id}
           empty="No member or key budgets."
           columns={[
-            { header: "Scope", cell: (row) => `${row.scope}: ${row.scopeId}` },
+            { header: "Scope", cell: (row) => `${row.scope}: ${subjectName(row)}` },
             { header: "Status", cell: (row) => <StatusPill tone={row.status === "active" ? "ok" : "warn"}>{row.status}</StatusPill> },
+            { header: "Enforcement", cell: (row) => row.enforcement ?? "hard" },
             { header: "Limit", cell: (row) => formatCredits(row.limitMicroCredits), align: "right" },
             { header: "Spent", cell: (row) => formatCredits(row.spentMicroCredits), align: "right" },
             { header: "Held", cell: (row) => formatCredits(row.reservedMicroCredits), align: "right" },
           ]}
         />
-        {can.budgetsWrite ? <BudgetForm tenantId={tenantId} members={members} keys={keys} budgets={allocated} onChanged={onChanged} /> : null}
       </AdminSection>
 
-      <AdminSection title="Virtual keys" description="Per-key rate limits; empty fields clear the limit.">
+      <AdminSection title="Virtual keys" description="Per-key rate limits, set by the team owner.">
         <AdminTable
           label="Virtual keys"
           rows={keys}
@@ -109,18 +112,7 @@ export function AdminBudgets({
               ),
             },
             { header: "Last used", cell: (row) => formatTime(row.lastUsedAt) },
-            {
-              header: "Rate limit",
-              cell: (row) => (
-                <RateLimitForm
-                  label={`Rate limit for key ${row.name}`}
-                  value={row.rateLimit}
-                  disabled={!can.limitsWrite}
-                  onSave={(rateLimit) => adminApi.setKeyRateLimit(tenantId, row.id, rateLimit)}
-                  onDone={onChanged}
-                />
-              ),
-            },
+            { header: "Rate limit", cell: (row) => describeRateLimit(row.rateLimit) },
           ]}
         />
       </AdminSection>
@@ -144,85 +136,6 @@ export function AdminBudgets({
         )}
       </AdminSection>
     </>
-  );
-}
-
-function BudgetForm({
-  tenantId,
-  members,
-  keys,
-  budgets,
-  onChanged,
-}: {
-  tenantId: string;
-  members: TenantMember[];
-  keys: GatewayKey[];
-  budgets: Budget[];
-  onChanged: () => void;
-}) {
-  const subjects = [
-    ...members.map((member) => ({ value: `user:${member.userId}`, label: `Member · ${member.name ?? member.userId}` })),
-    ...keys.map((key) => ({ value: `key:${key.id}`, label: `Key · ${key.name}` })),
-  ];
-  const [subject, setSubject] = useState(subjects[0]?.value ?? "");
-  const [limit, setLimit] = useState("");
-  const [status, setStatus] = useState<"active" | "suspended">("active");
-  const [reason, setReason] = useState("");
-  const action = useAdminAction(onChanged);
-  if (subjects.length === 0) return null;
-  const existing = budgets.find((budget) => `${budget.scope}:${budget.scopeId}` === subject);
-  return (
-    <AdminCard>
-      <form
-        aria-label="Set budget"
-        className="grid gap-3 sm:grid-cols-5"
-        onSubmit={action.submit(async () => {
-          const [scope, ...rest] = subject.split(":");
-          const limitMicroCredits = limit.trim() === "" ? null : parseCredits(limit);
-          if (limit.trim() !== "" && limitMicroCredits === null) throw new Error("The limit must be a number of credits.");
-          await adminApi.setBudget(tenantId, scope as "user" | "key", rest.join(":"), {
-            limitMicroCredits,
-            status,
-            ...(reason.trim() ? { reason: reason.trim() } : {}),
-          });
-          setLimit("");
-          setReason("");
-        })}
-      >
-        <label className="flex flex-col gap-1 text-xs font-medium text-stone-600 dark:text-stone-300">
-          <span>Member or key</span>
-          <SelectMenu ariaLabel="Budget subject" variant="field" size="sm" value={subject} options={subjects} onValueChange={setSubject} />
-        </label>
-        <AdminField
-          label="Limit (credits)"
-          hint={existing ? `now ${formatCredits(existing.limitMicroCredits)}; empty = unlimited` : "empty = unlimited"}
-          inputMode="decimal"
-          value={limit}
-          onChange={(e) => setLimit(e.target.value)}
-        />
-        <label className="flex flex-col gap-1 text-xs font-medium text-stone-600 dark:text-stone-300">
-          <span>Status</span>
-          <SelectMenu
-            ariaLabel="Budget status"
-            variant="field"
-            size="sm"
-            value={status}
-            options={[
-              { value: "active", label: "Active" },
-              { value: "suspended", label: "Suspended" },
-            ]}
-            onValueChange={setStatus}
-          />
-        </label>
-        <AdminField label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-        <div className="flex items-end">
-          <Button type="submit" size="sm" variant="primary" disabled={action.pending}>
-            Save budget
-          </Button>
-        </div>
-      </form>
-      <AdminErrorAlert error={action.error} />
-    </AdminCard>
   );
 }
 

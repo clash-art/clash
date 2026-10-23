@@ -2,7 +2,8 @@
  * Streaming relay (#348): one upstream SSE body to the caller, unbuffered.
  *
  * The upstream body is `tee()`d. One branch goes to the caller chunk by chunk
- * (optionally through an event filter); the other runs through the usage
+ * (through the event transform when events are dropped or the model is
+ * rewritten to the public code); the other runs through the usage
  * capture tap (sse.ts) and is discarded. Nothing waits for the whole body,
  * and `response.text()` is never called on a stream.
  *
@@ -17,7 +18,15 @@
  * `onEnd` (settlement, retention) runs before the caller's stream closes, so
  * the text it returns, the coded trailer, is the last thing the caller reads.
  */
-import { encodeSseComment, encodeSseEvent, createSseEventFilter, createUsageCaptureStream, type SseEvent } from "./sse.js";
+import {
+  SSE_MODEL_PATHS,
+  createSseEventTransform,
+  createUsageCaptureStream,
+  encodeSseComment,
+  encodeSseEvent,
+  sseModelRewrite,
+  type SseEvent,
+} from "./sse.js";
 import type { GatewayErrorCode } from "./errors.js";
 import type { StreamObservation, GatewayUsageShape } from "./usage.js";
 
@@ -38,6 +47,12 @@ export interface StreamRelayOptions {
   maxDurationMs: number;
   /** Events the caller must not see (the usage chunk the gateway injected). */
   dropEvent?: (event: SseEvent) => boolean;
+  /**
+   * The public model code the caller asked for: each event's model is set to
+   * it (sseModelRewrite), so no upstream model name reaches the caller. Every
+   * other byte is relayed unchanged; the metering branch sees the upstream's.
+   */
+  publicModel?: string;
   /** Each upstream chunk exactly as handed to the caller. */
   onDelivered?: (chunk: Uint8Array) => void;
   /**
@@ -66,7 +81,16 @@ export function relayGatewayStream(options: StreamRelayOptions): ReadableStream<
   const [forward, meter] = options.body.tee();
   const capture = createUsageCaptureStream(options.shape);
   const meterReader = through(meter, capture.stream).getReader();
-  const clientReader = (options.dropEvent ? through(forward, createSseEventFilter(options.dropEvent)) : forward).getReader();
+  const { dropEvent, publicModel } = options;
+  const rewrite = publicModel !== undefined ? sseModelRewrite(publicModel, SSE_MODEL_PATHS[options.shape]) : undefined;
+  const clientReader = (
+    dropEvent || rewrite
+      ? through(
+          forward,
+          createSseEventTransform((event, raw) => (dropEvent?.(event) ? null : rewrite ? rewrite(event, raw) : raw)),
+        )
+      : forward
+  ).getReader();
 
   let clientGone = false;
   let timedOut = false;

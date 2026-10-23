@@ -10,6 +10,7 @@ const bearer = (token?: string) =>
 
 describeGatewayContract("in-memory stub", async () => {
   const fixture = catalogFixture();
+  let members = 0;
   const identity = (tenantId: string, keyId: string, budgetIds: string[]) => ({
     tenantId,
     userId: `${tenantId}-user`,
@@ -82,6 +83,16 @@ describeGatewayContract("in-memory stub", async () => {
         : {}),
       rateLimited: { request: () => bearer("rate-limited"), limit: 3 },
       concurrencyLimited: { request: () => bearer("concurrency-limited"), limit: 2 },
+      memberBudget: async (enforcement) => {
+        const tenantId = `tenant-member-${(members += 1)}`;
+        const userBudget = `${tenantId}-user-budget`;
+        const wallet = `${tenantId}-wallet`;
+        gateway.addIdentity(tenantId, { ...identity(tenantId, `${tenantId}-key`, [userBudget, wallet]) }, [
+          { id: wallet, tenantId, scope: "tenant", scopeId: tenantId, limitMicroCredits: 1_000_000_000, spentMicroCredits: 0, reservedMicroCredits: 0, version: 0 },
+          { id: userBudget, tenantId, scope: "user", scopeId: `${tenantId}-user`, limitMicroCredits: 0, spentMicroCredits: 0, reservedMicroCredits: 0, version: 0, enforcement },
+        ]);
+        return bearer(tenantId);
+      },
     },
   };
 });

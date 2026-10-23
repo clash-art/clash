@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  alertThresholdPct,
+  budgetAlertKey,
+  budgetFlags,
   checkBudgetInvariants,
   computeHold,
   planRelease,
@@ -108,6 +111,36 @@ describe("reserve / settle arithmetic", () => {
       expect(error).toBeInstanceOf(GatewayError);
       expect((error as GatewayError).details).toMatchObject({ budgetId: "tight", remainingMicroCredits: 3 });
     }
+  });
+
+  it("refuses only on hard budgets; soft and alert budgets hold past their limit and raise flags", () => {
+    const soft = { ...budget("soft", 10, 8), enforcement: "soft" as const };
+    const alert = { ...budget("alert", 10, 8), enforcement: "alert" as const };
+    expect(codeOf(() => planReserve([budget("hard", 10, 8)], 3))).toBe("GATEWAY_BUDGET_EXCEEDED");
+    expect(codeOf(() => planReserve([soft, alert, budget("hard", 10, 8)], 3))).toBe("GATEWAY_BUDGET_EXCEEDED");
+    const planned = planReserve([soft, alert], 3, "req-1");
+    expect(planned.budgets.map((entry) => entry.reservedMicroCredits)).toEqual([3, 3]);
+    expect(planned.flags.map(({ budgetId, kind }) => [budgetId, kind])).toEqual([
+      ["alert", "alert_threshold"],
+      ["soft", "soft_exceeded"],
+    ]);
+    expect(planned.flags.find((flag) => flag.kind === "soft_exceeded")).toMatchObject({ dedupeKey: "req-1", usedMicroCredits: 11 });
+    // Within the limit: a soft budget raises nothing.
+    expect(planReserve([soft], 2).flags).toEqual([]);
+    // Unlimited budgets never flag.
+    expect(planReserve([{ ...budget("open", null), enforcement: "soft" }], 99).flags).toEqual([]);
+  });
+
+  it("alerts at the configured threshold on any enforcement, once per limit and threshold", () => {
+    const tracked = { ...budget("t", 100, 70), alertThresholdPct: 80 };
+    expect(budgetFlags(tracked, 9, "r")).toEqual([]);
+    const [flag] = budgetFlags(tracked, 10, "r");
+    expect(flag).toMatchObject({ kind: "alert_threshold", enforcement: "hard", thresholdPct: 80, usedMicroCredits: 80 });
+    expect(flag!.dedupeKey).toBe(budgetAlertKey(100, 80));
+    expect(budgetFlags({ ...tracked, limitMicroCredits: 200 }, 100, "r")[0]!.dedupeKey).not.toBe(flag!.dedupeKey);
+    // An alert budget without a threshold alerts at its limit.
+    expect(alertThresholdPct({ enforcement: "alert" })).toBe(100);
+    expect(alertThresholdPct({ enforcement: "hard" })).toBeUndefined();
   });
 
   it("settles the stored hold, charges actual cost and reports overshoot", () => {

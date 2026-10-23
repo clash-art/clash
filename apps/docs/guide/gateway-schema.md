@@ -34,7 +34,9 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_upstream_account`    | Official upstream credentials. No tenant or user column, so it is disjoint from tenant BYOK `provider_account`. Holds a `secret_ref` or a sealed `encrypted_credentials` envelope, never plaintext. |
 | `gateway_model`               | Versioned published catalog: one model card (`card_json`) per model per `catalog_version`.                                                                                                          |
 | `gateway_price`               | Price book: one rate per `(price_version, model_code, upstream_id, unit)`, `amount_micro` per `per` units of `currency` (default `credit`). `published_at` (0035) is `NULL` for a draft, which is never charged. See [gateway-price-book.md](gateway-price-book.md). |
-| `gateway_budget`              | `tenant` = team wallet, `user` = member budget allocated by the owner (`parent_budget_id`), `key` = per-key cap. `NULL` limit is explicitly unlimited.                                              |
+| `gateway_budget`              | `tenant` = team wallet, `user` = member budget allocated by the owner (`parent_budget_id`), `key` = per-key cap. `NULL` limit is explicitly unlimited. (0041) `enforcement` `hard`/`soft`/`alert` (a wallet is always `hard`, enforced by triggers) and `alert_threshold_pct` (1-100). See [gateway-teams.md](gateway-teams.md). |
+| `gateway_budget_event`        | (0041) Budget notifications written in the reservation's batch: `soft_exceeded` once per request admitted past a soft limit, `alert_threshold` once per budget, limit and threshold (unique `(budget_id, kind, dedupe_key)`). Counters after the hold; metadata only. |
+| `tenant.rate_limit_json`, `tenant_member.rate_limit_json` | (0041) Owner-configured team-wide and per-member rate limits.                                                                                                              |
 | `gateway_usage_ledger`        | Append-only money journal (below).                                                                                                                                                                  |
 | `gateway_admin_audit`         | One row per admin mutation with redacted before/after snapshots. Append-only: 0036 triggers refuse `UPDATE` and any `DELETE` inside the 13-month retention. (0040) The actor is `actor_kind` (`admin`, `user`, `bootstrap`, `migration`) plus `actor_id` (an admin account id for `admin`). See [gateway-admin.md](gateway-admin.md). |
 | `admin_accounts` and `admin_sessions`, `admin_credentials`, `admin_verifications` | (0040, #394) The admin identity store: the tables of the separate admin Better Auth instance, never the product `users`/`sessions`. `admin_accounts.role` is `platform_admin` only; `disabled_at` locks an account. 0040 dropped the 0036 `gateway_platform_role` grant on product users. |
@@ -42,11 +44,12 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_package`             | Subscription packages: fiat `price_minor` in `price_currency`, `credits_micro` granted per period.                                                                                                  |
 | `gateway_topup_pack`          | One-off credit packs. A purchase is a ledger `topup` entry.                                                                                                                                         |
 | `gateway_tenant_subscription` | A tenant's package subscription and period.                                                                                                                                                         |
-| `gateway_rate_window`         | (0034) Fixed-window request/token counters per `subject` (`key:…`, `model:…:user:…`, `tenant:…`) for the limits port. See [gateway-data-plane.md](gateway-data-plane.md).                         |
+| `gateway_rate_window`         | (0034) Fixed-window request/token counters per `subject` for the limits port, every subject prefixed with its tenant (#354): `tenant:<t>`, `tenant:<t>:key:<k>`, `tenant:<t>:user:<u>`, `tenant:<t>:model:<m>:user:<u>`. See [gateway-data-plane.md](gateway-data-plane.md). |
 | `gateway_inflight`            | (0034) In-flight concurrency leases per `subject`; a lease expires on its own if never released.                                                                                                    |
 
-Rate limits are configurable JSON (`rate_limit_json`) on keys, models,
-upstream accounts, packages and tenant subscriptions.
+Rate limits are configurable JSON (`rate_limit_json`, gateway-core
+`GatewayRateLimitSchema`) on keys, members, tenants, models, upstream
+accounts, packages and tenant subscriptions.
 
 ## Ledger
 

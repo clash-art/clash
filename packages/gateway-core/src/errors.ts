@@ -313,6 +313,43 @@ const definitions = {
     anthropic: "invalid_request_error",
     message: "A tenant must keep at least one owner.",
   },
+  // Team settings (#354): members, invites and budget allocation by the team owner.
+  GATEWAY_TENANT_NOT_TEAM: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "A personal workspace has no members to manage; create a team.",
+  },
+  GATEWAY_MEMBER_EXISTS: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The user is already a member of this team.",
+  },
+  GATEWAY_INVITE_EXISTS: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "A pending invite for this email already exists; revoke it to invite again.",
+  },
+  GATEWAY_INVITE_NOT_FOUND: {
+    status: 404,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "The invite does not exist or is no longer pending.",
+  },
+  GATEWAY_INVITE_EXPIRED: {
+    status: 410,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The invite has expired; ask the team owner for a new one.",
+  },
+  GATEWAY_INVITE_EMAIL_MISMATCH: {
+    status: 403,
+    openai: "permission_error",
+    anthropic: "permission_error",
+    message: "The invite was sent to a different email address than the signed-in account's.",
+  },
   // Admin identity (#394): the console takes an admin account session only.
   GATEWAY_ADMIN_SESSION_REQUIRED: {
     status: 403,

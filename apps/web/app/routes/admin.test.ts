@@ -172,10 +172,9 @@ describe("admin page scope", () => {
     const platformView = await budgetsLoader(args("/admin/budgets"));
     expect(platformView).toMatchObject({ tenantId: undefined, tenants: [], tenant: null });
     const tenantView = await budgetsLoader(args("/admin/budgets?tenant=team%3Az"));
-    expect(tenantView.tenant).toMatchObject({
-      id: "team:z",
-      can: { budgetsWrite: true, limitsWrite: true, walletAdjust: true, subscriptionLimits: true },
-    });
+    // Team budgets and limits are read-only in the console (#354): only the platform levers are offered.
+    expect(tenantView.tenant).toMatchObject({ id: "team:z" });
+    expect(tenantView.tenant!.can).toEqual({ walletAdjust: true, subscriptionLimits: true });
     expect(paths).toContain("/api/v1/admin/gateway/tenants/team%3Az/budgets");
   });
 

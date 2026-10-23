@@ -115,6 +115,16 @@ describe("RateLimitForm", () => {
     expect(onDone).toHaveBeenCalledTimes(2);
   });
 
+  it("configures media jobs in flight like every other bound", async () => {
+    const onSave = vi.fn(async () => undefined);
+    render(<RateLimitForm label="Member limit" value={{ mediaJobs: 1 }} onSave={onSave} />);
+    const form = screen.getByRole("form", { name: "Member limit" });
+    expect(within(form).getByLabelText("Media jobs")).toHaveValue("1");
+    type(form, "Media jobs", "3");
+    fireEvent.submit(form);
+    await waitFor(() => expect(onSave).toHaveBeenLastCalledWith({ mediaJobs: 3 }));
+  });
+
   it("shows the server's refusal", async () => {
     render(
       <RateLimitForm

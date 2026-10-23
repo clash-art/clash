@@ -2,15 +2,15 @@
  * Tenants, members, budgets, keys and limits (#353, #392), under
  * /api/v1/admin/gateway. Like the whole admin console these routes answer
  * platform grants only (services/gateway-authz.ts `platformRoute`), never a
- * tenant role. Members are read-only here: team owners manage members and
- * roles in team settings (#354).
+ * tenant role. Teams are read-only here (#354): their owners manage members,
+ * roles, member and key budgets, and key, member and tenant rate limits in
+ * team settings (routes/v1/gateway-team.ts). The console keeps the platform
+ * levers: wallet corrections and status, and the subscription's rate limit.
  *
  *   GET  /tenants                                         every tenant (?query)         tenants.list
  *   GET  /tenants/:tenantId/members                       members and roles             team.members.read
  *   GET  /tenants/:tenantId/budgets                       wallet, member, key budgets   budgets.read
- *   PUT  /tenants/:tenantId/budgets/:scope/:scopeId       set a user/key budget         team.budgets.allocate
  *   GET  /tenants/:tenantId/keys                          virtual keys (no hashes)      keys.read
- *   PUT  /tenants/:tenantId/keys/:keyId/rate-limit        key rate limits               limits.write
  *   PUT  /tenants/:tenantId/subscription/rate-limit       tenant rate-limit override    subscription.limits.write
  *   POST /tenants/:tenantId/wallet/adjust                 credit correction (reason)    wallet.adjust
  *   POST /tenants/:tenantId/wallet/status                 suspend / reactivate wallet   wallet.adjust
@@ -20,7 +20,6 @@ import { z } from "zod";
 
 import type { Env } from "../../../config";
 import {
-  GatewayBudgetSetRequestSchema,
   GatewayRateLimitUpdateRequestSchema,
   GatewayTenantListQuerySchema,
   GatewayWalletAdjustRequestSchema,
@@ -34,8 +33,6 @@ import { gatewayParam, gatewayQuery, readGatewayJson } from "../../../services/g
 import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
 
 const TenantIdSchema = z.string().min(1).max(256);
-const SubjectIdSchema = z.string().regex(/^[A-Za-z0-9._:@-]{1,256}$/);
-const BudgetScopeSchema = z.enum(["user", "key"]);
 
 const tenants = (env: Env) => createD1TenantAdmin(env.DB, { clock: monotonicClock() });
 const billing = (env: Env) => createD1Billing(env.DB, { clock: monotonicClock() });
@@ -75,41 +72,11 @@ adminTenantRoutes.get(
   }),
 );
 
-adminTenantRoutes.put(
-  "/tenants/:tenantId/budgets/:scope/:scopeId",
-  platformRoute("team.budgets.allocate", async (c, actor) => {
-    const tenantId = tenantParam(c.req.param("tenantId"));
-    const scope = gatewayParam(BudgetScopeSchema, c.req.param("scope"), "scope");
-    const scopeId = gatewayParam(SubjectIdSchema, c.req.param("scopeId"), "scopeId");
-    const body = await readGatewayJson(c, GatewayBudgetSetRequestSchema);
-    const budget = await tenants(c.env).setBudget({
-      tenantId,
-      scope,
-      scopeId,
-      limitMicroCredits: body.limitMicroCredits,
-      ...(body.status ? { status: body.status } : {}),
-      ...(body.reason ? { reason: body.reason } : {}),
-      actor,
-    });
-    return ok(c, { budget });
-  }),
-);
-
 adminTenantRoutes.get(
   "/tenants/:tenantId/keys",
   platformRoute("keys.read", async (c) =>
     ok(c, { keys: await tenants(c.env).listKeys(tenantParam(c.req.param("tenantId"))) }),
   ),
-);
-
-adminTenantRoutes.put(
-  "/tenants/:tenantId/keys/:keyId/rate-limit",
-  platformRoute("limits.write", async (c, actor) => {
-    const tenantId = tenantParam(c.req.param("tenantId"));
-    const keyId = gatewayParam(SubjectIdSchema, c.req.param("keyId"), "keyId");
-    const body = await readGatewayJson(c, GatewayRateLimitUpdateRequestSchema);
-    return ok(c, { key: await tenants(c.env).setKeyRateLimit({ tenantId, keyId, rateLimit: body.rateLimit, actor }) });
-  }),
 );
 
 adminTenantRoutes.put(

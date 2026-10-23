@@ -1,30 +1,42 @@
 /**
  * Rate and concurrency limits over D1 (`gateway_rate_window`,
- * `gateway_inflight`, 0034). Limits are configuration, read per request:
+ * `gateway_inflight`, 0034). Limits are configuration, read per request, and
+ * every counter is tenant-scoped (#354), so one tenant's traffic never
+ * throttles another's, even for a user who belongs to both:
  *
  * - key: `gateway_key.rate_limit_json` of the virtual key behind the caller's
- *   token (or the key itself), counted per key;
- * - model: the published `gateway_model.rate_limit_json`, counted per user and model;
- * - tenant: the active `gateway_tenant_subscription.rate_limit_json`, counted per tenant.
+ *   token (or the key itself), counted as `tenant:<t>:key:<k>`;
+ * - member: `tenant_member.rate_limit_json` (0041, set by the team owner),
+ *   counted as `tenant:<t>:user:<u>`;
+ * - model: the published `gateway_model.rate_limit_json`, counted per member
+ *   and model as `tenant:<t>:model:<m>:user:<u>`;
+ * - tenant: the tightest of the active `gateway_tenant_subscription`'s limit
+ *   (from its package, platform-set) and `tenant.rate_limit_json` (0041, set by
+ *   the team owner), counted as `tenant:<t>`.
  *
- * Each config is `{ requestsPerMinute?, tokensPerMinute?, concurrency? }`; an
- * absent config admits. A malformed one fails closed (GATEWAY_INTERNAL) rather
- * than silently admitting. Windows are fixed one-minute windows in database
- * rows shared by every isolate; decisions use gateway-core's window helpers.
- * A denied request still counts in its window, as in every adapter.
+ * Each config is GatewayRateLimitSchema JSON (`requestsPerMinute`,
+ * `tokensPerMinute`, `concurrency`, `mediaJobs`); an absent config admits. A
+ * malformed one fails closed (GATEWAY_INTERNAL) rather than silently
+ * admitting. `mediaJobs` bounds media/AIGC generations in flight, leased as
+ * `<subject>:media`. Windows are fixed one-minute windows in database rows
+ * shared by every isolate; decisions use gateway-core's window helpers. A
+ * denied request still counts in its window, as in every adapter.
  */
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import {
   GatewayError,
+  StoredGatewayRateLimitSchema,
   fixedWindowDecision,
   fixedWindowStart,
+  tightestRateLimit,
   type GatewayClock,
   type GatewayIds,
   type GatewayLimitPort,
+  type GatewayRateLimit,
   type LimitDecision,
+  type LimitInput,
   type LimitScope,
 } from "@clash/gateway-core";
-import { z } from "zod";
 
 import { parseJson, publishedCatalogVersionSql, toSeconds } from "./d1-common";
 
@@ -34,12 +46,7 @@ export const GATEWAY_LEASE_TTL_MS = 15 * 60 * 1000;
 /** Advisory retry for a concurrency denial: there is no window to wait for. */
 const CONCURRENCY_RETRY_AFTER_MS = 1_000;
 
-const RateLimitSchema = z.looseObject({
-  requestsPerMinute: z.number().int().positive().optional(),
-  tokensPerMinute: z.number().int().positive().optional(),
-  concurrency: z.number().int().positive().optional(),
-});
-type RateLimit = z.infer<typeof RateLimitSchema>;
+type RateLimit = Partial<GatewayRateLimit>;
 
 interface Subject {
   scope: LimitScope;
@@ -47,9 +54,18 @@ interface Subject {
   limits: RateLimit;
 }
 
-function parseLimits(raw: string | null, source: string): RateLimit | undefined {
-  if (raw === null) return undefined;
-  const parsed = RateLimitSchema.safeParse(parseJson(raw));
+/** Counter subjects; each starts with its tenant. */
+export const gatewayLimitSubjects = {
+  tenant: (tenantId: string) => `tenant:${tenantId}`,
+  key: (tenantId: string, keyId: string) => `tenant:${tenantId}:key:${keyId}`,
+  member: (tenantId: string, userId: string) => `tenant:${tenantId}:user:${userId}`,
+  model: (tenantId: string, modelCode: string, userId: string) => `tenant:${tenantId}:model:${modelCode}:user:${userId}`,
+  media: (subject: string) => `${subject}:media`,
+};
+
+function parseLimits(raw: string | null | undefined, source: string): RateLimit | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const parsed = StoredGatewayRateLimitSchema.safeParse(parseJson(raw));
   if (!parsed.success)
     throw new GatewayError("GATEWAY_INTERNAL", {
       message: "A configured rate limit is malformed.",
@@ -62,7 +78,7 @@ export function createD1GatewayLimitPort(
   db: D1Database,
   deps: { clock: GatewayClock; ids: GatewayIds },
 ): GatewayLimitPort {
-  async function subjects(input: Parameters<GatewayLimitPort["admit"]>[0], nowS: number): Promise<Subject[]> {
+  async function subjects(input: LimitInput, nowS: number): Promise<Subject[]> {
     const row = await db
       .prepare(
         `SELECT
@@ -72,26 +88,42 @@ export function createD1GatewayLimitPort(
                AND m.catalog_version = ${publishedCatalogVersionSql("?4")}) AS model_limits,
            (SELECT s.rate_limit_json FROM gateway_tenant_subscription s
              WHERE s.tenant_id = ?3 AND s.status IN ('trialing', 'active')
-             ORDER BY s.current_period_end DESC LIMIT 1) AS tenant_limits
+             ORDER BY s.current_period_end DESC LIMIT 1) AS subscription_limits,
+           (SELECT t.rate_limit_json FROM tenant t WHERE t.id = ?3) AS tenant_limits,
+           (SELECT tm.rate_limit_json FROM tenant_member tm
+             WHERE tm.tenant_id = ?3 AND tm.user_id = ?5) AS member_limits
          FROM (SELECT 1) AS one
          LEFT JOIN gateway_key k
-           ON k.id = COALESCE((SELECT t.key_id FROM gateway_token t WHERE t.id = ?1), ?1)`,
+           ON k.id = COALESCE((SELECT t.key_id FROM gateway_token t WHERE t.id = ?1), ?1) AND k.tenant_id = ?3`,
       )
-      .bind(input.keyId ?? null, input.modelCode, input.tenantId, nowS)
+      .bind(input.keyId ?? null, input.modelCode, input.tenantId, nowS, input.userId)
       .first<{
         key_id: string | null;
         key_limits: string | null;
         model_limits: string | null;
+        subscription_limits: string | null;
         tenant_limits: string | null;
+        member_limits: string | null;
       }>();
     const list: Subject[] = [];
     const key = row?.key_id ? parseLimits(row.key_limits, "key") : undefined;
-    if (key && row?.key_id) list.push({ scope: "key", subject: `key:${row.key_id}`, limits: key });
-    const model = parseLimits(row?.model_limits ?? null, "model");
+    if (key && row?.key_id)
+      list.push({ scope: "key", subject: gatewayLimitSubjects.key(input.tenantId, row.key_id), limits: key });
+    const member = parseLimits(row?.member_limits, "member");
+    if (member)
+      list.push({ scope: "user", subject: gatewayLimitSubjects.member(input.tenantId, input.userId), limits: member });
+    const model = parseLimits(row?.model_limits, "model");
     if (model)
-      list.push({ scope: "user", subject: `model:${input.modelCode}:user:${input.userId}`, limits: model });
-    const tenant = parseLimits(row?.tenant_limits ?? null, "tenant");
-    if (tenant) list.push({ scope: "tenant", subject: `tenant:${input.tenantId}`, limits: tenant });
+      list.push({
+        scope: "user",
+        subject: gatewayLimitSubjects.model(input.tenantId, input.modelCode, input.userId),
+        limits: model,
+      });
+    const tenant = tightestRateLimit([
+      parseLimits(row?.subscription_limits, "subscription"),
+      parseLimits(row?.tenant_limits, "tenant"),
+    ]);
+    if (tenant) list.push({ scope: "tenant", subject: gatewayLimitSubjects.tenant(input.tenantId), limits: tenant });
     return list;
   }
 
@@ -141,8 +173,14 @@ export function createD1GatewayLimitPort(
     await db.prepare(`DELETE FROM gateway_inflight WHERE lease_id = ?`).bind(leaseId).run();
   }
 
-  async function lease(list: Subject[], leaseId: string, nowMs: number): Promise<LimitDecision> {
-    const bounded = list.filter((entry) => entry.limits.concurrency);
+  async function lease(list: Subject[], leaseId: string, nowMs: number, media: boolean): Promise<LimitDecision> {
+    // Requests in flight, and (for a media generation) media jobs in flight.
+    const bounded = list.flatMap((entry) => [
+      ...(entry.limits.concurrency ? [{ scope: entry.scope, subject: entry.subject, limit: entry.limits.concurrency }] : []),
+      ...(media && entry.limits.mediaJobs
+        ? [{ scope: entry.scope, subject: gatewayLimitSubjects.media(entry.subject), limit: entry.limits.mediaJobs }]
+        : []),
+    ]);
     if (bounded.length === 0) return { allowed: true, leaseId };
     const nowS = toSeconds(nowMs);
     const expiresS = toSeconds(nowMs + GATEWAY_LEASE_TTL_MS);
@@ -156,7 +194,7 @@ export function createD1GatewayLimitPort(
            SELECT ?1, ?2, ?3, ?4
             WHERE (SELECT COUNT(*) FROM gateway_inflight WHERE subject = ?2) < ?5`,
         )
-        .bind(leaseId, entry.subject, expiresS, nowS, entry.limits.concurrency!),
+        .bind(leaseId, entry.subject, expiresS, nowS, entry.limit),
     ]);
     const results = await db.batch(statements);
     const denied = bounded.find((_entry, index) => !(results[index * 2 + 1]?.meta.changes ?? 0));
@@ -175,7 +213,7 @@ export function createD1GatewayLimitPort(
       const nowMs = deps.clock.now();
       const list = await subjects(input, toSeconds(nowMs));
       const leaseId = `gwl_${deps.ids.requestId()}`;
-      return (await countWindows(list, input, nowMs)) ?? lease(list, leaseId, nowMs);
+      return (await countWindows(list, input, nowMs)) ?? lease(list, leaseId, nowMs, input.media === true);
     },
     release,
   };
