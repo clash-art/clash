@@ -188,22 +188,27 @@ function eventEnd(bytes: Uint8Array, final: boolean): number {
 }
 
 /**
- * Pass an SSE byte stream through, dropping whole events `drop` selects. Kept
- * events leave as their original bytes, unchanged, as soon as their blank
- * line arrives; at most one partial event is held. Comments are kept.
+ * Pass an SSE byte stream through event by event: `map` gets each complete
+ * event with its original bytes and returns the bytes to send, or null to
+ * drop the event. A block that is not exactly one event (a comment, a blank
+ * line) leaves unchanged. Events leave as soon as their blank line arrives;
+ * at most one partial event is held.
  */
-export function createSseEventFilter(drop: (event: SseEvent) => boolean): TransformStream<Uint8Array, Uint8Array> {
+export function createSseEventTransform(
+  map: (event: SseEvent, raw: Uint8Array) => Uint8Array | null,
+): TransformStream<Uint8Array, Uint8Array> {
   let pending = new Uint8Array(0);
   const decoder = new TextDecoder();
   const emit = (controller: TransformStreamDefaultController<Uint8Array>, final: boolean) => {
     for (;;) {
       const end = eventEnd(pending, final);
       if (end === -1) return;
-      const raw = pending.subarray(0, end);
+      const raw = pending.slice(0, end);
       // The event is known complete here, so end() also takes a final lone CR.
       const parser = createSseParser();
       const events = [...parser.push(decoder.decode(raw)), ...parser.end()];
-      if (!(events.length === 1 && drop(events[0]!))) controller.enqueue(raw.slice());
+      const out = events.length === 1 ? map(events[0]!, raw) : raw;
+      if (out) controller.enqueue(out);
       pending = pending.slice(end);
     }
   };
@@ -220,6 +225,158 @@ export function createSseEventFilter(drop: (event: SseEvent) => boolean): Transf
       if (pending.byteLength) controller.enqueue(pending);
     },
   });
+}
+
+/**
+ * Pass an SSE byte stream through, dropping whole events `drop` selects. Kept
+ * events leave as their original bytes, unchanged. Comments are kept.
+ */
+export function createSseEventFilter(drop: (event: SseEvent) => boolean): TransformStream<Uint8Array, Uint8Array> {
+  return createSseEventTransform((event, raw) => (drop(event) ? null : raw));
+}
+
+// ─── Model rewriting ──────────────────────────────────────────────────────
+
+const JSON_SPACE = new Set([" ", "\t", "\n", "\r"]);
+const skipSpace = (text: string, index: number) => {
+  while (index < text.length && JSON_SPACE.has(text[index]!)) index += 1;
+  return index;
+};
+
+/** End (exclusive) of the JSON string starting at `index`, or -1. */
+function jsonStringEnd(text: string, index: number): number {
+  for (let at = index + 1; at < text.length; at += 1) {
+    const char = text[at];
+    if (char === "\\") at += 1;
+    else if (char === '"') return at + 1;
+  }
+  return -1;
+}
+
+/** End (exclusive) of the JSON value starting at `index`, or -1. */
+function jsonValueEnd(text: string, index: number): number {
+  const first = text[index];
+  if (first === '"') return jsonStringEnd(text, index);
+  if (first === "{" || first === "[") {
+    let depth = 0;
+    for (let at = index; at < text.length; at += 1) {
+      const char = text[at];
+      if (char === '"') {
+        const end = jsonStringEnd(text, at);
+        if (end === -1) return -1;
+        at = end - 1;
+      } else if (char === "{" || char === "[") depth += 1;
+      else if (char === "}" || char === "]") {
+        depth -= 1;
+        if (depth === 0) return at + 1;
+      }
+    }
+    return -1;
+  }
+  let at = index;
+  while (at < text.length && !",}] \t\n\r".includes(text[at]!)) at += 1;
+  return at === index ? -1 : at;
+}
+
+/** Spans of every member named `key` of the object starting at `index` (duplicates included). */
+function jsonMemberSpans(text: string, index: number, key: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  if (text[index] !== "{") return spans;
+  let at = skipSpace(text, index + 1);
+  if (text[at] === "}") return spans;
+  for (;;) {
+    if (text[at] !== '"') return [];
+    const nameEnd = jsonStringEnd(text, at);
+    if (nameEnd === -1) return [];
+    let name: unknown;
+    try {
+      name = JSON.parse(text.slice(at, nameEnd));
+    } catch {
+      return [];
+    }
+    at = skipSpace(text, nameEnd);
+    if (text[at] !== ":") return [];
+    const start = skipSpace(text, at + 1);
+    const end = jsonValueEnd(text, start);
+    if (end === -1) return [];
+    if (name === key) spans.push({ start, end });
+    at = skipSpace(text, end);
+    if (text[at] === ",") {
+      at = skipSpace(text, at + 1);
+      continue;
+    }
+    return text[at] === "}" ? spans : [];
+  }
+}
+
+/**
+ * `json` with every string member at one of `paths` set to `value`, every
+ * other byte unchanged; undefined when nothing needed changing.
+ */
+export function rewriteJsonStringMembers(
+  json: string,
+  paths: readonly (readonly string[])[],
+  value: string,
+): string | undefined {
+  const replacement = JSON.stringify(value);
+  const targets: Array<{ start: number; end: number }> = [];
+  const visit = (index: number, path: readonly string[]) => {
+    const [key, ...rest] = path;
+    if (key === undefined) return;
+    for (const span of jsonMemberSpans(json, index, key)) {
+      if (rest.length) visit(span.start, rest);
+      else if (json[span.start] === '"' && json.slice(span.start, span.end) !== replacement) targets.push(span);
+    }
+  };
+  for (const path of paths) visit(skipSpace(json, 0), path);
+  if (targets.length === 0) return undefined;
+  let out = json;
+  for (const span of targets.sort((a, b) => b.start - a.start))
+    out = out.slice(0, span.start) + replacement + out.slice(span.end);
+  return out;
+}
+
+/** Where a stream event names its model: OpenAI chunks at top level, Anthropic `message_start` under `message`. */
+export const SSE_MODEL_PATHS: Readonly<Record<GatewayUsageShape, readonly (readonly string[])[]>> = {
+  "openai-chat": [["model"]],
+  "anthropic-messages": [["model"], ["message", "model"]],
+};
+
+const DATA_LINE = /^data: ?/;
+const LINE_ENDING = /(?:\r\n|\r|\n)$/;
+const encoder = new TextEncoder();
+
+/**
+ * Event mapper for createSseEventTransform: set the event's model to `model`,
+ * the public model code the caller asked for, so an upstream model name never
+ * reaches the caller. Only the model value's bytes change. A JSON payload
+ * split over several `data:` lines (no known upstream sends one) is
+ * re-encoded instead.
+ */
+export function sseModelRewrite(
+  model: string,
+  paths: readonly (readonly string[])[],
+): (event: SseEvent, raw: Uint8Array) => Uint8Array {
+  const decoder = new TextDecoder();
+  return (event, raw) => {
+    if (event.data === OPENAI_STREAM_DONE || parseData(event.data) === undefined) return raw;
+    const rewritten = rewriteJsonStringMembers(event.data, paths, model);
+    if (rewritten === undefined) return raw;
+    const text = decoder.decode(raw);
+    const lines = text.split(/(?<=\r\n|\r(?!\n)|\n)/);
+    const dataLines = lines.filter((line) => DATA_LINE.test(line));
+    if (dataLines.length !== 1) return encoder.encode(encodeSseEvent({ ...event, data: rewritten }));
+    return encoder.encode(
+      lines
+        .map((line) => {
+          if (!DATA_LINE.test(line)) return line;
+          const prefix = DATA_LINE.exec(line)![0];
+          const ending = LINE_ENDING.exec(line)?.[0] ?? "";
+          return `${prefix}${rewritten}${ending}`;
+        })
+        .join(""),
+    );
+  };
 }
 
 export interface UsageCaptureResult extends StreamObservation {

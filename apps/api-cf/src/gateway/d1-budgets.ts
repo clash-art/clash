@@ -29,6 +29,12 @@
  * `sweepGatewayHolds(env)` runs it from the scheduled handler and the admin
  * route.
  *
+ * Enforcement (#354, 0041): only a `hard` budget's limit refuses the hold. A
+ * `soft` or `alert` budget holds past it, and the same batch appends its
+ * `gateway_budget_event` rows (soft_exceeded per request, alert_threshold per
+ * limit and threshold, deduplicated by a unique index); the rows it inserted
+ * are the reservation's flags.
+ *
  * A caller without any budget row is refused (GATEWAY_BUDGET_EXCEEDED,
  * reason `no_budget`): a missing budget is never unlimited. Periodic reset of
  * `daily`/`monthly` budgets is not implemented yet; such budgets keep counting
@@ -40,6 +46,8 @@ import {
   assertMicroCredits,
   planReserve,
   sweepExpiredGatewayHolds,
+  type BudgetEnforcement,
+  type BudgetFlag,
   type BudgetScope,
   type BudgetState,
   type GatewayBudgetPort,
@@ -72,6 +80,21 @@ interface BudgetRow {
   reserved_micro_credits: number;
   version: number;
   reset_at: number | null;
+  enforcement: BudgetEnforcement;
+  alert_threshold_pct: number | null;
+}
+
+/** A gateway_budget_event row the reservation batch inserted (RETURNING). */
+interface BudgetEventRow {
+  budget_id: string;
+  scope: BudgetScope;
+  kind: BudgetFlag["kind"];
+  enforcement: BudgetEnforcement;
+  dedupe_key: string;
+  limit_micro_credits: number;
+  spent_micro_credits: number;
+  reserved_micro_credits: number;
+  threshold_pct: number | null;
 }
 
 interface SettleRow {
@@ -99,7 +122,25 @@ interface SettleRow {
 }
 
 const BUDGET_COLUMNS = `id, tenant_id, scope, scope_id, status, limit_micro_credits,
-  spent_micro_credits, reserved_micro_credits, version, reset_at`;
+  spent_micro_credits, reserved_micro_credits, version, reset_at, enforcement, alert_threshold_pct`;
+
+const EVENT_COLUMNS = `(id, tenant_id, budget_id, scope, scope_id, kind, enforcement, dedupe_key, request_id,
+  limit_micro_credits, spent_micro_credits, reserved_micro_credits, threshold_pct, occurred_at)`;
+const EVENT_RETURNING = `RETURNING budget_id, scope, kind, enforcement, dedupe_key, limit_micro_credits,
+  spent_micro_credits, reserved_micro_credits, threshold_pct`;
+
+function budgetFlag(row: BudgetEventRow): BudgetFlag {
+  return {
+    budgetId: row.budget_id,
+    scope: row.scope,
+    kind: row.kind,
+    enforcement: row.enforcement,
+    limitMicroCredits: row.limit_micro_credits,
+    usedMicroCredits: row.spent_micro_credits + row.reserved_micro_credits,
+    ...(row.threshold_pct !== null ? { thresholdPct: row.threshold_pct } : {}),
+    dedupeKey: row.dedupe_key,
+  };
+}
 
 const SETTLE_COLUMNS = `request_id, tenant_id, user_id, key_id, status, amount_micro_credits,
   model_code, model_kind, credential_scope, input_tokens, output_tokens, cached_input_tokens,
@@ -116,6 +157,8 @@ function budgetState(row: BudgetRow): BudgetState {
     reservedMicroCredits: row.reserved_micro_credits,
     version: row.version,
     ...(row.reset_at !== null ? { resetAt: toMs(row.reset_at) } : {}),
+    enforcement: row.enforcement,
+    ...(row.alert_threshold_pct !== null ? { alertThresholdPct: row.alert_threshold_pct } : {}),
   };
 }
 
@@ -226,7 +269,7 @@ export function createD1GatewayBudgetPorts(
                   SET reserved_micro_credits = reserved_micro_credits + ?2,
                       version = version + 1, updated_at = ?4
                 WHERE id = ?1 AND tenant_id = ?5 AND status = 'active'
-                  AND (limit_micro_credits IS NULL
+                  AND (limit_micro_credits IS NULL OR enforcement <> 'hard'
                        OR spent_micro_credits + reserved_micro_credits + ?2 <= limit_micro_credits)
                   AND NOT EXISTS (SELECT 1 FROM gateway_usage_ledger
                                    WHERE request_id = ?3 AND budget_id = ?1 AND kind = 'hold')
@@ -258,15 +301,52 @@ export function createD1GatewayBudgetPorts(
             .bind(budgetId, input.requestId, input.tenantId, nowS),
         );
       }
+      // Flags, recorded in the same transaction as the holds (core budgetFlags,
+      // in SQL over the counters after the hold): a soft budget past its limit
+      // once per request, an alert threshold once per limit and threshold.
+      const eventStatements = ids.flatMap((budgetId) => [
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO gateway_budget_event ${EVENT_COLUMNS}
+             SELECT ?3 || ':soft:' || id, tenant_id, id, scope, scope_id, 'soft_exceeded', enforcement, ?3, ?3,
+                    limit_micro_credits, spent_micro_credits, reserved_micro_credits, NULL, ?4
+               FROM gateway_budget
+              WHERE id = ?1 AND tenant_id = ?2 AND enforcement = 'soft' AND limit_micro_credits IS NOT NULL
+                AND spent_micro_credits + reserved_micro_credits > limit_micro_credits
+             ${EVENT_RETURNING}`,
+          )
+          .bind(budgetId, input.tenantId, input.requestId, nowS),
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO gateway_budget_event ${EVENT_COLUMNS}
+             SELECT ?3 || ':alert:' || id, tenant_id, id, scope, scope_id, 'alert_threshold', enforcement,
+                    'limit=' || limit_micro_credits || ';pct=' || COALESCE(alert_threshold_pct, 100), ?3,
+                    limit_micro_credits, spent_micro_credits, reserved_micro_credits,
+                    COALESCE(alert_threshold_pct, 100), ?4
+               FROM gateway_budget
+              WHERE id = ?1 AND tenant_id = ?2 AND limit_micro_credits IS NOT NULL
+                AND (alert_threshold_pct IS NOT NULL OR enforcement = 'alert')
+                AND (spent_micro_credits + reserved_micro_credits) * 100
+                    >= limit_micro_credits * COALESCE(alert_threshold_pct, 100)
+             ${EVENT_RETURNING}`,
+          )
+          .bind(budgetId, input.tenantId, input.requestId, nowS),
+      ]);
+      let results: Awaited<ReturnType<D1Database["batch"]>>;
       try {
-        await db.batch(statements);
+        results = await db.batch([...statements, ...eventStatements]);
       } catch (cause) {
         throw await explainRefusal(input, ids, cause);
       }
+      const flags = results
+        .slice(statements.length)
+        .flatMap((result) => (result.results ?? []) as BudgetEventRow[])
+        .map(budgetFlag);
       return {
         requestId: input.requestId,
         holds: ids.map((budgetId) => ({ budgetId, microCredits: input.holdMicroCredits })),
         expiresAt: input.expiresAt,
+        ...(flags.length ? { flags } : {}),
       };
     },
 

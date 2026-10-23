@@ -24,6 +24,7 @@
   },
   "files": {
     "sessionSnapshot.ts": "Cross-tab get-session snapshot (localStorage, 5 min): a new tab's first get-session answers from it; cleared on sign-out, auth mutations, signed-out answers and API 401.",
-    "adminClient.ts": "Typed client for the gateway admin console API (/api/v1/admin/gateway, #353). Failures are AdminApiError with the server's GATEWAY_* code; adminCan/ADMIN_PAGES only decide what the UI offers, api-cf authorizes every call (apps/docs/guide/gateway-admin.md)."
+    "adminClient.ts": "Typed client for the gateway admin console API (/api/v1/admin/gateway, #353). Failures are AdminApiError with the server's GATEWAY_* code; adminCan/ADMIN_PAGES only decide what the UI offers, api-cf authorizes every call (apps/docs/guide/gateway-admin.md). Teams are read-only there.",
+    "teamClient.ts": "Typed client for team settings (/api/v1/gateway teams, invites, members, budgets, limits, purchases, a member's /me; #354) on the product session. Failures are coded (TeamApiError = AdminApiError); teamCan only decides what the UI offers (apps/docs/guide/gateway-teams.md)."
   }
 }

@@ -22,6 +22,7 @@ import { createProjectHostCommandRoutes } from "./project-host-command";
 import { createVoiceInputRoutes } from "./voice-input";
 import { gatewayTokenRoutes } from "./gateway-tokens";
 import { gatewayBillingRoutes } from "./gateway-billing";
+import { gatewayTeamRoutes } from "./gateway-team";
 import { adminGatewayRoutes } from "./admin/gateway";
 
 export const v1Routes = new Hono<{ Bindings: Env }>();
@@ -45,6 +46,9 @@ v1Routes.route("/gateway", gatewayTokenRoutes);
 // Tenant credit purchases (owner or platform admin) and the platform-admin
 // price book, packages and top-up packs.
 v1Routes.route("/gateway", gatewayBillingRoutes);
+// Team settings (#354): teams, invites, members and roles, owner budget
+// allocation and configurable rate limits, by the team owner.
+v1Routes.route("/gateway", gatewayTeamRoutes);
 v1Routes.route("/admin/gateway", adminGatewayRoutes);
 v1Routes.route("/runtimes", runtimesRoutes);
 v1Routes.route("/agents", agentRoutes);

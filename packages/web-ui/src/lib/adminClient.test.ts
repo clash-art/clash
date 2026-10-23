@@ -53,11 +53,11 @@ describe("adminRequest", () => {
   });
 
   it("sends JSON bodies with credentials and encodes path segments", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ key: {} }));
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json({ subscription: {} }));
     vi.stubGlobal("fetch", fetchMock);
-    await adminApi.setKeyRateLimit("team:a", "gwk/1", { concurrency: 2 });
+    await adminApi.setSubscriptionRateLimit("team:a/b", { concurrency: 2 });
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(String(url)).toContain("/api/v1/admin/gateway/tenants/team%3Aa/keys/gwk%2F1/rate-limit");
+    expect(String(url)).toContain("/api/v1/admin/gateway/tenants/team%3Aa%2Fb/subscription/rate-limit");
     expect(init).toMatchObject({ method: "PUT", credentials: "include", body: JSON.stringify({ rateLimit: { concurrency: 2 } }) });
   });
 });

@@ -22,7 +22,8 @@
  * (402 and every other admission error) is a plain coded JSON answer. Failover
  * happens only before the upstream's first byte. The upstream body is then
  * relayed byte for byte (stream.ts), except the usage chunk the gateway asked
- * for on a caller's behalf, and settled when it ends: observed usage, partial
+ * for on a caller's behalf and each chunk's `model`, which is the public model
+ * code the caller asked for (as in a plain answer), and settled when it ends: observed usage, partial
  * on a cut or failed stream, and after the upstream is aborted when the caller
  * disconnects. Headers are gone by then, so a settlement or retention failure
  * is reported in-stream (encodeGatewayStreamState) as well as by the
@@ -35,7 +36,7 @@ import {
   settleGatewayRequest,
   type GatewayAdmission,
 } from "./admission.js";
-import type { GatewayOutcome } from "./budget.js";
+import type { BudgetFlag, GatewayOutcome } from "./budget.js";
 import {
   GatewayError,
   gatewayErrorResponseInit,
@@ -75,6 +76,22 @@ export const GATEWAY_REQUEST_ID_HEADER = "x-clash-request-id";
  * is still the request's real outcome.
  */
 export const GATEWAY_SETTLEMENT_HEADER = "x-gateway-settlement";
+
+/**
+ * Present only when the reservation admitted the request past a soft budget
+ * limit or across an alert threshold (#354): one
+ * `<soft_exceeded|alert_threshold>; budget_id=<id>; scope=<scope>` entry per
+ * recorded flag, comma-separated. Set on every answer of the request,
+ * stream headers included, since the flags are known at admission.
+ */
+export const GATEWAY_BUDGET_HEADER = "x-gateway-budget";
+
+export function budgetHeaderValue(flags: readonly BudgetFlag[]): string {
+  return flags.map((flag) => `${flag.kind}; budget_id=${flag.budgetId}; scope=${flag.scope}`).join(", ");
+}
+
+const budgetHeaders = (admission: GatewayAdmission): Record<string, string> =>
+  admission.reservation.flags?.length ? { [GATEWAY_BUDGET_HEADER]: budgetHeaderValue(admission.reservation.flags) } : {};
 
 export const GATEWAY_APP_DEFAULTS = {
   holdTtlMs: 10 * 60 * 1000,
@@ -441,7 +458,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         return {
           response: json(
             { ...result.body, model: admission.request.model },
-            { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId, ...settlement } },
+            { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId, ...budgetHeaders(admission), ...settlement } },
           ),
           streaming: false,
         };
@@ -486,7 +503,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         typeof failure.details?.upstreamStatus === "number" ? failure.details.upstreamStatus : undefined,
       durationMs: ports.clock.now() - started,
     });
-    return { response: errorResponse(failure, requestId, settlement), streaming: false };
+    return { response: errorResponse(failure, requestId, { ...budgetHeaders(admission), ...settlement }), streaming: false };
   }
 
   /**
@@ -508,6 +525,8 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       maxDurationMs: streamMaxDurationMs,
       // The usage chunk exists because the gateway asked for it; a caller that did not gets the stream it asked for.
       ...(callerOmittedStreamUsage(admission.request) ? { dropEvent: isOpenAIUsageOnlyChunk } : {}),
+      // The public model code, not the upstream's, in every chunk, as in a plain answer.
+      publicModel: admission.request.model,
       ...(copy ? { onDelivered: (chunk: Uint8Array) => copy.append(chunk) } : {}),
       ...(options.waitUntil ? { waitUntil: options.waitUntil } : {}),
       onEnd: (relay) => finishStream(admission, context, relay, { copy, contentType: result.contentType }),
@@ -518,6 +537,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         "content-type": result.contentType,
         "cache-control": "no-store",
         [GATEWAY_REQUEST_ID_HEADER]: admission.requestId,
+        ...budgetHeaders(admission),
       },
     });
   }

@@ -50,6 +50,9 @@ export const router = createBrowserRouter([
         lazy: lazyRoute(() => import("./routes/project.$id")),
       },
       { path: "billing", lazy: lazyRoute(() => import("./routes/billing")) },
+      // Team settings (#354): the team owner manages members, budgets and limits.
+      { path: "team", lazy: lazyRoute(() => import("./routes/team")) },
+      { path: "team/invite", lazy: lazyRoute(() => import("./routes/team.invite")) },
       // Gateway admin console (#353): every page's loader asks api-cf for the
       // signed-in admin account (#394), whose own sign-in is /admin/login.
       { path: "admin/login", lazy: lazyRoute(() => import("./routes/admin.login")) },

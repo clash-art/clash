@@ -132,10 +132,13 @@ export interface RetainedPrompt {
   response: RetainedBody;
 }
 
+/** A configured rate limit (`GatewayRateLimitSchema` on the server). */
 export interface RateLimit {
   requestsPerMinute?: number;
   tokensPerMinute?: number;
   concurrency?: number;
+  /** Media/AIGC generations in flight at once. */
+  mediaJobs?: number;
 }
 
 export interface CatalogVersionSummary {
@@ -260,7 +263,14 @@ export interface Budget {
   spentMicroCredits: number;
   reservedMicroCredits: number;
   availableMicroCredits: number | null;
+  /** hard (refuse), soft (admit and flag), alert (admit and notify). A wallet is always hard. */
+  enforcement?: BudgetEnforcement;
+  /** Percent of the limit an alert is raised at; null: none (an alert budget alerts at 100%). */
+  alertThresholdPct?: number | null;
 }
+
+export const BUDGET_ENFORCEMENTS = ["hard", "soft", "alert"] as const;
+export type BudgetEnforcement = (typeof BUDGET_ENFORCEMENTS)[number];
 
 export interface Subscription {
   id: string;
@@ -483,13 +493,10 @@ export const adminApi = {
   disableAdminAccount: (id: string, reason?: string) =>
     adminRequest<{ disabled: boolean }>("POST", `/admin-accounts/${seg(id)}/disable`, reason ? { reason } : {}),
 
+  // Teams are read-only in the console (#354): owners allocate budgets and set limits in team settings.
   budgets: (tenantId: string) =>
     adminRequest<{ budgets: Budget[]; wallet: Budget | null; subscription: Subscription | null }>("GET", `/tenants/${seg(tenantId)}/budgets`),
-  setBudget: (tenantId: string, scope: "user" | "key", scopeId: string, body: { limitMicroCredits: number | null; status?: "active" | "suspended"; reason?: string }) =>
-    adminRequest<{ budget: Budget }>("PUT", `/tenants/${seg(tenantId)}/budgets/${scope}/${seg(scopeId)}`, body),
   keys: (tenantId: string) => adminRequest<{ keys: GatewayKey[] }>("GET", `/tenants/${seg(tenantId)}/keys`),
-  setKeyRateLimit: (tenantId: string, keyId: string, rateLimit: RateLimit | null) =>
-    adminRequest<{ key: GatewayKey }>("PUT", `/tenants/${seg(tenantId)}/keys/${seg(keyId)}/rate-limit`, { rateLimit }),
   setSubscriptionRateLimit: (tenantId: string, rateLimit: RateLimit | null, reason?: string) =>
     adminRequest<{ subscription: Subscription }>("PUT", `/tenants/${seg(tenantId)}/subscription/rate-limit`, {
       rateLimit,
@@ -520,10 +527,15 @@ export function parseCredits(text: string): number | null {
 }
 
 /** Rate-limit form fields -> a limit, or null when every field is empty. Throws on a non-integer. */
-export function parseRateLimit(fields: { requestsPerMinute: string; tokensPerMinute: string; concurrency: string }): RateLimit | null {
+export function parseRateLimit(fields: {
+  requestsPerMinute: string;
+  tokensPerMinute: string;
+  concurrency: string;
+  mediaJobs?: string;
+}): RateLimit | null {
   const limit: RateLimit = {};
-  for (const key of ["requestsPerMinute", "tokensPerMinute", "concurrency"] as const) {
-    const text = fields[key].trim();
+  for (const key of ["requestsPerMinute", "tokensPerMinute", "concurrency", "mediaJobs"] as const) {
+    const text = (fields[key] ?? "").trim();
     if (!text) continue;
     if (!/^\d+$/.test(text) || Number(text) <= 0) throw new Error(`${key} must be a positive whole number.`);
     limit[key] = Number(text);
@@ -537,6 +549,7 @@ export function describeRateLimit(limit: RateLimit | null | undefined): string {
     limit.requestsPerMinute ? `${limit.requestsPerMinute} rpm` : null,
     limit.tokensPerMinute ? `${limit.tokensPerMinute.toLocaleString()} tpm` : null,
     limit.concurrency ? `${limit.concurrency} concurrent` : null,
+    limit.mediaJobs ? `${limit.mediaJobs} media jobs` : null,
   ].filter(Boolean);
   return parts.join(" · ");
 }

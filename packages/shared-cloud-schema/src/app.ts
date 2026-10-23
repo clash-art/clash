@@ -37,6 +37,8 @@ export const tenants = sqliteTable("tenant", {
   name: text("name").notNull(),
   /** `personal` (lazily created personal:<userId>) or `team` (shared wallet). */
   kind: text("kind").notNull().default("personal"),
+  /** Owner-configured tenant-wide rate limit (0041), counted with the subscription's. */
+  rateLimitJson: text("rate_limit_json"),
   createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
 });
@@ -90,6 +92,8 @@ export const tenantMembers = sqliteTable(
     userId: text("user_id").notNull(),
     /** Owner or member only; 0038 triggers refuse any other role. */
     role: text("role", { enum: TENANT_MEMBER_ROLES }).notNull(),
+    /** Owner-configured per-member rate limit (0041). */
+    rateLimitJson: text("rate_limit_json"),
     createdAt: integer("created_at", { mode: "timestamp" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp" }).notNull(),
   },

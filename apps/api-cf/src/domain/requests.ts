@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { GATEWAY_BILLING_PERIODS, GATEWAY_PRICE_UNITS } from "@clash/gateway-core";
+import {
+  GATEWAY_BILLING_PERIODS,
+  GATEWAY_BUDGET_ENFORCEMENTS,
+  GATEWAY_PRICE_UNITS,
+  GatewayRateLimitSchema,
+} from "@clash/gateway-core";
 
 /** Default model names — single source of truth for request schemas & response metadata. */
 export const DEFAULT_IMAGE_MODEL = "nano-banana-2";
@@ -104,18 +109,12 @@ export const GatewayPriceDraftRequestSchema = z
   .strict();
 
 /**
- * A configured rate limit (`rate_limit_json` on keys, catalog models, upstream
- * accounts, packages and subscriptions), as d1-limits.ts enforces it. At least
- * one bound; unknown fields are refused so a typo never silently admits.
+ * A configured rate limit (`rate_limit_json` on keys, members, tenants,
+ * catalog models, upstream accounts, packages and subscriptions), as
+ * d1-limits.ts enforces it: gateway-core's one schema. At least one bound;
+ * unknown fields are refused so a typo never silently admits.
  */
-export const GatewayRateLimitSchema = z
-  .object({
-    requestsPerMinute: safeInt().positive().optional(),
-    tokensPerMinute: safeInt().positive().optional(),
-    concurrency: safeInt().positive().optional(),
-  })
-  .strict()
-  .refine((limits) => Object.keys(limits).length > 0, "empty rate limit");
+export { GatewayRateLimitSchema };
 const RateLimitRequestSchema = GatewayRateLimitSchema;
 
 const currency = () => z.string().regex(/^[A-Z]{3}$/);
@@ -234,14 +233,50 @@ export const GatewayUpstreamRotateRequestSchema = z
   .object({ credential: GatewayUpstreamCredentialSchema, reason: reason().optional() })
   .strict();
 
-/** PUT /api/v1/admin/gateway/tenants/:tenantId/budgets/(user|key)/:scopeId. */
+/**
+ * PUT /api/v1/gateway/tenants/:tenantId/budgets/(user|key)/:scopeId: the team
+ * owner allocates a member or key budget (team settings, #354).
+ */
 export const GatewayBudgetSetRequestSchema = z
   .object({
     /** null: explicitly unlimited (the tenant wallet still caps it). */
     limitMicroCredits: safeInt().nullable(),
     status: z.enum(["active", "suspended"]).optional(),
+    /** hard (refuse), soft (admit and flag) or alert (admit and notify); unchanged when omitted, hard for a new budget. */
+    enforcement: z.enum(GATEWAY_BUDGET_ENFORCEMENTS).optional(),
+    /** 1-100: alert at this share of the limit; null clears it; unchanged when omitted. */
+    alertThresholdPct: z.number().int().min(1).max(100).nullable().optional(),
+    /**
+     * Set a limit below what is already spent and held (refused otherwise
+     * with GATEWAY_BUDGET_BELOW_USAGE). An override needs a reason and is
+     * audited as `budget.override`.
+     */
+    override: z.literal(true).optional(),
     reason: reason().optional(),
   })
+  .strict()
+  .refine((body) => !body.override || body.reason !== undefined, { message: "an override needs a reason", path: ["reason"] });
+
+/** Team name for POST /api/v1/gateway/teams. */
+export const GatewayTeamCreateRequestSchema = z.object({ name: z.string().trim().min(1).max(100) }).strict();
+
+/** POST /api/v1/gateway/tenants/:tenantId/invites. */
+export const GatewayInviteCreateRequestSchema = z
+  .object({
+    email: z.email().max(254).transform((email) => email.toLowerCase()),
+    role: z.enum(GATEWAY_TENANT_ROLES).default("member"),
+  })
+  .strict();
+
+/** The invite secret from the invite link (`gwi_<id>.<secret>`). */
+export const GatewayInviteTokenSchema = z.string().regex(/^gwi_[0-9a-f]{24}\.[0-9a-f]{64}$/);
+
+/** POST /api/v1/gateway/invites/lookup and /invites/accept. */
+export const GatewayInviteTokenRequestSchema = z.object({ token: GatewayInviteTokenSchema }).strict();
+
+/** PUT /api/v1/gateway/tenants/:tenantId/members/:userId/role. */
+export const GatewayMemberRoleRequestSchema = z
+  .object({ role: z.enum(GATEWAY_TENANT_ROLES), reason: reason().optional() })
   .strict();
 
 /** POST /api/v1/admin/gateway/tenants/:tenantId/wallet/adjust (platform correction). */

@@ -40,39 +40,34 @@ describe("AdminBudgets", () => {
     render(
       <AdminBudgets tenantId="team:a" wallet={wallet} budgets={[wallet]} subscription={null} keys={keys} members={members} can={can} onChanged={() => undefined} />,
     );
-  const none: BudgetPermissions = { budgetsWrite: false, limitsWrite: false, walletAdjust: false, subscriptionLimits: false };
+  const none: BudgetPermissions = { walletAdjust: false, subscriptionLimits: false };
 
   it("is read-only for a role without write permissions", () => {
     renderBudgets(none);
     expect(screen.getByText("7.5")).toBeInTheDocument();
-    for (const name of ["Set budget", "Correct wallet", "Wallet status", "Rate limit for key ci"])
-      expect(screen.queryByRole("form", { name })).toBeNull();
+    for (const name of ["Correct wallet", "Wallet status"]) expect(screen.queryByRole("form", { name })).toBeNull();
   });
 
-  it("sets a member budget in micro-credits, and only platform staff see wallet corrections", async () => {
-    const calls = stubAdminFetch(() => Response.json({ budget: {} }));
-    renderBudgets({ ...none, budgetsWrite: true, limitsWrite: true });
-    expect(screen.queryByRole("form", { name: "Correct wallet" })).toBeNull();
-    expect(screen.getByRole("form", { name: "Rate limit for key ci" })).toBeInTheDocument();
-    const form = screen.getByRole("form", { name: "Set budget" });
-    type(form, "Limit (credits)", "2.25");
-    chooseOption("Budget status", "Suspended", form);
-    fireEvent.submit(form);
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toEqual({
-      method: "PUT",
-      path: "/api/v1/admin/gateway/tenants/team%3Aa/budgets/user/u-ann",
-      body: { limitMicroCredits: 2_250_000, status: "suspended" },
-    });
-  });
-
-  it("shows a refused budget's code inline", async () => {
-    stubAdminFetch(() => gatewayError(409, "GATEWAY_BUDGET_BELOW_USAGE", "The budget limit cannot go below what is already spent and reserved."));
-    renderBudgets({ ...none, budgetsWrite: true });
-    const form = screen.getByRole("form", { name: "Set budget" });
-    type(form, "Limit (credits)", "0");
-    fireEvent.submit(form);
-    expect(await screen.findByText("GATEWAY_BUDGET_BELOW_USAGE")).toBeInTheDocument();
+  it("only views team budgets and key limits, even for platform staff: owners set them in team settings", () => {
+    const ann: Budget = { ...wallet, id: "b-ann", scope: "user", scopeId: "u-ann", enforcement: "soft", limitMicroCredits: 1_000_000 };
+    render(
+      <AdminBudgets
+        tenantId="team:a"
+        wallet={wallet}
+        budgets={[wallet, ann]}
+        subscription={null}
+        keys={[{ ...keys[0]!, rateLimit: { requestsPerMinute: 30 } }]}
+        members={members}
+        can={{ walletAdjust: true, subscriptionLimits: true }}
+        onChanged={() => undefined}
+      />,
+    );
+    const table = screen.getByRole("table", { name: "Budgets" });
+    expect(within(table).getByText("user: Ann")).toBeInTheDocument();
+    expect(within(table).getByText("soft")).toBeInTheDocument();
+    expect(screen.getByText("30 rpm")).toBeInTheDocument();
+    for (const name of ["Set budget", "Rate limit for key ci"]) expect(screen.queryByRole("form", { name })).toBeNull();
+    expect(screen.getByRole("form", { name: "Correct wallet" })).toBeInTheDocument();
   });
 
   it("posts a wallet correction with a reason and a fresh idempotency key", async () => {

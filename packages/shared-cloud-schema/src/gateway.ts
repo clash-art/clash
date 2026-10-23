@@ -264,6 +264,8 @@ export const gatewayPrices = sqliteTable(
   }),
 );
 
+export const GATEWAY_BUDGET_ENFORCEMENTS = ["hard", "soft", "alert"] as const;
+
 /**
  * Budgets: `tenant` is the team wallet, `user` a member budget the owner
  * allocates from it, `key` a per-key cap. NULL limit = explicitly unlimited.
@@ -287,6 +289,10 @@ export const gatewayBudgets = sqliteTable(
       .default(0),
     status: text("status").notNull().default("active"),
     version: integer("version").notNull().default(0),
+    /** hard | soft | alert (0041; triggers keep a tenant wallet hard). */
+    enforcement: text("enforcement", { enum: GATEWAY_BUDGET_ENFORCEMENTS }).notNull().default("hard"),
+    /** 1-100: alert at this share of the limit; NULL = at the limit for `alert`, never otherwise. */
+    alertThresholdPct: integer("alert_threshold_pct"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -405,10 +411,55 @@ export const gatewayUsageLedger = sqliteTable(
   }),
 );
 
+export const GATEWAY_BUDGET_EVENT_KINDS = ["soft_exceeded", "alert_threshold"] as const;
+
+/**
+ * Budget notifications (0041, #354), written in the reservation's batch:
+ * `soft_exceeded` once per request admitted past a soft limit, and
+ * `alert_threshold` once per budget, limit and threshold. Counters are the
+ * budget's after the hold; metadata only.
+ */
+export const gatewayBudgetEvents = sqliteTable(
+  "gateway_budget_event",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id").notNull(),
+    budgetId: text("budget_id").notNull(),
+    scope: text("scope").notNull(),
+    scopeId: text("scope_id").notNull(),
+    kind: text("kind", { enum: GATEWAY_BUDGET_EVENT_KINDS }).notNull(),
+    enforcement: text("enforcement").notNull(),
+    dedupeKey: text("dedupe_key").notNull(),
+    requestId: text("request_id"),
+    limitMicroCredits: integer("limit_micro_credits").notNull(),
+    spentMicroCredits: integer("spent_micro_credits").notNull(),
+    reservedMicroCredits: integer("reserved_micro_credits").notNull(),
+    thresholdPct: integer("threshold_pct"),
+    occurredAt: integer("occurred_at").notNull(),
+  },
+  (table) => ({
+    dedupeIdx: uniqueIndex("gateway_budget_event_dedupe_idx").on(
+      table.budgetId,
+      table.kind,
+      table.dedupeKey,
+    ),
+    tenantTimeIdx: index("gateway_budget_event_tenant_time_idx").on(
+      table.tenantId,
+      table.occurredAt,
+    ),
+    kindCheck: check(
+      "gateway_budget_event_kind_check",
+      sql`${table.kind} IN ('soft_exceeded', 'alert_threshold')`,
+    ),
+  }),
+);
+
 /**
  * Fixed-window request/token counters for the gateway limits port
- * (web/drizzle/0034_gateway_limits.sql). `subject` names what is counted, e.g.
- * `key:<gateway_key.id>`; `window_start` is unix seconds.
+ * (web/drizzle/0034_gateway_limits.sql). `subject` names what is counted and
+ * always starts with its tenant (0041): `tenant:<t>`, `tenant:<t>:user:<u>`,
+ * `tenant:<t>:key:<k>`, `tenant:<t>:model:<m>:user:<u>`; `window_start` is
+ * unix seconds.
  */
 export const gatewayRateWindows = sqliteTable(
   "gateway_rate_window",
