@@ -6,8 +6,9 @@
  * integration run, so both execute the same contract.
  *
  * The text model is a built-in shared-types card with an official
- * OpenAI-compatible route, published through `gateway_model.card_json`: the
- * catalog stays data. Seeded amounts are fixture inputs; the contract derives
+ * OpenAI-compatible route, and the messages model one with an official
+ * anthropic-compatible route (#349), both published through
+ * `gateway_model.card_json`: the catalog stays data. Seeded amounts are fixture inputs; the contract derives
  * every expectation from the ports, never from these numbers.
  */
 import type { D1Database } from "@cloudflare/workers-types";
@@ -69,6 +70,27 @@ export function officialChatCard(): ModelCard {
   return card;
 }
 
+/**
+ * A built-in text card the official gateway can serve over the Anthropic
+ * Messages wire format. It is the only anthropic-compatible card the seed
+ * publishes, so an agent's model id maps to it alone.
+ */
+export function officialMessagesCard(): ModelCard {
+  const card = MODEL_CARDS.find(
+    (candidate) =>
+      candidate.kind === "text" &&
+      listDeclaredModelUpstreamRoutes([candidate]).some(
+        (route) =>
+          route.providerId === "official" &&
+          route.apiShape === "anthropic-compatible" &&
+          route.upstreamId === "anthropic" &&
+          !route.executorPluginId,
+      ),
+  );
+  if (!card) throw new Error("shared-types has no official anthropic-compatible text card");
+  return card;
+}
+
 export interface TenantTokenOptions {
   modelAllowlist?: string[];
   scopes?: GatewayTokenScope[];
@@ -82,9 +104,13 @@ export interface SeededGateway {
   clock: GatewayClock;
   encryptionKey: string;
   textModel: string;
+  /** Served over the Anthropic Messages route (#349). */
+  messagesModel: string;
   catalogVersion: string;
   upstreamAccountId: string;
   upstreamApiKey: string;
+  /** The official anthropic-compatible account serving `messagesModel`. */
+  messagesAccountId: string;
   ports(overrides?: Partial<GatewayPorts>): GatewayPorts;
   /** Mint a token for a fresh user in their own personal tenant, with limited budgets unless `budgets: false`. */
   tenantToken(options?: TenantTokenOptions): Promise<{ token: string; userId: string; tenantId: string }>;
@@ -105,25 +131,30 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
   const catalogVersion = `contract-${run}`;
   const upstreamAccountId = `gwu_contract_${run}`;
   const upstreamApiKey = `sk-contract-${hex(12)}`;
+  const messagesCard = officialMessagesCard();
+  const messagesAccountId = `${upstreamAccountId}_messages`;
+  const published = messagesCard.id === card.id ? [card] : [card, messagesCard];
 
   await db.batch([
-    db
-      .prepare(
-        `INSERT INTO gateway_model (id, catalog_version, model_code, kind, enabled, card_json, max_output_tokens, published_at)
-         VALUES (?, ?, ?, ?, 1, ?, 4096, ?)`,
-      )
-      .bind(`gwm_${run}`, catalogVersion, card.id, card.kind, JSON.stringify(card), nowS - 60),
-    ...[
-      ["input_token", 3_000_000],
-      ["output_token", 15_000_000],
-    ].map(([unit, amount]) =>
+    ...published.flatMap((model, index) => [
       db
         .prepare(
-          `INSERT INTO gateway_price (id, price_version, model_code, upstream_id, unit, amount_micro, per, effective_from, published_at)
-           VALUES (?, ?, ?, '', ?, ?, 1000000, ?, ?)`,
+          `INSERT INTO gateway_model (id, catalog_version, model_code, kind, enabled, card_json, max_output_tokens, published_at)
+           VALUES (?, ?, ?, ?, 1, ?, 4096, ?)`,
         )
-        .bind(`gwp_${run}_${unit}`, `price-${run}`, card.id, unit, amount, nowS - 60, nowS - 60),
-    ),
+        .bind(`gwm_${run}_${index}`, catalogVersion, model.id, model.kind, JSON.stringify(model), nowS - 60),
+      ...[
+        ["input_token", 3_000_000],
+        ["output_token", 15_000_000],
+      ].map(([unit, amount]) =>
+        db
+          .prepare(
+            `INSERT INTO gateway_price (id, price_version, model_code, upstream_id, unit, amount_micro, per, effective_from, published_at)
+             VALUES (?, ?, ?, '', ?, ?, 1000000, ?, ?)`,
+          )
+          .bind(`gwp_${run}_${index}_${unit}`, `price-${run}`, model.id, unit, amount, nowS - 60, nowS - 60),
+      ),
+    ]),
     db
       .prepare(
         `INSERT INTO gateway_upstream_account
@@ -131,6 +162,13 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
          VALUES (?, 'official', 'openai', 'openai-compatible', 1, ?, '["apiKey"]')`,
       )
       .bind(upstreamAccountId, await sealGatewayUpstreamCredentials({ apiKey: upstreamApiKey }, encryptionKey)),
+    db
+      .prepare(
+        `INSERT INTO gateway_upstream_account
+           (id, provider_id, upstream_id, api_shape, enabled, encrypted_credentials, configured_credentials)
+         VALUES (?, 'official', 'anthropic', 'anthropic-compatible', 1, ?, '["apiKey"]')`,
+      )
+      .bind(messagesAccountId, await sealGatewayUpstreamCredentials({ apiKey: `sk-ant-contract-${hex(12)}` }, encryptionKey)),
   ]);
 
   const tokens = createGatewayTokenStore(db, { clock });
@@ -205,9 +243,11 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
     clock,
     encryptionKey,
     textModel: card.id,
+    messagesModel: messagesCard.id,
     catalogVersion,
     upstreamAccountId,
     upstreamApiKey,
+    messagesAccountId,
     ports: (overrides = {}) => ({
       ...createD1GatewayPorts({
         db,
@@ -256,6 +296,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       otherTenantRequest: () => gatewayRequest(tenantB.token),
       anonymousRequest: () => gatewayRequest(),
       textModel: seeded.textModel,
+      messagesModel: seeded.messagesModel,
       rateLimited: { request: () => gatewayRequest(rateLimited), limit: 3 },
       concurrencyLimited: { request: () => gatewayRequest(concurrencyLimited), limit: 2 },
       memberBudget: async (enforcement) => gatewayRequest((await seeded.memberBudgetToken(enforcement)).token),

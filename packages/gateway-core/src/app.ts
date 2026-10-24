@@ -3,20 +3,23 @@
  * A plain WHATWG fetch handler (no framework: gateway-core reaches only zod);
  * each adapter mounts it under its own prefix and supplies the ports.
  *
- * Served today: OpenAI-compatible `POST {base}/v1/chat/completions`, plain or
- * `stream: true`.
+ * Served today, plain or `stream: true`:
+ * - OpenAI-compatible `POST {base}/v1/chat/completions`;
+ * - Anthropic Messages `POST {base}/anthropic/v1/messages` (#349), plus its
+ *   unmetered `…/messages/count_tokens` (anthropic.ts).
+ * Both protocols share one flow; PROTOCOLS holds what differs between them.
  * Flow: authenticate once (identity comes from the credential only, never a
- * header claim) -> normalize -> admit (allowlist, catalog policy, plan, price,
- * limits, hold) -> call the planned upstream routes in failover order ->
- * settle exactly once -> answer. Every failure is a coded GatewayError in the
- * OpenAI error shape; upstream error bodies are never forwarded (they can echo
- * key fragments), and only metadata is logged. A settlement that fails after
- * the request ran marks the holds `settle_failed` and adds the
- * GATEWAY_SETTLEMENT_FAILED settlement header to the real answer. With
- * `retention.enabled`, every admitted request's normalized body and the exact
- * answer bytes are then retained (retention.ts); a retention failure adds the
- * GATEWAY_RETENTION_FAILED retention header and never changes the answer or
- * its billing.
+ * header claim) -> normalize -> admit (catalog policy, model mapping,
+ * allowlist, plan, price, limits, hold) -> call the planned upstream routes in
+ * failover order -> settle exactly once -> answer. Every failure is a coded
+ * GatewayError in the caller's protocol error shape; upstream error bodies are
+ * never forwarded (they can echo key fragments), and only metadata is logged.
+ * A settlement that fails after the request ran marks the holds
+ * `settle_failed` and adds the GATEWAY_SETTLEMENT_FAILED settlement header to
+ * the real answer. With `retention.enabled`, every admitted request's
+ * normalized body and the exact answer bytes are then retained
+ * (retention.ts); a retention failure adds the GATEWAY_RETENTION_FAILED
+ * retention header and never changes the answer or its billing.
  *
  * Streams (#348): the hold is reserved before any byte is sent, so a refusal
  * (402 and every other admission error) is a plain coded JSON answer. Failover
@@ -33,26 +36,43 @@ import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
 import {
   admitGatewayRequest,
+  assertModelAllowed,
   settleGatewayRequest,
   type GatewayAdmission,
 } from "./admission.js";
+import {
+  anthropicCredentialRequest,
+  anthropicMessageContent,
+  anthropicTokenCount,
+  anthropicUpstreamHeaders,
+  isAnthropicMessagesRoute,
+  resolveAnthropicModelCode,
+} from "./anthropic.js";
 import type { BudgetFlag, GatewayOutcome } from "./budget.js";
+import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
 import {
   GatewayError,
   gatewayErrorResponseInit,
   toGatewayError,
   type GatewayErrorCode,
+  type GatewayWireProtocol,
 } from "./errors.js";
+import { requireAdmission } from "./limits.js";
 import type { GatewayIdentity, GatewayPorts, GatewayUpstreamCredential } from "./ports.js";
 import type { GatewayPrice } from "./pricing.js";
 import {
   callerOmittedStreamUsage,
+  normalizeAnthropicCountTokensRequest,
+  normalizeAnthropicMessagesRequest,
   normalizeOpenAIChatRequest,
   prepareUpstreamBody,
   type GatewayRequest,
+  type NormalizeOptions,
 } from "./request.js";
 import {
   nextGatewayAttempt,
+  planGatewayRoutes,
+  type GatewayCatalog,
   type GatewayRouteAttempt,
   type UpstreamFailure,
 } from "./routing.js";
@@ -67,7 +87,14 @@ import {
 } from "./retention.js";
 import { encodeSseError, isOpenAIUsageOnlyChunk } from "./sse.js";
 import { encodeGatewayStreamState, relayGatewayStream, type StreamEnding, type StreamRelayResult } from "./stream.js";
-import { createUsageAccumulator, emptyUsage, settledUsage, streamedUsage, type Usage } from "./usage.js";
+import {
+  createUsageAccumulator,
+  emptyUsage,
+  settledUsage,
+  streamedUsage,
+  type GatewayUsageShape,
+  type Usage,
+} from "./usage.js";
 
 export const GATEWAY_REQUEST_ID_HEADER = "x-clash-request-id";
 /**
@@ -104,10 +131,12 @@ export const GATEWAY_APP_DEFAULTS = {
 /**
  * Upstream base URLs used when an official credential carries no `baseUrl`
  * (the same default as shared-runtime text generation). Any other upstream
- * must publish its `baseUrl` with the credential.
+ * must publish its `baseUrl` with the credential, including the API version
+ * segment the protocol path is appended to (`…/v1`).
  */
 const DEFAULT_BASE_URLS: Readonly<Record<string, string>> = {
   openai: "https://api.openai.com/v1",
+  anthropic: "https://api.anthropic.com/v1",
 };
 
 export interface GatewayAppOptions {
@@ -161,6 +190,61 @@ export interface GatewayApp {
 export function isOpenAIChatRoute(route: ModelUpstreamRoute): boolean {
   return route.kind === "text" && route.apiShape === "openai-compatible" && !route.executorPluginId;
 }
+
+/** What differs between the wire protocols the data plane serves; the flow is shared. */
+interface WireProtocol {
+  wire: GatewayWireProtocol;
+  shape: GatewayUsageShape;
+  /** Appended to the credential's base URL. */
+  upstreamPath: string;
+  isRouteExecutable(route: ModelUpstreamRoute): boolean;
+  /** The request the identity port authenticates: the caller's credential only. */
+  credentialRequest(request: Request): Request;
+  normalize(body: unknown, options: NormalizeOptions): GatewayRequest;
+  resolveModel?: (requested: string, catalog: GatewayCatalog) => string;
+  /** Gateway-owned headers, plus only the protocol headers forwarded from the caller. */
+  upstreamHeaders(apiKey: string, caller: Headers, stream: boolean): Record<string, string>;
+  /** The generated part of a 2xx answer (the output estimate's basis), or undefined when it is not an answer. */
+  answerContent(body: Record<string, unknown>): unknown;
+  /** Log event prefix. */
+  event: string;
+}
+
+const OPENAI_CHAT: WireProtocol = {
+  wire: "openai",
+  shape: "openai-chat",
+  upstreamPath: "/chat/completions",
+  isRouteExecutable: isOpenAIChatRoute,
+  credentialRequest: (request) => request,
+  normalize: normalizeOpenAIChatRequest,
+  upstreamHeaders: (apiKey, _caller, stream) => ({
+    authorization: `Bearer ${apiKey}`,
+    "content-type": "application/json",
+    accept: stream ? "text/event-stream" : "application/json",
+  }),
+  answerContent: (body) => (Array.isArray(body.choices) ? body.choices : undefined),
+  event: "gateway.chat_completion",
+};
+
+const ANTHROPIC_MESSAGES: WireProtocol = {
+  wire: "anthropic",
+  shape: "anthropic-messages",
+  upstreamPath: "/messages",
+  isRouteExecutable: isAnthropicMessagesRoute,
+  credentialRequest: anthropicCredentialRequest,
+  normalize: normalizeAnthropicMessagesRequest,
+  resolveModel: resolveAnthropicModelCode,
+  upstreamHeaders: anthropicUpstreamHeaders,
+  answerContent: anthropicMessageContent,
+  event: "gateway.messages",
+};
+
+/** Paths under the base path, each with the protocol whose errors it answers in. */
+const ROUTES = new Map<string, { name: string; protocol: WireProtocol; countTokens?: true }>([
+  ["/v1/chat/completions", { name: "chat/completions", protocol: OPENAI_CHAT }],
+  ["/anthropic/v1/messages", { name: "messages", protocol: ANTHROPIC_MESSAGES }],
+  ["/anthropic/v1/messages/count_tokens", { name: "messages/count_tokens", protocol: ANTHROPIC_MESSAGES, countTokens: true }],
+]);
 
 const encoder = new TextEncoder();
 
@@ -221,8 +305,23 @@ type AttemptResult =
   /** Nothing reached the upstream (no price, key or base URL for this route). */
   | { kind: "skipped"; error: GatewayError }
   | { kind: "failed"; failure: UpstreamFailure }
-  /** The upstream answered 2xx with a body that is not a completion. */
+  /** The upstream answered 2xx with a body that is not an answer of the protocol. */
   | { kind: "invalid"; error: GatewayError };
+
+/** One upstream call: where to send it and how to recognize its answer. */
+interface UpstreamCall {
+  path: string;
+  stream: boolean;
+  headers(apiKey: string): Record<string, string>;
+  body: Record<string, unknown>;
+  answerContent(body: Record<string, unknown>): unknown;
+}
+
+/** One caller request being served: its protocol and the caller's headers. */
+interface Exchange {
+  protocol: WireProtocol;
+  caller: Headers;
+}
 
 export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions = {}): GatewayApp {
   const basePath = normalizeBasePath(options.basePath);
@@ -231,14 +330,19 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? GATEWAY_APP_DEFAULTS.upstreamTimeoutMs;
   const streamMaxDurationMs = options.streamMaxDurationMs ?? GATEWAY_APP_DEFAULTS.streamMaxDurationMs;
 
-  const errorResponse = (error: unknown, requestId?: string, extraHeaders: Record<string, string> = {}): Response => {
+  const errorResponse = (
+    error: unknown,
+    requestId?: string,
+    extraHeaders: Record<string, string> = {},
+    wire: GatewayWireProtocol = "openai",
+  ): Response => {
     const coded = toGatewayError(error);
     if (coded.code === "GATEWAY_INTERNAL")
       ports.logger.error("gateway.internal", {
         requestId,
         cause: coded.cause instanceof Error ? coded.cause.name : typeof coded.cause,
       });
-    const init = gatewayErrorResponseInit(coded, "openai");
+    const init = gatewayErrorResponseInit(coded, wire);
     return json(init.body, {
       status: init.status,
       headers: {
@@ -262,19 +366,11 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           at: admission.pricedAt,
         });
 
-  async function callAttempt(
-    admission: GatewayAdmission,
-    attempt: GatewayRouteAttempt,
-  ): Promise<AttemptResult & { price?: GatewayPrice }> {
-    let price: GatewayPrice;
+  /** Resolve the route's credential and make one upstream call. */
+  async function callUpstream(attempt: GatewayRouteAttempt, tenantId: string, call: UpstreamCall): Promise<AttemptResult> {
     let credential: GatewayUpstreamCredential;
     try {
-      price = await priceFor(admission, attempt);
-      credential = await ports.credentials.resolve({
-        route: attempt.route,
-        scope: attempt.scope,
-        tenantId: admission.identity.tenantId,
-      });
+      credential = await ports.credentials.resolve({ route: attempt.route, scope: attempt.scope, tenantId });
     } catch (error) {
       return { kind: "skipped", error: toGatewayError(error) };
     }
@@ -287,7 +383,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         }),
       };
 
-    const { stream } = admission.request;
+    const { stream } = call;
     const deadlineMs = attempt.firstByteTimeoutMs ?? upstreamTimeoutMs;
     // A stream's deadline covers the response headers only; once they arrive
     // the same controller stays with the relay for disconnects and its
@@ -302,26 +398,20 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     let response: Response;
     try {
       response = await ports.upstream.fetch(
-        new Request(`${baseUrl}/chat/completions`, {
+        new Request(`${baseUrl}${call.path}`, {
           method: "POST",
-          // Only gateway-owned headers: the caller's credential never travels upstream.
-          headers: {
-            authorization: `Bearer ${credential.apiKey}`,
-            "content-type": "application/json",
-            accept: stream ? "text/event-stream" : "application/json",
-          },
-          body: JSON.stringify(prepareUpstreamBody(admission.request, attempt.route.upstreamModel)),
+          // Only gateway-owned and protocol headers: the caller's credential never travels upstream.
+          headers: call.headers(credential.apiKey),
+          body: JSON.stringify(call.body),
           signal: stream ? upstream.signal : AbortSignal.timeout(deadlineMs),
         }),
       );
     } catch (error) {
-      // Executed routes are idempotent text routes (isOpenAIChatRoute), so the
-      // state only selects the code: a deadline is a timeout, anything else a
-      // transport failure.
+      // Executed routes are idempotent text routes, so the state only selects
+      // the code: a deadline is a timeout, anything else a transport failure.
       const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
       return {
         kind: "failed",
-        price,
         failure: timedOut ? { state: "unknown", reason: "timeout" } : { state: "not-sent", reason: "network" },
       };
     } finally {
@@ -330,7 +420,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     if (!response.ok) {
       // Drain without reading into anything the caller or logs can see.
       await response.body?.cancel().catch(() => undefined);
-      return { kind: "failed", price, failure: { state: "answered", status: response.status } };
+      return { kind: "failed", failure: { state: "answered", status: response.status } };
     }
     if (stream) {
       const contentType = response.headers.get("content-type");
@@ -338,13 +428,12 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         await response.body?.cancel().catch(() => undefined);
         return {
           kind: "invalid",
-          price,
           error: new GatewayError("GATEWAY_UPSTREAM_ERROR", {
             details: { upstreamId: attempt.route.upstreamId, reason: "not_event_stream" },
           }),
         };
       }
-      return { kind: "streaming", price, body: response.body, contentType: contentType ?? "text/event-stream", upstream };
+      return { kind: "streaming", body: response.body, contentType: contentType ?? "text/event-stream", upstream };
     }
     let body: unknown;
     try {
@@ -352,20 +441,39 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     } catch {
       body = undefined;
     }
-    if (!isRecord(body) || !Array.isArray(body.choices))
+    const content = isRecord(body) ? call.answerContent(body) : undefined;
+    if (!isRecord(body) || content === undefined)
       return {
         kind: "invalid",
-        price,
         error: new GatewayError("GATEWAY_UPSTREAM_ERROR", {
           details: { upstreamId: attempt.route.upstreamId, reason: "invalid_body" },
         }),
       };
-    return {
-      kind: "answered",
-      price,
-      body,
-      outputBytes: encoder.encode(JSON.stringify(body.choices)).byteLength,
-    };
+    return { kind: "answered", body, outputBytes: encoder.encode(JSON.stringify(content)).byteLength };
+  }
+
+  async function callAttempt(
+    admission: GatewayAdmission,
+    attempt: GatewayRouteAttempt,
+    exchange: Exchange,
+  ): Promise<AttemptResult & { price?: GatewayPrice }> {
+    let price: GatewayPrice;
+    try {
+      price = await priceFor(admission, attempt);
+    } catch (error) {
+      return { kind: "skipped", error: toGatewayError(error) };
+    }
+    const { protocol, caller } = exchange;
+    const { stream } = admission.request;
+    const result = await callUpstream(attempt, admission.identity.tenantId, {
+      path: protocol.upstreamPath,
+      stream,
+      headers: (apiKey) => protocol.upstreamHeaders(apiKey, caller, stream),
+      body: prepareUpstreamBody(admission.request, attempt.route.upstreamModel),
+      answerContent: protocol.answerContent,
+    });
+    // A skip before the call (no key or base URL) never priced anything worth recording.
+    return result.kind === "skipped" ? result : { ...result, price };
   }
 
   /**
@@ -418,8 +526,13 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   }
 
   /** The answer, and whether it is a stream (which settles and retains itself when it ends). */
-  async function execute(admission: GatewayAdmission, started: number): Promise<{ response: Response; streaming: boolean }> {
+  async function execute(
+    admission: GatewayAdmission,
+    exchange: Exchange,
+    started: number,
+  ): Promise<{ response: Response; streaming: boolean }> {
     const { plan, requestId } = admission;
+    const { protocol } = exchange;
     let attempt: GatewayRouteAttempt | undefined = plan.attempts[0];
     let last: GatewayRouteAttempt = plan.attempts[0]!;
     let lastPrice: GatewayPrice | undefined;
@@ -430,22 +543,22 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     while (attempt) {
       last = attempt;
       tried += 1;
-      const result = await callAttempt(admission, attempt);
+      const result = await callAttempt(admission, attempt, exchange);
       lastPrice = result.price;
       if (result.kind === "streaming")
         return {
-          response: streamAnswer(admission, { attempt, price: result.price ?? admission.price, tried, started }, result),
+          response: streamAnswer(admission, exchange, { attempt, price: result.price ?? admission.price, tried, started }, result),
           streaming: true,
         };
       if (result.kind === "answered") {
-        const accumulator = createUsageAccumulator("openai-chat");
+        const accumulator = createUsageAccumulator(protocol.shape);
         accumulator.observe(result.body);
         const usage = settledUsage(accumulator, {
           inputTokens: admission.request.estimatedInputTokens,
           outputBytes: result.outputBytes,
         });
         const settlement = await settle(admission, { attempt, outcome: "completed", usage, price: result.price });
-        ports.logger.info("gateway.chat_completion", {
+        ports.logger.info(protocol.event, {
           requestId,
           model: plan.modelCode,
           upstreamId: attempt.route.upstreamId,
@@ -493,7 +606,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       ...(lastPrice ? { price: lastPrice } : {}),
       error: failure,
     });
-    ports.logger.warn("gateway.chat_completion_failed", {
+    ports.logger.warn(`${protocol.event}_failed`, {
       requestId,
       model: plan.modelCode,
       upstreamId: last.route.upstreamId,
@@ -503,7 +616,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         typeof failure.details?.upstreamStatus === "number" ? failure.details.upstreamStatus : undefined,
       durationMs: ports.clock.now() - started,
     });
-    return { response: errorResponse(failure, requestId, { ...budgetHeaders(admission), ...settlement }), streaming: false };
+    return { response: errorResponse(failure, requestId, { ...budgetHeaders(admission), ...settlement }, protocol.wire), streaming: false };
   }
 
   /**
@@ -512,6 +625,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
    */
   function streamAnswer(
     admission: GatewayAdmission,
+    exchange: Exchange,
     context: { attempt: GatewayRouteAttempt; price: GatewayPrice; tried: number; started: number },
     result: Extract<AttemptResult, { kind: "streaming" }>,
   ): Response {
@@ -520,7 +634,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       : undefined;
     const body = relayGatewayStream({
       body: result.body,
-      shape: "openai-chat",
+      shape: exchange.protocol.shape,
       upstream: result.upstream,
       maxDurationMs: streamMaxDurationMs,
       // The usage chunk exists because the gateway asked for it; a caller that did not gets the stream it asked for.
@@ -529,7 +643,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       publicModel: admission.request.model,
       ...(copy ? { onDelivered: (chunk: Uint8Array) => copy.append(chunk) } : {}),
       ...(options.waitUntil ? { waitUntil: options.waitUntil } : {}),
-      onEnd: (relay) => finishStream(admission, context, relay, { copy, contentType: result.contentType }),
+      onEnd: (relay) => finishStream(admission, exchange, context, relay, { copy, contentType: result.contentType }),
     });
     return new Response(body, {
       status: 200,
@@ -549,6 +663,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
    */
   async function finishStream(
     admission: GatewayAdmission,
+    exchange: Exchange,
     context: { attempt: GatewayRouteAttempt; price: GatewayPrice; tried: number; started: number },
     relay: StreamRelayResult,
     retained: { copy: RetainedBodyCopy | undefined; contentType: string },
@@ -576,7 +691,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       ...(error ? { error } : {}),
     });
     const settlementState = settlement[GATEWAY_SETTLEMENT_HEADER];
-    let tail = error ? encodeSseError(error, "openai") : "";
+    let tail = error ? encodeSseError(error, exchange.protocol.wire) : "";
     if (settlementState)
       tail += encodeGatewayStreamState({
         header: GATEWAY_SETTLEMENT_HEADER,
@@ -585,7 +700,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         requestId,
       });
     const callerGone = relay.ending === "client_aborted";
-    ports.logger[relay.ending === "completed" ? "info" : "warn"]("gateway.chat_completion_stream", {
+    ports.logger[relay.ending === "completed" ? "info" : "warn"](`${exchange.protocol.event}_stream`, {
       requestId,
       model: admission.plan.modelCode,
       upstreamId: attempt.route.upstreamId,
@@ -619,13 +734,14 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     return callerGone ? "" : tail;
   }
 
-  async function chatCompletions(request: Request): Promise<Response> {
+  /** A metered model call of either protocol. */
+  async function serve(request: Request, protocol: WireProtocol): Promise<Response> {
     const started = ports.clock.now();
     let admission: GatewayAdmission;
     try {
-      const identity: GatewayIdentity = await ports.identity.authenticate(request);
+      const identity: GatewayIdentity = await ports.identity.authenticate(protocol.credentialRequest(request));
       const body = await readJsonBody(request, maxBodyBytes);
-      const gatewayRequest: GatewayRequest = normalizeOpenAIChatRequest(body, {
+      const gatewayRequest: GatewayRequest = protocol.normalize(body, {
         idempotencyKey: request.headers.get("idempotency-key"),
         maxBodyBytes,
       });
@@ -637,23 +753,117 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           // A stream's hold outlives the longest stream, so the sweeper never expires a live one.
           holdTtlMs: gatewayRequest.stream ? holdTtlMs + streamMaxDurationMs : holdTtlMs,
           routing: {
-            isRouteExecutable: isOpenAIChatRoute,
+            isRouteExecutable: protocol.isRouteExecutable,
             ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
           },
+          ...(protocol.resolveModel ? { resolveModel: protocol.resolveModel } : {}),
         },
       );
     } catch (error) {
-      return errorResponse(error);
+      return errorResponse(error, undefined, {}, protocol.wire);
     }
+    const exchange: Exchange = { protocol, caller: request.headers };
     let answer: { response: Response; streaming: boolean };
     try {
-      answer = await execute(admission, started);
+      answer = await execute(admission, exchange, started);
     } catch (error) {
       // execute() settles on every path it controls; this is a last resort.
-      answer = { response: errorResponse(error, admission.requestId), streaming: false };
+      answer = { response: errorResponse(error, admission.requestId, {}, protocol.wire), streaming: false };
     }
     // A stream retains itself when it ends; everything else is retained now.
     return options.retention?.enabled && !answer.streaming ? retain(admission, answer.response) : answer.response;
+  }
+
+  /**
+   * Anthropic `messages/count_tokens`: authenticated, catalog-mapped,
+   * allowlisted and rate-limited like a model call, then proxied to the
+   * planned anthropic-compatible routes in failover order. Nothing is
+   * generated, so there is no hold and no ledger row.
+   */
+  async function countTokens(request: Request, protocol: WireProtocol): Promise<Response> {
+    const started = ports.clock.now();
+    let leaseId: string | undefined;
+    try {
+      const identity = await ports.identity.authenticate(protocol.credentialRequest(request));
+      const counted = normalizeAnthropicCountTokensRequest(await readJsonBody(request, maxBodyBytes), { maxBodyBytes });
+      const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(identity));
+      const model = protocol.resolveModel ? protocol.resolveModel(counted.model, catalog) : counted.model;
+      assertModelAllowed(identity, model);
+      const plan = planGatewayRoutes({
+        modelCode: model,
+        kind: "text",
+        catalog,
+        scope: identity.credentialScope,
+        providers: await ports.routes.providers(identity, identity.credentialScope),
+        isRouteExecutable: protocol.isRouteExecutable,
+        ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
+      });
+      leaseId = requireAdmission(
+        await ports.limits.admit({
+          tenantId: identity.tenantId,
+          userId: identity.userId,
+          ...(identity.keyId ? { keyId: identity.keyId } : {}),
+          modelCode: plan.modelCode,
+          estimatedTokens: 0,
+        }),
+      );
+      let attempt: GatewayRouteAttempt | undefined = plan.attempts[0];
+      let error: GatewayError | undefined;
+      let contacted = false;
+      while (attempt) {
+        const result = await callUpstream(attempt, identity.tenantId, {
+          path: `${protocol.upstreamPath}/count_tokens`,
+          stream: false,
+          headers: (apiKey) => protocol.upstreamHeaders(apiKey, request.headers, false),
+          body: { ...counted.body, model: attempt.route.upstreamModel },
+          answerContent: anthropicTokenCount,
+        });
+        if (result.kind === "answered") {
+          ports.logger.info(`${protocol.event}_count_tokens`, {
+            model: plan.modelCode,
+            upstreamId: attempt.route.upstreamId,
+            accountId: attempt.route.accountId,
+            durationMs: ports.clock.now() - started,
+          });
+          return json(result.body, { status: 200 });
+        }
+        if (result.kind === "skipped") {
+          error = result.error;
+          attempt = plan.attempts[attempt.index + 1];
+          continue;
+        }
+        if (result.kind === "streaming") {
+          // Unreachable for a plain call; never leave a body open.
+          await result.body.cancel().catch(() => undefined);
+          throw new GatewayError("GATEWAY_INTERNAL");
+        }
+        contacted = true;
+        if (result.kind === "invalid") {
+          error = result.error;
+          break;
+        }
+        const decision = nextGatewayAttempt(plan, attempt, result.failure);
+        error = decision.error;
+        if (decision.action === "fail") break;
+        attempt = decision.next;
+      }
+      if (contacted && attempt === undefined && error && error.code !== "GATEWAY_ROUTES_EXHAUSTED")
+        error = new GatewayError("GATEWAY_ROUTES_EXHAUSTED", {
+          details: { model: plan.modelCode, lastCode: error.code },
+          cause: error,
+        });
+      throw error ?? new GatewayError("GATEWAY_INTERNAL");
+    } catch (error) {
+      const coded = toGatewayError(error);
+      if (leaseId !== undefined)
+        ports.logger.warn(`${protocol.event}_count_tokens_failed`, {
+          code: coded.code,
+          durationMs: ports.clock.now() - started,
+        });
+      return errorResponse(coded, undefined, {}, protocol.wire);
+    } finally {
+      if (leaseId !== undefined) await ports.limits.release({ leaseId }).catch(() => undefined);
+    }
   }
 
   /**
@@ -702,20 +912,27 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           : basePath
             ? undefined
             : pathname;
-      if (path === "/v1/chat/completions") {
+      const route = path === undefined ? undefined : ROUTES.get(path);
+      if (route) {
         if (request.method !== "POST")
           return errorResponse(
             new GatewayError("GATEWAY_INVALID_REQUEST", {
-              message: "chat/completions accepts POST only.",
+              message: `${route.name} accepts POST only.`,
               details: { method: request.method },
             }),
+            undefined,
+            {},
+            route.protocol.wire,
           );
-        return chatCompletions(request);
+        return route.countTokens ? countTokens(request, route.protocol) : serve(request, route.protocol);
       }
       return errorResponse(
         new GatewayError("GATEWAY_CAPABILITY_UNAVAILABLE", {
           details: { method: request.method, path: path ?? pathname },
         }),
+        undefined,
+        {},
+        path?.startsWith("/anthropic/") ? "anthropic" : "openai",
       );
     },
   };

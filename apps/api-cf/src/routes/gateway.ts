@@ -2,10 +2,11 @@
  * Gateway surface authenticated by sk_gw_ tokens only (#346), mounted at
  * /gateway outside /api/*: neither the session/clsh_ middleware nor any
  * caller header (x-user-id included) contributes identity here. The data
- * plane (/gateway/v1/*, #347) is gateway-core's createGatewayApp over the D1
- * ports in ../gateway and verifies the same way.
+ * plane (/gateway/v1/*, #347; /gateway/anthropic/v1/*, #349) is
+ * gateway-core's createGatewayApp over the D1 ports in ../gateway and
+ * verifies the same way.
  */
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 
 import type { Env } from "../config";
 import { createCloudflareGatewayApp } from "../gateway";
@@ -37,7 +38,7 @@ gatewayRoutes.get("/me", async (c) => {
   }
 });
 
-gatewayRoutes.all("/v1/*", (c) => {
+const dataPlane = (c: Context<{ Bindings: Env }>) => {
   // Hono throws when there is no ExecutionContext (unit tests calling app.request).
   let waitUntil: ((promise: Promise<unknown>) => void) | undefined;
   try {
@@ -47,4 +48,8 @@ gatewayRoutes.all("/v1/*", (c) => {
     waitUntil = undefined;
   }
   return createCloudflareGatewayApp(c.env, waitUntil ? { waitUntil } : {}).fetch(c.req.raw);
-});
+};
+
+// OpenAI-compatible chat (#347/#348) and Anthropic Messages + count_tokens (#349).
+gatewayRoutes.all("/v1/*", dataPlane);
+gatewayRoutes.all("/anthropic/v1/*", dataPlane);

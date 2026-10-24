@@ -22,6 +22,7 @@ import {
   settleMediaGeneration,
   type GatewayAdmission,
 } from "../admission.js";
+import { isAnthropicMessagesRoute } from "../anthropic.js";
 import { computeHold, type BudgetEnforcement, type BudgetFlag } from "../budget.js";
 import { sweepExpiredGatewayHolds } from "../holds.js";
 import { createSseParser, OPENAI_STREAM_DONE, type SseEvent } from "../sse.js";
@@ -43,6 +44,7 @@ import {
 } from "../ports.js";
 import { priceUsage } from "../pricing.js";
 import {
+  normalizeAnthropicMessagesRequest,
   normalizeMediaGenerationRequest,
   normalizeOpenAIChatRequest,
   type GatewayModelKind,
@@ -94,6 +96,12 @@ export interface GatewayContractHarness {
     anonymousRequest(): Request;
     /** A text model servable and priced for tenant A's scope. */
     textModel: string;
+    /**
+     * A text model with an anthropic-compatible route, servable and priced for
+     * tenant A's scope, and the only card that route's upstream model maps to.
+     * Required by the Anthropic Messages cases.
+     */
+    messagesModel?: string;
     /** Optional media/AIGC model servable and priced for tenant A's scope. */
     mediaModel?: { code: string; kind: GatewayModelKind; units: Partial<Record<GatewayMediaUnit, number>> };
     /** A credential whose key admits exactly `limit` requests per rate window. */
@@ -1708,6 +1716,290 @@ export function describeGatewayContract(
         404,
         "GATEWAY_MODEL_NOT_FOUND",
       ]);
+      expect(stub.seen).toHaveLength(0);
+    });
+
+    // ─── Data plane: Anthropic Messages (#349) ───────────────────────
+    // The same flow as chat: the caller sends an Anthropic body, as an agent
+    // would, naming the route's upstream model id rather than the public code.
+    const messagesModel = () => {
+      expect(harness.fixtures.messagesModel, "fixture messagesModel is required").toBeDefined();
+      return harness.fixtures.messagesModel!;
+    };
+    const firstMessagesRoute = async (identity: GatewayIdentity) =>
+      planGatewayRoutes({
+        modelCode: messagesModel(),
+        catalog: await ports().routes.catalog(identity),
+        scope: identity.credentialScope,
+        providers: await ports().routes.providers(identity, identity.credentialScope),
+        isRouteExecutable: isAnthropicMessagesRoute,
+      }).attempts[0]!.route;
+    const tokenOf = (credential: Request) => (credential.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const messages = (
+      upstream: GatewayPorts["upstream"],
+      credential: Request,
+      body: Record<string, unknown>,
+      input: { headers?: Record<string, string>; auth?: "bearer" | "x-api-key"; path?: string } = {},
+    ) => {
+      const app = createGatewayApp({ ...ports(), upstream }, { basePath: "/gateway" });
+      const token = tokenOf(credential);
+      return app.fetch(
+        new Request(`https://gateway.contract/gateway/anthropic/v1/${input.path ?? "messages"}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(token ? (input.auth === "x-api-key" ? { "x-api-key": token } : { authorization: `Bearer ${token}` }) : {}),
+            ...input.headers,
+          },
+          body: JSON.stringify(body),
+        }),
+      );
+    };
+    /** An agent turn: cached system and tools, and a tool_use answered by a tool_result. */
+    const messagesBody = (model: string, extra: Record<string, unknown> = {}) => ({
+      model,
+      max_tokens: 64,
+      system: [{ type: "text", text: "contract system", cache_control: { type: "ephemeral" } }],
+      tools: [
+        {
+          name: "Read",
+          description: "Read a file",
+          input_schema: { type: "object", properties: { file_path: { type: "string" } } },
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+      messages: [
+        { role: "user", content: "contract" },
+        { role: "assistant", content: [{ type: "tool_use", id: "toolu_prev", name: "Read", input: { file_path: "/tmp/a" } }] },
+        {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_prev", content: "file body", cache_control: { type: "ephemeral" } }],
+        },
+      ],
+      ...extra,
+    });
+    const anthropicMessage = (model: string) => ({
+      id: "msg_contract",
+      type: "message",
+      role: "assistant",
+      model,
+      content: [
+        { type: "text", text: "contract reply" },
+        { type: "tool_use", id: "toolu_contract", name: "Read", input: { file_path: "/tmp/x" } },
+      ],
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 5, cache_creation_input_tokens: 7 },
+    });
+    const anthropicEvent = (type: string, data: Record<string, unknown> = {}) =>
+      `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
+    /** An Anthropic stream with a text block and a streamed tool_use block; `end: false` cuts it before message_delta. */
+    const anthropicStream = (model: string, shape: { end?: boolean } = {}) =>
+      [
+        anthropicEvent("message_start", {
+          message: {
+            id: "msg_contract",
+            type: "message",
+            role: "assistant",
+            model,
+            content: [],
+            stop_reason: null,
+            stop_sequence: null,
+            usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 4, cache_creation_input_tokens: 2 },
+          },
+        }),
+        anthropicEvent("content_block_start", { index: 0, content_block: { type: "text", text: "" } }),
+        anthropicEvent("ping"),
+        anthropicEvent("content_block_delta", { index: 0, delta: { type: "text_delta", text: "contract reply" } }),
+        anthropicEvent("content_block_stop", { index: 0 }),
+        anthropicEvent("content_block_start", {
+          index: 1,
+          content_block: { type: "tool_use", id: "toolu_contract", name: "Read", input: {} },
+        }),
+        anthropicEvent("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: '{"file_path":' } }),
+        anthropicEvent("content_block_delta", { index: 1, delta: { type: "input_json_delta", partial_json: '"/tmp/x"}' } }),
+        anthropicEvent("content_block_stop", { index: 1 }),
+        ...(shape.end === false
+          ? []
+          : [
+              anthropicEvent("message_delta", { delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 9 } }),
+              anthropicEvent("message_stop"),
+            ]),
+      ].join("");
+    const messagesCost = async (identity: GatewayIdentity, payloads: unknown[]) => {
+      const route = await firstMessagesRoute(identity);
+      const accumulator = createUsageAccumulator("anthropic-messages");
+      for (const payload of payloads) accumulator.observe(payload);
+      const price = await ports().routes.price({ identity, catalogVersion: (await ports().routes.catalog(identity)).version, route });
+      return priceUsage(accumulator.snapshot(), price).microCredits;
+    };
+    const anthropicError = async (res: Response) =>
+      (await res.json()) as { type: string; error: { type: string; message: string; budget_id?: string | null; reset_at?: string | null } };
+
+    dataPlane("anthropic: serves a message for a Bearer or x-api-key caller, maps the agent's model id to the public code and settles once", async () => {
+      const identity = await tenant();
+      const route = await firstMessagesRoute(identity);
+      const credential = await ports().credentials.resolve({ route, scope: identity.credentialScope, tenantId: identity.tenantId });
+      const before = await snapshot(identity);
+      const stub = upstreamStub((_request, body) => Response.json(anthropicMessage(String(body.model))));
+      const callerRequest = harness.fixtures.tenantRequest();
+      const sent = messagesBody(route.upstreamModel);
+      const beta = "prompt-caching-2024-07-31,interleaved-thinking-2025-05-14";
+      const res = await messages(stub.port, callerRequest, sent, {
+        headers: { "anthropic-version": "2023-06-01", "anthropic-beta": beta, "x-user-id": unique("spoofed-user") },
+      });
+      expect(res.status, await res.clone().text()).toBe(200);
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const answer = (await res.json()) as Record<string, unknown>;
+      expect(answer).toEqual({ ...anthropicMessage(route.upstreamModel), model: messagesModel() });
+
+      expect(stub.seen).toHaveLength(1);
+      const [upstream] = stub.seen;
+      expect(new URL(upstream!.request.url).pathname.endsWith("/messages")).toBe(true);
+      expect(upstream!.request.headers.get("x-api-key")).toBe(credential.apiKey);
+      expect(upstream!.request.headers.get("authorization")).toBeNull();
+      expect(upstream!.request.headers.get("anthropic-version")).toBe("2023-06-01");
+      expect(upstream!.request.headers.get("anthropic-beta")).toBe(beta);
+      expect(upstream!.request.headers.get("x-user-id")).toBeNull();
+      // cache_control, tools and the tool_use/tool_result turn reach the upstream as sent.
+      expect(upstream!.body).toEqual({ ...sent, model: route.upstreamModel });
+
+      const cost = await messagesCost(identity, [anthropicMessage(route.upstreamModel)]);
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+        status: "settled",
+        modelCode: messagesModel(),
+        costMicroCredits: cost,
+        upstreamId: route.upstreamId,
+        usage: { source: "reported" },
+      });
+      for (const [id, budget] of await snapshot(identity)) {
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + cost);
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+      }
+
+      // The Anthropic SDK's own header carries the same sk_gw_ token.
+      const viaApiKey = await messages(stub.port, harness.fixtures.tenantRequest(), messagesBody(messagesModel()), { auth: "x-api-key" });
+      expect(viaApiKey.status, await viaApiKey.clone().text()).toBe(200);
+      expect(((await viaApiKey.json()) as Record<string, unknown>).model).toBe(messagesModel());
+    });
+
+    dataPlane("anthropic: streams every event with the public model, tool_use deltas intact, and settles the message_delta usage once", async () => {
+      const identity = await tenant();
+      const route = await firstMessagesRoute(identity);
+      const before = await snapshot(identity);
+      const upstreamText = anthropicStream(route.upstreamModel);
+      const stub = upstreamStub(() => eventStream(split(upstreamText)));
+      const res = await messages(stub.port, harness.fixtures.tenantRequest(), messagesBody(route.upstreamModel, { stream: true }));
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/event-stream");
+      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+      const text = await res.text();
+      // Every byte the upstream sent, with the public model code in place of the upstream's.
+      expect(text).toBe(anthropicStream(messagesModel()));
+      expect(text).not.toContain(JSON.stringify(route.upstreamModel));
+      expect(stub.seen[0]!.request.headers.get("accept")).toBe("text/event-stream");
+      expect(stub.seen[0]!.body).toMatchObject({ stream: true, model: route.upstreamModel });
+
+      const cost = await messagesCost(identity, events(upstreamText).map((event) => JSON.parse(event.data) as unknown));
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+        status: "settled",
+        costMicroCredits: cost,
+        usage: { source: "reported" },
+      });
+      for (const [id, budget] of await snapshot(identity)) {
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + cost);
+        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
+      }
+    });
+
+    dataPlane("anthropic: a stream cut before message_delta settles partial and ends with an Anthropic error event", async () => {
+      const identity = await tenant();
+      const route = await firstMessagesRoute(identity);
+      const price = await ports().routes.price({ identity, catalogVersion: (await ports().routes.catalog(identity)).version, route });
+      const body = messagesBody(messagesModel(), { stream: true });
+      const stub = upstreamStub(() => eventStream(split(anthropicStream(route.upstreamModel, { end: false }))));
+      const res = await messages(stub.port, harness.fixtures.tenantRequest(), body);
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text.startsWith(anthropicStream(messagesModel(), { end: false }))).toBe(true);
+      const last = events(text).at(-1)!;
+      expect(last.event).toBe("error");
+      expect(JSON.parse(last.data)).toMatchObject({ type: "error", error: { type: "api_error" } });
+      expect((JSON.parse(last.data) as { error: { message: string } }).error.message).toMatch(/^GATEWAY_UPSTREAM_ERROR: /);
+
+      const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! });
+      expect(row).toMatchObject({ status: "partial", errorCode: "GATEWAY_UPSTREAM_ERROR", usage: { source: "estimated" } });
+      expect(row!.costMicroCredits).toBeGreaterThan(0);
+      expect(row!.costMicroCredits).toBeLessThan(computeHold(normalizeAnthropicMessagesRequest(body), price));
+    });
+
+    dataPlane("anthropic: refuses an over-budget call with a coded 402 in the Anthropic shape, before any upstream call", async () => {
+      const identity = await ports().identity.authenticate(harness.fixtures.otherTenantRequest());
+      const budgets = await snapshot(identity);
+      const limited = [...budgets.values()].filter((budget) => budget.limitMicroCredits !== null);
+      expect(limited.length, "fixture needs a limited budget").toBeGreaterThan(0);
+      const remaining = (budget: (typeof limited)[number]) =>
+        budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits;
+      const filler = await reserve(identity, Math.min(...limited.map(remaining)));
+      const stub = upstreamStub(() => eventStream([anthropicStream("unused")]));
+      const res = await messages(stub.port, harness.fixtures.otherTenantRequest(), messagesBody(messagesModel(), { stream: true }));
+      expect([res.status, res.headers.get("x-clash-error-code")]).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
+      const body = await anthropicError(res);
+      expect(body).toMatchObject({ type: "error", error: { type: "billing_error" } });
+      expect(body.error.message).toMatch(/^GATEWAY_BUDGET_EXCEEDED: /);
+      expect(limited.map((budget) => budget.id)).toContain(body.error.budget_id);
+      expect(stub.seen).toHaveLength(0);
+      await ports().budgets.settle(settlementEvent(identity, filler.requestId, 0, "upstream_failed"));
+    });
+
+    dataPlane("anthropic: enforces the rate limit with a coded 429 in the Anthropic shape", async () => {
+      const limitedKey = harness.fixtures.rateLimited;
+      expect(limitedKey, "fixture rateLimited is required").toBeDefined();
+      const stub = upstreamStub((_request, body) => Response.json(anthropicMessage(String(body.model))));
+      let refused: Response | undefined;
+      // The window may already be spent by the limits cases: a refusal must come within limit + 1 calls.
+      for (let index = 0; index <= limitedKey!.limit && !refused; index += 1) {
+        const res = await messages(stub.port, limitedKey!.request(), messagesBody(messagesModel()));
+        if (res.headers.get("x-clash-error-code") === "GATEWAY_RATE_LIMITED") refused = res;
+        else await res.arrayBuffer();
+      }
+      expect(refused, "no GATEWAY_RATE_LIMITED within limit + 1 calls").toBeDefined();
+      expect(refused!.status).toBe(429);
+      expect(await anthropicError(refused!)).toMatchObject({ type: "error", error: { type: "rate_limit_error" } });
+    });
+
+    dataPlane("anthropic: proxies count_tokens to the mapped route without a hold or ledger charge", async () => {
+      const identity = await tenant();
+      const route = await firstMessagesRoute(identity);
+      const credential = await ports().credentials.resolve({ route, scope: identity.credentialScope, tenantId: identity.tenantId });
+      const before = await counters(identity);
+      const counted = { input_tokens: 4321 };
+      const stub = upstreamStub(() => Response.json(counted));
+      const { max_tokens: _maxTokens, ...sent } = messagesBody(route.upstreamModel);
+      const beta = "token-counting-2024-11-01";
+      const res = await messages(stub.port, harness.fixtures.tenantRequest(), sent, {
+        path: "messages/count_tokens",
+        auth: "x-api-key",
+        headers: { "anthropic-beta": beta },
+      });
+      expect(res.status, await res.clone().text()).toBe(200);
+      expect(await res.json()).toEqual(counted);
+      expect(stub.seen).toHaveLength(1);
+      expect(new URL(stub.seen[0]!.request.url).pathname.endsWith("/messages/count_tokens")).toBe(true);
+      expect(stub.seen[0]!.request.headers.get("x-api-key")).toBe(credential.apiKey);
+      expect(stub.seen[0]!.request.headers.get("anthropic-beta")).toBe(beta);
+      expect(stub.seen[0]!.body).toEqual({ ...sent, model: route.upstreamModel });
+      expect(await counters(identity)).toEqual(before);
+    });
+
+    dataPlane("anthropic: answers 401 and 404 in the Anthropic error shape without calling an upstream", async () => {
+      const stub = upstreamStub(() => Response.json({}));
+      const anonymous = await messages(stub.port, harness.fixtures.anonymousRequest(), messagesBody(messagesModel()));
+      expect([anonymous.status, anonymous.headers.get("x-clash-error-code")]).toEqual([401, "GATEWAY_AUTH_REQUIRED"]);
+      expect(await anthropicError(anonymous)).toMatchObject({ type: "error", error: { type: "authentication_error" } });
+      const unknown = await messages(stub.port, harness.fixtures.tenantRequest(), messagesBody(unique("no-such-model")));
+      expect([unknown.status, unknown.headers.get("x-clash-error-code")]).toEqual([404, "GATEWAY_MODEL_NOT_FOUND"]);
+      expect(await anthropicError(unknown)).toMatchObject({ type: "error", error: { type: "not_found_error" } });
       expect(stub.seen).toHaveLength(0);
     });
   });

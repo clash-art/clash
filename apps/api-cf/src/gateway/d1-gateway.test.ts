@@ -29,6 +29,7 @@ import {
   d1ContractHarness,
   gatewayRequest,
   officialChatCard,
+  officialMessagesCard,
   seedGateway,
   type SeededGateway,
 } from "./test-support";
@@ -388,6 +389,68 @@ describe("/gateway/v1 through the Worker app", () => {
     await sweepGatewayHolds({ DB: d1 }, { clock: gateway.clock, logger: { info() {}, warn() {}, error() {} } });
     expect(rows(stale)).toEqual(closed);
     expect(reserved()).toBe(heldBoth - 7 * identity.budgetIds.length);
+  });
+
+  it("serves /gateway/anthropic/v1 messages and count_tokens through the Worker mount on the official Anthropic account", async () => {
+    const caller = await gateway.tenantToken();
+    const route = listDeclaredModelUpstreamRoutes([officialMessagesCard()]).find(
+      (candidate) => candidate.apiShape === "anthropic-compatible" && candidate.providerId === "official",
+    )!;
+    stubUpstream((body) =>
+      new URL(upstream.at(-1)!.url).pathname.endsWith("/count_tokens")
+        ? Response.json({ input_tokens: 11 })
+        : Response.json({
+            id: "msg_unit",
+            type: "message",
+            role: "assistant",
+            model: body.model,
+            content: [{ type: "text", text: "hi" }],
+            stop_reason: "end_turn",
+            stop_sequence: null,
+            usage: { input_tokens: 4, output_tokens: 2 },
+          }),
+    );
+    // Claude Code's own request shape: the agent's model id, `?beta=true`, and the token as Bearer.
+    const send = (path: string, body: Record<string, unknown>) =>
+      app.request(
+        `/gateway/anthropic/v1/${path}?beta=true`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: ORIGIN,
+            authorization: `Bearer ${caller.token}`,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify(body),
+        },
+        { DB: d1, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey } as never,
+      );
+    const turn = { model: route.upstreamModel, messages: [{ role: "user", content: "hello" }] };
+
+    const res = await send("messages", { ...turn, max_tokens: 16 });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await res.json()) as { model: string }).model).toBe(gateway.messagesModel);
+    expect(upstream).toHaveLength(1);
+    expect(upstream[0]!.headers.get("authorization")).toBeNull();
+    expect(upstream[0]!.headers.get("x-api-key")).toMatch(/\S/);
+    expect(upstream[0]!.headers.get("x-api-key")).not.toBe(caller.token);
+    const rows = sqlite
+      .prepare(`SELECT user_id, model_code, status, account_id FROM gateway_usage_ledger WHERE request_id = ? AND kind = 'settle'`)
+      .all(res.headers.get("x-clash-request-id")) as Array<Record<string, string>>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows)
+      expect(row).toEqual({
+        user_id: caller.userId,
+        model_code: gateway.messagesModel,
+        status: "settled",
+        account_id: gateway.messagesAccountId,
+      });
+
+    const counted = await send("messages/count_tokens", turn);
+    expect(counted.status, await counted.clone().text()).toBe(200);
+    expect(await counted.json()).toEqual({ input_tokens: 11 });
+    expect(new URL(upstream[1]!.url).pathname.endsWith("/messages/count_tokens")).toBe(true);
   });
 
   it("keeps /gateway/me working beside the data plane", async () => {

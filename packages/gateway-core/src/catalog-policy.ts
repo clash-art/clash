@@ -11,6 +11,11 @@ import type { GatewayCatalog, GatewayModelCard } from "./routing.js";
 const DEEPSEEK = /deepseek/i;
 const FLASH = /flash/i;
 
+/** Whether any of the names (model code, upstream id, upstream model) is a DeepSeek one. */
+export function namesDeepSeek(...names: readonly string[]): boolean {
+  return names.some((name) => DEEPSEEK.test(name));
+}
+
 type Implementation = NonNullable<GatewayModelCard["providerImplementations"]>[number];
 
 function isDeepSeekCard(card: GatewayModelCard): boolean {

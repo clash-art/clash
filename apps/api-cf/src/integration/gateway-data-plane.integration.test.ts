@@ -209,6 +209,55 @@ describe("/gateway/v1/chat/completions in workerd", () => {
       expect(rows.length).toBeGreaterThan(0);
       for (const row of rows) expect(row).toMatchObject({ status: "client_aborted", usage_source: "estimated" });
     });
+
+    it("streams Anthropic Messages through /gateway/anthropic/v1 with the public model and settles message_delta usage (#349)", async () => {
+      const caller = await gateway.tenantToken();
+      const vendorModel = "vendor-internal-model-name";
+      const anthropicEvents = (model: string) =>
+        [
+          ["message_start", { message: { id: "msg_workerd", type: "message", role: "assistant", model, content: [], usage: { input_tokens: 4, output_tokens: 1 } } }],
+          ["content_block_start", { index: 0, content_block: { type: "text", text: "" } }],
+          ["content_block_delta", { index: 0, delta: { type: "text_delta", text: "hello" } }],
+          ["content_block_stop", { index: 0 }],
+          ["message_delta", { delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } }],
+          ["message_stop", {}],
+        ].map(([type, data]) => `event: ${type as string}\ndata: ${JSON.stringify({ type, ...(data as object) })}\n\n`);
+      vi.mocked(globalThis.fetch).mockImplementation(async (input, init) => {
+        const request = new Request(input as RequestInfo, init);
+        if (!request.url.endsWith("/messages")) throw new Error(`Unexpected external request: ${request.url}`);
+        upstream.push(request);
+        return sse(anthropicEvents(vendorModel));
+      });
+      const res = await app.request(
+        "/gateway/anthropic/v1/messages?beta=true",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: ORIGIN,
+            authorization: `Bearer ${caller.token}`,
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "prompt-caching-2024-07-31",
+          },
+          body: JSON.stringify({
+            model: gateway.messagesModel,
+            max_tokens: 16,
+            stream: true,
+            messages: [{ role: "user", content: [{ type: "text", text: "hello", cache_control: { type: "ephemeral" } }] }],
+          }),
+        },
+        bindings,
+      );
+      expect(res.status, await res.clone().text()).toBe(200);
+      const delivered = await res.text();
+      expect(delivered).toBe(anthropicEvents(gateway.messagesModel).join(""));
+      expect(upstream).toHaveLength(1);
+      expect(upstream[0]!.headers.get("anthropic-beta")).toBe("prompt-caching-2024-07-31");
+      expect(upstream[0]!.headers.get("authorization")).toBeNull();
+      const rows = await settleRows(res.headers.get("x-clash-request-id")!);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row).toEqual({ status: "settled", input_tokens: 4, output_tokens: 2, usage_source: "reported" });
+    });
   });
 
   it("retains bodies in R2 with the hosted flag, and an admin account views the stored bytes, audited", async () => {

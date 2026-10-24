@@ -1,7 +1,7 @@
 /**
- * Request admission and settlement over GatewayPorts: authenticate -> allowlist
- * -> catalog policy -> plan -> price -> hold -> limits -> reserve, then exactly
- * one settlement.
+ * Request admission and settlement over GatewayPorts: authenticate -> catalog
+ * policy -> (protocol model mapping) -> allowlist -> plan -> price -> hold ->
+ * limits -> reserve, then exactly one settlement.
  * Adapters wrap these around the upstream call; HTTP shells live elsewhere.
  */
 import {
@@ -24,6 +24,7 @@ import { assertPriceCovers, type GatewayPrice, type MicroCredits } from "./prici
 import { holdUnits, type GatewayRequest } from "./request.js";
 import {
   planGatewayRoutes,
+  type GatewayCatalog,
   type GatewayRouteAttempt,
   type GatewayRoutePlan,
   type PlanGatewayRoutesInput,
@@ -52,6 +53,12 @@ export interface AdmitOptions {
     PlanGatewayRoutesInput,
     "isRouteExecutable" | "mayRetryAmbiguousSubmit" | "firstByteTimeoutMs" | "maxAttempts"
   >;
+  /**
+   * Maps the model id the caller sent onto a catalog public code (Anthropic
+   * agents send Anthropic model ids). The admitted request carries the public
+   * code, so the allowlist, limits, ledger and answers all see that code.
+   */
+  resolveModel?: (requested: string, catalog: GatewayCatalog) => string;
 }
 
 export function assertModelAllowed(identity: GatewayIdentity, model: string): void {
@@ -76,9 +83,11 @@ async function admit(
   options: AdmitOptions,
 ): Promise<GatewayAdmission> {
   const identity = await ports.identity.authenticate(input.httpRequest);
-  const { request } = input;
-  assertModelAllowed(identity, request.model);
   const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(identity));
+  const request = options.resolveModel
+    ? { ...input.request, model: options.resolveModel(input.request.model, catalog) }
+    : input.request;
+  assertModelAllowed(identity, request.model);
   const providers = await ports.routes.providers(identity, identity.credentialScope);
   const plan = planGatewayRoutes({
     ...options.routing,

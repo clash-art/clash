@@ -501,3 +501,89 @@ describe("createGatewayApp streaming", () => {
     );
   });
 });
+
+describe("createGatewayApp Anthropic Messages", () => {
+  const messages = { model: fixture.textModel, max_tokens: 4, messages: [{ role: "user", content: "hi" }] };
+  const anthropicPath = (path = "messages") => `/gateway/anthropic/v1/${path}`;
+  const errorBody = async (res: Response) => (await res.json()) as { type: string; error: { type: string; message: string } };
+  const counting = (answer: () => Response) => {
+    const urls: string[] = [];
+    return {
+      urls,
+      upstream: {
+        async fetch(request: Request) {
+          urls.push(new URL(request.url).pathname);
+          return answer();
+        },
+      },
+    };
+  };
+
+  it("never sends the Anthropic wire format to an OpenAI-compatible or DeepSeek route", async () => {
+    const deepseek = "gateway-deepseek-flash";
+    const catalog: GatewayCatalog = {
+      version: "deepseek-1",
+      models: buildEffectiveModelCards({
+        baseModels: [],
+        providers: fixture.providers.official,
+        configs: [
+          {
+            modelId: deepseek,
+            custom: true,
+            name: "DeepSeek Flash",
+            kind: "text",
+            providerBindings: [
+              { providerAccountId: "official-openai", upstreamModel: "deepseek-v4-flash" },
+              { providerAccountId: "official-anthropic", upstreamModel: "deepseek-v4-flash" },
+            ],
+          },
+        ],
+      }),
+    };
+    const stub = counting(() => Response.json({}));
+    const { app } = gateway({ catalog, upstream: stub.upstream });
+    const res = await app.fetch(post({ ...messages, model: deepseek }, { path: anthropicPath() }));
+    expect([res.status, code(res)]).toEqual([404, "GATEWAY_MODEL_NOT_FOUND"]);
+    expect((await errorBody(res)).type).toBe("error");
+    expect(stub.urls).toEqual([]);
+  });
+
+  it("treats a 2xx answer that is not a message as an upstream error, in the Anthropic shape", async () => {
+    const { app } = gateway({ upstream: { fetch: async () => ok("not-a-message") } });
+    const res = await app.fetch(post(messages, { path: anthropicPath() }));
+    expect([res.status, code(res)]).toEqual([502, "GATEWAY_UPSTREAM_ERROR"]);
+    expect(await errorBody(res)).toMatchObject({ type: "error", error: { type: "api_error" } });
+  });
+
+  it("answers a failed count_tokens upstream with a coded error that leaks nothing", async () => {
+    const stub = counting(() => Response.json({ error: { message: "bad sk-leaked" } }, { status: 500 }));
+    const { app, memory } = gateway({ upstream: stub.upstream });
+    const { max_tokens: _maxTokens, ...count } = messages;
+    const res = await app.fetch(post(count, { path: anthropicPath("messages/count_tokens") }));
+    expect(res.status).toBe(502);
+    expect(["GATEWAY_UPSTREAM_ERROR", "GATEWAY_ROUTES_EXHAUSTED"]).toContain(code(res));
+    const text = await res.text();
+    expect(text).not.toContain("sk-leaked");
+    expect(stub.urls.every((path) => path.endsWith("/messages/count_tokens"))).toBe(true);
+    // Counting tokens holds and charges nothing.
+    expect(await memory.ports.ledger.query({ tenantId: "tenant-a", limit: 10 })).toEqual([]);
+
+    const invalid = gateway({ upstream: { fetch: async () => Response.json({ tokens: "many" }) } });
+    const bad = await invalid.app.fetch(post(count, { path: anthropicPath("messages/count_tokens") }));
+    expect([bad.status, code(bad)]).toEqual([502, "GATEWAY_UPSTREAM_ERROR"]);
+  });
+
+  it("rejects misrouted requests in the Anthropic error shape", async () => {
+    const never: GatewayUpstreamPort = { fetch: () => Promise.reject(new Error("unreachable")) };
+    const { app } = gateway({ upstream: never });
+    const get = await app.fetch(post(messages, { path: anthropicPath(), method: "GET" }));
+    expect([get.status, code(get)]).toEqual([400, "GATEWAY_INVALID_REQUEST"]);
+    expect(await errorBody(get)).toMatchObject({ type: "error", error: { type: "invalid_request_error" } });
+    const models = await app.fetch(post(messages, { path: anthropicPath("models") }));
+    expect([models.status, code(models)]).toEqual([501, "GATEWAY_CAPABILITY_UNAVAILABLE"]);
+    expect((await errorBody(models)).type).toBe("error");
+    // max_tokens is required by the Messages API.
+    const { max_tokens: _maxTokens, ...unbounded } = messages;
+    expect(code(await app.fetch(post(unbounded, { path: anthropicPath() })))).toBe("GATEWAY_INVALID_REQUEST");
+  });
+});

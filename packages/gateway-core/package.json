@@ -30,6 +30,7 @@
     "clean": "rm -rf dist",
     "lint": "eslint src --ext .ts",
     "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit --project tsconfig.check.json"
   },
@@ -38,6 +39,8 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@agentclientprotocol/claude-agent-acp": "^0.47.0",
+    "@agentclientprotocol/sdk": "1.3.0",
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "eslint": "^8.57.0",

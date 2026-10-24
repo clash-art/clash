@@ -14,5 +14,7 @@ export default defineConfig({
     environment: "node",
     // Only source suites are authoritative; never collect compiled copies.
     include: ["src/**/*.test.ts"],
+    // Agent E2E suites spawn real agent binaries: `pnpm test:e2e` (vitest.e2e.config.ts).
+    exclude: ["src/**/*.e2e.test.ts"],
   },
 });
