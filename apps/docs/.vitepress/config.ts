@@ -34,6 +34,7 @@ export default withMermaid(defineConfig({
             { text: "Gateway Admin Console", link: "/guide/gateway-admin" },
             { text: "Gateway Teams, Budgets & Limits", link: "/guide/gateway-teams" },
             { text: "Gateway Ops Runbook", link: "/guide/gateway-ops-runbook" },
+            { text: "Gateway Node Backup & Ops", link: "/guide/gateway-node-backup" },
             { text: "Build Architecture", link: "/guide/build-architecture" },
             { text: "Release Pipeline", link: "/guide/release-pipeline" },
             {
