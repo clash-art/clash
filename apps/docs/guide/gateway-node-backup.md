@@ -10,8 +10,7 @@ NODES historical notes about SQLite `VACUUM INTO` are obsolete for product
 ops.
 
 Related: cloud Workers ops runbook (#361 / `gateway-ops-runbook.md` when
-merged). Compose / health / drain land in #374 / #375. SSE LB (#376) is
-paused pending product decision on introducing nginx.
+merged). Compose / health / drain land in #374 / #375. SSE LB (#376) is deferred/cancelled until product needs multi-instance self-host LB.
 
 ## What to back up
 
