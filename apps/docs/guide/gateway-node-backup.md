@@ -9,8 +9,10 @@ live `.sqlite`+WAL pair, or treat single-file SQLite as a restore target.
 NODES historical notes about SQLite `VACUUM INTO` are obsolete for product
 ops.
 
-Related: cloud Workers ops runbook (#361 / `gateway-ops-runbook.md` when
-merged). Compose / health / drain land in #374 / #375. Multi-instance self-host is fine; issue #376 (checked-in nginx/LB deploy docs) is cancelled for this phase — operators bring their own LB; this repo does not own LB config.
+Related: cloud Workers ops runbook (#361 /
+[gateway-ops-runbook.md](gateway-ops-runbook.md)). Compose / health / drain
+land in #374 / #375. Load balancing is the deployer's choice; nodes are
+stateless and expose health endpoints (`/healthz`, `/readyz`).
 
 ## What to back up
 
@@ -116,8 +118,8 @@ from this data restore drill.
 | **Drain a node** | `SIGTERM` → `/readyz` 503 → LB ejects → finish streams up to grace → settle in `finally` (#375). |
 | **Rollback code** | Previous image tag; schema backward-compatible for one release. |
 
-Cloud Workers-specific rotate / suspend / reconcile steps: issue #361
-(`apps/docs/guide/gateway-ops-runbook.md` when merged).
+Cloud Workers-specific rotate / suspend / drain steps:
+[gateway-ops-runbook.md](gateway-ops-runbook.md) (#361).
 
 ## Incident SQL stubs
 
