@@ -11,9 +11,10 @@ Related guides: [gateway-admin.md](gateway-admin.md),
 [gateway-schema.md](gateway-schema.md),
 [gateway-data-plane.md](gateway-data-plane.md).
 
-Self-host (Node + Postgres) backup/restore and LB tuning are covered by
-Epic B issues #376 (SSE LB) and #384 (backup/restore); they are not part of
-this cloud runbook.
+Self-host (Node + Postgres) backup/restore is covered by Epic B
+issue #384 / [gateway-node-backup.md](gateway-node-backup.md) (when present).
+Load balancing is the deployer's choice; gateway nodes are stateless and
+expose health endpoints.
 
 ## Product boundaries (locked 2026-10-20)
 
@@ -75,7 +76,7 @@ never carry plaintext keys.
      succeeds on a Flash-allowed model.
 5. If upstream returns 401/403 after rotation, the data plane maps to
    `502 UPSTREAM_AUTH_FAILED` and does not charge — fix the secret, do not
-   "retry POST" from an LB.
+   blindly retry the client POST.
 
 UI: `/admin/upstreams`. API table: [gateway-admin.md](gateway-admin.md).
 
@@ -95,51 +96,6 @@ UI: `/admin/upstreams`. API table: [gateway-admin.md](gateway-admin.md).
    so new `sk_gw_` traffic stops immediately.
 5. Record the reason in the admin mutation (audit row). Reactivate only
    after the owner confirms and counters look sane.
-
-## Runbook: reconcile ledger (staging)
-
-Nightly / on-demand checks (D1; same invariants as gateway-core):
-
-```sql
--- Open + settle_failed holds must match budget.reserved_micro_credits
--- (illustrative; run via staging D1 / wrangler d1 execute --env staging)
-SELECT b.id AS budget_id,
-       b.reserved_micro_credits AS budget_reserved,
-       COALESCE(h.hold_sum, 0) AS hold_sum
-  FROM gateway_budget b
-  LEFT JOIN (
-    SELECT budget_id, SUM(amount_micro_credits) AS hold_sum
-      FROM gateway_usage_ledger
-     WHERE kind = 'hold' AND status IN ('open', 'settle_failed')
-     GROUP BY budget_id
-  ) h ON h.budget_id = b.id
- WHERE b.reserved_micro_credits <> COALESCE(h.hold_sum, 0);
-
--- Usage budgets: spent should equal sum of settle amounts
-SELECT b.id AS budget_id,
-       b.spent_micro_credits AS budget_spent,
-       COALESCE(s.settle_sum, 0) AS settle_sum
-  FROM gateway_budget b
-  LEFT JOIN (
-    SELECT budget_id, SUM(amount_micro_credits) AS settle_sum
-      FROM gateway_usage_ledger
-     WHERE kind = 'settle'
-     GROUP BY budget_id
-  ) s ON s.budget_id = b.id
- WHERE b.spent_micro_credits <> COALESCE(s.settle_sum, 0);
-```
-
-If drift is real (not a race with an in-flight hold):
-
-1. Prefer the **stale-hold sweeper** / settle recovery path so open holds
-   expire or settle through normal code (`gateway-data-plane.md`).
-2. Only then post a platform `wallet/adjust` (`adjust` ledger kind) with a
-   clear `reason` and a unique idempotency key — one correction per key.
-3. Never rewrite historical `settle` rows; append `adjust` / `refund`.
-
-Column names follow the D1 schema in [gateway-schema.md](gateway-schema.md).
-If a query errors because a column was renamed in a later migration, update
-this runbook — do not invent alternate money units.
 
 ## Runbook: drain / rollback (staging Workers)
 
@@ -172,7 +128,7 @@ Rules:
   with the schema already applied on staging D1 for one release.
 - Never run `wrangler deploy` without `--env staging` from this runbook.
 - After rollback, re-check `/api/v1/admin/gateway/overview`, a smoke
-  chat completion, and the ledger invariant queries above.
+  chat completion, and wallet / hold health in the admin console.
 
 ## Incident quick links
 
@@ -181,11 +137,11 @@ Rules:
 | `402 GATEWAY_BUDGET_EXCEEDED` spike | Wallet / member / key suspended or empty; `/admin/budgets` |
 | `502 UPSTREAM_AUTH_FAILED` | Recent key rotation; upstream `enabled`; Worker secret name |
 | `429` with `Retry-After` | Live counters on `/admin/abuse`; owner rate limits |
-| Ledger drift | Invariant SQL above; sweeper; then audited `adjust` |
+| Suspected wallet/hold drift | Prefer stale-hold sweeper / settle recovery; then audited `wallet/adjust` — never rewrite historical `settle` rows |
 | Retention view 410 | Body past 30 days or purge already ran |
 
 ## Out of scope here
 
 - Production deploys and production secret rotation.
 - Node self-host PG base backup / WAL / object-store restore (#384).
-- nginx / Caddy / Traefik SSE load balancing (#376).
+- Nightly upstream invoice / AI Gateway reconcile as a product path (dropped; use charge-once ledger + Durable settle recovery / #399, and manual audited `adjust` when needed).
