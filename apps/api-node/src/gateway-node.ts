@@ -335,14 +335,20 @@ export function createN2GatewayBudgetPort(deps: {
   }
   return {
     async reserve(input) {
-      if (input.budgetIds.length > 0)
-        await store.admitText({ tenantId: input.tenantId, budgetIds: input.budgetIds });
+      // Fail closed: every caller (virtual key, clsh_, session; official or
+      // tenant scope) is admitted only against a real N2 budget row. No row
+      // means no free pass — refuse with the coded 402.
+      if (input.budgetIds.length === 0)
+        throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
+      await store.admitText({ tenantId: input.tenantId, budgetIds: input.budgetIds });
       return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
     },
     async settle(event) {
       const budgetIds = await budgetIdsOf(event);
+      // Admission refused budgetless callers; a budget vanishing mid-request
+      // must not settle for free either.
       if (budgetIds.length === 0)
-        return { requestId: event.requestId, costMicroCredits: event.costMicroCredits, duplicate: false };
+        throw new GatewayError("GATEWAY_INTERNAL", { details: { reason: "settle_without_budget" } });
       const result = await store.chargeText({
         requestId: event.requestId,
         tenantId: event.tenantId,

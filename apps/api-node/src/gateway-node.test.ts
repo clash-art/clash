@@ -190,25 +190,53 @@ describe("gateway-node routes", () => {
     expect(statsFor(OFFICIAL_KEY)?.requests).toBe(2);
   });
 
-  it("authenticates clsh_ tokens and sessions as the personal tenant", async () => {
+  it("refuses an unfunded personal (official-scope) caller with 402 and no upstream call", async () => {
     const clsh = `clsh_${randomBytes(20).toString("hex")}`;
     await pglite.query(
       `INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES ('t1','u-clsh','n',$1,$2)`,
       [sha(clsh), clsh.slice(0, 13)],
     );
-    const viaToken = await chat("/v1/chat/completions", clsh);
-    expect(viaToken.status).toBe(200);
     sessionUser = "u-session";
-    const viaSession = await chat("/v1/chat/completions", undefined, {}, { cookie: "better-auth.session_token=x" });
-    expect(viaSession.status).toBe(200);
-    const { rows } = await pglite.query<{ tenant_id: string }>(
-      "SELECT tenant_id FROM gateway_request ORDER BY tenant_id",
-    );
-    // No budgets: nothing charged, so no request row; identity is still personal.
-    expect(rows.every((r) => r.tenant_id.startsWith("personal:"))).toBe(true);
+    const unfundedKey = await virtualKey({ tenantId: "tenant-a", userId: "u-nobudget" });
+    for (const [token, headers] of [
+      [clsh, {}],
+      [undefined, { cookie: "better-auth.session_token=x" }],
+      [unfundedKey.token, {}],
+    ] as const) {
+      const response = await chat("/v1/chat/completions", token, {}, headers);
+      expect(response.status).toBe(402);
+      expect(response.headers.get("x-clash-error-code")).toBe("GATEWAY_BUDGET_EXCEEDED");
+    }
+    expect(statsFor(OFFICIAL_KEY)).toBeUndefined();
+    const { rows } = await pglite.query("SELECT 1 FROM gateway_usage_ledger UNION ALL SELECT 1 FROM gateway_request");
+    expect(rows).toHaveLength(0);
+    // Identity still resolves: the catalog is readable without a budget.
     const models = await app.request("/v1/models", { headers: { authorization: `Bearer ${clsh}` } });
     expect(models.status).toBe(200);
     expect(personalTenantId("x")).toBe("personal:x");
+  });
+
+  it("charges a funded personal caller exactly once after a non-stream chat", async () => {
+    const clsh = `clsh_${randomBytes(20).toString("hex")}`;
+    await pglite.query(
+      `INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES ('t1','u-clsh','n',$1,$2)`,
+      [sha(clsh), clsh.slice(0, 13)],
+    );
+    await budget("b-personal", "personal:u-clsh", "user", "u-clsh", 1_000_000_000);
+    const response = await chat("/v1/chat/completions", clsh);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as any).object).toBe("chat.completion");
+    expect(statsFor(OFFICIAL_KEY)?.requests).toBe(1);
+    const { rows } = await pglite.query<{ tenant_id: string; budget_id: string; amount: string }>(
+      `SELECT tenant_id, budget_id, amount_micro_credits::text AS amount FROM gateway_usage_ledger WHERE kind='charge'`,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ tenant_id: "personal:u-clsh", budget_id: "b-personal" });
+    const spent = await pglite.query<{ spent: string }>(
+      "SELECT spent_micro_credits::text AS spent FROM gateway_budget WHERE id='b-personal'",
+    );
+    expect(Number(spent.rows[0]!.spent)).toBe(Number(rows[0]!.amount));
+    expect(Number(rows[0]!.amount)).toBeGreaterThan(0);
   });
 
   it("lists /v1/models filtered by the key's allowlist", async () => {
@@ -261,6 +289,7 @@ describe("gateway-node routes", () => {
   });
 
   it("answers 429 past the key's rate limit with retry-after", async () => {
+    await budget("b-a", "tenant-a", "tenant", "tenant-a", 1_000_000_000);
     const { token, id } = await virtualKey({ tenantId: "tenant-a", userId: "u1" });
     await pglite.query(
       `INSERT INTO gateway_config (key, value, version, updated_at) VALUES ($1, $2::jsonb, 1, 0)`,
