@@ -438,7 +438,7 @@ describe("/gateway/v1 through the Worker app", () => {
     const identity = await ports.identity.authenticate(gatewayRequest(caller.token));
     const now = gateway.clock.now();
     const reserve = (requestId: string) =>
-      ports.budgets.reserve({ requestId, tenantId: identity.tenantId, budgetIds: identity.budgetIds, holdMicroCredits: 7, expiresAt: now - 5_000 });
+      ports.budgets.reserve({ requestId, tenantId: identity.tenantId, budgetIds: identity.budgetIds, credentialScope: identity.credentialScope, holdMicroCredits: 7, expiresAt: now - 5_000 });
     const stale = `gwr_sweep_${crypto.randomUUID()}`;
     const failed = `gwr_sweep_${crypto.randomUUID()}`;
     await reserve(stale);
@@ -466,6 +466,48 @@ describe("/gateway/v1 through the Worker app", () => {
     await sweepGatewayHolds({ DB: d1 }, { clock: gateway.clock, logger: { info() {}, warn() {}, error() {} } });
     expect(rows(stale)).toEqual(closed);
     expect(reserved()).toBe(heldBoth - 7 * identity.budgetIds.length);
+  });
+
+  it("exempts only unbudgeted tenant-scope (BYOK) requests from the no-budget refusal (#369)", async () => {
+    const caller = await gateway.tenantToken();
+    const ports = gateway.ports();
+    const identity = await ports.identity.authenticate(gatewayRequest(caller.token));
+    const input = (requestId: string, credentialScope: "official" | "tenant", budgetIds: readonly string[] = []) => ({
+      requestId,
+      tenantId: identity.tenantId,
+      budgetIds,
+      credentialScope,
+      holdMicroCredits: 7,
+      expiresAt: gateway.clock.now() + 60_000,
+    });
+    const event = (requestId: string, credentialScope: "official" | "tenant") => ({
+      requestId,
+      tenantId: identity.tenantId,
+      userId: identity.userId,
+      modelCode: "m",
+      kind: "text" as const,
+      upstreamId: "u",
+      credentialScope,
+      usage: { source: "upstream" as const, inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, units: {} },
+      costMicroCredits: 5,
+      priceVersion: "p",
+      catalogVersion: "c",
+      status: "settled" as const,
+      occurredAt: gateway.clock.now(),
+    });
+    const byok = `gwr_byok_${crypto.randomUUID()}`;
+    await expect(ports.budgets.reserve(input(byok, "tenant"))).resolves.toMatchObject({ holds: [] });
+    await expect(ports.budgets.settle(event(byok, "tenant") as never)).resolves.toMatchObject({ costMicroCredits: 0 });
+    await expect(ports.budgets.reserve(input(`gwr_off_${crypto.randomUUID()}`, "official"))).rejects.toMatchObject({
+      code: "GATEWAY_BUDGET_EXCEEDED",
+    });
+    await expect(ports.budgets.settle(event(`gwr_off_${crypto.randomUUID()}`, "official") as never)).rejects.toMatchObject({
+      code: "GATEWAY_INTERNAL",
+    });
+    // A BYOK request with budget rows still holds them.
+    const held = await ports.budgets.reserve(input(`gwr_byokb_${crypto.randomUUID()}`, "tenant", identity.budgetIds));
+    expect(held.holds.length).toBe(identity.budgetIds.length);
+    expect(identity.budgetIds.length).toBeGreaterThan(0);
   });
 
   it("serves /gateway/anthropic/v1 messages and count_tokens through the Worker mount on the official Anthropic account", async () => {

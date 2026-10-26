@@ -481,6 +481,23 @@ DeepSeek Flash-only policy, filtered by the key's allowlist).
 - Budgets are N2 (#363): text admission is the read-only credit-floor check,
   settlement is one postpay charge. Limits are #364, credentials #366 (one
   scope per request; tenant traffic never resolves an official key).
+- Official vs tenant (BYOK) resolution (#369, decision N12): the scope order
+  is **user-configurable** in `gateway_credential_priority` (migration
+  0019): one row per tenant (`user_id = ''`) and optionally per member (the
+  member row wins). Values: `official_only`, `tenant_only`, `official_first`,
+  `tenant_first`. No row: the credential's own scope only (no cross-scope
+  fallback). The core (`planForIdentity`) plans the request in the first
+  listed scope that has a route; every attempt, retry and failover stays in
+  that scope, so an official key never serves a BYOK request or vice versa,
+  and a plan mixing scopes is refused before the budget is touched.
+- Budget by resolved scope: `reserve` receives the request's
+  `credentialScope`. A `tenant` (BYOK) request with no budget row is
+  admitted (the tenant pays its own upstream) and settles with no platform
+  charge; with a budget row it is held to that budget. An `official` request
+  with no budget row is always 402 `GATEWAY_BUDGET_EXCEEDED` with no upstream
+  call. A fallback from BYOK to official happens only at planning, before
+  `reserve`, so it is budget-checked as official. The D1 adapter applies the
+  same rule.
 - The #365 maintenance tick (rollover + limits sweep) starts in-process on
   the api role. Nothing is kept in process memory between requests.
 - Not yet on Node: shared circuit store (circuits read closed), body

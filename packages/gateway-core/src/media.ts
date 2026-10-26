@@ -22,6 +22,7 @@
  */
 import {
   assertModelAllowed,
+  planForIdentity,
   reserveAdmission,
   type GatewayAdmission,
 } from "./admission.js";
@@ -36,7 +37,6 @@ import {
   type GatewayRequest,
 } from "./request.js";
 import {
-  planGatewayRoutes,
   type GatewayRouteAttempt,
   type GatewayRoutePlan,
   type PlanGatewayRoutesInput,
@@ -174,21 +174,19 @@ export function planGatewayMediaJob(
 ): Promise<GatewayMediaJob> {
   return coded(
     (async () => {
-      const { identity } = input;
+      const caller = input.identity;
       if (input.kind === "text")
         throw new GatewayError("GATEWAY_INVALID_REQUEST", {
           message: "Text models use the chat or messages protocol.",
           details: { param: "kind" },
         });
-      assertModelAllowed(identity, input.model);
-      const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(identity));
-      const plan = planGatewayRoutes({
+      assertModelAllowed(caller, input.model);
+      const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(caller));
+      const { plan, identity } = await planForIdentity(ports, caller, {
         ...options.routing,
         modelCode: input.model,
         kind: input.kind,
         catalog,
-        scope: identity.credentialScope,
-        providers: await ports.routes.providers(identity, identity.credentialScope),
         ...(input.requestedParameterIds ? { requestedParameterIds: input.requestedParameterIds } : {}),
       });
       const job: GatewayMediaJob = {

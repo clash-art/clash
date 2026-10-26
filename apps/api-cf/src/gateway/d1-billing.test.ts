@@ -498,6 +498,7 @@ describe("price book and billing over D1 (node:sqlite)", () => {
         requestId: `gwr_hold_${hex(4)}`,
         tenantId: caller.tenantId,
         budgetIds: [funded.id],
+        credentialScope: "official",
         holdMicroCredits: funded.limit_micro_credits! - funded.spent_micro_credits - keep,
         expiresAt: t + 60_000,
       });

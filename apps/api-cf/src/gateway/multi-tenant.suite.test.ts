@@ -144,6 +144,7 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
               requestId: `race-${caller.tenantId}-${index}`,
               tenantId: identity.tenantId,
               budgetIds: identity.budgetIds,
+              credentialScope: identity.credentialScope,
               holdMicroCredits: hold,
               expiresAt: ports.clock.now() + 60_000,
             })

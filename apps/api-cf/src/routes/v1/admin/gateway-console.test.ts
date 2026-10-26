@@ -1087,7 +1087,7 @@ describe("stale-hold sweep", () => {
       .run(budgetId, t.tenantId, t.tenantId);
     const { budgets } = createD1GatewayBudgetPorts(d1, { clock: { now: () => Date.now() } });
     const requestId = `gwr_${hex()}`;
-    await budgets.reserve({ requestId, tenantId: t.tenantId, budgetIds: [budgetId], holdMicroCredits: 9, expiresAt: Date.now() - 5_000 });
+    await budgets.reserve({ requestId, tenantId: t.tenantId, budgetIds: [budgetId], credentialScope: "official", holdMicroCredits: 9, expiresAt: Date.now() - 5_000 });
     const sweepAudits = () => auditRows("action = 'holds.sweep'").length;
     const auditsBefore = sweepAudits();
 

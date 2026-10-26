@@ -38,7 +38,7 @@ jobs:
           pnpm --dir apps/local-api exec vitest run src/project-host.contract.test.ts
           # api-node's render worker imports shared-runtime modules that resolve @clash/action-sdk through its built entries.
           pnpm exec turbo run build --filter='@clash/api-node^...'
-          pnpm --dir apps/api-node exec vitest run src/project-host.contract.test.ts src/timeline-host.test.ts src/timeline-definition.test.ts src/personal-assets.test.ts src/timeline-render.test.ts src/app.test.ts src/relay-http.test.ts src/gateway-node.test.ts src/gateway-node-stream.test.ts
+          pnpm --dir apps/api-node exec vitest run src/project-host.contract.test.ts src/timeline-host.test.ts src/timeline-definition.test.ts src/personal-assets.test.ts src/timeline-render.test.ts src/app.test.ts src/relay-http.test.ts src/gateway-node.test.ts src/gateway-node-stream.test.ts src/gateway-credential-resolution.test.ts
           pnpm --dir apps/api-cf exec vitest run src/startup-imports.test.ts src/generated/cloud-plugin-validators.test.ts src/routes/v1/project-assets.test.ts src/routes/v1/voice-input.test.ts src/agents/project-room-loro-remote.test.ts
           pnpm --dir apps/api-cf exec vitest run --config vitest.integration.config.mts src/integration/project-host.contract.integration.test.ts src/integration/project-room-host-command.integration.test.ts src/integration/project-assets.integration.test.ts src/integration/project-websocket-auth.integration.test.ts
       - name: Verify Storyboard references and chat drafts

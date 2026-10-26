@@ -46,6 +46,7 @@ import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 import {
   admitGatewayRequest,
   assertModelAllowed,
+  planForIdentity,
   settleGatewayRequest,
   type GatewayAdmission,
 } from "./admission.js";
@@ -88,7 +89,6 @@ import {
 } from "./request.js";
 import {
   nextGatewayAttempt,
-  planGatewayRoutes,
   type GatewayCatalog,
   type GatewayRouteAttempt,
   type UpstreamFailure,
@@ -1008,17 +1008,15 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     let leaseId: string | undefined;
     let limitHeaders: GatewayRateLimitHeaders = {};
     try {
-      const identity = await ports.identity.authenticate(protocol.credentialRequest(request));
+      const caller = await ports.identity.authenticate(protocol.credentialRequest(request));
       const counted = normalizeAnthropicCountTokensRequest(await readJsonBody(request, maxBodyBytes), { maxBodyBytes });
-      const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(identity));
+      const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(caller));
       const model = protocol.resolveModel ? protocol.resolveModel(counted.model, catalog) : counted.model;
-      assertModelAllowed(identity, model);
-      const plan = planGatewayRoutes({
+      assertModelAllowed(caller, model);
+      const { plan, identity } = await planForIdentity(ports, caller, {
         modelCode: model,
         kind: "text",
         catalog,
-        scope: identity.credentialScope,
-        providers: await ports.routes.providers(identity, identity.credentialScope),
         isRouteExecutable: protocol.isRouteExecutable,
         ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
       });

@@ -281,6 +281,7 @@ describe("#360 multi-tenant suite (gateway-core / in-memory)", () => {
               requestId: `race-${index}`,
               tenantId: identityA.tenantId,
               budgetIds: identityA.budgetIds,
+              credentialScope: identityA.credentialScope,
               holdMicroCredits: hold,
               expiresAt: memory.ports.clock.now() + 60_000,
             })
