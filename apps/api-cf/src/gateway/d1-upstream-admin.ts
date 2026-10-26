@@ -24,7 +24,14 @@ import { GatewayError, gatewayCircuitState, type GatewayClock } from "@clash/gat
 
 import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
 import type { RateLimitConfig } from "./d1-billing";
-import { numberRecord, parseJson, stringList, toMs, toSeconds } from "./d1-common";
+import {
+  GATEWAY_UPSTREAM_ACCOUNT_ID_PREFIX,
+  numberRecord,
+  parseJson,
+  stringList,
+  toMs,
+  toSeconds,
+} from "./d1-common";
 import {
   secretRefCredentials,
   sealGatewayUpstreamCredentials,
@@ -309,7 +316,7 @@ export function createD1UpstreamAdmin(
         actor: GatewayAdminActor;
       },
     ): Promise<UpstreamAccountView> {
-      const id = `gwu_${crypto.randomUUID().replaceAll("-", "")}`;
+      const id = `${GATEWAY_UPSTREAM_ACCOUNT_ID_PREFIX}${crypto.randomUUID().replaceAll("-", "")}`;
       const credential = await credentialColumns(input.credential);
       const nowS = nowSeconds();
       await db.batch([

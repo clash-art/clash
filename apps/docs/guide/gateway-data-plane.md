@@ -212,6 +212,58 @@ delivered units at the price book. A failure after acceptance settles
 `upstream_failed` at cost zero, with the failure's code, whatever was
 requested.
 
+### Official media jobs (#359)
+
+Hosted image, video and audio generation runs through the same core and
+ledger as chat. A media run is official when none of the user's own provider
+accounts serves its model and the published gateway catalog does. Its job
+outlives one HTTP request, so `packages/gateway-core/src/media.ts` splits
+admission into steps:
+
+| Hosted pipeline step     | Gateway (`apps/api-cf/src/generation/official-media.ts`)                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `resolveRoute` (enqueue) | `planGatewayMediaJob`: allowlist, catalog policy, `planGatewayRoutes` over official accounts, price as of now. One `gateway_media_job` row (0049) per task freezes the first attempt and the price instant. |
+| `beforeGenerate`         | `admitGatewayMediaJob`: limits (`mediaJobs` in flight) and the hold on every budget, before the provider is called.         |
+| provider credentials     | The official key of the frozen route, only for the admitted run that planned it (same task, actor and account).            |
+| `afterGenerate`          | `settleMediaGeneration` succeeded: the delivered units, never above the held ones, once.                                   |
+| `onFailure`              | `settleMediaGeneration` failed: zero, always.                                                                             |
+
+- **Identity.** The product user acting in the Project's tenant: a member of
+  that tenant, or the owner of their own personal workspace. The budgets are
+  the tenant wallet and the member's budget. No header is identity.
+- **Units.** A job measures one `request`, one `image` per image run, the
+  requested duration in whole `video_second`/`audio_second`, and the prompt's
+  `character`s. Only the units the published price has a rate for are held
+  and charged, in credits. A rated unit the job cannot measure (a per-second
+  price for a run with no duration) refuses with `GATEWAY_PRICE_UNAVAILABLE`
+  before anything is held. A success is charged the probed duration of the
+  staged output when one was measured.
+- **AIGC failures never charge.** Any failure, including one after the
+  provider accepted the job, settles zero. Every step is idempotent: the job
+  row only moves forward, the budgets port settles a request once, and a late
+  success after a failure, or after the [sweeper](#stale-hold-sweeper)
+  expired the hold, is a duplicate that charges nothing. The hold lives two
+  hours, past the run's 30-minute deadline.
+- **Refusals.** At enqueue, a served model the caller may not use refuses
+  before the run exists: `GATEWAY_FORBIDDEN` (not a member),
+  `GATEWAY_BUDGET_EXCEEDED` (no budget), `GATEWAY_PRICE_UNAVAILABLE`.
+  `/api/generate/*` answers them with their status and `{ error, code }`. At
+  admission, a refusal fails the run with the matching provider failure code
+  (`quota_exhausted`, `rate_limited`, `permission_denied`), holding nothing;
+  rate and concurrency refusals are retried.
+- **Settlement failures** are marked `settle_failed` exactly as in the data
+  plane. They never fail or republish the run.
+- **No platform key outside the ledger.** An adapter's key is the run's own
+  (`credentialsForRoute`): the user's account, or the official key of an
+  admitted job. Gemini Omni no longer falls back to the Worker's
+  `GOOGLE_API_KEY`; official Gemini Omni runs need a `gateway_upstream_account`.
+- **BYOK usage.** A run on the user's own provider account is not charged
+  credits. The lifecycle writes one `provider_usage_audit` row when it ends
+  (`generation/media-usage.ts`), with what was delivered or the failure code,
+  for every adapter. Before #359 only Pika wrote usage. Adapters that record
+  the provider's own usage events (`recordsProviderUsage`, Pika) get no second
+  row.
+
 ## Stale-hold sweeper
 
 `sweepExpiredGatewayHolds` (`packages/gateway-core/src/holds.ts`) closes
@@ -349,7 +401,9 @@ happens in `apps/api-cf/src/gateway/d1-common.ts`.
 - the reconciliation job for `settle_failed` holds. Until it lands, they are
   found by hold `status = 'settle_failed'` (or by the log when the mark itself
   failed) and settled manually;
-- media/AIGC routes (their settlement hook is in place).
+- official media for routes whose credentials are more than an API key and
+  base URL (Vertex service accounts): the sealed envelope holds only those,
+  so such routes stay BYOK.
 
 ## Tests
 
@@ -386,7 +440,13 @@ end-to-end check against a fetch-stub upstream with no network. They cover:
 
 The budgets capability covers the sweeper: it expires a stale hold once,
 leaves `settle_failed` and live holds alone, and turns a late settlement into
-a duplicate. The composed cases cover the media hook. The duration limit, failover
+a duplicate. The composed cases cover the media hook, and
+`packages/gateway-core/src/media.test.ts` covers media jobs on the memory
+ports. `apps/api-cf/src/generation/official-media.test.ts` drives the real
+hosted generation pipeline over migrated D1 with a stub provider: the official
+fallback, the hold before the provider call, a success charged once, a failure
+after acceptance never charged (replayed and late settlements are duplicates),
+refusals, credential custody, and the BYOK usage row. The duration limit, failover
 before the first byte, and a stream's hold outliving the sweeper are memory
 cases in `app.test.ts`.
 

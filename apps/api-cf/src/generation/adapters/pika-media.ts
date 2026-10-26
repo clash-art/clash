@@ -9,6 +9,7 @@ import {
 import { appendProviderUsageEvent } from "../../services/provider-usage";
 import type { GenerationContext } from "../context";
 import type { GenerationAdapter } from "../adapter";
+import { isOfficialMediaRun, officialMediaRuntime } from "../official-media";
 import { credentialsForRoute } from "./provider-credentials";
 import { positionalReferencePrompt } from "./positional-reference-prompt";
 
@@ -47,6 +48,7 @@ function mediaKind(ctx: GenerationContext): "image" | "video" | "audio" {
 
 export const pikaMediaAdapter: GenerationAdapter = {
   name: "pika-media",
+  recordsProviderUsage: () => true,
 
   async submit(ctx) {
     const { params } = ctx;
@@ -139,6 +141,8 @@ function usageRecorder(ctx: GenerationContext) {
   return async (
     event: import("../../services/pika-media").PikaUsageLifecycleEvent,
   ) => {
+    // An official run is metered by the gateway ledger; its account is never the user's.
+    if (await isOfficialMediaRun(officialMediaRuntime(ctx.env), params)) return;
     const requestPart = event.providerRequestId ?? "submit";
     await appendProviderUsageEvent(ctx.env.DB, {
       id: `${params.taskId}:pika:${requestPart}:${event.status}`,

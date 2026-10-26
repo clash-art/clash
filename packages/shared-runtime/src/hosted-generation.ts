@@ -45,8 +45,14 @@ export interface GenerationPipelinePorts {
     action: () => Promise<void>,
   ): Promise<void>;
   beforeGenerate?(params: GenerationParams): Promise<void>;
-  afterGenerate?(params: GenerationParams): Promise<void>;
-  onFailure?(params: GenerationParams, error: Error): Promise<void>;
+  /** After a successful publication; `run` carries the staged output it published. */
+  afterGenerate?(params: GenerationParams, run: DurableRunRecord): Promise<void>;
+  /** Before a terminal failure is published; `run.failure` is the terminal failure. */
+  onFailure?(
+    params: GenerationParams,
+    error: Error,
+    run: DurableRunRecord,
+  ): Promise<void>;
   provider: DurableProviderExecutor;
   stage: DurableOutputStore["stage"];
   publish: DurableProjectPublisher["publish"];
@@ -265,7 +271,7 @@ export function createGenerationPipeline(ports: GenerationPipelinePorts) {
       async publish(input) {
         await ports.publish(input);
         await ports.checkpoint(input.run, "afterGenerate", async () => {
-          await ports.afterGenerate?.(params(input.run));
+          await ports.afterGenerate?.(params(input.run), input.run);
         });
       },
       async publishFailure(input) {
@@ -273,6 +279,7 @@ export function createGenerationPipeline(ports: GenerationPipelinePorts) {
           await ports.onFailure?.(
             params(input.run),
             new Error(input.run.failure?.message ?? input.failure.message),
+            input.run,
           );
         });
         await ports.publishFailure(input);

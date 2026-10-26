@@ -2,6 +2,7 @@ import { hostedGenerationStatus } from "../generation/status";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { ZodError } from "zod";
+import { isGatewayError } from "@clash/gateway-core";
 
 import type { Env } from "../config";
 import { log } from "../logger";
@@ -108,6 +109,9 @@ async function submitToWorkflow(
     await startGeneration(c.env, taskId, genParams);
     return null; // success
   } catch (e) {
+    // An official media run the gateway refused (budget, membership, price): its code, never a 500.
+    if (isGatewayError(e) && e.code !== "GATEWAY_INTERNAL")
+      return c.json({ error: e.message, code: e.code }, e.status as 400);
     // Asset row is created inside the workflow on completion; nothing to mark failed here.
     // The orphan-recovery loop in NodeProcessor catches stuck `pendingTask` via workflow.status().
     log.error("Failed to create workflow instance:", e);

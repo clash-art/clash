@@ -11,6 +11,9 @@ export const toSeconds = (ms: number) => Math.floor(ms / 1000);
 /** Unix seconds -> epoch ms. */
 export const toMs = (seconds: number) => seconds * 1000;
 
+/** Every `gateway_upstream_account.id` starts with this; tenant BYOK account ids are minted elsewhere. */
+export const GATEWAY_UPSTREAM_ACCOUNT_ID_PREFIX = "gwu_";
+
 /** Wall clock that never goes backwards within one isolate. */
 export function monotonicClock(): GatewayClock {
   let last = 0;

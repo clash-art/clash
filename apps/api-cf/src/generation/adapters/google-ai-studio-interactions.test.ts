@@ -188,4 +188,23 @@ describe("googleAiStudioInteractionsAdapter", () => {
       "video/mp4",
     );
   });
+
+  it("never serves a run with the platform env key when the run's own credentials fail", async () => {
+    const custody = Object.assign(new Error("media job not admitted"), {
+      code: "GATEWAY_KEY_UNAVAILABLE",
+    });
+    const ctx = makeCtx({ GOOGLE_API_KEY: "platform-key" });
+
+    mocks.credentialsForRoute.mockRejectedValueOnce(custody);
+    await expect(
+      googleAiStudioInteractionsAdapter.submit(ctx as never),
+    ).rejects.toBe(custody);
+
+    mocks.credentialsForRoute.mockResolvedValueOnce({});
+    await expect(
+      googleAiStudioInteractionsAdapter.submit(ctx as never),
+    ).rejects.toThrow("API key is required");
+
+    expect(mocks.createInteraction).not.toHaveBeenCalled();
+  });
 });

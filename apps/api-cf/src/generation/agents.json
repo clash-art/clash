@@ -19,7 +19,10 @@
     "executable-runtime.ts": "Cloudflare composition root for executable Actions: shared DurableRunEngine coordinator, PluginExecutionPort provider, R2 stage and ProjectRoom publication. A remote plugin's media answer (the run's pre-assigned pluginOutputAssetId) is staged by sealing its completed upload session and published as a Project Asset once, keyed by the run.",
     "executable-binding.ts": "Resolve a frozen binding to code-registered first-party execution or the user's per-plugin remote endpoint; first-party ids never use the remote path.",
     "executable-action-params.ts": "Hosted admission/publication view of one frozen executable Action run.",
-    "project-owner.ts": "Accountable Project owner lookup used by remote settings and Asset publication."
+    "project-owner.ts": "Accountable Project owner lookup used by remote settings and Asset publication.",
+    "official-media.ts": "#359 official media/AIGC through gateway-core + ledger: a media run no BYOK account serves is planned on the shared route plan (one gateway_media_job per task), admitted (hold + media-job lease) in beforeGenerate, settled in afterGenerate (delivered units, once) or onFailure (zero, always). Official credentials resolve only for the admitted run that planned them. Guide: apps/docs/guide/gateway-data-plane.md#media-and-aigc.",
+    "media-usage.ts": "#359 the one usage writer: quantities a media run asks for/delivers (price book picks the charged units), and one provider_usage_audit row per BYOK run when it ends, unless the adapter recordsProviderUsage (Pika). Adapters never meter.",
+    "official-media.test.ts": "The hosted pipeline over migrated node:sqlite D1 with a stub adapter: BYOK->official fallback, hold before the provider, success charged once, failure after acceptance never charged (replays/late success duplicate), refusals, credential custody (plugin store too), BYOK usage backfill."
   },
   "compatibility": [
     "Live GenerationWorkflow uses shared graph and D1/R2 ports while retaining legacy task IDs and D1 Asset/node publication; this is not native Generator Output Commit migration. Timeline renders are the exception: they publish a Project Asset like the browser render path and api-node. A render node without Timeline provenance (sourceTimelineId/sourceTimelineRevisionId) fails publication and is projected failed.",

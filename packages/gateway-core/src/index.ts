@@ -8,6 +8,7 @@ export * from "./circuit.js";
 export * from "./errors.js";
 export * from "./holds.js";
 export * from "./limits.js";
+export * from "./media.js";
 export * from "./ports.js";
 export * from "./pricing.js";
 export * from "./request.js";
