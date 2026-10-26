@@ -3,7 +3,7 @@
   "key_files": {
     "src/app.ts": "Bearer-token admission plus optional Better Auth browser sessions, owned Project listing and session-only token management. Mounts the shared voice-input routes; session writes enforce the configured public origin.",
     "src/postgres.ts": "pg pool lifecycle and pinned transaction adapter. Rollback on failure, release in finally, destroy on rollback failure.",
-    "src/migrations.ts": "Explicit versioned migration runner; transaction advisory lock and checksum guard. App startup never auto-migrates.",
+    "src/migrations.ts": "Explicit versioned migration runner; transaction advisory lock and checksum guard. App startup never auto-migrates. Includes 0016_gateway.sql (#362).",
     "src/server.ts": "HTTP listener and bounded graceful shutdown. Requires DATABASE_URL and CLOUD_PUBLIC_URL; HOST defaults to loopback.",
     "src/app.test.ts": "Real HTTP listener with PGlite SQL, database token lookup, forged identity rejection, owner isolation and token revocation. Not a network PostgreSQL test.",
     "src/replica-log.ts": "Project-scoped opaque binary log + atomic outbox, content-checked idempotent append, lease claims with SKIP LOCKED and fenced acknowledgement. Caller owns authorization; clients/checkpoint worker own Loro validation. pg_notify carries only project/cursor.",
@@ -48,6 +48,8 @@
     "src/project-host.contract.test.ts": "Shared Project Host contract on PGlite + temporary disk; declares catalog and asset trash/restore as known gaps.",
     "src/provider-settings.ts": "PostgreSQL read models for provider accounts, model-card configs and usage audit; credentials are decrypted only through the shared secret envelope. Mirrors the D1 tables without foreign keys.",
     "src/voice-input.ts": "Node wiring for the shared voice-input route factory and hosted ports; catalog/credentials/audit come from Postgres, no Provider transcription logic lives here.",
+    "src/gateway-seed.ts": "Explicit Flash-only gateway seed (#362): deepseek-v4-flash catalog + credits price rows; refuses non-Flash DeepSeek. pnpm seed:gateway; never on startup.",
+    "src/gateway-schema.test.ts": "PGlite: 0016 applies; ledger charge-once (request_id, budget_id, kind); credential '' uniqueness; seed Flash-only refuse; settle intent PK.",
     "src/mock-upstream/": "Test-only deterministic mock upstream (NODES §4.4 / #378): OpenAI + Anthropic JSON/SSE with latency/failure control API, key-hash stats, fake sk_test_* keys only. CLI: pnpm mock-upstream / scripts/mock-upstream.ts. Never for production."
   }
 }

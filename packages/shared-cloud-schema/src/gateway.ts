@@ -11,6 +11,8 @@ import {
 // No foreign keys — see AGENTS.md
 
 /*
+ * Postgres Node self-host schema is postgres/0016_gateway.sql (#362, N2 kinds).
+ * This file remains the D1/api-cf Drizzle mirror only — not a supported SQLite gateway topology.
  * Clash official model gateway tables (web/drizzle/0032_gateway.sql; guide:
  * apps/docs/guide/gateway-schema.md). Timestamps are unix seconds; money is
  * integer micro-credits (1 credit = 1_000_000), matching @clash/gateway-core
