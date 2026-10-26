@@ -702,3 +702,51 @@ export const gatewayTenantSubscriptions = sqliteTable(
     ),
   }),
 );
+
+export const GATEWAY_MEDIA_JOB_STATUSES = [
+  "planned",
+  "admitted",
+  "settled",
+  "refused",
+] as const;
+export type GatewayMediaJobStatus = (typeof GATEWAY_MEDIA_JOB_STATUSES)[number];
+
+/**
+ * Official media/AIGC jobs (0049, #359): one row per hosted generation run
+ * served by official upstream accounts. The server-side record that the run
+ * is official (only the run that planned it resolves official credentials)
+ * and the durable anchor of its ledger request: `requestId` is the gateway
+ * request id of the job's hold and settle rows. `jobJson` is the gateway-core
+ * `GatewayMediaJob` (identity, frozen route, quantities, price instant);
+ * never a prompt, output or credential.
+ */
+export const gatewayMediaJobs = sqliteTable(
+  "gateway_media_job",
+  {
+    requestId: text("request_id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    tenantId: text("tenant_id").notNull(),
+    userId: text("user_id").notNull(),
+    modelCode: text("model_code").notNull(),
+    kind: text("kind").notNull(),
+    status: text("status", { enum: GATEWAY_MEDIA_JOB_STATUSES })
+      .notNull()
+      .default("planned"),
+    jobJson: text("job_json").notNull(),
+    leaseId: text("lease_id"),
+    errorCode: text("error_code"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    taskIdx: uniqueIndex("gateway_media_job_task_idx").on(table.taskId),
+    tenantTimeIdx: index("gateway_media_job_tenant_time_idx").on(
+      table.tenantId,
+      table.createdAt,
+    ),
+    statusCheck: check(
+      "gateway_media_job_status_check",
+      sql`${table.status} IN (${sql.raw(GATEWAY_MEDIA_JOB_STATUSES.map((status) => `'${status}'`).join(", "))})`,
+    ),
+  }),
+);

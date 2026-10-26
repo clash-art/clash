@@ -20,6 +20,7 @@ import {
 import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
 import { HOSTED_GENERATION_OWNER } from "../cloud-runs/owners";
 import type { Env } from "../config";
+import { serverLog } from "../logger";
 import { getPlugins } from "../plugins/registry";
 import type { Plugin } from "../plugins/types";
 import { probeAsset } from "../services/asset-probe";
@@ -32,7 +33,18 @@ import { createGenerationOutputBroker } from "./output";
 import { resolveAdapter } from "./registry";
 import type { GenerationAdapter } from "./adapter";
 import type { GenerationParams } from "./params";
-import { resolveGenerationModelProviderRoute } from "./model-provider-route";
+import {
+  NoConfiguredProviderRouteError,
+  resolveGenerationModelProviderRoute,
+} from "./model-provider-route";
+import { recordProviderUsage, type GenerationUsageOutcome } from "./media-usage";
+import {
+  admitOfficialMediaRun,
+  officialMediaRuntime,
+  planOfficialMediaRoute,
+  settleOfficialMediaRun,
+  type OfficialMediaRuntime,
+} from "./official-media";
 import {
   assertHostedGenerationAccess,
   claimHostedGenerationNode,
@@ -62,6 +74,47 @@ export interface HostedGenerationOptions {
     publication: HostedGenerationPublication,
   ) => Promise<void>;
   hookCheckpoint?: (name: string, action: () => Promise<void>) => Promise<void>;
+  /** Official media jobs (gateway ports and job store); defaults to this env's D1. */
+  officialMedia?: OfficialMediaRuntime;
+  /** The usage writer for runs on the user's own accounts; defaults to `provider_usage_audit`. */
+  recordUsage?: (
+    params: GenerationParams,
+    outcome: GenerationUsageOutcome,
+  ) => Promise<void>;
+}
+
+function hostedRouteExecutable(params: GenerationParams) {
+  return (route: ModelUpstreamRoute) => {
+    try {
+      resolveAdapter({ ...params, selectedRoute: route });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+}
+
+/**
+ * The run's route: the user's own provider accounts first, then, for a media
+ * model none of them serves, the official gateway (`official-media.ts`).
+ */
+async function resolveHostedGenerationRoute(
+  env: Env,
+  params: GenerationParams,
+  official: () => OfficialMediaRuntime,
+): Promise<ModelUpstreamRoute | undefined> {
+  try {
+    return await resolveGenerationModelProviderRoute(env, params);
+  } catch (error) {
+    if (!(error instanceof NoConfiguredProviderRouteError)) throw error;
+    const route = await planOfficialMediaRoute(official(), params, {
+      isRouteExecutable: hostedRouteExecutable(params),
+      mayRetryAmbiguousSubmit: (candidate) =>
+        !isExecutablePluginProviderRoute(candidate),
+    });
+    if (route) return route;
+    throw error;
+  }
 }
 
 /** Hook markers prevent ordinary replay; a crash between the external hook and its
@@ -90,6 +143,38 @@ function cloudflarePorts(
   options: HostedGenerationOptions,
 ): GenerationPipelinePorts {
   const hooks = options.hooks ?? getPlugins().generation;
+  let officialRuntime = options.officialMedia;
+  const official = () => (officialRuntime ??= officialMediaRuntime(env));
+  const recordUsage =
+    options.recordUsage ??
+    ((params: GenerationParams, outcome: GenerationUsageOutcome) =>
+      recordProviderUsage(env, params, outcome));
+  /**
+   * BYOK runs get one usage row, unless their adapter records the provider's
+   * own events. The row is an audit of the user's own spend, not a charge: a
+   * failed write is logged and never fails or wedges the run.
+   */
+  const meterOwnAccount = async (
+    params: GenerationParams,
+    outcome: GenerationUsageOutcome,
+  ) => {
+    let adapter: GenerationAdapter | undefined;
+    try {
+      adapter = (options.adapter ?? resolveAdapter)(params);
+    } catch {
+      adapter = undefined;
+    }
+    if (adapter?.recordsProviderUsage?.(params)) return;
+    try {
+      await recordUsage(params, outcome);
+    } catch (error) {
+      serverLog.child("generation").error("generation.usage_write_failed", {
+        task_id: params.taskId,
+        status: outcome.status,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
   const context = (run: DurableRunRecord) =>
     new GenerationContext(
       frozenGeneration(run).params,
@@ -120,10 +205,9 @@ function cloudflarePorts(
     journal: options.journal ?? createD1CloudDurableRunJournal(env.DB),
     clock: options.clock,
     resolveRoute: (params) =>
-      (options.resolveRoute ?? resolveGenerationModelProviderRoute)(
-        env,
-        params,
-      ),
+      options.resolveRoute
+        ? options.resolveRoute(env, params)
+        : resolveHostedGenerationRoute(env, params, official),
     assertAccess: (params) =>
       (options.assertAccess ?? assertHostedGenerationAccess)(env, params),
     claim: (params) =>
@@ -155,11 +239,31 @@ function cloudflarePorts(
         : hookReceipt(env, run, name, action),
     beforeGenerate: async (params) => {
       await hooks?.beforeGenerate?.({ env, params });
+      // An official run holds its budgets before the provider is called.
+      await admitOfficialMediaRun(official(), params);
     },
-    afterGenerate: async (params) => {
+    afterGenerate: async (params, run) => {
+      if (
+        !(await settleOfficialMediaRun(official(), params, {
+          status: "succeeded",
+          run,
+        }))
+      )
+        await meterOwnAccount(params, { status: "completed", run });
       await hooks?.afterGenerate?.({ env, params }, {});
     },
-    onFailure: async (params, error) => {
+    onFailure: async (params, error, run) => {
+      // AIGC failures never charge: an official run settles zero.
+      if (
+        !(await settleOfficialMediaRun(official(), params, {
+          status: "failed",
+          failure: run.failure,
+        }))
+      )
+        await meterOwnAccount(params, {
+          status: "failed",
+          errorCode: run.failure?.code ?? "execution_failed",
+        });
       await hooks?.onFailure?.({ env, params }, error);
     },
     provider: {

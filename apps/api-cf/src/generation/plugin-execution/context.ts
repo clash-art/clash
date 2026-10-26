@@ -5,6 +5,10 @@ import type {
 } from "@clash/shared-types/executable-plugin";
 import type { ModelUpstreamRoute } from "@clash/shared-types";
 import { getProviderCredentials } from "../../services/provider-accounts";
+import {
+  officialMediaCredentials,
+  officialMediaRuntime,
+} from "../official-media";
 import { createGenerationOutputBroker } from "../output";
 import { brokerUploadContext } from "./output-upload";
 import type { Env } from "../../config";
@@ -48,6 +52,12 @@ export function createCloudExecutorContext(
     if (options.credentials) {
       return options.credentials({ route, actorUserId: params.actorUserId });
     }
+    // An admitted official media job resolves its official key; nothing else can.
+    const official = await officialMediaCredentials(
+      officialMediaRuntime(env),
+      params,
+    );
+    if (official) return official;
     return getProviderCredentials(env, params.actorUserId, {
       providerId: route.providerId ?? route.upstreamId,
       ...(route.accountId ? { accountId: route.accountId } : {}),

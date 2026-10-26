@@ -48,6 +48,11 @@ export async function loadHostedModelCards(
   };
 }
 
+/** No enabled provider account of the user serves the model. */
+export class NoConfiguredProviderRouteError extends Error {
+  override name = "NoConfiguredProviderRouteError";
+}
+
 export async function resolveGenerationModelProviderRoute(
   env: Pick<Env, "DB">,
   params: GenerationParams,
@@ -67,7 +72,7 @@ export async function resolveGenerationModelProviderRoute(
     configuredProviders,
   });
   if (!route) {
-    throw new Error(`No configured provider route for ${modelCode}`);
+    throw new NoConfiguredProviderRouteError(`No configured provider route for ${modelCode}`);
   }
   return route;
 }

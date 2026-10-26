@@ -31,6 +31,8 @@ function sharedContentParts(
 
 export const textGenAdapter: GenerationAdapter = {
   name: "text-gen",
+  recordsProviderUsage: (params) =>
+    params.selectedRoute?.apiShape === "pika-chat",
 
   async submit(ctx) {
     const { params } = ctx;

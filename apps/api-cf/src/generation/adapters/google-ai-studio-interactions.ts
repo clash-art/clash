@@ -91,28 +91,16 @@ async function transportCredentials(
   ctx: GenerationContext,
   route: NonNullable<GenerationContext["params"]["selectedRoute"]>,
 ): Promise<{ apiKey?: string; baseUrl?: string }> {
-  let stored: Record<string, string> = {};
-  let storedError: unknown;
-  try {
-    // Gateway BYOK may intentionally omit apiKey, so select the account first
-    // and enforce the alternative transport credentials below.
-    stored = await credentialsForRoute(ctx, {
-      ...route,
-      requiredCredentials: [],
-    });
-  } catch (error) {
-    storedError = error;
-  }
-
+  // The key is the run's own: the user's account, or the official key of an
+  // admitted gateway media job. A platform env key would serve the run outside
+  // the ledger and past its custody checks, so there is no fallback (#359).
+  const stored = await credentialsForRoute(ctx, route);
   const baseUrl =
     stringCredential(stored.baseUrl) ??
     stringCredential(ctx.env.GOOGLE_AI_STUDIO_BASE_URL);
-  const apiKey =
-    stringCredential(stored.apiKey) ?? stringCredential(ctx.env.GOOGLE_API_KEY);
-  if (!apiKey) {
-    if (storedError) throw storedError;
+  const apiKey = stringCredential(stored.apiKey);
+  if (!apiKey)
     throw new Error("Google AI Studio API key is required for Gemini Omni.");
-  }
   return {
     ...(apiKey ? { apiKey } : {}),
     ...(baseUrl ? { baseUrl } : {}),

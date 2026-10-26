@@ -47,6 +47,7 @@ migration is `apps/web/drizzle/0032_gateway.sql`; the Drizzle mirror is
 | `gateway_tenant_subscription` | A tenant's package subscription and period.                                                                                                                                                         |
 | `gateway_rate_window`         | (0034) Fixed-window request/token counters per `subject` for the limits port, every subject prefixed with its tenant (#354): `tenant:<t>`, `tenant:<t>:key:<k>`, `tenant:<t>:user:<u>`, `tenant:<t>:model:<m>:user:<u>`. See [gateway-data-plane.md](gateway-data-plane.md). |
 | `gateway_inflight`            | (0034) In-flight concurrency leases per `subject`; a lease expires on its own if never released.                                                                                                    |
+| `gateway_media_job`           | (0049, #359) One official media/AIGC job per hosted generation task (unique `task_id`), keyed by its ledger `request_id`. `job_json` is the gateway-core `GatewayMediaJob` (identity, frozen route, quantities, price instant), never a prompt, output or credential. `status` moves forward only: `planned` → `admitted` (`lease_id`) → `settled`, or `planned` → `refused` (`error_code`). See [gateway-data-plane.md](gateway-data-plane.md#media-and-aigc). |
 
 Rate limits are configurable JSON (`rate_limit_json`, gateway-core
 `GatewayRateLimitSchema`) on keys, members, tenants, models, upstream

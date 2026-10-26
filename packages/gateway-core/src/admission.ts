@@ -107,9 +107,38 @@ async function admit(
     route: plan.attempts[0]!.route,
     at: pricedAt,
   });
+  return reserveAdmission(ports, {
+    requestId: ports.ids.requestId(),
+    identity,
+    request,
+    plan,
+    price,
+    pricedAt,
+    holdTtlMs: options.holdTtlMs,
+  });
+}
+
+/**
+ * The reservation half of admission, for a request already planned and
+ * priced: the hold, the limits lease and the hold on every budget under
+ * `requestId`. On refusal nothing stays held or leased. Media jobs
+ * (media.ts) call it with the request id and price instant their job froze.
+ */
+export async function reserveAdmission(
+  ports: GatewayPorts,
+  input: {
+    requestId: string;
+    identity: GatewayIdentity;
+    request: GatewayRequest;
+    plan: GatewayRoutePlan;
+    price: GatewayPrice;
+    pricedAt: number;
+    holdTtlMs: number;
+  },
+): Promise<GatewayAdmission> {
+  const { requestId, identity, request, plan, price, pricedAt } = input;
   assertPriceCovers(price, holdUnits(request));
   const holdMicroCredits = computeHold(request, price);
-  const requestId = ports.ids.requestId();
   const limitDecision = await ports.limits.admit({
     tenantId: identity.tenantId,
     userId: identity.userId,
@@ -126,7 +155,7 @@ async function admit(
       tenantId: identity.tenantId,
       budgetIds: identity.budgetIds,
       holdMicroCredits,
-      expiresAt: admittedAt + options.holdTtlMs,
+      expiresAt: admittedAt + input.holdTtlMs,
       ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
     });
     // Admitted past a soft limit, or across an alert threshold: recorded by
