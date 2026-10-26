@@ -12,7 +12,7 @@ import {
 } from "./budget.js";
 import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
 import { GatewayError, toGatewayError } from "./errors.js";
-import { requireAdmission } from "./limits.js";
+import { requireAdmission, type GatewayRateLimitHeaders } from "./limits.js";
 import {
   ledgerStatus,
   type GatewayIdentity,
@@ -43,6 +43,8 @@ export interface GatewayAdmission {
   holdMicroCredits: MicroCredits;
   reservation: Reservation;
   leaseId: string;
+  /** OpenAI-style rate-limit state from admission; set on every answer. */
+  limitHeaders?: GatewayRateLimitHeaders;
   admittedAt: number;
 }
 
@@ -108,16 +110,15 @@ async function admit(
   assertPriceCovers(price, holdUnits(request));
   const holdMicroCredits = computeHold(request, price);
   const requestId = ports.ids.requestId();
-  const leaseId = requireAdmission(
-    await ports.limits.admit({
-      tenantId: identity.tenantId,
-      userId: identity.userId,
-      ...(identity.keyId ? { keyId: identity.keyId } : {}),
-      modelCode: plan.modelCode,
-      estimatedTokens: request.estimatedInputTokens + (request.maxOutputTokens ?? 0),
-      ...(request.protocol === "media" ? { media: true } : {}),
-    }),
-  );
+  const limitDecision = await ports.limits.admit({
+    tenantId: identity.tenantId,
+    userId: identity.userId,
+    ...(identity.keyId ? { keyId: identity.keyId } : {}),
+    modelCode: plan.modelCode,
+    estimatedTokens: request.estimatedInputTokens + (request.maxOutputTokens ?? 0),
+    ...(request.protocol === "media" ? { media: true } : {}),
+  });
+  const leaseId = requireAdmission(limitDecision);
   const admittedAt = ports.clock.now();
   try {
     const reservation = await ports.budgets.reserve({
@@ -151,6 +152,7 @@ async function admit(
       holdMicroCredits,
       reservation,
       leaseId,
+      ...(limitDecision.allowed && limitDecision.headers ? { limitHeaders: limitDecision.headers } : {}),
       admittedAt,
     };
   } catch (error) {

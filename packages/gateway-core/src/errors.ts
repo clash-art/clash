@@ -463,6 +463,8 @@ export interface GatewayErrorOptions {
   details?: Record<string, unknown>;
   /** Advisory `Retry-After` in milliseconds for 429/503 answers. */
   retryAfterMs?: number;
+  /** Safe answer headers an adapter already derived, e.g. OpenAI-style rate-limit state. */
+  headers?: Record<string, string>;
   cause?: unknown;
 }
 
@@ -471,6 +473,7 @@ export class GatewayError extends Error {
   readonly status: number;
   readonly details?: Record<string, unknown>;
   readonly retryAfterMs?: number;
+  readonly headers?: Record<string, string>;
 
   constructor(code: GatewayErrorCode, options: GatewayErrorOptions = {}) {
     super(options.message ?? definitions[code].message, {
@@ -482,6 +485,7 @@ export class GatewayError extends Error {
     if (options.details) this.details = options.details;
     if (options.retryAfterMs !== undefined)
       this.retryAfterMs = Math.max(0, Math.ceil(options.retryAfterMs));
+    if (options.headers) this.headers = { ...options.headers };
   }
 }
 
@@ -506,6 +510,7 @@ export function toGatewayError(error: unknown): GatewayError {
       message: error.message,
       details: error.details,
       retryAfterMs: error.retryAfterMs,
+      headers: error.headers,
       cause: error,
     });
   return new GatewayError("GATEWAY_INTERNAL", { cause: error });
@@ -582,6 +587,7 @@ export function gatewayErrorResponseInit(
   body: OpenAIErrorBody | AnthropicErrorBody;
 } {
   const headers: Record<string, string> = {
+    ...error.headers,
     "content-type": "application/json",
     "x-clash-error-code": error.code,
   };

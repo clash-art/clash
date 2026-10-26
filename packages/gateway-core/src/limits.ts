@@ -57,13 +57,17 @@ export function tightestRateLimit(limits: ReadonlyArray<Partial<GatewayRateLimit
   return Object.keys(merged).length ? merged : undefined;
 }
 
+/** OpenAI-style `x-ratelimit-*` and `retry-after` answer headers. */
+export type GatewayRateLimitHeaders = Record<string, string>;
+
 export type LimitDecision =
-  | { allowed: true; leaseId: string }
+  | { allowed: true; leaseId: string; headers?: GatewayRateLimitHeaders }
   | {
       allowed: false;
       code: "GATEWAY_RATE_LIMITED" | "GATEWAY_CONCURRENCY_LIMITED";
       scope: LimitScope;
       retryAfterMs: number;
+      headers?: GatewayRateLimitHeaders;
     };
 
 /** Throw the coded error for a denial; return the lease to release afterwards. */
@@ -72,6 +76,7 @@ export function requireAdmission(decision: LimitDecision): string {
   throw new GatewayError(decision.code, {
     retryAfterMs: decision.retryAfterMs,
     details: { scope: decision.scope },
+    ...(decision.headers ? { headers: decision.headers } : {}),
   });
 }
 
