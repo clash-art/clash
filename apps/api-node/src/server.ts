@@ -21,6 +21,12 @@ import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
 import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
 import { startGatewayMaintenance } from "./gateway-maintenance.ts";
+import {
+  createGatewayDrainController,
+  createGatewayHealthRoutes,
+  gatewayDrainTimingsFromEnv,
+  runGatewayDrain,
+} from "./gateway-health.ts";
 
 const log = apiNodeLog.child("server");
 
@@ -73,13 +79,29 @@ export function startServer(
   let stopGatewayMaintenance: (() => void) | undefined;
   // Settlements of streams whose caller left (#368); drained before the pool closes.
   const gatewayWork = createGatewayBackgroundWork();
-  if (gatewayRole(env) === "api") {
+  // Drain state and open streams of this node (#375).
+  const drain = createGatewayDrainController();
+  const role = gatewayRole(env);
+  const ring = role === "api" ? gatewayKeyRingFromEnv(env) : undefined;
+  app.route(
+    "/",
+    createGatewayHealthRoutes({
+      db: database.db,
+      drain,
+      work: gatewayWork,
+      ...(ring ? { ring } : {}),
+      blobDirectories: [env.CLOUD_CONTENT_DIR, env.CLOUD_ASSET_DIR].filter(
+        (directory): directory is string => !!directory,
+      ),
+    }),
+  );
+  if (ring) {
     const limits = createPgGatewayLimitPort(database.db);
     const ports = createPgGatewayPorts({
       db: database.db,
       credentials: createPgGatewayCredentialStore({
         db: database.db,
-        ring: gatewayKeyRingFromEnv(env),
+        ring,
       }),
       limits,
       ...(auth
@@ -91,7 +113,7 @@ export function startServer(
           }
         : {}),
     });
-    app.route("/", createGatewayNodeRoutes(ports, { work: gatewayWork }));
+    app.route("/", createGatewayNodeRoutes(ports, { work: gatewayWork, drain }));
     stopGatewayMaintenance = startGatewayMaintenance({
       db: database.db,
       limits,
@@ -103,24 +125,23 @@ export function startServer(
   server.listen(config.port, config.hostname);
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;
+  const timings = gatewayDrainTimingsFromEnv(env);
   let closing: Promise<void> | undefined;
+  // SIGTERM drain (#375): readyz 503 → delay → stop accepting → grace →
+  // GATEWAY_DRAINING to open streams → settle → close sockets → close pool.
   const close = () =>
-    (closing ??= (async () => {
-      const deadline = setTimeout(() => server.closeAllConnections(), 10000);
-      deadline.unref();
-      try {
+    (closing ??= runGatewayDrain({
+      drain,
+      work: gatewayWork,
+      server,
+      timings,
+      onStopAccepting: async () => {
         stopGatewayMaintenance?.();
         await gateway.close();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
-      } finally {
-        clearTimeout(deadline);
-        // Closing connections cancels live streams, which settle in the background.
-        await gatewayWork.drain(10000);
-        await database.close();
-      }
-    })());
+      },
+      closeDatabase: () => database.close(),
+      onStep: (step, facts) => log.info(`gateway.drain_${step}`, facts ?? {}),
+    }).then(() => undefined));
   return { server, close };
 }
 if (
