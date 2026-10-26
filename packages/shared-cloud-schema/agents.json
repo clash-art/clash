@@ -15,7 +15,8 @@
     "postgres/0009_cloud_runs.sql": "PostgreSQL cloud run journal and initial dispatch intent; no foreign keys. Separate from upstream BullMQ-owned schema.",
     "postgres/0010_auth.sql": "Better Auth 1.6.23 core user/session/account/verification and database rate-limit fields; application schema without SQL foreign keys.",
     "postgres/0016_gateway.sql": "Postgres gateway schema for Node self-host (#362): budgets, requests, idempotency claims, thin settle intents, N2 ledger (debit/charge/refund/adjust/grant/topup/expire; unique request_id+budget_id+kind), credits price book, rate windows, inflight, config, upstream credentials. No FKs; no long-lived holds table; no SQLite product path. Checksum runner loads it from apps/api-node/src/migrations.ts.",
-    "postgres/0017_gateway_keyring.sql": "#366: scope/tenant_key CHECK on gateway_upstream_credential; append-only gateway_admin_audit."
+    "postgres/0017_gateway_keyring.sql": "#366: scope/tenant_key CHECK on gateway_upstream_credential; append-only gateway_admin_audit.",
+    "postgres/0018_gateway_virtual_key.sql": "#367: gateway_virtual_key (sk_gw_ virtual keys for the Node data plane; SHA-256 only, tenant/user/allowlist/scope from the row)."
   },
   "architecture_notes": [
     "Narrow source exports auth/app/broker/runtime are consumed directly by TypeScript-aware Node/Worker bundlers and Drizzle Kit. There is no broad root export or pre-build requirement.",
