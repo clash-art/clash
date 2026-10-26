@@ -86,7 +86,7 @@ CREATE INDEX gateway_tenant_subscription_due_idx
 -- operator's reason.
 ALTER TABLE gateway_admin_audit DROP CONSTRAINT gateway_admin_audit_actor_kind_check;
 ALTER TABLE gateway_admin_audit ADD CONSTRAINT gateway_admin_audit_actor_kind_check
-  CHECK (actor_kind IN ('admin', 'user', 'bootstrap', 'migration', 'payment'));
+  CHECK (actor_kind IN ('admin', 'user', 'bootstrap', 'migration', 'payment', 'system'));
 ALTER TABLE gateway_admin_audit ADD COLUMN reason text;
 CREATE INDEX gateway_admin_audit_tenant_time_idx
   ON gateway_admin_audit (tenant_id, created_at);

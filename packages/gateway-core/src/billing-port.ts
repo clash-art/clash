@@ -40,9 +40,12 @@ import {
 
 // ─── Actors ─────────────────────────────────────────────────────────────────
 
-/** An authorized console or product caller (admin account or team role). */
+/**
+ * An authorized console or product caller (admin account or team role), or
+ * an abuse threshold (`system`, `threshold:<signal>`, #356).
+ */
 export interface GatewayBillingStaffActor {
-  kind: "admin" | "user";
+  kind: "admin" | "user" | "system";
   id: string;
   role: string;
 }
@@ -65,7 +68,7 @@ export type GatewayBillingActor =
 
 /** The identity an audit row and a ledger `actor_user_id` record. */
 export interface GatewayBillingAuditIdentity {
-  kind: "admin" | "user" | "payment";
+  kind: "admin" | "user" | "system" | "payment";
   id: string;
   role: string;
 }
