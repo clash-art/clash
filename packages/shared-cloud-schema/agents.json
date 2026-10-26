@@ -3,7 +3,7 @@
   "key_files": {
     "src/auth.ts": "Single Better Auth users/sessions/accounts/verifications table definitions and bidirectional ORM relations. Column SQL foreign keys are absent; relation fields/references remain query metadata.",
     "src/app.ts": "Shared cloud control-plane Project, tenant (kind personal/team), tenant_invite (web/drizzle/0032), token, provider, legacy installed-record and Asset/index tables. Project Loro and local SQLite authority are not moved here. provider_oauth carries callback_type, encrypted_flow_secret (sealed PKCE verifier/state) and error_code for the hosted web flow (web/drizzle/0031).",
-    "src/gateway.ts": "Clash official gateway D1/SQLite Drizzle mirror (web/drizzle/0032+; api-cf). Unix seconds, integer micro-credits, no body columns. Postgres Node topology is packages/shared-cloud-schema/postgres/0016_gateway.sql (#362) \u2014 do not treat this SQLite mirror as a supported Node/SQLite product path. Guide: apps/docs/guide/gateway-schema.md.",
+    "src/gateway.ts": "Clash official gateway D1/SQLite Drizzle mirror (web/drizzle/0032+; api-cf). Unix seconds, integer micro-credits, no body columns. Postgres Node topology is packages/shared-cloud-schema/postgres/0016_gateway.sql (#362) — do not treat this SQLite mirror as a supported Node/SQLite product path. Guide: apps/docs/guide/gateway-schema.md.",
     "src/admin-auth.ts": "Admin identity store (#394, web/drizzle/0040): admin_accounts/admin_sessions/admin_credentials/admin_verifications for the separate admin Better Auth instance (api-cf src/admin-auth.ts). Export names are that instance's model names; never the product users table. Epoch ms timestamps, no foreign keys.",
     "src/broker.ts": "API-only capability broker audit table, preserving its existing columns and indexes.",
     "src/runtime.ts": "Web backend runtime, runtime token/session, chat message and agent member index tables; not a replacement local Host state store.",
@@ -14,7 +14,8 @@
     "postgres/0008_checkpoint_outbox.sql": "Extends existing outbox with notification/checkpoint kind, per-project checkpoint coalescing and dirty-head backfill. No foreign keys or separate task table.",
     "postgres/0009_cloud_runs.sql": "PostgreSQL cloud run journal and initial dispatch intent; no foreign keys. Separate from upstream BullMQ-owned schema.",
     "postgres/0010_auth.sql": "Better Auth 1.6.23 core user/session/account/verification and database rate-limit fields; application schema without SQL foreign keys.",
-    "postgres/0016_gateway.sql": "Postgres gateway schema for Node self-host (#362): budgets, requests, idempotency claims, thin settle intents, N2 ledger (debit/charge/refund/adjust/grant/topup/expire; unique request_id+budget_id+kind), credits price book, rate windows, inflight, config, upstream credentials. No FKs; no long-lived holds table; no SQLite product path. Checksum runner loads it from apps/api-node/src/migrations.ts."
+    "postgres/0016_gateway.sql": "Postgres gateway schema for Node self-host (#362): budgets, requests, idempotency claims, thin settle intents, N2 ledger (debit/charge/refund/adjust/grant/topup/expire; unique request_id+budget_id+kind), credits price book, rate windows, inflight, config, upstream credentials. No FKs; no long-lived holds table; no SQLite product path. Checksum runner loads it from apps/api-node/src/migrations.ts.",
+    "postgres/0017_gateway_keyring.sql": "#366: scope/tenant_key CHECK on gateway_upstream_credential; append-only gateway_admin_audit."
   },
   "architecture_notes": [
     "Narrow source exports auth/app/broker/runtime are consumed directly by TypeScript-aware Node/Worker bundlers and Drizzle Kit. There is no broad root export or pre-build requirement.",
