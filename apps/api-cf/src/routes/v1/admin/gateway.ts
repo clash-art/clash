@@ -15,9 +15,11 @@
  *   GET  /packages                        subscription packages                           packages.read
  *   POST /packages                        create                                          packages.write
  *   POST /packages/:id/archive                                                            packages.write
+ *   POST /packages/:id/external-price     set/clear the provider price id (#419)          packages.write
  *   GET  /topup-packs                     top-up packs                                    packages.read
  *   POST /topup-packs                     create                                          packages.write
  *   POST /topup-packs/:id/archive                                                         packages.write
+ *   POST /topup-packs/:id/external-price  set/clear the provider price id (#419)          packages.write
  *   POST /billing/rollover                close ended subscription periods (idempotent)   billing.rollover
  *
  * The other routes live in gateway-access.ts (me, admin accounts),
@@ -30,6 +32,7 @@ import { z } from "zod";
 
 import type { Env } from "../../../config";
 import {
+  GatewayExternalPriceIdRequestSchema,
   GatewayPackageCreateRequestSchema,
   GatewayPriceDraftRequestSchema,
   GatewayPriceVersionSchema,
@@ -130,6 +133,16 @@ adminGatewayRoutes.post(
   }),
 );
 
+adminGatewayRoutes.post(
+  "/packages/:id/external-price",
+  platformRoute("packages.write", async (c, actor) => {
+    const id = gatewayParam(IdSchema, c.req.param("id"), "id");
+    const { externalPriceId } = await readGatewayJson(c, GatewayExternalPriceIdRequestSchema);
+    const billing = createD1Billing(c.env.DB, { clock: monotonicClock() });
+    return ok(c, { package: await billing.setPackageExternalPriceId(id, externalPriceId, actor) });
+  }),
+);
+
 adminGatewayRoutes.get(
   "/topup-packs",
   platformRoute("packages.read", async (c) =>
@@ -151,6 +164,16 @@ adminGatewayRoutes.post(
   platformRoute("packages.write", async (c, actor) => {
     const id = gatewayParam(IdSchema, c.req.param("id"), "id");
     return ok(c, { pack: await createD1Billing(c.env.DB, { clock: monotonicClock() }).archiveTopupPack(id, actor) });
+  }),
+);
+
+adminGatewayRoutes.post(
+  "/topup-packs/:id/external-price",
+  platformRoute("packages.write", async (c, actor) => {
+    const id = gatewayParam(IdSchema, c.req.param("id"), "id");
+    const { externalPriceId } = await readGatewayJson(c, GatewayExternalPriceIdRequestSchema);
+    const billing = createD1Billing(c.env.DB, { clock: monotonicClock() });
+    return ok(c, { pack: await billing.setTopupPackExternalPriceId(id, externalPriceId, actor) });
   }),
 );
 

@@ -24,6 +24,7 @@ let composed: Plugin = NOOP;
  *  - lifecycle hooks run all matching impls in registration order
  *  - resolveKey / resolveUser take the FIRST non-null result
  *  - routes.register is invoked for every plugin
+ *  - billing is the first plugin's declared purchase mode
  */
 export function composePlugins(plugins: Plugin[]): Plugin {
   if (plugins.length === 0) return NOOP;
@@ -38,6 +39,9 @@ export function composePlugins(plugins: Plugin[]): Plugin {
   const afterGens = plugins.flatMap((p) => (p.generation?.afterGenerate ? [p.generation.afterGenerate] : []));
   const onFailures = plugins.flatMap((p) => (p.generation?.onFailure ? [p.generation.onFailure] : []));
   const beforeUploads = plugins.flatMap((p) => (p.assets?.beforeUpload ? [p.assets.beforeUpload] : []));
+  // One provider owns purchases: the first plugin declaring a mode wins
+  // (fail closed — any "provider" plugin closes the free path).
+  const billing = plugins.find((p) => p.billing)?.billing;
   const routesRegisters = plugins.flatMap((p) => (p.routes?.register ? [p.routes.register] : []));
 
   return {
@@ -97,6 +101,7 @@ export function composePlugins(plugins: Plugin[]): Plugin {
           },
         }
       : undefined,
+    billing,
     routes: routesRegisters.length
       ? {
           register: (app: Hono<{ Bindings: Env }>) => {
@@ -110,6 +115,15 @@ export function composePlugins(plugins: Plugin[]): Plugin {
 /** Install the composed plugin. Called once by createApp(). */
 export function setPlugins(plugins: Plugin[]): void {
   composed = composePlugins(plugins);
+}
+
+/**
+ * "free" (self-host, no billing plugin: core grants credits directly) or
+ * "provider" (a payments plugin sells them). Fails closed: any declared
+ * `billing` config, whatever its mode, closes the free path.
+ */
+export function billingPurchaseMode(plugin: Plugin = composed): "free" | "provider" {
+  return plugin.billing ? "provider" : "free";
 }
 
 /** Read the currently-installed composed plugin. */

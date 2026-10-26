@@ -216,6 +216,18 @@ const definitions = {
     anthropic: "invalid_request_error",
     message: "The top-up pack is archived and cannot be purchased.",
   },
+  GATEWAY_PAYMENT_REQUIRED_VIA_PROVIDER: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "Purchases go through the payment provider's checkout on this deployment.",
+  },
+  GATEWAY_EXTERNAL_PRICE_ID_TAKEN: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The external price id is already set on another package or top-up pack.",
+  },
   GATEWAY_TENANT_NOT_FOUND: {
     status: 404,
     openai: "not_found_error",

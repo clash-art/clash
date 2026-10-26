@@ -26,6 +26,16 @@ export interface GatewayAdminActor {
   role: string;
 }
 
+/**
+ * The identity an audit row records: an admin actor, or a payment provider
+ * webhook (`payment`, id `payment:<provider>`, role the provider; #419).
+ */
+export interface AuditActor {
+  kind: GatewayAdminActor["kind"] | "payment";
+  id: string;
+  role: string;
+}
+
 export const AUDIT_REDACTED = "[redacted]";
 
 /** Keys whose values are secret material, wherever they appear in a snapshot. */
@@ -54,7 +64,7 @@ export function redactAuditValue(value: unknown, key = "", depth = 0): unknown {
 export interface AdminAuditInput {
   /** '' for platform-wide changes (catalog, price book, upstreams, platform roles). */
   tenantId: string;
-  actor: GatewayAdminActor;
+  actor: AuditActor;
   action: string;
   targetType: string;
   targetId: string;

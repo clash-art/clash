@@ -118,6 +118,8 @@ export { GatewayRateLimitSchema };
 const RateLimitRequestSchema = GatewayRateLimitSchema;
 
 const currency = () => z.string().regex(/^[A-Z]{3}$/);
+/** A payment provider's price/product id (#419): configuration, opaque to core. */
+const externalPriceId = () => z.string().trim().min(1).max(256).regex(/^[\x21-\x7e]+$/);
 
 /** POST /api/v1/admin/gateway/packages. */
 export const GatewayPackageCreateRequestSchema = z
@@ -130,6 +132,8 @@ export const GatewayPackageCreateRequestSchema = z
     periodMicroCredits: safeInt(),
     /** Tenant rate limits while subscribed. */
     rateLimit: RateLimitRequestSchema.optional(),
+    /** The payment provider's price id (#419). */
+    externalPriceId: externalPriceId().nullable().optional(),
   })
   .strict();
 
@@ -140,7 +144,14 @@ export const GatewayTopupPackCreateRequestSchema = z
     priceMinor: safeInt(),
     priceCurrency: currency(),
     microCredits: safeInt(),
+    /** The payment provider's price id (#419). */
+    externalPriceId: externalPriceId().nullable().optional(),
   })
+  .strict();
+
+/** POST /api/v1/admin/gateway/{packages,topup-packs}/:id/external-price. null clears it. */
+export const GatewayExternalPriceIdRequestSchema = z
+  .object({ externalPriceId: externalPriceId().nullable() })
   .strict();
 
 /** POST /api/v1/gateway/tenants/:tenantId/subscription. */

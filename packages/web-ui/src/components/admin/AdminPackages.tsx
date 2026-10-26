@@ -76,6 +76,18 @@ export function AdminPackages({
             { header: "Credits / period", cell: (row) => formatCredits(row.periodMicroCredits), align: "right" },
             { header: "Tenant limit", cell: (row) => describeRateLimit(row.rateLimit) },
             {
+              header: "Provider price id",
+              cell: (row) => (
+                <ExternalPriceIdCell
+                  label={`Provider price id for ${row.name}`}
+                  value={row.externalPriceId ?? null}
+                  canWrite={canWrite}
+                  save={(value) => adminApi.setPackageExternalPriceId(row.id, value)}
+                  onChanged={onChanged}
+                />
+              ),
+            },
+            {
               header: "",
               cell: (row) =>
                 canWrite && row.status === "active" ? (
@@ -100,6 +112,18 @@ export function AdminPackages({
             { header: "Price", cell: (row) => money(row.priceMinor, row.priceCurrency) },
             { header: "Credits", cell: (row) => formatCredits(row.microCredits), align: "right" },
             {
+              header: "Provider price id",
+              cell: (row) => (
+                <ExternalPriceIdCell
+                  label={`Provider price id for ${row.name}`}
+                  value={row.externalPriceId ?? null}
+                  canWrite={canWrite}
+                  save={(value) => adminApi.setTopupPackExternalPriceId(row.id, value)}
+                  onChanged={onChanged}
+                />
+              ),
+            },
+            {
               header: "",
               cell: (row) =>
                 canWrite && row.status === "active" ? (
@@ -116,8 +140,45 @@ export function AdminPackages({
   );
 }
 
+/**
+ * The payment provider's price id (#419): configuration that maps a provider
+ * checkout to this package or pack. Empty clears it.
+ */
+function ExternalPriceIdCell({
+  label,
+  value,
+  canWrite,
+  save,
+  onChanged,
+}: {
+  label: string;
+  value: string | null;
+  canWrite: boolean;
+  save: (value: string | null) => Promise<unknown>;
+  onChanged: () => void;
+}) {
+  const [draft, setDraft] = useState(value ?? "");
+  const action = useAdminAction(onChanged);
+  if (!canWrite) return <span className="font-mono text-xs">{value ?? "—"}</span>;
+  return (
+    <form className="flex items-center gap-1" aria-label={label} onSubmit={action.submit(() => save(draft.trim() || null))}>
+      <input
+        aria-label={label}
+        className="w-36 rounded border border-stone-300 bg-transparent px-1.5 py-0.5 font-mono text-xs dark:border-stone-700"
+        value={draft}
+        placeholder="unset"
+        onChange={(e) => setDraft(e.target.value)}
+      />
+      <Button type="submit" size="sm" disabled={action.pending || draft.trim() === (value ?? "")}>
+        Save
+      </Button>
+      <AdminErrorAlert error={action.error} />
+    </form>
+  );
+}
+
 function PackageForm({ onChanged }: { onChanged: () => void }) {
-  const [form, setForm] = useState({ name: "", period: "month" as "month" | "year", price: "", currency: "USD", credits: "", rpm: "", tpm: "", concurrency: "" });
+  const [form, setForm] = useState({ name: "", period: "month" as "month" | "year", price: "", currency: "USD", credits: "", rpm: "", tpm: "", concurrency: "", externalPriceId: "" });
   const action = useAdminAction(onChanged);
   return (
     <AdminCard>
@@ -135,6 +196,7 @@ function PackageForm({ onChanged }: { onChanged: () => void }) {
             priceCurrency: form.currency.trim().toUpperCase(),
             periodMicroCredits: credits,
             ...(rateLimit ? { rateLimit } : {}),
+            ...(form.externalPriceId.trim() ? { externalPriceId: form.externalPriceId.trim() } : {}),
           });
         })}
       >
@@ -159,6 +221,7 @@ function PackageForm({ onChanged }: { onChanged: () => void }) {
         <AdminField label="Tenant requests/min" inputMode="numeric" value={form.rpm} onChange={(e) => setForm({ ...form, rpm: e.target.value })} />
         <AdminField label="Tenant tokens/min" inputMode="numeric" value={form.tpm} onChange={(e) => setForm({ ...form, tpm: e.target.value })} />
         <AdminField label="Tenant concurrency" inputMode="numeric" value={form.concurrency} onChange={(e) => setForm({ ...form, concurrency: e.target.value })} />
+        <AdminField label="Provider price id" hint="optional; set by the payments plugin's provider" value={form.externalPriceId} onChange={(e) => setForm({ ...form, externalPriceId: e.target.value })} />
         <div className="sm:col-span-4">
           <Button type="submit" size="sm" variant="primary" disabled={action.pending}>
             Create package
@@ -171,13 +234,13 @@ function PackageForm({ onChanged }: { onChanged: () => void }) {
 }
 
 function TopupPackForm({ onChanged }: { onChanged: () => void }) {
-  const [form, setForm] = useState({ name: "", price: "", currency: "USD", credits: "" });
+  const [form, setForm] = useState({ name: "", price: "", currency: "USD", credits: "", externalPriceId: "" });
   const action = useAdminAction(onChanged);
   return (
     <AdminCard>
       <form
         aria-label="New top-up pack"
-        className="grid gap-3 sm:grid-cols-5"
+        className="grid gap-3 sm:grid-cols-6"
         onSubmit={action.submit(async () => {
           const credits = parseCredits(form.credits);
           if (credits === null) throw new Error("Credits must be a number.");
@@ -186,6 +249,7 @@ function TopupPackForm({ onChanged }: { onChanged: () => void }) {
             priceMinor: Number(form.price),
             priceCurrency: form.currency.trim().toUpperCase(),
             microCredits: credits,
+            ...(form.externalPriceId.trim() ? { externalPriceId: form.externalPriceId.trim() } : {}),
           });
         })}
       >
@@ -193,6 +257,7 @@ function TopupPackForm({ onChanged }: { onChanged: () => void }) {
         <AdminField label="Price (minor units)" inputMode="numeric" value={form.price} onChange={(e) => setForm({ ...form, price: e.target.value })} required />
         <AdminField label="Currency" value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} required />
         <AdminField label="Credits" inputMode="decimal" value={form.credits} onChange={(e) => setForm({ ...form, credits: e.target.value })} required />
+        <AdminField label="Provider price id" value={form.externalPriceId} onChange={(e) => setForm({ ...form, externalPriceId: e.target.value })} />
         <div className="flex items-end">
           <Button type="submit" size="sm" variant="primary" disabled={action.pending}>
             Create pack

@@ -75,16 +75,19 @@ allocated are left unchanged. A member's requests draw on the wallet and on the
 member's own budget together. There is no automatic overage: when the wallet
 is empty, requests fail with `GATEWAY_BUDGET_EXCEEDED`.
 
-There is no payment provider. The team owner (`billing.purchase`) records
-the purchase from team settings ([gateway-teams.md](gateway-teams.md), which
-lists the active packages and packs through `GET /billing/offers`), and the
-credits are posted immediately:
+On a self-hosted deployment there is no payment provider. The team owner
+(`billing.purchase`) records the purchase from team settings
+([gateway-teams.md](gateway-teams.md), which lists the active packages and
+packs through `GET /billing/offers`), and the credits are posted immediately.
+A deployment with a payments plugin works differently; see
+[Provider purchase mode](#provider-purchase-mode).
 
 | Ledger kind | Written by                       | Effect on the wallet limit                                                                   |
 | ----------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
 | `topup`     | buying a top-up pack             | `+ pack credits`. Top-up credits do not expire.                                               |
 | `grant`     | subscribing, then each new period | `+ package credits per period`                                                               |
 | `expire`    | closing a period (rollover)      | `− the part of that period's grant the period did not consume`                                |
+| `adjust`    | a platform correction, or a provider refund (`ref_kind` `payment_refund`) | `± the correction`; a refund `− refunded credits`, never below spend + open holds |
 
 Grant credits for a period are consumed before any other credits in the
 wallet. When a period closes, the expired amount is
@@ -102,7 +105,8 @@ anchor:
 
 - `topup:<tenant>:<key>` for a top-up;
 - `grant:<subscription>:<period start>` for a grant;
-- `expire:<subscription>:<period start>` for an expiry.
+- `expire:<subscription>:<period start>` for an expiry;
+- `refund:<tenant>:<key>` for a provider refund (kind `adjust`).
 
 The ledger's unique `(request_id, budget_id, kind)` makes a duplicate entry
 impossible.
@@ -134,6 +138,30 @@ later.
 Rollover reports an outcome for each subscription. A period close that failed
 carries its error code and is retried by the next call.
 
+### Provider purchase mode
+
+A hosted deployment sells credits through a payment provider with a plugin
+(`createApp({ plugins })`, `apps/api-cf/src/plugins/types.ts`) that declares
+`billing: { purchaseMode: "provider", checkoutPath? }` (#419). The provider
+code lives in the plugin, not in core.
+
+- The purchase routes (`POST /topups`, `/subscription`, `/subscription/cancel`)
+  then refuse with `GATEWAY_PAYMENT_REQUIRED_VIA_PROVIDER` (409, naming the
+  plugin's checkout path) and write nothing. `GET /billing` and
+  `GET /billing/offers` are unchanged. Any declared `billing` closes the free
+  path; with no billing plugin (self-host) purchases stay free.
+- Packages and packs carry the provider's price id as configuration:
+  nullable, unique `external_price_id`, set at creation or with
+  `POST …/:id/external-price`, shown as `externalPriceId`. No price or product
+  id is hardcoded.
+- The plugin records what the provider confirmed through the server-only API
+  `apps/api-cf/src/billing.ts` (`createD1Billing`): `topup`, `subscribe` and
+  `cancelSubscription` with the system actor
+  `{ kind: "payment", provider, eventId }` and the provider's order or
+  subscription id as `idempotencyKey`, and `refund` for refunds and
+  chargebacks. Ledger `actor_user_id` is `payment:<provider>`; the audit row
+  has `actor_kind = 'payment'` and records provider and event id.
+
 ## Endpoints
 
 Platform admin, `/api/v1/admin/gateway`:
@@ -148,6 +176,7 @@ Platform admin, `/api/v1/admin/gateway`:
 | `POST /packages/:id/archive`            | Stop new subscriptions. Live subscriptions keep renewing.                                    |
 | `GET /topup-packs`, `POST /topup-packs` | List packs, or create one: `{ name, priceMinor, priceCurrency, microCredits }`.              |
 | `POST /topup-packs/:id/archive`         | Stop new purchases of the pack.                                                              |
+| `POST /packages/:id/external-price`, `POST /topup-packs/:id/external-price` | Set or clear the provider price id: `{ externalPriceId: string \| null }`. Creation also accepts `externalPriceId`. |
 | `POST /billing/rollover`                | Close ended periods: `{ tenantId? }`.                                                        |
 
 `priceMinor` is an integer in minor units of the ISO 4217 `priceCurrency`. It
@@ -181,6 +210,8 @@ Errors use the gateway's OpenAI error shape plus `x-clash-error-code`.
 | Same idempotency key, different item                               | `GATEWAY_IDEMPOTENCY_CONFLICT` 409              |
 | Unlimited or periodic wallet                                       | `GATEWAY_WALLET_INCOMPATIBLE` 409               |
 | A concurrent change won the batch                                  | `GATEWAY_CONFLICT` 409 (read again and retry)   |
+| Purchase route while a payments plugin owns purchases              | `GATEWAY_PAYMENT_REQUIRED_VIA_PROVIDER` 409     |
+| External price id already on another package / pack                | `GATEWAY_EXTERNAL_PRICE_ID_TAKEN` 409           |
 
 ## Tests
 
@@ -190,5 +221,7 @@ Errors use the gateway's OpenAI error shape plus `x-clash-error-code`.
   node:sqlite, including no repricing through the real data plane.
 - `apps/api-cf/src/routes/v1/admin/gateway.test.ts`: platform-only and
   tenant-role enforcement, and the coded errors.
+- `apps/api-cf/src/routes/v1/gateway-billing-provider.test.ts`: free versus
+  provider purchase mode, payment-actor purchases, refunds and price ids.
 - `apps/api-cf/src/integration/gateway-price-book.integration.test.ts`: the
   publish → request → settle path in workerd.
