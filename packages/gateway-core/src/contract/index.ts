@@ -65,6 +65,7 @@ export const GATEWAY_CONTRACT_CAPABILITIES = [
   "identity",
   "routes",
   "credentials",
+  "upstreamHealth",
   "budgets",
   "ledger",
   "limits.rate",
@@ -350,6 +351,36 @@ export function describeGatewayContract(
             );
           },
         ],
+        [
+          "excluding refused key versions resolves each other version once, then GATEWAY_KEY_UNAVAILABLE",
+          async () => {
+            const identity = await tenant();
+            const { route } = (await plan(identity)).attempts[0]!;
+            const resolve = (excludeKeyVersions: readonly string[]) =>
+              ports().credentials.resolve({
+                route,
+                scope: identity.credentialScope,
+                tenantId: identity.tenantId,
+                ...(excludeKeyVersions.length ? { excludeKeyVersions } : {}),
+              });
+            const refused: string[] = [];
+            // An account holds at most two usable versions (active, draining).
+            for (let step = 0; step < 2; step += 1) {
+              let credential;
+              try {
+                credential = await resolve(refused);
+              } catch (error) {
+                expect(step, "the active version always resolves").toBeGreaterThan(0);
+                expect(isGatewayError(error) && error.code).toBe("GATEWAY_KEY_UNAVAILABLE");
+                return;
+              }
+              expect(credential.keyVersion, "a rotatable key names its version").toMatch(/\S/);
+              expect(refused).not.toContain(credential.keyVersion);
+              refused.push(credential.keyVersion!);
+            }
+            await expectCode(resolve(refused), "GATEWAY_KEY_UNAVAILABLE");
+          },
+        ],
       ],
       unavailable: async () => {
         const identity = await tenant();
@@ -364,6 +395,51 @@ export function describeGatewayContract(
           "GATEWAY_CAPABILITY_UNAVAILABLE",
         );
       },
+    });
+
+    // ─── Upstream health (circuit counters) ───────────────────────────
+    capability("upstreamHealth", {
+      supported: [
+        [
+          "counts concurrent failures without losing one, opens at the threshold, and a success closes it",
+          async () => {
+            const accountId = unique("account");
+            const health = ports().upstreamHealth;
+            expect(await health.read({ accountIds: [accountId] })).toEqual([]);
+            const at = ports().clock.now();
+            const threshold = 3;
+            const failure = (openUntil: number) =>
+              health.recordFailure({ accountId, code: "GATEWAY_UPSTREAM_ERROR", at, threshold, openUntil });
+            const below = await Promise.all(Array.from({ length: threshold - 1 }, () => failure(at + 1_000)));
+            expect(below.map((entry) => entry.consecutiveFailures).sort()).toEqual(
+              Array.from({ length: threshold - 1 }, (_, index) => index + 1),
+            );
+            const [counted] = await health.read({ accountIds: [accountId] });
+            expect(counted).toMatchObject({ accountId, consecutiveFailures: threshold - 1, lastFailureCode: "GATEWAY_UPSTREAM_ERROR", lastFailureAt: at });
+            expect(counted?.openUntil).toBeUndefined();
+            expect(await failure(at + 2_000)).toMatchObject({ consecutiveFailures: threshold, openUntil: at + 2_000 });
+            // Past the threshold every failure moves the cooldown.
+            expect(await failure(at + 3_000)).toMatchObject({ consecutiveFailures: threshold + 1, openUntil: at + 3_000 });
+            await health.recordSuccess({ accountId, at: at + 4_000 });
+            const [closed] = await health.read({ accountIds: [accountId] });
+            expect(closed).toMatchObject({ accountId, consecutiveFailures: 0, lastSuccessAt: at + 4_000 });
+            expect(closed?.openUntil).toBeUndefined();
+          },
+        ],
+        [
+          "a success for an account with no counters records nothing, and reads are per account",
+          async () => {
+            const quiet = unique("account");
+            const failing = unique("account");
+            const at = ports().clock.now();
+            await ports().upstreamHealth.recordSuccess({ accountId: quiet, at });
+            await ports().upstreamHealth.recordFailure({ accountId: failing, code: "GATEWAY_UPSTREAM_TIMEOUT", at, threshold: 1, openUntil: at + 1 });
+            const rows = await ports().upstreamHealth.read({ accountIds: [quiet, failing] });
+            expect(rows.map((row) => row.accountId)).toEqual([failing]);
+          },
+        ],
+      ],
+      unavailable: unavailable(() => ports().upstreamHealth.read({ accountIds: [unique("account")] })),
     });
 
     // ─── Budgets + ledger ────────────────────────────────────────────

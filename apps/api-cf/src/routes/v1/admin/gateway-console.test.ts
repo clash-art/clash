@@ -147,6 +147,13 @@ function withAuditFailing<T>(run: () => T | Promise<T>): Promise<T> {
 
 const card = () => officialChatCard();
 
+/** An admin may see a few leading characters of a key to tell keys apart: never most of it. */
+function expectKeyPrefix(key: string, prefix: unknown) {
+  expect(typeof prefix).toBe("string");
+  expect(key.startsWith(prefix as string)).toBe(true);
+  expect((prefix as string).length).toBeLessThan(key.length / 2);
+}
+
 /** The console's tenant-scoped routes; like every console route they answer platform grants only. */
 const tenantConsoleRoutes = (t: ReturnType<typeof team>): Array<[string, string, unknown?]> => [
   ["GET", `/api/v1/admin/gateway/overview?tenantId=${encodeURIComponent(t.tenantId)}`],
@@ -201,6 +208,7 @@ describe("permission matrix, enforced by the server", () => {
       ["POST", "/api/v1/admin/gateway/upstreams", { providerId: "official", credential: { secretRef: "GATEWAY_UPSTREAM_X" } }],
       ["PATCH", "/api/v1/admin/gateway/upstreams/gwu_x", { enabled: false }],
       ["POST", "/api/v1/admin/gateway/upstreams/gwu_x/rotate", { credential: { secretRef: "GATEWAY_UPSTREAM_X" } }],
+      ["POST", "/api/v1/admin/gateway/upstreams/gwu_x/revoke", { keyVersion: "v1" }],
       ["GET", "/api/v1/admin/gateway/tenants"],
       ["GET", "/api/v1/admin/gateway/admin-accounts"],
       ["POST", "/api/v1/admin/gateway/admin-accounts", { email: "x@admin.test", name: "x", password: "a-long-password-1" }],
@@ -498,7 +506,15 @@ describe("platform catalog and upstreams", () => {
     const createdText = await created.clone().text();
     expect(created.status, createdText).toBe(201);
     const { upstream } = (await created.json()) as { upstream: { id: string; credential: Record<string, unknown> } };
-    expect(upstream.credential).toEqual({ kind: "sealed", secretRef: null, fields: ["apiKey", "baseUrl"], keyVersion: "v1", rotatedAt: null });
+    expect(upstream.credential).toEqual({
+      kind: "sealed",
+      secretRef: null,
+      fields: ["apiKey", "baseUrl"],
+      keyVersion: "v1",
+      keyPrefix: expect.any(String),
+      rotatedAt: null,
+    });
+    expectKeyPrefix(apiKey, upstream.credential.keyPrefix);
     const sealed = (sqlite.prepare(`SELECT encrypted_credentials FROM gateway_upstream_account WHERE id = ?`).get(upstream.id) as {
       encrypted_credentials: string;
     }).encrypted_credentials;
@@ -546,6 +562,114 @@ describe("platform catalog and upstreams", () => {
         "GATEWAY_INVALID_REQUEST",
       );
     await expectCode(await call("PATCH", "/api/v1/admin/gateway/upstreams/gwu_none", platformAdmin.auth, { enabled: false }), 404, "GATEWAY_UPSTREAM_NOT_FOUND");
+  });
+
+  it("rotates by adding vN+1 while the previous version drains, revokes, and audits each step without key material (#350)", async () => {
+    type KeyView = { keyVersion: string; kind: string; keyPrefix: string | null; secretRef: string | null; secretPresent?: boolean };
+    type View = {
+      id: string;
+      credential: KeyView & { rotatedAt: string | null };
+      draining: (KeyView & { since: string | null }) | null;
+      nextKeyVersion: string;
+      health: unknown;
+    };
+    const keys = [1, 2, 3, 4].map((n) => `sk-rot${n}-${hex()}${hex()}`);
+    const base = "/api/v1/admin/gateway/upstreams";
+    const upstreamOf = async (res: Response | Promise<Response>, status = 200) => (await json<{ upstream: View }>(await res, status)).upstream;
+    const created = await upstreamOf(
+      call("POST", base, platformAdmin.auth, { providerId: "official", upstreamId: "openai", credential: { apiKey: keys[0] } }),
+      201,
+    );
+    const id = created.id;
+    const rotate = (body: Record<string, unknown>) => call("POST", `${base}/${id}/rotate`, platformAdmin.auth, body);
+    const revoke = (keyVersion: string, reason?: string) =>
+      call("POST", `${base}/${id}/revoke`, platformAdmin.auth, { keyVersion, ...(reason ? { reason } : {}) });
+
+    // A failing circuit before the rotation: the new key resets it.
+    sqlite
+      .prepare(`INSERT INTO gateway_upstream_health (account_id, consecutive_failures, open_until_ms, last_failure_code) VALUES (?, 7, ?, 'GATEWAY_UPSTREAM_ERROR')`)
+      .run(id, Date.now() + 60_000);
+    const listed = await json<{ upstreams: View[] }>(await call("GET", base, platformAdmin.auth));
+    expect(listed.upstreams.find((entry) => entry.id === id)?.health).toMatchObject({ state: "open", consecutiveFailures: 7 });
+
+    // Add v2: v1 drains.
+    const v2 = await upstreamOf(rotate({ credential: { apiKey: keys[1] }, reason: "scheduled" }));
+    expect(v2.credential.keyVersion).toBe("v2");
+    expectKeyPrefix(keys[1]!, v2.credential.keyPrefix);
+    expect(v2.draining?.keyVersion).toBe("v1");
+    expect(v2.draining?.keyPrefix).toBe(created.credential.keyPrefix);
+    expect(v2.draining?.since).not.toBeNull();
+    expect(v2.health).toBeNull();
+    // One rotation at a time: the drain must end before another version is added.
+    await expectCode(await rotate({ credential: { apiKey: keys[2] } }), 409, "GATEWAY_UPSTREAM_ROTATION_IN_PROGRESS");
+    await expectCode(await revoke("v9"), 404, "GATEWAY_UPSTREAM_KEY_VERSION_NOT_FOUND");
+
+    // Revoke the drained v1, then the only key left cannot be revoked.
+    const drained = await upstreamOf(revoke("v1", "drained"));
+    expect([drained.credential.keyVersion, drained.draining]).toEqual(["v2", null]);
+    await expectCode(await revoke("v2"), 409, "GATEWAY_UPSTREAM_LAST_KEY");
+
+    // An emergency rotation revokes the previous version at once.
+    const v3 = await upstreamOf(rotate({ credential: { apiKey: keys[2] }, drain: false, reason: "leaked" }));
+    expect([v3.credential.keyVersion, v3.draining]).toEqual(["v3", null]);
+
+    // Revoking the new active version while the old one drains rolls back to it; numbers are never reused.
+    const v4 = await upstreamOf(rotate({ credential: { apiKey: keys[3] } }));
+    const rolledBack = await upstreamOf(revoke("v4", "bad key"));
+    expect([rolledBack.credential.keyVersion, rolledBack.credential.keyPrefix, rolledBack.draining]).toEqual(["v3", v3.credential.keyPrefix, null]);
+    expect(rolledBack.nextKeyVersion).toBe("v5");
+    const v5 = await upstreamOf(rotate({ credential: { secretRef: "GATEWAY_UPSTREAM_CONSOLE" } }));
+    expect(v5.credential.keyVersion).toBe("v5");
+
+    // A Secrets Store / Worker secret version shows whether it is bound and its prefix, never its value.
+    const boundKey = `sk-bound-${hex()}${hex()}`;
+    const bound = await json<{ upstreams: View[] }>(
+      await call("GET", base, platformAdmin.auth, undefined, { ...baseEnv, GATEWAY_UPSTREAM_CONSOLE: { get: async () => boundKey } }),
+    );
+    const boundView = bound.upstreams.find((entry) => entry.id === id)!;
+    expect(boundView.credential).toMatchObject({ kind: "secret_ref", secretRef: "GATEWAY_UPSTREAM_CONSOLE", secretPresent: true });
+    expectKeyPrefix(boundKey, boundView.credential.keyPrefix);
+    expect(JSON.stringify(bound)).not.toContain(boundKey);
+    const unbound = await json<{ upstreams: View[] }>(await call("GET", base, platformAdmin.auth));
+    expect(unbound.upstreams.find((entry) => entry.id === id)?.credential).toMatchObject({ secretPresent: false, keyPrefix: null });
+
+    const audits = auditRows("target_id = ?", id);
+    expect(audits.map((row) => [row.action, row.reason, row.actor_id])).toEqual([
+      ["upstream.create", null, platformAdmin.id],
+      ["upstream.rotate", "scheduled", platformAdmin.id],
+      ["upstream.revoke_key", "drained", platformAdmin.id],
+      ["upstream.rotate", "leaked", platformAdmin.id],
+      ["upstream.rotate", null, platformAdmin.id],
+      ["upstream.revoke_key", "bad key", platformAdmin.id],
+      ["upstream.rotate", null, platformAdmin.id],
+    ]);
+    expect(JSON.parse(audits[1]!.after_json!)).toMatchObject({ credential: { keyVersion: "v2" }, draining: { keyVersion: "v1" }, revoked: [] });
+    expect(JSON.parse(audits[3]!.after_json!)).toMatchObject({ credential: { keyVersion: "v3" }, draining: null, revoked: ["v2"] });
+    expect(JSON.parse(audits[5]!.after_json!)).toMatchObject({ credential: { keyVersion: "v3" }, draining: null, revoked: ["v4"] });
+    const sealed = sqlite
+      .prepare(`SELECT encrypted_credentials FROM gateway_upstream_account WHERE id = ?`)
+      .get(id) as { encrypted_credentials: string | null };
+    const audited = JSON.stringify(audits);
+    // Audit rows hold versions only: no key, no envelope, not even the displayed prefix.
+    const prefixes = [created, v2, v3, v4].map((view) => view.credential.keyPrefix!);
+    for (const secret of [...keys, ...prefixes, boundKey, boundView.credential.keyPrefix!]) expect(audited).not.toContain(secret);
+    expect(audited).not.toContain("encrypted");
+    expect(sealed.encrypted_credentials).toBeNull();
+    expect(sqlite.prepare(`SELECT COUNT(*) AS n FROM gateway_upstream_health WHERE account_id = ?`).get(id)).toEqual({ n: 0 });
+  });
+
+  it("refuses to seal an official key under a KEK shared with tenant BYOK", async () => {
+    await expectCode(
+      await call(
+        "POST",
+        "/api/v1/admin/gateway/upstreams",
+        platformAdmin.auth,
+        { providerId: "official", credential: { apiKey: `sk-shared-${hex()}${hex()}` } },
+        { ...baseEnv, ACTION_SECRET_KEY: ENCRYPTION_KEY },
+      ),
+      503,
+      "GATEWAY_ENCRYPTION_KEY_SHARED",
+    );
   });
 
   it("creates and disables admin accounts with audit, never the last enabled one", async () => {
@@ -716,6 +840,11 @@ describe("audit is atomic with every mutation", () => {
         "upstream rotate",
         () => call("POST", `/api/v1/admin/gateway/upstreams/${upstream.id}/rotate`, admin, { credential: { secretRef: "GATEWAY_UPSTREAM_A3" } }),
         () => count(`SELECT COUNT(*) AS n FROM gateway_upstream_account WHERE id = ? AND key_version = 'v2'`, upstream.id),
+      ],
+      [
+        "upstream revoke",
+        () => call("POST", `/api/v1/admin/gateway/upstreams/${upstream.id}/revoke`, admin, { keyVersion: "v1" }),
+        () => count(`SELECT COUNT(*) AS n FROM gateway_upstream_account WHERE id = ? AND draining_key_version IS NULL`, upstream.id),
       ],
       [
         "subscribe",

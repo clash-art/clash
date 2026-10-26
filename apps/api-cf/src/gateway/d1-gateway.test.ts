@@ -22,8 +22,15 @@ import { listDeclaredModelUpstreamRoutes } from "@clash/shared-types";
 import { createApp } from "../app";
 import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
 import { createD1GatewayBudgetPorts, sweepGatewayHolds } from "./d1-budgets";
-import { createD1GatewayCredentialPort, sealGatewayUpstreamCredentials } from "./d1-credentials";
-import { gatewayRetentionKeys } from "@clash/gateway-core";
+import {
+  createD1GatewayCredentialPort,
+  gatewayEncryptionKey,
+  readSecretBinding,
+  sealGatewayUpstreamCredentials,
+} from "./d1-credentials";
+import { GATEWAY_CIRCUIT_DEFAULTS, gatewayRetentionKeys } from "@clash/gateway-core";
+import { encryptProviderCredentials } from "@clash/shared-runtime/provider-credentials";
+import { workerSecrets } from "./index";
 import {
   createMemoryBucket,
   d1ContractHarness,
@@ -192,6 +199,76 @@ describe("/gateway/v1 through the Worker app", () => {
     const text = await failed.text();
     expect(text).not.toContain(gateway.upstreamApiKey);
     expect(text).not.toContain(caller.token);
+  });
+
+  it("retries a refused rotated key with the draining version before the first byte (#350)", async () => {
+    const caller = await gateway.tenantToken();
+    const rotatedKey = `sk-rotated-${crypto.randomUUID()}`;
+    const original = sqlite
+      .prepare(`SELECT encrypted_credentials, key_version FROM gateway_upstream_account WHERE id = ?`)
+      .get(gateway.upstreamAccountId) as { encrypted_credentials: string; key_version: string };
+    // A rotation in progress: v2 active, the seeded key draining as v1.
+    sqlite
+      .prepare(
+        `UPDATE gateway_upstream_account
+            SET draining_key_version = key_version, draining_encrypted_credentials = encrypted_credentials,
+                key_version = 'v2', encrypted_credentials = ?
+          WHERE id = ?`,
+      )
+      .run(await sealGatewayUpstreamCredentials({ apiKey: rotatedKey }, gateway.encryptionKey), gateway.upstreamAccountId);
+    try {
+      stubUpstream((body) =>
+        upstream.at(-1)!.headers.get("authorization") === `Bearer ${rotatedKey}`
+          ? Response.json({ error: { message: "invalid key" } }, { status: 401 })
+          : Response.json(completion(String(body.model))),
+      );
+      const res = await send(caller.token, chat());
+      const text = await res.text();
+      expect(res.status, text).toBe(200);
+      expect(upstream.map((request) => request.headers.get("authorization"))).toEqual([
+        `Bearer ${rotatedKey}`,
+        `Bearer ${gateway.upstreamApiKey}`,
+      ]);
+      const rows = sqlite
+        .prepare(`SELECT * FROM gateway_usage_ledger WHERE request_id = ?`)
+        .all(res.headers.get("x-clash-request-id")) as Array<{ kind: string; status: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.filter((row) => row.kind === "settle").map((row) => row.status)).toContain("settled");
+      for (const surface of [text, JSON.stringify(rows)])
+        for (const key of [rotatedKey, gateway.upstreamApiKey]) expect(surface).not.toContain(key);
+    } finally {
+      sqlite
+        .prepare(
+          `UPDATE gateway_upstream_account
+              SET key_version = ?, encrypted_credentials = ?, draining_key_version = NULL, draining_encrypted_credentials = NULL
+            WHERE id = ?`,
+        )
+        .run(original.key_version, original.encrypted_credentials, gateway.upstreamAccountId);
+    }
+  });
+
+  it("opens the account's circuit in D1 after consecutive 5xx and answers GATEWAY_NO_ROUTE without contact (#350)", async () => {
+    const caller = await gateway.tenantToken();
+    const health = () =>
+      sqlite
+        .prepare(`SELECT consecutive_failures, open_until_ms FROM gateway_upstream_health WHERE account_id = ?`)
+        .get(gateway.upstreamAccountId) as { consecutive_failures: number; open_until_ms: number | null } | undefined;
+    try {
+      stubUpstream(() => Response.json({ error: { message: "overloaded" } }, { status: 503 }));
+      for (let i = 0; i < GATEWAY_CIRCUIT_DEFAULTS.failureThreshold; i += 1)
+        expect((await send(caller.token, chat())).status).toBeGreaterThanOrEqual(500);
+      expect(upstream).toHaveLength(GATEWAY_CIRCUIT_DEFAULTS.failureThreshold);
+      expect(health()).toMatchObject({ consecutive_failures: GATEWAY_CIRCUIT_DEFAULTS.failureThreshold });
+      expect(health()?.open_until_ms).toBeGreaterThan(Date.now());
+
+      stubUpstream(() => Response.json(completion("unused")));
+      const open = await send(caller.token, chat());
+      expect([open.status, code(open)]).toEqual([503, "GATEWAY_NO_ROUTE"]);
+      expect(Number(open.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(upstream).toHaveLength(0);
+    } finally {
+      sqlite.prepare(`DELETE FROM gateway_upstream_health WHERE account_id = ?`).run(gateway.upstreamAccountId);
+    }
   });
 
   it("marks the holds settle_failed, not open, when the settle batch fails; reconciliation charges once", async () => {
@@ -513,5 +590,92 @@ describe("official upstream credential custody", () => {
     await expect(
       port.resolve({ route: { ...route("gwu_unit_ref"), upstreamId: "anthropic" }, scope: "official", tenantId: "t" }),
     ).rejects.toMatchObject({ code: "GATEWAY_KEY_UNAVAILABLE", details: { reason: "route_mismatch" } });
+  });
+
+  async function rotatingAccount(id: string, active: string, draining: string) {
+    await d1
+      .prepare(
+        `INSERT INTO gateway_upstream_account
+           (id, provider_id, upstream_id, key_version, key_serial, encrypted_credentials, draining_key_version, draining_encrypted_credentials)
+         VALUES (?, 'official', 'openai', 'v3', 3, ?, 'v2', ?)`,
+      )
+      .bind(id, active, draining)
+      .run();
+  }
+
+  it("resolves the active version first, the draining one only when the active one was refused, then none", async () => {
+    const id = `gwu_unit_rotating_${crypto.randomUUID()}`;
+    await rotatingAccount(
+      id,
+      await sealGatewayUpstreamCredentials({ apiKey: "sk-unit-active" }, secrets.encryptionKey),
+      await sealGatewayUpstreamCredentials({ apiKey: "sk-unit-draining" }, secrets.encryptionKey),
+    );
+    const resolve = (excludeKeyVersions?: string[]) =>
+      port.resolve({ route: route(id), scope: "official", tenantId: "t", ...(excludeKeyVersions ? { excludeKeyVersions } : {}) });
+    await expect(resolve()).resolves.toMatchObject({ apiKey: "sk-unit-active", keyVersion: "v3", keyId: id });
+    await expect(resolve(["v3"])).resolves.toMatchObject({ apiKey: "sk-unit-draining", keyVersion: "v2" });
+    await expect(resolve(["v3", "v2"])).rejects.toMatchObject({
+      code: "GATEWAY_KEY_UNAVAILABLE",
+      details: { reason: "no_key_version" },
+    });
+  });
+
+  it("fails closed when the active version cannot be decrypted, never falling back to the draining one", async () => {
+    const id = `gwu_unit_broken_${crypto.randomUUID()}`;
+    await rotatingAccount(
+      id,
+      await sealGatewayUpstreamCredentials({ apiKey: "sk-unit-foreign" }, "another-kek"),
+      await sealGatewayUpstreamCredentials({ apiKey: "sk-unit-draining" }, secrets.encryptionKey),
+    );
+    const resolved = port.resolve({ route: route(id), scope: "official", tenantId: "t" });
+    await expect(resolved).rejects.toMatchObject({ code: "GATEWAY_KEY_UNAVAILABLE", details: { reason: "decrypt_failed" } });
+    const error = await resolved.catch((caught: Error) => JSON.stringify({ ...caught, message: caught.message }));
+    for (const key of ["sk-unit-foreign", "sk-unit-draining"]) expect(error).not.toContain(key);
+  });
+
+  it("reads Cloudflare Secrets Store bindings and Worker secrets by name; a store failure fails closed", async () => {
+    await account("gwu_unit_store", { secret_ref: "GATEWAY_UPSTREAM_STORE" });
+    await account("gwu_unit_store_down", { secret_ref: "GATEWAY_UPSTREAM_STORE_DOWN" });
+    await account("gwu_unit_worker", { secret_ref: "GATEWAY_UPSTREAM_WORKER" });
+    const env = {
+      GATEWAY_UPSTREAM_STORE: { get: async () => "sk-unit-store" },
+      GATEWAY_UPSTREAM_STORE_DOWN: { get: () => Promise.reject(new Error("store unavailable")) },
+      GATEWAY_UPSTREAM_WORKER: "sk-unit-worker",
+    };
+    const fromEnv = createD1GatewayCredentialPort(d1, workerSecrets(env as never));
+    const resolve = (id: string) => fromEnv.resolve({ route: route(id), scope: "official", tenantId: "t" });
+    await expect(resolve("gwu_unit_store")).resolves.toMatchObject({ apiKey: "sk-unit-store" });
+    await expect(resolve("gwu_unit_worker")).resolves.toMatchObject({ apiKey: "sk-unit-worker" });
+    await expect(resolve("gwu_unit_store_down")).rejects.toMatchObject({
+      code: "GATEWAY_KEY_UNAVAILABLE",
+      details: { reason: "secret_store_failed" },
+    });
+    expect(readSecretBinding(env, "GATEWAY_UPSTREAM_MISSING")).toBeUndefined();
+  });
+
+  it("keeps the official KEK distinct from the tenant BYOK key and envelope", async () => {
+    const shared = `shared-kek-${crypto.randomUUID()}`;
+    // One value configured for both vaults: the official vault has no KEK, so sealed keys fail closed.
+    expect(gatewayEncryptionKey({ GATEWAY_ENCRYPTION_KEY: shared, ACTION_SECRET_KEY: shared })).toEqual({
+      encryptionKeyProblem: "shared_with_byok",
+    });
+    expect(gatewayEncryptionKey({ GATEWAY_ENCRYPTION_KEY: shared, ACTION_SECRET_KEY: "other" })).toEqual({ encryptionKey: shared });
+    const id = `gwu_unit_shared_${crypto.randomUUID()}`;
+    await account(id, { encrypted_credentials: await sealGatewayUpstreamCredentials({ apiKey: "sk-unit-shared" }, shared) });
+    const sharedPort = createD1GatewayCredentialPort(
+      d1,
+      workerSecrets({ GATEWAY_ENCRYPTION_KEY: shared, ACTION_SECRET_KEY: shared } as never),
+    );
+    await expect(sharedPort.resolve({ route: route(id), scope: "official", tenantId: "t" })).rejects.toMatchObject({
+      code: "GATEWAY_KEY_UNAVAILABLE",
+      details: { reason: "encryption_key_shared_with_byok" },
+    });
+    // A tenant BYOK envelope copied into the official vault never opens, even under the same key string.
+    const byok = `gwu_unit_byok_${crypto.randomUUID()}`;
+    await account(byok, { encrypted_credentials: await encryptProviderCredentials({ apiKey: "sk-unit-byok" }, secrets.encryptionKey) });
+    await expect(port.resolve({ route: route(byok), scope: "official", tenantId: "t" })).rejects.toMatchObject({
+      code: "GATEWAY_KEY_UNAVAILABLE",
+      details: { reason: "decrypt_failed" },
+    });
   });
 });

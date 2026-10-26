@@ -4,6 +4,7 @@ export * from "./app.js";
 export * from "./billing.js";
 export * from "./budget.js";
 export * from "./catalog-policy.js";
+export * from "./circuit.js";
 export * from "./errors.js";
 export * from "./holds.js";
 export * from "./limits.js";

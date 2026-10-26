@@ -182,6 +182,17 @@ export const gatewayUpstreamAccounts = sqliteTable(
     encryptedCredentials: text("encrypted_credentials"),
     configuredCredentials: text("configured_credentials"),
     keyVersion: text("key_version").notNull().default("v1"),
+    /** The active key's first characters (0043, #350); never the key. */
+    keyPrefix: text("key_prefix"),
+    /** Highest key version number ever issued; a revoked number is never reused. */
+    keySerial: integer("key_serial").notNull().default(1),
+    /** The previous version while a rotation drains; refused-key retries fall back to it. */
+    drainingKeyVersion: text("draining_key_version"),
+    drainingSecretRef: text("draining_secret_ref"),
+    drainingEncryptedCredentials: text("draining_encrypted_credentials"),
+    drainingConfiguredCredentials: text("draining_configured_credentials"),
+    drainingKeyPrefix: text("draining_key_prefix"),
+    drainingSince: integer("draining_since"),
     rateLimitJson: text("rate_limit_json"),
     rotatedAt: integer("rotated_at"),
     createdAt: createdAt(),
@@ -197,6 +208,27 @@ export const gatewayUpstreamAccounts = sqliteTable(
       "gateway_upstream_account_secret_check",
       sql`${table.secretRef} IS NOT NULL OR ${table.encryptedCredentials} IS NOT NULL`,
     ),
+  }),
+);
+
+/**
+ * Circuit-breaker counters per official upstream account (0043, #350):
+ * operational state only, no request, tenant or key material. Times are
+ * epoch milliseconds (`*_ms`).
+ */
+export const gatewayUpstreamHealth = sqliteTable(
+  "gateway_upstream_health",
+  {
+    accountId: text("account_id").primaryKey(),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    openUntilMs: integer("open_until_ms"),
+    lastFailureCode: text("last_failure_code"),
+    lastFailureAtMs: integer("last_failure_at_ms"),
+    lastSuccessAtMs: integer("last_success_at_ms"),
+    updatedAt: updatedAt(),
+  },
+  (table) => ({
+    failuresCheck: check("gateway_upstream_health_failures_check", sql`${table.consecutiveFailures} >= 0`),
   }),
 );
 

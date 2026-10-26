@@ -193,7 +193,7 @@ Every admin mutation appends one `gateway_admin_audit` row:
 
 Covered mutations: price drafts and publishes, packages, top-up packs,
 billing rollover, subscriptions and top-ups, catalog clone/model
-upsert/remove/publish, upstream create/update/disable/rotate, wallet
+upsert/remove/publish, upstream create/update/disable/rotate/key revoke, wallet
 corrections and status, subscription rate limits, admin account creation and
 disabling, retention purges that deleted something, hold sweeps that expired
 something, and every staff prompt view (whatever its outcome). Team settings
@@ -217,7 +217,7 @@ Errors are coded (`x-clash-error-code`).
 | Access         | `GET /me` (the account, its permissions); `GET/POST /admin-accounts {email, name, password, reason?}`; `POST /admin-accounts/:id/disable`        |
 | Catalog        | `GET /catalog`; `GET /catalog/versions/:v`; `POST …/:v/clone {from}`; `PUT/DELETE …/:v/models/:modelCode`; `POST …/:v/publish`                 |
 | Prices, packs  | see [gateway-price-book.md](gateway-price-book.md)                                                                                              |
-| Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate`                                                                     |
+| Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate {credential, drain?, reason?}`; `POST /upstreams/:id/revoke {keyVersion, reason?}` |
 | Tenants        | `GET /tenants`; `GET /tenants/:t/members` (read-only)                                                                                           |
 | Budgets        | `GET /tenants/:t/budgets` (read-only); `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`                                      |
 | Rate limits    | `GET /tenants/:t/keys` (read-only); `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts                                   |
@@ -232,13 +232,49 @@ is the model code (`GATEWAY_CATALOG_MODEL_INVALID`), and DeepSeek is served
 through Flash models only (`GATEWAY_CATALOG_MODEL_BLOCKED`). A published
 version never changes (`GATEWAY_CATALOG_VERSION_PUBLISHED`).
 
-**Upstream accounts.** Secrets are write-only: either a `GATEWAY_UPSTREAM_*`
-Worker secret *name* (`secret_ref`) or an API key sealed at once under
-`GATEWAY_ENCRYPTION_KEY` (`GATEWAY_ENCRYPTION_KEY_MISSING`, 503, when the key
-is not configured). Responses, the audit log and errors carry only the
-credential kind, field names and `key_version`. `enabled: false` disables an
-account for routing; rotation replaces the secret, bumps the key version and
-stamps `rotated_at`.
+**Upstream accounts.** Secrets are write-only: either the *name* of a
+`GATEWAY_UPSTREAM_*` Worker secret or Cloudflare Secrets Store binding
+(`secret_ref`), or an API key sealed at once under `GATEWAY_ENCRYPTION_KEY`
+(`GATEWAY_ENCRYPTION_KEY_MISSING`, 503, when the key is not configured;
+`GATEWAY_ENCRYPTION_KEY_SHARED`, 503, when it equals the tenant BYOK key
+`ACTION_SECRET_KEY`). Responses and errors carry only the credential kind,
+field names, `key_version` and `keyPrefix` (at most 8 leading characters and
+a quarter of the key, none under 16 characters); the audit log carries no
+prefix. A `secret_ref` view also says whether the binding currently resolves
+(`secretPresent`). `enabled: false` disables an account for routing. Each
+account also shows its circuit-breaker state (`health`), see
+[gateway-data-plane.md](gateway-data-plane.md#upstream-keys-and-failover).
+Rotation is versioned, below.
+
+### Upstream key rotation
+
+(#350, 0043.) An account holds at most two usable key versions: the
+**active** one, sent first, and while a rotation drains the **draining** one,
+the previous active version. The data plane retries a key the upstream refuses
+(401/403) with the draining version before the first byte, so a new key the
+upstream does not accept yet falls back to the old one instead of failing the
+request.
+
+1. **Add vN+1**: `POST /upstreams/:id/rotate {credential}`. The new version
+   becomes active and the previous active version drains (`draining`, with
+   `since`). While a version drains, another rotation is
+   `GATEWAY_UPSTREAM_ROTATION_IN_PROGRESS` (409): one rotation at a time.
+2. **Drain**: traffic uses the new key; the old one serves only refused-key
+   retries. Watch the circuit (`health`) and the `gateway.upstream_key_refused`
+   log (it names the version, never the key).
+3. **Revoke**: `POST /upstreams/:id/revoke {keyVersion}`. Revoking the
+   draining version ends the drain. Revoking the active version while one
+   drains rolls back to the draining version. The only key left is never
+   revoked (`GATEWAY_UPSTREAM_LAST_KEY`, 409): rotate or disable the account.
+   An unknown version is `GATEWAY_UPSTREAM_KEY_VERSION_NOT_FOUND` (404).
+
+`drain: false` on rotate revokes every previous version at once (a leaked
+key). Version numbers are never reused (`key_serial`, the response's
+`nextKeyVersion`). Every rotate and revoke is one D1 batch with its audit row
+(`upstream.rotate`, `upstream.revoke_key`; versions in `before`/`after` and a
+`revoked` list) and clears the account's circuit, because its failures were
+the old key's. A Secrets Store or Worker secret is created and deleted with
+`wrangler` on staging; the console only names it.
 
 **Budgets.** The console shows the wallet and the member and key budgets
 (enforcement, limit, spent, held). The team owner allocates them in team
@@ -425,6 +461,13 @@ Components live in `packages/web-ui/src/components/admin/` with the typed
 client `packages/web-ui/src/lib/adminClient.ts`; controls the caller's grants
 cannot use are not rendered, and failed actions show the coded error inline.
 
+On `/admin/upstreams` (`AdminUpstreams`), each account shows its active and
+draining key versions with their prefixes (an unbound `secret_ref` is marked
+`unbound`) and its circuit. With `upstreams.write`, **Rotate key** adds
+`nextKeyVersion` (optionally revoking the previous versions at once), and
+while a version drains **Revoke vN** ends the drain and **Roll back to vN**
+revokes the active version, each with an optional audit reason.
+
 On `/admin/usage`, when `/me` reports `promptAccess` (the flag is on and the
 caller holds `prompts.view`), each `settle` row has a **View** button and a
 request-id field opens the same viewer (`AdminPromptViewer`, the shared
@@ -460,7 +503,9 @@ or the coded error (expired, not retained).
   teams view-only (every team write route is absent from the console),
   audit per mutation (actor = the admin account, or the team owner for team
   settings) and rollback when the audit write fails, upstream secret
-  custody, rate-limit validation; staff prompt
+  custody, key rotation (vN+1 with drain, revoke, rollback, never-reused
+  versions, audit rows holding no key or prefix, a KEK shared with BYOK
+  refused), rate-limit validation; staff prompt
   view (admin accounts only, the stored bytes, every view audited without
   the body, nothing disclosed when the audit fails, expiry before purge,
   idempotent purge, a truncated stream copy); the hold sweep (admin accounts

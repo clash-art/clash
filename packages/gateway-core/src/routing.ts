@@ -184,6 +184,11 @@ function failureError(failure: UpstreamFailure): {
   }
 }
 
+/** The code a failed attempt is reported with (before any exhaustion wrapping). */
+export function upstreamFailureCode(failure: UpstreamFailure): GatewayErrorCode {
+  return failureError(failure).code;
+}
+
 /** Decide the next step after `attempt` failed. Exhaustion is GATEWAY_ROUTES_EXHAUSTED. */
 export function nextGatewayAttempt(
   plan: GatewayRoutePlan,

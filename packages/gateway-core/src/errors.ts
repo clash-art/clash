@@ -283,6 +283,31 @@ const definitions = {
     anthropic: "api_error",
     message: "The gateway credential encryption key is not configured; use a secret reference instead.",
   },
+  GATEWAY_ENCRYPTION_KEY_SHARED: {
+    status: 503,
+    openai: "server_error",
+    anthropic: "api_error",
+    message: "The gateway credential encryption key must differ from the tenant credential key; use a secret reference instead.",
+  },
+  // Upstream key rotation (#350).
+  GATEWAY_UPSTREAM_ROTATION_IN_PROGRESS: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The upstream account is still draining its previous key; revoke a key version before adding another.",
+  },
+  GATEWAY_UPSTREAM_KEY_VERSION_NOT_FOUND: {
+    status: 404,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "The upstream account holds no key with this version.",
+  },
+  GATEWAY_UPSTREAM_LAST_KEY: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The upstream account's only key cannot be revoked; rotate it or disable the account.",
+  },
   GATEWAY_BUDGET_NOT_FOUND: {
     status: 404,
     openai: "not_found_error",

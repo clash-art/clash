@@ -195,14 +195,33 @@ export interface UpstreamAccount {
   priority: number | null;
   weight: number | null;
   rateLimit: RateLimit | null;
-  credential: {
-    kind: "secret_ref" | "sealed";
-    secretRef: string | null;
-    fields: string[];
-    keyVersion: string;
-    rotatedAt: string | null;
-  };
+  /** The active key version (sent first). */
+  credential: UpstreamKeyVersion & { rotatedAt: string | null };
+  /** The previous version while a rotation drains; null otherwise. */
+  draining: (UpstreamKeyVersion & { since: string | null }) | null;
+  /** The version the next rotation adds. */
+  nextKeyVersion: string;
+  /** Circuit-breaker state; null when nothing is on record. */
+  health: {
+    state: "closed" | "open" | "half_open";
+    consecutiveFailures: number;
+    openUntil: string | null;
+    lastFailureCode: string | null;
+    lastFailureAt: string | null;
+    lastSuccessAt: string | null;
+  } | null;
   updatedAt: string;
+}
+
+/** One key version as the server shows it: never the key, at most its first characters. */
+export interface UpstreamKeyVersion {
+  kind: "secret_ref" | "sealed";
+  secretRef: string | null;
+  fields: string[];
+  keyVersion: string;
+  keyPrefix: string | null;
+  /** For a secret_ref: whether the binding currently resolves. */
+  secretPresent?: boolean;
 }
 
 export type UpstreamCredential = { secretRef: string } | { apiKey: string; baseUrl?: string };
@@ -472,8 +491,15 @@ export const adminApi = {
   }) => adminRequest<{ upstream: UpstreamAccount }>("POST", "/upstreams", body),
   updateUpstream: (id: string, patch: { enabled?: boolean; label?: string | null; priority?: number | null; weight?: number | null; rateLimit?: RateLimit | null }) =>
     adminRequest<{ upstream: UpstreamAccount }>("PATCH", `/upstreams/${seg(id)}`, patch),
-  rotateUpstream: (id: string, credential: UpstreamCredential, reason?: string) =>
-    adminRequest<{ upstream: UpstreamAccount }>("POST", `/upstreams/${seg(id)}/rotate`, { credential, ...(reason ? { reason } : {}) }),
+  /** Add the next key version; `drain: false` revokes every previous version at once. */
+  rotateUpstream: (id: string, credential: UpstreamCredential, options: { reason?: string; drain?: boolean } = {}) =>
+    adminRequest<{ upstream: UpstreamAccount }>("POST", `/upstreams/${seg(id)}/rotate`, {
+      credential,
+      ...(options.drain === false ? { drain: false } : {}),
+      ...(options.reason ? { reason: options.reason } : {}),
+    }),
+  revokeUpstreamKey: (id: string, keyVersion: string, reason?: string) =>
+    adminRequest<{ upstream: UpstreamAccount }>("POST", `/upstreams/${seg(id)}/revoke`, { keyVersion, ...(reason ? { reason } : {}) }),
 
   packages: () => adminRequest<{ packages: AdminPackage[] }>("GET", "/packages"),
   createPackage: (body: { name: string; billingPeriod: "month" | "year"; priceMinor: number; priceCurrency: string; periodMicroCredits: number; rateLimit?: RateLimit }) =>
