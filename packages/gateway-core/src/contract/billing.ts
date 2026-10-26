@@ -664,7 +664,7 @@ export function describeGatewayBillingContract(
           effectiveTo: null,
           rates: [
             {
-              modelCode: "deepseek-chat",
+              modelCode: "deepseek-not-flash",
               upstreamId: "",
               unit: "input_token",
               microCredits: 1,
