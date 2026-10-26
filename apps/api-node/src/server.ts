@@ -11,7 +11,12 @@ import { createReplicaHttpGateway } from "./relay-http.ts";
 import { createPostgresNotificationSource } from "./pg-notifications.ts";
 import { shutdownNodeTelemetry } from "@clash/shared-telemetry/node";
 import { apiNodeLog, errorFacts } from "./log.ts";
-import { createGatewayNodeRoutes, createPgGatewayPorts, gatewayRole } from "./gateway-node.ts";
+import {
+  createGatewayBackgroundWork,
+  createGatewayNodeRoutes,
+  createPgGatewayPorts,
+  gatewayRole,
+} from "./gateway-node.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
 import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
@@ -66,6 +71,8 @@ export function startServer(
   app.route("/", gateway.app);
   // Model gateway data plane (#367): api role only (role matrix: #373).
   let stopGatewayMaintenance: (() => void) | undefined;
+  // Settlements of streams whose caller left (#368); drained before the pool closes.
+  const gatewayWork = createGatewayBackgroundWork();
   if (gatewayRole(env) === "api") {
     const limits = createPgGatewayLimitPort(database.db);
     const ports = createPgGatewayPorts({
@@ -84,7 +91,7 @@ export function startServer(
           }
         : {}),
     });
-    app.route("/", createGatewayNodeRoutes(ports));
+    app.route("/", createGatewayNodeRoutes(ports, { work: gatewayWork }));
     stopGatewayMaintenance = startGatewayMaintenance({
       db: database.db,
       limits,
@@ -109,6 +116,8 @@ export function startServer(
         );
       } finally {
         clearTimeout(deadline);
+        // Closing connections cancels live streams, which settle in the background.
+        await gatewayWork.drain(10000);
         await database.close();
       }
     })());

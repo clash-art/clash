@@ -25,7 +25,9 @@ import {
   isGatewayPriceUnit,
   toGatewayError,
   unavailablePort,
+  GATEWAY_REQUEST_ID_HEADER,
   type GatewayApp,
+  type GatewayAppOptions,
   type GatewayBudgetPort,
   type GatewayCatalog,
   type GatewayClock,
@@ -324,6 +326,8 @@ export function createPgGatewayRoutesPort(deps: {
 export function createN2GatewayBudgetPort(deps: {
   db: GatewayBudgetDatabase;
   store?: PgGatewayBudgetStore;
+  /** Retry backoff for a transiently failed charge; SETTLE_RETRY_DELAYS_MS by default. */
+  settleRetryDelaysMs?: readonly number[];
 }): Pick<GatewayBudgetPort, "reserve" | "settle" | "markSettleFailed" | "snapshot" | "expiredHolds" | "expire"> {
   const store = deps.store ?? createPgGatewayBudgetStore(deps.db);
   async function budgetIdsOf(event: UsageEvent): Promise<string[]> {
@@ -344,6 +348,36 @@ export function createN2GatewayBudgetPort(deps: {
       return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
     },
     async settle(event) {
+      return settleDurably(() => settleOnce(event), deps.settleRetryDelaysMs ?? SETTLE_RETRY_DELAYS_MS);
+    },
+    // N2 writes no hold, so a failed settlement has nothing reserved to mark.
+    async markSettleFailed() {
+      return { status: "settle_failed" as const };
+    },
+    async snapshot(input) {
+      const rows = await store.snapshot({
+        tenantId: input.tenantId,
+        ...(input.budgetIds?.length ? { budgetIds: input.budgetIds } : {}),
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        scope: row.scope as "tenant" | "user" | "key",
+        scopeId: row.scopeId,
+        limitMicroCredits: row.limitMicroCredits,
+        spentMicroCredits: row.spentMicroCredits,
+        reservedMicroCredits: 0,
+        version: 0,
+        enforcement: row.enforcement as "hard" | "soft" | "alert",
+      }));
+    },
+    async expiredHolds() {
+      return [];
+    },
+    async expire() {
+      return { expired: false };
+    },
+  };
+  async function settleOnce(event: UsageEvent) {
       const budgetIds = await budgetIdsOf(event);
       // Admission refused budgetless callers; a budget vanishing mid-request
       // must not settle for free either.
@@ -376,34 +410,32 @@ export function createN2GatewayBudgetPort(deps: {
         costMicroCredits: result.chargedMicroCredits,
         duplicate: result.duplicate,
       };
-    },
-    // N2 writes no hold, so a failed settlement has nothing reserved to mark.
-    async markSettleFailed() {
-      return { status: "settle_failed" as const };
-    },
-    async snapshot(input) {
-      const rows = await store.snapshot({
-        tenantId: input.tenantId,
-        ...(input.budgetIds?.length ? { budgetIds: input.budgetIds } : {}),
-      });
-      return rows.map((row) => ({
-        id: row.id,
-        scope: row.scope as "tenant" | "user" | "key",
-        scopeId: row.scopeId,
-        limitMicroCredits: row.limitMicroCredits,
-        spentMicroCredits: row.spentMicroCredits,
-        reservedMicroCredits: 0,
-        version: 0,
-        enforcement: row.enforcement as "hard" | "soft" | "alert",
-      }));
-    },
-    async expiredHolds() {
-      return [];
-    },
-    async expire() {
-      return { expired: false };
-    },
-  };
+  }
+}
+
+/**
+ * Backoff before each retry of a postpay charge. The charge is one Postgres
+ * transaction keyed by the ledger's unique `(request_id, budget_id, kind)`, so
+ * a retry after an unacknowledged commit is a recorded no-op (`duplicate`),
+ * never a second charge.
+ */
+export const SETTLE_RETRY_DELAYS_MS: readonly number[] = [50, 250, 1000];
+
+/**
+ * Durable settle (N2): retry a charge that failed for a transient reason
+ * (connection loss, serialization failure — anything not a coded
+ * GatewayError) before giving up. Coded refusals (budget gone, idempotency
+ * conflict) are final and surface at once.
+ */
+export async function settleDurably<T>(work: () => Promise<T>, delaysMs: readonly number[]): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await work();
+    } catch (error) {
+      if (error instanceof GatewayError || attempt >= delaysMs.length) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+    }
+  }
 }
 
 /** Read side of the N2 ledger: one tenant's `charge` rows, one per request. */
@@ -516,6 +548,7 @@ export interface PgGatewayPortsInput {
   clock?: GatewayClock;
   logger?: GatewayLogger;
   upstream?: GatewayUpstreamPort;
+  settleRetryDelaysMs?: readonly number[];
 }
 
 export function createPgGatewayPorts(input: PgGatewayPortsInput): GatewayPorts {
@@ -543,7 +576,10 @@ export function createPgGatewayPorts(input: PgGatewayPortsInput): GatewayPorts {
       }),
       recordSuccess: async () => {},
     },
-    budgets: createN2GatewayBudgetPort({ db: input.db }),
+    budgets: createN2GatewayBudgetPort({
+      db: input.db,
+      ...(input.settleRetryDelaysMs ? { settleRetryDelaysMs: input.settleRetryDelaysMs } : {}),
+    }),
     limits: input.limits,
     ledger: createPgGatewayLedgerPort(input.db),
     blobs: unavailablePort("blobs"),
@@ -573,19 +609,176 @@ async function listModels(ports: GatewayPorts, request: Request): Promise<Respon
 
 export const GATEWAY_NODE_PREFIXES = ["/v1", "/api/v1/gateway"] as const;
 
+// ─── Streaming (#368) ────────────────────────────────────────────────────────
+
+/** Idle gap after which an SSE keep-alive comment is sent (proxies cut idle streams). */
+export const GATEWAY_SSE_KEEPALIVE_MS = 15_000;
+/**
+ * TTFT overhead budget: time the node adds between the upstream's first SSE
+ * byte and the caller's, on the admission + relay path (mock upstream, PGlite).
+ * Enforced by gateway-node-stream.test.ts and logged per stream as `ttftMs`.
+ */
+export const GATEWAY_NODE_TTFT_OVERHEAD_BUDGET_MS = 50;
+export const SSE_KEEPALIVE_COMMENT = ": keep-alive\n\n";
+
+/**
+ * Background work a response leaves behind: the settlement of a stream whose
+ * caller disconnected or timed out. Node has no `waitUntil`; this registry
+ * plays that part so the core always runs the settle, and `drain()` lets a
+ * shutting-down process finish those settlements before closing the pool.
+ * Nothing in it outlives the request's own settlement (stateless node).
+ */
+export interface GatewayBackgroundWork {
+  waitUntil(promise: Promise<unknown>): void;
+  /** Resolves once every registered promise settled, or after `timeoutMs`. */
+  drain(timeoutMs?: number): Promise<void>;
+  readonly pending: number;
+}
+
+export function createGatewayBackgroundWork(): GatewayBackgroundWork {
+  const pending = new Set<Promise<unknown>>();
+  return {
+    waitUntil(promise) {
+      const tracked = promise.catch(() => undefined).finally(() => pending.delete(tracked));
+      pending.add(tracked);
+    },
+    async drain(timeoutMs = 10_000) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        timer.unref?.();
+      });
+      while (pending.size > 0) {
+        const done = await Promise.race([Promise.allSettled([...pending]).then(() => true), deadline.then(() => false)]);
+        if (!done) break;
+      }
+      clearTimeout(timer);
+    },
+    get pending() {
+      return pending.size;
+    },
+  };
+}
+
+const isEventStream = (response: Response) =>
+  response.headers.get("content-type")?.toLowerCase().includes("text/event-stream") === true;
+
+/**
+ * Pass an SSE answer through unchanged, chunk by chunk (no buffering), adding
+ * a keep-alive comment after `keepAliveMs` of silence. A comment is only ever
+ * written at an event boundary (after a blank line), never inside a split
+ * upstream event. Cancelling (caller disconnect) cancels the core's relay,
+ * which aborts the upstream and settles observed usage.
+ */
+export function withSseKeepAlive(
+  response: Response,
+  input: { keepAliveMs: number; onFirstByte?: () => void },
+): Response {
+  if (!response.body || !isEventStream(response)) return response;
+  const reader = response.body.getReader();
+  const comment = new TextEncoder().encode(SSE_KEEPALIVE_COMMENT);
+  let lastAt = Date.now();
+  let tail = "\n\n"; // before the first byte the stream is at a boundary
+  let first = true;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = () => {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+  };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const tick = Math.max(10, Math.floor(input.keepAliveMs / 3));
+      timer = setInterval(() => {
+        if (Date.now() - lastAt < input.keepAliveMs || !/\n\r?\n$/.test(tail)) return;
+        try {
+          controller.enqueue(comment);
+          lastAt = Date.now();
+        } catch {
+          stop();
+        }
+      }, tick);
+      timer.unref?.();
+    },
+    async pull(controller) {
+      let next: ReadableStreamReadResult<Uint8Array>;
+      try {
+        next = await reader.read();
+      } catch (error) {
+        stop();
+        controller.error(error);
+        return;
+      }
+      if (next.done) {
+        stop();
+        controller.close();
+        return;
+      }
+      if (first) {
+        first = false;
+        input.onFirstByte?.();
+      }
+      const chunk = next.value;
+      if (chunk.byteLength > 0) {
+        tail = (tail + new TextDecoder().decode(chunk.subarray(Math.max(0, chunk.byteLength - 4)))).slice(-4);
+        lastAt = Date.now();
+      }
+      controller.enqueue(chunk);
+    },
+    cancel(reason) {
+      stop();
+      return reader.cancel(reason);
+    },
+  });
+  const headers = new Headers(response.headers);
+  // Ask reverse proxies (nginx) not to buffer the stream.
+  headers.set("x-accel-buffering", "no");
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
+}
+
+export interface GatewayNodeRoutesOptions {
+  /** Background settlements (disconnect / timeout); a private registry by default. */
+  work?: GatewayBackgroundWork;
+  keepAliveMs?: number;
+  logger?: GatewayLogger;
+  /** Passed to gateway-core's createGatewayApp (waitUntil is set from `work`). */
+  app?: Omit<GatewayAppOptions, "waitUntil" | "basePath">;
+}
+
 /**
  * Hono routes for `/v1/*` and `/api/v1/gateway/*`. `/api/v1/gateway/<rest>`
  * is the same surface as `/v1/<rest>` (and `/api/v1/gateway/anthropic/...`
  * the core's `/anthropic/...`).
+ *
+ * Streams (#368) are gateway-core's relay (stream.ts), unchanged: the core
+ * injects `stream_options.include_usage`, tees the upstream body (caller +
+ * usage tap), and settles once when the stream ends — completed, truncated,
+ * upstream error, timeout or caller disconnect — through the N2 budget port
+ * (postpay `charge` of observed usage, estimated from bytes when the upstream
+ * reported none). This layer only adds keep-alives and the TTFT log.
  */
-export function createGatewayNodeRoutes(ports: GatewayPorts): Hono {
-  const core: GatewayApp = createGatewayApp(ports);
+export function createGatewayNodeRoutes(ports: GatewayPorts, options: GatewayNodeRoutesOptions = {}): Hono {
+  const work = options.work ?? createGatewayBackgroundWork();
+  const keepAliveMs = options.keepAliveMs ?? GATEWAY_SSE_KEEPALIVE_MS;
+  const logger = options.logger ?? ports.logger;
+  const core: GatewayApp = createGatewayApp(ports, { ...options.app, waitUntil: (promise) => work.waitUntil(promise) });
+  const serve = async (request: Request) => {
+    const started = performance.now();
+    const response = await core.fetch(request);
+    return withSseKeepAlive(response, {
+      keepAliveMs,
+      onFirstByte: () =>
+        logger.info("gateway.stream_first_byte", {
+          requestId: response.headers.get(GATEWAY_REQUEST_ID_HEADER) ?? undefined,
+          ttftMs: Math.round(performance.now() - started),
+        }),
+    });
+  };
   const app = new Hono();
   const toCore = (request: Request, path: string) => {
     const url = new URL(request.url);
     url.pathname = path;
     const hasBody = request.method !== "GET" && request.method !== "HEAD";
-    return core.fetch(
+    return serve(
       new Request(url, {
         method: request.method,
         headers: request.headers,
@@ -596,7 +789,7 @@ export function createGatewayNodeRoutes(ports: GatewayPorts): Hono {
   };
   app.get("/v1/models", (c) => listModels(ports, c.req.raw));
   app.get("/api/v1/gateway/models", (c) => listModels(ports, c.req.raw));
-  app.all("/v1/*", (c) => core.fetch(c.req.raw));
+  app.all("/v1/*", (c) => serve(c.req.raw));
   app.all("/api/v1/gateway/*", (c) => {
     const rest = c.req.path.slice("/api/v1/gateway".length);
     return toCore(c.req.raw, rest.startsWith("/anthropic/") ? rest : `/v1${rest}`);
