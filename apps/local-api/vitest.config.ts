@@ -73,6 +73,14 @@ export default defineConfig({
         find: /^@clash\/sdk$/,
         replacement: resolve(__dirname, "../../packages/clash-sdk/js/src/index.ts"),
       },
+      {
+        find: /^@clash\/gateway-core\/testing$/,
+        replacement: resolve(__dirname, "../../packages/gateway-core/src/testing/memory-ports.ts"),
+      },
+      {
+        find: /^@clash\/gateway-core$/,
+        replacement: resolve(__dirname, "../../packages/gateway-core/src/index.ts"),
+      },
     ],
   },
   test: {
