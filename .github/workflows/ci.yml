@@ -103,3 +103,44 @@ jobs:
 
       - name: Render fixture frames through both renderers and compare SSIM
         run: pnpm test:remotion-parity
+
+  gateway-lite:
+    name: Gateway lite multi-process harness (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_USER: clash_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clash_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      # server.ts resolves workspace packages through their built entries.
+      - name: Build api-node workspace dependencies
+        run: pnpm exec turbo run build --filter='@clash/api-node^...'
+
+      - name: Run gateway lite harness (>=3 gateway processes, one real Postgres)
+        env:
+          GATEWAY_LITE_DATABASE_URL: postgresql://clash_test@127.0.0.1:5432/postgres
+          GATEWAY_LITE_REPORT: ${{ runner.temp }}/gateway-lite-report.json
+        run: pnpm --filter @clash/api-node test:gateway-lite
+
+      - name: Upload gateway lite report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gateway-lite-report
+          path: ${{ runner.temp }}/gateway-lite-report.json
+          if-no-files-found: ignore

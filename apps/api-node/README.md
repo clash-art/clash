@@ -231,6 +231,50 @@ Default `CLUSTER_PEER_MODE=fresh` deliberately grows a new Loro peer per write;
 `persistent` reuses each writer's peer. Client CRDT merge cost and same-host contention
 are included in workload time. These are acceptance samples, not production capacity.
 
+### Model gateway lite harness (#379)
+
+```sh
+GATEWAY_LITE_DOCKER=1 pnpm --filter @clash/api-node test:gateway-lite        # ephemeral postgres:16 container, removed afterwards
+GATEWAY_LITE_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/postgres \
+  GATEWAY_LITE_REPORT=/tmp/gateway-lite.json pnpm --filter @clash/api-node test:gateway-lite
+```
+
+Starts three (`GATEWAY_LITE_NODES`, minimum 3) real `src/server.ts` gateway processes
+(api role), the #378 mock upstream process and short-lived race worker processes
+against one fresh database on a disposable **loopback** Postgres (created and
+dropped by the run). There is no load balancer: the harness round-robins over the
+node ports. With neither variable set it prints a skip notice and exits 0
+(`GATEWAY_LITE_DOCKER_CMD="sudo -n docker"` if the docker socket needs sudo).
+CI runs it against a `postgres:16` service container. The JSON report lists every
+scenario with its counts plus a final `checkGatewayInvariants` pass.
+
+Races proven on real Postgres (PGlite serializes transactions, so these were untested before):
+
+| Scenario | Checks |
+| --- | --- |
+| budget overdraft | 60 concurrent requests over 3 nodes on a 100k budget, 50k floor: spend stops exactly at limit + floor, next request 402, ledger unique per `(request_id, budget_id, kind)` |
+| charge-once / media debit + refund | 3 processes settle the same request ids at once: one ledger row and one spend per id, exactly one caller told "charged" |
+| rate limits | `requestsPerMinute` admits exactly the limit across nodes; `concurrency` admits exactly the bound, no leaked leases |
+| client abort mid-stream | one `client_aborted` charge per stream, open-stream gauge back to 0 |
+| SIGTERM drain mid-stream | stream ends with `GATEWAY_DRAINING`, exit 0, request charged once, peers keep serving |
+| SIGKILL mid-stream | no partial charge, invariants hold, replacement node serves at once |
+| key rotation | `encryption.current` moved to k2 while 3 re-encrypt workers race and all nodes serve: zero failed requests, every envelope on k2, CAS losses counted as `skipped` |
+| rollover | 4 workers, `FOR UPDATE SKIP LOCKED`: each of 300 due budgets rolled exactly once, work spread over workers |
+
+Accepted edge wear: text is postpay and the charge is one transaction (ledger row +
+spend). A node killed before that transaction commits loses the charge (the
+SIGKILL scenario asserts zero charge, never a partial one); once it committed the
+charge is complete. The `gateway_settle_intent` journal (#399) is not written by the
+Node gateway yet, so there is no crash-recovery replay; concurrency leases of a
+killed node stay until the lease TTL / maintenance sweep.
+
+Still needs the heavier staging check (T2), not this lite harness: a real load
+balancer and connection draining in front of the nodes, PgBouncer/transaction
+pooling, Postgres failover/HA and network partitions, LISTEN/NOTIFY under
+reconnects at scale, SKIP LOCKED and row-lock contention at production row counts
+and latency, cross-host clock skew, the settle-intent replay (#399), and sustained
+load/soak numbers. Lite runs are correctness samples, not capacity numbers.
+
 SDK: [Loro Streams client](https://www.npmjs.com/package/@loro-dev/streams-client).
 Protocol alternative evaluated: [Durable Streams](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 PG: [NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html),
