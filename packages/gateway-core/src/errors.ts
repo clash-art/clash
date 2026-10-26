@@ -290,6 +290,25 @@ const definitions = {
     anthropic: "invalid_request_error",
     message: "The gateway serves DeepSeek through Flash models only.",
   },
+  // Official catalog publish (#351).
+  GATEWAY_CATALOG_SEED_EMPTY: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "No model card is served by an enabled official upstream account; add an account before seeding.",
+  },
+  GATEWAY_UPSTREAM_CREDENTIAL_FIELDS: {
+    status: 400,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The credential lacks fields this provider requires.",
+  },
+  GATEWAY_ROUTE_PIN_UNAVAILABLE: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The pinned model implementation is no longer served by any published catalog version.",
+  },
   GATEWAY_UPSTREAM_NOT_FOUND: {
     status: 404,
     openai: "not_found_error",

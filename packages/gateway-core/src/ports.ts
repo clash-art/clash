@@ -66,8 +66,13 @@ export interface GatewayIdentityPort {
 }
 
 export interface GatewayRoutesPort {
-  /** Published catalog the caller may route against (configurable data, not compiled cards). */
-  catalog(identity: GatewayIdentity): Promise<GatewayCatalog>;
+  /**
+   * Published catalog the caller may route against (configurable data, not
+   * compiled cards): the live version, or with `version` that published
+   * snapshot, which never changes (route pins, #351). A draft or unknown
+   * version rejects with GATEWAY_CATALOG_VERSION_NOT_FOUND.
+   */
+  catalog(identity: GatewayIdentity, query?: { version?: string }): Promise<GatewayCatalog>;
   /** Accounts of exactly one scope; official and tenant accounts are never mixed. */
   providers(
     identity: GatewayIdentity,

@@ -206,7 +206,7 @@ Every admin mutation appends one `gateway_admin_audit` row:
   price `created_by`) hold the same actor id.
 
 Covered mutations: price drafts and publishes, packages, top-up packs,
-billing rollover, subscriptions and top-ups, catalog clone/model
+billing rollover, subscriptions and top-ups, catalog clone/seed/model
 upsert/remove/publish, upstream create/update/disable/rotate/key revoke, wallet
 corrections and status, subscription rate limits, admin account creation and
 disabling, abuse thresholds (`abuse.threshold`), suspensions and lifts
@@ -230,7 +230,7 @@ Errors are coded (`x-clash-error-code`).
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Sign-in        | `POST /api/admin-auth/sign-in/email {email, password}`, `POST /api/admin-auth/sign-out`, `GET /api/admin-auth/get-session` (Better Auth)        |
 | Access         | `GET /me` (the account, its permissions); `GET/POST /admin-accounts {email, name, password, role?, reason?}`; `POST /admin-accounts/:id/disable` |
-| Catalog        | `GET /catalog`; `GET /catalog/versions/:v`; `POST …/:v/clone {from}`; `PUT/DELETE …/:v/models/:modelCode`; `POST …/:v/publish`                 |
+| Catalog        | `GET /catalog`; `GET /catalog/versions/:v`; `POST …/:v/clone {from}`; `POST …/:v/seed {textModelCodes?}`; `PUT/DELETE …/:v/models/:modelCode`; `POST …/:v/publish`                 |
 | Prices, packs  | see [gateway-price-book.md](gateway-price-book.md)                                                                                              |
 | Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate {credential, drain?, reason?}`; `POST /upstreams/:id/revoke {keyVersion, reason?}` |
 | Tenants        | `GET /tenants`; `GET /tenants/:t/members` (read-only)                                                                                           |
@@ -248,17 +248,58 @@ is the model code (`GATEWAY_CATALOG_MODEL_INVALID`), and DeepSeek is served
 through Flash models only (`GATEWAY_CATALOG_MODEL_BLOCKED`). A published
 version never changes (`GATEWAY_CATALOG_VERSION_PUBLISHED`).
 
+The live version is the newest started `published_at`, and within one second
+the one published last (`publish_seq`, 0051), never the larger version name.
+
+**Launch seeding (#351).** `POST …/:v/seed` creates the draft `:v` from the
+deployment's model cards (`planGatewayLaunchCatalog` in `@clash/gateway-core`):
+every AIGC/media card (image, video, audio, 3D) an *enabled official* upstream
+account serves, then only the chat-only text cards named in `textModelCodes`.
+The response lists every other card with its reason (`no-official-account`,
+`text-not-configured`, `deepseek-not-flash`) and any unknown text codes. The
+rows and one `catalog.seed` audit row are one D1 batch; an existing version is
+`GATEWAY_CONFLICT`, and nothing served is `GATEWAY_CATALOG_SEED_EMPTY`. The
+draft is then reviewed and published like any other.
+
+**DeepSeek Flash-only.** Pro/Reasoner models are refused on every write path
+(`GATEWAY_CATALOG_MODEL_BLOCKED`): catalog upsert, seed `textModelCodes`, and
+an upstream account's `supportedModelIds`/`modelPriorities`. Routing applies
+the same policy to whatever a catalog holds.
+
+**Route pins.** `routes.catalog(identity, { version })` answers one published
+(started) version, which never changes; a draft or unknown version is
+`GATEWAY_CATALOG_VERSION_NOT_FOUND`. `resolveGatewayRoutePin` serves a pin
+(`gatewayRoutePin`: model, catalog version, exact upstream/model/account)
+through the live version when it still holds that implementation, otherwise
+through the pinned snapshot. Accounts are not versioned: a disabled account,
+or a DeepSeek Pro/Reasoner pin, is `GATEWAY_ROUTE_PIN_UNAVAILABLE`.
+
+**The "Clash official" row.** `GET /api/v1/model-providers` and
+`GET /api/v1/models/catalog` carry `official` beside (never among) the user's
+own accounts: `null` while nothing is published, `{status: "published",
+catalogVersion, publishedAt, models, upstreams}` (`OfficialModelProviderSchema`
+in shared-types; models an enabled official account serves, AIGC/media first;
+upstreams by provider, upstream and region, never by account id or
+credential), or `{status: "unavailable", code}` when it cannot be read.
+Settings → Providers renders it read-only; a local Host that answers no
+`official` field renders nothing.
+
 **Upstream accounts.** Secrets are write-only: either the *name* of a
 `GATEWAY_UPSTREAM_*` Worker secret or Cloudflare Secrets Store binding
-(`secret_ref`), or an API key sealed at once under `GATEWAY_ENCRYPTION_KEY`
-(`GATEWAY_ENCRYPTION_KEY_MISSING`, 503, when the key is not configured;
-`GATEWAY_ENCRYPTION_KEY_SHARED`, 503, when it equals the tenant BYOK key
-`ACTION_SECRET_KEY`). Responses and errors carry only the credential kind,
-field names, `key_version` and `keyPrefix` (at most 8 leading characters and
-a quarter of the key, none under 16 characters); the audit log carries no
-prefix. A `secret_ref` view also says whether the binding currently resolves
-(`secretPresent`). `enabled: false` disables an account for routing. Each
-account also shows its circuit-breaker state (`health`), see
+(`secret_ref`, with `fields` naming what its JSON value holds; `apiKey` by
+default), an API key, or several `credentials` fields (Kling's `accessKey` +
+`secretKey`, a Vertex `serviceAccountKey`) sealed at once under
+`GATEWAY_ENCRYPTION_KEY` (`GATEWAY_ENCRYPTION_KEY_MISSING`, 503, when the key
+is not configured; `GATEWAY_ENCRYPTION_KEY_SHARED`, 503, when it equals the
+tenant BYOK key `ACTION_SECRET_KEY`). Create and rotate check the fields
+against the provider's shared definition (`GATEWAY_UPSTREAM_CREDENTIAL_FIELDS`).
+Responses and errors carry only the credential kind, field names,
+`key_version` and `keyPrefix` (at most 8 leading characters and a quarter of
+the key, none under 16 characters; only when the credential has an `apiKey`);
+the audit log carries no prefix. A `secret_ref` view also says whether the
+binding currently resolves (`secretPresent`). `enabled: false` disables an
+account for routing. Each account also shows its circuit-breaker state
+(`health`), see
 [gateway-data-plane.md](gateway-data-plane.md#upstream-keys-and-failover).
 Rotation is versioned, below.
 

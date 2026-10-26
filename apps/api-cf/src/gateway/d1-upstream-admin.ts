@@ -20,7 +20,13 @@
  * the account's circuit, since its failures were the old key's.
  */
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
-import { GatewayError, gatewayCircuitState, type GatewayClock } from "@clash/gateway-core";
+import {
+  GatewayError,
+  gatewayCircuitState,
+  isBlockedDeepSeekModel,
+  missingOfficialUpstreamCredentials,
+  type GatewayClock,
+} from "@clash/gateway-core";
 
 import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
 import type { RateLimitConfig } from "./d1-billing";
@@ -39,7 +45,10 @@ import {
 } from "./d1-credentials";
 import { HEALTH_COLUMNS, healthOf, type HealthRow } from "./d1-upstream-health";
 
-export type UpstreamCredentialInput = { secretRef: string } | { apiKey: string; baseUrl?: string };
+export type UpstreamCredentialInput =
+  | { secretRef: string; fields?: string[] }
+  | { apiKey: string; baseUrl?: string }
+  | { credentials: Record<string, string> };
 
 export interface UpstreamFields {
   label?: string | null;
@@ -272,24 +281,56 @@ export function createD1UpstreamAdmin(
     return present(account, health);
   }
 
-  /** Column values for a credential; a sealed key needs a distinct GATEWAY_ENCRYPTION_KEY. */
-  async function credentialColumns(credential: UpstreamCredentialInput) {
+  /**
+   * Column values for a credential of `account`; a sealed key needs
+   * GATEWAY_ENCRYPTION_KEY. The fields must satisfy the provider's shared
+   * definition (GATEWAY_UPSTREAM_CREDENTIAL_FIELDS), checked before anything
+   * is sealed.
+   */
+  async function credentialColumns(
+    credential: UpstreamCredentialInput,
+    account: { providerId: string; upstreamId?: string; apiShape?: string | null },
+  ) {
+    const requireFields = (fields: string[]) => {
+      const missing = missingOfficialUpstreamCredentials({ ...account, fields });
+      if (missing.length > 0)
+        throw new GatewayError("GATEWAY_UPSTREAM_CREDENTIAL_FIELDS", {
+          details: { providerId: account.providerId, upstreamId: account.upstreamId || account.providerId, missing },
+        });
+      return fields;
+    };
     if ("secretRef" in credential)
-      return { secretRef: credential.secretRef, sealed: null, fields: ["apiKey"], prefix: null };
+      return {
+        secretRef: credential.secretRef,
+        sealed: null,
+        fields: requireFields([...new Set(credential.fields ?? ["apiKey"])]),
+        prefix: null,
+      };
+    const credentials =
+      "credentials" in credential
+        ? credential.credentials
+        : { apiKey: credential.apiKey, ...(credential.baseUrl ? { baseUrl: credential.baseUrl } : {}) };
+    const fields = requireFields(Object.keys(credentials));
     if (deps.encryptionKeyProblem === "shared_with_byok") throw new GatewayError("GATEWAY_ENCRYPTION_KEY_SHARED");
     if (!deps.encryptionKey) throw new GatewayError("GATEWAY_ENCRYPTION_KEY_MISSING");
-    const credentials = { apiKey: credential.apiKey, ...(credential.baseUrl ? { baseUrl: credential.baseUrl } : {}) };
     return {
       secretRef: null,
       sealed: await sealGatewayUpstreamCredentials(credentials, deps.encryptionKey),
-      fields: Object.keys(credentials),
-      prefix: upstreamKeyPrefix(credential.apiKey),
+      fields,
+      prefix: credentials.apiKey ? upstreamKeyPrefix(credentials.apiKey) : null,
     };
   }
 
   /** Clears the circuit of an account whose keys changed, chained on the audit row (so on the change). */
   const resetHealth = (id: string): D1PreparedStatement =>
     db.prepare(`DELETE FROM gateway_upstream_health WHERE account_id = ? AND changes() = 1`).bind(id);
+
+  /** DeepSeek is served through Flash models only: no account may name a Pro/Reasoner model. */
+  function refuseBlockedModels(fields: Pick<UpstreamFields, "supportedModelIds" | "modelPriorities">) {
+    const named = [...(fields.supportedModelIds ?? []), ...Object.keys(fields.modelPriorities ?? {})];
+    const blocked = named.find((modelCode) => isBlockedDeepSeekModel(modelCode));
+    if (blocked) throw new GatewayError("GATEWAY_CATALOG_MODEL_BLOCKED", { details: { modelCode: blocked } });
+  }
 
   const json = (value: unknown) => (value === null || value === undefined ? null : JSON.stringify(value));
 
@@ -316,8 +357,9 @@ export function createD1UpstreamAdmin(
         actor: GatewayAdminActor;
       },
     ): Promise<UpstreamAccountView> {
+      refuseBlockedModels(input);
       const id = `${GATEWAY_UPSTREAM_ACCOUNT_ID_PREFIX}${crypto.randomUUID().replaceAll("-", "")}`;
-      const credential = await credentialColumns(input.credential);
+      const credential = await credentialColumns(input.credential, input);
       const nowS = nowSeconds();
       await db.batch([
         db
@@ -376,6 +418,7 @@ export function createD1UpstreamAdmin(
 
     /** Non-secret fields only; `enabled: false` disables the account for routing at once. */
     async update(id: string, patch: UpstreamFields, actor: GatewayAdminActor): Promise<UpstreamAccountView> {
+      refuseBlockedModels(patch);
       const before = await requireRow(id);
       const set: string[] = [];
       const values: unknown[] = [];
@@ -433,7 +476,11 @@ export function createD1UpstreamAdmin(
         throw new GatewayError("GATEWAY_UPSTREAM_ROTATION_IN_PROGRESS", {
           details: { accountId: id, drainingKeyVersion: before.draining_key_version },
         });
-      const credential = await credentialColumns(input.credential);
+      const credential = await credentialColumns(input.credential, {
+        providerId: before.provider_id,
+        upstreamId: before.upstream_id,
+        apiShape: before.api_shape,
+      });
       const serial = Math.max(before.key_serial, 1) + 1;
       const keyVersion = keyVersionOf(serial);
       const nowS = nowSeconds();

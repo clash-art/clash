@@ -248,6 +248,8 @@ export const gatewayModels = sqliteTable(
     maxOutputTokens: integer("max_output_tokens"),
     rateLimitJson: text("rate_limit_json"),
     publishedAt: integer("published_at"),
+    /** Publish order (0051): breaks a same-second `publishedAt` tie; NULL for drafts. */
+    publishSeq: integer("publish_seq"),
     createdAt: createdAt(),
   },
   (table) => ({
@@ -255,6 +257,7 @@ export const gatewayModels = sqliteTable(
       table.catalogVersion,
       table.modelCode,
     ),
+    publishedIdx: index("gateway_model_published_idx").on(table.publishedAt, table.publishSeq),
   }),
 );
 
