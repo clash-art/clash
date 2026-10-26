@@ -20,6 +20,7 @@ interface Instruments {
   generationDuration: Histogram;
   budgetRolled: Counter;
   budgetRolloverLag: Histogram;
+  drainedStreams: Counter;
 }
 
 let instruments: Instruments | undefined;
@@ -49,12 +50,17 @@ function current(): Instruments {
         unit: "s",
       },
     ),
+    drainedStreams: meter().createCounter("clash.gateway.drain.terminated_streams", {
+      description: "Open streams ended with GATEWAY_DRAINING when a node drained.",
+      unit: "{stream}",
+    }),
   });
 }
 
 /** Test hook: drop cached instruments after swapping the global provider. */
 export function resetMetricsForTest(): void {
   instruments = undefined;
+  gatewayNodeObserved = false;
 }
 
 export type OutboxQueue = "notification" | "checkpoint";
@@ -133,4 +139,36 @@ export function recordBudgetRollover(result: {
       })
       .addCallback((observer) => observer.observe(lastRolloverBacklog));
   }
+}
+
+/** Record streams a drain ended with the terminal GATEWAY_DRAINING event (#375). */
+export function recordGatewayDrain(terminated: number): void {
+  if (terminated > 0) current().drainedStreams.add(terminated);
+}
+
+interface GatewayNodeGaugeSource {
+  drain: { readonly openStreams: number; readonly phase: string };
+  work: { readonly pending: number };
+}
+let gatewayNodeSource: GatewayNodeGaugeSource | undefined;
+let gatewayNodeObserved = false;
+
+/**
+ * Node-local gateway gauges (#375): open streams, pending settlements, draining.
+ * No attributes at all, so no tenant/user/key cardinality. Registered once;
+ * a later call only swaps the source.
+ */
+export function observeGatewayNode(source: GatewayNodeGaugeSource): void {
+  gatewayNodeSource = source;
+  if (gatewayNodeObserved) return;
+  gatewayNodeObserved = true;
+  const gauge = (name: string, description: string, unit: string, read: (s: GatewayNodeGaugeSource) => number) =>
+    meter()
+      .createObservableGauge(name, { description, unit })
+      .addCallback((observer) => {
+        if (gatewayNodeSource) observer.observe(read(gatewayNodeSource));
+      });
+  gauge("clash.gateway.streams.open", "SSE streams this node is serving.", "{stream}", (s) => s.drain.openStreams);
+  gauge("clash.gateway.settlements.pending", "Stream settlements still running in the background.", "{settlement}", (s) => s.work.pending);
+  gauge("clash.gateway.draining", "1 while the node drains (readyz 503).", "1", (s) => (s.drain.phase === "serving" ? 0 : 1));
 }

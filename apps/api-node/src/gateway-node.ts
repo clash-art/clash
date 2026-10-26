@@ -58,6 +58,7 @@ import { createPgGatewayBudgetStore } from "./gateway-budget.ts";
 import { tenantKeyOf } from "./gateway-credentials.ts";
 import type { PgGatewayLimitPort } from "./gateway-limits.ts";
 import { apiNodeLog } from "./log.ts";
+import { drainableSseBody, refuseWhenStopped, type GatewayDrainController } from "./gateway-health.ts";
 
 export const GATEWAY_VIRTUAL_KEY_PREFIX = "sk_gw_";
 const VIRTUAL_KEY_PATTERN = /^sk_gw_([0-9a-f]{24})\.([0-9a-f]{64})$/;
@@ -788,6 +789,8 @@ export interface GatewayNodeRoutesOptions {
   work?: GatewayBackgroundWork;
   keepAliveMs?: number;
   logger?: GatewayLogger;
+  /** Node drain state (#375): open streams get GATEWAY_DRAINING on shutdown. */
+  drain?: GatewayDrainController;
   /** Passed to gateway-core's createGatewayApp (waitUntil is set from `work`). */
   app?: Omit<GatewayAppOptions, "waitUntil" | "basePath">;
 }
@@ -812,7 +815,7 @@ export function createGatewayNodeRoutes(ports: GatewayPorts, options: GatewayNod
   const serve = async (request: Request) => {
     const started = performance.now();
     const response = await core.fetch(request);
-    return withSseKeepAlive(response, {
+    const relayed = withSseKeepAlive(response, {
       keepAliveMs,
       onFirstByte: () =>
         logger.info("gateway.stream_first_byte", {
@@ -820,8 +823,19 @@ export function createGatewayNodeRoutes(ports: GatewayPorts, options: GatewayNod
           ttftMs: Math.round(performance.now() - started),
         }),
     });
+    if (!options.drain || !relayed.body || !isEventStream(relayed)) return relayed;
+    const requestId = relayed.headers.get(GATEWAY_REQUEST_ID_HEADER) ?? undefined;
+    return new Response(drainableSseBody(relayed.body, { drain: options.drain, ...(requestId ? { requestId } : {}) }), {
+      status: relayed.status,
+      statusText: relayed.statusText,
+      headers: relayed.headers,
+    });
   };
   const app = new Hono();
+  if (options.drain) {
+    const refuse = refuseWhenStopped(options.drain);
+    for (const prefix of GATEWAY_NODE_PREFIXES) app.use(`${prefix}/*`, refuse);
+  }
   const toCore = (request: Request, path: string) => {
     const url = new URL(request.url);
     url.pathname = path;
