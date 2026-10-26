@@ -1,5 +1,7 @@
 /**
- * Tenant credit purchases (#352), mounted at /api/v1/gateway. Authorization
+ * Tenant credit purchases (#352), mounted at /api/v1/gateway. The handlers
+ * are gateway-core's createGatewayBillingHandlers (#425), shared with
+ * api-node (apps/api-node/src/gateway-billing-routes.ts). Authorization
  * is services/gateway-authz.ts: the tenant owner holds `billing.read` and
  * `billing.purchase`, a member neither. This is a product route: admin
  * accounts never reach it (#394); the console corrects a wallet with
@@ -20,15 +22,16 @@
  *   POST /tenants/:tenantId/subscription/cancel  end at the current period end
  *   POST /tenants/:tenantId/topups               buy a top-up pack
  */
-import { GatewayError } from "@clash/gateway-core";
+import {
+  createGatewayBillingHandlers,
+  type GatewayBillingPurchaseConfig,
+} from "@clash/gateway-core";
 import { Hono } from "hono";
 import type { Context } from "hono";
 
 import type { Env } from "../../config";
-import { GatewaySubscribeRequestSchema, GatewayTopupRequestSchema } from "../../domain/requests";
 import { createD1Billing } from "../../gateway/d1-billing";
 import { monotonicClock } from "../../gateway/d1-common";
-import { readGatewayJson } from "../../services/gateway-admin";
 import { tenantRoute } from "../../services/gateway-authz";
 import { billingPurchaseMode, getPlugins } from "../../plugins/registry";
 
@@ -36,50 +39,57 @@ type BillingContext = Context<{ Bindings: Env }>;
 
 const NO_STORE = { "cache-control": "no-store" };
 
-const billing = (c: BillingContext) => createD1Billing(c.env.DB, { clock: monotonicClock() });
-
-/** Closes the free self-credit path when a payments plugin owns purchases (fail closed). */
-function requireFreePurchaseMode(): void {
+/** This host's purchase mode: from the installed plugins (api-node reads it from config). */
+export function pluginPurchaseConfig(): GatewayBillingPurchaseConfig {
   const plugin = getPlugins();
-  if (billingPurchaseMode(plugin) === "free") return;
   const checkoutPath = plugin.billing?.checkoutPath;
-  throw new GatewayError("GATEWAY_PAYMENT_REQUIRED_VIA_PROVIDER", {
-    ...(checkoutPath ? { message: `Purchases go through the payment provider's checkout: ${checkoutPath}` } : {}),
-    details: { purchaseMode: "provider", ...(checkoutPath ? { checkoutPath } : {}) },
-  });
+  return {
+    purchaseMode: billingPurchaseMode(plugin),
+    ...(checkoutPath ? { checkoutPath } : {}),
+  };
 }
+
+/** The shared tenant billing handlers (gateway-core) over the D1 adapter. */
+const handlers = (c: BillingContext) =>
+  createGatewayBillingHandlers(
+    createD1Billing(c.env.DB, { clock: monotonicClock() }),
+    pluginPurchaseConfig,
+  );
 
 export const gatewayBillingRoutes = new Hono<{ Bindings: Env }>();
 
 gatewayBillingRoutes.get(
   "/tenants/:tenantId/billing",
-  tenantRoute("billing.read", async (c, _actor, tenantId) => c.json(await billing(c).walletSummary(tenantId), 200, NO_STORE)),
+  tenantRoute("billing.read", async (c, _actor, tenantId) => {
+    const result = await handlers(c).summary(tenantId);
+    return c.json(result.body, result.status, NO_STORE);
+  }),
 );
 
 gatewayBillingRoutes.post(
   "/tenants/:tenantId/subscription",
   tenantRoute("billing.purchase", async (c, actor, tenantId) => {
-    requireFreePurchaseMode();
-    const body = await readGatewayJson(c, GatewaySubscribeRequestSchema);
-    const result = await billing(c).subscribe({ tenantId, ...body, actor });
-    return c.json(result, result.replayed ? 200 : 201, NO_STORE);
+    const result = await handlers(c).subscribe(
+      tenantId,
+      () => c.req.text(),
+      actor,
+    );
+    return c.json(result.body, result.status, NO_STORE);
   }),
 );
 
 gatewayBillingRoutes.post(
   "/tenants/:tenantId/subscription/cancel",
   tenantRoute("billing.purchase", async (c, actor, tenantId) => {
-    requireFreePurchaseMode();
-    return c.json({ subscription: await billing(c).cancelSubscription({ tenantId, actor }) }, 200, NO_STORE);
+    const result = await handlers(c).cancel(tenantId, actor);
+    return c.json(result.body, result.status, NO_STORE);
   }),
 );
 
 gatewayBillingRoutes.post(
   "/tenants/:tenantId/topups",
   tenantRoute("billing.purchase", async (c, actor, tenantId) => {
-    requireFreePurchaseMode();
-    const body = await readGatewayJson(c, GatewayTopupRequestSchema);
-    const result = await billing(c).topup({ tenantId, ...body, actor });
-    return c.json(result, result.replayed ? 200 : 201, NO_STORE);
+    const result = await handlers(c).topup(tenantId, () => c.req.text(), actor);
+    return c.json(result.body, result.status, NO_STORE);
   }),
 );

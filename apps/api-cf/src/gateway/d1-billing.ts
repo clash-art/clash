@@ -1,5 +1,7 @@
 /**
- * Credit billing over D1 (#352; guide: apps/docs/guide/gateway-price-book.md):
+ * Credit billing over D1 (#352; guide: apps/docs/guide/gateway-price-book.md),
+ * the D1 adapter of gateway-core's GatewayBillingPort (billing-port.ts, #425;
+ * the Postgres adapter is apps/api-node/src/gateway-billing.ts):
  * subscription packages (`gateway_package`), top-up packs
  * (`gateway_topup_pack`), tenant subscriptions (`gateway_tenant_subscription`)
  * and the tenant wallet (the `tenant`-scope `gateway_budget`).
@@ -36,32 +38,39 @@
  */
 import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types";
 import {
+  GATEWAY_BILLING_ADMIN_CREDIT,
+  GATEWAY_BILLING_ADMIN_DEBIT,
+  GATEWAY_BILLING_MAX_PERIODS_PER_ROLLOVER,
+  GATEWAY_BILLING_PAYMENT_REFUND,
   GatewayError,
+  assertRefundAmount,
+  billingAuditIdentity,
+  billingPaymentRef,
   billingPeriod,
+  billingRequestIds,
+  billingSubscriptionId,
   billingPeriodIndex,
   expiringGrant,
   walletAvailable,
   type GatewayBillingPeriod,
+  type GatewayBillingPort,
+  type GatewayBillingRateLimit,
   type GatewayClock,
-  type GatewayRateLimit,
+  type GatewayCreditEntryView,
+  type GatewayPackageView,
+  type GatewayPaymentActor,
+  type GatewayPurchaseResult,
+  type GatewayRolloverOutcome,
+  type GatewaySubscriptionView,
+  type GatewayTopupPackView,
+  type GatewayWalletView,
 } from "@clash/gateway-core";
 
-import { sha256Hex } from "../services/api-token";
 import { adminAuditStatement, type AuditActor, type GatewayAdminActor } from "./d1-admin-audit";
 import { parseJson, toMs, toSeconds } from "./d1-common";
 
-/**
- * A payment provider's verified webhook (#419), as the system actor of a
- * purchase, renewal, cancel or refund. Ledger `actor_user_id` is
- * `payment:<provider>`; the audit row records provider and event id.
- */
-export interface PaymentActor {
-  kind: "payment";
-  /** Provider slug, e.g. "polar": lowercase letters, digits, "-" or "_". */
-  provider: string;
-  /** The provider's webhook event id (or order id) this write answers. */
-  eventId: string;
-}
+/** A payment provider's verified webhook (#419); shared type (gateway-core billing-port.ts). */
+export type PaymentActor = GatewayPaymentActor;
 
 /**
  * The authorized caller (services/gateway-authz.ts): a product user through a
@@ -71,108 +80,19 @@ export interface PaymentActor {
  */
 export type BillingActor = GatewayAdminActor | PaymentActor;
 
-const PROVIDER_SLUG = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-const MAX_EVENT_ID = 256;
-
 /** The audit/ledger identity of an actor; a payment actor is validated first. */
-function auditActor(actor: BillingActor): AuditActor {
-  if (actor.kind !== "payment") return actor;
-  if (!PROVIDER_SLUG.test(actor.provider) || !actor.eventId || actor.eventId.length > MAX_EVENT_ID)
-    throw new GatewayError("GATEWAY_INVALID_REQUEST", {
-      message: "A payment actor needs a provider slug and an event id.",
-      details: { actor: "payment" },
-    });
-  return { kind: "payment", id: `payment:${actor.provider}`, role: actor.provider };
-}
-
-/** Provider and event id recorded in the audit snapshot of a payment write. */
-const paymentRef = (actor: BillingActor) =>
-  actor.kind === "payment" ? { payment: { provider: actor.provider, eventId: actor.eventId } } : {};
+const auditActor = (actor: BillingActor): AuditActor => billingAuditIdentity(actor);
+const paymentRef = billingPaymentRef;
 
 /** A stored rate limit (gateway-core GatewayRateLimitSchema). */
-export type RateLimitConfig = Partial<GatewayRateLimit>;
-
-export interface PackageView {
-  id: string;
-  name: string;
-  status: "active" | "archived";
-  billingPeriod: GatewayBillingPeriod;
-  priceMinor: number;
-  priceCurrency: string;
-  /** Credits granted into the tenant wallet each period. */
-  periodMicroCredits: number;
-  rateLimit: RateLimitConfig | null;
-  /** The payment provider's price id (configuration, #419); null when unset. */
-  externalPriceId: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface TopupPackView {
-  id: string;
-  name: string;
-  status: "active" | "archived";
-  priceMinor: number;
-  priceCurrency: string;
-  /** Credits added to the tenant wallet; they do not expire. */
-  microCredits: number;
-  /** The payment provider's price id (configuration, #419); null when unset. */
-  externalPriceId: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface SubscriptionView {
-  id: string;
-  tenantId: string;
-  packageId: string;
-  status: string;
-  currentPeriodStart: string;
-  currentPeriodEnd: string;
-  cancelAt: string | null;
-  canceledAt: string | null;
-  /** Tenant rate limits while live (copied from the package, overridable by a platform admin). */
-  rateLimit: RateLimitConfig | null;
-}
-
-export interface WalletView {
-  budgetId: string;
-  tenantId: string;
-  status: string;
-  /** null: explicitly unlimited (cannot hold purchased credits). */
-  limitMicroCredits: number | null;
-  spentMicroCredits: number;
-  reservedMicroCredits: number;
-  availableMicroCredits: number | null;
-}
-
-export interface CreditEntryView {
-  requestId: string;
-  kind: "grant" | "topup" | "expire" | "adjust";
-  amountMicroCredits: number;
-  refKind: string | null;
-  refId: string | null;
-  actorUserId: string | null;
-  occurredAt: string;
-}
-
-export interface PurchaseResult<T> {
-  /** True when the idempotency key was already used for this same purchase. */
-  replayed: boolean;
-  entry: CreditEntryView;
-  wallet: WalletView;
-  subscription?: T;
-}
-
-export interface RolloverOutcome {
-  subscriptionId: string;
-  tenantId: string;
-  periodsClosed: number;
-  expiredMicroCredits: number;
-  grantedMicroCredits: number;
-  status: string;
-  error?: { code: string; message: string };
-}
+export type RateLimitConfig = GatewayBillingRateLimit;
+export type PackageView = GatewayPackageView;
+export type TopupPackView = GatewayTopupPackView;
+export type SubscriptionView = GatewaySubscriptionView;
+export type WalletView = GatewayWalletView;
+export type CreditEntryView = GatewayCreditEntryView;
+export type PurchaseResult<T> = GatewayPurchaseResult<T>;
+export type RolloverOutcome = GatewayRolloverOutcome;
 
 interface PackageRow {
   id: string;
@@ -239,7 +159,7 @@ const newId = (prefix: string) => `${prefix}${crypto.randomUUID().replaceAll("-"
 /** Subscriptions that are live: they grant credits and their rate limits apply. */
 const LIVE_SUBSCRIPTION = "status IN ('trialing', 'active')";
 /** Bounds one rollover call for a subscription many periods behind; the next call continues. */
-const MAX_PERIODS_PER_ROLLOVER = 24;
+const MAX_PERIODS_PER_ROLLOVER = GATEWAY_BILLING_MAX_PERIODS_PER_ROLLOVER;
 
 const SUBSCRIPTION_COLUMNS = `id, tenant_id, package_id, status, current_period_start,
   current_period_end, cancel_at, canceled_at, rate_limit_json, created_at`;
@@ -251,10 +171,10 @@ const CREDIT_COLUMNS = `request_id, kind, amount_micro_credits, ref_kind, ref_id
 const walletIdSql = (t: string) =>
   `(SELECT id FROM gateway_budget WHERE tenant_id = ${t} AND scope = 'tenant' AND scope_id = ${t})`;
 /** ref_kind of a platform wallet correction: the ledger amount is non-negative, so it carries the direction. */
-const ADMIN_CREDIT = "admin_credit";
-const ADMIN_DEBIT = "admin_debit";
+const ADMIN_CREDIT = GATEWAY_BILLING_ADMIN_CREDIT;
+const ADMIN_DEBIT = GATEWAY_BILLING_ADMIN_DEBIT;
 /** ref_kind of a provider refund or chargeback: an `adjust` that removes credits (#419). */
-const PAYMENT_REFUND = "payment_refund";
+const PAYMENT_REFUND = GATEWAY_BILLING_PAYMENT_REFUND;
 /** A wallet that can hold credits: limited and not periodic. */
 const FUNDABLE = "limit_micro_credits IS NOT NULL AND period = 'none'";
 
@@ -335,7 +255,10 @@ function creditView(row: CreditRow): CreditEntryView {
 
 function incompatible(wallet: WalletRow): GatewayError {
   return new GatewayError("GATEWAY_WALLET_INCOMPATIBLE", {
-    details: { budgetId: wallet.id, reason: wallet.limit_micro_credits === null ? "unlimited" : "periodic" },
+    details: {
+      budgetId: wallet.id,
+      reason: wallet.limit_micro_credits === null ? "unlimited" : "periodic",
+    },
   });
 }
 
@@ -371,7 +294,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
   }
   async function requireTenant(tenantId: string): Promise<void> {
     const tenant = await db.prepare(`SELECT 1 AS found FROM tenant WHERE id = ?`).bind(tenantId).first();
-    if (!tenant) throw new GatewayError("GATEWAY_TENANT_NOT_FOUND", { details: { tenantId } });
+    if (!tenant)
+      throw new GatewayError("GATEWAY_TENANT_NOT_FOUND", {
+        details: { tenantId },
+      });
   }
   /** Fails before any write when the existing wallet cannot hold credits; a missing one is created at 0. */
   async function requireFundableWallet(tenantId: string): Promise<void> {
@@ -391,7 +317,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     nowS: number;
     when: string;
   }): D1PreparedStatement {
-    return adminAuditStatement(db, { ...input, actor: auditActor(input.actor) });
+    return adminAuditStatement(db, {
+      ...input,
+      actor: auditActor(input.actor),
+    });
   }
 
   /** Creates the tenant wallet at a zero limit when it does not exist yet. */
@@ -465,7 +394,9 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
   async function walletOrThrow(tenantId: string): Promise<WalletView> {
     const wallet = await walletRow(tenantId);
     if (!wallet)
-      throw new GatewayError("GATEWAY_INTERNAL", { message: "The tenant wallet is missing after a purchase." });
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The tenant wallet is missing after a purchase.",
+      });
     return walletView(wallet);
   }
 
@@ -515,14 +446,20 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       audit({ tenantId: "", actor, action: "package.create", targetType: "package", targetId: id, after: input, nowS, when: "1" }),
     ]), input.externalPriceId);
     const row = await packageRow(id);
-    if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The created package is missing." });
+    if (!row)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The created package is missing.",
+      });
     return packageView(row);
   }
 
   /** Archive: no new subscriptions; live subscriptions keep renewing. Archiving twice is a no-op. */
   async function archivePackage(id: string, actor: BillingActor): Promise<PackageView> {
     const before = await packageRow(id);
-    if (!before) throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: id } });
+    if (!before)
+      throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", {
+        details: { packageId: id },
+      });
     if (before.status !== "archived") {
       const nowS = nowSeconds();
       await db.batch([
@@ -543,7 +480,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       ]);
     }
     const row = await packageRow(id);
-    if (!row) throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: id } });
+    if (!row)
+      throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", {
+        details: { packageId: id },
+      });
     return packageView(row);
   }
 
@@ -572,13 +512,19 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       audit({ tenantId: "", actor, action: "topup_pack.create", targetType: "topup_pack", targetId: id, after: input, nowS, when: "1" }),
     ]), input.externalPriceId);
     const row = await topupPackRow(id);
-    if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The created top-up pack is missing." });
+    if (!row)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The created top-up pack is missing.",
+      });
     return topupPackView(row);
   }
 
   async function archiveTopupPack(id: string, actor: BillingActor): Promise<TopupPackView> {
     const before = await topupPackRow(id);
-    if (!before) throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: id } });
+    if (!before)
+      throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", {
+        details: { packId: id },
+      });
     if (before.status !== "archived") {
       const nowS = nowSeconds();
       await db.batch([
@@ -599,7 +545,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       ]);
     }
     const row = await topupPackRow(id);
-    if (!row) throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: id } });
+    if (!row)
+      throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", {
+        details: { packId: id },
+      });
     return topupPackView(row);
   }
 
@@ -609,7 +558,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       return await write();
     } catch (cause) {
       if (externalPriceId && /UNIQUE constraint failed: .*external_price_id/i.test(String((cause as Error)?.message ?? cause)))
-        throw new GatewayError("GATEWAY_EXTERNAL_PRICE_ID_TAKEN", { details: { externalPriceId }, cause });
+        throw new GatewayError("GATEWAY_EXTERNAL_PRICE_ID_TAKEN", {
+          details: { externalPriceId },
+          cause,
+        });
       throw cause;
     }
   }
@@ -625,8 +577,12 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     const before = isPackage ? await packageRow(id) : await topupPackRow(id);
     if (!before)
       throw isPackage
-        ? new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: id } })
-        : new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: id } });
+        ? new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", {
+            details: { packageId: id },
+          })
+        : new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", {
+            details: { packId: id },
+          });
     if ((before.external_price_id ?? null) === externalPriceId) return;
     const nowS = nowSeconds();
     await externalPriceInsert(
@@ -654,14 +610,20 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
   async function setPackageExternalPriceId(id: string, externalPriceId: string | null, actor: BillingActor): Promise<PackageView> {
     await setExternalPriceId("gateway_package", id, externalPriceId, actor);
     const row = await packageRow(id);
-    if (!row) throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: id } });
+    if (!row)
+      throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", {
+        details: { packageId: id },
+      });
     return packageView(row);
   }
 
   async function setTopupPackExternalPriceId(id: string, externalPriceId: string | null, actor: BillingActor): Promise<TopupPackView> {
     await setExternalPriceId("gateway_topup_pack", id, externalPriceId, actor);
     const row = await topupPackRow(id);
-    if (!row) throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: id } });
+    if (!row)
+      throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", {
+        details: { packId: id },
+      });
     return topupPackView(row);
   }
 
@@ -686,21 +648,32 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     actor: BillingActor;
   }): Promise<PurchaseResult<never>> {
     auditActor(input.actor);
-    const requestId = `topup:${input.tenantId}:${input.idempotencyKey}`;
+    const requestId = billingRequestIds.topup(input.tenantId, input.idempotencyKey);
     const replay = async (): Promise<PurchaseResult<never> | null> => {
       const prior = await creditEntry(requestId, "topup");
       if (!prior) return null;
       if (prior.ref_id !== input.packId)
-        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", { details: { idempotencyKey: input.idempotencyKey } });
-      return { replayed: true, entry: creditView(prior), wallet: await walletOrThrow(input.tenantId) };
+        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", {
+          details: { idempotencyKey: input.idempotencyKey },
+        });
+      return {
+        replayed: true,
+        entry: creditView(prior),
+        wallet: await walletOrThrow(input.tenantId),
+      };
     };
     await requireTenant(input.tenantId);
     const prior = await replay();
     if (prior) return prior;
     const pack = await topupPackRow(input.packId);
-    if (!pack) throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: input.packId } });
+    if (!pack)
+      throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", {
+        details: { packId: input.packId },
+      });
     if (pack.status !== "active")
-      throw new GatewayError("GATEWAY_TOPUP_PACK_ARCHIVED", { details: { packId: input.packId } });
+      throw new GatewayError("GATEWAY_TOPUP_PACK_ARCHIVED", {
+        details: { packId: input.packId },
+      });
     await requireFundableWallet(input.tenantId);
     const nowS = nowSeconds();
     try {
@@ -726,7 +699,11 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           action: "wallet.topup",
           targetType: "topup",
           targetId: requestId,
-          after: { packId: pack.id, microCredits: pack.credits_micro, ...paymentRef(input.actor) },
+          after: {
+            packId: pack.id,
+            microCredits: pack.credits_micro,
+            ...paymentRef(input.actor),
+          },
           nowS,
           when: "changes() = 1",
         }),
@@ -737,13 +714,25 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       if (raced) return raced;
       const now = await topupPackRow(input.packId);
       if (now?.status !== "active")
-        throw new GatewayError("GATEWAY_TOPUP_PACK_ARCHIVED", { details: { packId: input.packId } });
+        throw new GatewayError("GATEWAY_TOPUP_PACK_ARCHIVED", {
+          details: { packId: input.packId },
+        });
       await requireFundableWallet(input.tenantId);
-      throw new GatewayError("GATEWAY_CONFLICT", { details: { tenantId: input.tenantId }, cause });
+      throw new GatewayError("GATEWAY_CONFLICT", {
+        details: { tenantId: input.tenantId },
+        cause,
+      });
     }
     const entry = await creditEntry(requestId, "topup");
-    if (!entry) throw new GatewayError("GATEWAY_INTERNAL", { message: "The top-up entry is missing." });
-    return { replayed: false, entry: creditView(entry), wallet: await walletOrThrow(input.tenantId) };
+    if (!entry)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The top-up entry is missing.",
+      });
+    return {
+      replayed: false,
+      entry: creditView(entry),
+      wallet: await walletOrThrow(input.tenantId),
+    };
   }
 
   /** One live subscription per tenant; its first period's credits are granted in the same batch. */
@@ -754,7 +743,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     actor: BillingActor;
   }): Promise<PurchaseResult<SubscriptionView>> {
     auditActor(input.actor);
-    const subscriptionId = `gws_${(await sha256Hex(`${input.tenantId}\n${input.idempotencyKey}`)).slice(0, 32)}`;
+    const subscriptionId = await billingSubscriptionId(input.tenantId, input.idempotencyKey);
     const replay = async (): Promise<PurchaseResult<SubscriptionView> | null> => {
       const prior = await db
         .prepare(`SELECT ${SUBSCRIPTION_COLUMNS} FROM gateway_tenant_subscription WHERE id = ?`)
@@ -762,9 +751,14 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         .first<SubscriptionRow>();
       if (!prior) return null;
       if (prior.package_id !== input.packageId)
-        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", { details: { idempotencyKey: input.idempotencyKey } });
-      const grant = await creditEntry(`grant:${prior.id}:${prior.created_at}`, "grant");
-      if (!grant) throw new GatewayError("GATEWAY_INTERNAL", { message: "The first subscription grant is missing." });
+        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", {
+          details: { idempotencyKey: input.idempotencyKey },
+        });
+      const grant = await creditEntry(billingRequestIds.grant(prior.id, prior.created_at), "grant");
+      if (!grant)
+        throw new GatewayError("GATEWAY_INTERNAL", {
+          message: "The first subscription grant is missing.",
+        });
       return {
         replayed: true,
         entry: creditView(grant),
@@ -787,7 +781,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     const nowS = nowSeconds();
     const period = billingPeriod(toMs(nowS), packageView(pkg).billingPeriod, 0);
     const endS = toSeconds(period.end);
-    const grantId = `grant:${subscriptionId}:${nowS}`;
+    const grantId = billingRequestIds.grant(subscriptionId, nowS);
     try {
       await db.batch([
         ensureWallet(input.tenantId, nowS),
@@ -858,7 +852,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     auditActor(input.actor);
     await requireTenant(input.tenantId);
     const live = await liveSubscription(input.tenantId);
-    if (!live) throw new GatewayError("GATEWAY_SUBSCRIPTION_NOT_FOUND", { details: { tenantId: input.tenantId } });
+    if (!live)
+      throw new GatewayError("GATEWAY_SUBSCRIPTION_NOT_FOUND", {
+        details: { tenantId: input.tenantId },
+      });
     if (live.cancel_at === null) {
       const nowS = nowSeconds();
       await db.batch([
@@ -875,7 +872,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           action: "subscription.cancel",
           targetType: "subscription",
           targetId: live.id,
-          after: { cancelAt: live.current_period_end, ...paymentRef(input.actor) },
+          after: {
+            cancelAt: live.current_period_end,
+            ...paymentRef(input.actor),
+          },
           nowS,
           when: "changes() = 1",
         }),
@@ -885,7 +885,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       .prepare(`SELECT ${SUBSCRIPTION_COLUMNS} FROM gateway_tenant_subscription WHERE id = ?`)
       .bind(live.id)
       .first<SubscriptionRow>();
-    if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The subscription is missing." });
+    if (!row)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The subscription is missing.",
+      });
     return subscriptionView(row);
   }
 
@@ -898,9 +901,15 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     nowS: number,
   ): Promise<{ expired: number; granted: number; status: string }> {
     const pkg = await packageRow(sub.package_id);
-    if (!pkg) throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: sub.package_id } });
+    if (!pkg)
+      throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", {
+        details: { packageId: sub.package_id },
+      });
     const wallet = await walletRow(sub.tenant_id);
-    if (!wallet) throw new GatewayError("GATEWAY_INTERNAL", { message: "The subscribed tenant has no wallet." });
+    if (!wallet)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The subscribed tenant has no wallet.",
+      });
     if (wallet.limit_micro_credits === null || wallet.period !== "none") throw incompatible(wallet);
 
     const startS = sub.current_period_start;
@@ -908,7 +917,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     const [grantRow, spentRow] = await db.batch([
       db
         .prepare(`SELECT amount_micro_credits FROM gateway_usage_ledger WHERE request_id = ? AND kind = 'grant' LIMIT 1`)
-        .bind(`grant:${sub.id}:${startS}`),
+        .bind(billingRequestIds.grant(sub.id, startS)),
       db
         .prepare(
           `SELECT COALESCE(SUM(CASE kind WHEN 'settle' THEN amount_micro_credits ELSE -amount_micro_credits END), 0) AS spent
@@ -936,7 +945,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     const nextStartS = endS;
     const nextEndS = toSeconds(billingPeriod(anchorMs, cadence, billingPeriodIndex(anchorMs, cadence, toMs(endS))).end);
     const grantNext = ends ? 0 : pkg.credits_micro;
-    const expireId = `expire:${sub.id}:${startS}`;
+    const expireId = billingRequestIds.expire(sub.id, startS);
 
     const statements: D1PreparedStatement[] = [
       ends
@@ -969,7 +978,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     if (!ends)
       statements.push(
         creditEntryStatement({
-          requestId: `grant:${sub.id}:${nextStartS}`,
+          requestId: billingRequestIds.grant(sub.id, nextStartS),
           kind: "grant",
           tenantId: sub.tenant_id,
           amount: grantNext,
@@ -1052,7 +1061,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           const error =
             cause instanceof GatewayError
               ? cause
-              : new GatewayError("GATEWAY_CONFLICT", { details: { subscriptionId: sub.id }, cause });
+              : new GatewayError("GATEWAY_CONFLICT", {
+                  details: { subscriptionId: sub.id },
+                  cause,
+                });
           outcome.error = { code: error.code, message: error.message };
           break;
         }
@@ -1107,7 +1119,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
   }): Promise<PurchaseResult<never>> {
     return adjustment({
       ...input,
-      requestId: `adjust:${input.tenantId}:${input.idempotencyKey}`,
+      requestId: billingRequestIds.adjust(input.tenantId, input.idempotencyKey),
       refKind: input.deltaMicroCredits >= 0 ? ADMIN_CREDIT : ADMIN_DEBIT,
       refId: input.tenantId,
       action: "wallet.adjust",
@@ -1134,18 +1146,14 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     reason?: string;
     actor: PaymentActor;
   }): Promise<PurchaseResult<never>> {
-    if (!Number.isSafeInteger(input.microCredits) || input.microCredits <= 0)
-      throw new GatewayError("GATEWAY_INVALID_REQUEST", {
-        message: "A refund removes a positive whole number of micro-credits.",
-        details: { microCredits: input.microCredits },
-      });
+    assertRefundAmount(input.microCredits);
     return adjustment({
       tenantId: input.tenantId,
       deltaMicroCredits: -input.microCredits,
       reason: input.reason ?? `${input.actor.provider} refund`,
       idempotencyKey: input.idempotencyKey,
       actor: input.actor,
-      requestId: `refund:${input.tenantId}:${input.idempotencyKey}`,
+      requestId: billingRequestIds.refund(input.tenantId, input.idempotencyKey),
       refKind: PAYMENT_REFUND,
       refId: input.refId ?? input.tenantId,
       action: "wallet.refund",
@@ -1170,8 +1178,14 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       const prior = await creditEntry(requestId, "adjust");
       if (!prior) return null;
       if (prior.ref_kind !== refKind || prior.amount_micro_credits !== amount || prior.ref_id !== input.refId)
-        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", { details: { idempotencyKey: input.idempotencyKey } });
-      return { replayed: true, entry: creditView(prior), wallet: await walletOrThrow(input.tenantId) };
+        throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", {
+          details: { idempotencyKey: input.idempotencyKey },
+        });
+      return {
+        replayed: true,
+        entry: creditView(prior),
+        wallet: await walletOrThrow(input.tenantId),
+      };
     };
     const requireCover = async () => {
       if (input.deltaMicroCredits >= 0) return;
@@ -1180,7 +1194,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       const used = (wallet?.spent_micro_credits ?? 0) + (wallet?.reserved_micro_credits ?? 0);
       if (limit - amount < used)
         throw new GatewayError("GATEWAY_BUDGET_BELOW_USAGE", {
-          details: { tenantId: input.tenantId, ...(wallet ? { budgetId: wallet.id } : {}) },
+          details: {
+            tenantId: input.tenantId,
+            ...(wallet ? { budgetId: wallet.id } : {}),
+          },
         });
     };
     await requireTenant(input.tenantId);
@@ -1212,7 +1229,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           action: input.action,
           targetType: "wallet",
           targetId: requestId,
-          after: { deltaMicroCredits: input.deltaMicroCredits, ...paymentRef(input.actor) },
+          after: {
+            deltaMicroCredits: input.deltaMicroCredits,
+            ...paymentRef(input.actor),
+          },
           reason: input.reason,
           nowS,
           when: "changes() = 1",
@@ -1224,11 +1244,21 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       if (raced) return raced;
       await requireFundableWallet(input.tenantId);
       await requireCover();
-      throw new GatewayError("GATEWAY_CONFLICT", { details: { tenantId: input.tenantId }, cause });
+      throw new GatewayError("GATEWAY_CONFLICT", {
+        details: { tenantId: input.tenantId },
+        cause,
+      });
     }
     const entry = await creditEntry(requestId, "adjust");
-    if (!entry) throw new GatewayError("GATEWAY_INTERNAL", { message: "The adjustment entry is missing." });
-    return { replayed: false, entry: creditView(entry), wallet: await walletOrThrow(input.tenantId) };
+    if (!entry)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The adjustment entry is missing.",
+      });
+    return {
+      replayed: false,
+      entry: creditView(entry),
+      wallet: await walletOrThrow(input.tenantId),
+    };
   }
 
   /** Suspend or reactivate the tenant wallet: a suspended wallet admits no request. */
@@ -1263,7 +1293,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           when: "changes() = 1",
         }),
       ]);
-      if (!updated?.meta.changes) throw new GatewayError("GATEWAY_CONFLICT", { details: { budgetId: before.id } });
+      if (!updated?.meta.changes)
+        throw new GatewayError("GATEWAY_CONFLICT", {
+          details: { budgetId: before.id },
+        });
     }
     return walletOrThrow(input.tenantId);
   }
@@ -1277,7 +1310,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
   }): Promise<SubscriptionView> {
     await requireTenant(input.tenantId);
     const live = await liveSubscription(input.tenantId);
-    if (!live) throw new GatewayError("GATEWAY_SUBSCRIPTION_NOT_FOUND", { details: { tenantId: input.tenantId } });
+    if (!live)
+      throw new GatewayError("GATEWAY_SUBSCRIPTION_NOT_FOUND", {
+        details: { tenantId: input.tenantId },
+      });
     const nowS = nowSeconds();
     const next = input.rateLimit ? JSON.stringify(input.rateLimit) : null;
     const [updated] = await db.batch([
@@ -1300,16 +1336,22 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         when: "changes() = 1",
       }),
     ]);
-    if (!updated?.meta.changes) throw new GatewayError("GATEWAY_CONFLICT", { details: { subscriptionId: live.id } });
+    if (!updated?.meta.changes)
+      throw new GatewayError("GATEWAY_CONFLICT", {
+        details: { subscriptionId: live.id },
+      });
     const row = await db
       .prepare(`SELECT ${SUBSCRIPTION_COLUMNS} FROM gateway_tenant_subscription WHERE id = ?`)
       .bind(live.id)
       .first<SubscriptionRow>();
-    if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The subscription is missing." });
+    if (!row)
+      throw new GatewayError("GATEWAY_INTERNAL", {
+        message: "The subscription is missing.",
+      });
     return subscriptionView(row);
   }
 
-  return {
+  const port = {
     adjustWallet,
     refund,
     setWalletStatus,
@@ -1329,7 +1371,8 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     cancelSubscription,
     rollover,
     walletSummary,
-  };
+  } satisfies GatewayBillingPort;
+  return port;
 }
 
 export type D1Billing = ReturnType<typeof createD1Billing>;

@@ -20,6 +20,7 @@ import {
   GatewayError,
   assertPriceDraftPolicy,
   type GatewayClock,
+  type GatewayPriceBookPort,
   type GatewayPriceUnit,
   type PriceDraftRate,
 } from "@clash/gateway-core";
@@ -118,6 +119,7 @@ function abortWhen(db: D1Database, version: string, condition: string): D1Prepar
 
 const PUBLISHED_ROW = `EXISTS (SELECT 1 FROM gateway_price WHERE price_version = ?1 AND published_at IS NOT NULL)`;
 
+/** The D1 adapter of gateway-core's GatewayPriceBookPort (#425). */
 export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock }) {
   async function versionRows(version: string): Promise<PriceRow[]> {
     const { results } = await db
@@ -133,7 +135,10 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
 
   async function read(version: string): Promise<PriceVersionView> {
     const view = versionViews(await versionRows(version))[0];
-    if (!view) throw new GatewayError("GATEWAY_PRICE_VERSION_NOT_FOUND", { details: { version } });
+    if (!view)
+      throw new GatewayError("GATEWAY_PRICE_VERSION_NOT_FOUND", {
+        details: { version },
+      });
     return view;
   }
 
@@ -160,7 +165,7 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
     });
   }
 
-  return {
+  const port = {
     /** Every credit price version, newest effective first; optionally only versions pricing `modelCode`. */
     async list(filter: { modelCode?: string; status?: "draft" | "published" } = {}): Promise<PriceVersionView[]> {
       const { results } = await db
@@ -185,7 +190,9 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
       const fromS = toSeconds(input.effectiveFrom);
       const toS = input.effectiveTo === null ? null : toSeconds(input.effectiveTo);
       if (toS !== null && toS <= fromS)
-        throw new GatewayError("GATEWAY_PRICE_WINDOW_INVALID", { details: { param: "effectiveTo" } });
+        throw new GatewayError("GATEWAY_PRICE_WINDOW_INVALID", {
+          details: { param: "effectiveTo" },
+        });
       const before = versionViews(await versionRows(input.version))[0];
       if (before?.status === "published")
         throw new GatewayError("GATEWAY_PRICE_VERSION_PUBLISHED", {
@@ -240,7 +247,10 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
           throw new GatewayError("GATEWAY_PRICE_VERSION_PUBLISHED", {
             details: { version: input.version, publishedAt: now.publishedAt },
           });
-        throw new GatewayError("GATEWAY_CONFLICT", { details: { version: input.version }, cause });
+        throw new GatewayError("GATEWAY_CONFLICT", {
+          details: { version: input.version },
+          cause,
+        });
       }
       return read(input.version);
     },
@@ -259,7 +269,11 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
       const ended = (sql: string) => `${sql}effective_to IS NOT NULL AND ${sql}effective_to <= ?2`;
       if (before.effectiveTo !== null && toSeconds(Date.parse(before.effectiveTo)) <= nowS)
         throw new GatewayError("GATEWAY_PRICE_WINDOW_INVALID", {
-          details: { version: input.version, reason: "ended", effectiveTo: before.effectiveTo },
+          details: {
+            version: input.version,
+            reason: "ended",
+            effectiveTo: before.effectiveTo,
+          },
         });
       const [published] = await db.batch([
         db
@@ -281,16 +295,22 @@ export function createD1PriceBook(db: D1Database, deps: { clock: GatewayClock })
       ]);
       if (!published?.meta.changes) {
         const now = versionViews(await versionRows(input.version))[0];
-        if (!now) throw new GatewayError("GATEWAY_PRICE_VERSION_NOT_FOUND", { details: { version: input.version } });
+        if (!now)
+          throw new GatewayError("GATEWAY_PRICE_VERSION_NOT_FOUND", {
+            details: { version: input.version },
+          });
         if (now.status === "published")
           throw new GatewayError("GATEWAY_PRICE_VERSION_PUBLISHED", {
             details: { version: input.version, publishedAt: now.publishedAt },
           });
-        throw new GatewayError("GATEWAY_CONFLICT", { details: { version: input.version } });
+        throw new GatewayError("GATEWAY_CONFLICT", {
+          details: { version: input.version },
+        });
       }
       return read(input.version);
     },
-  };
+  } satisfies GatewayPriceBookPort;
+  return port;
 }
 
 export type D1PriceBook = ReturnType<typeof createD1PriceBook>;
