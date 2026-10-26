@@ -235,6 +235,8 @@ export interface AdminPackage {
   priceCurrency: string;
   periodMicroCredits: number;
   rateLimit: RateLimit | null;
+  /** Payment provider price id (#419); null when unset. */
+  externalPriceId?: string | null;
 }
 
 export interface AdminTopupPack {
@@ -244,6 +246,8 @@ export interface AdminTopupPack {
   priceMinor: number;
   priceCurrency: string;
   microCredits: number;
+  /** Payment provider price id (#419); null when unset. */
+  externalPriceId?: string | null;
 }
 
 export interface TenantSummary {
@@ -502,13 +506,17 @@ export const adminApi = {
     adminRequest<{ upstream: UpstreamAccount }>("POST", `/upstreams/${seg(id)}/revoke`, { keyVersion, ...(reason ? { reason } : {}) }),
 
   packages: () => adminRequest<{ packages: AdminPackage[] }>("GET", "/packages"),
-  createPackage: (body: { name: string; billingPeriod: "month" | "year"; priceMinor: number; priceCurrency: string; periodMicroCredits: number; rateLimit?: RateLimit }) =>
+  createPackage: (body: { name: string; billingPeriod: "month" | "year"; priceMinor: number; priceCurrency: string; periodMicroCredits: number; rateLimit?: RateLimit; externalPriceId?: string | null }) =>
     adminRequest<{ package: AdminPackage }>("POST", "/packages", body),
   archivePackage: (id: string) => adminRequest<{ package: AdminPackage }>("POST", `/packages/${seg(id)}/archive`),
+  setPackageExternalPriceId: (id: string, externalPriceId: string | null) =>
+    adminRequest<{ package: AdminPackage }>("POST", `/packages/${seg(id)}/external-price`, { externalPriceId }),
   topupPacks: () => adminRequest<{ packs: AdminTopupPack[] }>("GET", "/topup-packs"),
-  createTopupPack: (body: { name: string; priceMinor: number; priceCurrency: string; microCredits: number }) =>
+  createTopupPack: (body: { name: string; priceMinor: number; priceCurrency: string; microCredits: number; externalPriceId?: string | null }) =>
     adminRequest<{ pack: AdminTopupPack }>("POST", "/topup-packs", body),
   archiveTopupPack: (id: string) => adminRequest<{ pack: AdminTopupPack }>("POST", `/topup-packs/${seg(id)}/archive`),
+  setTopupPackExternalPriceId: (id: string, externalPriceId: string | null) =>
+    adminRequest<{ pack: AdminTopupPack }>("POST", `/topup-packs/${seg(id)}/external-price`, { externalPriceId }),
   rollover: () => adminRequest<{ subscriptions: unknown[]; failed: number }>("POST", "/billing/rollover", {}),
 
   tenants: (query?: string) => adminRequest<{ tenants: TenantSummary[] }>("GET", `/tenants${q({ query })}`),

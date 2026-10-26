@@ -4,9 +4,15 @@
  * (`gateway_topup_pack`), tenant subscriptions (`gateway_tenant_subscription`)
  * and the tenant wallet (the `tenant`-scope `gateway_budget`).
  *
- * There is no payment provider. A purchase is recorded by a tenant role
- * holding `billing.purchase` (services/gateway-authz.ts) and
- * credits the wallet at once:
+ * Self-host has no payment provider: a purchase is recorded by a tenant role
+ * holding `billing.purchase` (services/gateway-authz.ts) and credits the
+ * wallet at once. With a payments plugin (`Plugin.billing.purchaseMode =
+ * "provider"`, #419) the product purchase routes are closed and the plugin
+ * calls the same operations from verified provider webhooks with a `payment`
+ * actor (provider + event id) and the provider's id as idempotency key;
+ * refunds and chargebacks are `refund()` (an `adjust` entry, ref_kind
+ * `payment_refund`). Packages and packs carry the provider's price id as
+ * configuration (`external_price_id`), never in code:
  *
  * - topup:     ledger `topup`, wallet limit += pack credits.
  * - subscribe: subscription row + ledger `grant` for the first period.
@@ -41,15 +47,47 @@ import {
 } from "@clash/gateway-core";
 
 import { sha256Hex } from "../services/api-token";
-import { adminAuditStatement, type GatewayAdminActor } from "./d1-admin-audit";
+import { adminAuditStatement, type AuditActor, type GatewayAdminActor } from "./d1-admin-audit";
 import { parseJson, toMs, toSeconds } from "./d1-common";
 
 /**
- * The authorized caller (services/gateway-authz.ts): a product user through a
- * team role, or an admin account. Ledger `actor_user_id` holds its id (`adm_…`
- * for an admin account, #394).
+ * A payment provider's verified webhook (#419), as the system actor of a
+ * purchase, renewal, cancel or refund. Ledger `actor_user_id` is
+ * `payment:<provider>`; the audit row records provider and event id.
  */
-export type BillingActor = GatewayAdminActor;
+export interface PaymentActor {
+  kind: "payment";
+  /** Provider slug, e.g. "polar": lowercase letters, digits, "-" or "_". */
+  provider: string;
+  /** The provider's webhook event id (or order id) this write answers. */
+  eventId: string;
+}
+
+/**
+ * The authorized caller (services/gateway-authz.ts): a product user through a
+ * team role, or an admin account; or a payment provider's webhook. Ledger
+ * `actor_user_id` holds its id (`adm_…` for an admin account, #394;
+ * `payment:<provider>` for a payment).
+ */
+export type BillingActor = GatewayAdminActor | PaymentActor;
+
+const PROVIDER_SLUG = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+const MAX_EVENT_ID = 256;
+
+/** The audit/ledger identity of an actor; a payment actor is validated first. */
+function auditActor(actor: BillingActor): AuditActor {
+  if (actor.kind !== "payment") return actor;
+  if (!PROVIDER_SLUG.test(actor.provider) || !actor.eventId || actor.eventId.length > MAX_EVENT_ID)
+    throw new GatewayError("GATEWAY_INVALID_REQUEST", {
+      message: "A payment actor needs a provider slug and an event id.",
+      details: { actor: "payment" },
+    });
+  return { kind: "payment", id: `payment:${actor.provider}`, role: actor.provider };
+}
+
+/** Provider and event id recorded in the audit snapshot of a payment write. */
+const paymentRef = (actor: BillingActor) =>
+  actor.kind === "payment" ? { payment: { provider: actor.provider, eventId: actor.eventId } } : {};
 
 /** A stored rate limit (gateway-core GatewayRateLimitSchema). */
 export type RateLimitConfig = Partial<GatewayRateLimit>;
@@ -64,6 +102,8 @@ export interface PackageView {
   /** Credits granted into the tenant wallet each period. */
   periodMicroCredits: number;
   rateLimit: RateLimitConfig | null;
+  /** The payment provider's price id (configuration, #419); null when unset. */
+  externalPriceId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +116,8 @@ export interface TopupPackView {
   priceCurrency: string;
   /** Credits added to the tenant wallet; they do not expire. */
   microCredits: number;
+  /** The payment provider's price id (configuration, #419); null when unset. */
+  externalPriceId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -141,6 +183,7 @@ interface PackageRow {
   price_currency: string;
   credits_micro: number;
   rate_limit_json: string | null;
+  external_price_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -152,6 +195,7 @@ interface TopupPackRow {
   price_minor: number;
   price_currency: string;
   credits_micro: number;
+  external_price_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -209,6 +253,8 @@ const walletIdSql = (t: string) =>
 /** ref_kind of a platform wallet correction: the ledger amount is non-negative, so it carries the direction. */
 const ADMIN_CREDIT = "admin_credit";
 const ADMIN_DEBIT = "admin_debit";
+/** ref_kind of a provider refund or chargeback: an `adjust` that removes credits (#419). */
+const PAYMENT_REFUND = "payment_refund";
 /** A wallet that can hold credits: limited and not periodic. */
 const FUNDABLE = "limit_micro_credits IS NOT NULL AND period = 'none'";
 
@@ -222,6 +268,7 @@ function packageView(row: PackageRow): PackageView {
     priceCurrency: row.price_currency,
     periodMicroCredits: row.credits_micro,
     rateLimit: (parseJson(row.rate_limit_json) as RateLimitConfig | undefined) ?? null,
+    externalPriceId: row.external_price_id ?? null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -235,6 +282,7 @@ function topupPackView(row: TopupPackRow): TopupPackView {
     priceMinor: row.price_minor,
     priceCurrency: row.price_currency,
     microCredits: row.credits_micro,
+    externalPriceId: row.external_price_id ?? null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -343,7 +391,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     nowS: number;
     when: string;
   }): D1PreparedStatement {
-    return adminAuditStatement(db, input);
+    return adminAuditStatement(db, { ...input, actor: auditActor(input.actor) });
   }
 
   /** Creates the tenant wallet at a zero limit when it does not exist yet. */
@@ -438,18 +486,19 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
       priceCurrency: string;
       periodMicroCredits: number;
       rateLimit?: RateLimitConfig;
+      externalPriceId?: string | null;
     },
     actor: BillingActor,
   ): Promise<PackageView> {
     const id = newId("gwpkg_");
     const nowS = nowSeconds();
-    await db.batch([
+    await externalPriceInsert(() => db.batch([
       db
         .prepare(
           `INSERT INTO gateway_package
              (id, name, status, billing_period, price_minor, price_currency, credits_micro,
-              rate_limit_json, created_at, updated_at)
-           VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+              rate_limit_json, external_price_id, created_at, updated_at)
+           VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
           id,
@@ -459,11 +508,12 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           input.priceCurrency,
           input.periodMicroCredits,
           input.rateLimit ? JSON.stringify(input.rateLimit) : null,
+          input.externalPriceId ?? null,
           nowS,
           nowS,
         ),
       audit({ tenantId: "", actor, action: "package.create", targetType: "package", targetId: id, after: input, nowS, when: "1" }),
-    ]);
+    ]), input.externalPriceId);
     const row = await packageRow(id);
     if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The created package is missing." });
     return packageView(row);
@@ -505,21 +555,22 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
   }
 
   async function createTopupPack(
-    input: { name: string; priceMinor: number; priceCurrency: string; microCredits: number },
+    input: { name: string; priceMinor: number; priceCurrency: string; microCredits: number; externalPriceId?: string | null },
     actor: BillingActor,
   ): Promise<TopupPackView> {
     const id = newId("gwpack_");
     const nowS = nowSeconds();
-    await db.batch([
+    await externalPriceInsert(() => db.batch([
       db
         .prepare(
           `INSERT INTO gateway_topup_pack
-             (id, name, status, price_minor, price_currency, credits_micro, validity_days, created_at, updated_at)
-           VALUES (?, ?, 'active', ?, ?, ?, NULL, ?, ?)`,
+             (id, name, status, price_minor, price_currency, credits_micro, validity_days, external_price_id,
+              created_at, updated_at)
+           VALUES (?, ?, 'active', ?, ?, ?, NULL, ?, ?, ?)`,
         )
-        .bind(id, input.name, input.priceMinor, input.priceCurrency, input.microCredits, nowS, nowS),
+        .bind(id, input.name, input.priceMinor, input.priceCurrency, input.microCredits, input.externalPriceId ?? null, nowS, nowS),
       audit({ tenantId: "", actor, action: "topup_pack.create", targetType: "topup_pack", targetId: id, after: input, nowS, when: "1" }),
-    ]);
+    ]), input.externalPriceId);
     const row = await topupPackRow(id);
     if (!row) throw new GatewayError("GATEWAY_INTERNAL", { message: "The created top-up pack is missing." });
     return topupPackView(row);
@@ -552,7 +603,81 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     return topupPackView(row);
   }
 
-  // ─── Purchases (platform admin or tenant owner) ────────────────────────
+  /** Runs a write that may set an external price id; a duplicate id is GATEWAY_EXTERNAL_PRICE_ID_TAKEN. */
+  async function externalPriceInsert<T>(write: () => Promise<T>, externalPriceId: string | null | undefined): Promise<T> {
+    try {
+      return await write();
+    } catch (cause) {
+      if (externalPriceId && /UNIQUE constraint failed: .*external_price_id/i.test(String((cause as Error)?.message ?? cause)))
+        throw new GatewayError("GATEWAY_EXTERNAL_PRICE_ID_TAKEN", { details: { externalPriceId }, cause });
+      throw cause;
+    }
+  }
+
+  /** Set or clear (null) the provider price id of a package or pack; same value twice is a no-op. */
+  async function setExternalPriceId(
+    table: "gateway_package" | "gateway_topup_pack",
+    id: string,
+    externalPriceId: string | null,
+    actor: BillingActor,
+  ): Promise<void> {
+    const isPackage = table === "gateway_package";
+    const before = isPackage ? await packageRow(id) : await topupPackRow(id);
+    if (!before)
+      throw isPackage
+        ? new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: id } })
+        : new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: id } });
+    if ((before.external_price_id ?? null) === externalPriceId) return;
+    const nowS = nowSeconds();
+    await externalPriceInsert(
+      () =>
+        db.batch([
+          db
+            .prepare(`UPDATE ${table} SET external_price_id = ?2, updated_at = ?3 WHERE id = ?1 AND external_price_id IS ?4`)
+            .bind(id, externalPriceId, nowS, before.external_price_id ?? null),
+          audit({
+            tenantId: "",
+            actor,
+            action: isPackage ? "package.external_price" : "topup_pack.external_price",
+            targetType: isPackage ? "package" : "topup_pack",
+            targetId: id,
+            before: { externalPriceId: before.external_price_id ?? null },
+            after: { externalPriceId },
+            nowS,
+            when: "changes() = 1",
+          }),
+        ]),
+      externalPriceId,
+    );
+  }
+
+  async function setPackageExternalPriceId(id: string, externalPriceId: string | null, actor: BillingActor): Promise<PackageView> {
+    await setExternalPriceId("gateway_package", id, externalPriceId, actor);
+    const row = await packageRow(id);
+    if (!row) throw new GatewayError("GATEWAY_PACKAGE_NOT_FOUND", { details: { packageId: id } });
+    return packageView(row);
+  }
+
+  async function setTopupPackExternalPriceId(id: string, externalPriceId: string | null, actor: BillingActor): Promise<TopupPackView> {
+    await setExternalPriceId("gateway_topup_pack", id, externalPriceId, actor);
+    const row = await topupPackRow(id);
+    if (!row) throw new GatewayError("GATEWAY_TOPUP_PACK_NOT_FOUND", { details: { packId: id } });
+    return topupPackView(row);
+  }
+
+  /** The package a provider price id is configured on (a payments plugin resolving a webhook), or null. */
+  async function packageByExternalPriceId(externalPriceId: string): Promise<PackageView | null> {
+    const row = await db.prepare(`SELECT * FROM gateway_package WHERE external_price_id = ?`).bind(externalPriceId).first<PackageRow>();
+    return row ? packageView(row) : null;
+  }
+
+  /** The top-up pack a provider price id is configured on, or null. */
+  async function topupPackByExternalPriceId(externalPriceId: string): Promise<TopupPackView | null> {
+    const row = await db.prepare(`SELECT * FROM gateway_topup_pack WHERE external_price_id = ?`).bind(externalPriceId).first<TopupPackRow>();
+    return row ? topupPackView(row) : null;
+  }
+
+  // ─── Purchases (platform admin, tenant owner, or payment webhook) ──────
 
   async function topup(input: {
     tenantId: string;
@@ -560,6 +685,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     idempotencyKey: string;
     actor: BillingActor;
   }): Promise<PurchaseResult<never>> {
+    auditActor(input.actor);
     const requestId = `topup:${input.tenantId}:${input.idempotencyKey}`;
     const replay = async (): Promise<PurchaseResult<never> | null> => {
       const prior = await creditEntry(requestId, "topup");
@@ -587,7 +713,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount: pack.credits_micro,
           refKind: "topup_pack",
           refId: pack.id,
-          actorUserId: input.actor.id,
+          actorUserId: auditActor(input.actor).id,
           nowS,
           when: `w.limit_micro_credits IS NOT NULL AND w.period = 'none'
             AND EXISTS (SELECT 1 FROM gateway_topup_pack WHERE id = ?6 AND status = 'active')
@@ -600,7 +726,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           action: "wallet.topup",
           targetType: "topup",
           targetId: requestId,
-          after: { packId: pack.id, microCredits: pack.credits_micro },
+          after: { packId: pack.id, microCredits: pack.credits_micro, ...paymentRef(input.actor) },
           nowS,
           when: "changes() = 1",
         }),
@@ -627,6 +753,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     idempotencyKey: string;
     actor: BillingActor;
   }): Promise<PurchaseResult<SubscriptionView>> {
+    auditActor(input.actor);
     const subscriptionId = `gws_${(await sha256Hex(`${input.tenantId}\n${input.idempotencyKey}`)).slice(0, 32)}`;
     const replay = async (): Promise<PurchaseResult<SubscriptionView> | null> => {
       const prior = await db
@@ -686,7 +813,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount: pkg.credits_micro,
           refKind: "subscription",
           refId: subscriptionId,
-          actorUserId: input.actor.id,
+          actorUserId: auditActor(input.actor).id,
           nowS,
           when: "changes() = 1",
         }),
@@ -697,7 +824,13 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           action: "subscription.create",
           targetType: "subscription",
           targetId: subscriptionId,
-          after: { packageId: pkg.id, periodStart: nowS, periodEnd: endS, grantMicroCredits: pkg.credits_micro },
+          after: {
+            packageId: pkg.id,
+            periodStart: nowS,
+            periodEnd: endS,
+            grantMicroCredits: pkg.credits_micro,
+            ...paymentRef(input.actor),
+          },
           nowS,
           when: "changes() = 1",
         }),
@@ -722,6 +855,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
 
   /** Ends the live subscription at its current period end. Canceling twice is a no-op. */
   async function cancelSubscription(input: { tenantId: string; actor: BillingActor }): Promise<SubscriptionView> {
+    auditActor(input.actor);
     await requireTenant(input.tenantId);
     const live = await liveSubscription(input.tenantId);
     if (!live) throw new GatewayError("GATEWAY_SUBSCRIPTION_NOT_FOUND", { details: { tenantId: input.tenantId } });
@@ -741,7 +875,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           action: "subscription.cancel",
           targetType: "subscription",
           targetId: live.id,
-          after: { cancelAt: live.current_period_end },
+          after: { cancelAt: live.current_period_end, ...paymentRef(input.actor) },
           nowS,
           when: "changes() = 1",
         }),
@@ -826,7 +960,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         amount: expired,
         refKind: "subscription",
         refId: sub.id,
-        actorUserId: actor.id,
+        actorUserId: auditActor(actor).id,
         nowS,
         when: "changes() = 1",
       }),
@@ -841,7 +975,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           amount: grantNext,
           refKind: "subscription",
           refId: sub.id,
-          actorUserId: actor.id,
+          actorUserId: auditActor(actor).id,
           nowS,
           when: "changes() = 1",
         }),
@@ -942,7 +1076,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         .prepare(
           `SELECT ${CREDIT_COLUMNS} FROM gateway_usage_ledger
             WHERE tenant_id = ? AND (kind IN ('grant', 'topup', 'expire')
-                  OR (kind = 'adjust' AND ref_kind IN ('${ADMIN_CREDIT}', '${ADMIN_DEBIT}')))
+                  OR (kind = 'adjust' AND ref_kind IN ('${ADMIN_CREDIT}', '${ADMIN_DEBIT}', '${PAYMENT_REFUND}')))
             ORDER BY occurred_at DESC, request_id DESC LIMIT ?`,
         )
         .bind(tenantId, limit)
@@ -971,13 +1105,71 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     idempotencyKey: string;
     actor: BillingActor;
   }): Promise<PurchaseResult<never>> {
-    const requestId = `adjust:${input.tenantId}:${input.idempotencyKey}`;
-    const refKind = input.deltaMicroCredits >= 0 ? ADMIN_CREDIT : ADMIN_DEBIT;
+    return adjustment({
+      ...input,
+      requestId: `adjust:${input.tenantId}:${input.idempotencyKey}`,
+      refKind: input.deltaMicroCredits >= 0 ? ADMIN_CREDIT : ADMIN_DEBIT,
+      refId: input.tenantId,
+      action: "wallet.adjust",
+    });
+  }
+
+  /**
+   * A provider refund or chargeback (#419): removes `microCredits` from the
+   * tenant wallet as a ledger `adjust` entry (ref_kind `payment_refund`,
+   * request id `refund:<tenant>:<key>`, unique on (request_id, kind)), with
+   * the audit row naming provider and event id. One idempotency key (use the
+   * provider's refund id) is one refund: a redelivered webhook replays it, the
+   * same key with another amount or ref is GATEWAY_IDEMPOTENCY_CONFLICT. Like
+   * an admin debit it never takes the wallet below spend + open holds
+   * (GATEWAY_BUDGET_BELOW_USAGE: credits already used are not clawed back; the
+   * plugin decides, e.g. suspend the wallet with setWalletStatus).
+   */
+  async function refund(input: {
+    tenantId: string;
+    microCredits: number;
+    idempotencyKey: string;
+    /** What was refunded, e.g. the provider order id; default the tenant id. */
+    refId?: string;
+    reason?: string;
+    actor: PaymentActor;
+  }): Promise<PurchaseResult<never>> {
+    if (!Number.isSafeInteger(input.microCredits) || input.microCredits <= 0)
+      throw new GatewayError("GATEWAY_INVALID_REQUEST", {
+        message: "A refund removes a positive whole number of micro-credits.",
+        details: { microCredits: input.microCredits },
+      });
+    return adjustment({
+      tenantId: input.tenantId,
+      deltaMicroCredits: -input.microCredits,
+      reason: input.reason ?? `${input.actor.provider} refund`,
+      idempotencyKey: input.idempotencyKey,
+      actor: input.actor,
+      requestId: `refund:${input.tenantId}:${input.idempotencyKey}`,
+      refKind: PAYMENT_REFUND,
+      refId: input.refId ?? input.tenantId,
+      action: "wallet.refund",
+    });
+  }
+
+  async function adjustment(input: {
+    tenantId: string;
+    deltaMicroCredits: number;
+    reason: string;
+    idempotencyKey: string;
+    actor: BillingActor;
+    requestId: string;
+    refKind: string;
+    refId: string;
+    action: string;
+  }): Promise<PurchaseResult<never>> {
+    auditActor(input.actor);
+    const { requestId, refKind } = input;
     const amount = Math.abs(input.deltaMicroCredits);
     const replay = async (): Promise<PurchaseResult<never> | null> => {
       const prior = await creditEntry(requestId, "adjust");
       if (!prior) return null;
-      if (prior.ref_kind !== refKind || prior.amount_micro_credits !== amount)
+      if (prior.ref_kind !== refKind || prior.amount_micro_credits !== amount || prior.ref_id !== input.refId)
         throw new GatewayError("GATEWAY_IDEMPOTENCY_CONFLICT", { details: { idempotencyKey: input.idempotencyKey } });
       return { replayed: true, entry: creditView(prior), wallet: await walletOrThrow(input.tenantId) };
     };
@@ -1006,8 +1198,8 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
           tenantId: input.tenantId,
           amount,
           refKind,
-          refId: input.tenantId,
-          actorUserId: input.actor.id,
+          refId: input.refId,
+          actorUserId: auditActor(input.actor).id,
           reason: input.reason,
           nowS,
           when: `w.limit_micro_credits IS NOT NULL AND w.period = 'none'
@@ -1017,10 +1209,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
         audit({
           tenantId: input.tenantId,
           actor: input.actor,
-          action: "wallet.adjust",
+          action: input.action,
           targetType: "wallet",
           targetId: requestId,
-          after: { deltaMicroCredits: input.deltaMicroCredits },
+          after: { deltaMicroCredits: input.deltaMicroCredits, ...paymentRef(input.actor) },
           reason: input.reason,
           nowS,
           when: "changes() = 1",
@@ -1119,6 +1311,7 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
 
   return {
     adjustWallet,
+    refund,
     setWalletStatus,
     setSubscriptionRateLimit,
     listPackages,
@@ -1127,6 +1320,10 @@ export function createD1Billing(db: D1Database, deps: { clock: GatewayClock }) {
     listTopupPacks,
     createTopupPack,
     archiveTopupPack,
+    setPackageExternalPriceId,
+    setTopupPackExternalPriceId,
+    packageByExternalPriceId,
+    topupPackByExternalPriceId,
     topup,
     subscribe,
     cancelSubscription,

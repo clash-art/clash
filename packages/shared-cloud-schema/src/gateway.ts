@@ -649,6 +649,7 @@ export const gatewayPackages = sqliteTable(
       "gateway_package_credits_check",
       sql`${table.creditsMicro} >= 0`,
     ),
+    externalPriceIdx: uniqueIndex("gateway_package_external_price_idx").on(table.externalPriceId),
   }),
 );
 
@@ -676,6 +677,7 @@ export const gatewayTopupPacks = sqliteTable(
       "gateway_topup_pack_credits_check",
       sql`${table.creditsMicro} >= 0`,
     ),
+    externalPriceIdx: uniqueIndex("gateway_topup_pack_external_price_idx").on(table.externalPriceId),
   }),
 );
 

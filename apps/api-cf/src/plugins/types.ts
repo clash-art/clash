@@ -41,6 +41,21 @@ export interface GenerationHookCtx {
 /** Loose result shape — providers emit a superset; plugins read what they need. */
 export type GenerationResult = Record<string, unknown>;
 
+/**
+ * How tenants obtain credits (#419). Absent (self-host): the core purchase
+ * routes grant credits directly, for free. "provider": a payments plugin sells
+ * them through its own checkout and records them from verified provider
+ * webhooks via the server-only billing API (`@clash/api-cf/billing`); the core
+ * purchase routes then refuse with GATEWAY_PAYMENT_REQUIRED_VIA_PROVIDER.
+ */
+export type BillingPurchaseMode = "provider";
+
+export interface BillingPluginConfig {
+  purchaseMode: BillingPurchaseMode;
+  /** Where the client starts a purchase (e.g. "/api/v1/billing/checkout"); returned in the 409 details. */
+  checkoutPath?: string;
+}
+
 export interface Plugin {
   /** Stable identifier — appears in logs / errors. */
   name: string;
@@ -86,6 +101,9 @@ export interface Plugin {
       user?: UserContext;
     }) => Promise<void>;
   };
+
+  /** Purchase mode seam (#419). Any plugin declaring "provider" closes the free purchase path. */
+  billing?: BillingPluginConfig;
 
   routes?: {
     /** Mount additional routes on the Hono app at startup. */
