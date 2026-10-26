@@ -4,6 +4,13 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: /^@clash\/gateway-core$/,
+        replacement: resolve(
+          import.meta.dirname,
+          "../../packages/gateway-core/src/index.ts",
+        ),
+      },
+      {
         find: /^@clash\/shared-types\/(.+)$/,
         replacement: resolve(
           import.meta.dirname,
