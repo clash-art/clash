@@ -18,6 +18,8 @@ import {
   gatewayRole,
 } from "./gateway-node.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
+import { createPgGatewayBilling } from "./gateway-billing.ts";
+import { createGatewayBillingTenantRoutes, gatewayBillingPurchaseConfigFromEnv } from "./gateway-billing-routes.ts";
 import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
 import { startGatewayMaintenance } from "./gateway-maintenance.ts";
@@ -113,6 +115,19 @@ export function startServer(
           }
         : {}),
     });
+    // Tenant credit billing (#425), before the data plane's /api/v1/gateway/* catch-all.
+    app.route(
+      "/",
+      createGatewayBillingTenantRoutes({
+        billing: createPgGatewayBilling({ db: database.db }),
+        db: database.db,
+        session: async (headers: Headers) => {
+          const session = auth ? await auth.api.getSession({ headers }) : null;
+          return session ? { userId: session.user.id } : null;
+        },
+        purchase: gatewayBillingPurchaseConfigFromEnv(env),
+      }),
+    );
     app.route("/", createGatewayNodeRoutes(ports, { work: gatewayWork, drain }));
     stopGatewayMaintenance = startGatewayMaintenance({
       db: database.db,

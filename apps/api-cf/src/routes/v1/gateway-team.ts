@@ -30,6 +30,7 @@
  *   GET    /tenants/:t/billing/offers                  packages and top-up packs        billing.read
  *   GET    /tenants/:t/me                              own role, budget, keys, usage    usage.read_own + budgets.read_own
  */
+import { createGatewayBillingHandlers } from "@clash/gateway-core";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
@@ -45,6 +46,7 @@ import {
 } from "../../domain/requests";
 import { createD1AdminReads } from "../../gateway/d1-admin-reads";
 import { createD1Billing } from "../../gateway/d1-billing";
+import { pluginPurchaseConfig } from "./gateway-billing";
 import { createD1GatewayBudgetPorts } from "../../gateway/d1-budgets";
 import { monotonicClock } from "../../gateway/d1-common";
 import { createD1TenantAdmin } from "../../gateway/d1-tenant-admin";
@@ -289,12 +291,9 @@ gatewayTeamRoutes.get(
 gatewayTeamRoutes.get(
   "/tenants/:tenantId/billing/offers",
   tenantRoute("billing.read", async (c) => {
-    const ledger = billing(c);
-    const [packages, packs] = await Promise.all([ledger.listPackages(), ledger.listTopupPacks()]);
-    return ok(c, {
-      packages: packages.filter((entry) => entry.status === "active"),
-      packs: packs.filter((entry) => entry.status === "active"),
-    });
+    // Shared handler (gateway-core, #425): api-node answers the same body.
+    const result = await createGatewayBillingHandlers(billing(c), pluginPurchaseConfig).offers();
+    return ok(c, result.body);
   }),
 );
 

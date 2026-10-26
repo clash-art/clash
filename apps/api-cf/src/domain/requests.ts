@@ -1,10 +1,10 @@
 import { z } from "zod";
 import {
-  GATEWAY_BILLING_PERIODS,
   GATEWAY_BUDGET_ENFORCEMENTS,
-  GATEWAY_PRICE_UNITS,
   GATEWAY_SUSPENSION_SUBJECTS,
   GatewayAbuseThresholdSchema,
+  GatewayIdempotencyKeySchema,
+  GatewayPriceVersionSchema,
   GatewayRateLimitSchema,
 } from "@clash/gateway-core";
 
@@ -74,41 +74,24 @@ export const MintGatewayTokenRequestSchema = z
 export type MintGatewayTokenRequest = z.infer<typeof MintGatewayTokenRequestSchema>;
 
 // ─── Gateway price book and credit billing (#352) ──────────────────────────
-// Amounts are integer micro-credits (1 credit = 1_000_000); fiat prices are
-// integer minor units of an ISO 4217 currency. Times are ISO 8601 instants.
+// The billing request schemas live in @clash/gateway-core (billing-schemas.ts,
+// #425) so every host parses the same bodies; re-exported here.
+export {
+  GatewayExternalPriceIdRequestSchema,
+  GatewayIdempotencyKeySchema,
+  GatewayPackageCreateRequestSchema,
+  GatewayPriceDraftRequestSchema,
+  GatewayPriceVersionSchema,
+  GatewayRolloverRequestSchema,
+  GatewaySubscribeRequestSchema,
+  GatewayTopupPackCreateRequestSchema,
+  GatewayTopupRequestSchema,
+  GatewayWalletAdjustRequestSchema,
+  GatewayWalletStatusRequestSchema,
+} from "@clash/gateway-core";
 
 const safeInt = () => z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const isoInstant = () => z.iso.datetime({ offset: true });
-
-/** Price-book version name, e.g. `2026-11-01` or `v12`. */
-export const GatewayPriceVersionSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
-
-/** Client-chosen purchase idempotency key; one key is one purchase per tenant. */
-export const GatewayIdempotencyKeySchema = z.string().regex(/^[A-Za-z0-9._:-]{1,128}$/);
-
-/** PUT /api/v1/admin/gateway/prices/versions/:version: create or replace a draft. */
-export const GatewayPriceDraftRequestSchema = z
-  .object({
-    effectiveFrom: isoInstant(),
-    effectiveTo: isoInstant().nullable().optional(),
-    rates: z
-      .array(
-        z
-          .object({
-            modelCode: z.string().min(1).max(256),
-            /** Omitted or '': every upstream of the model. */
-            upstreamId: z.string().max(256).optional(),
-            unit: z.enum(GATEWAY_PRICE_UNITS),
-            /** Price of `per` units, in micro-credits. */
-            amountMicroCredits: safeInt(),
-            per: safeInt().positive(),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(200),
-  })
-  .strict();
 
 /**
  * A configured rate limit (`rate_limit_json` on keys, members, tenants,
@@ -118,58 +101,6 @@ export const GatewayPriceDraftRequestSchema = z
  */
 export { GatewayRateLimitSchema };
 const RateLimitRequestSchema = GatewayRateLimitSchema;
-
-const currency = () => z.string().regex(/^[A-Z]{3}$/);
-/** A payment provider's price/product id (#419): configuration, opaque to core. */
-const externalPriceId = () => z.string().trim().min(1).max(256).regex(/^[\x21-\x7e]+$/);
-
-/** POST /api/v1/admin/gateway/packages. */
-export const GatewayPackageCreateRequestSchema = z
-  .object({
-    name: z.string().trim().min(1).max(128),
-    billingPeriod: z.enum(GATEWAY_BILLING_PERIODS),
-    priceMinor: safeInt(),
-    priceCurrency: currency(),
-    /** Credits granted into the tenant wallet each period. */
-    periodMicroCredits: safeInt(),
-    /** Tenant rate limits while subscribed. */
-    rateLimit: RateLimitRequestSchema.optional(),
-    /** The payment provider's price id (#419). */
-    externalPriceId: externalPriceId().nullable().optional(),
-  })
-  .strict();
-
-/** POST /api/v1/admin/gateway/topup-packs. Top-up credits do not expire. */
-export const GatewayTopupPackCreateRequestSchema = z
-  .object({
-    name: z.string().trim().min(1).max(128),
-    priceMinor: safeInt(),
-    priceCurrency: currency(),
-    microCredits: safeInt(),
-    /** The payment provider's price id (#419). */
-    externalPriceId: externalPriceId().nullable().optional(),
-  })
-  .strict();
-
-/** POST /api/v1/admin/gateway/{packages,topup-packs}/:id/external-price. null clears it. */
-export const GatewayExternalPriceIdRequestSchema = z
-  .object({ externalPriceId: externalPriceId().nullable() })
-  .strict();
-
-/** POST /api/v1/gateway/tenants/:tenantId/subscription. */
-export const GatewaySubscribeRequestSchema = z
-  .object({ packageId: z.string().min(1).max(128), idempotencyKey: GatewayIdempotencyKeySchema })
-  .strict();
-
-/** POST /api/v1/gateway/tenants/:tenantId/topups. */
-export const GatewayTopupRequestSchema = z
-  .object({ packId: z.string().min(1).max(128), idempotencyKey: GatewayIdempotencyKeySchema })
-  .strict();
-
-/** POST /api/v1/admin/gateway/billing/rollover. Omitted tenantId: every due subscription. */
-export const GatewayRolloverRequestSchema = z
-  .object({ tenantId: z.string().min(1).max(256).optional() })
-  .strict();
 
 // ─── Gateway admin console (#353) ──────────────────────────────────────────
 // Guide: apps/docs/guide/gateway-admin.md. Authorization is
@@ -209,7 +140,11 @@ export const GatewayCatalogCloneRequestSchema = z.object({ from: GatewayCatalogV
 
 /** An upstream secret: a `GATEWAY_UPSTREAM_*` Worker secret name, or a key sealed on receipt. Write-only. */
 export const GatewayUpstreamCredentialSchema = z.union([
-  z.object({ secretRef: z.string().regex(/^GATEWAY_UPSTREAM_[A-Z0-9_]{1,120}$/) }).strict(),
+  z
+    .object({
+      secretRef: z.string().regex(/^GATEWAY_UPSTREAM_[A-Z0-9_]{1,120}$/),
+    })
+    .strict(),
   z
     .object({
       apiKey: z.string().trim().min(8).max(4096),
@@ -252,7 +187,11 @@ export const GatewayUpstreamUpdateRequestSchema = z
  * `false` revokes every previous version at once.
  */
 export const GatewayUpstreamRotateRequestSchema = z
-  .object({ credential: GatewayUpstreamCredentialSchema, drain: z.boolean().optional(), reason: reason().optional() })
+  .object({
+    credential: GatewayUpstreamCredentialSchema,
+    drain: z.boolean().optional(),
+    reason: reason().optional(),
+  })
   .strict();
 
 /** A key version name, e.g. `v2`. */
@@ -260,7 +199,10 @@ export const GatewayUpstreamKeyVersionSchema = z.string().regex(/^[A-Za-z0-9._-]
 
 /** POST /api/v1/admin/gateway/upstreams/:id/revoke: remove one key version. */
 export const GatewayUpstreamRevokeRequestSchema = z
-  .object({ keyVersion: GatewayUpstreamKeyVersionSchema, reason: reason().optional() })
+  .object({
+    keyVersion: GatewayUpstreamKeyVersionSchema,
+    reason: reason().optional(),
+  })
   .strict();
 
 /**
@@ -309,28 +251,12 @@ export const GatewayMemberRoleRequestSchema = z
   .object({ role: z.enum(GATEWAY_TENANT_ROLES), reason: reason().optional() })
   .strict();
 
-/** POST /api/v1/admin/gateway/tenants/:tenantId/wallet/adjust (platform correction). */
-export const GatewayWalletAdjustRequestSchema = z
-  .object({
-    deltaMicroCredits: z
-      .number()
-      .int()
-      .min(-Number.MAX_SAFE_INTEGER)
-      .max(Number.MAX_SAFE_INTEGER)
-      .refine((value) => value !== 0, "zero adjustment"),
-    reason: reason(),
-    idempotencyKey: GatewayIdempotencyKeySchema,
-  })
-  .strict();
-
-/** POST /api/v1/admin/gateway/tenants/:tenantId/wallet/status. */
-export const GatewayWalletStatusRequestSchema = z
-  .object({ status: z.enum(["active", "suspended"]), reason: reason() })
-  .strict();
-
 /** PUT …/keys/:keyId/rate-limit and …/subscription/rate-limit; null clears the limit. */
 export const GatewayRateLimitUpdateRequestSchema = z
-  .object({ rateLimit: GatewayRateLimitSchema.nullable(), reason: reason().optional() })
+  .object({
+    rateLimit: GatewayRateLimitSchema.nullable(),
+    reason: reason().optional(),
+  })
   .strict();
 
 /** An admin account id (`adm_…`, admin_accounts.id). */
@@ -411,5 +337,8 @@ export const GatewayAuditQuerySchema = z
 
 /** GET /api/v1/admin/gateway/tenants. */
 export const GatewayTenantListQuerySchema = z
-  .object({ query: z.string().trim().min(1).max(128).optional(), limit: queryLimit(500, 100) })
+  .object({
+    query: z.string().trim().min(1).max(128).optional(),
+    limit: queryLimit(500, 100),
+  })
   .strict();
