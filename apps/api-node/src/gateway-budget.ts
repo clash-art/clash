@@ -755,6 +755,27 @@ export function createPgGatewayBudgetStore(
           debit.amount_micro_credits,
           "amount_micro_credits",
         );
+        // A period rollover (#365) may have cleared this debit's spend
+        // already; then only what is still in `spent` is taken back, and the
+        // ledger row records how much so the invariant check stays exact.
+        const locked = await tx.query<{
+          spent_micro_credits: number | string;
+          period: string;
+        }>(
+          `SELECT spent_micro_credits, period FROM gateway_budget
+            WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+          [debit.budget_id, parsed.tenantId],
+        );
+        const current = locked.rows[0];
+        const periodic =
+          current !== undefined &&
+          (current.period === "daily" || current.period === "monthly");
+        const rollback = periodic
+          ? Math.min(
+              amount,
+              readMicroCredits(current.spent_micro_credits, "spent_micro_credits"),
+            )
+          : amount;
         const inserted = await tx.query<{ id: string }>(
           `INSERT INTO gateway_usage_ledger
              (id, request_id, budget_id, kind, status, tenant_id, user_id, key_id,
@@ -778,6 +799,9 @@ export function createPgGatewayBudgetStore(
             JSON.stringify({
               settlement: "refund",
               refundedMicroCredits: amount,
+              ...(rollback === amount
+                ? {}
+                : { spentRolledBackMicroCredits: rollback }),
             }),
             occurredAtS,
           ],
@@ -791,7 +815,7 @@ export function createPgGatewayBudgetStore(
                   updated_at = $4
             WHERE id = $1 AND tenant_id = $2 AND spent_micro_credits >= $3
             RETURNING id`,
-          [debit.budget_id, parsed.tenantId, amount, occurredAtS],
+          [debit.budget_id, parsed.tenantId, rollback, occurredAtS],
         );
         if (updated.rows.length !== 1) {
           throw new GatewayError("GATEWAY_SETTLEMENT_FAILED", {
@@ -1152,6 +1176,22 @@ export interface GatewayInvariantOptions {
   floorMicroCredits?: number;
 }
 
+/** Settlement kinds plus the period-rollover `adjust` rows (#365). */
+const SPEND_KINDS =
+  "(kind IN ('debit', 'charge', 'refund') OR (kind = 'adjust' AND ref_kind = 'period_rollover'))";
+
+/** A refund after a rollover may take back less than it refunds. */
+function refundRollbackOf(row: LedgerRow, amount: number): number {
+  const basis = row.billing_basis as
+    | { spentRolledBackMicroCredits?: unknown }
+    | null
+    | undefined;
+  const rolled = basis?.spentRolledBackMicroCredits;
+  return rolled === undefined
+    ? amount
+    : readMicroCredits(rolled, "spentRolledBackMicroCredits");
+}
+
 /**
  * Re-derive the budgets from the ledger and report every drift this store can
  * produce. Admin movements (`grant`, `topup`, `expire`, `adjust`) move a
@@ -1173,10 +1213,11 @@ export async function checkGatewayInvariants(
 
   const ledgerFilter =
     options.tenantId === undefined
-      ? " WHERE kind IN ('debit', 'charge', 'refund')"
-      : " WHERE tenant_id = $1 AND kind IN ('debit', 'charge', 'refund')";
+      ? ` WHERE ${SPEND_KINDS}`
+      : ` WHERE tenant_id = $1 AND ${SPEND_KINDS}`;
   const { rows: ledgerRows } = await db.query<LedgerRow>(
-    `SELECT id, request_id, budget_id, kind, amount_micro_credits, user_id, key_id
+    `SELECT id, request_id, budget_id, kind, amount_micro_credits, user_id, key_id,
+            ref_kind, billing_basis
        FROM gateway_usage_ledger${ledgerFilter}
       ORDER BY request_id, budget_id, kind`,
     options.tenantId === undefined ? [] : [options.tenantId],
@@ -1209,9 +1250,15 @@ export async function checkGatewayInvariants(
       spend.set(row.budget_id, (spend.get(row.budget_id) ?? 0) + amount);
     } else if (row.kind === "charge") {
       spend.set(row.budget_id, (spend.get(row.budget_id) ?? 0) + amount);
+    } else if (row.kind === "adjust") {
+      // Period rollover (#365): the spend it cleared.
+      spend.set(row.budget_id, (spend.get(row.budget_id) ?? 0) - amount);
     } else {
       refunds.set(key, (refunds.get(key) ?? 0) + amount);
-      spend.set(row.budget_id, (spend.get(row.budget_id) ?? 0) - amount);
+      spend.set(
+        row.budget_id,
+        (spend.get(row.budget_id) ?? 0) - refundRollbackOf(row, amount),
+      );
     }
   }
 

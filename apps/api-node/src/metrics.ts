@@ -18,6 +18,8 @@ import type { PostgresQueryPort } from "@clash/shared-runtime/project-authorizat
 interface Instruments {
   outboxDispatched: Counter;
   generationDuration: Histogram;
+  budgetRolled: Counter;
+  budgetRolloverLag: Histogram;
 }
 
 let instruments: Instruments | undefined;
@@ -36,6 +38,17 @@ function current(): Instruments {
       description: "Durable generation runs from creation to a terminal phase.",
       unit: "s",
     }),
+    budgetRolled: meter().createCounter("clash.gateway.budget.rolled", {
+      description: "Gateway budgets moved into a new period.",
+      unit: "{budget}",
+    }),
+    budgetRolloverLag: meter().createHistogram(
+      "clash.gateway.budget.rollover_lag",
+      {
+        description: "Seconds the oldest rolled budget was past reset_at, per tick.",
+        unit: "s",
+      },
+    ),
   });
 }
 
@@ -95,4 +108,29 @@ export function recordGenerationTransition(
     Math.max(0, next.updatedAt - next.createdAt) / 1000,
     { "clash.generation.outcome": next.phase },
   );
+}
+
+let lastRolloverBacklog = 0;
+let rolloverBacklogObserved = false;
+
+/** Record one rollover tick: rolled count, lag, and the due backlog gauge. */
+export function recordBudgetRollover(result: {
+  rolled: number;
+  backlog: number;
+  maxLagS: number;
+}): void {
+  if (result.rolled > 0) {
+    current().budgetRolled.add(result.rolled);
+    current().budgetRolloverLag.record(result.maxLagS);
+  }
+  lastRolloverBacklog = result.backlog;
+  if (!rolloverBacklogObserved) {
+    rolloverBacklogObserved = true;
+    meter()
+      .createObservableGauge("clash.gateway.budget.rollover_backlog", {
+        description: "Gateway budgets past reset_at after the last tick.",
+        unit: "{budget}",
+      })
+      .addCallback((observer) => observer.observe(lastRolloverBacklog));
+  }
 }
