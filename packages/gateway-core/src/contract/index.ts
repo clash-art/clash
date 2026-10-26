@@ -483,6 +483,7 @@ export function describeGatewayContract(
         requestId: ports().ids.requestId(),
         tenantId: identity.tenantId,
         budgetIds: identity.budgetIds,
+        credentialScope: identity.credentialScope,
         holdMicroCredits: hold,
         expiresAt: expiresAt ?? ports().clock.now() + 60_000,
         ...(idempotencyKey ? { idempotencyKey } : {}),

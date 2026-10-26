@@ -25,6 +25,7 @@ import { holdUnits, type GatewayRequest } from "./request.js";
 import {
   planGatewayRoutes,
   type GatewayCatalog,
+  type GatewayCredentialScope,
   type GatewayRouteAttempt,
   type GatewayRoutePlan,
   type PlanGatewayRoutesInput,
@@ -68,6 +69,37 @@ export function assertModelAllowed(identity: GatewayIdentity, model: string): vo
     throw new GatewayError("GATEWAY_MODEL_NOT_ALLOWED", { details: { model } });
 }
 
+/** The scopes an identity's requests may be served from, in priority order. */
+export function credentialScopeOrder(identity: GatewayIdentity): GatewayCredentialScope[] {
+  const order = identity.credentialPriority?.length ? identity.credentialPriority : [identity.credentialScope];
+  return [...new Set(order)];
+}
+
+/**
+ * Plan a request in the first scope of the caller's priority that has a
+ * route (#369). The plan holds one scope only, so a failover never crosses
+ * from BYOK to official (or back) after the budget was reserved for it; the
+ * returned identity carries the resolved scope.
+ */
+export async function planForIdentity(
+  ports: Pick<GatewayPorts, "routes">,
+  identity: GatewayIdentity,
+  input: Omit<PlanGatewayRoutesInput, "scope" | "providers">,
+): Promise<{ plan: GatewayRoutePlan; identity: GatewayIdentity }> {
+  let last: unknown;
+  for (const scope of credentialScopeOrder(identity)) {
+    const providers = await ports.routes.providers(identity, scope);
+    try {
+      const plan = planGatewayRoutes({ ...input, scope, providers });
+      return { plan, identity: scope === identity.credentialScope ? identity : { ...identity, credentialScope: scope } };
+    } catch (error) {
+      if (!(error instanceof GatewayError) || error.code !== "GATEWAY_NO_ROUTE") throw error;
+      last = error;
+    }
+  }
+  throw last ?? new GatewayError("GATEWAY_NO_ROUTE", { details: { model: input.modelCode } });
+}
+
 /** Admit or reject with a coded error; on rejection nothing stays held or leased. */
 export function admitGatewayRequest(
   ports: GatewayPorts,
@@ -84,20 +116,17 @@ async function admit(
   input: { httpRequest: Request; request: GatewayRequest },
   options: AdmitOptions,
 ): Promise<GatewayAdmission> {
-  const identity = await ports.identity.authenticate(input.httpRequest);
-  const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(identity));
+  const caller = await ports.identity.authenticate(input.httpRequest);
+  const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(caller));
   const request = options.resolveModel
     ? { ...input.request, model: options.resolveModel(input.request.model, catalog) }
     : input.request;
-  assertModelAllowed(identity, request.model);
-  const providers = await ports.routes.providers(identity, identity.credentialScope);
-  const plan = planGatewayRoutes({
+  assertModelAllowed(caller, request.model);
+  const { plan, identity } = await planForIdentity(ports, caller, {
     ...options.routing,
     modelCode: request.model,
     kind: request.kind,
     catalog,
-    scope: identity.credentialScope,
-    providers,
     requestedParameterIds: request.requestedParameterIds,
   });
   const pricedAt = ports.clock.now();
@@ -137,6 +166,14 @@ export async function reserveAdmission(
   },
 ): Promise<GatewayAdmission> {
   const { requestId, identity, request, plan, price, pricedAt } = input;
+  // The budget learns the one scope the request is served from; a plan that
+  // mixed scopes could reach an official key on a BYOK-exempt reservation.
+  const credentialScope = plan.attempts[0]?.scope ?? identity.credentialScope;
+  if (plan.attempts.some((attempt) => attempt.scope !== credentialScope))
+    throw new GatewayError("GATEWAY_INTERNAL", {
+      message: "A route plan mixes credential scopes.",
+      details: { reason: "mixed_credential_scope" },
+    });
   assertPriceCovers(price, holdUnits(request));
   const holdMicroCredits = computeHold(request, price);
   const limitDecision = await ports.limits.admit({
@@ -154,6 +191,7 @@ export async function reserveAdmission(
       requestId,
       tenantId: identity.tenantId,
       budgetIds: identity.budgetIds,
+      credentialScope,
       holdMicroCredits,
       expiresAt: admittedAt + input.holdTtlMs,
       ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),

@@ -255,6 +255,11 @@ export function createD1GatewayBudgetPorts(
     async reserve(input) {
       assertMicroCredits(input.holdMicroCredits, "hold");
       const ids = [...new Set(input.budgetIds)].sort();
+      // BYOK (#369): a tenant-scope request with no budget row is admitted
+      // without a hold (the tenant pays its own upstream). An official-scope
+      // request with no budget never is; a BYOK caller with budgets holds them.
+      if (ids.length === 0 && input.credentialScope === "tenant")
+        return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
       if (ids.length === 0)
         throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
       const nowS = toSeconds(deps.clock.now());
@@ -369,6 +374,10 @@ export function createD1GatewayBudgetPorts(
         )
         .bind(event.requestId, event.tenantId)
         .all<{ budget_id: string }>();
+      // An unbudgeted BYOK request (#369) was admitted holding nothing: no
+      // budget moves. Official scope with no hold is never settled for free.
+      if (holds.length === 0 && event.credentialScope === "tenant")
+        return { requestId: event.requestId, costMicroCredits: 0, duplicate: false };
       if (holds.length === 0)
         throw new GatewayError("GATEWAY_INTERNAL", {
           message: "Settlement for a request with no open reservation.",

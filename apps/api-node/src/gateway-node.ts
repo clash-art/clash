@@ -102,6 +102,43 @@ const BUDGET_IDS_SQL = (tenant: string, user: string, key: string) =>
          OR (b.scope = 'user' AND b.scope_id = ${user})
          OR (b.scope = 'key' AND b.scope_id = ${key}))), '[]'::json)`;
 
+/**
+ * The caller's configured scope order (#369): its member row, else its
+ * tenant row, else NULL (the credential's own scope only).
+ */
+const PRIORITY_SQL = (tenant: string, user: string) =>
+  `(SELECT p.priority FROM gateway_credential_priority p
+     WHERE p.tenant_id = ${tenant} AND p.user_id IN (${user}, '')
+     ORDER BY p.user_id DESC LIMIT 1)`;
+
+export type GatewayCredentialPriority = "official_only" | "tenant_only" | "official_first" | "tenant_first";
+
+const PRIORITY_ORDER: Record<GatewayCredentialPriority, readonly GatewayCredentialScope[]> = {
+  official_only: ["official"],
+  tenant_only: ["tenant"],
+  official_first: ["official", "tenant"],
+  tenant_first: ["tenant", "official"],
+};
+
+/** Scope order for a stored priority; unknown or absent: `[scope]` only. */
+export function credentialPriorityOrder(
+  priority: unknown,
+  scope: GatewayCredentialScope,
+): readonly GatewayCredentialScope[] {
+  return typeof priority === "string" && priority in PRIORITY_ORDER
+    ? PRIORITY_ORDER[priority as GatewayCredentialPriority]
+    : [scope];
+}
+
+/** Identity fields for a resolved scope order; the first scope is the primary. */
+function withPriority(
+  priority: unknown,
+  scope: GatewayCredentialScope,
+): Pick<GatewayIdentity, "credentialScope" | "credentialPriority"> {
+  const order = credentialPriorityOrder(priority, scope);
+  return { credentialScope: order[0]!, credentialPriority: order };
+}
+
 export interface SessionResolver {
   /** The signed-in user of a Better Auth session cookie, or null. */
   (headers: Headers): Promise<{ userId: string } | null>;
@@ -134,10 +171,12 @@ export function createPgGatewayIdentityPort(deps: {
           expires_at: string | number | null;
           revoked_at: string | number | null;
           budget_ids: unknown;
+          priority: string | null;
         }>(
           `SELECT k.id, k.tenant_id, k.user_id, k.model_allowlist, k.credential_scope,
                   k.expires_at, k.revoked_at,
-                  ${BUDGET_IDS_SQL("k.tenant_id", "k.user_id", "k.id")} AS budget_ids
+                  ${BUDGET_IDS_SQL("k.tenant_id", "k.user_id", "k.id")} AS budget_ids,
+                  ${PRIORITY_SQL("k.tenant_id", "k.user_id")} AS priority
              FROM gateway_virtual_key k WHERE k.token_hash = $1 LIMIT 1`,
           [sha256Hex(token)],
         );
@@ -154,29 +193,31 @@ export function createPgGatewayIdentityPort(deps: {
           keyId: row.id,
           ...(modelAllowlist ? { modelAllowlist } : {}),
           budgetIds: parseList(row.budget_ids) ?? [],
-          credentialScope: row.credential_scope,
+          ...withPriority(row.priority, row.credential_scope),
         };
       }
       if (token?.startsWith("clsh_")) {
-        const { rows } = await db.query<{ user_id: string; budget_ids: unknown }>(
+        const { rows } = await db.query<{ user_id: string; budget_ids: unknown; priority: string | null }>(
           `SELECT a.user_id,
-                  ${BUDGET_IDS_SQL("('personal:' || a.user_id)", "a.user_id", "''")} AS budget_ids
+                  ${BUDGET_IDS_SQL("('personal:' || a.user_id)", "a.user_id", "''")} AS budget_ids,
+                  ${PRIORITY_SQL("('personal:' || a.user_id)", "a.user_id")} AS priority
              FROM api_token a WHERE a.token_hash = $1 LIMIT 1`,
           [sha256Hex(token)],
         );
         const row = rows[0];
         if (!row) throw unauthenticated("unknown");
-        return personalIdentity(row.user_id, row.budget_ids);
+        return personalIdentity(row.user_id, row.budget_ids, row.priority);
       }
       if (!token && deps.session && request.headers.has("cookie")) {
         const session = await deps.session(request.headers).catch(() => null);
         if (session) {
           const tenantId = personalTenantId(session.userId);
-          const { rows } = await db.query<{ budget_ids: unknown }>(
-            `SELECT ${BUDGET_IDS_SQL("$1::text", "$2::text", "''")} AS budget_ids`,
+          const { rows } = await db.query<{ budget_ids: unknown; priority: string | null }>(
+            `SELECT ${BUDGET_IDS_SQL("$1::text", "$2::text", "''")} AS budget_ids,
+                    ${PRIORITY_SQL("$1::text", "$2::text")} AS priority`,
             [tenantId, session.userId],
           );
-          return personalIdentity(session.userId, rows[0]?.budget_ids);
+          return personalIdentity(session.userId, rows[0]?.budget_ids, rows[0]?.priority);
         }
       }
       throw unauthenticated(token ? "unknown" : "missing");
@@ -184,12 +225,12 @@ export function createPgGatewayIdentityPort(deps: {
   };
 }
 
-function personalIdentity(userId: string, budgetIds: unknown): GatewayIdentity {
+function personalIdentity(userId: string, budgetIds: unknown, priority?: unknown): GatewayIdentity {
   return {
     tenantId: personalTenantId(userId),
     userId,
     budgetIds: parseList(budgetIds) ?? [],
-    credentialScope: "official",
+    ...withPriority(priority, "official"),
   };
 }
 
@@ -339,9 +380,13 @@ export function createN2GatewayBudgetPort(deps: {
   }
   return {
     async reserve(input) {
-      // Fail closed: every caller (virtual key, clsh_, session; official or
-      // tenant scope) is admitted only against a real N2 budget row. No row
-      // means no free pass — refuse with the coded 402.
+      // Fail closed: an official-scope request (any caller: virtual key,
+      // clsh_, session) is admitted only against a real N2 budget row; no
+      // row means no free pass — the coded 402. BYOK (#369): a tenant-scope
+      // request with no row is admitted (the tenant pays its own upstream);
+      // with a row it is held to that budget like any other.
+      if (input.budgetIds.length === 0 && input.credentialScope === "tenant")
+        return { requestId: input.requestId, holds: [], expiresAt: input.expiresAt };
       if (input.budgetIds.length === 0)
         throw new GatewayError("GATEWAY_BUDGET_EXCEEDED", { details: { reason: "no_budget" } });
       await store.admitText({ tenantId: input.tenantId, budgetIds: input.budgetIds });
@@ -379,8 +424,11 @@ export function createN2GatewayBudgetPort(deps: {
   };
   async function settleOnce(event: UsageEvent) {
       const budgetIds = await budgetIdsOf(event);
-      // Admission refused budgetless callers; a budget vanishing mid-request
-      // must not settle for free either.
+      // An unbudgeted BYOK request moves no platform money (#369).
+      if (budgetIds.length === 0 && event.credentialScope === "tenant")
+        return { requestId: event.requestId, costMicroCredits: 0, duplicate: false };
+      // Admission refused budgetless official callers; a budget vanishing
+      // mid-request must not settle for free either.
       if (budgetIds.length === 0)
         throw new GatewayError("GATEWAY_INTERNAL", { details: { reason: "settle_without_budget" } });
       const result = await store.chargeText({

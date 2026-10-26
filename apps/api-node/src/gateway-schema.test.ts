@@ -24,6 +24,7 @@ it("applies the postgres gateway migration on PGlite (0016)", async () => {
       "gateway_admin_audit",
       "gateway_budget",
       "gateway_config",
+      "gateway_credential_priority",
       "gateway_idempotency_claim",
       "gateway_inflight",
       "gateway_model",

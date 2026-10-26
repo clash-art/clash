@@ -29,8 +29,18 @@ export interface GatewayIdentity {
   modelAllowlist?: readonly string[];
   /** Budgets this caller draws on, all reserved together. */
   budgetIds: readonly string[];
-  /** Which upstream accounts serve this caller. */
+  /**
+   * Which upstream accounts serve this caller. After admission this is the
+   * scope the request was resolved to (see `credentialPriority`).
+   */
   credentialScope: GatewayCredentialScope;
+  /**
+   * User-configurable scope order (N12, #369): the scopes tried, in order,
+   * when planning a request; the first scope with a route wins and every
+   * attempt of the request stays in it (official and BYOK keys never mix).
+   * Absent or empty: `[credentialScope]` only.
+   */
+  credentialPriority?: readonly GatewayCredentialScope[];
 }
 
 export interface GatewayClock {
@@ -129,6 +139,12 @@ export interface ReserveInput {
   requestId: string;
   tenantId: string;
   budgetIds: readonly string[];
+  /**
+   * Scope every attempt of this request is served from. An adapter may admit
+   * a `tenant` (BYOK) request with no budget row (the tenant pays its own
+   * upstream); an `official` request with no budget always refuses (#369).
+   */
+  credentialScope: GatewayCredentialScope;
   holdMicroCredits: MicroCredits;
   /** Epoch ms after which the sweeper may expire the hold. */
   expiresAt: number;
