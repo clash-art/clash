@@ -2,12 +2,17 @@
  * Upstream accounts page (#353). Secrets are write-only: the form sends a
  * Worker secret name or an API key once, the key field is cleared after
  * every submit, and the server only ever answers the credential kind, field
- * names and key version.
+ * names, key version and the key's first characters.
+ *
+ * Rotation (#350) adds the next key version while the previous one drains;
+ * revoking the draining version ends the drain, revoking the active one rolls
+ * back to the draining one. The circuit column is the account's breaker state.
  */
 import { useState } from "react";
 
-import { adminApi, type UpstreamAccount, type UpstreamCredential } from "../../lib/adminClient";
+import { adminApi, type UpstreamAccount, type UpstreamCredential, type UpstreamKeyVersion } from "../../lib/adminClient";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { SelectMenu } from "../ui/select";
 import { AdminCard, AdminErrorAlert, AdminField, AdminSection, AdminTable, StatusPill, formatTime, useAdminAction } from "./AdminKit";
 import { RateLimitForm } from "./RateLimitForm";
@@ -61,7 +66,7 @@ function CredentialFields({
       ) : (
         <AdminField
           label="Secret name"
-          hint="A GATEWAY_UPSTREAM_* Worker secret."
+          hint="A GATEWAY_UPSTREAM_* Worker secret or Secrets Store binding."
           value={secret}
           onChange={(e) => onSecretChange(e.target.value)}
           required
@@ -77,6 +82,42 @@ function credentialOf(kind: CredentialKind, secret: string, baseUrl: string): Up
     : { apiKey: secret.trim(), ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}) };
 }
 
+/** One key version: its source, version and first characters; never the key. */
+function KeyVersionLine({ version }: { version: UpstreamKeyVersion }) {
+  return (
+    <>
+      {version.kind === "secret_ref" ? `secret ${version.secretRef}` : `sealed ${version.fields.join(", ")}`}
+      {" · "}
+      {version.keyVersion}
+      {version.keyPrefix ? ` · ${version.keyPrefix}…` : ""}
+      {version.secretPresent === false ? (
+        <>
+          {" "}
+          <StatusPill tone="warn">unbound</StatusPill>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function CircuitCell({ health }: { health: UpstreamAccount["health"] }) {
+  if (!health) return <StatusPill tone="ok">closed</StatusPill>;
+  const tone = health.state === "open" ? "warn" : health.state === "half_open" ? "muted" : "ok";
+  return (
+    <div className="text-xs">
+      <StatusPill tone={tone}>{health.state.replace("_", "-")}</StatusPill>
+      {health.consecutiveFailures > 0 ? (
+        <div className="text-stone-500">
+          {health.consecutiveFailures} failed{health.lastFailureCode ? ` · ${health.lastFailureCode}` : ""}
+        </div>
+      ) : null}
+      {health.state === "open" ? <div className="text-stone-500">until {formatTime(health.openUntil)}</div> : null}
+    </div>
+  );
+}
+
+type Revoking = { accountId: string; keyVersion: string };
+
 export function AdminUpstreams({
   upstreams,
   canWrite,
@@ -88,6 +129,12 @@ export function AdminUpstreams({
 }) {
   const toggle = useAdminAction(onChanged);
   const [rotating, setRotating] = useState<string | null>(null);
+  const [revoking, setRevoking] = useState<Revoking | null>(null);
+  const revokingAccount = revoking ? upstreams.find((row) => row.id === revoking.accountId) : undefined;
+  const openRevoke = (accountId: string, keyVersion: string) => {
+    setRotating(null);
+    setRevoking({ accountId, keyVersion });
+  };
   return (
     <>
       <AdminSection title="Official upstream accounts" description="Server-owned keys the gateway routes official traffic through.">
@@ -116,13 +163,19 @@ export function AdminUpstreams({
               header: "Credential",
               cell: (row) => (
                 <div className="text-xs">
-                  {row.credential.kind === "secret_ref" ? `secret ${row.credential.secretRef}` : `sealed ${row.credential.fields.join(", ")}`}
-                  <div className="text-stone-500">
-                    {row.credential.keyVersion} · rotated {formatTime(row.credential.rotatedAt)}
+                  <div>
+                    <KeyVersionLine version={row.credential} />
                   </div>
+                  <div className="text-stone-500">rotated {formatTime(row.credential.rotatedAt)}</div>
+                  {row.draining ? (
+                    <div className="mt-1 text-stone-500">
+                      draining <KeyVersionLine version={row.draining} /> · since {formatTime(row.draining.since)}
+                    </div>
+                  ) : null}
                 </div>
               ),
             },
+            { header: "Circuit", cell: (row) => <CircuitCell health={row.health} /> },
             { header: "Priority / weight", cell: (row) => `${row.priority ?? "—"} / ${row.weight ?? "—"}` },
             {
               header: "Rate limit",
@@ -149,9 +202,25 @@ export function AdminUpstreams({
                     >
                       {row.enabled ? "Disable" : "Enable"}
                     </Button>
-                    <Button size="sm" onClick={() => setRotating(rotating === row.id ? null : row.id)}>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setRevoking(null);
+                        setRotating(rotating === row.id ? null : row.id);
+                      }}
+                    >
                       Rotate key
                     </Button>
+                    {row.draining ? (
+                      <>
+                        <Button size="sm" variant="destructive" onClick={() => openRevoke(row.id, row.draining!.keyVersion)}>
+                          Revoke {row.draining.keyVersion}
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => openRevoke(row.id, row.credential.keyVersion)}>
+                          Roll back to {row.draining.keyVersion}
+                        </Button>
+                      </>
+                    ) : null}
                   </div>
                 ) : null,
             },
@@ -159,9 +228,21 @@ export function AdminUpstreams({
         />
         {rotating ? (
           <RotateForm
+            key={rotating}
             account={upstreams.find((row) => row.id === rotating)!}
             onDone={() => {
               setRotating(null);
+              onChanged();
+            }}
+          />
+        ) : null}
+        {revoking && revokingAccount ? (
+          <RevokeForm
+            key={`${revoking.accountId}:${revoking.keyVersion}`}
+            account={revokingAccount}
+            keyVersion={revoking.keyVersion}
+            onDone={() => {
+              setRevoking(null);
               onChanged();
             }}
           />
@@ -177,7 +258,9 @@ function RotateForm({ account, onDone }: { account: UpstreamAccount; onDone: () 
   const [secret, setSecret] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [reason, setReason] = useState("");
+  const [revokeNow, setRevokeNow] = useState(false);
   const action = useAdminAction(onDone);
+  const previous = [account.credential.keyVersion, ...(account.draining ? [account.draining.keyVersion] : [])].join(", ");
   return (
     <AdminCard>
       <form
@@ -185,17 +268,55 @@ function RotateForm({ account, onDone }: { account: UpstreamAccount; onDone: () 
         className="grid gap-3 sm:grid-cols-4"
         onSubmit={action.submit(async () => {
           try {
-            await adminApi.rotateUpstream(account.id, credentialOf(kind, secret, baseUrl), reason.trim() || undefined);
+            await adminApi.rotateUpstream(account.id, credentialOf(kind, secret, baseUrl), {
+              ...(reason.trim() ? { reason: reason.trim() } : {}),
+              ...(revokeNow ? { drain: false } : {}),
+            });
           } finally {
             setSecret("");
           }
         })}
       >
         <CredentialFields kind={kind} onKindChange={setKind} secret={secret} onSecretChange={setSecret} baseUrl={baseUrl} onBaseUrlChange={setBaseUrl} />
-        <AdminField label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <AdminField label="Reason" hint="kept in the audit log" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <label className="flex items-center gap-2 text-sm sm:col-span-4">
+          <Checkbox aria-label="Revoke previous versions now" checked={revokeNow} onCheckedChange={(checked) => setRevokeNow(checked === true)} />
+          <span>
+            Revoke {previous} now (a leaked key) instead of letting {account.credential.keyVersion} drain
+          </span>
+        </label>
         <div className="sm:col-span-4">
           <Button type="submit" size="sm" variant="primary" disabled={action.pending}>
-            Rotate to {account.credential.keyVersion.replace(/\d+$/, (n) => String(Number(n) + 1))}
+            Rotate to {account.nextKeyVersion}
+          </Button>
+        </div>
+      </form>
+      <AdminErrorAlert error={action.error} />
+    </AdminCard>
+  );
+}
+
+/** Revoke one key version: the draining one ends the drain, the active one rolls back to the draining one. */
+function RevokeForm({ account, keyVersion, onDone }: { account: UpstreamAccount; keyVersion: string; onDone: () => void }) {
+  const [reason, setReason] = useState("");
+  const action = useAdminAction(onDone);
+  const rollback = keyVersion === account.credential.keyVersion && account.draining !== null;
+  return (
+    <AdminCard>
+      <form
+        aria-label={`Revoke ${keyVersion} of ${account.label ?? account.id}`}
+        className="grid gap-3 sm:grid-cols-4"
+        onSubmit={action.submit(() => adminApi.revokeUpstreamKey(account.id, keyVersion, reason.trim() || undefined))}
+      >
+        <p className="text-sm sm:col-span-4">
+          {rollback
+            ? `Revoke ${keyVersion} and serve ${account.draining!.keyVersion} again.`
+            : `Revoke ${keyVersion}; only ${account.credential.keyVersion} is sent afterwards.`}
+        </p>
+        <AdminField label="Reason" hint="kept in the audit log" value={reason} onChange={(e) => setReason(e.target.value)} />
+        <div className="sm:col-span-4">
+          <Button type="submit" size="sm" variant="destructive" disabled={action.pending}>
+            Revoke {keyVersion}
           </Button>
         </div>
       </form>

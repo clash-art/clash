@@ -95,6 +95,46 @@ and writes no ledger row. Any other path under `/gateway/anthropic/v1` answers
    the caller's credential nor the upstream key can be.
    See [gateway-admin.md](gateway-admin.md#staff-prompt-access-and-body-retention).
 
+## Upstream keys and failover
+
+(#350.) Each route is called with its official account's **active** key
+version (`credentials.resolve`). Rotation and revocation are admin
+operations ([gateway-admin.md](gateway-admin.md#upstream-key-rotation)).
+
+- **Refused key.** If the upstream answers 401/403, the same route is retried
+  with the account's **draining** version (`excludeKeyVersions` names the
+  refused ones), still before the first byte. Once every version is refused,
+  the route fails as `GATEWAY_KEY_UNAVAILABLE` and the plan fails over.
+- **Fail closed.** A version that cannot be read or decrypted (a missing
+  Worker secret or Secrets Store binding, a store error, a bad envelope, a
+  missing or shared KEK) is `GATEWAY_KEY_UNAVAILABLE` for that route. It is
+  never replaced by the account's other version, and nothing is sent to that
+  upstream; the next route may serve.
+- **Before the first byte only.** A connect failure, 408, 429 or 5xx fails
+  over to the next route, and so does a deadline on an idempotent route.
+  After the first byte reaches the caller nothing is retried: a retry would
+  duplicate output and billing. A caller-caused 4xx is not retried.
+- **Circuit breaker** (`circuit.ts`; counters in `gateway_upstream_health`,
+  0043). Official accounts only. Each failure above, and a 2xx that is not an
+  answer, counts. A caller's 4xx and anything after the first byte do not.
+  After `failureThreshold` consecutive failures (default 5), the account is
+  skipped without contact for `cooldownMs` (default 30 s). Then it is
+  half-open: one success closes it and one failure reopens it. When every
+  planned route is open, the answer is 503 `GATEWAY_NO_ROUTE` with
+  `Retry-After` (the soonest reopening). The counters are advisory: if they
+  cannot be read or written, the request routes as if every circuit were
+  closed and the answer is unchanged.
+- **No key material leaves the vault.** Logs (`gateway.upstream_key_refused`,
+  `gateway.key_unavailable`, `gateway.circuit_open`, the completion log) name
+  the account and the key version, never the key. Errors carry the account
+  id and a reason. Ledger rows and retained bodies hold neither.
+
+Tenant BYOK keys stay in `provider_account` under `ACTION_SECRET_KEY`. The
+official vault's KEK is `GATEWAY_ENCRYPTION_KEY` with its own salt, and a
+deployment that configures the same value for both has no official KEK:
+sealed official keys fail closed (`encryption_key_shared_with_byok`) and the
+console refuses to seal new ones (`GATEWAY_ENCRYPTION_KEY_SHARED`).
+
 ## Streaming
 
 `stream: true` (#348) uses the same admission, so the hold is reserved before
@@ -283,6 +323,7 @@ Errors use the OpenAI error shape (the Anthropic error shape under
 | Upstream deadline                                  | `GATEWAY_UPSTREAM_TIMEOUT` 504          |
 | Upstream 4xx                                       | `GATEWAY_UPSTREAM_REJECTED` 400         |
 | No usable official key or route                    | `GATEWAY_KEY_UNAVAILABLE` / `GATEWAY_NO_ROUTE` 503 |
+| Every planned account's circuit open               | `GATEWAY_NO_ROUTE` 503 with `Retry-After` |
 
 ## D1 ports
 
@@ -290,7 +331,8 @@ Errors use the OpenAI error shape (the Anthropic error shape under
 | ------------- | ------------------------------------------------------------------------------------------- |
 | `identity`    | `gateway_token` (`services/gateway-tokens.ts`)                                              |
 | `routes`      | Catalog: published `gateway_model.card_json` at the newest started `published_at`. Price book: published `gateway_price` rows effective at the request's admission instant; the newest version wins, and within it exact upstream rows win over `''` rows; credits only; drafts are never charged ([gateway-price-book.md](gateway-price-book.md)). Accounts: `gateway_upstream_account` (official only; tenant BYOK returns no accounts). |
-| `credentials` | `gateway_upstream_account`: `secret_ref` names a `GATEWAY_UPSTREAM_*` Worker secret (an API key or `{apiKey, baseUrl}` JSON). Alternatively, `encrypted_credentials` is sealed with the shared secret envelope under `GATEWAY_ENCRYPTION_KEY`, which is distinct from `ACTION_SECRET_KEY`. Failures are `GATEWAY_KEY_UNAVAILABLE`. |
+| `credentials` | `gateway_upstream_account`: `secret_ref` names a `GATEWAY_UPSTREAM_*` Worker secret or Cloudflare Secrets Store binding (an API key or `{apiKey, baseUrl}` JSON). Alternatively, `encrypted_credentials` is sealed with the shared secret envelope under `GATEWAY_ENCRYPTION_KEY`, which must differ from `ACTION_SECRET_KEY`. The active version first, then the `draining_*` version (0043) when the active one was refused. Failures are `GATEWAY_KEY_UNAVAILABLE`. |
+| `upstreamHealth` | `gateway_upstream_health` (0043, `d1-upstream-health.ts`): circuit counters per official account, a failure counted in one upsert so concurrent failures never lose a count; times in epoch ms. |
 | `budgets`     | `gateway_budget` + `gateway_usage_ledger`: an all-or-nothing reserve in one D1 batch (only `hard` budgets refuse; the same batch writes `gateway_budget_event` flags for `soft`/`alert` budgets, 0041), and settle in one batch. `markSettleFailed` sets hold rows to status `settle_failed`. `status` has no CHECK constraint, so no migration is needed. A caller with no budget row is refused. `expiredHolds` / `expire` back the sweeper (open holds by `expires_at`, index 0039). |
 | `ledger`      | Reads `settle` rows of one tenant.                                                          |
 | `limits`      | `rate_limit_json` from the virtual key (per key), the member (`tenant_member`, per member), the published model (per member and model) and the tenant (the tightest of the active subscription's and `tenant.rate_limit_json`). Every subject starts with its tenant (`tenant:<t>…`). `mediaJobs` bounds media generations in flight. Counted in `gateway_rate_window` and `gateway_inflight` (0034). |

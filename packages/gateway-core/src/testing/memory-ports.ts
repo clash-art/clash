@@ -12,6 +12,7 @@ import type {
 } from "@clash/shared-types/model-routing";
 
 import { planReserve, planSettle, type BudgetHold, type BudgetState } from "../budget.js";
+import type { GatewayUpstreamHealth } from "../circuit.js";
 import { GatewayError } from "../errors.js";
 import { fixedWindowDecision, fixedWindowStart } from "../limits.js";
 import {
@@ -40,8 +41,12 @@ export interface MemoryGatewayOptions {
   catalog: GatewayCatalog;
   providers: Record<GatewayCredentialScope, ProviderAccountAvailability[]>;
   prices: GatewayPrice[];
-  /** Provider account id -> secret; the account's scope comes from `providers`. */
-  keys: Record<string, string>;
+  /**
+   * Provider account id -> secret; the account's scope comes from `providers`.
+   * A list is a rotation in progress, newest first: `[active, draining]`, the
+   * active one with the highest version (`v<n>` … `v1`).
+   */
+  keys: Record<string, string | readonly string[]>;
   budgets: Array<BudgetState & { tenantId: string }>;
   /** Fixed-window request limits by key id (or user id for keyless callers); others are unlimited. */
   rateLimits?: Record<string, { windowMs: number; limit: number }>;
@@ -79,6 +84,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
   const blobs = new Map<string, GatewayBlob>();
   const retention = new Map<string, GatewayRetentionEntry>();
   const audit: GatewayAuditEvent[] = [];
+  const health = new Map<string, GatewayUpstreamHealth>();
   const logs: MemoryGateway["logs"] = [];
 
   const scopeOf = (accountId: string | undefined): GatewayCredentialScope | undefined =>
@@ -124,13 +130,58 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
       },
     },
     credentials: {
-      async resolve({ route, scope }: { route: ModelUpstreamRoute; scope: GatewayCredentialScope }) {
-        const apiKey = route.accountId ? options.keys[route.accountId] : undefined;
-        if (!apiKey || scopeOf(route.accountId) !== scope)
+      async resolve({
+        route,
+        scope,
+        excludeKeyVersions = [],
+      }: {
+        route: ModelUpstreamRoute;
+        scope: GatewayCredentialScope;
+        excludeKeyVersions?: readonly string[];
+      }) {
+        const keys = route.accountId ? options.keys[route.accountId] : undefined;
+        if (!keys?.length || scopeOf(route.accountId) !== scope)
           throw new GatewayError("GATEWAY_KEY_UNAVAILABLE", {
             details: { upstreamId: route.upstreamId, scope },
           });
-        return { apiKey, keyId: `${route.accountId}:v1`, keyVersion: "v1" };
+        const versions = (typeof keys === "string" ? [keys] : keys).map((apiKey, index, all) => ({
+          apiKey,
+          keyVersion: `v${all.length - index}`,
+        }));
+        const usable = versions.find((version) => !excludeKeyVersions.includes(version.keyVersion));
+        if (!usable)
+          throw new GatewayError("GATEWAY_KEY_UNAVAILABLE", {
+            details: { accountId: route.accountId, reason: "no_key_version" },
+          });
+        return { apiKey: usable.apiKey, keyId: route.accountId!, keyVersion: usable.keyVersion };
+      },
+    },
+    upstreamHealth: {
+      async read({ accountIds }) {
+        return accountIds.flatMap((id) => {
+          const entry = health.get(id);
+          return entry ? [{ ...entry }] : [];
+        });
+      },
+      async recordFailure({ accountId, code, at, threshold, openUntil }) {
+        const before = health.get(accountId);
+        const consecutiveFailures = (before?.consecutiveFailures ?? 0) + 1;
+        const after: GatewayUpstreamHealth = {
+          ...before,
+          accountId,
+          consecutiveFailures,
+          lastFailureCode: code,
+          lastFailureAt: at,
+          ...(consecutiveFailures >= threshold ? { openUntil } : {}),
+        };
+        health.set(accountId, after);
+        return { ...after };
+      },
+      async recordSuccess({ accountId, at }) {
+        const before = health.get(accountId);
+        if (!before) return;
+        const { openUntil: _openUntil, ...rest } = before;
+        health.set(accountId, { ...rest, consecutiveFailures: 0, lastSuccessAt: at });
       },
     },
     budgets: {

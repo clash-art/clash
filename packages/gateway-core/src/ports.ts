@@ -11,7 +11,8 @@ import type {
 } from "@clash/shared-types/model-routing";
 
 import type { BudgetFlag, BudgetHold, BudgetState, GatewayOutcome } from "./budget.js";
-import { GatewayError } from "./errors.js";
+import type { GatewayUpstreamHealth } from "./circuit.js";
+import { GatewayError, type GatewayErrorCode } from "./errors.js";
 import type { LimitDecision } from "./limits.js";
 import type { GatewayPrice, MicroCredits } from "./pricing.js";
 import type { GatewayModelKind } from "./request.js";
@@ -82,12 +83,46 @@ export interface GatewayCredentialPort {
    * Resolve the key for one route within one scope. A route whose account does
    * not belong to `scope` rejects with GATEWAY_KEY_UNAVAILABLE, so an official
    * key can never serve tenant BYOK traffic or vice versa.
+   *
+   * An account may hold two usable key versions while a rotation drains
+   * (#350); the active one resolves first. `excludeKeyVersions` names the
+   * versions the upstream already refused for this request: the next usable
+   * version resolves instead, and none left rejects with
+   * GATEWAY_KEY_UNAVAILABLE (`reason: "no_key_version"`). A version that
+   * cannot be read or decrypted rejects with GATEWAY_KEY_UNAVAILABLE too; it
+   * never falls back to another version (fail closed).
    */
   resolve(input: {
     route: ModelUpstreamRoute;
     scope: GatewayCredentialScope;
     tenantId: string;
+    excludeKeyVersions?: readonly string[];
   }): Promise<GatewayUpstreamCredential>;
+}
+
+/**
+ * Circuit-breaker counters per upstream account (circuit.ts decides; this
+ * port stores). Advisory: the data plane routes as if every circuit were
+ * closed when a call rejects.
+ */
+export interface GatewayUpstreamHealthPort {
+  /** Counters of these accounts; an account with no failure on record has no entry. */
+  read(input: { accountIds: readonly string[] }): Promise<GatewayUpstreamHealth[]>;
+  /**
+   * Count one failure atomically (concurrent failures never lose a count):
+   * `consecutiveFailures + 1`, the failure's code and time, and `openUntil`
+   * set when the new count reaches `threshold` (unchanged below it). Answers
+   * the counters after the write.
+   */
+  recordFailure(input: {
+    accountId: string;
+    code: GatewayErrorCode;
+    at: number;
+    threshold: number;
+    openUntil: number;
+  }): Promise<GatewayUpstreamHealth>;
+  /** Close the circuit: count 0, no `openUntil`, `lastSuccessAt`. A no-op for an account with no counters. */
+  recordSuccess(input: { accountId: string; at: number }): Promise<void>;
 }
 
 export interface ReserveInput {
@@ -359,6 +394,7 @@ export interface GatewayPorts {
   identity: GatewayIdentityPort;
   routes: GatewayRoutesPort;
   credentials: GatewayCredentialPort;
+  upstreamHealth: GatewayUpstreamHealthPort;
   budgets: GatewayBudgetPort;
   limits: GatewayLimitPort;
   ledger: GatewayLedgerPort;
@@ -378,6 +414,7 @@ export const GATEWAY_PORT_NAMES = [
   "identity",
   "routes",
   "credentials",
+  "upstreamHealth",
   "budgets",
   "limits",
   "ledger",

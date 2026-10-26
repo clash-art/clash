@@ -228,9 +228,21 @@ export const GatewayUpstreamUpdateRequestSchema = z
   .strict()
   .refine((patch) => Object.keys(patch).length > 0, "empty update");
 
-/** POST /api/v1/admin/gateway/upstreams/:id/rotate. */
+/**
+ * POST /api/v1/admin/gateway/upstreams/:id/rotate: add key version N+1.
+ * `drain` (default true) keeps the previous version until it is revoked;
+ * `false` revokes every previous version at once.
+ */
 export const GatewayUpstreamRotateRequestSchema = z
-  .object({ credential: GatewayUpstreamCredentialSchema, reason: reason().optional() })
+  .object({ credential: GatewayUpstreamCredentialSchema, drain: z.boolean().optional(), reason: reason().optional() })
+  .strict();
+
+/** A key version name, e.g. `v2`. */
+export const GatewayUpstreamKeyVersionSchema = z.string().regex(/^[A-Za-z0-9._-]{1,32}$/);
+
+/** POST /api/v1/admin/gateway/upstreams/:id/revoke: remove one key version. */
+export const GatewayUpstreamRevokeRequestSchema = z
+  .object({ keyVersion: GatewayUpstreamKeyVersionSchema, reason: reason().optional() })
   .strict();
 
 /**

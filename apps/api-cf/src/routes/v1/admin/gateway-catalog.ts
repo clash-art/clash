@@ -10,7 +10,8 @@
  *   GET    /upstreams                                        accounts (never secrets)         upstreams.read
  *   POST   /upstreams                                        create (secret write-only)       upstreams.write
  *   PATCH  /upstreams/:id                                    non-secret fields, disable       upstreams.write
- *   POST   /upstreams/:id/rotate                             replace the secret               upstreams.write
+ *   POST   /upstreams/:id/rotate                             add key vN+1 (previous drains)   upstreams.write
+ *   POST   /upstreams/:id/revoke                             revoke one key version           upstreams.write
  */
 import { Hono } from "hono";
 import { z } from "zod";
@@ -22,11 +23,13 @@ import {
   GatewayCatalogVersionSchema,
   GatewayModelCodeSchema,
   GatewayUpstreamCreateRequestSchema,
+  GatewayUpstreamRevokeRequestSchema,
   GatewayUpstreamRotateRequestSchema,
   GatewayUpstreamUpdateRequestSchema,
 } from "../../../domain/requests";
 import { createD1CatalogAdmin } from "../../../gateway/d1-catalog-admin";
 import { monotonicClock } from "../../../gateway/d1-common";
+import { gatewayEncryptionKey, readSecretBinding } from "../../../gateway/d1-credentials";
 import { createD1UpstreamAdmin } from "../../../gateway/d1-upstream-admin";
 import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
 import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
@@ -39,7 +42,8 @@ const catalog = (env: Env) => createD1CatalogAdmin(env.DB, { clock: monotonicClo
 const upstreams = (env: Env) =>
   createD1UpstreamAdmin(env.DB, {
     clock: monotonicClock(),
-    ...(env.GATEWAY_ENCRYPTION_KEY ? { encryptionKey: env.GATEWAY_ENCRYPTION_KEY } : {}),
+    ...gatewayEncryptionKey(env),
+    secret: (name) => readSecretBinding(env, name),
   });
 const versionParam = (value: string | undefined) => gatewayParam(GatewayCatalogVersionSchema, value, "version");
 const modelParam = (value: string | undefined) => gatewayParam(GatewayModelCodeSchema, value, "modelCode");
@@ -132,6 +136,22 @@ adminCatalogRoutes.post(
     return ok(c, {
       upstream: await upstreams(c.env).rotate(id, {
         credential: body.credential,
+        ...(body.drain !== undefined ? { drain: body.drain } : {}),
+        ...(body.reason ? { reason: body.reason } : {}),
+        actor,
+      }),
+    });
+  }),
+);
+
+adminCatalogRoutes.post(
+  "/upstreams/:id/revoke",
+  platformRoute("upstreams.write", async (c, actor) => {
+    const id = gatewayParam(AccountIdSchema, c.req.param("id"), "id");
+    const body = await readGatewayJson(c, GatewayUpstreamRevokeRequestSchema);
+    return ok(c, {
+      upstream: await upstreams(c.env).revokeKey(id, {
+        keyVersion: body.keyVersion,
         ...(body.reason ? { reason: body.reason } : {}),
         actor,
       }),

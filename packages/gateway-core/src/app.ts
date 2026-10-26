@@ -31,6 +31,15 @@
  * disconnects. Headers are gone by then, so a settlement or retention failure
  * is reported in-stream (encodeGatewayStreamState) as well as by the
  * `settle_failed` / `failed` rows and the coded logs.
+ *
+ * Keys and circuits (#350): a route is called with its account's active key;
+ * a 401/403 retries the account's draining version (a rotation in progress)
+ * before failing over, and a key that cannot be resolved or decrypted is
+ * GATEWAY_KEY_UNAVAILABLE for that route, never replaced by another version.
+ * Connect failures, deadlines, 408/429/5xx fail over to the next route only
+ * before the first byte. An official account whose circuit is open
+ * (circuit.ts) is skipped without contact; all of them open is
+ * GATEWAY_NO_ROUTE with Retry-After. Logs carry the key version, never a key.
  */
 import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
@@ -50,6 +59,14 @@ import {
 } from "./anthropic.js";
 import type { BudgetFlag, GatewayOutcome } from "./budget.js";
 import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
+import {
+  circuitFailureInput,
+  countsAgainstCircuit,
+  GATEWAY_CIRCUIT_DEFAULTS,
+  gatewayCircuitState,
+  type GatewayCircuitPolicy,
+  type GatewayUpstreamHealth,
+} from "./circuit.js";
 import {
   GatewayError,
   gatewayErrorResponseInit,
@@ -75,6 +92,7 @@ import {
   type GatewayCatalog,
   type GatewayRouteAttempt,
   type UpstreamFailure,
+  upstreamFailureCode,
 } from "./routing.js";
 import {
   createRetainedBodyCopy,
@@ -164,6 +182,8 @@ export interface GatewayAppOptions {
    * whose caller disconnected is settled and retained in the background.
    */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /** Upstream circuit breaker (circuit.ts); GATEWAY_CIRCUIT_DEFAULTS by default. */
+  circuit?: GatewayCircuitPolicy;
 }
 
 /** How each stream ending is settled, and the in-stream error it reports. */
@@ -298,15 +318,38 @@ async function readJsonBody(request: Request, maxBodyBytes: number): Promise<unk
   }
 }
 
-type AttemptResult =
+type AttemptResult = (
   | { kind: "answered"; body: Record<string, unknown>; outputBytes: number }
   /** A 2xx event stream; nothing was read from it yet. */
   | { kind: "streaming"; body: ReadableStream<Uint8Array>; contentType: string; upstream: AbortController }
-  /** Nothing reached the upstream (no price, key or base URL for this route). */
+  /** Nothing reached the upstream (no price, key or base URL for this route, or its circuit is open). */
   | { kind: "skipped"; error: GatewayError }
   | { kind: "failed"; failure: UpstreamFailure }
   /** The upstream answered 2xx with a body that is not an answer of the protocol. */
-  | { kind: "invalid"; error: GatewayError };
+  | { kind: "invalid"; error: GatewayError }
+) & {
+  /** Version of the key the upstream was last called with; never the key. */
+  keyVersion?: string;
+};
+
+/** The upstream refused the key itself: another version of the same account may be accepted. */
+const isKeyRefusal = (result: AttemptResult): result is Extract<AttemptResult, { kind: "failed" }> =>
+  result.kind === "failed" &&
+  result.failure.state === "answered" &&
+  (result.failure.status === 401 || result.failure.status === 403);
+
+/**
+ * One request's view of the planned accounts' circuits (circuit.ts), read
+ * once before the first attempt. Official accounts only: tenant BYOK accounts
+ * are the tenant's own. Advisory: a failed read or write is logged and routes
+ * as if closed, never changing the answer.
+ */
+interface RequestCircuits {
+  /** The coded skip for an attempt whose circuit is open, or undefined when it may be called. */
+  openSkip(attempt: GatewayRouteAttempt): GatewayError | undefined;
+  failed(attempt: GatewayRouteAttempt, code: GatewayErrorCode): Promise<void>;
+  succeeded(attempt: GatewayRouteAttempt): Promise<void>;
+}
 
 /** One upstream call: where to send it and how to recognize its answer. */
 interface UpstreamCall {
@@ -315,6 +358,15 @@ interface UpstreamCall {
   headers(apiKey: string): Record<string, string>;
   body: Record<string, unknown>;
   answerContent(body: Record<string, unknown>): unknown;
+}
+
+/** The attempt a stream is served by, for its settlement and log. */
+interface StreamContext {
+  attempt: GatewayRouteAttempt;
+  price: GatewayPrice;
+  tried: number;
+  started: number;
+  keyVersion?: string | undefined;
 }
 
 /** One caller request being served: its protocol and the caller's headers. */
@@ -366,14 +418,145 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           at: admission.pricedAt,
         });
 
-  /** Resolve the route's credential and make one upstream call. */
-  async function callUpstream(attempt: GatewayRouteAttempt, tenantId: string, call: UpstreamCall): Promise<AttemptResult> {
-    let credential: GatewayUpstreamCredential;
-    try {
-      credential = await ports.credentials.resolve({ route: attempt.route, scope: attempt.scope, tenantId });
-    } catch (error) {
-      return { kind: "skipped", error: toGatewayError(error) };
+  const circuitPolicy = options.circuit ?? GATEWAY_CIRCUIT_DEFAULTS;
+
+  const circuitAccount = (attempt: GatewayRouteAttempt) =>
+    attempt.scope === "official" ? attempt.route.accountId : undefined;
+
+  async function requestCircuits(attempts: readonly GatewayRouteAttempt[], requestId?: string): Promise<RequestCircuits> {
+    const health = new Map<string, GatewayUpstreamHealth>();
+    const accountIds = [
+      ...new Set(attempts.map(circuitAccount).filter((id): id is string => id !== undefined)),
+    ];
+    if (accountIds.length)
+      try {
+        for (const entry of await ports.upstreamHealth.read({ accountIds })) health.set(entry.accountId, entry);
+      } catch (error) {
+        ports.logger.warn("gateway.health_unavailable", { requestId, code: toGatewayError(error).code });
+      }
+    const recordFailed = (accountId: string, op: "failure" | "success", error: unknown) =>
+      ports.logger.warn("gateway.health_record_failed", { requestId, accountId, op, code: toGatewayError(error).code });
+    return {
+      openSkip(attempt) {
+        const accountId = circuitAccount(attempt);
+        const entry = accountId ? health.get(accountId) : undefined;
+        const now = ports.clock.now();
+        if (gatewayCircuitState(entry, now) !== "open") return undefined;
+        // Retry-After: the soonest any planned account's circuit half-opens.
+        const reopens = [...health.values()]
+          .filter((other) => gatewayCircuitState(other, now) === "open")
+          .map((other) => other.openUntil! - now);
+        return new GatewayError("GATEWAY_NO_ROUTE", {
+          details: { upstreamId: attempt.route.upstreamId, accountId: accountId!, reason: "circuit_open" },
+          retryAfterMs: Math.max(1, Math.min(...reopens)),
+        });
+      },
+      async failed(attempt, code) {
+        const accountId = circuitAccount(attempt);
+        if (!accountId) return;
+        const input = circuitFailureInput(accountId, code, ports.clock.now(), circuitPolicy);
+        try {
+          const entry = await ports.upstreamHealth.recordFailure(input);
+          health.set(accountId, entry);
+          if (entry.openUntil === input.openUntil)
+            ports.logger.warn("gateway.circuit_open", {
+              requestId,
+              accountId,
+              upstreamId: attempt.route.upstreamId,
+              consecutiveFailures: entry.consecutiveFailures,
+              cooldownMs: input.openUntil - input.at,
+              code,
+            });
+        } catch (error) {
+          recordFailed(accountId, "failure", error);
+        }
+      },
+      async succeeded(attempt) {
+        const accountId = circuitAccount(attempt);
+        const entry = accountId ? health.get(accountId) : undefined;
+        // Nothing on record to close: a healthy account's success writes nothing.
+        if (!accountId || !entry || (entry.consecutiveFailures === 0 && entry.openUntil === undefined)) return;
+        try {
+          await ports.upstreamHealth.recordSuccess({ accountId, at: ports.clock.now() });
+          health.set(accountId, { accountId, consecutiveFailures: 0 });
+        } catch (error) {
+          recordFailed(accountId, "success", error);
+        }
+      },
+    };
+  }
+
+  /**
+   * Call one route: skip it while its circuit is open, then call it with its
+   * active key. A key the upstream refuses (401/403) is retried with the
+   * account's next usable version (a rotation draining), still before any
+   * byte reached the caller; a key that cannot be resolved is never replaced
+   * by another version (fail closed). The outcome counts against the circuit.
+   */
+  async function callUpstream(
+    attempt: GatewayRouteAttempt,
+    tenantId: string,
+    call: UpstreamCall,
+    circuits: RequestCircuits,
+    requestId?: string,
+  ): Promise<AttemptResult> {
+    const open = circuits.openSkip(attempt);
+    if (open) return { kind: "skipped", error: open };
+    const refused: string[] = [];
+    let result: AttemptResult | undefined;
+    for (;;) {
+      let credential: GatewayUpstreamCredential;
+      try {
+        credential = await ports.credentials.resolve({
+          route: attempt.route,
+          scope: attempt.scope,
+          tenantId,
+          ...(refused.length ? { excludeKeyVersions: [...refused] } : {}),
+        });
+      } catch (error) {
+        const coded = toGatewayError(error);
+        const reason = typeof coded.details?.reason === "string" ? coded.details.reason : undefined;
+        // After a refusal, an account with no other version simply has nothing left to try.
+        if (!result || reason !== "no_key_version")
+          ports.logger.warn("gateway.key_unavailable", {
+            requestId,
+            accountId: attempt.route.accountId,
+            upstreamId: attempt.route.upstreamId,
+            code: coded.code,
+            reason,
+            refusedVersions: refused.length,
+          });
+        if (!result) return { kind: "skipped", error: coded };
+        break;
+      }
+      const { keyVersion } = credential;
+      result = {
+        ...(await callWithCredential(attempt, credential, call)),
+        ...(keyVersion !== undefined ? { keyVersion } : {}),
+      };
+      if (!isKeyRefusal(result) || keyVersion === undefined || refused.includes(keyVersion)) break;
+      ports.logger.warn("gateway.upstream_key_refused", {
+        requestId,
+        accountId: attempt.route.accountId,
+        upstreamId: attempt.route.upstreamId,
+        keyVersion,
+        upstreamStatus: result.failure.state === "answered" ? result.failure.status : undefined,
+      });
+      refused.push(keyVersion);
     }
+    if (result.kind === "answered" || result.kind === "streaming") await circuits.succeeded(attempt);
+    else if (result.kind === "invalid") await circuits.failed(attempt, result.error.code);
+    else if (result.kind === "failed" && countsAgainstCircuit(result.failure))
+      await circuits.failed(attempt, upstreamFailureCode(result.failure));
+    return result;
+  }
+
+  /** One upstream call with a resolved credential. */
+  async function callWithCredential(
+    attempt: GatewayRouteAttempt,
+    credential: GatewayUpstreamCredential,
+    call: UpstreamCall,
+  ): Promise<AttemptResult> {
     const baseUrl = (credential.baseUrl ?? DEFAULT_BASE_URLS[attempt.route.upstreamId])?.replace(/\/+$/, "");
     if (!baseUrl)
       return {
@@ -456,7 +639,10 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     admission: GatewayAdmission,
     attempt: GatewayRouteAttempt,
     exchange: Exchange,
+    circuits: RequestCircuits,
   ): Promise<AttemptResult & { price?: GatewayPrice }> {
+    const open = circuits.openSkip(attempt);
+    if (open) return { kind: "skipped", error: open };
     let price: GatewayPrice;
     try {
       price = await priceFor(admission, attempt);
@@ -465,13 +651,19 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     }
     const { protocol, caller } = exchange;
     const { stream } = admission.request;
-    const result = await callUpstream(attempt, admission.identity.tenantId, {
-      path: protocol.upstreamPath,
-      stream,
-      headers: (apiKey) => protocol.upstreamHeaders(apiKey, caller, stream),
-      body: prepareUpstreamBody(admission.request, attempt.route.upstreamModel),
-      answerContent: protocol.answerContent,
-    });
+    const result = await callUpstream(
+      attempt,
+      admission.identity.tenantId,
+      {
+        path: protocol.upstreamPath,
+        stream,
+        headers: (apiKey) => protocol.upstreamHeaders(apiKey, caller, stream),
+        body: prepareUpstreamBody(admission.request, attempt.route.upstreamModel),
+        answerContent: protocol.answerContent,
+      },
+      circuits,
+      admission.requestId,
+    );
     // A skip before the call (no key or base URL) never priced anything worth recording.
     return result.kind === "skipped" ? result : { ...result, price };
   }
@@ -539,15 +731,21 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     let error: GatewayError | undefined;
     let contacted = false;
     let tried = 0;
+    const circuits = await requestCircuits(plan.attempts, requestId);
 
     while (attempt) {
       last = attempt;
       tried += 1;
-      const result = await callAttempt(admission, attempt, exchange);
+      const result = await callAttempt(admission, attempt, exchange, circuits);
       lastPrice = result.price;
       if (result.kind === "streaming")
         return {
-          response: streamAnswer(admission, exchange, { attempt, price: result.price ?? admission.price, tried, started }, result),
+          response: streamAnswer(
+            admission,
+            exchange,
+            { attempt, price: result.price ?? admission.price, tried, started, keyVersion: result.keyVersion },
+            result,
+          ),
           streaming: true,
         };
       if (result.kind === "answered") {
@@ -563,6 +761,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           model: plan.modelCode,
           upstreamId: attempt.route.upstreamId,
           accountId: attempt.route.accountId,
+          keyVersion: result.keyVersion,
           attempts: tried,
           usageSource: usage.source,
           durationMs: ports.clock.now() - started,
@@ -626,7 +825,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   function streamAnswer(
     admission: GatewayAdmission,
     exchange: Exchange,
-    context: { attempt: GatewayRouteAttempt; price: GatewayPrice; tried: number; started: number },
+    context: StreamContext,
     result: Extract<AttemptResult, { kind: "streaming" }>,
   ): Response {
     const copy = options.retention?.enabled
@@ -664,7 +863,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   async function finishStream(
     admission: GatewayAdmission,
     exchange: Exchange,
-    context: { attempt: GatewayRouteAttempt; price: GatewayPrice; tried: number; started: number },
+    context: StreamContext,
     relay: StreamRelayResult,
     retained: { copy: RetainedBodyCopy | undefined; contentType: string },
   ): Promise<string> {
@@ -705,6 +904,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       model: admission.plan.modelCode,
       upstreamId: attempt.route.upstreamId,
       accountId: attempt.route.accountId,
+      keyVersion: context.keyVersion,
       attempts: context.tried,
       ending: relay.ending,
       outcome: plan.outcome,
@@ -810,14 +1010,20 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       let attempt: GatewayRouteAttempt | undefined = plan.attempts[0];
       let error: GatewayError | undefined;
       let contacted = false;
+      const circuits = await requestCircuits(plan.attempts);
       while (attempt) {
-        const result = await callUpstream(attempt, identity.tenantId, {
-          path: `${protocol.upstreamPath}/count_tokens`,
-          stream: false,
-          headers: (apiKey) => protocol.upstreamHeaders(apiKey, request.headers, false),
-          body: { ...counted.body, model: attempt.route.upstreamModel },
-          answerContent: anthropicTokenCount,
-        });
+        const result = await callUpstream(
+          attempt,
+          identity.tenantId,
+          {
+            path: `${protocol.upstreamPath}/count_tokens`,
+            stream: false,
+            headers: (apiKey) => protocol.upstreamHeaders(apiKey, request.headers, false),
+            body: { ...counted.body, model: attempt.route.upstreamModel },
+            answerContent: anthropicTokenCount,
+          },
+          circuits,
+        );
         if (result.kind === "answered") {
           ports.logger.info(`${protocol.event}_count_tokens`, {
             model: plan.modelCode,

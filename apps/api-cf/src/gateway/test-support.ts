@@ -282,6 +282,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       identity: "supported",
       routes: "supported",
       credentials: "supported",
+      upstreamHealth: "supported",
       budgets: "supported",
       ledger: "supported",
       "limits.rate": "supported",

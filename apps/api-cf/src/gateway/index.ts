@@ -26,10 +26,16 @@ import type { Env } from "../config";
 import { createGatewayTokenStore } from "../services/gateway-tokens";
 import { createD1GatewayBudgetPorts } from "./d1-budgets";
 import { monotonicClock } from "./d1-common";
-import { createD1GatewayCredentialPort, type GatewayCredentialSecrets } from "./d1-credentials";
+import {
+  createD1GatewayCredentialPort,
+  gatewayEncryptionKey,
+  readSecretBinding,
+  type GatewayCredentialSecrets,
+} from "./d1-credentials";
 import { createD1GatewayLimitPort } from "./d1-limits";
 import { createD1GatewayRetentionPort } from "./d1-retention";
 import { createD1GatewayRoutesPort } from "./d1-routes";
+import { createD1GatewayUpstreamHealthPort } from "./d1-upstream-health";
 import { createR2GatewayBlobPort, type GatewayBlobBucket } from "./r2-blobs";
 import { workersLogger } from "./workers-logger";
 
@@ -66,6 +72,7 @@ export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
     identity: { authenticate: (request) => tokens.verify(request, { scope: "models:invoke" }) },
     routes: createD1GatewayRoutesPort(input.db, { clock, logger }),
     credentials: createD1GatewayCredentialPort(input.db, input.secrets),
+    upstreamHealth: createD1GatewayUpstreamHealthPort(input.db),
     ...createD1GatewayBudgetPorts(input.db, { clock }),
     limits: createD1GatewayLimitPort(input.db, { clock, ids }),
     blobs: input.bucket ? createR2GatewayBlobPort(input.bucket) : unavailablePort("blobs"),
@@ -77,15 +84,15 @@ export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
   };
 }
 
-/** Worker secrets as the credential port sees them: by name, strings only. */
+/**
+ * Worker secrets as the credential port sees them: by name, a Worker secret
+ * or a Secrets Store binding. GATEWAY_ENCRYPTION_KEY is the official KEK only
+ * while it differs from the BYOK key (`gatewayEncryptionKey`).
+ */
 export function workerSecrets(env: Env): GatewayCredentialSecrets {
-  const bindings = env as unknown as Record<string, unknown>;
   return {
-    ...(env.GATEWAY_ENCRYPTION_KEY ? { encryptionKey: env.GATEWAY_ENCRYPTION_KEY } : {}),
-    secret: (name) => {
-      const value = bindings[name];
-      return typeof value === "string" ? value : undefined;
-    },
+    ...gatewayEncryptionKey(env),
+    secret: (name) => readSecretBinding(env, name),
   };
 }
 

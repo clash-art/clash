@@ -62,6 +62,7 @@ describeGatewayContract("in-memory stub", async () => {
       identity: "supported",
       routes: "supported",
       credentials: "supported",
+      upstreamHealth: "supported",
       budgets: "supported",
       ledger: "supported",
       "limits.rate": "supported",
