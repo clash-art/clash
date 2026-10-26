@@ -102,7 +102,7 @@ export interface GatewayCredentialStore extends GatewayCredentialPort {
   /** Reseal up to `limit` envelopes not under the current kid; returns how many changed. */
   reencrypt(input?: {
     limit?: number;
-  }): Promise<{ resealed: number; failed: number }>;
+  }): Promise<{ resealed: number; failed: number; skipped: number }>;
 }
 
 interface CredentialRow extends Record<string, unknown> {
@@ -139,6 +139,14 @@ export function createPgGatewayCredentialStore(deps: {
       [envelope, now(), row.id, row.encrypted_credentials],
     );
     return rows.length === 1;
+  }
+
+  async function resealedElsewhere(id: string, kid: string): Promise<boolean> {
+    const { rows } = await db.query<{ encrypted_credentials: string }>(
+      "SELECT encrypted_credentials FROM gateway_upstream_credential WHERE id = $1",
+      [id],
+    );
+    return !!rows[0] && envelopeKid(rows[0].encrypted_credentials) === kid;
   }
 
   async function open(row: CredentialRow) {
@@ -272,17 +280,21 @@ export function createPgGatewayCredentialStore(deps: {
       );
       let resealed = 0;
       let failed = 0;
+      // Lost the compare-and-set to a concurrent worker or a lazy re-seal on
+      // read (#379, seen on real Postgres): the row is done, not failed.
+      let skipped = 0;
       for (const row of rows) {
         if (envelopeKid(row.encrypted_credentials) === current) continue;
         try {
           const credentials = cleanProviderCredentials((await open(row)).value);
           if (credentials && (await reseal(row, credentials))) resealed += 1;
+          else if (credentials && (await resealedElsewhere(row.id, current))) skipped += 1;
           else failed += 1;
         } catch {
           failed += 1;
         }
       }
-      return { resealed, failed };
+      return { resealed, failed, skipped };
     },
   };
 }

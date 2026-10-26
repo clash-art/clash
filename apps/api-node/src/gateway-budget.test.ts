@@ -862,3 +862,78 @@ describe("pg gateway budget store — N2 settlement", () => {
     ).rejects.toMatchObject({ code: "GATEWAY_INVALID_REQUEST", status: 400 });
   });
 });
+
+describe("pg gateway budget store — same request settled concurrently on another node (#379)", () => {
+  // Found by the real-Postgres lite harness (src/integration/gateway-lite.lite.test.ts):
+  // two nodes settling one request both pass the charge-once read, then queue
+  // on the budget row locks. PGlite serializes transactions, so here the other
+  // node's committed settle is replayed inside the transaction right before
+  // the budget lock is taken — what READ COMMITTED shows the waiting node.
+  let pglite: PGlite;
+  let db: GatewayBudgetDatabase;
+  beforeEach(async () => {
+    ({ pglite, db } = await newDatabase());
+    await insertBudget(pglite, { id: "b-race", limitMicroCredits: 1_000_000 });
+  });
+  afterEach(async () => {
+    await pglite.close();
+  });
+
+  function racing(kind: "charge" | "debit", amount: number): GatewayBudgetDatabase {
+    let raced = false;
+    return {
+      query: db.query,
+      transaction: (work) =>
+        db.transaction((tx) =>
+          work({
+            async query(sql, parameters) {
+              if (!raced && /FROM gateway_budget[\s\S]*FOR UPDATE/.test(sql)) {
+                raced = true;
+                await tx.query(
+                  `INSERT INTO gateway_usage_ledger (id, request_id, budget_id, kind, status, tenant_id, user_id, key_id,
+                     amount_micro_credits, occurred_at, created_at)
+                   VALUES ('other-node', 'req-race', 'b-race', $1, 'settled', 'tenant-a', 'u1', '', $2, 0, 0)`,
+                  [kind, amount],
+                );
+                await tx.query(
+                  "UPDATE gateway_budget SET spent_micro_credits = spent_micro_credits + $1 WHERE id = 'b-race'",
+                  [amount],
+                );
+              }
+              return tx.query(sql, parameters);
+            },
+          } as GatewayBudgetSqlClient),
+        ),
+    };
+  }
+  const spent = async () =>
+    Number((await pglite.query<{ s: string }>("SELECT spent_micro_credits::text AS s FROM gateway_budget WHERE id = 'b-race'")).rows[0]!.s);
+
+  it("a text charge that lost the race reports the recorded charge as a duplicate", async () => {
+    const store = createPgGatewayBudgetStore(racing("charge", 700));
+    const result = await store.chargeText({
+      requestId: "req-race",
+      tenantId: "tenant-a",
+      userId: "u1",
+      budgetIds: ["b-race"],
+      costMicroCredits: 900,
+    });
+    expect(result).toMatchObject({ chargedMicroCredits: 700, duplicate: true });
+    expect(await spent()).toBe(700);
+    expect((await checkGatewayInvariants(db)).ok).toBe(true);
+  });
+
+  it("a media debit that lost the race does not spend twice", async () => {
+    const store = createPgGatewayBudgetStore(racing("debit", 500));
+    const result = await store.debitMedia({
+      requestId: "req-race",
+      tenantId: "tenant-a",
+      userId: "u1",
+      budgetIds: ["b-race"],
+      costMicroCredits: 500,
+    });
+    expect(result).toMatchObject({ debitMicroCredits: 500, duplicate: true });
+    expect(await spent()).toBe(500);
+    expect((await checkGatewayInvariants(db)).ok).toBe(true);
+  });
+});

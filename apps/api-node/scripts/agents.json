@@ -1,6 +1,7 @@
 {
   "summary": "Native Node 24 opt-in acceptance launchers. No release builds or production changes.",
   "key_files": {
-    "test-cluster.ts": "Starts a disposable loopback PostgreSQL cluster using PG_BIN or PATH, runs multi-process integration and cleans up its own cluster. Requires initdb/pg_ctl and pnpm; does not install services."
+    "test-cluster.ts": "Starts a disposable loopback PostgreSQL cluster using PG_BIN or PATH, runs multi-process integration and cleans up its own cluster. Requires initdb/pg_ctl and pnpm; does not install services.",
+    "test-gateway-lite.ts": "Gateway lite harness launcher (#379): uses GATEWAY_LITE_DATABASE_URL or an ephemeral postgres:16 container (GATEWAY_LITE_DOCKER=1), else prints a skip notice and exits 0; removes its container."
   }
 }

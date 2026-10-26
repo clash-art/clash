@@ -541,14 +541,16 @@ export function createPgGatewayBudgetStore(
 
     try {
       return await db.transaction(async (tx) => {
-        // Charge-once: an existing debit is the recorded money movement.
-        const debits = await readSettlementRows(
-          tx,
-          parsed.tenantId,
-          parsed.requestId,
-          "debit",
-        );
-        if (debits.length > 0) {
+        // Charge-once: an existing debit is the recorded money movement. It is
+        // read once, after the budget row locks (#379 keeps the query budget).
+        const recorded = async () => {
+          const debits = await readSettlementRows(
+            tx,
+            parsed.tenantId,
+            parsed.requestId,
+            "debit",
+          );
+          if (debits.length === 0) return undefined;
           return {
             requestId: parsed.requestId,
             budgetIds: debits.map((row) => row.budget_id),
@@ -564,7 +566,7 @@ export function createPgGatewayBudgetStore(
             ),
             duplicate: true,
           };
-        }
+        };
 
         await assertRequestTenant(tx, parsed.requestId, parsed.tenantId);
 
@@ -574,6 +576,11 @@ export function createPgGatewayBudgetStore(
           parsed.budgetIds,
           true,
         );
+        // A concurrent debit of the same request (another node) may have
+        // committed while this one waited for the budget locks; under READ
+        // COMMITTED the re-read now sees it (#379, real Postgres).
+        const raced = await recorded();
+        if (raced) return raced;
         const missing = missingBudgets(parsed.budgetIds, budgets);
         if (missing.length > 0) {
           throw new GatewayError("GATEWAY_BUDGET_NOT_FOUND", {
@@ -946,14 +953,16 @@ export function createPgGatewayBudgetStore(
 
     try {
       return await db.transaction(async (tx) => {
-        // Charge-once: an existing charge is the recorded money movement.
-        const charges = await readSettlementRows(
-          tx,
-          parsed.tenantId,
-          parsed.requestId,
-          "charge",
-        );
-        if (charges.length > 0) {
+        // Charge-once: an existing charge is the recorded money movement. It is
+        // read once, after the budget row locks (#379 keeps the query budget).
+        const recorded = async () => {
+          const charges = await readSettlementRows(
+            tx,
+            parsed.tenantId,
+            parsed.requestId,
+            "charge",
+          );
+          if (charges.length === 0) return undefined;
           return {
             requestId: parsed.requestId,
             chargedMicroCredits: readMicroCredits(
@@ -964,7 +973,7 @@ export function createPgGatewayBudgetStore(
             unbilledMicroCredits: 0,
             duplicate: true,
           };
-        }
+        };
 
         await assertRequestTenant(tx, parsed.requestId, parsed.tenantId);
 
@@ -974,6 +983,12 @@ export function createPgGatewayBudgetStore(
           parsed.budgetIds,
           true,
         );
+        // A concurrent settle of the same request (another node) may have
+        // committed while this one waited for the budget locks; it is the
+        // recorded charge, so report a duplicate and leave gateway_request
+        // alone (#379, real Postgres).
+        const raced = await recorded();
+        if (raced) return raced;
         const missing = missingBudgets(parsed.budgetIds, budgets);
         if (missing.length > 0) {
           throw new GatewayError("GATEWAY_BUDGET_NOT_FOUND", {

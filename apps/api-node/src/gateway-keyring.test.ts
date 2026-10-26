@@ -273,6 +273,28 @@ describe("credential store", () => {
       ).apiKey,
     ).toBe(apiKey);
   });
+  it("counts a re-encrypt compare-and-set lost to another node as skipped, not failed (#379)", async () => {
+    // Found by the real-Postgres lite harness: concurrent re-encrypt workers
+    // (or a node's lazy re-seal on read) win the CAS, and the loser used to
+    // report the finished row as `failed`.
+    const seed = createPgGatewayCredentialStore({ db, ring: ringWith("k1") });
+    await seed.put({ id: "c1", scope: "official", providerId: "openai", credentials: { apiKey } });
+    const other = createPgGatewayCredentialStore({ db, ring: ringWith("k2") });
+    let raced = false;
+    const racing: GatewayBudgetDatabase = {
+      ...db,
+      async query(sql, parameters) {
+        if (!raced && sql.trimStart().startsWith("UPDATE gateway_upstream_credential")) {
+          raced = true;
+          expect(await other.reencrypt()).toEqual({ resealed: 1, failed: 0, skipped: 0 });
+        }
+        return db.query(sql, parameters);
+      },
+    };
+    const loser = createPgGatewayCredentialStore({ db: racing, ring: ringWith("k2") });
+    expect(await loser.reencrypt()).toEqual({ resealed: 0, failed: 0, skipped: 1 });
+    expect(raced).toBe(true);
+  });
 });
 
 describe("admin rotation", () => {
@@ -377,7 +399,7 @@ describe("admin rotation", () => {
     });
     await a.call("/rotate", { kid: "k2" });
     const res = await a.call("/reencrypt", {});
-    expect(await res.json()).toEqual({ current: "k2", resealed: 1, failed: 0 });
+    expect(await res.json()).toEqual({ current: "k2", resealed: 1, failed: 0, skipped: 0 });
     const status = await (await a.call("")).json();
     expect(status).toEqual({
       current: "k2",
