@@ -57,6 +57,11 @@ export default {
     ctx.waitUntil(
       import("./gateway/d1-budgets").then((m) => m.sweepGatewayHolds(env)),
     );
+    // Gateway abuse thresholds (#356): alert, auto-suspend once per window,
+    // and drop observations past the longest window. Idempotent.
+    ctx.waitUntil(
+      import("./gateway/d1-abuse").then((m) => m.evaluateGatewayAbuseNow(env)),
+    );
     // Lazy like the other cron graphs; abandoned import staging has no hero
     // request to piggyback on.
     ctx.waitUntil(

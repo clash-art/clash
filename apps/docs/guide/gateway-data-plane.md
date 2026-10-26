@@ -367,6 +367,7 @@ Errors use the OpenAI error shape (the Anthropic error shape under
 | -------------------------------------------------- | --------------------------------------- |
 | No, unknown, expired or revoked token              | `GATEWAY_AUTH_REQUIRED` / `_EXPIRED` / `_REVOKED` 401 |
 | Missing `models:invoke` scope, tenant mismatch     | `GATEWAY_FORBIDDEN` 403                 |
+| Tenant, key or token suspended ([abuse](gateway-admin.md#abuse)) | `GATEWAY_SUSPENDED` 403   |
 | Model outside the token allowlist                  | `GATEWAY_MODEL_NOT_ALLOWED` 403         |
 | Model not in the published catalog                 | `GATEWAY_MODEL_NOT_FOUND` 404           |
 | No budget row, or a hard budget is exhausted, or one is suspended | `GATEWAY_BUDGET_EXCEEDED` 402 |
@@ -390,6 +391,7 @@ Errors use the OpenAI error shape (the Anthropic error shape under
 | `limits`      | `rate_limit_json` from the virtual key (per key), the member (`tenant_member`, per member), the published model (per member and model) and the tenant (the tightest of the active subscription's and `tenant.rate_limit_json`). Every subject starts with its tenant (`tenant:<t>…`). `mediaJobs` bounds media generations in flight. Counted in `gateway_rate_window` and `gateway_inflight` (0034). |
 | `blobs`       | R2 `R2_BUCKET` (`r2-blobs.ts`); retained bodies live under `gateway-retention/`. Without a bucket, `unavailablePort` (501), and retention records `failed`. |
 | `retention`   | `gateway_request_retention` (0037, `d1-retention.ts`): first write per request id wins; `expired` lists unpurged rows past `expires_at`; `markPurged` is idempotent. A truncated stream copy is `response_truncated = 1` with `response_observed_bytes` (0039). |
+| `abuse`       | `d1-abuse.ts` (0046, #356): per-minute observations, signals (`spend` from the ledger's settle rows), thresholds, alerts and suspensions, each mutation audited in its batch. See [gateway-admin.md](gateway-admin.md#abuse). |
 | `scheduler`, `audit` | `unavailablePort` (501) until their issues land.                                      |
 
 D1 columns are unix seconds; the core is epoch milliseconds. Conversion

@@ -635,6 +635,9 @@ export function createPgGatewayPorts(input: PgGatewayPortsInput): GatewayPorts {
     retention: unavailablePort("retention"),
     scheduler: unavailablePort("scheduler"),
     audit: unavailablePort("audit"),
+    // No Postgres abuse store yet: admission admits (no suspensions) and
+    // observations are dropped, as gateway-core does for an unavailable port.
+    abuse: unavailablePort("abuse"),
     logger,
     upstream: input.upstream ?? { fetch: (request) => fetch(request) },
   };

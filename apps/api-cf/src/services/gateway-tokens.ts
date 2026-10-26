@@ -73,6 +73,15 @@ export interface GatewayTokenRequirements {
 
 export const personalTenantId = (userId: string) => `personal:${userId}`;
 
+/**
+ * SQL for the key a `gateway_token` row (alias `t`) is counted and suspended
+ * as by abuse signals (#356, `GatewayIdentity.abuseKeyId`): its virtual key,
+ * else its `clsh_` parent, else the token itself. A session parent is not a
+ * key: each short-lived token stands alone, and its tenant is suspended instead.
+ */
+export const gatewayAbuseKeySql = (t: string) =>
+  `COALESCE(${t}.key_id, CASE WHEN ${t}.parent_kind = 'api_token' THEN ${t}.parent_id END, ${t}.id)`;
+
 const seconds = (ms: number) => Math.floor(ms / 1000);
 
 function hex(bytes: Uint8Array): string {
@@ -284,6 +293,7 @@ export function createGatewayTokenStore(
       .prepare(
         `SELECT t.id, t.tenant_id, t.user_id, t.scopes_json, t.model_allowlist_json,
                 t.credential_scope, t.expires_at, t.revoked_at, t.last_used_at,
+                ${gatewayAbuseKeySql("t")} AS abuse_key_id,
                 CASE t.parent_kind
                   WHEN 'session' THEN EXISTS (
                     SELECT 1 FROM sessions s
@@ -318,6 +328,7 @@ export function createGatewayTokenStore(
         expires_at: number;
         revoked_at: number | null;
         last_used_at: number | null;
+        abuse_key_id: string;
         parent_live: number;
         member: number;
         budget_ids: string;
@@ -367,6 +378,7 @@ export function createGatewayTokenStore(
       tenantId: row.tenant_id,
       userId: row.user_id,
       keyId: row.id,
+      ...(row.abuse_key_id !== row.id ? { abuseKeyId: row.abuse_key_id } : {}),
       ...(modelAllowlist ? { modelAllowlist } : {}),
       budgetIds: parseJsonList(row.budget_ids) ?? [],
       credentialScope: row.credential_scope,

@@ -15,8 +15,11 @@ import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-o
 
 const nowMs = sql`(cast(unixepoch('subsecond') * 1000 as integer))`;
 
-/** Roles an admin account may hold; the permissions are services/gateway-authz.ts. */
-export const ADMIN_ACCOUNT_ROLES = ["platform_admin"] as const;
+/**
+ * Roles an admin account may hold (0040; `support_agent` since 0046, #356);
+ * the permissions are services/gateway-authz.ts.
+ */
+export const ADMIN_ACCOUNT_ROLES = ["platform_admin", "support_agent"] as const;
 
 export const adminAccounts = sqliteTable(
   "admin_accounts",
@@ -37,7 +40,7 @@ export const adminAccounts = sqliteTable(
   },
   (table) => ({
     emailUnique: uniqueIndex("admin_accounts_email_unique").on(table.email),
-    roleCheck: check("admin_accounts_role_check", sql`${table.role} IN ('platform_admin')`),
+    roleCheck: check("admin_accounts_role_check", sql`${table.role} IN ('platform_admin', 'support_agent')`),
   }),
 );
 

@@ -527,6 +527,123 @@ export const gatewayInflight = sqliteTable(
 );
 
 /**
+ * Abuse observations (0046, #356): per-minute counters of authenticated
+ * requests and 401 answers per tenant, key and client fingerprint (a
+ * truncated hash, never the address). `''` tenant/key: an unrecognized
+ * credential. Deleted after 24 hours.
+ */
+export const gatewayAbuseObservations = sqliteTable(
+  "gateway_abuse_observation",
+  {
+    kind: text("kind", { enum: ["request", "auth_failure"] }).notNull(),
+    tenantId: text("tenant_id").notNull().default(""),
+    keyId: text("key_id").notNull().default(""),
+    fingerprint: text("fingerprint").notNull(),
+    windowStart: integer("window_start").notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.kind, table.tenantId, table.keyId, table.fingerprint, table.windowStart],
+    }),
+    timeIdx: index("gateway_abuse_observation_time_idx").on(table.kind, table.windowStart),
+    kindCheck: check("gateway_abuse_observation_kind_check", sql`${table.kind} IN ('request', 'auth_failure')`),
+  }),
+);
+
+export const GATEWAY_ABUSE_SIGNAL_NAMES = ["spend", "auth_failures", "shared_key", "velocity"] as const;
+
+/** One configured threshold per abuse signal (0046); no row: shown, never acted on. */
+export const gatewayAbuseThresholds = sqliteTable(
+  "gateway_abuse_threshold",
+  {
+    signal: text("signal", { enum: GATEWAY_ABUSE_SIGNAL_NAMES }).primaryKey(),
+    windowMinutes: integer("window_minutes").notNull(),
+    alertAt: integer("alert_at").notNull(),
+    /** NULL: alert only. */
+    suspendAt: integer("suspend_at"),
+    updatedAt: integer("updated_at").notNull(),
+    updatedBy: text("updated_by").notNull(),
+  },
+  (table) => ({
+    signalCheck: check(
+      "gateway_abuse_threshold_signal_check",
+      sql`${table.signal} IN ('spend', 'auth_failures', 'shared_key', 'velocity')`,
+    ),
+    windowCheck: check("gateway_abuse_threshold_window_check", sql`${table.windowMinutes} BETWEEN 1 AND 1440`),
+    valueCheck: check(
+      "gateway_abuse_threshold_value_check",
+      sql`${table.alertAt} > 0 AND (${table.suspendAt} IS NULL OR ${table.suspendAt} >= ${table.alertAt})`,
+    ),
+  }),
+);
+
+/**
+ * Suspensions of a tenant or a key (0046): token verification refuses a
+ * credential while a suspension of its tenant, token or virtual key is active
+ * (`lifted_at` NULL), with GATEWAY_SUSPENDED. History; never deleted.
+ */
+export const gatewaySuspensions = sqliteTable(
+  "gateway_suspension",
+  {
+    id: text("id").primaryKey(),
+    subjectKind: text("subject_kind", { enum: ["tenant", "key"] }).notNull(),
+    subjectId: text("subject_id").notNull(),
+    tenantId: text("tenant_id").notNull(),
+    source: text("source", { enum: ["manual", "auto"] }).notNull(),
+    signal: text("signal"),
+    reason: text("reason").notNull(),
+    /** `admin` (an admin account) or `system` (a threshold). */
+    actorKind: text("actor_kind").notNull(),
+    actorId: text("actor_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+    liftedAt: integer("lifted_at"),
+    liftedBy: text("lifted_by"),
+    liftReason: text("lift_reason"),
+  },
+  (table) => ({
+    activeIdx: uniqueIndex("gateway_suspension_active_idx")
+      .on(table.subjectKind, table.subjectId)
+      .where(sql`${table.liftedAt} IS NULL`),
+    tenantIdx: index("gateway_suspension_tenant_idx").on(table.tenantId, table.createdAt),
+    subjectCheck: check("gateway_suspension_subject_check", sql`${table.subjectKind} IN ('tenant', 'key')`),
+    sourceCheck: check(
+      "gateway_suspension_source_check",
+      sql`${table.source} IN ('manual', 'auto') AND (${table.source} = 'manual' OR ${table.signal} IS NOT NULL)`,
+    ),
+  }),
+);
+
+/** Threshold alerts (0046): one per signal, subject, threshold window and action. */
+export const gatewayAbuseAlerts = sqliteTable(
+  "gateway_abuse_alert",
+  {
+    id: text("id").primaryKey(),
+    signal: text("signal", { enum: GATEWAY_ABUSE_SIGNAL_NAMES }).notNull(),
+    subjectKind: text("subject_kind", { enum: ["tenant", "key", "client"] }).notNull(),
+    subjectId: text("subject_id").notNull(),
+    tenantId: text("tenant_id").notNull().default(""),
+    value: integer("value").notNull(),
+    threshold: integer("threshold").notNull(),
+    windowMinutes: integer("window_minutes").notNull(),
+    windowStart: integer("window_start").notNull(),
+    action: text("action", { enum: ["alert", "suspend"] }).notNull(),
+    suspensionId: text("suspension_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => ({
+    dedupeIdx: uniqueIndex("gateway_abuse_alert_dedupe_idx").on(
+      table.signal,
+      table.subjectKind,
+      table.subjectId,
+      table.windowStart,
+      table.action,
+    ),
+    timeIdx: index("gateway_abuse_alert_time_idx").on(table.createdAt),
+  }),
+);
+
+/**
  * One append-only row per admin mutation, with redacted before/after
  * snapshots. 0036 triggers refuse UPDATE, and DELETE before 13 months. The
  * actor is an identity kind plus its id (0040): admin accounts live in
@@ -540,7 +657,7 @@ export const gatewayAdminAudit = sqliteTable(
     tenantId: text("tenant_id").notNull().default(""),
     /** An admin account id for `admin`, a product user id for `user`. */
     actorId: text("actor_id").notNull(),
-    /** `admin`, `user` (a team role), `bootstrap` or `migration`. */
+    /** `admin`, `user` (a team role), `system` (an abuse threshold, 0046), `bootstrap` or `migration`. */
     actorKind: text("actor_kind").notNull().default("user"),
     actorRole: text("actor_role"),
     action: text("action").notNull(),

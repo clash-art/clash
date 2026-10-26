@@ -2,13 +2,22 @@
  * Users & teams page (#353, #392, #394): the tenant list, the selected
  * tenant's members and roles (read-only: team owners manage members in team
  * settings, #354), and the admin accounts (a separate identity, never product
- * users). The server keeps one enabled admin account.
+ * users) with their role: platform_admin, or support_agent (#356). The
+ * server keeps one enabled platform_admin.
  */
 import { useState } from "react";
 import { Link } from "react-router";
 
-import { adminApi, type AdminAccount, type TenantMember, type TenantSummary } from "../../lib/adminClient";
+import {
+  ADMIN_ACCOUNT_ROLES,
+  adminApi,
+  type AdminAccount,
+  type AdminAccountRole,
+  type TenantMember,
+  type TenantSummary,
+} from "../../lib/adminClient";
 import { Button } from "../ui/button";
+import { SelectMenu } from "../ui/select";
 import { AdminCard, AdminErrorAlert, AdminField, AdminSection, AdminTable, formatTime, useAdminAction } from "./AdminKit";
 
 export function AdminTenantList({ tenants, basePath }: { tenants: TenantSummary[]; basePath: string }) {
@@ -79,12 +88,13 @@ export function AdminAccounts({
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState<AdminAccountRole>("platform_admin");
   const [reason, setReason] = useState("");
   const action = useAdminAction(onChanged);
   return (
     <AdminSection
       title="Admin accounts"
-      description="Console sign-ins, separate from product users. Disabling one signs it out everywhere; the last enabled account cannot be disabled."
+      description="Console sign-ins, separate from product users. A support agent reads and suspends by id, without key, credential or prompt access. Disabling one signs it out everywhere; the last enabled platform admin cannot be disabled."
     >
       <AdminErrorAlert error={action.error} />
       <AdminTable
@@ -112,17 +122,19 @@ export function AdminAccounts({
         <AdminCard>
           <form
             aria-label="Create admin account"
-            className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_1fr_auto]"
+            className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto_1fr_auto]"
             onSubmit={action.submit(async () => {
               await adminApi.createAdminAccount({
                 email: email.trim(),
                 name: name.trim(),
                 password,
+                role,
                 ...(reason.trim() ? { reason: reason.trim() } : {}),
               });
               setEmail("");
               setName("");
               setPassword("");
+              setRole("platform_admin");
               setReason("");
             })}
           >
@@ -137,6 +149,17 @@ export function AdminAccounts({
               onChange={(e) => setPassword(e.target.value)}
               required
             />
+            <label className="flex flex-col gap-1 text-xs font-medium text-stone-600 dark:text-stone-300">
+              <span>Role</span>
+              <SelectMenu
+                ariaLabel="Role"
+                variant="field"
+                size="sm"
+                value={role}
+                options={ADMIN_ACCOUNT_ROLES.map((value) => ({ value, label: value === "platform_admin" ? "Platform admin" : "Support agent" }))}
+                onValueChange={(value) => setRole(value as AdminAccountRole)}
+              />
+            </label>
             <AdminField label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />
             <div className="flex items-end">
               <Button type="submit" size="sm" variant="primary" disabled={action.pending || !email.trim() || !name.trim() || !password}>

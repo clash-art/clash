@@ -13,7 +13,8 @@
  *   whose only credential is an admin session with ADMIN_SESSION_NOT_ACCEPTED
  *   (403), and the admin session never resolves as a product user;
  * - admin accounts are created and disabled through the audited API, the
- *   audit actor is the admin account, and the last enabled one stays.
+ *   audit actor is the admin account, and the last enabled platform_admin
+ *   stays (a support_agent account, #356, does not count).
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
@@ -322,6 +323,33 @@ describe("admin accounts through the audited API", () => {
       await call("GET", "/api/v1/admin/gateway/admin-accounts", first.auth),
     );
     expect(accounts.accounts.find((account) => account.id === second.id)?.disabledAt).not.toBeNull();
+  });
+
+  it("creates a support_agent account (#356) that cannot manage accounts; the last enabled platform_admin stays beside it", async () => {
+    sqlite.exec(`UPDATE admin_accounts SET disabled_at = 1 WHERE disabled_at IS NULL`);
+    const admin = await signedInAdmin(app, env, ORIGIN);
+    const email = `support-${crypto.randomUUID()}@admin.test`;
+    const password = `support-password-${crypto.randomUUID()}`;
+    const created = await json<{ account: { id: string; role: string } }>(
+      await call("POST", "/api/v1/admin/gateway/admin-accounts", admin.auth, { email, name: "Support", password, role: "support_agent" }),
+      201,
+    );
+    expect(created.account.role).toBe("support_agent");
+    expect(sqlite.prepare(`SELECT after_json FROM gateway_admin_audit WHERE target_id = ?`).get(created.account.id)).toEqual({
+      after_json: JSON.stringify({ email, name: "Support", role: "support_agent" }),
+    });
+    const support = await adminSignIn(app, env, { email, password }, ORIGIN);
+    const me = await json<{ admin: { role: string }; permissions: string[] }>(await call("GET", "/api/v1/admin/gateway/me", { cookie: support.cookie }));
+    expect(me.admin.role).toBe("support_agent");
+    expect(me.permissions).toEqual([...adminRolePermissions("support_agent")]);
+    await expectCode(
+      await call("POST", `/api/v1/admin/gateway/admin-accounts/${admin.id}/disable`, { cookie: support.cookie }, {}),
+      403,
+      "GATEWAY_FORBIDDEN",
+    );
+    // An enabled support_agent account does not keep the console manageable: the platform_admin stays.
+    await expectCode(await call("POST", `/api/v1/admin/gateway/admin-accounts/${admin.id}/disable`, admin.auth, {}), 409, "GATEWAY_LAST_ADMIN_ACCOUNT");
+    expect((await json<{ disabled: boolean }>(await call("POST", `/api/v1/admin/gateway/admin-accounts/${created.account.id}/disable`, admin.auth, {}))).disabled).toBe(true);
   });
 
   it("refuses a disabled account a session even with the right password", async () => {

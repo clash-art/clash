@@ -17,6 +17,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
 import {
+  abuseKeyOf,
+  abuseWindowStart,
+  evaluateGatewayAbuse,
+  gatewayClientFingerprint,
+  GatewayAbuseThresholdSchema,
+  type GatewayAbuseDecision,
+  type GatewayAbuseSignal,
+} from "../abuse.js";
+import {
   admitGatewayRequest,
   settleGatewayRequest,
   settleMediaGeneration,
@@ -74,6 +83,7 @@ export const GATEWAY_CONTRACT_CAPABILITIES = [
   "retention",
   "scheduler",
   "audit",
+  "abuse",
 ] as const;
 
 export type GatewayCapabilityId = (typeof GATEWAY_CONTRACT_CAPABILITIES)[number];
@@ -115,6 +125,12 @@ export interface GatewayContractHarness {
      * Required when `budgets` is supported.
      */
     memberBudget?: (enforcement: BudgetEnforcement) => Promise<Request>;
+    /**
+     * Two credentials of one fresh tenant (a new tenant each call), counted
+     * and suspended as different keys (`abuseKeyOf`), each with budgets that
+     * serve a chat completion. Required when `abuse` is supported.
+     */
+    abuseSubjects?: () => Promise<{ first(): Request; second(): Request }>;
   };
   close?: () => Promise<void>;
 }
@@ -948,6 +964,167 @@ export function describeGatewayContract(
       unavailable: unavailable(async () =>
         ports().audit.query({ tenantId: (await tenant()).tenantId }),
       ),
+    });
+
+    // ─── Abuse (#356) ────────────────────────────────────────────────
+    // Fresh subjects per case: a suspension never leaks into other cases.
+    const abuseSubjects = async () => {
+      const subjects = await harness.fixtures.abuseSubjects!();
+      const first = await ports().identity.authenticate(subjects.first());
+      const second = await ports().identity.authenticate(subjects.second());
+      const firstKey = abuseKeyOf(first)!;
+      const secondKey = abuseKeyOf(second)!;
+      expect(first.tenantId).toBe(second.tenantId);
+      expect(firstKey && secondKey && firstKey !== secondKey, "two distinct abuse keys").toBe(true);
+      return { ...subjects, identity: first, other: second, firstKey, secondKey, tenantId: first.tenantId };
+    };
+    const admin = { kind: "admin" as const, id: "adm_contract", role: "platform_admin" };
+    const measured = async (signal: GatewayAbuseSignal, subjectId: string) =>
+      (
+        await ports().abuse.measure({ signal, since: ports().clock.now() - 60_000, atLeast: 1, limit: 10_000 })
+      ).find((row) => row.subjectId === subjectId);
+    const active = (identity: GatewayIdentity) =>
+      ports().abuse.activeSuspension({
+        tenantId: identity.tenantId,
+        keyIds: [...new Set([identity.keyId, abuseKeyOf(identity)].filter((id): id is string => !!id))],
+      });
+
+    capability("abuse", {
+      supported: [
+        [
+          "counts requests per key (velocity) and distinct client fingerprints per key (shared_key)",
+          async () => {
+            const { firstKey, secondKey, tenantId } = await abuseSubjects();
+            const at = ports().clock.now();
+            const [a, b] = [unique("fp-a"), unique("fp-b")];
+            for (const fingerprint of [a, a, b])
+              await ports().abuse.observe({ kind: "request", tenantId, keyId: firstKey, fingerprint, at });
+            await ports().abuse.observe({ kind: "request", tenantId, keyId: secondKey, fingerprint: a, at });
+            expect(await measured("velocity", firstKey)).toEqual({ signal: "velocity", subjectKind: "key", subjectId: firstKey, tenantId, value: 3 });
+            expect(await measured("velocity", secondKey)).toMatchObject({ value: 1 });
+            expect(await measured("shared_key", firstKey)).toEqual({ signal: "shared_key", subjectKind: "key", subjectId: firstKey, tenantId, value: 2 });
+            expect(await measured("shared_key", secondKey)).toMatchObject({ value: 1 });
+            const ranked = await ports().abuse.measure({ signal: "velocity", since: at - 60_000, atLeast: 2, limit: 10_000 });
+            expect(ranked.some((row) => row.subjectId === secondKey), "below atLeast").toBe(false);
+            expect(ranked.map((row) => row.value)).toEqual([...ranked.map((row) => row.value)].sort((x, y) => y - x));
+          },
+        ],
+        [
+          "counts 401s per client fingerprint, and per tenant when the refused credential is known",
+          async () => {
+            const { identity, tenantId } = await abuseSubjects();
+            const at = ports().clock.now();
+            const client = unique("fp-401");
+            await ports().abuse.observe({ kind: "auth_failure", fingerprint: client, at });
+            await ports().abuse.observe({ kind: "auth_failure", fingerprint: client, at });
+            expect(await measured("auth_failures", client)).toEqual({
+              signal: "auth_failures",
+              subjectKind: "client",
+              subjectId: client,
+              tenantId: null,
+              value: 2,
+            });
+            // The identity port names a refused credential by its token id (`details.keyId`).
+            await ports().abuse.observe({ kind: "auth_failure", keyId: identity.keyId!, fingerprint: unique("fp-401"), at });
+            expect(await measured("auth_failures", tenantId)).toEqual({
+              signal: "auth_failures",
+              subjectKind: "tenant",
+              subjectId: tenantId,
+              tenantId,
+              value: 1,
+            });
+          },
+        ],
+        [
+          "suspends a key or a tenant once and lifts it; the caller's other key is unaffected by a key suspension",
+          async () => {
+            const { identity, other, firstKey, tenantId } = await abuseSubjects();
+            const at = ports().clock.now();
+            expect(await active(identity)).toBeNull();
+            const key = await ports().abuse.suspend({ subjectKind: "key", subjectId: firstKey, tenantId, reason: "contract", actor: admin, at });
+            expect(key).toMatchObject({ subjectKind: "key", subjectId: firstKey, tenantId, source: "manual", signal: null, actorKind: "admin", actorId: admin.id, liftedAt: null });
+            expect(await active(identity)).toMatchObject({ id: key.id });
+            expect(await active(other)).toBeNull();
+            await expectCode(
+              ports().abuse.suspend({ subjectKind: "key", subjectId: firstKey, tenantId, reason: "again", actor: admin, at }),
+              "GATEWAY_SUSPENSION_EXISTS",
+            );
+            const lifted = await ports().abuse.lift({ suspensionId: key.id, reason: "cleared", actor: admin, at });
+            expect(lifted).toMatchObject({ id: key.id, liftedBy: admin.id, liftReason: "cleared" });
+            // Adapters may store whole seconds.
+            expect(Math.abs(lifted.liftedAt! - at)).toBeLessThan(1000);
+            expect(await active(identity)).toBeNull();
+            await expectCode(ports().abuse.lift({ suspensionId: key.id, reason: "again", actor: admin, at }), "GATEWAY_SUSPENSION_NOT_FOUND");
+
+            const team = await ports().abuse.suspend({ subjectKind: "tenant", subjectId: tenantId, tenantId, reason: "contract", actor: admin, at });
+            expect(await active(identity)).toMatchObject({ id: team.id, subjectKind: "tenant" });
+            expect(await active(other)).toMatchObject({ id: team.id });
+            await ports().abuse.lift({ suspensionId: team.id, reason: "cleared", actor: admin, at });
+            expect(await active(other)).toBeNull();
+          },
+        ],
+        [
+          "raises each decision once per window; a suspend decision suspends once, a client is only alerted on",
+          async () => {
+            const { identity, firstKey, tenantId } = await abuseSubjects();
+            const at = ports().clock.now();
+            const decision: GatewayAbuseDecision = {
+              signal: "velocity",
+              subjectKind: "key",
+              subjectId: firstKey,
+              tenantId,
+              value: 9,
+              threshold: 5,
+              windowMinutes: 5,
+              action: "suspend",
+            };
+            const windowStart = abuseWindowStart(at, decision.windowMinutes);
+            const raised = await ports().abuse.raise({ decision, windowStart, at });
+            expect(raised.raised).toBe(true);
+            expect(raised.suspension).toMatchObject({ subjectKind: "key", subjectId: firstKey, tenantId, source: "auto", signal: "velocity", actorKind: "system" });
+            expect(await active(identity)).toMatchObject({ id: raised.suspension!.id });
+            expect(await ports().abuse.raise({ decision, windowStart, at })).toEqual({ raised: false, suspension: null });
+            // Lifted by an admin: the same window never suspends it again.
+            await ports().abuse.lift({ suspensionId: raised.suspension!.id, reason: "false positive", actor: admin, at });
+            expect(await ports().abuse.raise({ decision, windowStart, at })).toEqual({ raised: false, suspension: null });
+            expect(await active(identity)).toBeNull();
+
+            const client: GatewayAbuseDecision = { ...decision, signal: "auth_failures", subjectKind: "client", subjectId: unique("fp"), tenantId: null, action: "alert" };
+            expect(await ports().abuse.raise({ decision: client, windowStart, at })).toEqual({ raised: true, suspension: null });
+            expect(await ports().abuse.raise({ decision: client, windowStart, at })).toEqual({ raised: false, suspension: null });
+          },
+        ],
+        [
+          "configures thresholds that parse with the one schema, and clears them",
+          async () => {
+            const at = ports().clock.now();
+            const before = (await ports().abuse.thresholds()).shared_key ?? null;
+            const threshold = GatewayAbuseThresholdSchema.parse({ windowMinutes: 30, alertAt: 4, suspendAt: 8 });
+            expect(await ports().abuse.setThreshold({ signal: "shared_key", threshold, actor: admin, at })).toEqual({ changed: true });
+            expect((await ports().abuse.thresholds()).shared_key).toEqual(threshold);
+            expect(await ports().abuse.setThreshold({ signal: "shared_key", threshold, actor: admin, at })).toEqual({ changed: false });
+            for (const value of Object.values(await ports().abuse.thresholds()))
+              expect(GatewayAbuseThresholdSchema.safeParse(value).success).toBe(true);
+            await ports().abuse.setThreshold({ signal: "shared_key", threshold: null, actor: admin, at });
+            expect((await ports().abuse.thresholds()).shared_key).toBeUndefined();
+            if (before) await ports().abuse.setThreshold({ signal: "shared_key", threshold: before, actor: admin, at });
+          },
+        ],
+        [
+          "prunes observations older than the cut-off",
+          async () => {
+            const { firstKey, tenantId } = await abuseSubjects();
+            const now = ports().clock.now();
+            const old = now - 2 * 86_400_000;
+            await ports().abuse.observe({ kind: "request", tenantId, keyId: firstKey, fingerprint: unique("fp-old"), at: old });
+            const all = () => ports().abuse.measure({ signal: "velocity", since: 0, atLeast: 1, limit: 10_000 });
+            expect((await all()).find((row) => row.subjectId === firstKey)).toMatchObject({ value: 1 });
+            expect(await ports().abuse.prune({ before: now - 86_400_000 })).toBeGreaterThanOrEqual(1);
+            expect((await all()).find((row) => row.subjectId === firstKey)).toBeUndefined();
+          },
+        ],
+      ],
+      unavailable: unavailable(async () => ports().abuse.activeSuspension({ tenantId: (await tenant()).tenantId, keyIds: [] })),
     });
 
     // ─── Composition: admission -> settlement ────────────────────────
@@ -2079,5 +2256,117 @@ export function describeGatewayContract(
       expect(await anthropicError(unknown)).toMatchObject({ type: "error", error: { type: "not_found_error" } });
       expect(stub.seen).toHaveLength(0);
     });
+
+    // ─── Data plane: abuse gate (#356) ───────────────────────────────
+    const refusedSuspended = async (res: Response) => {
+      expect([res.status, res.headers.get("x-clash-error-code")]).toEqual([403, "GATEWAY_SUSPENDED"]);
+      expect(await res.json()).toMatchObject({ error: { type: "permission_error" } });
+    };
+
+    dataPlane(
+      "abuse: a suspended key or tenant is refused with GATEWAY_SUSPENDED before anything is reserved or sent upstream; lifting serves it again",
+      async () => {
+        const { first, second, identity, firstKey, tenantId } = await abuseSubjects();
+        const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+        const at = ports().clock.now();
+        const key = await ports().abuse.suspend({ subjectKind: "key", subjectId: firstKey, tenantId, reason: "contract", actor: admin, at });
+        const before = await counters(identity);
+        await refusedSuspended(await chat(stub.port, first(), chatBody()));
+        expect(stub.seen).toHaveLength(0);
+        expect(await counters(identity)).toEqual(before);
+        // The tenant's other key is not suspended.
+        expect((await chat(stub.port, second(), chatBody())).status).toBe(200);
+        await ports().abuse.lift({ suspensionId: key.id, reason: "cleared", actor: admin, at });
+        expect((await chat(stub.port, first(), chatBody())).status).toBe(200);
+
+        const team = await ports().abuse.suspend({ subjectKind: "tenant", subjectId: tenantId, tenantId, reason: "contract", actor: admin, at });
+        const seen = stub.seen.length;
+        await refusedSuspended(await chat(stub.port, first(), chatBody()));
+        await refusedSuspended(await chat(stub.port, second(), chatBody()));
+        expect(stub.seen).toHaveLength(seen);
+        await ports().abuse.lift({ suspensionId: team.id, reason: "cleared", actor: admin, at });
+        expect((await chat(stub.port, second(), chatBody())).status).toBe(200);
+      },
+      ["abuse"],
+    );
+
+    dataPlane(
+      "abuse: counts each authenticated request against its key and each 401 against the caller's fingerprint, never its address",
+      async () => {
+        const { first, firstKey, tenantId } = await abuseSubjects();
+        const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+        const userAgent = unique("agent");
+        const address = "203.0.113.9";
+        const options = { clientAddress: () => address };
+        const fingerprint = await gatewayClientFingerprint({ address, userAgent });
+        for (let index = 0; index < 2; index += 1)
+          expect((await chat(stub.port, first(), chatBody(), { "user-agent": userAgent }, {}, options)).status).toBe(200);
+        expect(await measured("velocity", firstKey)).toMatchObject({ value: 2, tenantId });
+        expect(await measured("shared_key", firstKey)).toMatchObject({ value: 1 });
+        const anonymous = await chat(stub.port, harness.fixtures.anonymousRequest(), chatBody(), { "user-agent": userAgent }, {}, options);
+        expect(anonymous.status).toBe(401);
+        expect(await measured("auth_failures", fingerprint)).toEqual({
+          signal: "auth_failures",
+          subjectKind: "client",
+          subjectId: fingerprint,
+          tenantId: null,
+          value: 1,
+        });
+        expect(fingerprint).not.toContain(address);
+      },
+      ["abuse"],
+    );
+
+    dataPlane(
+      "abuse: spend ranks a tenant by the micro-credits it was charged",
+      async () => {
+        const { first, tenantId } = await abuseSubjects();
+        const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+        const res = await chat(stub.port, first(), chatBody());
+        expect(res.status).toBe(200);
+        const row = await ports().ledger.get({ tenantId, requestId: res.headers.get("x-clash-request-id")! });
+        expect(row?.costMicroCredits).toBeGreaterThan(0);
+        expect(await measured("spend", tenantId)).toEqual({
+          signal: "spend",
+          subjectKind: "tenant",
+          subjectId: tenantId,
+          tenantId,
+          value: row!.costMicroCredits,
+        });
+      },
+      ["abuse"],
+    );
+
+    dataPlane(
+      "abuse: a threshold alerts on a key and suspends one past suspendAt, once per window; its next request is refused",
+      async () => {
+        const { first, second, identity, other, firstKey, secondKey, tenantId } = await abuseSubjects();
+        const at = ports().clock.now();
+        const previous = (await ports().abuse.thresholds()).velocity ?? null;
+        // Above every other subject's count in this window, so only these two keys cross it.
+        const [top] = await ports().abuse.measure({ signal: "velocity", since: at - 60_000, atLeast: 1, limit: 1 });
+        const base = top?.value ?? 0;
+        const threshold = { windowMinutes: 1, alertAt: base + 1, suspendAt: base + 3 };
+        for (let index = 0; index < base + 3; index += 1)
+          await ports().abuse.observe({ kind: "request", tenantId, keyId: firstKey, fingerprint: "fp", at });
+        for (let index = 0; index < base + 1; index += 1)
+          await ports().abuse.observe({ kind: "request", tenantId, keyId: secondKey, fingerprint: "fp", at });
+        await ports().abuse.setThreshold({ signal: "velocity", threshold, actor: admin, at });
+        try {
+          const result = await evaluateGatewayAbuse(ports());
+          expect(result).toMatchObject({ alerts: 2, suspended: 1, failed: 0 });
+          expect(await active(identity)).toMatchObject({ subjectKind: "key", subjectId: firstKey, source: "auto", signal: "velocity" });
+          expect(await active(other)).toBeNull();
+          expect(await evaluateGatewayAbuse(ports())).toMatchObject({ alerts: 0, suspended: 0 });
+          const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+          await refusedSuspended(await chat(stub.port, first(), chatBody()));
+          expect((await chat(stub.port, second(), chatBody())).status).toBe(200);
+          expect(stub.seen).toHaveLength(1);
+        } finally {
+          await ports().abuse.setThreshold({ signal: "velocity", threshold: previous, actor: admin, at });
+        }
+      },
+      ["abuse"],
+    );
   });
 }

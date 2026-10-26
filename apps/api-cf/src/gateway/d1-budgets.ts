@@ -192,7 +192,7 @@ function usageEvent(row: SettleRow): UsageEvent {
 }
 
 /** One settle row per budget carries the same event; reads take the first by budget id. */
-const ONE_SETTLE_PER_REQUEST = `l.budget_id = (SELECT MIN(s.budget_id) FROM gateway_usage_ledger s
+export const ONE_SETTLE_PER_REQUEST = `l.budget_id = (SELECT MIN(s.budget_id) FROM gateway_usage_ledger s
   WHERE s.request_id = l.request_id AND s.kind = 'settle')`;
 
 export function createD1GatewayBudgetPorts(

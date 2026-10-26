@@ -267,6 +267,14 @@ export interface TenantMember {
   joinedAt: string | null;
 }
 
+/**
+ * Admin account roles (`admin_accounts.role`; the server's
+ * GATEWAY_PLATFORM_ROLES): platform_admin holds everything; support_agent
+ * (#356) reads and suspends by id, with no key, credential or prompt access.
+ */
+export const ADMIN_ACCOUNT_ROLES = ["platform_admin", "support_agent"] as const;
+export type AdminAccountRole = (typeof ADMIN_ACCOUNT_ROLES)[number];
+
 /** An admin account (admin store, #394). */
 export interface AdminAccount {
   id: string;
@@ -356,7 +364,7 @@ export interface UsageResult {
 export interface AuditEntry {
   id: string;
   tenantId: string;
-  /** `admin` (an admin account), `user` (a team role), `bootstrap` or `migration`. */
+  /** `admin` (an admin account), `user` (a team role), `system` (an abuse threshold), `bootstrap` or `migration`. */
   actorKind: string;
   actorId: string;
   actorRole: string | null;
@@ -369,11 +377,72 @@ export interface AuditEntry {
   occurredAt: string;
 }
 
+/** Abuse signals (#356; `GATEWAY_ABUSE_SIGNALS` on the server). */
+export const ABUSE_SIGNALS = ["spend", "auth_failures", "shared_key", "velocity"] as const;
+export type AbuseSignal = (typeof ABUSE_SIGNALS)[number];
+
+/** A signal's threshold (`GatewayAbuseThresholdSchema`); `suspendAt` null: alert only. Spend is in micro-credits. */
+export interface AbuseThreshold {
+  windowMinutes: number;
+  alertAt: number;
+  suspendAt: number | null;
+}
+
+/** One measured subject: a tenant, a key, or a client fingerprint (no recognized credential). */
+export interface AbuseObservation {
+  signal: AbuseSignal;
+  subjectKind: "tenant" | "key" | "client";
+  subjectId: string;
+  tenantId: string | null;
+  value: number;
+}
+
+export interface AbuseAlert {
+  id: string;
+  signal: AbuseSignal;
+  subjectKind: AbuseObservation["subjectKind"];
+  subjectId: string;
+  tenantId: string | null;
+  value: number;
+  threshold: number;
+  windowMinutes: number;
+  windowStart: string;
+  action: "alert" | "suspend";
+  suspensionId: string | null;
+  createdAt: string;
+}
+
+export const SUSPENSION_SUBJECTS = ["tenant", "key"] as const;
+export type SuspensionSubject = (typeof SUSPENSION_SUBJECTS)[number];
+
+export interface Suspension {
+  id: string;
+  subjectKind: SuspensionSubject;
+  subjectId: string;
+  tenantId: string;
+  /** `manual` (an admin account) or `auto` (a threshold's suspendAt, with its signal). */
+  source: "manual" | "auto";
+  signal: AbuseSignal | null;
+  reason: string;
+  actorKind: "admin" | "system";
+  actorId: string;
+  createdAt: string;
+  liftedAt: string | null;
+  liftedBy: string | null;
+  liftReason: string | null;
+}
+
 export interface AbuseSignals {
+  /** Live rate-limit counters: the last minutes of rate windows and open leases. */
   windowMinutes: number;
   rateWindows: Array<{ subject: string; requests: number; tokens: number; lastWindowAt: string }>;
   inflight: Array<{ subject: string; leases: number }>;
   events: { available: false; reason: string };
+  /** Each signal's top subjects over its threshold window (or the default window without one). */
+  signals: Array<{ signal: AbuseSignal; windowMinutes: number; threshold: AbuseThreshold | null; top: AbuseObservation[] }>;
+  alerts: AbuseAlert[];
+  /** Active suspensions first. */
+  suspensions: Suspension[];
 }
 
 export interface UsageFilters {
@@ -459,6 +528,15 @@ export const adminApi = {
   usage: (filters: UsageFilters) => adminRequest<UsageResult>("GET", `/usage${q({ ...filters })}`),
   audit: (filters: AuditFilters) => adminRequest<{ entries: AuditEntry[] }>("GET", `/audit${q({ ...filters })}`),
   abuse: () => adminRequest<{ abuse: AbuseSignals }>("GET", "/abuse"),
+  setAbuseThreshold: (signal: AbuseSignal, threshold: AbuseThreshold | null, reason?: string) =>
+    adminRequest<{ signal: AbuseSignal; threshold: AbuseThreshold | null; changed: boolean }>("PUT", `/abuse/thresholds/${seg(signal)}`, {
+      threshold,
+      ...(reason ? { reason } : {}),
+    }),
+  suspend: (body: { subjectKind: SuspensionSubject; subjectId: string; reason: string }) =>
+    adminRequest<{ suspension: Suspension }>("POST", "/abuse/suspensions", body),
+  liftSuspension: (id: string, reason: string) =>
+    adminRequest<{ suspension: Suspension }>("POST", `/abuse/suspensions/${seg(id)}/lift`, { reason }),
   promptAccess: (requestId: string, reason: string) =>
     adminRequest<{ prompt: RetainedPrompt }>("POST", `/prompts/${seg(requestId)}/access`, { reason }),
 
@@ -522,7 +600,7 @@ export const adminApi = {
   tenants: (query?: string) => adminRequest<{ tenants: TenantSummary[] }>("GET", `/tenants${q({ query })}`),
   members: (tenantId: string) => adminRequest<{ members: TenantMember[] }>("GET", `/tenants/${seg(tenantId)}/members`),
   adminAccounts: () => adminRequest<{ accounts: AdminAccount[] }>("GET", "/admin-accounts"),
-  createAdminAccount: (body: { email: string; name: string; password: string; reason?: string }) =>
+  createAdminAccount: (body: { email: string; name: string; password: string; role?: AdminAccountRole; reason?: string }) =>
     adminRequest<{ account: AdminAccount; accounts: AdminAccount[] }>("POST", "/admin-accounts", body),
   disableAdminAccount: (id: string, reason?: string) =>
     adminRequest<{ disabled: boolean }>("POST", `/admin-accounts/${seg(id)}/disable`, reason ? { reason } : {}),
@@ -575,6 +653,34 @@ export function parseRateLimit(fields: {
     limit[key] = Number(text);
   }
   return Object.keys(limit).length ? limit : null;
+}
+
+/** A signal's value as an operator reads it: spend in credits, the rest as counts. */
+export function formatAbuseValue(signal: AbuseSignal, value: number): string {
+  return signal === "spend" ? `${formatCredits(value)} credits` : value.toLocaleString();
+}
+
+/**
+ * Threshold form fields -> a threshold (spend typed in credits, stored in
+ * micro-credits); an empty suspendAt means alert only. Throws a readable
+ * error; the server validates again with the one schema.
+ */
+export function parseAbuseThreshold(
+  signal: AbuseSignal,
+  fields: { windowMinutes: string; alertAt: string; suspendAt: string },
+): AbuseThreshold {
+  const amount = (label: string, text: string): number => {
+    const value = signal === "spend" ? parseCredits(text) : /^\d+$/.test(text.trim()) ? Number(text.trim()) : null;
+    if (value === null || value <= 0) throw new Error(`${label} must be a positive ${signal === "spend" ? "credit amount" : "whole number"}.`);
+    return value;
+  };
+  const minutes = fields.windowMinutes.trim();
+  if (!/^\d+$/.test(minutes) || Number(minutes) <= 0) throw new Error("Window must be a positive whole number of minutes.");
+  return {
+    windowMinutes: Number(minutes),
+    alertAt: amount("Alert at", fields.alertAt),
+    suspendAt: fields.suspendAt.trim() ? amount("Suspend at", fields.suspendAt) : null,
+  };
 }
 
 export function describeRateLimit(limit: RateLimit | null | undefined): string {

@@ -24,8 +24,9 @@
  *
  * The other routes live in gateway-access.ts (me, admin accounts),
  * gateway-catalog.ts (catalog, upstreams), gateway-tenants.ts (tenants,
- * members, budgets, keys, limits, wallet) and gateway-insights.ts (overview,
- * usage, audit, abuse, prompts).
+ * members, budgets, keys, limits, wallet), gateway-insights.ts (overview,
+ * usage, audit, prompts) and gateway-abuse.ts (abuse signals, thresholds and
+ * suspensions).
  */
 import { Hono } from "hono";
 import { z } from "zod";
@@ -44,6 +45,7 @@ import { monotonicClock } from "../../../gateway/d1-common";
 import { createD1PriceBook } from "../../../gateway/d1-price-book";
 import { gatewayParam, readGatewayJson } from "../../../services/gateway-admin";
 import { adminJson as ok, platformRoute } from "../../../services/gateway-authz";
+import { adminAbuseRoutes } from "./gateway-abuse";
 import { adminAccessRoutes } from "./gateway-access";
 import { adminCatalogRoutes } from "./gateway-catalog";
 import { adminInsightRoutes } from "./gateway-insights";
@@ -193,3 +195,4 @@ adminGatewayRoutes.route("/", adminAccessRoutes);
 adminGatewayRoutes.route("/", adminCatalogRoutes);
 adminGatewayRoutes.route("/", adminTenantRoutes);
 adminGatewayRoutes.route("/", adminInsightRoutes);
+adminGatewayRoutes.route("/", adminAbuseRoutes);

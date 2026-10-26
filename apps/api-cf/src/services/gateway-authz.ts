@@ -13,7 +13,8 @@
  *   platform resource or another tenant, and never the admin console.
  * - Admin accounts (`admin_accounts`, 0040), signed in through the admin
  *   Better Auth instance, act through their account role: `platform_admin`,
- *   which holds every permission on every tenant. They never reach a product
+ *   which holds every permission on every tenant, or `support_agent` (#356), which
+ *   triages abuse and suspends by id without credential access. They never reach a product
  *   route. The first one is bootstrapped explicitly
  *   (apps/api-cf/scripts/gateway-admin-account.ts); there is no
  *   environment-variable grant and no grant on a product user.
@@ -79,6 +80,9 @@ export const GATEWAY_PLATFORM_PERMISSIONS = [
   "usage.read_all",
   "audit.read_all",
   "abuse.read",
+  // Suspending and lifting take a tenant or key id only: no key material (#356).
+  "abuse.suspend",
+  "abuse.thresholds.write",
   "prompts.view",
   "retention.purge",
   "holds.sweep",
@@ -97,9 +101,24 @@ export const GATEWAY_TENANT_ROLE_PERMISSIONS: Readonly<Record<GatewayTenantRole,
   member: ["usage.read_own", "budgets.read_own"],
 };
 
-/** Admin account role -> permissions: platform_admin holds every permission, on every tenant. */
+/**
+ * Admin account role -> permissions: platform_admin holds every permission,
+ * on every tenant. support_agent (#356) reads tenants, members, budgets, usage,
+ * audit and abuse signals and suspends or lifts by id; it holds nothing that
+ * lists keys (`keys.read`), touches upstream credentials or retained prompts,
+ * or changes thresholds, wallets, limits, catalog or admin accounts.
+ */
 export const GATEWAY_PLATFORM_ROLE_PERMISSIONS: Readonly<Record<GatewayPlatformRole, readonly GatewayPermission[]>> = {
   platform_admin: [...GATEWAY_PLATFORM_PERMISSIONS, ...GATEWAY_TENANT_PERMISSIONS],
+  support_agent: [
+    "tenants.list",
+    "team.members.read",
+    "budgets.read",
+    "usage.read_all",
+    "audit.read_all",
+    "abuse.read",
+    "abuse.suspend",
+  ],
 };
 
 export function isGatewayTenantPermission(permission: string): permission is GatewayTenantPermission {

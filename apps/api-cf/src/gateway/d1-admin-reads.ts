@@ -358,9 +358,10 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
     },
 
     /**
-     * Abuse signals that exist today: the busiest rate-limit counters of the
-     * last minutes and the open in-flight leases. Denied (429/403) requests
-     * are not recorded anywhere yet, so `events` is explicitly unavailable.
+     * Live counters beside the abuse signals (#356, d1-abuse.ts): the busiest
+     * rate-limit counters of the last minutes and the open in-flight leases.
+     * 401 answers are counted (`auth_failures`); rate-limited (429) and
+     * forbidden (403) answers are not recorded, so `events` says so.
      */
     async abuse() {
       const now = nowS();
@@ -395,7 +396,7 @@ export function createD1AdminReads(db: D1Database, deps: { clock: GatewayClock }
         })),
         events: {
           available: false as const,
-          reason: "Denied requests (rate limited, forbidden) are not recorded yet; only live counters are shown.",
+          reason: "Rate-limited and forbidden answers are not recorded; 401 answers are counted as the auth_failures signal.",
         },
       };
     },

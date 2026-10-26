@@ -318,11 +318,24 @@ describe("AdminMembers and AdminAccounts", () => {
     expect(calls[1]).toEqual({
       method: "POST",
       path: "/api/v1/admin/gateway/admin-accounts",
-      body: { email: "new@admin.test", name: "New", password: "a-long-password-1" },
+      body: { email: "new@admin.test", name: "New", password: "a-long-password-1", role: "platform_admin" },
     });
     await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
     // The password field is cleared after the account is created.
     expect((within(form).getByLabelText("Password") as HTMLInputElement).value).toBe("");
+  });
+
+  it("creates a support agent account with the role chosen (#356)", async () => {
+    const calls = stubAdminFetch(() => Response.json({ account: accounts[1], accounts }, { status: 201 }));
+    render(<AdminAccounts accounts={accounts} currentAdminId="adm_me" canWrite onChanged={() => undefined} />);
+    const form = screen.getByRole("form", { name: "Create admin account" });
+    type(form, "Email", "triage@admin.test");
+    type(form, "Name", "Triage");
+    type(form, "Password", "a-long-password-2");
+    chooseOption("Role", "Support agent", form);
+    fireEvent.submit(form);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]!.body).toMatchObject({ email: "triage@admin.test", role: "support_agent" });
   });
 
   it("shows the coded refusal inline, such as the last enabled account", async () => {
@@ -340,19 +353,146 @@ describe("AdminMembers and AdminAccounts", () => {
   });
 });
 
-describe("AdminAbuse and AdminAudit", () => {
-  it("states that denied-request events are not yet available instead of showing an empty list", () => {
-    const abuse: AbuseSignals = {
-      windowMinutes: 60,
-      rateWindows: [{ subject: "key:gwk_1", requests: 12, tokens: 3400, lastWindowAt: "2026-10-01T00:00:00Z" }],
-      inflight: [],
-      events: { available: false, reason: "Denied requests are not recorded yet." },
-    };
-    render(<AdminAbuse abuse={abuse} />);
-    expect(screen.getByText("Denied-request events are not yet available")).toBeInTheDocument();
-    expect(screen.getByText("Denied requests are not recorded yet.")).toBeInTheDocument();
-    expect(screen.getByText("key:gwk_1")).toBeInTheDocument();
+describe("AdminAbuse", () => {
+  const abuse: AbuseSignals = {
+    windowMinutes: 5,
+    rateWindows: [{ subject: "key:gwk_1", requests: 12, tokens: 3400, lastWindowAt: "2026-10-01T00:00:00Z" }],
+    inflight: [],
+    events: { available: false, reason: "Rate-limited answers are not recorded." },
+    signals: [
+      {
+        signal: "spend",
+        windowMinutes: 60,
+        threshold: null,
+        top: [{ signal: "spend", subjectKind: "tenant", subjectId: "team:a", tenantId: "team:a", value: 2_500_000 }],
+      },
+      {
+        signal: "auth_failures",
+        windowMinutes: 60,
+        threshold: null,
+        top: [{ signal: "auth_failures", subjectKind: "client", subjectId: "0123abcd0123abcd", tenantId: null, value: 40 }],
+      },
+      { signal: "shared_key", windowMinutes: 60, threshold: null, top: [] },
+      {
+        signal: "velocity",
+        windowMinutes: 5,
+        threshold: { windowMinutes: 5, alertAt: 100, suspendAt: 300 },
+        top: [{ signal: "velocity", subjectKind: "key", subjectId: "gwk_hot", tenantId: "team:a", value: 320 }],
+      },
+    ],
+    alerts: [
+      {
+        id: "gwab_1",
+        signal: "velocity",
+        subjectKind: "key",
+        subjectId: "gwk_hot",
+        tenantId: "team:a",
+        value: 320,
+        threshold: 300,
+        windowMinutes: 5,
+        windowStart: "2026-10-01T00:00:00Z",
+        action: "suspend",
+        suspensionId: "gws_auto",
+        createdAt: "2026-10-01T00:01:00Z",
+      },
+    ],
+    suspensions: [
+      {
+        id: "gws_auto",
+        subjectKind: "key",
+        subjectId: "gwk_hot",
+        tenantId: "team:a",
+        source: "auto",
+        signal: "velocity",
+        reason: "velocity 320 >= 300 in 5 min",
+        actorKind: "system",
+        actorId: "threshold:velocity",
+        createdAt: "2026-10-01T00:01:00Z",
+        liftedAt: null,
+        liftedBy: null,
+        liftReason: null,
+      },
+    ],
+  };
+  const all = { suspend: true, thresholds: true };
+
+  it("shows every signal's top subjects, its threshold, the alerts and suspensions, read-only without permissions", () => {
+    stubAdminFetch();
+    render(<AdminAbuse abuse={abuse} can={{ suspend: false, thresholds: false }} onChanged={() => undefined} />);
+    for (const title of ["Top spenders", "401 spikes", "Shared-key fingerprints", "Request velocity", "Suspensions", "Alerts"])
+      expect(screen.getByRole("region", { name: title })).toBeInTheDocument();
+    expect(within(screen.getByRole("table", { name: "Top spenders" })).getByText("2.5 credits")).toBeInTheDocument();
+    expect(within(screen.getByRole("table", { name: "401 spikes" })).getByText("0123abcd0123abcd")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Request velocity" })).toHaveTextContent("suspend at 300 within 5 minutes");
+    expect(screen.getByRole("region", { name: "Top spenders" })).toHaveTextContent("No threshold: shown, never acted on.");
+    expect(within(screen.getByRole("table", { name: "Suspensions" })).getByText("auto · velocity")).toBeInTheDocument();
+    expect(screen.getByText("Rate-limited answers are not recorded.")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("form")).toBeNull();
   });
+
+  it("suspends a measured key by id with a reason; a client fingerprint cannot be selected", async () => {
+    const onChanged = vi.fn();
+    const calls = stubAdminFetch(() => Response.json({ suspension: abuse.suspensions[0] }, { status: 201 }));
+    render(<AdminAbuse abuse={abuse} can={all} onChanged={onChanged} />);
+    expect(within(screen.getByRole("table", { name: "401 spikes" })).queryByRole("button")).toBeNull();
+    fireEvent.click(within(screen.getByRole("table", { name: "Request velocity" })).getByRole("button", { name: "Select to suspend" }));
+    const form = screen.getByRole("form", { name: "Suspend" });
+    expect((within(form).getByLabelText("Tenant or key id") as HTMLInputElement).value).toBe("gwk_hot");
+    type(form, "Reason", "scraping");
+    fireEvent.submit(form);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: "POST",
+      path: "/api/v1/admin/gateway/abuse/suspensions",
+      body: { subjectKind: "key", subjectId: "gwk_hot", reason: "scraping" },
+    });
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("lifts an active suspension only with a reason, and shows the server's coded refusal", async () => {
+    const calls = stubAdminFetch(() => gatewayError(404, "GATEWAY_SUSPENSION_NOT_FOUND", "No active suspension with this id exists."));
+    render(<AdminAbuse abuse={abuse} can={all} onChanged={() => undefined} />);
+    const lift = within(screen.getByRole("table", { name: "Suspensions" })).getByRole("button", { name: "Lift" });
+    expect(lift).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Lift reason"), { target: { value: "false positive" } });
+    fireEvent.click(lift);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: "POST",
+      path: "/api/v1/admin/gateway/abuse/suspensions/gws_auto/lift",
+      body: { reason: "false positive" },
+    });
+    expect(await screen.findByText("GATEWAY_SUSPENSION_NOT_FOUND")).toBeInTheDocument();
+  });
+
+  it("configures a threshold, spend in credits, an empty suspend-at as alert only, and clears one", async () => {
+    const calls = stubAdminFetch(() => Response.json({ threshold: null, changed: true }));
+    render(<AdminAbuse abuse={abuse} can={all} onChanged={() => undefined} />);
+    const spend = screen.getByRole("form", { name: "Top spenders threshold" });
+    type(spend, "Window (minutes)", "60");
+    type(spend, "Alert at (credits)", "1.5");
+    fireEvent.submit(spend);
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: "PUT",
+      path: "/api/v1/admin/gateway/abuse/thresholds/spend",
+      body: { threshold: { windowMinutes: 60, alertAt: 1_500_000, suspendAt: null } },
+    });
+
+    const velocity = screen.getByRole("form", { name: "Request velocity threshold" });
+    expect((within(velocity).getByLabelText("Suspend at") as HTMLInputElement).value).toBe("300");
+    type(velocity, "Alert at", "zero");
+    fireEvent.submit(velocity);
+    expect(await screen.findByText("Alert at must be a positive whole number.")).toBeInTheDocument();
+    expect(calls).toHaveLength(1);
+    fireEvent.click(within(velocity).getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]).toEqual({ method: "PUT", path: "/api/v1/admin/gateway/abuse/thresholds/velocity", body: { threshold: null } });
+  });
+});
+
+describe("AdminAudit", () => {
 
   it("renders audit snapshots read-only and filters through the URL callback", () => {
     const onFiltersChange = vi.fn();

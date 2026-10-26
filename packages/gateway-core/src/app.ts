@@ -9,9 +9,11 @@
  *   unmetered `…/messages/count_tokens` (anthropic.ts).
  * Both protocols share one flow; PROTOCOLS holds what differs between them.
  * Flow: authenticate once (identity comes from the credential only, never a
- * header claim) -> normalize -> admit (catalog policy, model mapping,
- * allowlist, plan, price, limits, hold) -> call the planned upstream routes in
- * failover order -> settle exactly once -> answer. Every failure is a coded
+ * header claim) -> abuse gate (count the request or the 401, refuse a
+ * suspended tenant, key or token: abuse.ts) -> normalize -> admit (catalog
+ * policy, model mapping, allowlist, plan, price, limits, hold) -> call the
+ * planned upstream routes in failover order -> settle exactly once ->
+ * answer. Every failure is a coded
  * GatewayError in the caller's protocol error shape; upstream error bodies are
  * never forwarded (they can echo key fragments), and only metadata is logged.
  * A settlement that fails after the request ran marks the holds
@@ -43,6 +45,13 @@
  */
 import type { ModelUpstreamRoute } from "@clash/shared-types/model-routing";
 
+import {
+  abuseKeyOf,
+  assertGatewayCallerActive,
+  gatewayClientFingerprint,
+  recordGatewayAbuse,
+  type GatewayAbuseEvent,
+} from "./abuse.js";
 import {
   admitGatewayRequest,
   assertModelAllowed,
@@ -187,6 +196,12 @@ export interface GatewayAppOptions {
   waitUntil?: (promise: Promise<unknown>) => void;
   /** Upstream circuit breaker (circuit.ts); GATEWAY_CIRCUIT_DEFAULTS by default. */
   circuit?: GatewayCircuitPolicy;
+  /**
+   * The caller's network address as the platform reports it (api-cf:
+   * `cf-connecting-ip`), only ever hashed into the abuse client fingerprint
+   * (#356). Absent: the fingerprint covers the user agent alone.
+   */
+  clientAddress?: (request: Request) => string | null | undefined;
 }
 
 /** How each stream ending is settled, and the in-stream error it reports. */
@@ -954,12 +969,53 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     return callerGone ? "" : tail;
   }
 
+  /** Count an abuse observation; in the background when the runtime allows it. Never throws. */
+  function observe(event: GatewayAbuseEvent): Promise<void> {
+    const recorded = recordGatewayAbuse(ports, event);
+    if (!options.waitUntil) return recorded;
+    options.waitUntil(recorded);
+    return Promise.resolve();
+  }
+
+  /**
+   * Identity from the credential only, then the abuse gate (#356): a 401 is
+   * counted against the caller's fingerprint (and the refused credential the
+   * identity port names), an authenticated request against its key, and a
+   * suspended tenant, key or token is refused with GATEWAY_SUSPENDED.
+   */
+  async function authenticate(request: Request, protocol: WireProtocol): Promise<GatewayIdentity> {
+    const fingerprint = await gatewayClientFingerprint({
+      address: options.clientAddress?.(request),
+      userAgent: request.headers.get("user-agent"),
+    });
+    let identity: GatewayIdentity;
+    try {
+      identity = await ports.identity.authenticate(protocol.credentialRequest(request));
+    } catch (error) {
+      const coded = toGatewayError(error);
+      if (coded.status === 401) {
+        const keyId = coded.details?.keyId;
+        await observe({
+          kind: "auth_failure",
+          ...(typeof keyId === "string" && keyId ? { keyId } : {}),
+          fingerprint,
+          at: ports.clock.now(),
+        });
+      }
+      throw coded;
+    }
+    const keyId = abuseKeyOf(identity);
+    await observe({ kind: "request", tenantId: identity.tenantId, ...(keyId ? { keyId } : {}), fingerprint, at: ports.clock.now() });
+    await assertGatewayCallerActive(ports, identity);
+    return identity;
+  }
+
   /** A metered model call of either protocol. */
   async function serve(request: Request, protocol: WireProtocol): Promise<Response> {
     const started = ports.clock.now();
     let admission: GatewayAdmission;
     try {
-      const identity: GatewayIdentity = await ports.identity.authenticate(protocol.credentialRequest(request));
+      const identity: GatewayIdentity = await authenticate(request, protocol);
       const body = await readJsonBody(request, maxBodyBytes);
       const gatewayRequest: GatewayRequest = protocol.normalize(body, {
         idempotencyKey: request.headers.get("idempotency-key"),
@@ -1008,7 +1064,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
     let leaseId: string | undefined;
     let limitHeaders: GatewayRateLimitHeaders = {};
     try {
-      const caller = await ports.identity.authenticate(protocol.credentialRequest(request));
+      const caller = await authenticate(request, protocol);
       const counted = normalizeAnthropicCountTokensRequest(await readJsonBody(request, maxBodyBytes), { maxBodyBytes });
       const { catalog } = applyGatewayCatalogPolicy(await ports.routes.catalog(caller));
       const model = protocol.resolveModel ? protocol.resolveModel(counted.model, catalog) : counted.model;

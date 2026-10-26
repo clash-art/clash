@@ -5,12 +5,22 @@
  * Deliberate gaps (declared to the contract suite as known gaps/unavailable):
  * - limits: rate windows only; in-flight concurrency is not tracked.
  * - scheduler: no job runner, so the port answers GATEWAY_CAPABILITY_UNAVAILABLE.
+ *
+ * abuse: observations per minute, thresholds from `abuseThresholds`,
+ * alerts and suspensions in memory; suspensions append to `audit`.
  */
 import type {
   ModelUpstreamRoute,
   ProviderAccountAvailability,
 } from "@clash/shared-types/model-routing";
 
+import type {
+  GatewayAbuseEvent,
+  GatewayAbuseObservation,
+  GatewayAbuseThresholds,
+  GatewaySuspension,
+  GatewaySuspendInput,
+} from "../abuse.js";
 import { planReserve, planSettle, type BudgetHold, type BudgetState } from "../budget.js";
 import type { GatewayUpstreamHealth } from "../circuit.js";
 import { GatewayError } from "../errors.js";
@@ -52,6 +62,8 @@ export interface MemoryGatewayOptions {
   rateLimits?: Record<string, { windowMs: number; limit: number }>;
   startAt?: number;
   upstream?: GatewayUpstreamPort;
+  /** Abuse thresholds (#356); mutable, so a test may configure them later. */
+  abuseThresholds?: GatewayAbuseThresholds;
 }
 
 interface OpenReservation {
@@ -86,6 +98,42 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
   const audit: GatewayAuditEvent[] = [];
   const health = new Map<string, GatewayUpstreamHealth>();
   const logs: MemoryGateway["logs"] = [];
+  const abuseThresholds = options.abuseThresholds ?? {};
+  /** Observations per minute: kind, tenant, key, fingerprint, minute -> count. */
+  const observations = new Map<string, { event: Required<Omit<GatewayAbuseEvent, "at">>; minute: number; count: number }>();
+  const suspensions = new Map<string, GatewaySuspension>();
+  const alerts = new Set<string>();
+  const activeFor = (kind: GatewaySuspension["subjectKind"], subjectId: string) =>
+    [...suspensions.values()].find((entry) => entry.liftedAt === null && entry.subjectKind === kind && entry.subjectId === subjectId);
+  const suspendSubject = (input: GatewaySuspendInput, source: GatewaySuspension["source"], signal: GatewaySuspension["signal"]) => {
+    const suspension: GatewaySuspension = {
+      id: `susp-${(sequence += 1)}`,
+      subjectKind: input.subjectKind,
+      subjectId: input.subjectId,
+      tenantId: input.tenantId,
+      source,
+      signal,
+      reason: input.reason,
+      actorKind: input.actor.kind,
+      actorId: input.actor.id,
+      createdAt: input.at,
+      liftedAt: null,
+      liftedBy: null,
+      liftReason: null,
+    };
+    suspensions.set(suspension.id, suspension);
+    audit.push({
+      id: `audit-${suspension.id}`,
+      actor: input.actor.id,
+      tenantId: input.tenantId,
+      action: "abuse.suspend",
+      target: `${input.subjectKind}:${input.subjectId}`,
+      after: { source, signal },
+      reason: input.reason,
+      at: input.at,
+    });
+    return structuredClone(suspension);
+  };
 
   const scopeOf = (accountId: string | undefined): GatewayCredentialScope | undefined =>
     (["official", "tenant"] as const).find((scope) =>
@@ -102,7 +150,7 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
         const identity = token ? options.identities[token] : undefined;
         if (!identity) throw new GatewayError("GATEWAY_AUTH_REQUIRED");
         if (identity.expiresAt !== undefined && now >= identity.expiresAt)
-          throw new GatewayError("GATEWAY_TOKEN_EXPIRED");
+          throw new GatewayError("GATEWAY_TOKEN_EXPIRED", identity.keyId ? { details: { keyId: identity.keyId } } : {});
         const { expiresAt: _expiresAt, ...rest } = identity;
         return rest;
       },
@@ -394,6 +442,139 @@ export function createMemoryGatewayPorts(options: MemoryGatewayOptions): MemoryG
           .slice(-(limit ?? audit.length))
           .reverse()
           .map((event) => structuredClone(event));
+      },
+    },
+    abuse: {
+      async activeSuspension({ tenantId, keyIds }) {
+        const found = activeFor("tenant", tenantId) ?? keyIds.map((keyId) => activeFor("key", keyId)).find(Boolean);
+        return found ? structuredClone(found) : null;
+      },
+      async observe(event) {
+        // A refused credential's tenant and key are known here only through the identity it maps to.
+        const known = event.keyId
+          ? Object.values(options.identities).find((identity) => (identity.abuseKeyId ?? identity.keyId) === event.keyId || identity.keyId === event.keyId)
+          : undefined;
+        const counted = {
+          kind: event.kind,
+          tenantId: event.tenantId ?? known?.tenantId ?? "",
+          keyId: event.keyId ? (known?.abuseKeyId ?? event.keyId) : "",
+          fingerprint: event.fingerprint,
+        };
+        const minute = fixedWindowStart(event.at, 60_000);
+        const key = JSON.stringify([counted, minute]);
+        const entry = observations.get(key);
+        if (entry) entry.count += 1;
+        else observations.set(key, { event: counted, minute, count: 1 });
+      },
+      async measure({ signal, since, atLeast, limit }) {
+        const totals = new Map<string, GatewayAbuseObservation & { fingerprints: Set<string> }>();
+        const add = (subject: Omit<GatewayAbuseObservation, "signal" | "value">, value: number, fingerprint?: string) => {
+          const key = `${subject.subjectKind}\u0000${subject.subjectId}\u0000${subject.tenantId ?? ""}`;
+          const total = totals.get(key) ?? { signal, ...subject, value: 0, fingerprints: new Set<string>() };
+          if (fingerprint === undefined) total.value += value;
+          else {
+            total.fingerprints.add(fingerprint);
+            total.value = total.fingerprints.size;
+          }
+          totals.set(key, total);
+        };
+        if (signal === "spend") {
+          for (const event of ledger.values())
+            if (event.occurredAt >= since) add({ subjectKind: "tenant", subjectId: event.tenantId, tenantId: event.tenantId }, event.costMicroCredits);
+        } else {
+          const since0 = fixedWindowStart(since, 60_000);
+          for (const { event, minute, count } of observations.values()) {
+            if (minute < since0) continue;
+            if (signal === "auth_failures" && event.kind === "auth_failure")
+              add(
+                event.tenantId
+                  ? { subjectKind: "tenant", subjectId: event.tenantId, tenantId: event.tenantId }
+                  : { subjectKind: "client", subjectId: event.fingerprint, tenantId: null },
+                count,
+              );
+            if (signal !== "auth_failures" && event.kind === "request" && event.keyId) {
+              const subject = { subjectKind: "key" as const, subjectId: event.keyId, tenantId: event.tenantId };
+              if (signal === "velocity") add(subject, count);
+              else add(subject, 0, event.fingerprint);
+            }
+          }
+        }
+        return [...totals.values()]
+          .filter((total) => total.value >= atLeast)
+          .sort((a, b) => b.value - a.value)
+          .slice(0, limit)
+          .map(({ fingerprints: _fingerprints, ...total }) => total);
+      },
+      async thresholds() {
+        return structuredClone(abuseThresholds);
+      },
+      async setThreshold({ signal, threshold, actor, reason, at }) {
+        const before = abuseThresholds[signal] ?? null;
+        if (JSON.stringify(before) === JSON.stringify(threshold)) return { changed: false };
+        if (threshold) abuseThresholds[signal] = structuredClone(threshold);
+        else delete abuseThresholds[signal];
+        audit.push({
+          id: `audit-threshold-${(sequence += 1)}`,
+          actor: actor.id,
+          tenantId: "",
+          action: "abuse.threshold",
+          target: `signal:${signal}`,
+          ...(before ? { before } : {}),
+          ...(threshold ? { after: threshold } : {}),
+          ...(reason ? { reason } : {}),
+          at,
+        });
+        return { changed: true };
+      },
+      async raise({ decision, windowStart, at }) {
+        const key = JSON.stringify([decision.signal, decision.subjectKind, decision.subjectId, windowStart, decision.action]);
+        if (alerts.has(key)) return { raised: false, suspension: null };
+        alerts.add(key);
+        if (decision.action !== "suspend" || decision.subjectKind === "client") return { raised: true, suspension: null };
+        if (activeFor(decision.subjectKind, decision.subjectId)) return { raised: true, suspension: null };
+        const suspension = suspendSubject(
+          {
+            subjectKind: decision.subjectKind,
+            subjectId: decision.subjectId,
+            tenantId: decision.tenantId ?? "",
+            reason: `${decision.signal} ${decision.value} >= ${decision.threshold} in ${decision.windowMinutes} min`,
+            actor: { kind: "system", id: `threshold:${decision.signal}`, role: "abuse_threshold" },
+            at,
+          },
+          "auto",
+          decision.signal,
+        );
+        return { raised: true, suspension };
+      },
+      async suspend(input) {
+        if (activeFor(input.subjectKind, input.subjectId))
+          throw new GatewayError("GATEWAY_SUSPENSION_EXISTS", { details: { subjectKind: input.subjectKind } });
+        return suspendSubject(input, "manual", null);
+      },
+      async lift({ suspensionId, reason, actor, at }) {
+        const suspension = suspensions.get(suspensionId);
+        if (!suspension || suspension.liftedAt !== null)
+          throw new GatewayError("GATEWAY_SUSPENSION_NOT_FOUND", { details: { suspensionId } });
+        Object.assign(suspension, { liftedAt: at, liftedBy: actor.id, liftReason: reason });
+        audit.push({
+          id: `audit-lift-${suspensionId}`,
+          actor: actor.id,
+          tenantId: suspension.tenantId,
+          action: "abuse.lift",
+          target: `${suspension.subjectKind}:${suspension.subjectId}`,
+          reason,
+          at,
+        });
+        return structuredClone(suspension);
+      },
+      async prune({ before }) {
+        let pruned = 0;
+        for (const [key, entry] of observations)
+          if (entry.minute < before) {
+            observations.delete(key);
+            pruned += 1;
+          }
+        return pruned;
       },
     },
     logger: {

@@ -17,11 +17,12 @@ import type { D1Database, D1PreparedStatement } from "@cloudflare/workers-types"
 /**
  * Who performed an admin action (#394): an admin account (`admin`, its
  * `adm_…` id, its account role) or a product user acting through a team role
- * (`user`, the user id, `owner`/`member`). The bootstrap script and
- * migrations write `bootstrap` / `migration` rows in SQL.
+ * (`user`, the user id, `owner`/`member`), or an abuse threshold (`system`,
+ * `threshold:<signal>`, 0046). The bootstrap script and migrations write
+ * `bootstrap` / `migration` rows in SQL.
  */
 export interface GatewayAdminActor {
-  kind: "admin" | "user";
+  kind: "admin" | "user" | "system";
   id: string;
   role: string;
 }

@@ -59,6 +59,13 @@ const definitions = {
     anthropic: "permission_error",
     message: "The credential is not permitted to perform this operation.",
   },
+  // Abuse (#356): a suspended key or tenant, by an operator or an abuse threshold.
+  GATEWAY_SUSPENDED: {
+    status: 403,
+    openai: "permission_error",
+    anthropic: "permission_error",
+    message: "The credential or its team is suspended; contact support.",
+  },
   GATEWAY_MODEL_NOT_ALLOWED: {
     status: 403,
     openai: "permission_error",
@@ -444,6 +451,24 @@ const definitions = {
     openai: "server_error",
     anthropic: "api_error",
     message: "The streamed response exceeded the retention cap; only its first bytes are retained.",
+  },
+  GATEWAY_SUSPENSION_EXISTS: {
+    status: 409,
+    openai: "invalid_request_error",
+    anthropic: "invalid_request_error",
+    message: "The key or tenant is already suspended.",
+  },
+  GATEWAY_ABUSE_SUBJECT_NOT_FOUND: {
+    status: 404,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "No tenant or key with this id exists to suspend.",
+  },
+  GATEWAY_SUSPENSION_NOT_FOUND: {
+    status: 404,
+    openai: "not_found_error",
+    anthropic: "not_found_error",
+    message: "No active suspension with this id exists.",
   },
   GATEWAY_CONFLICT: {
     status: 409,
