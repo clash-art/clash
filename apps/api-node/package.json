@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit --project tsconfig.check.json",
     "worker:outbox": "tsx --tsconfig tsconfig.check.json --import ./src/telemetry-outbox.ts src/outbox-worker.ts",
     "test:cluster": "node scripts/test-cluster.ts",
-    "seed:gateway": "tsx --tsconfig tsconfig.check.json src/gateway-seed.ts"
+    "seed:gateway": "tsx --tsconfig tsconfig.check.json src/gateway-seed.ts",
+    "mock-upstream": "tsx --tsconfig tsconfig.check.json src/mock-upstream/cli.ts"
   },
   "dependencies": {
     "@clash/asset-sdk": "workspace:*",
