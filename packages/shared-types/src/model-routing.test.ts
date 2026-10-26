@@ -79,7 +79,6 @@ describe("model upstream routing", () => {
       "gpt-5.6-sol",
       "claude-sonnet-5",
       "gemini-3.6-flash",
-      "deepseek-v4-pro",
       "kimi-k3",
       "glm-5.2",
       "seedream-5-pro",

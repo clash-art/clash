@@ -1,0 +1,58 @@
+name: Anti-patterns
+
+# Mechanical checks for CONTRIBUTING.md#anti-patterns. Read-only: this
+# workflow never comments, labels, or writes to the repository.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+    types: [opened, edited, synchronize, reopened]
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-body:
+    name: PR body (Closes #N, Evidence, no single-backend scoping)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: node scripts/check-anti-patterns.ts pr-body "$GITHUB_EVENT_PATH"
+
+  issue-body:
+    name: Issue body (no single-backend scoping)
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: node scripts/check-anti-patterns.ts issue-body "$GITHUB_EVENT_PATH"
+
+  repo:
+    name: Repo (LB configs, zod, DeepSeek Flash, scoping in added lines)
+    if: github.event_name != 'issues' && !(github.event_name == 'pull_request' && github.event.action == 'edited')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: node --test scripts/check-anti-patterns.test.ts
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/check-anti-patterns.ts repo --base "$BASE"
