@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@clash/asset-sdk": "workspace:*",
+    "@clash/gateway-core": "workspace:*",
     "@clash/metadata-service": "workspace:*",
     "@clash/replica": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
@@ -31,7 +32,8 @@
     "hono": "^4.7.10",
     "loro-crdt": "1.16.3",
     "pg": "^8.16.3",
-    "tsx": "^4.0.0"
+    "tsx": "^4.0.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@clash-plugin/remotion": "workspace:*",

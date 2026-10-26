@@ -217,6 +217,9 @@ importers:
       '@clash/asset-sdk':
         specifier: workspace:*
         version: link:../../packages/asset-sdk
+      '@clash/gateway-core':
+        specifier: workspace:*
+        version: link:../../packages/gateway-core
       '@clash/metadata-service':
         specifier: workspace:*
         version: link:../../packages/metadata-service
@@ -256,6 +259,9 @@ importers:
       tsx:
         specifier: ^4.0.0
         version: 4.23.0
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
     devDependencies:
       '@clash-plugin/remotion':
         specifier: workspace:*
