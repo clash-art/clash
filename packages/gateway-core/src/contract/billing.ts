@@ -664,7 +664,8 @@ export function describeGatewayBillingContract(
           effectiveTo: null,
           rates: [
             {
-              modelCode: "deepseek-not-flash",
+              // A DeepSeek id with no "flash" in it: the policy must block it.
+              modelCode: "deepseek-test",
               upstreamId: "",
               unit: "input_token",
               microCredits: 1,
