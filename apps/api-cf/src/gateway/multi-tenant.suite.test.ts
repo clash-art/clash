@@ -53,14 +53,13 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
     });
   }
 
-  const env = () =>
-    ({
-      DB: d1,
-      ENVIRONMENT: "test",
-      GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
-      BETTER_AUTH_URL: ORIGIN,
-      BETTER_AUTH_SECRET: "test-secret-for-gateway-mt-360-0123456789",
-    }) as never;
+  const env = (): Record<string, unknown> => ({
+    DB: d1,
+    ENVIRONMENT: "test",
+    GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
+    BETTER_AUTH_URL: ORIGIN,
+    BETTER_AUTH_SECRET: "test-secret-for-gateway-mt-360-0123456789",
+  });
 
   const send = (token: string | undefined, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
     app.request(
@@ -75,7 +74,7 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
         },
         body: JSON.stringify(body),
       },
-      env(),
+      env() as never,
     );
 
   const chat = (extra: Record<string, unknown> = {}) => ({
@@ -227,11 +226,11 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
         BETTER_AUTH_URL: ORIGIN,
       } as never;
       // Reuse the existing seeded encryption + D1; retention metadata without bodies still audits.
-      const staff = await signedInAdmin(app, retaining, ORIGIN);
+      const staff = await signedInAdmin(app, retaining as never, ORIGIN);
       const meOff = await app.request(
         "/api/v1/admin/gateway/me",
         { headers: { origin: ORIGIN, ...staff.auth } },
-        env(),
+        env() as never,
       );
       expect(meOff.status).toBe(200);
       expect(((await meOff.json()) as { promptAccess: boolean }).promptAccess).toBe(false);
@@ -239,7 +238,7 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
       const meOn = await app.request(
         "/api/v1/admin/gateway/me",
         { headers: { origin: ORIGIN, ...staff.auth } },
-        retaining,
+        retaining as never,
       );
       const meOnBody = (await meOn.json()) as { admin: { role: string }; promptAccess: boolean };
       expect(meOnBody.admin.role).toBe("platform_admin");
@@ -248,7 +247,7 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
 
     it("keeps self-host default: prompt access disabled without GATEWAY_STAFF_PROMPT_ACCESS", async () => {
       const staffEnv = env();
-      const staff = await signedInAdmin(app, staffEnv, ORIGIN);
+      const staff = await signedInAdmin(app, staffEnv as never, ORIGIN);
       const viewed = await app.request(
         `/api/v1/admin/gateway/prompts/gwr_missing/access`,
         {
@@ -282,7 +281,7 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
       stubUpstream();
       const caller = await gateway.tenantToken();
       const staffEnv = env();
-      const staff = await signedInAdmin(app, staffEnv, ORIGIN);
+      const staff = await signedInAdmin(app, staffEnv as never, ORIGIN);
       const suspend = await app.request(
         `/api/v1/admin/gateway/tenants/${caller.tenantId}/wallet/status`,
         {
