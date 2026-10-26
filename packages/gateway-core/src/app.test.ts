@@ -338,6 +338,38 @@ describe("createGatewayApp", () => {
     expect(memory.reservationState(requestId)).toBe("settled");
   });
 
+  it("returns admission's OpenAI-style rate-limit headers on a served answer and a 429 denial", async () => {
+    const limited = gateway({ upstream: { fetch: async () => ok("x") } });
+    limited.memory.ports.limits.admit = async () => ({
+      allowed: true,
+      leaseId: "lease-header",
+      headers: {
+        "x-ratelimit-limit-requests": "10",
+        "x-ratelimit-remaining-requests": "9",
+        "x-ratelimit-reset-requests": "30s",
+      },
+    });
+    const served = await limited.app.fetch(post(chat));
+    expect(served.status).toBe(200);
+    expect(served.headers.get("x-ratelimit-limit-requests")).toBe("10");
+    expect(served.headers.get("x-ratelimit-remaining-requests")).toBe("9");
+    expect(served.headers.get("x-ratelimit-reset-requests")).toBe("30s");
+
+    const denied = gateway({ upstream: { fetch: async () => ok("x") } });
+    denied.memory.ports.limits.admit = async () => ({
+      allowed: false,
+      code: "GATEWAY_RATE_LIMITED",
+      scope: "tenant",
+      retryAfterMs: 1_200,
+      headers: { "x-ratelimit-limit-requests": "10", "x-ratelimit-remaining-requests": "0" },
+    });
+    const answer = await denied.app.fetch(post(chat));
+    expect(answer.status).toBe(429);
+    expect(answer.headers.get("x-clash-error-code")).toBe("GATEWAY_RATE_LIMITED");
+    expect(answer.headers.get("retry-after")).toBe("2");
+    expect(answer.headers.get("x-ratelimit-remaining-requests")).toBe("0");
+  });
+
   it("rejects malformed, oversized and misrouted requests with coded errors", async () => {
     const never: GatewayUpstreamPort = { fetch: () => Promise.reject(new Error("unreachable")) };
     const { app } = gateway({ upstream: never });

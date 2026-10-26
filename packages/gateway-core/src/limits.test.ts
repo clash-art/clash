@@ -38,7 +38,13 @@ describe("limit denial", () => {
   it("is a coded 429 with Retry-After in whole seconds", () => {
     let caught: unknown;
     try {
-      requireAdmission({ allowed: false, code: "GATEWAY_RATE_LIMITED", scope: "tenant", retryAfterMs: 1_200 });
+      requireAdmission({
+        allowed: false,
+        code: "GATEWAY_RATE_LIMITED",
+        scope: "tenant",
+        retryAfterMs: 1_200,
+        headers: { "x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "2s" },
+      });
     } catch (error) {
       caught = error;
     }
@@ -47,6 +53,8 @@ describe("limit denial", () => {
     expect(init.status).toBe(429);
     expect(init.headers["x-clash-error-code"]).toBe("GATEWAY_RATE_LIMITED");
     expect(init.headers["retry-after"]).toBe("2");
+    expect(init.headers["x-ratelimit-remaining-requests"]).toBe("0");
+    expect(init.headers["x-ratelimit-reset-requests"]).toBe("2s");
     expect((caught as GatewayError).details).toEqual({ scope: "tenant" });
   });
 });

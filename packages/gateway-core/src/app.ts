@@ -74,7 +74,7 @@ import {
   type GatewayErrorCode,
   type GatewayWireProtocol,
 } from "./errors.js";
-import { requireAdmission } from "./limits.js";
+import { requireAdmission, type GatewayRateLimitHeaders } from "./limits.js";
 import type { GatewayIdentity, GatewayPorts, GatewayUpstreamCredential } from "./ports.js";
 import type { GatewayPrice } from "./pricing.js";
 import {
@@ -137,6 +137,9 @@ export function budgetHeaderValue(flags: readonly BudgetFlag[]): string {
 
 const budgetHeaders = (admission: GatewayAdmission): Record<string, string> =>
   admission.reservation.flags?.length ? { [GATEWAY_BUDGET_HEADER]: budgetHeaderValue(admission.reservation.flags) } : {};
+
+const rateLimitHeaders = (admission: GatewayAdmission): Record<string, string> =>
+  admission.limitHeaders ?? {};
 
 export const GATEWAY_APP_DEFAULTS = {
   holdTtlMs: 10 * 60 * 1000,
@@ -770,7 +773,15 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         return {
           response: json(
             { ...result.body, model: admission.request.model },
-            { status: 200, headers: { [GATEWAY_REQUEST_ID_HEADER]: requestId, ...budgetHeaders(admission), ...settlement } },
+            {
+              status: 200,
+              headers: {
+                [GATEWAY_REQUEST_ID_HEADER]: requestId,
+                ...rateLimitHeaders(admission),
+                ...budgetHeaders(admission),
+                ...settlement,
+              },
+            },
           ),
           streaming: false,
         };
@@ -815,7 +826,15 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         typeof failure.details?.upstreamStatus === "number" ? failure.details.upstreamStatus : undefined,
       durationMs: ports.clock.now() - started,
     });
-    return { response: errorResponse(failure, requestId, { ...budgetHeaders(admission), ...settlement }, protocol.wire), streaming: false };
+    return {
+      response: errorResponse(
+        failure,
+        requestId,
+        { ...rateLimitHeaders(admission), ...budgetHeaders(admission), ...settlement },
+        protocol.wire,
+      ),
+      streaming: false,
+    };
   }
 
   /**
@@ -850,6 +869,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         "content-type": result.contentType,
         "cache-control": "no-store",
         [GATEWAY_REQUEST_ID_HEADER]: admission.requestId,
+        ...rateLimitHeaders(admission),
         ...budgetHeaders(admission),
       },
     });
@@ -968,7 +988,10 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
       answer = await execute(admission, exchange, started);
     } catch (error) {
       // execute() settles on every path it controls; this is a last resort.
-      answer = { response: errorResponse(error, admission.requestId, {}, protocol.wire), streaming: false };
+      answer = {
+        response: errorResponse(error, admission.requestId, rateLimitHeaders(admission), protocol.wire),
+        streaming: false,
+      };
     }
     // A stream retains itself when it ends; everything else is retained now.
     return options.retention?.enabled && !answer.streaming ? retain(admission, answer.response) : answer.response;
@@ -983,6 +1006,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   async function countTokens(request: Request, protocol: WireProtocol): Promise<Response> {
     const started = ports.clock.now();
     let leaseId: string | undefined;
+    let limitHeaders: GatewayRateLimitHeaders = {};
     try {
       const identity = await ports.identity.authenticate(protocol.credentialRequest(request));
       const counted = normalizeAnthropicCountTokensRequest(await readJsonBody(request, maxBodyBytes), { maxBodyBytes });
@@ -998,15 +1022,15 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         isRouteExecutable: protocol.isRouteExecutable,
         ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
       });
-      leaseId = requireAdmission(
-        await ports.limits.admit({
-          tenantId: identity.tenantId,
-          userId: identity.userId,
-          ...(identity.keyId ? { keyId: identity.keyId } : {}),
-          modelCode: plan.modelCode,
-          estimatedTokens: 0,
-        }),
-      );
+      const limitDecision = await ports.limits.admit({
+        tenantId: identity.tenantId,
+        userId: identity.userId,
+        ...(identity.keyId ? { keyId: identity.keyId } : {}),
+        modelCode: plan.modelCode,
+        estimatedTokens: 0,
+      });
+      leaseId = requireAdmission(limitDecision);
+      if (limitDecision.allowed && limitDecision.headers) limitHeaders = limitDecision.headers;
       let attempt: GatewayRouteAttempt | undefined = plan.attempts[0];
       let error: GatewayError | undefined;
       let contacted = false;
@@ -1031,7 +1055,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
             accountId: attempt.route.accountId,
             durationMs: ports.clock.now() - started,
           });
-          return json(result.body, { status: 200 });
+          return json(result.body, { status: 200, headers: limitHeaders });
         }
         if (result.kind === "skipped") {
           error = result.error;
@@ -1066,7 +1090,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
           code: coded.code,
           durationMs: ports.clock.now() - started,
         });
-      return errorResponse(coded, undefined, {}, protocol.wire);
+      return errorResponse(coded, undefined, limitHeaders, protocol.wire);
     } finally {
       if (leaseId !== undefined) await ports.limits.release({ leaseId }).catch(() => undefined);
     }
