@@ -7,8 +7,10 @@
  * x-user-id included, is read as identity. `blobs` is R2 (`R2_BUCKET`) and
  * `retention` is D1 metadata; together they retain request/response bodies
  * for 30 days when the hosted-only GATEWAY_STAFF_PROMPT_ACCESS flag is on.
- * Ports this deployment does not implement yet (scheduler, audit) are
- * explicit `unavailablePort`s that answer GATEWAY_CAPABILITY_UNAVAILABLE.
+ * `abuse` (#356) counts requests and 401s, and refuses suspended tenants and
+ * keys (d1-abuse.ts). Ports this deployment does not implement yet
+ * (scheduler, audit) are explicit `unavailablePort`s that answer
+ * GATEWAY_CAPABILITY_UNAVAILABLE.
  * Guide: apps/docs/guide/gateway-data-plane.md.
  */
 import type { D1Database } from "@cloudflare/workers-types";
@@ -24,6 +26,7 @@ import {
 
 import type { Env } from "../config";
 import { createGatewayTokenStore } from "../services/gateway-tokens";
+import { createD1GatewayAbusePort } from "./d1-abuse";
 import { createD1GatewayBudgetPorts } from "./d1-budgets";
 import { monotonicClock } from "./d1-common";
 import {
@@ -79,6 +82,7 @@ export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
     retention: createD1GatewayRetentionPort(input.db),
     scheduler: unavailablePort("scheduler"),
     audit: unavailablePort("audit"),
+    abuse: createD1GatewayAbusePort(input.db),
     logger,
     upstream: input.upstream ?? { fetch: (request) => fetch(request) },
   };
@@ -116,6 +120,8 @@ export function createCloudflareGatewayApp(
     {
       basePath: GATEWAY_BASE_PATH,
       retention: { enabled: staffPromptAccessEnabled(env) },
+      // Hashed into the abuse client fingerprint only (#356); never stored.
+      clientAddress: (request) => request.headers.get("cf-connecting-ip"),
       ...(waitUntil ? { waitUntil } : {}),
     },
   );

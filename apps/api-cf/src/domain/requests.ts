@@ -3,6 +3,8 @@ import {
   GATEWAY_BILLING_PERIODS,
   GATEWAY_BUDGET_ENFORCEMENTS,
   GATEWAY_PRICE_UNITS,
+  GATEWAY_SUSPENSION_SUBJECTS,
+  GatewayAbuseThresholdSchema,
   GatewayRateLimitSchema,
 } from "@clash/gateway-core";
 
@@ -175,8 +177,13 @@ export const GatewayRolloverRequestSchema = z
 
 /** Every role `tenant_member.role` may hold (#392; enforced in D1 by 0038). */
 export const GATEWAY_TENANT_ROLES = ["owner", "member"] as const;
-/** Admin account roles (`admin_accounts.role`, 0040): admin accounts, never product users (#394). */
-export const GATEWAY_PLATFORM_ROLES = ["platform_admin"] as const;
+/**
+ * Admin account roles (`admin_accounts.role`, 0040): admin accounts, never
+ * product users (#394). `support_agent` (0046, #356) triages abuse without
+ * any credential, prompt or configuration access; it is not the team role
+ * #392 retired.
+ */
+export const GATEWAY_PLATFORM_ROLES = ["platform_admin", "support_agent"] as const;
 
 const reason = () => z.string().trim().min(1).max(500);
 const identifier = () => z.string().regex(/^[A-Za-z0-9._:@/-]{1,256}$/);
@@ -335,6 +342,8 @@ export const GatewayAdminAccountCreateRequestSchema = z
     email: z.email().max(254),
     name: z.string().trim().min(1).max(100),
     password: z.string().min(12).max(128),
+    /** Absent: `platform_admin`. */
+    role: z.enum(GATEWAY_PLATFORM_ROLES).optional(),
     reason: reason().optional(),
   })
   .strict();
@@ -346,6 +355,22 @@ export const GatewayPromptAccessRequestSchema = z.object({ reason: reason() }).s
 export const GatewayRetentionPurgeRequestSchema = z
   .object({ limit: z.number().int().min(1).max(1000).optional() })
   .strict();
+
+/** PUT /api/v1/admin/gateway/abuse/thresholds/:signal (#356); `threshold: null` clears it. */
+export const GatewayAbuseThresholdRequestSchema = z
+  .object({ threshold: GatewayAbuseThresholdSchema.nullable(), reason: reason().optional() })
+  .strict();
+
+/**
+ * POST /api/v1/admin/gateway/abuse/suspensions (#356): suspend a tenant or a
+ * key by id. Ids only: suspending never needs or discloses key material.
+ */
+export const GatewaySuspendRequestSchema = z
+  .object({ subjectKind: z.enum(GATEWAY_SUSPENSION_SUBJECTS), subjectId: identifier(), reason: reason() })
+  .strict();
+
+/** POST /api/v1/admin/gateway/abuse/suspensions/:suspensionId/lift (#356). */
+export const GatewayLiftSuspensionRequestSchema = z.object({ reason: reason() }).strict();
 
 /** POST /api/v1/admin/gateway/holds/sweep: expire stale budget holds now. */
 export const GatewayHoldSweepRequestSchema = z

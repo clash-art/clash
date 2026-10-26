@@ -6,8 +6,10 @@
  *
  *   GET  /me                               the signed-in admin account, its permissions
  *   GET  /admin-accounts                   admin accounts                          admin_accounts.read
- *   POST /admin-accounts                   create one (email, name, password)      admin_accounts.write
- *   POST /admin-accounts/:id/disable       sign out and lock (never the last one)  admin_accounts.write
+ *   POST /admin-accounts                   create one (email, name, password,      admin_accounts.write
+ *                                          role: platform_admin by default)
+ *   POST /admin-accounts/:id/disable       sign out and lock (never the last       admin_accounts.write
+ *                                          enabled platform_admin)
  *
  * The first admin account is bootstrapped by
  * apps/api-cf/scripts/gateway-admin-account.ts, never by an env variable.
@@ -68,7 +70,7 @@ adminAccessRoutes.post(
     const account = await store.create({
       email: body.email,
       name: body.name,
-      role: "platform_admin",
+      role: body.role ?? "platform_admin",
       passwordHash,
       ...(body.reason ? { reason: body.reason } : {}),
       actor,

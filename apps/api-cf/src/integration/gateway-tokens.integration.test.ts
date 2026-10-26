@@ -166,6 +166,7 @@ describeGatewayContract("Workers/D1 gateway token identity", async () => {
     retention: unavailablePort("retention"),
     scheduler: unavailablePort("scheduler"),
     audit: unavailablePort("audit"),
+    abuse: unavailablePort("abuse"),
     logger: { info() {}, warn() {}, error() {} },
     upstream: unavailablePort("upstream"),
   };
@@ -184,6 +185,7 @@ describeGatewayContract("Workers/D1 gateway token identity", async () => {
       retention: "unavailable",
       scheduler: "unavailable",
       audit: "unavailable",
+      abuse: "unavailable",
     },
     fixtures: {
       tenantRequest: () => gatewayRequest(tenantA),

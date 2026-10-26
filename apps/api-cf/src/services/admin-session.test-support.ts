@@ -16,10 +16,18 @@ export interface SeededAdmin {
   password: string;
 }
 
+export interface AdminSeedInput {
+  email?: string;
+  name?: string;
+  password?: string;
+  /** `admin_accounts.role`; absent: `platform_admin`. */
+  role?: string;
+}
+
 /** An enabled admin account with a password credential, written straight to the admin tables. */
 export async function seedAdminAccount(
   db: D1Database,
-  input: { email?: string; name?: string; password?: string } = {},
+  input: AdminSeedInput = {},
 ): Promise<SeededAdmin> {
   const id = newAdminAccountId();
   const email = (input.email ?? `${id}@admin.test`).toLowerCase();
@@ -29,9 +37,9 @@ export async function seedAdminAccount(
     db
       .prepare(
         `INSERT INTO admin_accounts (id, name, email, email_verified, role, created_at, updated_at)
-         VALUES (?, ?, ?, 1, 'platform_admin', ?, ?)`,
+         VALUES (?, ?, ?, 1, ?, ?, ?)`,
       )
-      .bind(id, input.name ?? "Test admin", email, now, now),
+      .bind(id, input.name ?? "Test admin", email, input.role ?? "platform_admin", now, now),
     db
       .prepare(
         `INSERT INTO admin_credentials (id, account_id, provider_id, admin_id, password, created_at, updated_at)
@@ -82,7 +90,7 @@ export async function signedInAdmin(
   app: Fetchable,
   env: Record<string, unknown> & { DB: D1Database },
   origin: string,
-  input: { email?: string; name?: string; password?: string } = {},
+  input: AdminSeedInput = {},
 ): Promise<SeededAdmin & { auth: { cookie: string } }> {
   const admin = await seedAdminAccount(env.DB, input);
   const { response, cookie } = await adminSignIn(app, env, admin, origin);

@@ -118,6 +118,8 @@ export interface SeededGateway {
   memberBudgetToken(enforcement: BudgetEnforcement): Promise<{ token: string; userId: string; tenantId: string }>;
   /** A token minted from a virtual key carrying `rateLimit`. */
   keyToken(owner: { userId: string; tenantId: string }, rateLimit: Record<string, number>): Promise<string>;
+  /** Two tokens of one fresh tenant minted from two `clsh_` parents: two abuse keys (#356). */
+  abuseSubjectTokens(): Promise<{ first: string; second: string; tenantId: string }>;
 }
 
 export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlobBucket } = {}): Promise<SeededGateway> {
@@ -237,6 +239,17 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
     return token;
   }
 
+  async function abuseSubjectTokens() {
+    const first = await tenantToken();
+    const parentId = `gw-parent-${hex(8)}`;
+    await db
+      .prepare(`INSERT INTO api_token (id, user_id, name, token_hash, token_prefix) VALUES (?, ?, 'gw', ?, 'clsh_gw')`)
+      .bind(parentId, first.userId, await sha256Hex(`clsh_${hex(20)}`))
+      .run();
+    const second = await tokens.mint({ userId: first.userId, parent: { kind: "api_token", id: parentId } });
+    return { first: first.token, second: second.token, tenantId: first.tenantId };
+  }
+
   return {
     db,
     ...(options.bucket ? { bucket: options.bucket } : {}),
@@ -261,6 +274,7 @@ export async function seedGateway(db: D1Database, options: { bucket?: GatewayBlo
     tenantToken,
     memberBudgetToken,
     keyToken,
+    abuseSubjectTokens,
   };
 }
 
@@ -270,7 +284,7 @@ export const gatewayRequest = (token?: string) =>
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 
-/** The gateway-core contract over the D1 ports: every capability but scheduler and audit (blobs when seeded with a bucket). */
+/** The gateway-core contract over the D1 ports: every capability but scheduler and audit (blobs when seeded with a bucket), abuse included. */
 export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayContractHarness> {
   const tenantA = await seeded.tenantToken();
   const tenantB = await seeded.tenantToken();
@@ -291,6 +305,7 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       retention: "supported",
       scheduler: "unavailable",
       audit: "unavailable",
+      abuse: "supported",
     },
     fixtures: {
       tenantRequest: () => gatewayRequest(tenantA.token),
@@ -301,6 +316,10 @@ export async function d1ContractHarness(seeded: SeededGateway): Promise<GatewayC
       rateLimited: { request: () => gatewayRequest(rateLimited), limit: 3 },
       concurrencyLimited: { request: () => gatewayRequest(concurrencyLimited), limit: 2 },
       memberBudget: async (enforcement) => gatewayRequest((await seeded.memberBudgetToken(enforcement)).token),
+      abuseSubjects: async () => {
+        const subjects = await seeded.abuseSubjectTokens();
+        return { first: () => gatewayRequest(subjects.first), second: () => gatewayRequest(subjects.second) };
+      },
     },
   };
 }

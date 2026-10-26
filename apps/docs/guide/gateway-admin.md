@@ -58,7 +58,7 @@ middleware):
 ## Roles
 
 Roles live in D1. There is no environment-variable grant, and there are no
-job roles (#392):
+team job roles (#392):
 
 - **Team roles** (`tenant_member.role`, migration 0038): `owner` or `member`,
   nothing else, held by product users. A team role acts on its own team
@@ -68,11 +68,20 @@ job roles (#392):
   ([gateway-teams.md](gateway-teams.md), #354); the admin console only views
   teams: no role assignment, member or key budget allocation, or key, member
   and team rate limits.
-- **Admin account role** (`admin_accounts.role`, migration 0040):
-  `platform_admin`, nothing else, held by admin accounts only. It holds every
-  permission: every platform permission, and every tenant permission on
-  every tenant. Until #394 this was a grant on product users
-  (`gateway_platform_role`, 0036); 0040 dropped every such grant (below).
+- **Admin account roles** (`admin_accounts.role`, migrations 0040 and
+  0046), held by admin accounts only:
+  - `platform_admin` holds every permission: every platform permission, and
+    every tenant permission on every tenant. Until #394 this was a grant on
+    product users (`gateway_platform_role`, 0036); 0040 dropped every such
+    grant (below).
+  - `support_agent` (#356) triages abuse: it reads tenants, members, budgets,
+    usage, the audit log and the abuse signals (`tenants.list`,
+    `team.members.read`, `budgets.read`, `usage.read_all`, `audit.read_all`,
+    `abuse.read`) and suspends or lifts a tenant or key by id
+    (`abuse.suspend`). It holds nothing that lists keys (`keys.read`),
+    touches upstream credentials or retained prompts, or changes thresholds,
+    wallets, limits, catalog, prices or admin accounts. It is an admin
+    account role, unrelated to the team roles #392 retired.
 
 Migration 0038 rewrote every team row (and pending invite) holding an earlier
 role to `member` (idempotently), and D1 triggers refuse any role other than
@@ -109,13 +118,14 @@ authorizes through it. The server answers `GATEWAY_FORBIDDEN` (403,
 | `billing.read`          |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 | `billing.purchase`      |   ✓   |        |       ✓        | `/api/v1/gateway/tenants/:t`    |
 
-Platform permissions, admin accounts (`platform_admin`) only: `tenants.list`,
+Platform permissions, admin accounts only (`platform_admin` holds all;
+`support_agent` the subset above): `tenants.list`,
 `catalog.read`, `catalog.write`, `prices.read`, `prices.write`,
 `packages.read`, `packages.write`, `billing.rollover`, `upstreams.read`,
 `upstreams.write`, `wallet.adjust`, `subscription.limits.write`,
 `admin_accounts.read`, `admin_accounts.write`, `usage.read_all`,
-`audit.read_all`, `abuse.read`, `prompts.view`, `retention.purge`,
-`holds.sweep`.
+`audit.read_all`, `abuse.read`, `abuse.suspend`, `abuse.thresholds.write`,
+`prompts.view`, `retention.purge`, `holds.sweep`.
 
 The admin console authorizes with `platformRoute`: the caller is the admin
 account the middleware verified, and the permission must come from its role.
@@ -152,9 +162,12 @@ account is new: repeating it changes nothing, the password included. It
 never touches the product `users` table. Sign in at `/admin/login`.
 
 Every later account goes through the audited API: `POST /admin-accounts`
-creates one, `POST /admin-accounts/:id/disable` signs it out everywhere and
-deletes its password. The last enabled admin account cannot be disabled
-(`GATEWAY_LAST_ADMIN_ACCOUNT`).
+creates one (`role` `platform_admin` by default, or `support_agent`),
+`POST /admin-accounts/:id/disable` signs it out everywhere and deletes its
+password. The last enabled `platform_admin` cannot be disabled
+(`GATEWAY_LAST_ADMIN_ACCOUNT`); an enabled `support_agent` does not count,
+since it cannot manage accounts. 0046 rebuilds `admin_accounts` (SQLite
+cannot alter a CHECK) with the same columns, rows and unique email index.
 
 ### Migration from product-user grants (0040)
 
@@ -185,8 +198,9 @@ Every admin mutation appends one `gateway_admin_audit` row:
   changes, and the actor: `actor_kind` plus `actor_id` (0040) and
   `actor_role`. Console mutations are `admin` with the admin account's
   `adm_…` id and role; team owners' mutations (purchases, team settings) are
-  `user` with the product user id and team role; the bootstrap script writes
-  `bootstrap`, migration 0040 `migration`. Rows written before 0040 keep
+  `user` with the product user id and team role; an abuse threshold's
+  automatic suspension is `system` with `threshold:<signal>` (#356); the
+  bootstrap script writes `bootstrap`, migration 0040 `migration`. Rows written before 0040 keep
   their actor id and read `user` (or `bootstrap`). Other columns that record
   who acted (the ledger's `actor_user_id`, budget `allocated_by_user_id`,
   price `created_by`) hold the same actor id.
@@ -195,7 +209,8 @@ Covered mutations: price drafts and publishes, packages, top-up packs,
 billing rollover, subscriptions and top-ups, catalog clone/model
 upsert/remove/publish, upstream create/update/disable/rotate/key revoke, wallet
 corrections and status, subscription rate limits, admin account creation and
-disabling, retention purges that deleted something, hold sweeps that expired
+disabling, abuse thresholds (`abuse.threshold`), suspensions and lifts
+(`abuse.suspend`, `abuse.lift`, manual or automatic), retention purges that deleted something, hold sweeps that expired
 something, and every staff prompt view (whatever its outcome). Team settings
 (#354, written by team owners, [gateway-teams.md](gateway-teams.md)) audit the
 same way: team creation, invites, role changes and removals (the last owner
@@ -214,14 +229,15 @@ Errors are coded (`x-clash-error-code`).
 | Area           | Routes                                                                                                                                          |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Sign-in        | `POST /api/admin-auth/sign-in/email {email, password}`, `POST /api/admin-auth/sign-out`, `GET /api/admin-auth/get-session` (Better Auth)        |
-| Access         | `GET /me` (the account, its permissions); `GET/POST /admin-accounts {email, name, password, reason?}`; `POST /admin-accounts/:id/disable`        |
+| Access         | `GET /me` (the account, its permissions); `GET/POST /admin-accounts {email, name, password, role?, reason?}`; `POST /admin-accounts/:id/disable` |
 | Catalog        | `GET /catalog`; `GET /catalog/versions/:v`; `POST …/:v/clone {from}`; `PUT/DELETE …/:v/models/:modelCode`; `POST …/:v/publish`                 |
 | Prices, packs  | see [gateway-price-book.md](gateway-price-book.md)                                                                                              |
 | Upstreams      | `GET/POST /upstreams`; `PATCH /upstreams/:id`; `POST /upstreams/:id/rotate {credential, drain?, reason?}`; `POST /upstreams/:id/revoke {keyVersion, reason?}` |
 | Tenants        | `GET /tenants`; `GET /tenants/:t/members` (read-only)                                                                                           |
 | Budgets        | `GET /tenants/:t/budgets` (read-only); `POST /tenants/:t/wallet/adjust`; `POST /tenants/:t/wallet/status`                                      |
 | Rate limits    | `GET /tenants/:t/keys` (read-only); `PUT /tenants/:t/subscription/rate-limit`; model limits on catalog drafts                                   |
-| Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide; audit also `?actorKind=&actorId=`); `GET /abuse`               |
+| Reads          | `GET /overview`, `GET /usage`, `GET /audit` (each `?tenantId=` or platform-wide; audit also `?actorKind=&actorId=`)                            |
+| Abuse          | `GET /abuse`; `PUT /abuse/thresholds/:signal {threshold, reason?}`; `POST /abuse/suspensions {subjectKind, subjectId, reason}`; `POST /abuse/suspensions/:id/lift {reason}` ([Abuse](#abuse)) |
 | Prompt access  | `POST /prompts/:requestId/access {reason}`; `POST /retention/purge {limit?}`                                                                    |
 | Holds          | `POST /holds/sweep {limit?}`: the stale-hold sweeper now ([gateway-data-plane.md](gateway-data-plane.md#stale-hold-sweeper))                       |
 
@@ -292,11 +308,68 @@ one, no unknown fields) and enforced by `d1-limits.ts`. `null` clears a
 limit. The console sets the catalog's, the upstreams' and the
 subscription's; key, member and team limits are the owner's.
 
-**Abuse.** Only live counters exist today (`gateway_rate_window`,
-`gateway_inflight`, every subject prefixed with its tenant: `tenant:<t>…`).
-Denied requests (rate-limited, forbidden) are not recorded, so the response
-states `events.available: false` rather than showing an empty list as if
-nothing happened.
+## Abuse
+
+Abuse signals, configurable thresholds, alerts and suspension (#356). The
+core is `packages/gateway-core/src/abuse.ts` (the `abuse` port, the one
+threshold schema, decisions, the data-plane gate); the D1 adapter is
+`apps/api-cf/src/gateway/d1-abuse.ts` over migration 0046; the console routes
+are `apps/api-cf/src/routes/v1/admin/gateway-abuse.ts`.
+
+**Signals.** The data plane counts, per minute, every authenticated request
+against its tenant, key and client fingerprint, and every 401 answer against
+the fingerprint (and the refused credential's tenant and key when the token
+is known but revoked or expired). The fingerprint is the first 16 hex
+characters of a SHA-256 of the address (`cf-connecting-ip`) and user agent;
+neither is stored. Counting runs in `waitUntil` and never fails a request.
+
+| Signal          | Console title           | Subject                | Value over the window                 |
+| --------------- | ----------------------- | ---------------------- | ------------------------------------- |
+| `spend`         | Top spenders            | tenant                 | micro-credits settled (usage ledger)  |
+| `auth_failures` | 401 spikes              | tenant, else client    | 401 answers                           |
+| `shared_key`    | Shared-key fingerprints | key                    | distinct client fingerprints          |
+| `velocity`      | Request velocity        | key                    | authenticated requests                |
+
+A **key** is the credential a token belongs to: its virtual key, else its
+`clsh_` parent, else the gateway token itself (a session-minted token stands
+alone; suspend its tenant instead). Observations are pruned after 24 hours,
+the longest window.
+
+**Thresholds** are configuration with no built-in default: a signal without
+one is shown, never acted on. `PUT /abuse/thresholds/:signal` takes
+`{ windowMinutes (1..1440), alertAt, suspendAt | null }`, validated with
+`GatewayAbuseThresholdSchema` (no unknown fields, `suspendAt >= alertAt`;
+spend in micro-credits); `threshold: null` clears it. Rate limits
+(`GatewayRateLimitSchema`) stay the per-minute baseline; abuse thresholds
+act on top of them.
+
+**Evaluation and alerts.** The Worker `scheduled` handler runs
+`evaluateGatewayAbuse`: for each signal with a threshold, it measures the top
+subjects over the window and records each decision once per signal, subject,
+window and action (`gateway_abuse_alert`). An alert is that row plus a
+`gateway.abuse_alert` log line (`gateway.abuse_suspended` when it
+suspended), which is what the console's Alerts table shows. Crossing
+`suspendAt` suspends a tenant or key automatically (source `auto`, actor
+`system` `threshold:<signal>`, audited in the same batch). A client
+fingerprint is never suspended, only alerted on. A subject an admin lifts is
+not suspended again inside the same window.
+
+**Suspension.** `POST /abuse/suspensions {subjectKind: tenant | key,
+subjectId, reason}` suspends manually (`GATEWAY_ABUSE_SUBJECT_NOT_FOUND` for
+an unknown id, `GATEWAY_SUSPENSION_EXISTS` while one is active);
+`POST /abuse/suspensions/:id/lift {reason}` lifts it
+(`GATEWAY_SUSPENSION_NOT_FOUND` unless active). Both take and answer ids
+only, so `support_agent` suspends without any key material. While a
+suspension of the caller's tenant, key or token is active, every data-plane
+request is refused with `GATEWAY_SUSPENDED` (403, `permission_error`) right
+after authentication, before anything is reserved or sent upstream. If the
+check itself fails the request is refused (`GATEWAY_INTERNAL`); a deployment
+without the abuse port has no suspensions and admits.
+
+`GET /abuse` also keeps the live counters (`gateway_rate_window`,
+`gateway_inflight`, subjects prefixed with their tenant). Rate-limited (429)
+and forbidden (403) answers are not recorded, and the response says so
+(`events.available: false`).
 
 ## Staff prompt access and body retention
 
@@ -454,7 +527,7 @@ otherwise to `/admin`. The console header shows the signed-in account and a
 | `/admin/budgets`   | Wallet and its corrections, budgets and key limits (read-only), subscription rate limit | `tenants.list`   |
 | `/admin/packages`  | Packages and top-up packs                             | `packages.read`  |
 | `/admin/usage`     | Ledger, per-model totals, prompt viewer               | `usage.read_all` |
-| `/admin/abuse`     | Live rate-limit counters                              | `abuse.read`     |
+| `/admin/abuse`     | Abuse signals and thresholds, suspend and lift, alerts, live rate-limit counters | `abuse.read`     |
 | `/admin/audit`     | Audit log                                             | `audit.read_all` |
 
 Components live in `packages/web-ui/src/components/admin/` with the typed
@@ -520,6 +593,17 @@ or the coded error (expired, not retained).
   creates one admin account (never a product user) whose password Better
   Auth verifies, is idempotent, refuses production and `--password`, and
   never prints the hash.
+- Abuse (#356): `packages/gateway-core/src/abuse.test.ts` (decisions, the
+  threshold schema, fingerprints, the gate) and the contract `abuse` cases
+  (counting, measuring, suspend/lift, once-per-window raise, prune; data
+  plane: `GATEWAY_SUSPENDED` before any reservation or upstream call, 401s
+  counted by fingerprint, spend from the ledger, auto-suspension) on the
+  memory stub and D1; `apps/api-cf/src/routes/v1/admin/gateway-abuse.test.ts`
+  through the Worker (admin accounts only, manual and automatic suspension of
+  keys and tenants refused with 403, audit rows rolled back with their
+  mutation, a `support_agent` suspending while every key, credential and
+  prompt route refuses it); `apps/api-cf/src/gateway/abuse-migration.test.ts`
+  (0046 constraints and the `admin_accounts` rebuild).
 - `apps/web/app/routes/admin.test.ts`: loader guard (redirect to
   `/admin/login` without an admin session or with only a product session,
   403 without calling the page API, unavailable deployment, tenant scoping)

@@ -6,7 +6,6 @@
  *   GET  /overview   (?tenantId)          30-day spend, requests, failures     usage.read_all
  *   GET  /usage      (?tenantId, filters) ledger entries + per-model totals    usage.read_all
  *   GET  /audit      (?tenantId, filters) admin audit rows                     audit.read_all
- *   GET  /abuse                           live rate-limit counters             abuse.read
  *   POST /prompts/:requestId/access       view a retained prompt + response    prompts.view
  *   POST /retention/purge                 purge expired retained bodies now    retention.purge
  *   POST /holds/sweep                     expire stale budget holds now        holds.sweep
@@ -102,11 +101,6 @@ adminInsightRoutes.get(
     });
     return ok(c, { entries });
   }),
-);
-
-adminInsightRoutes.get(
-  "/abuse",
-  platformRoute("abuse.read", async (c) => ok(c, { abuse: await reads(c.env).abuse() })),
 );
 
 const OUTCOMES: Partial<Record<string, string>> = {

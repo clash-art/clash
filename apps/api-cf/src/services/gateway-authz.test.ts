@@ -1,10 +1,10 @@
 /**
  * The gateway permission matrix (#353, #392, #394): team roles are `owner`
- * and `member` only, held by product users; the platform role is
- * `platform_admin` only, held by admin accounts. Owner holds every tenant
+ * and `member` only, held by product users; the admin account roles are
+ * `platform_admin` and `support_agent` (#356). Owner holds every tenant
  * permission, member reads only their own usage and budget, a tenant role
- * never reaches another tenant or a platform resource, and an admin account
- * holds everything. The route suites (routes/v1/admin/gateway-console.test.ts,
+ * never reaches another tenant or a platform resource, a platform_admin
+ * holds everything, and support_agent suspends without credential access. The route suites (routes/v1/admin/gateway-console.test.ts,
  * routes/v1/admin/admin-identity.test.ts) prove the server enforces this
  * module.
  */
@@ -32,12 +32,37 @@ const access = (role: string, tenantId = "team:a"): GatewayAccess => ({
 });
 
 describe("gateway permission matrix", () => {
-  it("has exactly two team roles and one admin account role", () => {
+  it("has exactly two team roles and two admin account roles", () => {
     expect([...GATEWAY_TENANT_ROLES]).toEqual(["owner", "member"]);
-    // The Drizzle mirrors of the D1 columns (0038, 0040) hold the same roles.
+    // The Drizzle mirrors of the D1 columns (0038, 0040/0046) hold the same roles.
     expect([...TENANT_MEMBER_ROLES]).toEqual([...GATEWAY_TENANT_ROLES]);
-    expect([...GATEWAY_PLATFORM_ROLES]).toEqual(["platform_admin"]);
+    // #356 asks for a support role beside platform_admin (#392's retired team role name stays retired).
+    expect([...GATEWAY_PLATFORM_ROLES]).toEqual(["platform_admin", "support_agent"]);
     expect([...ADMIN_ACCOUNT_ROLES]).toEqual([...GATEWAY_PLATFORM_ROLES]);
+  });
+
+  it("lets support_agent suspend and lift by id without any key, credential or prompt access (#356)", () => {
+    const support = { id: "adm_support", role: "support_agent" };
+    for (const permission of ["abuse.read", "abuse.suspend"] as const)
+      expect(authorizeAdminAccess(support, permission), permission).toEqual({ kind: "admin", id: "adm_support", role: "support_agent" });
+    // Every permission that lists keys, touches upstream credentials or retained prompts, or changes configuration.
+    for (const permission of [
+      "keys.read",
+      "upstreams.read",
+      "upstreams.write",
+      "prompts.view",
+      "abuse.thresholds.write",
+      "admin_accounts.read",
+      "admin_accounts.write",
+      "wallet.adjust",
+      "limits.write",
+      "catalog.write",
+      "prices.write",
+    ] as const)
+      expect(authorizeAdminAccess(support, permission), permission).toBeNull();
+    // Whatever support_agent holds is a subset of what platform_admin holds.
+    for (const permission of adminRolePermissions("support_agent"))
+      expect(adminRolePermissions("platform_admin"), permission).toContain(permission);
   });
 
   it("gives the owner every tenant permission, including member management and budget allocation", () => {

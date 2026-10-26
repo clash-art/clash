@@ -10,7 +10,8 @@ import {
   type GatewayAppOptions,
 } from "./app.js";
 import { sweepExpiredGatewayHolds } from "./holds.js";
-import type { GatewayUpstreamPort } from "./ports.js";
+import { GatewayError } from "./errors.js";
+import { unavailablePort, type GatewayUpstreamPort } from "./ports.js";
 import { createSseParser, OPENAI_STREAM_DONE } from "./sse.js";
 import { planGatewayRoutes, type GatewayCatalog } from "./routing.js";
 import { catalogFixture } from "./testing/fixtures.js";
@@ -383,6 +384,50 @@ describe("createGatewayApp", () => {
     const unknownPath = await app.fetch(post(chat, { path: "/gateway/v1/embeddings" }));
     expect([unknownPath.status, code(unknownPath)]).toEqual([501, "GATEWAY_CAPABILITY_UNAVAILABLE"]);
     expect(code(await app.fetch(post(chat, { token: "" })))).toBe("GATEWAY_AUTH_REQUIRED");
+  });
+});
+
+describe("createGatewayApp abuse gate", () => {
+  const counted = () => {
+    let calls = 0;
+    return { upstream: { fetch: async () => ((calls += 1), ok(fixture.textModel)) }, calls: () => calls };
+  };
+
+  it("serves the request when counting an observation fails, and logs the code", async () => {
+    const { upstream, calls } = counted();
+    const { app, memory } = gateway({ upstream });
+    memory.ports.abuse.observe = async () => {
+      throw new GatewayError("GATEWAY_INTERNAL");
+    };
+    expect((await app.fetch(post(chat))).status).toBe(200);
+    expect(calls()).toBe(1);
+    expect(memory.logs).toContainEqual({ level: "warn", event: "gateway.abuse_observe_failed", fields: { kind: "request", code: "GATEWAY_INTERNAL" } });
+  });
+
+  it("refuses when the suspension check fails, and admits when the deployment has no abuse port", async () => {
+    const { upstream, calls } = counted();
+    const { app, memory } = gateway({ upstream });
+    memory.ports.abuse.activeSuspension = async () => {
+      throw new Error("d1 down");
+    };
+    const refused = await app.fetch(post(chat));
+    expect([refused.status, code(refused)]).toEqual([500, "GATEWAY_INTERNAL"]);
+    expect(calls()).toBe(0);
+    memory.ports.abuse = unavailablePort("abuse");
+    expect((await app.fetch(post(chat))).status).toBe(200);
+    expect(calls()).toBe(1);
+  });
+
+  it("hands the observation to waitUntil instead of holding the request on it", async () => {
+    const pending: Array<Promise<unknown>> = [];
+    let release!: () => void;
+    const { upstream } = counted();
+    const { app, memory } = gateway({ upstream, app: { waitUntil: (promise) => void pending.push(promise) } });
+    memory.ports.abuse.observe = () => new Promise<void>((resolve) => (release = resolve));
+    expect((await app.fetch(post(chat))).status).toBe(200);
+    expect(pending.length).toBeGreaterThanOrEqual(1);
+    release();
+    await Promise.all(pending);
   });
 });
 

@@ -11,6 +11,7 @@ const bearer = (token?: string) =>
 describeGatewayContract("in-memory stub", async () => {
   const fixture = catalogFixture();
   let members = 0;
+  let abuseTenants = 0;
   const identity = (tenantId: string, keyId: string, budgetIds: string[]) => ({
     tenantId,
     userId: `${tenantId}-user`,
@@ -71,6 +72,7 @@ describeGatewayContract("in-memory stub", async () => {
       retention: "supported",
       scheduler: "unavailable",
       audit: "supported",
+      abuse: "supported",
     },
     // The stub counts rate windows only; it has no in-flight counter.
     knownGaps: ["limits.concurrency"],
@@ -95,6 +97,16 @@ describeGatewayContract("in-memory stub", async () => {
           { id: userBudget, tenantId, scope: "user", scopeId: `${tenantId}-user`, limitMicroCredits: 0, spentMicroCredits: 0, reservedMicroCredits: 0, version: 0, enforcement },
         ]);
         return bearer(tenantId);
+      },
+      abuseSubjects: async () => {
+        const tenantId = `tenant-abuse-${(abuseTenants += 1)}`;
+        const wallet = `${tenantId}-wallet`;
+        // Two tokens minted from two different parent credentials: counted and suspended as two keys.
+        gateway.addIdentity(`${tenantId}-first`, { ...identity(tenantId, `${tenantId}-token-1`, [wallet]), abuseKeyId: `${tenantId}-key-1` }, [
+          { id: wallet, tenantId, scope: "tenant", scopeId: tenantId, limitMicroCredits: 1_000_000_000, spentMicroCredits: 0, reservedMicroCredits: 0, version: 0 },
+        ]);
+        gateway.addIdentity(`${tenantId}-second`, { ...identity(tenantId, `${tenantId}-token-2`, [wallet]), abuseKeyId: `${tenantId}-key-2` }, []);
+        return { first: () => bearer(`${tenantId}-first`), second: () => bearer(`${tenantId}-second`) };
       },
     },
   };

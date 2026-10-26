@@ -10,8 +10,9 @@
  *   (GATEWAY_ADMIN_ACCOUNT_EXISTS);
  * - disable: stamps `disabled_at` and deletes the account's sessions and
  *   password, so it is signed out at once and cannot sign in again. The last
- *   enabled account cannot be disabled (GATEWAY_LAST_ADMIN_ACCOUNT), so the
- *   console can never lock itself out.
+ *   enabled `platform_admin` cannot be disabled (GATEWAY_LAST_ADMIN_ACCOUNT),
+ *   so the console can never lock itself out (a `support_agent` account, #356,
+ *   cannot manage accounts).
  *
  * The first account cannot come from the API (nobody can sign in yet): see
  * admin-account-bootstrap.ts. There is no environment-variable grant.
@@ -106,7 +107,7 @@ export function createD1AdminAccounts(db: D1Database, deps: { clock: GatewayCloc
 
     /**
      * Disable an account: signed out everywhere, no password left. Disabling
-     * a disabled account is a no-op; the last enabled one is
+     * a disabled account is a no-op; the last enabled platform_admin is
      * GATEWAY_LAST_ADMIN_ACCOUNT.
      */
     async disable(input: { id: string; reason?: string; actor: GatewayAdminActor }): Promise<{ disabled: boolean }> {
@@ -117,7 +118,9 @@ export function createD1AdminAccounts(db: D1Database, deps: { clock: GatewayCloc
           .prepare(
             `UPDATE admin_accounts SET disabled_at = ?2, updated_at = ?2
               WHERE id = ?1 AND disabled_at IS NULL
-                AND EXISTS (SELECT 1 FROM admin_accounts o WHERE o.id <> ?1 AND o.disabled_at IS NULL)`,
+                AND (role <> 'platform_admin' OR EXISTS (
+                  SELECT 1 FROM admin_accounts o
+                   WHERE o.id <> ?1 AND o.disabled_at IS NULL AND o.role = 'platform_admin'))`,
           )
           .bind(input.id, nowMs),
         adminAuditStatement(db, {

@@ -10,6 +10,7 @@ import type {
   ProviderAccountAvailability,
 } from "@clash/shared-types/model-routing";
 
+import type { GatewayAbusePort } from "./abuse.js";
 import type { BudgetFlag, BudgetHold, BudgetState, GatewayOutcome } from "./budget.js";
 import type { GatewayUpstreamHealth } from "./circuit.js";
 import { GatewayError, type GatewayErrorCode } from "./errors.js";
@@ -25,6 +26,12 @@ export interface GatewayIdentity {
   userId: string;
   /** Virtual key / gateway token id when the caller used one. */
   keyId?: string;
+  /**
+   * The key abuse signals count and suspend this caller as (#356): the
+   * virtual key or long-lived parent credential its token was minted from.
+   * Absent: `keyId`.
+   */
+  abuseKeyId?: string;
   /** Model codes this credential may use; absent means the whole catalog. */
   modelAllowlist?: readonly string[];
   /** Budgets this caller draws on, all reserved together. */
@@ -418,6 +425,8 @@ export interface GatewayPorts {
   retention: GatewayRetentionPort;
   scheduler: GatewaySchedulerPort;
   audit: GatewayAuditPort;
+  /** Abuse observations, thresholds, alerts and suspensions (abuse.ts, #356). */
+  abuse: GatewayAbusePort;
   logger: GatewayLogger;
   upstream: GatewayUpstreamPort;
 }
@@ -438,6 +447,7 @@ export const GATEWAY_PORT_NAMES = [
   "retention",
   "scheduler",
   "audit",
+  "abuse",
   "logger",
   "upstream",
 ] as const satisfies readonly GatewayPortName[];
