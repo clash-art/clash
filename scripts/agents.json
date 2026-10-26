@@ -9,6 +9,8 @@
     "source-check-config.test.ts": "Tests preservation of browser/app-local aliases and non-mutating failure when shared mappings change.",
     "executable-scripts.test.ts": "Executes native imports and the agent bundler in isolated fixtures, preserving generated JavaScript package boundaries without a release build.",
     "packaged-runtime-binaries.ts": "Shared npm/self-contained/Desktop packaging helper: npm invocation per platform, ffmpeg/ffprobe installer paths, and the executable bit a read-only install cannot repair later.",
-    "remotion-parity/": "Server (@remotion/renderer) vs browser (@remotion/web-renderer) composition parity check. Generates ffmpeg fixtures at run time and gates every sample frame on SSIM >= 0.95; run with pnpm test:remotion-parity."
+    "remotion-parity/": "Server (@remotion/renderer) vs browser (@remotion/web-renderer) composition parity check. Generates ffmpeg fixtures at run time and gates every sample frame on SSIM >= 0.95; run with pnpm test:remotion-parity.",
+    "check-anti-patterns.ts": "CI gate for the mechanical anti-patterns in CONTRIBUTING.md: PR/issue body rules (Closes #N, Evidence, no single-backend scoping), no load balancer configs, one zod version, DeepSeek Flash only, no scoping phrases in added lines.",
+    "check-anti-patterns.test.ts": "node:test coverage for check-anti-patterns.ts, including a scratch git repo with synthetic violations."
   }
 }

@@ -20,6 +20,8 @@
     "scripts/runtime-dependency-identity.ts",
     "scripts/packaged-runtime-binaries.ts",
     "scripts/runtime-dependency-identity.test.ts",
-    "scripts/e2e/harness.test.ts"
+    "scripts/e2e/harness.test.ts",
+    "scripts/check-anti-patterns.ts",
+    "scripts/check-anti-patterns.test.ts"
   ]
 }

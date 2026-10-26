@@ -1340,7 +1340,6 @@ const PIKA_2026_TEXT_MODEL_CARDS = (
     ["gpt-5.6-sol", "GPT-5.6 Sol", "OpenAI"],
     ["claude-sonnet-5", "Claude Sonnet 5", "Anthropic"],
     ["gemini-3.6-flash", "Gemini 3.6 Flash", "Google"],
-    ["deepseek-v4-pro", "DeepSeek V4 Pro", "DeepSeek"],
     ["kimi-k3", "Kimi K3", "Moonshot AI"],
     ["glm-5.2", "GLM-5.2", "Z.ai"],
   ] as const
@@ -5485,18 +5484,6 @@ const MODEL_PROVIDER_IMPLEMENTATION_ROWS: ModelProviderImplementationRow[] = [
     "pika",
     "pika-chat",
     "google/gemini-3.6-flash",
-    18,
-    {
-      credentials: ["apiKey"],
-      ...PIKA_EXECUTOR_OPTIONS,
-    },
-  ],
-  [
-    "deepseek-v4-pro",
-    "pika",
-    "pika",
-    "pika-chat",
-    "deepseek/deepseek-v4-pro",
     18,
     {
       credentials: ["apiKey"],
