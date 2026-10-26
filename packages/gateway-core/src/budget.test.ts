@@ -3,12 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   alertThresholdPct,
   budgetAlertKey,
+  budgetBalance,
   budgetFlags,
   checkBudgetInvariants,
-  computeHold,
-  planRelease,
-  planReserve,
-  planSettle,
+  computeMediaDebit,
+  planCharge,
+  planCheck,
+  planDebit,
+  planRefund,
   settleRequest,
   type BudgetState,
   type GatewayOutcome,
@@ -51,84 +53,100 @@ const codeOf = (fn: () => unknown) => {
 const chat = (extra: Record<string, unknown> = {}) =>
   normalizeOpenAIChatRequest({ model: "m", messages: [{ role: "user", content: "hello there" }], ...extra });
 
-describe("computeHold", () => {
-  it("is the price of the worst case: the input estimate plus the output ceiling", () => {
-    const request = chat({ max_tokens: 100 });
-    expect(computeHold(request, price)).toBe(
-      priceUsage({ ...emptyUsage(), inputTokens: request.estimatedInputTokens, outputTokens: 100 }, price).microCredits,
-    );
-    const unbounded = chat();
-    expect(computeHold(unbounded, price)).toBe(
-      priceUsage(
-        { ...emptyUsage(), inputTokens: unbounded.estimatedInputTokens, outputTokens: price.maxOutputTokens! },
-        price,
-      ).microCredits,
-    );
-    // A request may not raise its ceiling above the model's.
-    const greedy = chat({ max_tokens: 1_000_000 });
-    expect(computeHold(greedy, price)).toBe(
-      priceUsage(
-        { ...emptyUsage(), inputTokens: greedy.estimatedInputTokens, outputTokens: price.maxOutputTokens! },
-        price,
-      ).microCredits,
-    );
-  });
-
-  it("prices requested media units", () => {
+describe("computeMediaDebit", () => {
+  it("is the exact price of the requested media units", () => {
     const request = normalizeMediaGenerationRequest({ model: "m", kind: "image", units: { image: 3 } });
-    expect(computeHold(request, price)).toBe(priceUsage({ ...emptyUsage(), units: { image: 3 } }, price).microCredits);
+    expect(computeMediaDebit(request, price)).toBe(priceUsage({ ...emptyUsage(), units: { image: 3 } }, price).microCredits);
   });
 
-  it("refuses to guess an unbounded output", () => {
-    expect(codeOf(() => computeHold(chat(), { ...price, maxOutputTokens: undefined }))).toBe(
-      "GATEWAY_INVALID_REQUEST",
-    );
-    expect(codeOf(() => computeHold(chat({ max_tokens: 5 }), { ...price, rates: [] }))).toBe(
-      "GATEWAY_PRICE_UNAVAILABLE",
-    );
+  it("never prices text ahead, and refuses a unit without a rate", () => {
+    expect(codeOf(() => computeMediaDebit(chat({ max_tokens: 5 }), price))).toBe("GATEWAY_INTERNAL");
+    const request = normalizeMediaGenerationRequest({ model: "m", kind: "image", units: { image: 1 } });
+    expect(codeOf(() => computeMediaDebit(request, { ...price, rates: [] }))).toBe("GATEWAY_PRICE_UNAVAILABLE");
   });
 });
 
-describe("reserve / settle arithmetic", () => {
-  it("reserves on every budget or none", () => {
-    const budgets = [budget("b", 100, 60), budget("a", 1000), budget("c", null)];
-    expect(codeOf(() => planReserve(budgets, 41))).toBe("GATEWAY_BUDGET_EXCEEDED");
-    const reserved = planReserve(budgets, 40);
-    expect(reserved.budgets.map((entry) => entry.id)).toEqual(["a", "b", "c"]);
-    for (const entry of reserved.budgets) {
-      const original = budgets.find((candidate) => candidate.id === entry.id)!;
-      expect(entry.reservedMicroCredits).toBe(original.reservedMicroCredits + 40);
-      expect(entry.spentMicroCredits).toBe(original.spentMicroCredits);
-    }
-    expect(budgets[0]!.reservedMicroCredits).toBe(0);
+describe("planCheck (text postpay admission)", () => {
+  it("admits while every hard budget is above -floor and writes nothing", () => {
+    const budgets = [budget("a", 100, 100), budget("b", 100, 104), budget("open", null, 1_000)];
+    expect(planCheck(budgets, 5)).toEqual({ flags: [] });
+    expect(budgets.map(budgetBalance)).toEqual([0, -4, null]);
   });
 
-  it("reports which budget refused, with what remains", () => {
+  it("refuses at -floor, naming the budget, its balance and the floor", () => {
     try {
-      planReserve([budget("tight", 10, 4, 3)], 4);
+      planCheck([budget("a", 100), budget("low", 100, 105)], 5);
       throw new Error("expected refusal");
     } catch (error) {
       expect(error).toBeInstanceOf(GatewayError);
-      expect((error as GatewayError).details).toMatchObject({ budgetId: "tight", remainingMicroCredits: 3 });
+      expect((error as GatewayError).code).toBe("GATEWAY_BUDGET_EXCEEDED");
+      expect((error as GatewayError).details).toMatchObject({
+        budgetId: "low",
+        balanceMicroCredits: -5,
+        floorMicroCredits: 5,
+        remainingMicroCredits: 0,
+      });
     }
+    // A zero floor refuses an empty budget.
+    expect(codeOf(() => planCheck([budget("a", 100, 100)], 0))).toBe("GATEWAY_BUDGET_EXCEEDED");
+    // A legacy hold counts against the balance.
+    expect(codeOf(() => planCheck([budget("a", 100, 90, 15)], 5))).toBe("GATEWAY_BUDGET_EXCEEDED");
   });
 
-  it("refuses only on hard budgets; soft and alert budgets hold past their limit and raise flags", () => {
-    const soft = { ...budget("soft", 10, 8), enforcement: "soft" as const };
-    const alert = { ...budget("alert", 10, 8), enforcement: "alert" as const };
-    expect(codeOf(() => planReserve([budget("hard", 10, 8)], 3))).toBe("GATEWAY_BUDGET_EXCEEDED");
-    expect(codeOf(() => planReserve([soft, alert, budget("hard", 10, 8)], 3))).toBe("GATEWAY_BUDGET_EXCEEDED");
-    const planned = planReserve([soft, alert], 3, "req-1");
-    expect(planned.budgets.map((entry) => entry.reservedMicroCredits)).toEqual([3, 3]);
+  it("never refuses on soft or alert budgets, and reports what is already true as flags", () => {
+    const soft = { ...budget("soft", 10, 30), enforcement: "soft" as const };
+    const alert = { ...budget("alert", 10, 30), enforcement: "alert" as const };
+    const planned = planCheck([soft, alert], 0, "req-1");
     expect(planned.flags.map(({ budgetId, kind }) => [budgetId, kind])).toEqual([
       ["alert", "alert_threshold"],
       ["soft", "soft_exceeded"],
     ]);
-    expect(planned.flags.find((flag) => flag.kind === "soft_exceeded")).toMatchObject({ dedupeKey: "req-1", usedMicroCredits: 11 });
-    // Within the limit: a soft budget raises nothing.
-    expect(planReserve([soft], 2).flags).toEqual([]);
-    // Unlimited budgets never flag.
-    expect(planReserve([{ ...budget("open", null), enforcement: "soft" }], 99).flags).toEqual([]);
+    expect(planned.flags.find((flag) => flag.kind === "soft_exceeded")).toMatchObject({ dedupeKey: "req-1", usedMicroCredits: 30 });
+  });
+
+  it("rejects a floor that is not whole micro-credits", () => {
+    expect(codeOf(() => planCheck([budget("a", 100)], -1))).toBe("GATEWAY_INTERNAL");
+    expect(codeOf(() => planCheck([budget("a", 100)], 0.5))).toBe("GATEWAY_INTERNAL");
+  });
+});
+
+describe("planDebit / planCharge / planRefund", () => {
+  it("debits every budget or none, the full amount each, in id order", () => {
+    const budgets = [budget("b", 100, 60), budget("a", 1000), budget("c", null)];
+    expect(codeOf(() => planDebit(budgets, 41))).toBe("GATEWAY_BUDGET_EXCEEDED");
+    const debited = planDebit(budgets, 40);
+    expect(debited.budgets.map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+    for (const entry of debited.budgets) {
+      const original = budgets.find((candidate) => candidate.id === entry.id)!;
+      expect(entry.spentMicroCredits).toBe(original.spentMicroCredits + 40);
+      expect(entry.reservedMicroCredits).toBe(original.reservedMicroCredits);
+      expect(entry.version).toBe(original.version + 1);
+    }
+    expect(budgets[0]!.spentMicroCredits).toBe(60);
+  });
+
+  it("has no floor for a prepaid debit, and refuses only on hard budgets", () => {
+    expect(codeOf(() => planDebit([budget("hard", 10, 8)], 3))).toBe("GATEWAY_BUDGET_EXCEEDED");
+    const soft = { ...budget("soft", 10, 8), enforcement: "soft" as const };
+    const alert = { ...budget("alert", 10, 8), enforcement: "alert" as const };
+    expect(codeOf(() => planDebit([soft, alert, budget("hard", 10, 8)], 3))).toBe("GATEWAY_BUDGET_EXCEEDED");
+    const planned = planDebit([soft, alert], 3, "req-1");
+    expect(planned.budgets.map((entry) => entry.spentMicroCredits)).toEqual([11, 11]);
+    expect(planned.flags.map(({ budgetId, kind }) => [budgetId, kind])).toEqual([
+      ["alert", "alert_threshold"],
+      ["soft", "soft_exceeded"],
+    ]);
+    expect(planDebit([soft], 2).flags).toEqual([]);
+    expect(planDebit([{ ...budget("open", null), enforcement: "soft" }], 99).flags).toEqual([]);
+  });
+
+  it("charges past the limit without refusing, and refunds exactly what was recorded", () => {
+    const charged = planCharge(budget("a", 100, 90), 30);
+    expect(charged.spentMicroCredits).toBe(120);
+    expect(budgetBalance(charged)).toBe(-20);
+    expect(planRefund(charged, 30)).toMatchObject({ spentMicroCredits: 90, version: 2 });
+    expect(codeOf(() => planRefund(budget("a", 100, 5), 6))).toBe("GATEWAY_INTERNAL");
+    expect(codeOf(() => planCharge(budget("a", 100), 0.5))).toBe("GATEWAY_INTERNAL");
   });
 
   it("alerts at the configured threshold on any enforcement, once per limit and threshold", () => {
@@ -138,63 +156,55 @@ describe("reserve / settle arithmetic", () => {
     expect(flag).toMatchObject({ kind: "alert_threshold", enforcement: "hard", thresholdPct: 80, usedMicroCredits: 80 });
     expect(flag!.dedupeKey).toBe(budgetAlertKey(100, 80));
     expect(budgetFlags({ ...tracked, limitMicroCredits: 200 }, 100, "r")[0]!.dedupeKey).not.toBe(flag!.dedupeKey);
-    // An alert budget without a threshold alerts at its limit.
     expect(alertThresholdPct({ enforcement: "alert" })).toBe(100);
     expect(alertThresholdPct({ enforcement: "hard" })).toBeUndefined();
   });
 
-  it("settles the stored hold, charges actual cost and reports overshoot", () => {
-    const [held] = planReserve([budget("a", 100)], 50).budgets;
-    const settled = planSettle(held!, { budgetId: "a", microCredits: 50 }, 20);
-    expect(settled.budget).toMatchObject({ spentMicroCredits: 20, reservedMicroCredits: 0 });
-    expect(settled.overshootMicroCredits).toBe(0);
-    const over = planSettle(held!, { budgetId: "a", microCredits: 50 }, 130);
-    expect(over.budget.spentMicroCredits).toBe(130);
-    expect(over.overshootMicroCredits).toBe(30);
-    expect(planRelease(held!, { budgetId: "a", microCredits: 50 })).toMatchObject({
-      spentMicroCredits: 0,
-      reservedMicroCredits: 0,
-    });
-    expect(codeOf(() => planSettle(held!, { budgetId: "other", microCredits: 50 }, 1))).toBe("GATEWAY_INTERNAL");
-    expect(codeOf(() => planSettle(held!, { budgetId: "a", microCredits: 50 }, 0.5))).toBe("GATEWAY_INTERNAL");
-  });
-
-  it("keeps integer counters and the invariants through a long reserve/settle sequence", () => {
+  it("keeps integer counters and spent == settle - refund through a long debit/charge/refund sequence", () => {
     let state = budget("a", 5_000_000);
-    const holds: Array<{ microCredits: number; state: "open" | "settled" | "released"; settledMicroCredits?: number }> = [];
+    const rows: Array<{ kind: "settle" | "refund"; microCredits: number }> = [];
+    const debits: number[] = [];
     let seed = 42;
     const next = (max: number) => {
       seed = (seed * 1103515245 + 12345) % 2147483648;
       return seed % max;
     };
     for (let step = 0; step < 500; step += 1) {
-      const open = holds.filter((hold) => hold.state === "open");
-      if (open.length && next(2) === 0) {
-        const hold = open[next(open.length)]!;
-        const cost = next(hold.microCredits + 1);
-        state = planSettle(state, { budgetId: "a", microCredits: hold.microCredits }, cost).budget;
-        hold.state = "settled";
-        hold.settledMicroCredits = cost;
-      } else {
-        const amount = next(20_000) + 1;
+      const choice = next(3);
+      const amount = next(20_000) + 1;
+      if (choice === 0 && debits.length) {
+        const refunded = debits.splice(next(debits.length), 1)[0]!;
+        state = planRefund(state, refunded);
+        rows.push({ kind: "refund", microCredits: refunded });
+      } else if (choice === 1) {
         try {
-          state = planReserve([state], amount).budgets[0]!;
-          holds.push({ microCredits: amount, state: "open" });
+          planCheck([state], 1_000_000);
+          state = planCharge(state, amount);
+          rows.push({ kind: "settle", microCredits: amount });
+        } catch (error) {
+          expect((error as GatewayError).code).toBe("GATEWAY_BUDGET_EXCEEDED");
+        }
+      } else {
+        try {
+          state = planDebit([state], amount).budgets[0]!;
+          rows.push({ kind: "settle", microCredits: amount });
+          debits.push(amount);
         } catch (error) {
           expect((error as GatewayError).code).toBe("GATEWAY_BUDGET_EXCEEDED");
         }
       }
-      expect(state.spentMicroCredits + state.reservedMicroCredits).toBeLessThanOrEqual(state.limitMicroCredits!);
-      expect(checkBudgetInvariants(state, holds)).toEqual([]);
+      expect(Number.isSafeInteger(state.spentMicroCredits)).toBe(true);
+      expect(checkBudgetInvariants(state, rows)).toEqual([]);
     }
   });
 
-  it("detects counters that drifted from their holds", () => {
-    const violations = checkBudgetInvariants(budget("a", 100, 10, 5), [
-      { microCredits: 7, state: "open" },
-      { microCredits: 9, state: "settled", settledMicroCredits: 10 },
+  it("detects a spent counter that drifted from its ledger rows", () => {
+    const violations = checkBudgetInvariants(budget("a", 100, 10), [
+      { kind: "settle", microCredits: 7 },
+      { kind: "settle", microCredits: 9 },
+      { kind: "refund", microCredits: 7 },
     ]);
-    expect(violations.map((violation) => violation.rule)).toEqual(["reserved-matches-holds"]);
+    expect(violations).toEqual([{ budgetId: "a", rule: "spent-matches-ledger", expected: 9, actual: 10 }]);
   });
 });
 

@@ -8,25 +8,26 @@
  *    plan (`planGatewayRoutes`) over the caller's one credential scope, priced
  *    at the plan instant. The job freezes the first attempt and that instant,
  *    so a retried admission or a later settlement prices identically.
- * 2. `admitGatewayMediaJob`: limits (a media job in flight) and the hold on
- *    every budget, for the units the price book charges.
+ * 2. `admitGatewayMediaJob`: limits (a media job in flight) and the prepaid
+ *    debit of the exact price on every budget (#399), for the units the price
+ *    book charges. The debit is charge-once under the job's request id.
  * 3. `restoreGatewayMediaAdmission`: the same admission rebuilt from the job
- *    for settlement in a later step, without holding again.
- * 4. `settleMediaGeneration` (admission.ts): a success is charged its
- *    delivered units (`deliveredMediaUnits`), any failure zero, once.
+ *    for settlement in a later step, without debiting again.
+ * 4. `settleMediaGeneration` (admission.ts): a success needs no money write
+ *    (the debit was exact); a failure dispatches the full refund settle run.
  *
  * Units come from the price book: of the quantities a job can measure about
  * itself (images, seconds, characters, one request), only the media units the
  * published price has a rate for are charged. A priced unit the job cannot
- * measure refuses with GATEWAY_PRICE_UNAVAILABLE before anything is held.
+ * measure refuses with GATEWAY_PRICE_UNAVAILABLE before anything is debited.
  */
 import {
   assertModelAllowed,
+  gatewayPayment,
+  payAdmission,
   planForIdentity,
-  reserveAdmission,
   type GatewayAdmission,
 } from "./admission.js";
-import { computeHold } from "./budget.js";
 import { applyGatewayCatalogPolicy } from "./catalog-policy.js";
 import { GatewayError, toGatewayError } from "./errors.js";
 import type { GatewayIdentity, GatewayPorts } from "./ports.js";
@@ -81,7 +82,7 @@ const isMediaUnit = (unit: string): unit is GatewayMediaUnit =>
 /**
  * The units of `quantities` the price charges. A media rate whose quantity is
  * unknown fails closed, and so does a price with no media rate at all: a job
- * held at zero would leave the budget unprotected.
+ * debited at zero would run unpaid.
  */
 export function pricedMediaUnits(price: GatewayPrice, quantities: GatewayMediaQuantities): Usage["units"] {
   const units: Usage["units"] = {};
@@ -104,10 +105,11 @@ export function pricedMediaUnits(price: GatewayPrice, quantities: GatewayMediaQu
 }
 
 /**
- * What a succeeded job is charged: each held unit at the quantity the job
- * delivered when it measured one (a rendered video's seconds), never above
- * the held quantity, which the caller agreed to at admission; otherwise the
- * held quantity.
+ * What a succeeded job delivered, as reported on its outcome: each debited
+ * unit at the quantity the job measured (a rendered video's seconds), never
+ * above the debited quantity, which the caller agreed to at admission;
+ * otherwise the debited quantity. The prepaid debit stands either way (#399):
+ * a success writes no follow-up money.
  */
 export function deliveredMediaUnits(
   admission: Pick<GatewayAdmission, "request">,
@@ -156,7 +158,7 @@ const coded = <T>(promise: Promise<T>): Promise<T> =>
 /**
  * Plan a media job for a verified identity: allowlist, catalog policy, the
  * shared route plan over the identity's credential scope, and the price as of
- * now. Nothing is held. Rejects with the planning codes (GATEWAY_MODEL_NOT_FOUND,
+ * now. Nothing is debited. Rejects with the planning codes (GATEWAY_MODEL_NOT_FOUND,
  * GATEWAY_NO_ROUTE, GATEWAY_PRICE_UNAVAILABLE, ...).
  */
 export function planGatewayMediaJob(
@@ -207,28 +209,24 @@ export function planGatewayMediaJob(
 }
 
 /**
- * Admit a planned job: its limits lease (a media job in flight) and the hold
- * for the units the price book charges, under the job's request id. On
- * refusal nothing stays held or leased. Holding twice under one request id is
- * refused by the budgets port, so an adapter that may repeat admission keeps
- * its own record of a reservation it already made.
+ * Admit a planned job: its limits lease (a media job in flight) and the
+ * prepaid debit of the exact price for the units the price book charges,
+ * under the job's request id. On refusal nothing is debited or leased.
+ * Debiting twice under one request id is refused by the budgets port, so an
+ * adapter that may repeat admission keeps its own record of a debit it
+ * already made.
  */
-export function admitGatewayMediaJob(
-  ports: GatewayPorts,
-  job: GatewayMediaJob,
-  options: { holdTtlMs: number },
-): Promise<GatewayAdmission> {
+export function admitGatewayMediaJob(ports: GatewayPorts, job: GatewayMediaJob): Promise<GatewayAdmission> {
   return coded(
     (async () => {
       const price = await priceJob(ports, job);
-      return reserveAdmission(ports, {
+      return payAdmission(ports, {
         requestId: job.requestId,
         identity: job.identity,
         request: mediaRequest(job, price),
         plan: jobPlan(job),
         price,
         pricedAt: job.pricedAt,
-        holdTtlMs: options.holdTtlMs,
       });
     })(),
   );
@@ -236,7 +234,7 @@ export function admitGatewayMediaJob(
 
 /**
  * The admission of an already admitted job, for settling it in a later step:
- * priced as of the job's instant, nothing reserved or leased again.
+ * priced as of the job's instant, nothing debited or leased again.
  * `leaseId` ends the job's limits lease when it settles.
  */
 export function restoreGatewayMediaAdmission(
@@ -255,8 +253,8 @@ export function restoreGatewayMediaAdmission(
         plan: jobPlan(job),
         price,
         pricedAt: job.pricedAt,
-        holdMicroCredits: computeHold(request, price),
-        reservation: { requestId: job.requestId, holds: [], expiresAt: 0 },
+        payment: await gatewayPayment(request, price, job.identity),
+        flags: [],
         leaseId: options.leaseId ?? "",
         admittedAt: job.pricedAt,
       };

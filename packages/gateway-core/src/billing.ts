@@ -81,7 +81,7 @@ export function walletAvailable(wallet: {
 /**
  * Credits a period expiry removes: the period's grant minus what the period
  * consumed (grant credits go first), never more than the wallet can give up
- * now, so open holds stay covered and the limit never drops below spend.
+ * now, so the limit never drops below spend.
  */
 export function expiringGrant(input: {
   grantedMicroCredits: MicroCredits;

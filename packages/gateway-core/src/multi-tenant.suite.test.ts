@@ -16,6 +16,7 @@ import {
 import { GATEWAY_ERROR_TABLE, GatewayError, gatewayErrorResponseInit } from "./errors.js";
 import { normalizeMediaGenerationRequest } from "./request.js";
 import { planGatewayRoutes, type GatewayCatalog } from "./routing.js";
+import { GATEWAY_SETTLEMENT_DEFAULTS } from "./settlement.js";
 import { createSseParser, OPENAI_STREAM_DONE } from "./sse.js";
 import { emptyUsage } from "./usage.js";
 import { catalogFixture } from "./testing/fixtures.js";
@@ -264,9 +265,9 @@ describe("#360 multi-tenant suite (gateway-core / in-memory)", () => {
   });
 
   describe("3. budget race under concurrent streaming", () => {
-    it("keeps spent+reserved <= limit across many concurrent reserves; excess is GATEWAY_BUDGET_EXCEEDED", async () => {
-      const hold = 100_000;
-      const limit = 1_000_000; // admits exactly 10 holds
+    it("keeps spent <= limit across many concurrent prepaid debits; excess is GATEWAY_BUDGET_EXCEEDED", async () => {
+      const debit = 100_000;
+      const limit = 1_000_000; // admits exactly 10 debits
       const { memory } = harness({
         budgets: [budget("budget-a", "tenant-a", limit)],
       });
@@ -277,13 +278,21 @@ describe("#360 multi-tenant suite (gateway-core / in-memory)", () => {
       const results = await Promise.all(
         Array.from({ length: attempts }, (_, index) =>
           memory.ports.budgets
-            .reserve({
+            .debit({
               requestId: `race-${index}`,
               tenantId: identityA.tenantId,
-              budgetIds: identityA.budgetIds,
+              userId: identityA.userId,
+              modelCode: "race-media",
+              kind: "image",
+              upstreamId: "race",
               credentialScope: identityA.credentialScope,
-              holdMicroCredits: hold,
-              expiresAt: memory.ports.clock.now() + 60_000,
+              usage: emptyUsage(),
+              costMicroCredits: debit,
+              priceVersion: "race",
+              catalogVersion: "race",
+              status: "settled",
+              occurredAt: memory.ports.clock.now(),
+              budgetIds: identityA.budgetIds,
             })
             .then(() => ({ ok: true as const }))
             .catch((error: unknown) => ({
@@ -300,9 +309,9 @@ describe("#360 multi-tenant suite (gateway-core / in-memory)", () => {
         tenantId: "tenant-a",
         budgetIds: ["budget-a"],
       });
-      expect(snapshot!.spentMicroCredits + snapshot!.reservedMicroCredits).toBeLessThanOrEqual(limit);
-      expect(snapshot!.reservedMicroCredits).toBe(admitted * hold);
-      expect(snapshot!.spentMicroCredits).toBe(0);
+      expect(snapshot!.spentMicroCredits).toBeLessThanOrEqual(limit);
+      expect(snapshot!.spentMicroCredits).toBe(admitted * debit);
+      expect(snapshot!.reservedMicroCredits).toBe(0);
     });
   });
 
@@ -609,8 +618,8 @@ describe("#360 multi-tenant suite (gateway-core / in-memory)", () => {
     });
   });
 
-  describe("12. media metering (decision 11 — AIGC zero-charge on failure)", () => {
-    it("charges zero when a media generation fails after acceptance, and charges units on success", async (context) => {
+  describe("12. media metering (decision 11 — AIGC zero-charge on failure, #399 prepay + refund)", () => {
+    it("refunds the prepaid debit when a media generation fails after acceptance; a success keeps it", async (context) => {
       const media = fixture.mediaModel;
       if (!media) {
         context.skip();
@@ -629,34 +638,38 @@ describe("#360 multi-tenant suite (gateway-core / in-memory)", () => {
               units,
             }),
           },
-          { holdTtlMs: 60_000 },
         );
+      const wallet = async () => (await memory.ports.budgets.snapshot({ tenantId: "tenant-a" }))[0]!;
+      const before = await wallet();
       const failed = await admit();
-      const { result } = await settleMediaGeneration(memory.ports, failed, {
+      const { dispatch } = await settleMediaGeneration(memory.ports, failed, {
         attempt: failed.plan.attempts[0]!,
         result: { status: "failed", error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
       });
-      expect(result.costMicroCredits).toBe(0);
+      expect(dispatch).toMatchObject({ kind: "refund", scheduled: true });
+      expect((await wallet()).spentMicroCredits).toBe(before.spentMicroCredits);
       expect(
         await memory.ports.ledger.get({ tenantId: failed.identity.tenantId, requestId: failed.requestId }),
       ).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
 
       const served = await admit();
-      const { settlement } = await settleMediaGeneration(memory.ports, served, {
+      const { settlement, dispatch: none } = await settleMediaGeneration(memory.ports, served, {
         attempt: served.plan.attempts[0]!,
         result: { status: "succeeded", units },
       });
-      expect(settlement.costMicroCredits).toBe(
-        priceUsage({ ...emptyUsage(), units }, served.price).microCredits,
-      );
-      expect(settlement.costMicroCredits).toBeGreaterThan(0);
+      const price = priceUsage({ ...emptyUsage(), units }, served.price).microCredits;
+      expect(settlement.costMicroCredits).toBe(price);
+      expect(price).toBeGreaterThan(0);
+      expect(none).toBeNull();
+      expect((await wallet()).spentMicroCredits).toBe(before.spentMicroCredits + price);
     });
   });
 
   describe("13. abuse", () => {
-    it("refuses further spend once the hard wallet is exhausted (suspend-equivalent ceiling)", async () => {
+    it("refuses further spend once the hard wallet is exhausted to the credit floor (suspend-equivalent ceiling)", async () => {
       const { app } = harness({
-        budgets: [budget("budget-a", "tenant-a", 0)],
+        // Postpaid text is admitted down to -floor (#399); at -floor it is refused.
+        budgets: [budget("budget-a", "tenant-a", 0, GATEWAY_SETTLEMENT_DEFAULTS.creditFloorMicroCredits)],
         upstream: {
           async fetch() {
             throw new Error("must not contact upstream over an empty wallet");

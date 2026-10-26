@@ -6,5 +6,5 @@
   "src/cloud-runs/cloud-durable-workflow-entrypoint.ts": "Optional Cloudflare WorkflowEntrypoint subclass adapter. Deployments provide provider, OSS staging, and Project publisher ports.",
   "src/cloud-runs/cloud-durable-run-coordinator.test.ts": "Chaos tests for duplicate enqueue, ambiguous side-effect crashes, CAS contention, dispatcher idempotency, and Workflow wakeups.",
   "src/cloud-runs/cloud-durable-run-journal.integration.test.ts": "Miniflare/D1 integration tests for persistence, concurrent CAS election, and due recovery scans.",
-  "src/cloud-runs/owners.ts": "The one exported owner list shared by admission, Workflow coordinator selection and cron recovery."
+  "src/cloud-runs/owners.ts": "The one exported owner list (api-cf:generation, api-cf:executable, api-cf:gateway-settle) shared by admission, Workflow coordinator selection (agents/generation.ts) and cron recovery."
 }

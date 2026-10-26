@@ -41,6 +41,7 @@ export default {
   fetch: app.fetch,
   scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
     // Separate waitUntil calls: one failing job must not cancel the others.
+    // Durable Run recovery covers gateway settle runs too (#399).
     ctx.waitUntil(recoverCloudDurableRuns(env));
     ctx.waitUntil(
       import("./services/project-content-multipart").then((m) =>
@@ -51,11 +52,6 @@ export default {
     // whatever GATEWAY_STAFF_PROMPT_ACCESS says, so turning it off strands none.
     ctx.waitUntil(
       import("./gateway/d1-retention").then((m) => m.purgeGatewayRetention(env)),
-    );
-    // Gateway stale holds (#348): release reservations whose request never
-    // settled, at zero cost. Idempotent; settle_failed holds are left alone.
-    ctx.waitUntil(
-      import("./gateway/d1-budgets").then((m) => m.sweepGatewayHolds(env)),
     );
     // Gateway abuse thresholds (#356): alert, auto-suspend once per window,
     // and drop observations past the longest window. Idempotent.

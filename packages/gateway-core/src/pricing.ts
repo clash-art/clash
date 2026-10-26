@@ -1,7 +1,7 @@
 /**
  * Integer money. All amounts are micro-credits (1 credit = 1_000_000) held as
  * safe integers; multiplication runs in bigint and rounds up once per line, so
- * no floating-point value ever reaches a hold, a settlement or a ledger row.
+ * no floating-point value ever reaches a debit, a charge or a ledger row.
  * Prices carry no markup: the price book is the charged amount.
  */
 import { GatewayError } from "./errors.js";
@@ -50,7 +50,7 @@ export interface GatewayPrice {
   /** Immutable price-book version recorded on every ledger row. */
   version: string;
   rates: GatewayPriceRate[];
-  /** Ceiling for holds when a request omits `max_tokens`. */
+  /** Output ceiling that caps an estimated output when a request omits `max_tokens`. */
   maxOutputTokens?: number;
 }
 

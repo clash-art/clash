@@ -91,12 +91,12 @@ const renderOwner = () =>
   render(<TeamSettings teams={[ownerTeam]} team={ownerTeam} view={{ kind: "owner", data: owner }} onSelect={() => undefined} onChanged={() => undefined} />);
 
 describe("TeamSettings (owner)", () => {
-  it("shows the wallet, budgets with reserved and used, notifications, usage and audit", () => {
+  it("shows the wallet, budgets with used and left, notifications, usage and audit", () => {
     renderOwner();
     expect(screen.getByText("16")).toBeInTheDocument();
     const budgets = screen.getByRole("table", { name: "Budgets" });
     const ann = within(budgets).getByText("Member · Ann").closest("tr")!;
-    for (const text of ["soft", "5", "1.25", "0.25", "3.5", "80%"]) expect(within(ann).getByText(text)).toBeInTheDocument();
+    for (const text of ["soft", "5", "1.25", "3.5", "80%"]) expect(within(ann).getByText(text)).toBeInTheDocument();
     expect(within(screen.getByRole("table", { name: "Budget notifications" })).getByText("Alert: 80% reached")).toBeInTheDocument();
     expect(within(screen.getByRole("table", { name: "Usage" })).getByText("gpt-5.4")).toBeInTheDocument();
     expect(within(screen.getByRole("table", { name: "Audit log" })).getByText("budget.override")).toBeInTheDocument();

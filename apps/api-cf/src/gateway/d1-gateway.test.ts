@@ -16,19 +16,33 @@ vi.mock("../containers/render", () => ({
   RenderContainer: class MockRenderContainer {},
 }));
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describeGatewayContract } from "@clash/gateway-core/contract";
 import { listDeclaredModelUpstreamRoutes } from "@clash/shared-types";
 
 import { createApp } from "../app";
+import type { Env } from "../config";
+import { runCloudDurableWorkflow } from "../cloud-runs/cloud-durable-workflow";
+import { createD1CloudDurableRunJournal } from "../cloud-runs/cloud-durable-run-journal";
+import { GATEWAY_SETTLE_OWNER } from "../cloud-runs/owners";
+import { recoverCloudDurableRuns } from "../generation/recovery";
 import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
-import { createD1GatewayBudgetPorts, sweepGatewayHolds } from "./d1-budgets";
 import {
   createD1GatewayCredentialPort,
   gatewayEncryptionKey,
   readSecretBinding,
   sealGatewayUpstreamCredentials,
 } from "./d1-credentials";
-import { GATEWAY_CIRCUIT_DEFAULTS, gatewayRetentionKeys } from "@clash/gateway-core";
+import { createD1GatewaySettlementPort, createGatewaySettleCoordinator } from "./settle-runs";
+import {
+  GATEWAY_CIRCUIT_DEFAULTS,
+  gatewayRetentionKeys,
+  gatewaySettleRunIdentity,
+  type GatewayLogFields,
+  type GatewaySettlementIntent,
+} from "@clash/gateway-core";
 import { encryptProviderCredentials } from "@clash/shared-runtime/provider-credentials";
 import { workerSecrets } from "./index";
 import {
@@ -75,7 +89,17 @@ describe("/gateway/v1 through the Worker app", () => {
     });
   }
 
-  const send = (token: string | undefined, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+  /** The Worker env: settle runs go through the real journal on the inline Durable Run Workflow. */
+  const workerEnv = (overrides: Record<string, unknown> = {}) =>
+    ({
+      DB: d1,
+      ENVIRONMENT: "test",
+      GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
+      GENERATION_WORKFLOW: gateway.workflow,
+      ...overrides,
+    }) as never;
+
+  const send = (token: string | undefined, body: Record<string, unknown>, headers: Record<string, string> = {}, env = workerEnv()) =>
     app.request(
       "/gateway/v1/chat/completions",
       {
@@ -88,10 +112,10 @@ describe("/gateway/v1 through the Worker app", () => {
         },
         body: JSON.stringify(body),
       },
-      { DB: d1, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey } as never,
+      env,
     );
 
-  const chat = (model = gateway.textModel, extra: Record<string, unknown> = {}) => ({
+  const chat =(model = gateway.textModel, extra: Record<string, unknown> = {}) => ({
     model,
     messages: [{ role: "user", content: "hello" }],
     max_tokens: 16,
@@ -150,7 +174,7 @@ describe("/gateway/v1 through the Worker app", () => {
         headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${caller.token}` },
         body: JSON.stringify(chat(gateway.textModel, { stream: true, stream_options: { include_usage: true } })),
       },
-      { DB: d1, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey, GATEWAY_STAFF_PROMPT_ACCESS: "enabled", R2_BUCKET: bucket } as never,
+      workerEnv({ GATEWAY_STAFF_PROMPT_ACCESS: "enabled", R2_BUCKET: bucket }),
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/event-stream");
@@ -199,6 +223,10 @@ describe("/gateway/v1 through the Worker app", () => {
     const text = await failed.text();
     expect(text).not.toContain(gateway.upstreamApiKey);
     expect(text).not.toContain(caller.token);
+    // A failed text request owed nothing: no money row and no settle run.
+    const failedId = failed.headers.get("x-clash-request-id")!;
+    expect(ledgerRows(failedId)).toEqual([]);
+    expect(settleRuns(failedId)).toEqual([]);
   });
 
   it("retries a refused rotated key with the draining version before the first byte (#350)", async () => {
@@ -271,88 +299,93 @@ describe("/gateway/v1 through the Worker app", () => {
     }
   });
 
-  it("marks the holds settle_failed, not open, when the settle batch fails; reconciliation charges once", async () => {
+  const ledgerRows = (requestId: string) =>
+    sqlite
+      .prepare(`SELECT budget_id, kind, status, amount_micro_credits AS amount FROM gateway_usage_ledger WHERE request_id = ? ORDER BY budget_id, kind`)
+      .all(requestId) as Array<{ budget_id: string; kind: string; status: string; amount: number }>;
+  const settleRuns = (requestId: string) =>
+    sqlite
+      .prepare(`SELECT owner_id, output_slot, phase, recover_at FROM cloud_durable_run_journal WHERE action_run_id = ?`)
+      .all(`gateway-settle:${requestId}`) as Array<{ owner_id: string; output_slot: string; phase: string; recover_at: number | null }>;
+  const spent = (tenantId: string) =>
+    sqlite
+      .prepare(`SELECT id, spent_micro_credits AS spent, reserved_micro_credits AS reserved FROM gateway_budget WHERE tenant_id = ? ORDER BY id`)
+      .all(tenantId) as Array<{ id: string; spent: number; reserved: number }>;
+
+  it("admits text without a money write and charges it through one gateway-settle run", async () => {
     const caller = await gateway.tenantToken();
+    const before = spent(caller.tenantId);
     stubUpstream((body) => Response.json(completion(String(body.model))));
-    // The node:sqlite shim exposes each statement's SQL; fail only the settle batch.
-    const failingSettle = new Proxy(d1, {
+    const res = await send(caller.token, chat());
+    expect(res.status, await res.clone().text()).toBe(200);
+    const requestId = res.headers.get("x-clash-request-id")!;
+    expect(res.headers.get("x-gateway-settlement")).toBeNull();
+    expect(settleRuns(requestId)).toEqual([{ owner_id: GATEWAY_SETTLE_OWNER, output_slot: "charge", phase: "succeeded", recover_at: null }]);
+    const rows = ledgerRows(requestId);
+    expect(rows.map((row) => row.kind)).toEqual(before.map(() => "settle"));
+    expect(new Set(rows.map((row) => row.amount)).size).toBe(1);
+    for (const [index, budget] of spent(caller.tenantId).entries())
+      expect(budget).toEqual({ ...before[index]!, spent: before[index]!.spent + rows[0]!.amount });
+  });
+
+  it("answers a charge that cannot be journaled with the coded settlement header and writes nothing: the accepted edge", async () => {
+    const caller = await gateway.tenantToken();
+    const before = spent(caller.tenantId);
+    stubUpstream((body) => Response.json(completion(String(body.model))));
+    // The node:sqlite shim exposes each statement's SQL; fail only the journal write.
+    const failingJournal = new Proxy(d1, {
       get(target, property, receiver) {
-        if (property === "batch")
-          return (statements: Array<{ sql: string }>) =>
-            statements.some((statement) => statement.sql.includes("':settle:'"))
-              ? Promise.reject(new Error("D1_ERROR: forced settle failure"))
-              : target.batch(statements as never);
+        if (property === "prepare")
+          return (sql: string) =>
+            sql.includes("INTO cloud_durable_run_journal")
+              ? { bind: () => ({ run: () => Promise.reject(new Error("D1_ERROR: forced journal failure")) }) }
+              : target.prepare(sql);
         return Reflect.get(target, property, receiver);
       },
     });
-    const res = await app.request(
-      "/gateway/v1/chat/completions",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: ORIGIN, authorization: `Bearer ${caller.token}` },
-        body: JSON.stringify(chat()),
-      },
-      { DB: failingSettle, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey } as never,
-    );
+    const res = await send(caller.token, chat(), {}, workerEnv({ DB: failingJournal }));
     expect(res.status, await res.clone().text()).toBe(200);
     const requestId = res.headers.get("x-clash-request-id")!;
-    expect(res.headers.get("x-gateway-settlement")).toBe(
-      `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`,
-    );
+    expect(res.headers.get("x-gateway-settlement")).toBe(`failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`);
+    expect(settleRuns(requestId)).toEqual([]);
+    expect(ledgerRows(requestId)).toEqual([]);
+    expect(spent(caller.tenantId)).toEqual(before);
+  });
 
-    const ledgerRows = () =>
-      sqlite
-        .prepare(`SELECT budget_id, kind, status, error_code FROM gateway_usage_ledger WHERE request_id = ? ORDER BY budget_id, kind`)
-        .all(requestId) as Array<{ budget_id: string; kind: string; status: string; error_code: string | null }>;
-    const budgetRows = () =>
-      sqlite
-        .prepare(`SELECT id, spent_micro_credits AS spent, reserved_micro_credits AS reserved FROM gateway_budget WHERE tenant_id = ? ORDER BY id`)
-        .all(caller.tenantId) as Array<{ id: string; spent: number; reserved: number }>;
-    const holds = ledgerRows();
-    expect(holds.length).toBeGreaterThan(0);
-    for (const row of holds)
-      expect(row).toMatchObject({ kind: "hold", status: "settle_failed", error_code: "GATEWAY_INTERNAL" });
-    const held = budgetRows();
-    for (const budget of held) expect([budget.spent, budget.reserved > 0]).toEqual([0, true]);
-
-    // Reconciliation (and any retry of it) settles the marked holds exactly once.
-    const { budgets } = createD1GatewayBudgetPorts(d1, { clock: { now: () => Date.now() } });
-    const event = {
-      requestId,
-      tenantId: caller.tenantId,
-      userId: caller.userId,
-      modelCode: gateway.textModel,
-      kind: "text" as const,
-      upstreamId: "openai",
-      credentialScope: "official" as const,
-      usage: { inputTokens: 4, outputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" as const },
-      costMicroCredits: 7,
-      priceVersion: "reconcile",
-      catalogVersion: "reconcile",
-      status: "settled" as const,
-      occurredAt: Date.now(),
-    };
-    expect(await budgets.settle(event)).toMatchObject({ duplicate: false, costMicroCredits: 7 });
-    expect(await budgets.settle({ ...event, costMicroCredits: 99 })).toMatchObject({ duplicate: true, costMicroCredits: 7 });
-    expect(await budgets.markSettleFailed({ requestId, tenantId: caller.tenantId, errorCode: "GATEWAY_INTERNAL" })).toEqual({
-      status: "settled",
-    });
-    for (const budget of budgetRows()) expect([budget.spent, budget.reserved]).toEqual([7, 0]);
-    expect(ledgerRows().filter((row) => row.kind === "hold").map((row) => row.status)).toEqual(
-      holds.map(() => "settled"),
-    );
+  it("charges once, through the scheduled cron, a journaled charge whose Workflow start was lost", async () => {
+    const caller = await gateway.tenantToken();
+    const before = spent(caller.tenantId);
+    stubUpstream((body) => Response.json(completion(String(body.model))));
+    gateway.workflow.pause(true);
+    let requestId: string;
+    try {
+      const res = await send(caller.token, chat());
+      expect(res.status, await res.clone().text()).toBe(200);
+      // Journaled, so the answer is a normal one.
+      expect(res.headers.get("x-gateway-settlement")).toBeNull();
+      requestId = res.headers.get("x-clash-request-id")!;
+      expect(settleRuns(requestId)).toEqual([
+        { owner_id: GATEWAY_SETTLE_OWNER, output_slot: "charge", phase: "queued", recover_at: expect.any(Number) },
+      ]);
+      expect(ledgerRows(requestId)).toEqual([]);
+      expect(spent(caller.tenantId)).toEqual(before);
+    } finally {
+      gateway.workflow.pause(false);
+    }
+    const env = { DB: d1, GENERATION_WORKFLOW: gateway.workflow } as unknown as Env;
+    await recoverCloudDurableRuns(env, gateway.clock.now() + 60_000);
+    expect(settleRuns(requestId)).toMatchObject([{ phase: "succeeded", recover_at: null }]);
+    const charged = spent(caller.tenantId);
+    const amount = ledgerRows(requestId)[0]!.amount;
+    expect(charged.map((budget) => budget.spent)).toEqual(before.map((budget) => budget.spent + amount));
+    // Another tick finds nothing due for it.
+    await recoverCloudDurableRuns(env, gateway.clock.now() + 120_000);
+    expect(spent(caller.tenantId)).toEqual(charged);
   });
 
   describe("body retention (GATEWAY_STAFF_PROMPT_ACCESS)", () => {
     const retainingEnv = (overrides: Record<string, unknown> = {}) =>
-      ({
-        DB: d1,
-        ENVIRONMENT: "test",
-        GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
-        GATEWAY_STAFF_PROMPT_ACCESS: "enabled",
-        R2_BUCKET: bucket,
-        ...overrides,
-      }) as never;
+      workerEnv({ GATEWAY_STAFF_PROMPT_ACCESS: "enabled", R2_BUCKET: bucket, ...overrides });
     const post = (token: string, body: Record<string, unknown>, env: never, headers: Record<string, string> = {}) =>
       app.request(
         "/gateway/v1/chat/completions",
@@ -432,40 +465,44 @@ describe("/gateway/v1 through the Worker app", () => {
     });
   });
 
-  it("sweeps stale holds through the scheduled entry point, idempotently, and leaves settle_failed holds reserved", async () => {
+  it("migration 0042 closes the retired path's open and settle_failed holds at zero and keeps their keys claimed", async () => {
     const caller = await gateway.tenantToken();
     const ports = gateway.ports();
     const identity = await ports.identity.authenticate(gatewayRequest(caller.token));
-    const now = gateway.clock.now();
-    const reserve = (requestId: string) =>
-      ports.budgets.reserve({ requestId, tenantId: identity.tenantId, budgetIds: identity.budgetIds, credentialScope: identity.credentialScope, holdMicroCredits: 7, expiresAt: now - 5_000 });
-    const stale = `gwr_sweep_${crypto.randomUUID()}`;
-    const failed = `gwr_sweep_${crypto.randomUUID()}`;
-    await reserve(stale);
-    await reserve(failed);
-    await ports.budgets.markSettleFailed({ requestId: failed, tenantId: identity.tenantId, errorCode: "GATEWAY_INTERNAL" });
-    const rows = (requestId: string) =>
-      sqlite
-        .prepare(`SELECT kind, status, amount_micro_credits AS amount FROM gateway_usage_ledger WHERE request_id = ? ORDER BY kind, budget_id`)
-        .all(requestId) as Array<{ kind: string; status: string; amount: number }>;
-    const reserved = () =>
-      (sqlite.prepare(`SELECT SUM(reserved_micro_credits) AS reserved FROM gateway_budget WHERE tenant_id = ?`).get(identity.tenantId) as {
-        reserved: number;
-      }).reserved;
-    const heldBoth = reserved();
+    const before = spent(identity.tenantId);
+    const nowS = Math.floor(gateway.clock.now() / 1000);
+    const open = `gwr_hold_${crypto.randomUUID()}`;
+    const failed = `gwr_hold_${crypto.randomUUID()}`;
+    const key = `idem-${crypto.randomUUID()}`;
+    // What the retired reserve path left behind: hold rows and their reserved credits.
+    for (const [requestId, status] of [[open, "open"], [failed, "settle_failed"]] as const)
+      for (const budgetId of identity.budgetIds) {
+        sqlite
+          .prepare(
+            `INSERT INTO gateway_usage_ledger (id, request_id, budget_id, kind, status, tenant_id, amount_micro_credits, ref_kind, ref_id, expires_at, occurred_at)
+             VALUES (?, ?, ?, 'hold', ?, ?, 7, ?, ?, ?, ?)`,
+          )
+          .run(`${requestId}:hold:${budgetId}`, requestId, budgetId, status, identity.tenantId, requestId === open ? "idempotency" : null, requestId === open ? key : null, nowS + 600, nowS);
+        sqlite.prepare(`UPDATE gateway_budget SET reserved_micro_credits = reserved_micro_credits + 7 WHERE id = ?`).run(budgetId);
+      }
+    const migration = readFileSync(fileURLToPath(new URL("../../../web/drizzle/0042_gateway_settlement.sql", import.meta.url).href), "utf8");
+    sqlite.exec(migration);
 
-    const first = await sweepGatewayHolds({ DB: d1 }, { clock: gateway.clock, logger: { info() {}, warn() {}, error() {} } });
-    expect(first.expired).toBeGreaterThan(0);
-    const closed = rows(stale);
-    expect(closed.filter((row) => row.kind === "hold").map((row) => row.status)).toEqual(identity.budgetIds.map(() => "expired"));
-    expect(closed.filter((row) => row.kind === "settle")).toEqual(identity.budgetIds.map(() => ({ kind: "settle", status: "expired", amount: 0 })));
-    expect(rows(failed).map((row) => row.status)).toEqual(identity.budgetIds.map(() => "settle_failed"));
-    expect(heldBoth - reserved()).toBe(7 * identity.budgetIds.length);
-
-    // Again: nothing left for these requests, nothing changes.
-    await sweepGatewayHolds({ DB: d1 }, { clock: gateway.clock, logger: { info() {}, warn() {}, error() {} } });
-    expect(rows(stale)).toEqual(closed);
-    expect(reserved()).toBe(heldBoth - 7 * identity.budgetIds.length);
+    expect(spent(identity.tenantId)).toEqual(before);
+    for (const requestId of [open, failed])
+      expect(ledgerRows(requestId)).toEqual(
+        [...identity.budgetIds].sort().flatMap((budgetId) => [
+          { budget_id: budgetId, kind: "hold", status: "expired", amount: 7 },
+          { budget_id: budgetId, kind: "settle", status: "expired", amount: 0 },
+        ]),
+      );
+    // The key its hold claimed never runs again.
+    await expect(
+      ports.budgets.check({ requestId: ports.ids.requestId(), tenantId: identity.tenantId, budgetIds: identity.budgetIds, credentialScope: "official", floorMicroCredits: 1_000_000, idempotency: { key, expiresAt: gateway.clock.now() + 60_000 } }),
+    ).rejects.toMatchObject({ code: "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED" });
+    // Re-applied, it changes nothing.
+    sqlite.exec(migration);
+    expect(spent(identity.tenantId)).toEqual(before);
   });
 
   it("exempts only unbudgeted tenant-scope (BYOK) requests from the no-budget refusal (#369)", async () => {
@@ -477,8 +514,7 @@ describe("/gateway/v1 through the Worker app", () => {
       tenantId: identity.tenantId,
       budgetIds,
       credentialScope,
-      holdMicroCredits: 7,
-      expiresAt: gateway.clock.now() + 60_000,
+      floorMicroCredits: 0,
     });
     const event = (requestId: string, credentialScope: "official" | "tenant") => ({
       requestId,
@@ -488,26 +524,28 @@ describe("/gateway/v1 through the Worker app", () => {
       kind: "text" as const,
       upstreamId: "u",
       credentialScope,
-      usage: { source: "upstream" as const, inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, units: {} },
+      usage: { source: "reported" as const, inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, units: {} },
       costMicroCredits: 5,
       priceVersion: "p",
       catalogVersion: "c",
       status: "settled" as const,
       occurredAt: gateway.clock.now(),
     });
-    const byok = `gwr_byok_${crypto.randomUUID()}`;
-    await expect(ports.budgets.reserve(input(byok, "tenant"))).resolves.toMatchObject({ holds: [] });
-    await expect(ports.budgets.settle(event(byok, "tenant") as never)).resolves.toMatchObject({ costMicroCredits: 0 });
-    await expect(ports.budgets.reserve(input(`gwr_off_${crypto.randomUUID()}`, "official"))).rejects.toMatchObject({
+    // An unbudgeted BYOK request is admitted with no money write (and owes no settle run).
+    await expect(ports.budgets.check(input(`gwr_byok_${crypto.randomUUID()}`, "tenant"))).resolves.toEqual({});
+    await expect(ports.budgets.check(input(`gwr_off_${crypto.randomUUID()}`, "official"))).rejects.toMatchObject({
       code: "GATEWAY_BUDGET_EXCEEDED",
     });
-    await expect(ports.budgets.settle(event(`gwr_off_${crypto.randomUUID()}`, "official") as never)).rejects.toMatchObject({
-      code: "GATEWAY_INTERNAL",
-    });
-    // A BYOK request with budget rows still holds them.
-    const held = await ports.budgets.reserve(input(`gwr_byokb_${crypto.randomUUID()}`, "tenant", identity.budgetIds));
-    expect(held.holds.length).toBe(identity.budgetIds.length);
+    // A charge never invents a free budget.
+    await expect(
+      ports.budgets.charge({ ...event(`gwr_off_${crypto.randomUUID()}`, "official"), budgetIds: [] }),
+    ).rejects.toMatchObject({ code: "GATEWAY_BUDGET_EXCEEDED" });
+    // A BYOK request with budget rows is still checked against, and charged on, them.
+    const byok = `gwr_byokb_${crypto.randomUUID()}`;
+    await ports.budgets.check(input(byok, "tenant", identity.budgetIds));
+    await ports.budgets.charge({ ...event(byok, "tenant"), budgetIds: identity.budgetIds });
     expect(identity.budgetIds.length).toBeGreaterThan(0);
+    expect(ledgerRows(byok).filter((row) => row.kind === "settle")).toHaveLength(identity.budgetIds.length);
   });
 
   it("serves /gateway/anthropic/v1 messages and count_tokens through the Worker mount on the official Anthropic account", async () => {
@@ -543,9 +581,9 @@ describe("/gateway/v1 through the Worker app", () => {
           },
           body: JSON.stringify(body),
         },
-        { DB: d1, ENVIRONMENT: "test", GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey } as never,
+        workerEnv(),
       );
-    const turn = { model: route.upstreamModel, messages: [{ role: "user", content: "hello" }] };
+    const turn ={ model: route.upstreamModel, messages: [{ role: "user", content: "hello" }] };
 
     const res = await send("messages", { ...turn, max_tokens: 16 });
     expect(res.status, await res.clone().text()).toBe(200);
@@ -581,6 +619,119 @@ describe("/gateway/v1 through the Worker app", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ userId: caller.userId, tenantId: caller.tenantId });
+  });
+});
+
+describe("gateway-settle runs on the Durable Run journal (#399, N2)", () => {
+  let gateway: SeededGateway;
+  beforeAll(async () => {
+    gateway = await seeded;
+  });
+
+  function harness() {
+    let t = gateway.clock.now();
+    const clock = { now: () => t };
+    const logs: Array<{ event: string; fields?: GatewayLogFields }> = [];
+    const logger = {
+      info: (event: string, fields?: GatewayLogFields) => logs.push({ event, fields }),
+      warn: (event: string, fields?: GatewayLogFields) => logs.push({ event, fields }),
+      error: (event: string, fields?: GatewayLogFields) => logs.push({ event, fields }),
+    };
+    // Journal only: these tests drive the run themselves.
+    const settlement = createD1GatewaySettlementPort({ db: d1, clock, logger });
+    const drive = (db: typeof d1, intent: GatewaySettlementIntent) =>
+      runCloudDurableWorkflow({
+        coordinator: createGatewaySettleCoordinator({ db, clock, logger }),
+        identity: gatewaySettleRunIdentity(intent),
+        // Sleeps move the clock to the wake time, so a retry is due at once.
+        step: { do: (_name, _config, callback) => callback(), sleepUntil: async (_name, at) => void (t = Math.max(t, at)) },
+        now: clock.now,
+        maxSteps: 64,
+      });
+    return { clock, logs, settlement, drive };
+  }
+
+  async function chargeIntent(amount: number): Promise<{ intent: GatewaySettlementIntent; tenantId: string; budgetIds: readonly string[] }> {
+    const caller = await gateway.tenantToken();
+    const ports = gateway.ports();
+    const identity = await ports.identity.authenticate(gatewayRequest(caller.token));
+    return {
+      tenantId: identity.tenantId,
+      budgetIds: identity.budgetIds,
+      intent: {
+        kind: "charge",
+        budgetIds: [...identity.budgetIds],
+        event: {
+          requestId: ports.ids.requestId(),
+          tenantId: identity.tenantId,
+          userId: identity.userId,
+          modelCode: gateway.textModel,
+          kind: "text",
+          upstreamId: "openai",
+          credentialScope: "official",
+          usage: { inputTokens: 4, outputTokens: 2, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" },
+          costMicroCredits: amount,
+          priceVersion: "settle-run-test",
+          catalogVersion: "settle-run-test",
+          status: "settled",
+          occurredAt: gateway.clock.now(),
+        },
+      },
+    };
+  }
+
+  const spentOf = (tenantId: string) =>
+    (sqlite.prepare(`SELECT spent_micro_credits AS spent FROM gateway_budget WHERE tenant_id = ? ORDER BY id`).all(tenantId) as Array<{ spent: number }>).map(
+      (row) => row.spent,
+    );
+
+  it("retries a storage failure of the ledger write and charges once", async () => {
+    const { settlement, drive } = harness();
+    const { intent, tenantId } = await chargeIntent(9);
+    const before = spentOf(tenantId);
+    expect(await settlement.dispatch(intent)).toMatchObject({ kind: "charge", scheduled: false });
+    let failures = 2;
+    const flaky = new Proxy(d1, {
+      get(target, property, receiver) {
+        if (property === "batch")
+          return (statements: Array<{ sql: string }>) =>
+            failures > 0 && statements.some((statement) => statement.sql.includes("':settle:'"))
+              ? (failures--, Promise.reject(new Error("D1_ERROR: transient")))
+              : target.batch(statements as never);
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const run = await drive(flaky, intent);
+    expect(failures).toBe(0);
+    expect(run.phase).toBe("succeeded");
+    expect(spentOf(tenantId)).toEqual(before.map((value) => value + 9));
+    // A duplicate Workflow delivery of the finished run moves nothing.
+    await drive(d1, intent);
+    expect(spentOf(tenantId)).toEqual(before.map((value) => value + 9));
+  });
+
+  it("fails a coded refusal at once, logged, and recovery never re-dispatches it", async () => {
+    const { clock, logs, settlement, drive } = harness();
+    const requestId = `gwr_never_debited_${crypto.randomUUID()}`;
+    const intent: GatewaySettlementIntent = {
+      kind: "refund",
+      requestId,
+      tenantId: "tenant-without-debit",
+      status: "upstream_failed",
+      errorCode: "GATEWAY_UPSTREAM_ERROR",
+      occurredAt: clock.now(),
+    };
+    await settlement.dispatch(intent);
+    const run = await drive(d1, intent);
+    expect(run.phase).toBe("failed");
+    expect(logs.find((entry) => entry.event === "gateway.settle_run_failed")?.fields).toMatchObject({
+      actionRunId: `gateway-settle:${requestId}`,
+      kind: "refund",
+      code: "GATEWAY_INTERNAL",
+      retryable: false,
+    });
+    const due = await createD1CloudDurableRunJournal(d1).listRecoverable(GATEWAY_SETTLE_OWNER, clock.now() + 60_000);
+    expect(due.some((entry) => entry.actionRunId === `gateway-settle:${requestId}`)).toBe(false);
   });
 });
 

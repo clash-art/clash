@@ -23,7 +23,7 @@ import { createD1Billing, type BillingActor } from "./d1-billing";
 import { toSeconds } from "./d1-common";
 import { createD1PriceBook } from "./d1-price-book";
 import { createD1GatewayPorts } from "./index";
-import { CONTRACT_ORIGIN, seedGateway, type SeededGateway } from "./test-support";
+import { CONTRACT_ORIGIN, inlineSettleWorkflow, seedGateway, type SeededGateway } from "./test-support";
 
 const { d1, sqlite } = createSqliteD1();
 const seeded: Promise<SeededGateway> = seedGateway(d1);
@@ -81,6 +81,7 @@ describe("price book and billing over D1 (node:sqlite)", () => {
       clock,
       secrets: { encryptionKey: gateway.encryptionKey, secret: () => undefined },
       logger: { info() {}, warn() {}, error() {} },
+      workflow: inlineSettleWorkflow(d1, clock),
       upstream: {
         fetch: async (request) =>
           Response.json({
@@ -488,27 +489,34 @@ describe("price book and billing over D1 (node:sqlite)", () => {
       expect(wallet(caller.tenantId)).toEqual(after);
     });
 
-    it("never expires credits that back an open hold", async () => {
+    it("expires nothing from a wallet a postpaid charge took below zero; the overdraft carries into the next period", async () => {
       const caller = await gateway.tenantToken();
       const pkg = await monthly();
-      const sub = await billing().subscribe({ tenantId: caller.tenantId, packageId: pkg.id, idempotencyKey: "hold", actor: admin });
+      const sub = await billing().subscribe({ tenantId: caller.tenantId, packageId: pkg.id, idempotencyKey: "overdraft", actor: admin });
       const funded = wallet(caller.tenantId)!;
-      const keep = credits(1);
-      await ports.budgets.reserve({
-        requestId: `gwr_hold_${hex(4)}`,
+      const overdraft = credits(1);
+      // A text request's settle run charges its actual cost, never refused (#399).
+      await ports.budgets.charge({
+        requestId: `gwr_overdraft_${hex(4)}`,
         tenantId: caller.tenantId,
-        budgetIds: [funded.id],
+        userId: caller.userId,
+        modelCode: "billing-test",
+        kind: "text",
+        upstreamId: "billing-test",
         credentialScope: "official",
-        holdMicroCredits: funded.limit_micro_credits! - funded.spent_micro_credits - keep,
-        expiresAt: t + 60_000,
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" },
+        costMicroCredits: funded.limit_micro_credits! - funded.spent_micro_credits + overdraft,
+        priceVersion: "billing-test",
+        catalogVersion: "billing-test",
+        status: "settled",
+        occurredAt: t,
+        budgetIds: [funded.id],
       });
       t = Date.parse(sub.subscription!.currentPeriodEnd) + 1_000;
       const [outcome] = await billing().rollover({ actor: admin, tenantId: caller.tenantId });
-      expect(outcome!.expiredMicroCredits).toBe(keep);
+      expect(outcome!.expiredMicroCredits).toBe(0);
       const after = wallet(caller.tenantId)!;
-      expect(after.limit_micro_credits! - after.spent_micro_credits - after.reserved_micro_credits).toBe(
-        outcome!.grantedMicroCredits,
-      );
+      expect(after.limit_micro_credits! - after.spent_micro_credits).toBe(outcome!.grantedMicroCredits - overdraft);
     });
 
     it("ends a canceled subscription at its period end without a further grant", async () => {

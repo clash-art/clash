@@ -207,7 +207,7 @@ export interface StreamObservation {
  * the larger of any reported output and the estimate from delivered content,
  * capped at the request's output ceiling, marked `estimated`. A stream cut
  * after n tokens is charged about n tokens: never zero output for delivered
- * content, never the full hold.
+ * content, never the full output ceiling.
  */
 export function streamedUsage(
   observed: StreamObservation,

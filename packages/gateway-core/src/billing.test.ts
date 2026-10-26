@@ -59,7 +59,7 @@ describe("wallet credits", () => {
     // Grant credits go first: spend up to the grant comes out of it.
     expect(expiringGrant({ grantedMicroCredits: 100, spentInPeriodMicroCredits: 30, availableMicroCredits: 500 })).toBe(70);
     expect(expiringGrant({ grantedMicroCredits: 100, spentInPeriodMicroCredits: 130, availableMicroCredits: 500 })).toBe(0);
-    // Never more than the wallet can give up now (open holds stay covered).
+    // Never more than the wallet can give up now (nothing from a balance at or below zero).
     expect(expiringGrant({ grantedMicroCredits: 100, spentInPeriodMicroCredits: 0, availableMicroCredits: 40 })).toBe(40);
     expect(codeOf(() => expiringGrant({ grantedMicroCredits: 1.5, spentInPeriodMicroCredits: 0, availableMicroCredits: 0 }))).toBe(
       "GATEWAY_INTERNAL",

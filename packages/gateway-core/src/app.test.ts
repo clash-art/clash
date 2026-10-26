@@ -9,7 +9,6 @@ import {
   isOpenAIChatRoute,
   type GatewayAppOptions,
 } from "./app.js";
-import { sweepExpiredGatewayHolds } from "./holds.js";
 import { GatewayError } from "./errors.js";
 import { unavailablePort, type GatewayUpstreamPort } from "./ports.js";
 import { createSseParser, OPENAI_STREAM_DONE } from "./sse.js";
@@ -225,7 +224,7 @@ describe("createGatewayApp", () => {
     expect(urls[0]!.endsWith("/chat/completions")).toBe(true);
   });
 
-  it("maps an upstream deadline to GATEWAY_UPSTREAM_TIMEOUT or exhaustion and settles zero", async () => {
+  it("maps an upstream deadline to GATEWAY_UPSTREAM_TIMEOUT or exhaustion and writes no money", async () => {
     const { app, memory } = gateway({
       upstream: {
         fetch: (request) =>
@@ -240,7 +239,9 @@ describe("createGatewayApp", () => {
       tenantId: "tenant-a",
       requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)!,
     });
-    expect(row).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
+    // Postpaid: nothing was delivered, so nothing is owed and no row is written.
+    expect(row).toBeNull();
+    expect((await memory.ports.budgets.snapshot({ tenantId: "tenant-a" }))[0]!.spentMicroCredits).toBe(0);
   });
 
   it("does not fail over or forward an upstream 4xx body", async () => {
@@ -281,9 +282,9 @@ describe("createGatewayApp", () => {
     expect(calls).toBe(0);
   });
 
-  it("still answers a served completion when settlement fails, with the coded settlement header", async () => {
+  it("still answers a served completion when its charge cannot be journaled, with the coded settlement header", async () => {
     const { app, memory } = gateway({ upstream: { fetch: async () => ok("x") } });
-    memory.ports.budgets.settle = () => Promise.reject(new Error("ledger unavailable"));
+    memory.ports.settlement.dispatch = () => Promise.reject(new Error("journal unavailable"));
     const res = await app.fetch(post(chat));
     expect(res.status).toBe(200);
     expect(((await res.json()) as { choices: unknown[] }).choices).toHaveLength(1);
@@ -291,52 +292,98 @@ describe("createGatewayApp", () => {
     expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBe(
       `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`,
     );
-    expect(memory.reservationState(requestId)).toBe("settle_failed");
+    // The accepted edge: nothing was journaled, so nothing is charged or held.
+    expect(memory.settlementState(requestId, "charge")).toBeUndefined();
     expect(await memory.ports.ledger.get({ tenantId: "tenant-a", requestId })).toBeNull();
-    const logged = memory.logs.find((entry) => entry.event === "gateway.settle_failed");
+    expect((await memory.ports.budgets.snapshot({ tenantId: "tenant-a" }))[0]).toMatchObject({
+      spentMicroCredits: 0,
+      reservedMicroCredits: 0,
+    });
+    const logged = memory.logs.find((entry) => entry.event === "gateway.settle_dispatch_failed");
     expect(logged).toMatchObject({
       level: "error",
-      fields: { requestId, code: "GATEWAY_SETTLEMENT_FAILED", cause: "GATEWAY_INTERNAL", marker: "settle_failed" },
+      fields: { requestId, code: "GATEWAY_SETTLEMENT_FAILED", cause: "GATEWAY_INTERNAL", payment: "postpaid" },
     });
     expect(JSON.stringify(memory.logs)).not.toContain(fixture.keys["official-openai"]);
   });
 
-  it("adds the settlement header to a coded failure whose settlement also failed", async () => {
+  it("writes nothing for a coded upstream failure that delivered no output", async () => {
     const { app, memory } = gateway({ upstream: { fetch: async () => new Response("no", { status: 400 }) } });
-    memory.ports.budgets.settle = () => Promise.reject(new Error("ledger unavailable"));
+    let dispatched = 0;
+    const dispatch = memory.ports.settlement.dispatch.bind(memory.ports.settlement);
+    memory.ports.settlement.dispatch = (intent) => {
+      dispatched += 1;
+      return dispatch(intent);
+    };
     const res = await app.fetch(post(chat));
     expect(code(res)).toBe("GATEWAY_UPSTREAM_REJECTED");
+    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBeNull();
+    expect(dispatched).toBe(0);
     const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
-    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toContain("code=GATEWAY_SETTLEMENT_FAILED");
-    expect(memory.reservationState(requestId)).toBe("settle_failed");
+    expect(await memory.ports.ledger.get({ tenantId: "tenant-a", requestId })).toBeNull();
   });
 
-  it("keeps the header when even the marker cannot be written, and logs both codes", async () => {
+  it("answers normally when the charge is journaled but its run is not scheduled yet; recovery charges it once", async () => {
     const { app, memory } = gateway({ upstream: { fetch: async () => ok("x") } });
-    memory.ports.budgets.settle = () => Promise.reject(new Error("ledger unavailable"));
-    memory.ports.budgets.markSettleFailed = () => Promise.reject(new Error("ledger unavailable"));
-    const res = await app.fetch(post(chat));
-    expect(res.status).toBe(200);
-    expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toContain("code=GATEWAY_SETTLEMENT_FAILED");
-    expect(memory.logs.find((entry) => entry.event === "gateway.settle_failed")?.fields).toMatchObject({
-      code: "GATEWAY_SETTLEMENT_FAILED",
-      marker: "unrecorded",
-      markCause: "GATEWAY_INTERNAL",
-    });
-  });
-
-  it("omits the header when a settlement that reported failure was in fact recorded", async () => {
-    const { app, memory } = gateway({ upstream: { fetch: async () => ok("x") } });
-    const settle = memory.ports.budgets.settle.bind(memory.ports.budgets);
-    memory.ports.budgets.settle = async (event) => {
-      await settle(event);
-      throw new Error("response lost after commit");
-    };
+    memory.pauseSettlement(true);
     const res = await app.fetch(post(chat));
     expect(res.status).toBe(200);
     expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBeNull();
     const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
-    expect(memory.reservationState(requestId)).toBe("settled");
+    expect(memory.settlementState(requestId, "charge")).toBe("pending");
+    expect(memory.logs).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        event: "gateway.settle_deferred",
+        fields: expect.objectContaining({ requestId, kind: "charge" }),
+      }),
+    );
+    expect(await memory.ports.ledger.get({ tenantId: "tenant-a", requestId })).toBeNull();
+    memory.pauseSettlement(false);
+    expect(await memory.ports.settlement.recover()).toEqual({ scanned: 1, scheduled: 1, failed: 0 });
+    expect(await memory.ports.settlement.recover()).toEqual({ scanned: 0, scheduled: 0, failed: 0 });
+    const row = await memory.ports.ledger.get({ tenantId: "tenant-a", requestId });
+    expect(row).toMatchObject({ status: "settled" });
+    const [budget] = await memory.ports.budgets.snapshot({ tenantId: "tenant-a" });
+    expect(budget!.spentMicroCredits).toBe(row!.costMicroCredits);
+  });
+
+  it("admits text above the configured credit floor and refuses at it, before any upstream call", async () => {
+    let calls = 0;
+    const { app, memory } = gateway({
+      app: { creditFloor: 5 },
+      upstream: {
+        async fetch() {
+          calls += 1;
+          return ok("x");
+        },
+      },
+    });
+    // Balance -4: above the floor's -5, so admitted.
+    await memory.ports.budgets.charge({
+      requestId: "filler",
+      tenantId: "tenant-a",
+      userId: "user-a",
+      modelCode: fixture.textModel,
+      kind: "text",
+      upstreamId: "openai",
+      credentialScope: "official",
+      usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" },
+      costMicroCredits: 1_000_000_004,
+      priceVersion: "price-1",
+      catalogVersion: "test",
+      status: "settled",
+      occurredAt: 0,
+      budgetIds: ["budget-a"],
+    });
+    expect((await app.fetch(post(chat))).status).toBe(200);
+    expect(calls).toBe(1);
+    // Charged afterwards, past the floor: postpaid work that was done is never refused.
+    const [budget] = await memory.ports.budgets.snapshot({ tenantId: "tenant-a" });
+    expect(budget!.spentMicroCredits).toBeGreaterThan(1_000_000_005);
+    const refused = await app.fetch(post(chat));
+    expect([refused.status, code(refused)]).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
+    expect(calls).toBe(1);
   });
 
   it("returns admission's OpenAI-style rate-limit headers on a served answer and a 429 denial", async () => {
@@ -540,42 +587,38 @@ describe("createGatewayApp streaming", () => {
       const refused = await app.fetch(post(streamChat));
       expect(refused.headers.get("content-type")).toContain("application/json");
       expect(["GATEWAY_UPSTREAM_ERROR", "GATEWAY_UPSTREAM_TIMEOUT", "GATEWAY_ROUTES_EXHAUSTED"]).toContain(code(refused));
-      expect(await ledger(memory, refused)).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
+      // Postpaid: a failure that delivered nothing owes nothing and writes no row.
+      expect(await ledger(memory, refused)).toBeNull();
     }
   });
 
-  it("holds a stream's reservation past the plain hold TTL, so the sweeper never expires a live stream", async () => {
+  it("keeps a stream's idempotency claim past the plain claim TTL, so a live stream's key never runs twice", async () => {
     let open!: () => void;
     const gate = new Promise<void>((resolve) => {
       open = resolve;
     });
-    const { app, memory } = gateway({ upstream: { fetch: async (request) => sse(gate, request.signal) } });
-    const res = await app.fetch(post(streamChat));
-    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
-    memory.advance(GATEWAY_APP_DEFAULTS.holdTtlMs + 1);
-    expect(await sweepExpiredGatewayHolds(memory.ports)).toEqual({ expired: 0, failed: 0 });
-    expect(memory.reservationState(requestId)).toBe("open");
+    let calls = 0;
+    const { app, memory } = gateway({
+      upstream: {
+        fetch: async (request) => {
+          calls += 1;
+          return sse(gate, request.signal);
+        },
+      },
+    });
+    const keyed = () => {
+      const request = post(streamChat);
+      request.headers.set("idempotency-key", "stream-key");
+      return request;
+    };
+    const res = await app.fetch(keyed());
+    memory.advance(GATEWAY_APP_DEFAULTS.idempotencyTtlMs + 1);
+    expect(code(await app.fetch(keyed()))).toBe("GATEWAY_IDEMPOTENCY_IN_PROGRESS");
     open();
     await res.text();
     expect(await ledger(memory, res)).toMatchObject({ status: "settled" });
-  });
-
-  it("settles a stream whose hold the sweeper already expired as a logged duplicate, charging nothing", async () => {
-    let open!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      open = resolve;
-    });
-    const { app, memory } = gateway({ upstream: { fetch: async (request) => sse(gate, request.signal) } });
-    const res = await app.fetch(post(streamChat));
-    const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
-    memory.advance(GATEWAY_APP_DEFAULTS.holdTtlMs + GATEWAY_APP_DEFAULTS.streamMaxDurationMs + 1);
-    expect(await sweepExpiredGatewayHolds(memory.ports)).toEqual({ expired: 1, failed: 0 });
-    open();
-    await res.text();
-    expect(await ledger(memory, res)).toMatchObject({ status: "expired", costMicroCredits: 0 });
-    expect(memory.logs).toContainEqual(
-      expect.objectContaining({ level: "warn", event: "gateway.settle_duplicate", fields: expect.objectContaining({ requestId }) }),
-    );
+    expect(code(await app.fetch(keyed()))).toBe("GATEWAY_IDEMPOTENCY_ALREADY_SETTLED");
+    expect(calls).toBe(1);
   });
 });
 
@@ -642,7 +685,7 @@ describe("createGatewayApp Anthropic Messages", () => {
     const text = await res.text();
     expect(text).not.toContain("sk-leaked");
     expect(stub.urls.every((path) => path.endsWith("/messages/count_tokens"))).toBe(true);
-    // Counting tokens holds and charges nothing.
+    // Counting tokens checks and charges nothing.
     expect(await memory.ports.ledger.query({ tenantId: "tenant-a", limit: 10 })).toEqual([]);
 
     const invalid = gateway({ upstream: { fetch: async () => Response.json({ tokens: "many" }) } });

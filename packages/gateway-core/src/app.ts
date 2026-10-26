@@ -11,19 +11,24 @@
  * Flow: authenticate once (identity comes from the credential only, never a
  * header claim) -> abuse gate (count the request or the 401, refuse a
  * suspended tenant, key or token: abuse.ts) -> normalize -> admit (catalog
- * policy, model mapping, allowlist, plan, price, limits, hold) -> call the
- * planned upstream routes in failover order -> settle exactly once ->
- * answer. Every failure is a coded
+ * policy, model mapping, allowlist, plan, price, limits, money) -> call the
+ * planned upstream routes in failover order -> settle once -> answer. Every
+ * failure is a coded
  * GatewayError in the caller's protocol error shape; upstream error bodies are
  * never forwarded (they can echo key fragments), and only metadata is logged.
- * A settlement that fails after the request ran marks the holds
- * `settle_failed` and adds the GATEWAY_SETTLEMENT_FAILED settlement header to
- * the real answer. With `retention.enabled`, every admitted request's
- * normalized body and the exact answer bytes are then retained
+ *
+ * Money (#399, admission.ts): text is postpaid. Admission only checks the
+ * credit floor; when the request ends, what it owes is journaled as a
+ * `charge` settle run (ports.settlement) that writes the ledger afterwards.
+ * A settlement that cannot be journaled (the accepted edge: the charge is
+ * lost) adds the GATEWAY_SETTLEMENT_FAILED settlement header to the real
+ * answer; a journaled one whose run could not be scheduled yet is recovered
+ * and changes nothing on the answer. With `retention.enabled`, every admitted
+ * request's normalized body and the exact answer bytes are then retained
  * (retention.ts); a retention failure adds the GATEWAY_RETENTION_FAILED
  * retention header and never changes the answer or its billing.
  *
- * Streams (#348): the hold is reserved before any byte is sent, so a refusal
+ * Streams (#348): admission completes before any byte is sent, so a refusal
  * (402 and every other admission error) is a plain coded JSON answer. Failover
  * happens only before the upstream's first byte. The upstream body is then
  * relayed byte for byte (stream.ts), except the usage chunk the gateway asked
@@ -31,8 +36,8 @@
  * code the caller asked for (as in a plain answer), and settled when it ends: observed usage, partial
  * on a cut or failed stream, and after the upstream is aborted when the caller
  * disconnects. Headers are gone by then, so a settlement or retention failure
- * is reported in-stream (encodeGatewayStreamState) as well as by the
- * `settle_failed` / `failed` rows and the coded logs.
+ * is reported in-stream (encodeGatewayStreamState) as well as by the retention
+ * `failed` row and the coded logs.
  *
  * Keys and circuits (#350): a route is called with its account's active key;
  * a 401/403 retries the account's draining version (a rotation in progress)
@@ -87,6 +92,7 @@ import {
 import { requireAdmission, type GatewayRateLimitHeaders } from "./limits.js";
 import type { GatewayIdentity, GatewayPorts, GatewayUpstreamCredential } from "./ports.js";
 import type { GatewayPrice } from "./pricing.js";
+import type { GatewayCreditFloor } from "./settlement.js";
 import {
   callerOmittedStreamUsage,
   normalizeAnthropicCountTokensRequest,
@@ -125,15 +131,16 @@ import {
 
 export const GATEWAY_REQUEST_ID_HEADER = "x-clash-request-id";
 /**
- * Present only when settlement failed after the request ran:
+ * Present only when the request's follow-up money write could not be
+ * journaled after the request ran:
  * `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=<id>`. The answer itself
  * is still the request's real outcome.
  */
 export const GATEWAY_SETTLEMENT_HEADER = "x-gateway-settlement";
 
 /**
- * Present only when the reservation admitted the request past a soft budget
- * limit or across an alert threshold (#354): one
+ * Present only when admission let the request in past a soft budget limit or
+ * at an alert threshold (#354): one
  * `<soft_exceeded|alert_threshold>; budget_id=<id>; scope=<scope>` entry per
  * recorded flag, comma-separated. Set on every answer of the request,
  * stream headers included, since the flags are known at admission.
@@ -145,16 +152,17 @@ export function budgetHeaderValue(flags: readonly BudgetFlag[]): string {
 }
 
 const budgetHeaders = (admission: GatewayAdmission): Record<string, string> =>
-  admission.reservation.flags?.length ? { [GATEWAY_BUDGET_HEADER]: budgetHeaderValue(admission.reservation.flags) } : {};
+  admission.flags.length ? { [GATEWAY_BUDGET_HEADER]: budgetHeaderValue(admission.flags) } : {};
 
 const rateLimitHeaders = (admission: GatewayAdmission): Record<string, string> =>
   admission.limitHeaders ?? {};
 
 export const GATEWAY_APP_DEFAULTS = {
-  holdTtlMs: 10 * 60 * 1000,
+  /** An Idempotency-Key claim's lifetime; a stream's lives `streamMaxDurationMs` longer. */
+  idempotencyTtlMs: 10 * 60 * 1000,
   maxBodyBytes: 8 * 1024 * 1024,
   upstreamTimeoutMs: 120 * 1000,
-  /** A stream is aborted and settled partial after this; its hold lives this much longer than `holdTtlMs`. */
+  /** A stream is aborted and settled partial after this. */
   streamMaxDurationMs: 10 * 60 * 1000,
 } as const;
 
@@ -172,7 +180,12 @@ const DEFAULT_BASE_URLS: Readonly<Record<string, string>> = {
 export interface GatewayAppOptions {
   /** Path prefix the app is mounted under, e.g. "/gateway". */
   basePath?: string;
-  holdTtlMs?: number;
+  idempotencyTtlMs?: number;
+  /**
+   * Text/LLM credit floor (#399): a fixed amount or one resolved per caller.
+   * GATEWAY_SETTLEMENT_DEFAULTS.creditFloorMicroCredits when absent.
+   */
+  creditFloor?: GatewayCreditFloor;
   maxBodyBytes?: number;
   /**
    * Upstream deadline when the route sets no first-byte timeout. For a stream
@@ -395,7 +408,7 @@ interface Exchange {
 
 export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions = {}): GatewayApp {
   const basePath = normalizeBasePath(options.basePath);
-  const holdTtlMs = options.holdTtlMs ?? GATEWAY_APP_DEFAULTS.holdTtlMs;
+  const idempotencyTtlMs = options.idempotencyTtlMs ?? GATEWAY_APP_DEFAULTS.idempotencyTtlMs;
   const maxBodyBytes = options.maxBodyBytes ?? GATEWAY_APP_DEFAULTS.maxBodyBytes;
   const upstreamTimeoutMs = options.upstreamTimeoutMs ?? GATEWAY_APP_DEFAULTS.upstreamTimeoutMs;
   const streamMaxDurationMs = options.streamMaxDurationMs ?? GATEWAY_APP_DEFAULTS.streamMaxDurationMs;
@@ -687,52 +700,38 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
   }
 
   /**
-   * Settle once. A failed settlement does not change the answer (the upstream
-   * work is done or failed either way); instead the holds are durably marked
-   * `settle_failed` for reconciliation and the answer carries the settlement
-   * header. Returns the headers to add to the answer.
+   * Settle once: journal the follow-up the request owes (settleGatewayRequest).
+   * A follow-up that could not be journaled does not change the answer (the
+   * upstream work is done or failed either way): it is the accepted edge, a
+   * lost charge or an unrefunded debit, logged with its payment mode and
+   * outcome and reported by the settlement header. A journaled run the scheduler did not take yet
+   * is left to recovery. Returns the headers to add to the answer.
    */
   async function settle(
     admission: GatewayAdmission,
     input: { attempt: GatewayRouteAttempt; outcome: GatewayOutcome; usage: Usage; price?: GatewayPrice; error?: GatewayError },
   ): Promise<Record<string, string>> {
     const { requestId } = admission;
-    let cause: GatewayError;
     try {
-      const { result } = await settleGatewayRequest(ports, admission, input);
-      // Already closed, e.g. by the stale-hold sweeper: the recorded cost stands.
-      if (result.duplicate)
-        ports.logger.warn("gateway.settle_duplicate", {
+      const { settlement, dispatch } = await settleGatewayRequest(ports, admission, input);
+      if (dispatch && !dispatch.scheduled)
+        ports.logger.warn("gateway.settle_deferred", {
           requestId,
-          outcome: input.outcome,
-          recordedMicroCredits: result.costMicroCredits,
+          kind: dispatch.kind,
+          costMicroCredits: settlement.costMicroCredits,
         });
       return {};
     } catch (error) {
-      cause = toGatewayError(error);
+      const code: GatewayErrorCode = "GATEWAY_SETTLEMENT_FAILED";
+      ports.logger.error("gateway.settle_dispatch_failed", {
+        requestId,
+        code,
+        cause: toGatewayError(error).code,
+        payment: admission.payment.mode,
+        outcome: input.outcome,
+      });
+      return { [GATEWAY_SETTLEMENT_HEADER]: `failed; code=${code}; request_id=${requestId}` };
     }
-    let marker: "settled" | "settle_failed" | "unrecorded";
-    let markCause: string | undefined;
-    try {
-      marker = (
-        await ports.budgets.markSettleFailed({
-          requestId,
-          tenantId: admission.identity.tenantId,
-          errorCode: cause.code,
-        })
-      ).status;
-    } catch (error) {
-      marker = "unrecorded";
-      markCause = toGatewayError(error).code;
-    }
-    if (marker === "settled") {
-      // The settlement was recorded after all; nothing is left to reconcile.
-      ports.logger.warn("gateway.settle_recovered", { requestId, cause: cause.code });
-      return {};
-    }
-    const code: GatewayErrorCode = "GATEWAY_SETTLEMENT_FAILED";
-    ports.logger.error("gateway.settle_failed", { requestId, code, cause: cause.code, marker, markCause });
-    return { [GATEWAY_SETTLEMENT_HEADER]: `failed; code=${code}; request_id=${requestId}` };
   }
 
   /** The answer, and whether it is a stream (which settles and retains itself when it ends). */
@@ -1026,8 +1025,9 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
         { ...ports, identity: { authenticate: async () => identity } },
         { httpRequest: request, request: gatewayRequest },
         {
-          // A stream's hold outlives the longest stream, so the sweeper never expires a live one.
-          holdTtlMs: gatewayRequest.stream ? holdTtlMs + streamMaxDurationMs : holdTtlMs,
+          // A stream's idempotency claim outlives the longest stream, so it never expires under a live one.
+          idempotencyTtlMs: gatewayRequest.stream ? idempotencyTtlMs + streamMaxDurationMs : idempotencyTtlMs,
+          ...(options.creditFloor !== undefined ? { creditFloor: options.creditFloor } : {}),
           routing: {
             isRouteExecutable: protocol.isRouteExecutable,
             ...(options.maxAttempts !== undefined ? { maxAttempts: options.maxAttempts } : {}),
@@ -1057,7 +1057,7 @@ export function createGatewayApp(ports: GatewayPorts, options: GatewayAppOptions
    * Anthropic `messages/count_tokens`: authenticated, catalog-mapped,
    * allowlisted and rate-limited like a model call, then proxied to the
    * planned anthropic-compatible routes in failover order. Nothing is
-   * generated, so there is no hold and no ledger row.
+   * generated, so there is no money check and no ledger row.
    */
   async function countTokens(request: Request, protocol: WireProtocol): Promise<Response> {
     const started = ports.clock.now();

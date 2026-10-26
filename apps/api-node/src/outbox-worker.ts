@@ -1,7 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createNodeTaskRuntime } from "./task-runtime.ts";
+import { createNodeTaskRuntime, routeRunCoordinators } from "./task-runtime.ts";
+import { createPostgresRunJournal } from "./durable-run-journal.ts";
+import {
+  NODE_GATEWAY_SETTLE_OWNER,
+  createNodeGatewaySettleCoordinator,
+} from "./gateway-settle.ts";
+import { NODE_GENERATION_OWNER } from "./generation.ts";
 import { databaseUrl, publicUrl, renderServerUrl } from "./config.ts";
 import { createHttpRenderServerPort } from "@clash/shared-runtime/render-server";
 import { createFsAssetDeliveryStore } from "@clash/shared-runtime/fs-asset-delivery-store";
@@ -110,12 +116,20 @@ if (
           assetDirectory,
         })
       : undefined;
+    // Gateway settle runs (#399, N2) always run here: the api role journals
+    // them with their outbox row, this runtime delivers and recovers them.
+    const journal = createPostgresRunJournal(database.db);
     const tasks = createNodeTaskRuntime({
       connectionString: databaseUrl(process.env),
       db: database.db,
-      ...(render
-        ? { coordinator: render.coordinator, journal: render.journal }
-        : {}),
+      journal,
+      coordinator: routeRunCoordinators(journal, {
+        [NODE_GATEWAY_SETTLE_OWNER]: createNodeGatewaySettleCoordinator({
+          db: database.db,
+          journal,
+        }),
+        ...(render ? { [NODE_GENERATION_OWNER]: render.coordinator } : {}),
+      }),
     });
     try {
       await tasks.start();

@@ -6,6 +6,11 @@
  * database. Worker processes drive the store-level races. No load balancer:
  * the harness spreads requests round-robin over the node ports itself.
  *
+ * Follow-up money writes are `api-node:gateway-settle` Durable Runs (#399,
+ * N2): the nodes journal them, and the production outbox worker process
+ * (`src/outbox-worker.ts`, BullMQ on the same Postgres) applies them, so
+ * every charge below lands through that worker.
+ *
  * PGlite serializes every transaction, so the row-lock / SKIP LOCKED / unique
  * races below were untested before this harness. Run with
  * `pnpm --filter @clash/api-node test:gateway-lite` (see docs in
@@ -15,7 +20,9 @@ import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { Pool } from "pg";
 import { buildEffectiveModelCards } from "@clash/shared-types/model-routing";
@@ -23,8 +30,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checkGatewayInvariants } from "../gateway-budget.ts";
 import { createPgGatewayCredentialStore } from "../gateway-credentials.ts";
 import { gatewayKeyRingFromEnv } from "../gateway-keyring.ts";
+import { NODE_GATEWAY_SETTLE_OWNER } from "../gateway-settle.ts";
 import { migrateDatabase } from "../migrations.ts";
 import { openPostgres } from "../postgres.ts";
+import { migrateTaskQueue } from "../task-runtime.ts";
 
 const ADMIN_URL = process.env.GATEWAY_LITE_DATABASE_URL;
 const NODES = Math.max(3, Number(process.env.GATEWAY_LITE_NODES ?? 3));
@@ -89,10 +98,11 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
+// Charges land through the outbox worker's BullMQ flows, so waits leave room for its dispatch loop.
 async function until(
   check: () => Promise<boolean> | boolean,
   label: string,
-  ms = 15_000,
+  ms = 60_000,
 ) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
@@ -160,6 +170,20 @@ interface Node extends Proc {
   label: string;
 }
 const nodes: Node[] = [];
+let assetDir = "";
+let settleWorker: Proc | undefined;
+
+/**
+ * The production outbox worker (BullMQ on this Postgres): it delivers and
+ * recovers the settle runs the nodes journal. Readiness is not observable
+ * over HTTP; callers wait on the journal instead.
+ */
+function startSettleWorker(): Proc {
+  return spawnTs("../outbox-worker.ts", {
+    DATABASE_URL: dbUrl,
+    CLOUD_ASSET_DIR: assetDir,
+  });
+}
 
 async function startNode(label: string): Promise<Node> {
   const port = await freePort();
@@ -361,6 +385,9 @@ describeLite(
       dbUrl = url.href;
       database = openPostgres({ connectionString: dbUrl, max: 10 });
       await migrateDatabase(database.db);
+      // BullMQ's Postgres tables, the explicit deployment step of the outbox worker.
+      await migrateTaskQueue(dbUrl);
+      assetDir = await mkdtemp(join(tmpdir(), "gateway-lite-assets-"));
 
       mockPort = await freePort();
       mock = spawnTs("../mock-upstream/cli.ts", {
@@ -453,6 +480,7 @@ describeLite(
       });
       for (let i = 0; i < NODES; i += 1)
         nodes.push(await startNode(`gw${i + 1}`));
+      settleWorker = startSettleWorker();
     }, 180_000);
 
     afterAll(async () => {
@@ -474,6 +502,7 @@ describeLite(
         `gateway-lite report: ${JSON.stringify({ ok: report.ok, scenarios: report.scenarios.map((s) => [s.name, s.ok]) })}`,
       );
       await Promise.all(procs.map((p) => stop(p.child, "SIGTERM", 5000)));
+      if (assetDir) await rm(assetDir, { recursive: true, force: true });
       await database?.close();
       if (admin) {
         if (dbName)
@@ -780,7 +809,6 @@ describeLite(
         await until(
           async () => (await charges("t-abort")).length === NODES,
           "abort charges",
-          10_000,
         );
         await delay(500);
         const rows = await charges("t-abort");
@@ -826,7 +854,6 @@ describeLite(
         await until(
           async () => (await charges("t-term")).length === 2,
           "term charges",
-          10_000,
         );
         Object.assign(facts, {
           drainedEvent: text.includes("GATEWAY_DRAINING"),
@@ -892,6 +919,92 @@ describeLite(
         expect(again.status).toBe(200);
       });
     });
+
+    it("SIGKILL after the settle run is journaled still charges exactly once (#399)", async () => {
+      await scenario("sigkill-after-journal-charge-once", async (facts) => {
+        const token = await virtualKey("t-journal");
+        await budget("b-journal", "t-journal", 1_000_000_000);
+        await setConfig("limits.tenant.t-journal", { concurrency: 50 });
+        // No deliverer: every run the node journals stays queued.
+        await stop(settleWorker!.child);
+        const victim = nodes[0]!;
+        const n = 5;
+        const responses = await Promise.all(
+          Array.from({ length: n }, () => post(token, {}, { node: victim })),
+        );
+        const requestIds = await Promise.all(
+          responses.map(async (r) => {
+            await r.text();
+            expect(r.status).toBe(200);
+            return r.headers.get("x-clash-request-id")!;
+          }),
+        );
+        const runIds = requestIds.map((id) => `gateway-settle:${id}`);
+        const runs = () =>
+          sql<{ action_run_id: string; owner_id: string; phase: string }>(
+            `SELECT action_run_id, owner_id, phase FROM cloud_durable_run_journal WHERE action_run_id = ANY($1)`,
+            [runIds],
+          );
+        // A non-stream answer is sent after its run is journaled: kill the
+        // node now, with nothing applied and nothing left in its memory.
+        const journaled = await runs();
+        const exited = once(victim.child, "exit");
+        victim.child.kill("SIGKILL");
+        await exited;
+        const outbox = await sql<{ n: string }>(
+          `SELECT count(*)::text AS n FROM cloud_run_dispatch WHERE action_run_id = ANY($1)`,
+          [runIds],
+        );
+        const chargedBeforeDelivery = (await charges("t-journal")).length;
+        expect(journaled).toHaveLength(n);
+        expect(journaled.every((run) => run.owner_id === NODE_GATEWAY_SETTLE_OWNER && run.phase === "queued")).toBe(true);
+        expect(Number(outbox[0]!.n)).toBe(n);
+        expect(chargedBeforeDelivery).toBe(0);
+
+        // A worker that dies mid-delivery: SIGKILL as soon as it takes the first run.
+        const doomed = startSettleWorker();
+        await until(
+          async () => (await runs()).some((run) => run.phase !== "queued") || (await charges("t-journal")).length > 0,
+          "first delivery",
+        );
+        doomed.child.kill("SIGKILL");
+        await once(doomed.child, "exit").catch(() => undefined);
+        const chargedAtKill = (await charges("t-journal")).length;
+        // Redeliver every run on top (an outbox row a crashed worker never acknowledged).
+        for (const actionRunId of runIds)
+          await sql(
+            `INSERT INTO cloud_run_dispatch (action_run_id, output_slot) VALUES ($1, 'charge') ON CONFLICT DO NOTHING`,
+            [actionRunId],
+          );
+        settleWorker = startSettleWorker();
+        // Stalled jobs of the killed worker come back after BullMQ's lock expiry.
+        await until(
+          async () => (await runs()).every((run) => run.phase === "succeeded"),
+          "every journaled run delivered",
+          240_000,
+        );
+        const rows = await charges("t-journal");
+        const spent = await spentOf("b-journal");
+        const inv = await checkGatewayInvariants(database.db, { tenantId: "t-journal" });
+        Object.assign(facts, {
+          requests: n,
+          journaledRuns: journaled.length,
+          outboxRows: Number(outbox[0]!.n),
+          chargedBeforeDelivery,
+          chargedWhenWorkerKilled: chargedAtKill,
+          chargeRows: rows.length,
+          distinctRequests: new Set(rows.map((row) => row.request_id)).size,
+          spent,
+          expectedSpent: n * COST,
+          invariants: { ok: inv.ok, violations: inv.violations.length },
+        });
+        expect(rows).toHaveLength(n);
+        expect(new Set(rows.map((row) => row.request_id))).toEqual(new Set(requestIds));
+        expect(spent).toBe(n * COST);
+        expect(inv.ok).toBe(true);
+        nodes[0] = await startNode("gw1b");
+      });
+    }, 300_000);
 
     it("key rotation with concurrent re-encryption workers while all nodes serve", async () => {
       await scenario("key-rotation-across-processes", async (facts) => {

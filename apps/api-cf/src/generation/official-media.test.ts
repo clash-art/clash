@@ -32,6 +32,7 @@ import type { Env } from "../config";
 import { createD1GatewayPorts } from "../gateway";
 import { sealGatewayUpstreamCredentials } from "../gateway/d1-credentials";
 import { toSeconds } from "../gateway/d1-common";
+import { inlineSettleWorkflow } from "../gateway/test-support";
 import type { GenerationAdapter } from "./adapter";
 import { credentialsForRoute } from "./adapters/provider-credentials";
 import { mediaQuantities, measuredMediaQuantities, recordProviderUsage } from "./media-usage";
@@ -54,7 +55,16 @@ import {
 
 const { d1, sqlite } = createSqliteD1();
 const encryptionKey = "official-media-test-kek";
-const env = { DB: d1, GATEWAY_ENCRYPTION_KEY: encryptionKey } as unknown as Env;
+const settleWorkflow = inlineSettleWorkflow(d1);
+/** Runs gateway settle runs (a failed job's refund) inline; generation starts stay the pipeline's own. */
+const env = {
+  DB: d1,
+  GATEWAY_ENCRYPTION_KEY: encryptionKey,
+  GENERATION_WORKFLOW: {
+    create: async (input: Parameters<typeof settleWorkflow.create>[0]) =>
+      input.params.actionRunId.startsWith("gateway-settle:") ? settleWorkflow.create(input) : {},
+  },
+} as unknown as Env;
 const officialApiKey = `sk-official-media-${crypto.randomUUID()}`;
 
 const isOfficial = (route: ModelUpstreamRoute) => route.providerId === "official";
@@ -249,7 +259,7 @@ const wallet = async (ports: GatewayPorts, tenantId: string) =>
   (await ports.budgets.snapshot({ tenantId })).find((budget) => budget.scope === "tenant")!;
 
 describe("official media generation through the gateway ledger", () => {
-  it("routes a model the user has no account for to the official gateway, holds before the provider, charges a success once", async () => {
+  it("routes a model the user has no account for to the official gateway, debits before the provider, a success keeps the debit", async () => {
     const { userId, tenantId } = await member();
     const { adapter, seenKeys } = stubAdapter("succeed");
     const run = pipeline(adapter);
@@ -260,8 +270,8 @@ describe("official media generation through the gateway ledger", () => {
     expect(frozen.selectedRoute).toMatchObject({ accountId: harness.accountId, providerId: "official" });
     const planned = jobRow(input.taskId)!;
     expect(planned.status).toBe("planned");
-    // Planning holds nothing.
-    expect((await wallet(harness.ports, tenantId)).reservedMicroCredits).toBe(0);
+    // Planning debits nothing.
+    expect(await wallet(harness.ports, tenantId)).toMatchObject({ spentMicroCredits: 0, reservedMicroCredits: 0 });
 
     expect((await run.drive(input.taskId)).phase).toBe("succeeded");
     // The provider was called once, with the official key resolved for this run only.
@@ -286,14 +296,14 @@ describe("official media generation through the gateway ledger", () => {
     // Metered by the ledger alone: no BYOK usage row for an official run.
     expect(usageRows(input.taskId)).toEqual([]);
 
-    // A replayed afterGenerate (lost checkpoint) settles nothing new.
+    // A replayed afterGenerate (lost checkpoint) writes nothing new; a success has no settle run.
     const runtime = officialMediaRuntime(env);
     expect(await settleOfficialMediaRun(runtime, frozen, { status: "succeeded", run: {} })).toBe(true);
     expect(await wallet(harness.ports, tenantId)).toMatchObject({ spentMicroCredits: cost, reservedMicroCredits: 0 });
-    expect(ledgerRows(planned.request_id).filter((row) => row.kind === "settle")).toHaveLength(1);
+    expect(ledgerRows(planned.request_id).map((row) => row.kind)).toEqual(["settle"]);
   });
 
-  it("a provider failure after acceptance never charges, and no replay or late success charges it twice", async () => {
+  it("a provider failure after acceptance refunds the debit in full, and no replay or late success moves money again", async () => {
     const { userId, tenantId } = await member();
     const { adapter, seenKeys } = stubAdapter("fail_after_acceptance");
     const run = pipeline(adapter);
@@ -311,8 +321,11 @@ describe("official media generation through the gateway ledger", () => {
       costMicroCredits: 0,
       errorCode: mediaFailureCode(done.failure),
     });
-    // The hold was reserved, then released at zero.
-    expect(ledgerRows(requestId).map((row) => row.kind)).toContain("hold");
+    // Debited at admission, then refunded in full by the request's one settle run.
+    const debited = ledgerRows(requestId);
+    expect(debited.map((row) => row.kind)).toEqual(["refund", "settle"]);
+    expect(debited[0]!.amount_micro_credits).toBe(debited[1]!.amount_micro_credits);
+    expect(debited[1]!.amount_micro_credits).toBeGreaterThan(0);
     expect(await wallet(harness.ports, tenantId)).toMatchObject({ spentMicroCredits: 0, reservedMicroCredits: 0 });
 
     const frozen = frozenGeneration(done).params;
@@ -320,13 +333,11 @@ describe("official media generation through the gateway ledger", () => {
     await settleOfficialMediaRun(runtime, frozen, { status: "failed", failure: done.failure });
     await settleOfficialMediaRun(runtime, frozen, { status: "succeeded", run: {} });
     expect(await wallet(harness.ports, tenantId)).toMatchObject({ spentMicroCredits: 0, reservedMicroCredits: 0 });
-    expect(ledgerRows(requestId).filter((row) => row.kind === "settle")).toEqual([
-      expect.objectContaining({ amount_micro_credits: 0 }),
-    ]);
+    expect(ledgerRows(requestId)).toEqual(debited);
     expect(usageRows(input.taskId)).toEqual([]);
   });
 
-  it("a hard wallet the hold does not fit fails the run before the provider, holding nothing", async () => {
+  it("a hard wallet the debit does not fit fails the run before the provider, debiting nothing", async () => {
     const { userId, tenantId } = await member(0);
     const { adapter, seenKeys } = stubAdapter("succeed");
     const run = pipeline(adapter);
@@ -374,7 +385,7 @@ describe("official media generation through the gateway ledger", () => {
     const frozen = frozenGeneration(run.state.rows.get(input.taskId)!).params;
     const runtime = officialMediaRuntime(env);
 
-    // Planned, not yet admitted: no hold, no key.
+    // Planned, not yet admitted: no debit, no key.
     await expect(officialMediaCredentials(runtime, frozen)).rejects.toMatchObject({ code: "GATEWAY_KEY_UNAVAILABLE" });
     // Another actor replaying the same task and route never reaches the official key.
     await expect(officialMediaCredentials(runtime, { ...frozen, actorUserId: "intruder" })).rejects.toMatchObject({
@@ -398,7 +409,7 @@ describe("official media generation through the gateway ledger", () => {
       code: "GATEWAY_FORBIDDEN",
     });
 
-    // A run that ends before it was admitted holds nothing and is only refused.
+    // A run that ends before it was admitted was debited nothing and is only refused.
     const other = params(fresh("task-unadmitted"), harness.card.id, userId);
     await run.enqueue(other);
     const unadmitted = frozenGeneration(run.state.rows.get(other.taskId)!).params;

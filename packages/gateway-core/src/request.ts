@@ -1,7 +1,7 @@
 /**
  * Wire request -> GatewayRequest. The original body is preserved for
  * pass-through: normalization validates and extracts what routing, limits and
- * holds need, and never rewrites what the caller asked the model to do.
+ * billing need, and never rewrites what the caller asked the model to do.
  */
 import { z } from "zod";
 import {
@@ -27,9 +27,9 @@ export interface GatewayRequest {
   maxOutputTokens?: number;
   /** Size of the serialized body, the basis of the input estimate. */
   bodyBytes: number;
-  /** Conservative prompt estimate used for holds and token limits. */
+  /** Conservative prompt estimate used for token limits and usage estimates. */
   estimatedInputTokens: number;
-  /** Media/AIGC quantities the caller requested, priced for the hold. */
+  /** Media/AIGC quantities the caller requested, debited at admission. */
   requestedUnits: Partial<Record<GatewayMediaUnit, number>>;
   /** Card parameters materially selected, for route parameter support. */
   requestedParameterIds: string[];
@@ -60,7 +60,7 @@ const anthropicMessagesSchema = z.looseObject({
   stream: z.boolean().optional(),
 });
 
-const mediaUnitSchema = z.enum([
+export const GatewayMediaUnitSchema = z.enum([
   "image",
   "video_second",
   "audio_second",
@@ -72,9 +72,9 @@ const mediaSchema = z.object({
   model: z.string().trim().min(1),
   kind: z.string().trim().min(1),
   params: z.record(z.string(), z.unknown()).default({}),
-  // At least one billable quantity: a media hold of zero would leave the budget unprotected.
+  // At least one billable quantity: a free media debit would leave the budget unprotected.
   units: z
-    .partialRecord(mediaUnitSchema, z.number().int().nonnegative())
+    .partialRecord(GatewayMediaUnitSchema,z.number().int().nonnegative())
     .refine((units) => Object.values(units).some((quantity) => (quantity ?? 0) > 0), {
       message: "State at least one billable unit (image, video_second, audio_second, character or request).",
     }),
@@ -196,7 +196,7 @@ export function normalizeAnthropicCountTokensRequest(
 
 /**
  * Media/AIGC generation (image, video, audio, ...). The caller states the
- * billable quantities it is asking for; the hold prices exactly those.
+ * billable quantities it is asking for; admission debits exactly those.
  */
 export function normalizeMediaGenerationRequest(
   body: unknown,
@@ -255,8 +255,11 @@ export function callerOmittedStreamUsage(request: GatewayRequest): boolean {
   return options?.include_usage !== true;
 }
 
-/** Price units the admission hold for this request depends on. */
-export function holdUnits(request: GatewayRequest): GatewayPriceUnit[] {
+/**
+ * Price units this request is billed in: a media request's prepaid debit,
+ * a text request's postpaid charge. Admission requires a rate for each.
+ */
+export function pricedUnits(request: GatewayRequest): GatewayPriceUnit[] {
   if (request.protocol === "media")
     return Object.entries(request.requestedUnits)
       .filter(([, quantity]) => (quantity ?? 0) > 0)

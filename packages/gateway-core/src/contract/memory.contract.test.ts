@@ -23,8 +23,8 @@ describeGatewayContract("in-memory stub", async () => {
     identities: {
       "tenant-a": identity("tenant-a", "key-a", ["budget-a-key", "budget-a-team"]),
       "tenant-b": identity("tenant-b", "key-b", ["budget-b"]),
-      "rate-limited": identity("tenant-a", "key-rate", []),
-      "concurrency-limited": identity("tenant-a", "key-concurrency", []),
+      "rate-limited": identity("tenant-a", "key-rate", ["budget-a-key", "budget-a-team"]),
+      "concurrency-limited": identity("tenant-a", "key-concurrency", ["budget-a-key", "budget-a-team"]),
     },
     catalog: fixture.catalog,
     providers: fixture.providers,
@@ -70,6 +70,7 @@ describeGatewayContract("in-memory stub", async () => {
       "limits.concurrency": "supported",
       blobs: "supported",
       retention: "supported",
+      settlement: "supported",
       scheduler: "unavailable",
       audit: "supported",
       abuse: "supported",
@@ -88,6 +89,7 @@ describeGatewayContract("in-memory stub", async () => {
         : {}),
       rateLimited: { request: () => bearer("rate-limited"), limit: 3 },
       concurrencyLimited: { request: () => bearer("concurrency-limited"), limit: 2 },
+      settlementDelivery: { pause: (paused) => gateway.pauseSettlement(paused) },
       memberBudget: async (enforcement) => {
         const tenantId = `tenant-member-${(members += 1)}`;
         const userBudget = `${tenantId}-user-budget`;

@@ -25,7 +25,7 @@ export class GenerationWorkflow extends WorkflowEntrypoint<
     const [
       { runCloudDurableWorkflowEntrypoint },
       { createD1CloudDurableRunJournal },
-      { EXECUTABLE_ACTION_OWNER },
+      { EXECUTABLE_ACTION_OWNER, GATEWAY_SETTLE_OWNER },
     ] = await Promise.all([
       import("../cloud-runs/cloud-durable-workflow"),
       import("../cloud-runs/cloud-durable-run-journal"),
@@ -39,9 +39,13 @@ export class GenerationWorkflow extends WorkflowEntrypoint<
         ? (
             await import("../generation/executable-runtime")
           ).createExecutableActionRuntime(this.env, { journal })
-        : (await import("../generation/runtime")).createHostedGenerationRuntime(
-            this.env,
-          );
+        : record?.owner.id === GATEWAY_SETTLE_OWNER
+          ? (
+              await import("../gateway/settle-runs")
+            ).createGatewaySettleCoordinator({ db: this.env.DB, journal })
+          : (
+              await import("../generation/runtime")
+            ).createHostedGenerationRuntime(this.env);
     const run = await runCloudDurableWorkflowEntrypoint({
       coordinator,
       payload: event.payload,

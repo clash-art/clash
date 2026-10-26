@@ -159,6 +159,12 @@ export interface GatewayMediaCompleteResult {
 export interface GatewayTextAdmissionInput {
   tenantId: string;
   budgetIds: readonly string[];
+  /**
+   * The floor the data plane resolved for this caller (#399; on this host
+   * from `readGatewaySettlementFloor`, so it is the floor `chargeText` caps
+   * at). Absent: the configured floor.
+   */
+  floorMicroCredits?: number;
 }
 
 export interface GatewayTextAdmissionResult {
@@ -282,6 +288,7 @@ const mediaCompleteSchema = z.object({
 const textAdmissionSchema = z.object({
   tenantId: identifierSchema,
   budgetIds: z.array(identifierSchema).min(1),
+  floorMicroCredits: amountSchema.optional(),
 });
 
 const textChargeSchema = z.object({
@@ -487,8 +494,18 @@ async function assertRequestTenant(
   }
 }
 
+/**
+ * The credit floor knob on this host (#399): `gateway_config` key
+ * GATEWAY_SETTLEMENT_FLOOR_CONFIG_KEY, 0 when unset. The data plane's
+ * `creditFloor` reads it (server.ts), so text admission and the postpaid
+ * charge cap agree on one floor.
+ */
+export function readGatewaySettlementFloor(db: GatewayBudgetSqlClient): Promise<number> {
+  return resolveConfiguredFloor(db, undefined);
+}
+
 async function resolveConfiguredFloor(
-  db: GatewayBudgetDatabase,
+  db: GatewayBudgetSqlClient,
   override: number | undefined,
 ): Promise<number> {
   if (override !== undefined) {
@@ -891,7 +908,7 @@ export function createPgGatewayBudgetStore(
     input: GatewayTextAdmissionInput,
   ): Promise<GatewayTextAdmissionResult> {
     const parsed = parseInput(textAdmissionSchema, input);
-    const floor = await resolveFloor();
+    const floor = parsed.floorMicroCredits ?? (await resolveFloor());
     const budgets = await readBudgets(
       db,
       parsed.tenantId,

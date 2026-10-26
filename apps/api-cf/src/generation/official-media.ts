@@ -9,16 +9,16 @@
  * | Pipeline step            | Gateway                                                   |
  * | ------------------------ | --------------------------------------------------------- |
  * | `resolveRoute` (enqueue) | `planGatewayMediaJob`: shared route plan, price; one `gateway_media_job` row per task |
- * | `beforeGenerate`         | `admitGatewayMediaJob`: limits lease (media job) and hold on every budget |
+ * | `beforeGenerate`         | `admitGatewayMediaJob`: limits lease (media job) and the prepaid exact debit on every budget (#399) |
  * | provider credentials     | the official key of the job's frozen route, for that run only |
- * | `afterGenerate`          | `settleMediaGeneration` succeeded: delivered units, once  |
- * | `onFailure`              | `settleMediaGeneration` failed: zero, once                |
+ * | `afterGenerate`          | `settleMediaGeneration` succeeded: no money write, the debit stands |
+ * | `onFailure`              | `settleMediaGeneration` failed: one journaled full-refund settle run |
  *
- * Every step is idempotent: the job row moves forward only, the budgets port
- * settles a request once, and a late success after a failure (or after the
- * stale-hold sweeper) is a duplicate that charges nothing. A settlement that
- * fails is marked `settle_failed` for reconciliation, as in the data plane;
- * it never fails or republishes the run.
+ * Every step is idempotent: the job row moves forward only, the debit is
+ * charge-once under the job's request id, and the refund is one
+ * `api-cf:gateway-settle` Durable Run per request (ledger unique on request,
+ * budget and kind). A refund that could not be journaled is logged and left
+ * for the hook's retry; it never fails or republishes the run.
  */
 import { ProviderExecutionError } from "@clash/action-sdk/executable-failure";
 import {
@@ -53,13 +53,6 @@ import { readEffectiveTenant } from "../services/project-asset-resources";
 import { generationMediaKind, mediaQuantities, measuredMediaQuantities } from "./media-usage";
 import type { GenerationParams } from "./params";
 
-/**
- * How long a media job's hold may stay open. It outlives the run's 30-minute
- * deadline and its publication retries, so the sweeper only ever expires a
- * job whose run is gone.
- */
-export const GATEWAY_MEDIA_HOLD_TTL_MS = 2 * 60 * 60 * 1000;
-
 export interface OfficialMediaRuntime {
   ports: GatewayPorts;
   jobs: D1GatewayMediaJobStore;
@@ -68,7 +61,15 @@ export interface OfficialMediaRuntime {
 }
 
 export function officialMediaRuntime(env: Env, overrides: Partial<GatewayPorts> = {}): OfficialMediaRuntime {
-  const ports = { ...createD1GatewayPorts({ db: env.DB, secrets: workerSecrets(env) }), ...overrides };
+  const ports = {
+    ...createD1GatewayPorts({
+      db: env.DB,
+      secrets: workerSecrets(env),
+      // A failed run's refund settle run is started at once; the cron recovers a lost start.
+      ...(env.GENERATION_WORKFLOW ? { workflow: env.GENERATION_WORKFLOW } : {}),
+    }),
+    ...overrides,
+  };
   return {
     ports,
     jobs: createD1GatewayMediaJobStore(env.DB, { now: () => ports.clock.now() }),
@@ -193,8 +194,8 @@ function refusal(error: GatewayError): ProviderExecutionError {
 
 /**
  * Admit the run's job before its provider is called (the `beforeGenerate`
- * step). A job already admitted, or whose hold a crashed attempt reserved,
- * is not held again. A refusal fails the submit with its code, holding
+ * step). A job already admitted, or whose debit a crashed attempt wrote, is
+ * not debited again. A refusal fails the submit with its code, debiting
  * nothing; a rate or concurrency refusal is retried.
  */
 export async function admitOfficialMediaRun(runtime: OfficialMediaRuntime, params: GenerationParams): Promise<void> {
@@ -203,13 +204,13 @@ export async function admitOfficialMediaRun(runtime: OfficialMediaRuntime, param
   const { job } = stored;
   if (stored.status === "refused")
     throw refusal(new GatewayError(isGatewayErrorCode(stored.errorCode) ? stored.errorCode : "GATEWAY_INTERNAL"));
-  if (await runtime.jobs.held(job)) {
+  if (await runtime.jobs.debited(job)) {
     await runtime.jobs.admitted(job.requestId);
     return;
   }
   let leaseId: string;
   try {
-    ({ leaseId } = await admitGatewayMediaJob(runtime.ports, job, { holdTtlMs: GATEWAY_MEDIA_HOLD_TTL_MS }));
+    ({ leaseId } = await admitGatewayMediaJob(runtime.ports, job));
   } catch (caught) {
     const error = toGatewayError(caught);
     if (!RETRYABLE_REFUSALS.includes(error.code)) await runtime.jobs.refused(job.requestId, error.code);
@@ -242,10 +243,11 @@ export type OfficialMediaOutcome =
   | { status: "failed"; failure: { code: string; providerCode?: string } | undefined };
 
 /**
- * Settle the run's job once it ended (`afterGenerate` / `onFailure`). Only a
- * success is charged, its delivered units; every failure settles zero. A job
- * never admitted holds nothing and is only marked refused. Resolves true
- * when the run is official (whatever the settlement's fate).
+ * Settle the run's job once it ended (`afterGenerate` / `onFailure`). A
+ * success keeps the prepaid debit and writes nothing; every failure
+ * dispatches the full refund. A job never admitted was debited nothing and is
+ * only marked refused. Resolves true when the run is official (whatever the
+ * settlement's fate).
  */
 export async function settleOfficialMediaRun(
   runtime: OfficialMediaRuntime,
@@ -258,67 +260,38 @@ export async function settleOfficialMediaRun(
   const { ports } = runtime;
   if (stored.status === "refused" || stored.status === "settled") return true;
   if (stored.status === "planned") {
-    if (!(await runtime.jobs.held(job))) {
+    if (!(await runtime.jobs.debited(job))) {
       if (outcome.status === "failed") await runtime.jobs.refused(job.requestId, mediaFailureCode(outcome.failure));
-      // A success is never admitted after the fact: nothing was held, nothing is charged.
+      // A success is never admitted after the fact: nothing was debited, nothing is charged.
       else ports.logger.error("gateway.media_unadmitted_success", { requestId: job.requestId });
       return true;
     }
     await runtime.jobs.admitted(job.requestId);
   }
-  let cause: GatewayError;
   try {
     const admission = await restoreGatewayMediaAdmission(ports, job, stored.leaseId ? { leaseId: stored.leaseId } : {});
     const result: MediaGenerationResult =
       outcome.status === "succeeded"
         ? { status: "succeeded", units: deliveredMediaUnits(admission, measuredMediaQuantities(params, outcome.run)) }
         : { status: "failed", error: new GatewayError(mediaFailureCode(outcome.failure)) };
-    const settled = await settleMediaGeneration(ports, admission, { attempt: job.attempt, result });
-    if (settled.result.duplicate)
-      ports.logger.warn("gateway.settle_duplicate", {
-        requestId: job.requestId,
-        outcome: outcome.status,
-        recordedMicroCredits: settled.result.costMicroCredits,
-      });
+    // The refund (if any) is journaled before this resolves; its settle run applies it.
+    await settleMediaGeneration(ports, admission, { attempt: job.attempt, result });
     await runtime.jobs.settled(job.requestId);
-    return true;
   } catch (error) {
-    cause = toGatewayError(error);
+    // Not journaled: the job stays admitted so a retried hook dispatches again.
+    ports.logger.error("gateway.settle_dispatch_failed", {
+      requestId: job.requestId,
+      outcome: outcome.status,
+      cause: toGatewayError(error).code,
+    });
   }
-  // As in the data plane: the holds stay reserved as settle_failed until reconciliation.
-  let marker: "settled" | "settle_failed" | "unrecorded";
-  let markCause: string | undefined;
-  try {
-    marker = (
-      await ports.budgets.markSettleFailed({
-        requestId: job.requestId,
-        tenantId: job.identity.tenantId,
-        errorCode: cause.code,
-      })
-    ).status;
-  } catch (error) {
-    marker = "unrecorded";
-    markCause = toGatewayError(error).code;
-  }
-  if (marker === "settled") {
-    ports.logger.warn("gateway.settle_recovered", { requestId: job.requestId, cause: cause.code });
-    await runtime.jobs.settled(job.requestId);
-    return true;
-  }
-  ports.logger.error("gateway.settle_failed", {
-    requestId: job.requestId,
-    code: "GATEWAY_SETTLEMENT_FAILED",
-    cause: cause.code,
-    marker,
-    markCause,
-  });
   return true;
 }
 
 /**
  * The official key for an official run's route, or undefined when the run
  * is not official (the caller resolves the user's own account). Only an
- * admitted job resolves: a run whose hold was never reserved never reaches
+ * admitted job resolves: a run that was never debited never reaches
  * an official account. Errors are GATEWAY_KEY_UNAVAILABLE, never key material.
  */
 export async function officialMediaCredentials(

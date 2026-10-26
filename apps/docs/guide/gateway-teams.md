@@ -52,8 +52,11 @@ packs. The wallet is always `hard`: purchased credits are the ceiling.
 
 `PUT /tenants/:t/budgets/(user|key)/:id` sets a member's or a key's budget
 under the wallet. A request draws on the wallet, the member's budget and the
-key's budget together, and holds the full amount on each (stream and
-non-stream alike, before any byte is sent).
+key's budget together, with the full amount on each (stream and non-stream
+alike). Admission decides before any byte is sent: text is postpaid and
+admitted while each budget's balance is above `-floor`, then charged its actual
+cost; media is prepaid, its exact price debited at once
+([gateway-data-plane.md](gateway-data-plane.md#settlement)).
 
 | Field               | Meaning                                                                                                                       |
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
@@ -65,20 +68,20 @@ non-stream alike, before any byte is sent).
 
 Enforcement is explicit; no budget state is silent:
 
-| Enforcement | A hold that does not fit under the limit                                                                                                                      |
+| Enforcement | A text request at or below `-floor`, or a media debit that does not fit under the limit                                                                     |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hard`      | Refused: `402 GATEWAY_BUDGET_EXCEEDED` naming the budget (`budget_id`, `reset_at`), before any upstream call.                                              |
+| `hard`      | Refused: `402 GATEWAY_BUDGET_EXCEEDED` naming the budget (`budget_id`, `reset_at`), before any upstream call. A hard limit of zero therefore stops text once the budget is `floor` below zero. |
 | `soft`      | Admitted and flagged: a `soft_exceeded` budget event for that request, the `x-gateway-budget` answer header, and the `gateway.budget_soft_exceeded` log.   |
 | `alert`     | Admitted. Crossing the threshold records one `alert_threshold` event per limit and threshold (a new limit or threshold may alert again), with the header and the `gateway.budget_alert` log. |
 
-The events (`gateway_budget_event`, 0041) are written in the reservation's
-own batch, so a flag exists exactly when the hold does. The owner sees them
+The events (`gateway_budget_event`, 0041) are written in the batch of the
+admission check, debit or charge that raised them. The owner sees them
 under *Budget notifications*; a member sees their own. The answer header is
 `x-gateway-budget: <soft_exceeded|alert_threshold>; budget_id=<id>; scope=<user|key>`
 (comma-separated when several), on plain answers and on the stream's headers.
 
-Budgets show their limit, used (`spentMicroCredits`), reserved (open holds)
-and what is left.
+Budgets show their limit, used (`spentMicroCredits`), reserved (always zero
+since 0042 retired holds) and what is left.
 
 ## Rate limits
 

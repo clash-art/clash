@@ -11,16 +11,17 @@ import { createHash, randomBytes } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { buildEffectiveModelCards } from "@clash/shared-types/model-routing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { GatewayBudgetDatabase, GatewayBudgetSqlClient } from "./gateway-budget.ts";
+import {
+  readGatewaySettlementFloor,
+  type GatewayBudgetDatabase,
+  type GatewayBudgetSqlClient,
+} from "./gateway-budget.ts";
+import { createPgGatewayBudgetPort } from "./gateway-budget-port.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
 import { createGatewayKeyRing } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
-import {
-  createGatewayNodeRoutes,
-  createN2GatewayBudgetPort,
-  createPgGatewayPorts,
-  credentialPriorityOrder,
-} from "./gateway-node.ts";
+import { createGatewayNodeRoutes, createPgGatewayPorts, credentialPriorityOrder } from "./gateway-node.ts";
+import { inlinePgSettlement } from "./gateway-settle-test-support.ts";
 import { migrateDatabase } from "./migrations.ts";
 import { createMockUpstreamApp, keyIdFor, MOCK_KEY_ID, type MockUpstreamApp } from "./mock-upstream/index.ts";
 
@@ -167,7 +168,14 @@ beforeEach(async () => {
     },
   };
   app = createGatewayNodeRoutes(
-    createPgGatewayPorts({ db, credentials, limits: createPgGatewayLimitPort(db), upstream }),
+    createPgGatewayPorts({
+      db,
+      credentials,
+      limits: createPgGatewayLimitPort(db),
+      upstream,
+      settlement: inlinePgSettlement({ db }),
+    }),
+    { app: { creditFloor: () => readGatewaySettlementFloor(db) } },
   );
 });
 
@@ -285,10 +293,10 @@ describe("gateway-node credential resolution (#369)", () => {
   });
 
   it("budget port: only tenant scope is exempt from the no-budget refusal", async () => {
-    const port = createN2GatewayBudgetPort({ db });
-    const base = { requestId: "gwr_x", tenantId: TENANT, budgetIds: [], holdMicroCredits: 5, expiresAt: Date.now() + 60_000 };
-    await expect(port.reserve({ ...base, credentialScope: "tenant" })).resolves.toMatchObject({ holds: [] });
-    await expect(port.reserve({ ...base, credentialScope: "official" })).rejects.toMatchObject({
+    const port = createPgGatewayBudgetPort({ db });
+    const base = { requestId: "gwr_x", tenantId: TENANT, budgetIds: [], floorMicroCredits: 0 };
+    await expect(port.check({ ...base, credentialScope: "tenant" })).resolves.toEqual({});
+    await expect(port.check({ ...base, credentialScope: "official" })).rejects.toMatchObject({
       code: "GATEWAY_BUDGET_EXCEEDED",
     });
   });

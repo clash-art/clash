@@ -11,13 +11,14 @@ import type {
 } from "@clash/shared-types/model-routing";
 
 import type { GatewayAbusePort } from "./abuse.js";
-import type { BudgetFlag, BudgetHold, BudgetState, GatewayOutcome } from "./budget.js";
+import type { BudgetFlag, BudgetState, GatewayOutcome } from "./budget.js";
 import type { GatewayUpstreamHealth } from "./circuit.js";
 import { GatewayError, type GatewayErrorCode } from "./errors.js";
 import type { LimitDecision } from "./limits.js";
 import type { GatewayPrice, MicroCredits } from "./pricing.js";
 import type { GatewayModelKind } from "./request.js";
 import type { GatewayCatalog, GatewayCredentialScope } from "./routing.js";
+import type { GatewaySettlementIntent } from "./settlement.js";
 import type { Usage } from "./usage.js";
 
 /** Who is calling, derived from a verified credential, never from a header claim. */
@@ -147,7 +148,20 @@ export interface GatewayUpstreamHealthPort {
   recordSuccess(input: { accountId: string; at: number }): Promise<void>;
 }
 
-export interface ReserveInput {
+/**
+ * An Idempotency-Key's claim, taken at admission (#399: no hold carries it any
+ * more). While its request runs (not ended, before `expiresAt`) a second
+ * request under the key is GATEWAY_IDEMPOTENCY_IN_PROGRESS; after it ended,
+ * or once past `expiresAt` (its request vanished without ending),
+ * GATEWAY_IDEMPOTENCY_ALREADY_SETTLED: a key never runs twice.
+ */
+export interface IdempotencyClaim {
+  key: string;
+  /** Epoch ms; outlives every request that can still end the claim. */
+  expiresAt: number;
+}
+
+export interface BudgetCheckInput {
   requestId: string;
   tenantId: string;
   budgetIds: readonly string[];
@@ -155,92 +169,144 @@ export interface ReserveInput {
    * Scope every attempt of this request is served from. An adapter may admit
    * a `tenant` (BYOK) request with no budget row (the tenant pays its own
    * upstream); an `official` request with no budget always refuses (#369).
+   * A debit or charge carries the same scope on its usage event.
    */
   credentialScope: GatewayCredentialScope;
-  holdMicroCredits: MicroCredits;
-  /** Epoch ms after which the sweeper may expire the hold. */
-  expiresAt: number;
-  idempotencyKey?: string;
+  /** The credit floor in effect for this caller (settlement.ts). */
+  floorMicroCredits: MicroCredits;
+  idempotency?: IdempotencyClaim;
 }
 
-export interface Reservation {
+/** The ledger rows of a money write: the usage event plus every budget it draws on. */
+export interface BudgetEntryInput extends UsageEvent {
+  /** Every budget the caller draws on, as authenticated at admission. */
+  budgetIds: readonly string[];
+}
+
+export interface BudgetDebitInput extends BudgetEntryInput {
+  idempotency?: IdempotencyClaim;
+}
+
+export interface BudgetRefundInput {
   requestId: string;
-  holds: BudgetHold[];
-  expiresAt: number;
+  tenantId: string;
+  /** How the generation ended; recorded on the refund rows. */
+  status: Exclude<GatewayLedgerStatus, "settled">;
+  errorCode?: string;
+  occurredAt: number;
+}
+
+export interface BudgetAdmission {
   /**
-   * Budget states this reservation recorded instead of refusing (a soft
-   * budget past its limit, a newly crossed alert threshold). Empty or absent:
-   * none.
+   * Budget states admission made visible instead of refusing (a soft budget
+   * past its limit; for a debit, also a newly crossed alert threshold).
+   * Empty or absent: none.
    */
   flags?: BudgetFlag[];
 }
 
-export interface SettleResult {
+/** What one follow-up money write did. */
+export interface SettlementApplyResult {
   requestId: string;
-  /** Cost recorded by the first settlement; a duplicate returns it unchanged. */
+  kind: "charge" | "refund";
+  /** The amount the first write recorded; a duplicate returns it unchanged. */
   costMicroCredits: MicroCredits;
+  /** Nothing moved: this write had already been applied. */
   duplicate: boolean;
 }
 
-export interface SettleFailedInput {
-  requestId: string;
-  tenantId: string;
-  /** Code of the settlement failure, recorded on the marked holds. */
-  errorCode: string;
-}
-
+/**
+ * Money, under the hybrid settlement model (#399, budget.ts): media/AIGC is
+ * prepaid by `debit` and refunded by `refund`; text is admitted by `check`
+ * and postpaid by `charge`. Every write is idempotent by request id and
+ * ledger kind (the ledger's unique `(request_id, budget_id, kind)`), so a
+ * retried or duplicated settle run moves money once. There are no holds.
+ */
 export interface GatewayBudgetPort {
   /**
-   * Atomically hold on every budget or none. Rejects with GATEWAY_BUDGET_EXCEEDED
-   * (a `hard` budget the hold does not fit), GATEWAY_IDEMPOTENCY_IN_PROGRESS or
-   * GATEWAY_IDEMPOTENCY_ALREADY_SETTLED. `soft` and `alert` budgets hold past
-   * their limit; in the same transaction the adapter records each flag
-   * `planReserve` raises (`soft_exceeded` once per request and budget,
-   * `alert_threshold` once per budget and dedupe key) and returns the flags
-   * it recorded.
+   * Text admission (planCheck): no money is written. Rejects with
+   * GATEWAY_BUDGET_EXCEEDED when a `hard` budget is at or below `-floor` (a
+   * caller without any budget is refused too). Records the flags planCheck
+   * raises (deduplicated like `debit`'s) and returns the recorded ones. With
+   * `idempotency`, then takes the key's claim, or rejects with
+   * GATEWAY_IDEMPOTENCY_IN_PROGRESS / GATEWAY_IDEMPOTENCY_ALREADY_SETTLED
+   * when another request holds it.
    */
-  reserve(input: ReserveInput): Promise<Reservation>;
+  check(input: BudgetCheckInput): Promise<BudgetAdmission>;
   /**
-   * End a reservation: in one transaction, append the ledger row and move each
-   * open hold from reserved to spent at `event.costMicroCredits` (zero releases
-   * it). Every reservation ends in exactly one settlement; a duplicate is a
-   * no-op keyed by request id. A request id that was never reserved rejects
-   * with GATEWAY_INTERNAL.
+   * Media admission (planDebit): in one transaction, debit `costMicroCredits`
+   * from every budget or none and append the request's `settle` row per
+   * budget (status `settled`: the exact price is final unless refunded).
+   * Takes the idempotency claim in the same transaction. Rejects with
+   * GATEWAY_BUDGET_EXCEEDED (a `hard` budget that does not cover it),
+   * GATEWAY_IDEMPOTENCY_IN_PROGRESS or GATEWAY_IDEMPOTENCY_ALREADY_SETTLED; a
+   * rejected debit writes nothing. `soft` and `alert` budgets debit past
+   * their limit; the same transaction records each flag `planDebit` raises
+   * and the call returns the flags it recorded.
    */
-  settle(event: UsageEvent): Promise<SettleResult>;
+  debit(input: BudgetDebitInput): Promise<BudgetAdmission>;
   /**
-   * Durably record that `settle` failed for this request: every still-open
-   * hold moves to `settle_failed` with `errorCode`, and its amount stays
-   * reserved; no money moves. Idempotent. Answers `settled` when a settlement
-   * was in fact recorded (the failure was spurious) and `settle_failed`
-   * otherwise. A later `settle` closes `settle_failed` holds exactly like open
-   * ones, once. A request id that was never reserved rejects with
-   * GATEWAY_INTERNAL.
+   * Postpaid charge (the provider step of a `charge` settle run): in one
+   * transaction append the request's `settle` row per budget and add its cost
+   * to `spent`, never refused (planCharge), recording the flags the charge
+   * raises. A repeat is a duplicate and moves nothing.
    */
-  markSettleFailed(input: SettleFailedInput): Promise<{ status: "settled" | "settle_failed" }>;
+  charge(input: BudgetEntryInput): Promise<SettlementApplyResult>;
+  /**
+   * Full refund of a request's recorded money (the provider step of a
+   * `refund` settle run, for a failed media debit): in one transaction append
+   * a `refund` row per budget for the amount its `settle` row recorded and
+   * take it off `spent`. A repeat is a duplicate. A request with no `settle`
+   * row rejects with GATEWAY_INTERNAL.
+   */
+  refund(input: BudgetRefundInput): Promise<SettlementApplyResult>;
+  /**
+   * End the request's idempotency claim, if it holds one: a later request
+   * under the key is GATEWAY_IDEMPOTENCY_ALREADY_SETTLED. Idempotent; a
+   * request without a claim is a no-op.
+   */
+  endIdempotency(input: { requestId: string; tenantId: string }): Promise<void>;
   snapshot(input: { tenantId: string; budgetIds?: readonly string[] }): Promise<BudgetState[]>;
-  /**
-   * Requests with an `open` hold whose `expiresAt <= before`, oldest first, at
-   * most `limit`. `settle_failed` holds are never listed: they stay reserved
-   * until reconciliation.
-   */
-  expiredHolds(input: { before: number; limit: number }): Promise<ExpiredHold[]>;
-  /**
-   * Close one abandoned request (the stale-hold sweeper): in one transaction,
-   * release each `open` hold past `before` and append a zero-cost ledger row
-   * with status `expired`, once. A later `settle` for the request is a
-   * duplicate and charges nothing. Answers `expired: false` when there was
-   * nothing to expire (settled, settle_failed, not yet due, or already
-   * expired), so repeating it is a no-op.
-   */
-  expire(input: { requestId: string; tenantId: string; before: number }): Promise<{ expired: boolean }>;
 }
 
-export interface ExpiredHold {
+/** The intent journaled before its run was scheduled. */
+export interface SettlementDispatch {
   requestId: string;
-  tenantId: string;
-  /** Epoch ms. */
-  expiresAt: number;
+  kind: "charge" | "refund";
+  /**
+   * The scheduler accepted (or already had) the run. False: the intent is
+   * journaled but its run could not be scheduled now; recovery schedules it.
+   */
+  scheduled: boolean;
+}
+
+export interface SettlementRecovery {
+  scanned: number;
+  scheduled: number;
+  failed: number;
+}
+
+/**
+ * Durable delivery of follow-up money writes (N2: dedicated settle runs).
+ * The adapter journals the frozen intent first and schedules its run second;
+ * the run applies it with `applyGatewaySettlement` (settlement.ts), retrying
+ * until the ledger acknowledges it. A crash before the journal write loses
+ * the follow-up (the accepted edge); after it, recovery converges.
+ */
+export interface GatewaySettlementPort {
+  /**
+   * Journal `intent` (one per request id and kind; the same intent again is a
+   * no-op), then schedule its run. Resolves once the intent is durable, with
+   * `scheduled: false` when only the scheduler failed. Rejects only when the
+   * intent could not be journaled, or one with different content already is.
+   */
+  dispatch(intent: GatewaySettlementIntent): Promise<SettlementDispatch>;
+  /**
+   * Schedule every journaled intent whose run is due (the recovery tick).
+   * Never invents an intent and never rebuilds one from anything but the
+   * journal.
+   */
+  recover(): Promise<SettlementRecovery>;
 }
 
 export interface LimitInput {
@@ -298,7 +364,12 @@ export interface LedgerFilter {
   limit?: number;
 }
 
-/** Read side of the ledger; rows are written only by `budgets.settle`. */
+/**
+ * Read side of the ledger; rows are written only by the budgets port. One
+ * event per request with a money row: a refunded media debit reads as its
+ * refund's status and error code at a net cost of zero. A request that owed
+ * nothing (a failed text request) has no row.
+ */
 export interface GatewayLedgerPort {
   get(input: { tenantId: string; requestId: string }): Promise<UsageEvent | null>;
   /** Rows of one tenant only, newest first. */
@@ -378,7 +449,7 @@ export interface GatewayJob {
   runAt?: number;
 }
 
-/** Durable work after the response: media polling, settlement retries, sweeps. */
+/** Durable work after the response (media polling). Settlement has its own port. */
 export interface GatewaySchedulerPort {
   enqueue(job: GatewayJob): Promise<{ jobId: string; duplicate: boolean }>;
 }
@@ -424,6 +495,7 @@ export interface GatewayPorts {
   credentials: GatewayCredentialPort;
   upstreamHealth: GatewayUpstreamHealthPort;
   budgets: GatewayBudgetPort;
+  settlement: GatewaySettlementPort;
   limits: GatewayLimitPort;
   ledger: GatewayLedgerPort;
   blobs: GatewayBlobPort;
@@ -446,6 +518,7 @@ export const GATEWAY_PORT_NAMES = [
   "credentials",
   "upstreamHealth",
   "budgets",
+  "settlement",
   "limits",
   "ledger",
   "blobs",

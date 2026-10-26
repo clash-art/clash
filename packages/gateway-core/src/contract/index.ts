@@ -25,15 +25,14 @@ import {
   type GatewayAbuseDecision,
   type GatewayAbuseSignal,
 } from "../abuse.js";
-import {
-  admitGatewayRequest,
-  settleGatewayRequest,
-  settleMediaGeneration,
-  type GatewayAdmission,
-} from "../admission.js";
+import { admitGatewayRequest, settleGatewayRequest, settleMediaGeneration } from "../admission.js";
 import { isAnthropicMessagesRoute } from "../anthropic.js";
-import { computeHold, type BudgetEnforcement, type BudgetFlag } from "../budget.js";
-import { sweepExpiredGatewayHolds } from "../holds.js";
+import { budgetEnforcement, type BudgetEnforcement, type BudgetFlag, type BudgetState } from "../budget.js";
+import {
+  applyGatewaySettlement,
+  GATEWAY_SETTLEMENT_DEFAULTS,
+  type GatewaySettlementIntent,
+} from "../settlement.js";
 import { createSseParser, OPENAI_STREAM_DONE, type SseEvent } from "../sse.js";
 import { GATEWAY_STREAM_STATE_EVENT } from "../stream.js";
 import {
@@ -49,6 +48,7 @@ import {
   GATEWAY_PORT_NAMES,
   type GatewayIdentity,
   type GatewayPorts,
+  type IdempotencyClaim,
   type UsageEvent,
 } from "../ports.js";
 import { priceUsage } from "../pricing.js";
@@ -81,6 +81,7 @@ export const GATEWAY_CONTRACT_CAPABILITIES = [
   "limits.concurrency",
   "blobs",
   "retention",
+  "settlement",
   "scheduler",
   "audit",
   "abuse",
@@ -131,6 +132,14 @@ export interface GatewayContractHarness {
      * serve a chat completion. Required when `abuse` is supported.
      */
     abuseSubjects?: () => Promise<{ first(): Request; second(): Request }>;
+    /**
+     * The adapter's settle-run scheduler. Unpaused, a dispatched run has been
+     * applied when `dispatch` resolves (an inline scheduler, so the suite reads
+     * the ledger at once); paused, `dispatch` only journals (`scheduled:
+     * false`, as after a lost Workflow start) and `settlement.recover()`
+     * applies it. Required when `settlement` is supported.
+     */
+    settlementDelivery?: { pause(paused: boolean): void };
   };
   close?: () => Promise<void>;
 }
@@ -508,183 +517,177 @@ export function describeGatewayContract(
       occurredAt: ports().clock.now(),
     });
 
-    const reserve = (identity: GatewayIdentity, hold: number, idempotencyKey?: string, expiresAt?: number) =>
-      ports().budgets.reserve({
-        requestId: ports().ids.requestId(),
+    const floor = GATEWAY_SETTLEMENT_DEFAULTS.creditFloorMicroCredits;
+    const balance = (budget: Pick<BudgetState, "limitMicroCredits" | "spentMicroCredits" | "reservedMicroCredits">) =>
+      budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits;
+    const limitedHard = async (identity: GatewayIdentity) => {
+      const limited = [...(await snapshot(identity)).values()].filter(
+        (budget) => budget.limitMicroCredits !== null && budgetEnforcement(budget) === "hard",
+      );
+      expect(limited.length, "fixture needs a limited hard budget").toBeGreaterThan(0);
+      return limited;
+    };
+
+    const debit = (identity: GatewayIdentity, amount: number, idempotency?: IdempotencyClaim, requestId = ports().ids.requestId()) =>
+      ports()
+        .budgets.debit({
+          ...settlementEvent(identity, requestId, amount),
+          budgetIds: identity.budgetIds,
+          ...(idempotency ? { idempotency } : {}),
+        })
+        .then((admission) => ({ requestId, ...admission }));
+    const check = (
+      identity: GatewayIdentity,
+      idempotency?: IdempotencyClaim,
+      requestId = ports().ids.requestId(),
+      floorMicroCredits: number = floor,
+    ) =>
+      ports()
+        .budgets.check({
+          requestId,
+          tenantId: identity.tenantId,
+          budgetIds: identity.budgetIds,
+          credentialScope: identity.credentialScope,
+          floorMicroCredits,
+          ...(idempotency ? { idempotency } : {}),
+        })
+        .then((admission) => ({ requestId, ...admission }));
+    const charge = (identity: GatewayIdentity, amount: number, requestId = ports().ids.requestId()) =>
+      ports().budgets.charge({ ...settlementEvent(identity, requestId, amount), budgetIds: identity.budgetIds });
+    const refund = (identity: GatewayIdentity, requestId: string) =>
+      ports().budgets.refund({
+        requestId,
         tenantId: identity.tenantId,
-        budgetIds: identity.budgetIds,
-        credentialScope: identity.credentialScope,
-        holdMicroCredits: hold,
-        expiresAt: expiresAt ?? ports().clock.now() + 60_000,
-        ...(idempotencyKey ? { idempotencyKey } : {}),
+        status: "upstream_failed",
+        errorCode: "GATEWAY_UPSTREAM_ERROR",
+        occurredAt: ports().clock.now(),
       });
+    /**
+     * Charge a filler so that a limited hard budget sits exactly at `-floor`
+     * (text admission refuses there); `refund` it to restore the counters.
+     */
+    const drainToFloor = async (identity: GatewayIdentity) => {
+      const amount = Math.min(...(await limitedHard(identity)).map(balance)) + floor;
+      const { requestId } = await charge(identity, amount);
+      return requestId;
+    };
 
     capability("budgets", {
       supported: [
         [
-          "reserve holds on every budget; settle moves the hold to spent exactly once",
+          "a prepaid debit takes the exact amount from every budget at once; its refund returns it once",
           async () => {
             const identity = await tenant();
             expect(identity.budgetIds.length).toBeGreaterThan(0);
             const before = await snapshot(identity);
-            const reservation = await reserve(identity, 3);
-            expect(reservation.holds.map((hold) => hold.budgetId).sort()).toEqual(
-              [...identity.budgetIds].sort(),
-            );
-            const held = await snapshot(identity);
-            for (const [id, budget] of held) {
-              expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits + 3);
-              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
-            }
-            const event = settlementEvent(identity, reservation.requestId, 2);
-            const first = await ports().budgets.settle(event);
-            expect(first).toMatchObject({ duplicate: false, costMicroCredits: 2 });
-            const settled = await snapshot(identity);
-            const duplicate = await ports().budgets.settle({ ...event, costMicroCredits: 99 });
-            expect(duplicate).toMatchObject({ duplicate: true, costMicroCredits: 2 });
-            expect(await snapshot(identity)).toEqual(settled);
-            for (const [id, budget] of settled) {
+            const { requestId } = await debit(identity, 3);
+            for (const [id, budget] of await snapshot(identity)) {
+              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + 3);
               expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
-              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + 2);
+            }
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+              status: "settled",
+              costMicroCredits: 3,
+            });
+            expect(await refund(identity, requestId)).toMatchObject({ kind: "refund", duplicate: false, costMicroCredits: 3 });
+            const refunded = await snapshot(identity);
+            expect(await refund(identity, requestId)).toMatchObject({ duplicate: true, costMicroCredits: 3 });
+            expect(await snapshot(identity)).toEqual(refunded);
+            for (const [id, budget] of refunded) {
+              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
               expect(Number.isSafeInteger(budget.spentMicroCredits)).toBe(true);
-              expect(Number.isSafeInteger(budget.reservedMicroCredits)).toBe(true);
             }
-          },
-        ],
-        [
-          "an over-limit reservation is GATEWAY_BUDGET_EXCEEDED and holds nothing",
-          async () => {
-            const identity = await tenant();
-            const before = await snapshot(identity);
-            const limited = [...before.values()].filter((budget) => budget.limitMicroCredits !== null);
-            expect(limited.length, "fixture needs a limited budget").toBeGreaterThan(0);
-            const remaining = Math.min(
-              ...limited.map(
-                (budget) =>
-                  budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits,
-              ),
-            );
-            await expectCode(reserve(identity, remaining + 1), "GATEWAY_BUDGET_EXCEEDED");
-            expect(await snapshot(identity)).toEqual(before);
-          },
-        ],
-        [
-          "a zero-cost settlement releases the hold without spending",
-          async () => {
-            const identity = await tenant();
-            const before = await snapshot(identity);
-            const reservation = await reserve(identity, 5);
-            await ports().budgets.settle(
-              settlementEvent(identity, reservation.requestId, 0, "upstream_failed"),
-            );
-            const after = await snapshot(identity);
-            for (const [id, budget] of after) {
-              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
-              expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
-            }
-          },
-        ],
-        [
-          "an idempotency key admits once: in progress, then already settled",
-          async () => {
-            const identity = await tenant();
-            const key = unique("idem");
-            const reservation = await reserve(identity, 1, key);
-            await expectCode(reserve(identity, 1, key), "GATEWAY_IDEMPOTENCY_IN_PROGRESS");
-            await ports().budgets.settle(settlementEvent(identity, reservation.requestId, 1));
-            await expectCode(reserve(identity, 1, key), "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED");
-          },
-        ],
-        [
-          "a failed settlement is marked settle_failed and stays held; a later settle closes it once",
-          async () => {
-            const identity = await tenant();
-            const before = await snapshot(identity);
-            const key = unique("idem");
-            const reservation = await reserve(identity, 3, key);
-            const mark = {
-              requestId: reservation.requestId,
-              tenantId: identity.tenantId,
-              errorCode: "GATEWAY_INTERNAL",
-            };
-            expect(await ports().budgets.markSettleFailed(mark)).toEqual({ status: "settle_failed" });
-            expect(await ports().budgets.markSettleFailed(mark)).toEqual({ status: "settle_failed" });
-            for (const [id, budget] of await snapshot(identity)) {
-              expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits + 3);
-              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
-            }
-            await expectCode(reserve(identity, 1, key), "GATEWAY_IDEMPOTENCY_IN_PROGRESS");
-            const event = settlementEvent(identity, reservation.requestId, 2);
-            expect(await ports().budgets.settle(event)).toMatchObject({ duplicate: false, costMicroCredits: 2 });
-            expect(await ports().budgets.settle({ ...event, costMicroCredits: 99 })).toMatchObject({
-              duplicate: true,
-              costMicroCredits: 2,
-            });
-            for (const [id, budget] of await snapshot(identity)) {
-              expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
-              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + 2);
-            }
-            expect(await ports().budgets.markSettleFailed(mark)).toEqual({ status: "settled" });
-            await expectCode(
-              ports().budgets.markSettleFailed({ ...mark, requestId: unique("never-reserved") }),
-              "GATEWAY_INTERNAL",
-            );
-          },
-        ],
-        [
-          "the sweeper expires an open hold past its expiry once, at zero, and never a settle_failed or live one",
-          async () => {
-            const identity = await tenant();
-            const before = await snapshot(identity);
-            const now = ports().clock.now();
-            const stale = await reserve(identity, 3, undefined, now - 5_000);
-            const failed = await reserve(identity, 2, undefined, now - 5_000);
-            await ports().budgets.markSettleFailed({
-              requestId: failed.requestId,
-              tenantId: identity.tenantId,
-              errorCode: "GATEWAY_INTERNAL",
-            });
-            const live = await reserve(identity, 1);
-            const listed = (await ports().budgets.expiredHolds({ before: now, limit: 1000 })).map((hold) => hold.requestId);
-            expect(listed).toContain(stale.requestId);
-            expect(listed).not.toContain(failed.requestId);
-            expect(listed).not.toContain(live.requestId);
-
-            expect((await sweepExpiredGatewayHolds(ports(), { limit: 1000 })).expired).toBeGreaterThan(0);
-            expect(
-              await ports().ledger.get({ tenantId: identity.tenantId, requestId: stale.requestId }),
-            ).toMatchObject({ status: "expired", costMicroCredits: 0 });
-            for (const held of [failed, live])
-              expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId: held.requestId })).toBeNull();
-            for (const [id, budget] of await snapshot(identity)) {
-              expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits + 2 + 1);
-              expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
-            }
-
-            // Idempotent: nothing left to expire for it, and a late settlement charges nothing.
-            const after = await counters(identity);
-            expect(
-              await ports().budgets.expire({ requestId: stale.requestId, tenantId: identity.tenantId, before: now }),
-            ).toEqual({ expired: false });
-            await sweepExpiredGatewayHolds(ports(), { limit: 1000 });
-            expect((await ports().budgets.expiredHolds({ before: now, limit: 1000 })).map((hold) => hold.requestId)).not.toContain(
-              stale.requestId,
-            );
-            expect(await ports().budgets.settle(settlementEvent(identity, stale.requestId, 5))).toMatchObject({
-              duplicate: true,
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+              status: "upstream_failed",
               costMicroCredits: 0,
+              errorCode: "GATEWAY_UPSTREAM_ERROR",
             });
-            expect(await counters(identity)).toEqual(after);
-
-            for (const held of [failed, live])
-              await ports().budgets.settle(settlementEvent(identity, held.requestId, 0, "upstream_failed"));
+          },
+        ],
+        [
+          "an uncovered debit is GATEWAY_BUDGET_EXCEEDED and writes nothing: a prepaid request has no floor",
+          async () => {
+            const identity = await tenant();
+            const before = await snapshot(identity);
+            const remaining = Math.min(...(await limitedHard(identity)).map(balance));
+            const requestId = ports().ids.requestId();
+            await expectCode(debit(identity, remaining + 1, undefined, requestId), "GATEWAY_BUDGET_EXCEEDED");
+            expect(await snapshot(identity)).toEqual(before);
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
+          },
+        ],
+        [
+          "a text check writes no money: it admits above -floor and refuses at -floor",
+          async () => {
+            const identity = await tenant();
+            const before = await snapshot(identity);
+            await check(identity);
+            expect(await snapshot(identity)).toEqual(before);
+            // One micro-credit above the floor: still admitted.
+            const near = await charge(identity, Math.min(...(await limitedHard(identity)).map(balance)) + floor - 1);
+            await check(identity);
+            const at = await charge(identity, 1);
+            const refused = await expectCode(check(identity), "GATEWAY_BUDGET_EXCEEDED");
+            expect((await limitedHard(identity)).map((budget) => budget.id)).toContain(refused.details?.budgetId);
+            // A floor of zero refuses a balance of zero or less.
+            await refund(identity, at.requestId);
+            await expectCode(check(identity, undefined, undefined, 0), "GATEWAY_BUDGET_EXCEEDED");
+            await refund(identity, near.requestId);
             expect(await counters(identity)).toEqual(
               [...before.values()].map((budget) => [budget.id, budget.spentMicroCredits, budget.reservedMicroCredits]).sort(),
             );
           },
         ],
         [
-          "a hard member budget refuses; soft admits past its limit and flags every request; alert admits and alerts once per limit",
+          "a postpaid charge is never refused, may take a balance below zero, and applies once per request id",
+          async () => {
+            const identity = await tenant();
+            const before = await snapshot(identity);
+            const amount = Math.min(...(await limitedHard(identity)).map(balance)) + floor + 5;
+            const requestId = ports().ids.requestId();
+            expect(await charge(identity, amount, requestId)).toMatchObject({ kind: "charge", duplicate: false, costMicroCredits: amount });
+            const charged = await snapshot(identity);
+            expect(await charge(identity, 99, requestId)).toMatchObject({ duplicate: true, costMicroCredits: amount });
+            expect(await snapshot(identity)).toEqual(charged);
+            for (const [id, budget] of charged) expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + amount);
+            expect(Math.min(...(await limitedHard(identity)).map(balance))).toBeLessThan(0);
+            await refund(identity, requestId);
+          },
+        ],
+        [
+          "an idempotency key is in progress while its claim is open, then already settled once ended or expired",
+          async () => {
+            const identity = await tenant();
+            const key = unique("idem");
+            const claim = { key, expiresAt: ports().clock.now() + 60_000 };
+            const first = await check(identity, claim);
+            // Its own request may present the claim again.
+            await check(identity, claim, first.requestId);
+            const before = await snapshot(identity);
+            await expectCode(check(identity, claim), "GATEWAY_IDEMPOTENCY_IN_PROGRESS");
+            await expectCode(debit(identity, 1, claim), "GATEWAY_IDEMPOTENCY_IN_PROGRESS");
+            expect(await snapshot(identity)).toEqual(before);
+            await ports().budgets.endIdempotency({ requestId: first.requestId, tenantId: identity.tenantId });
+            await ports().budgets.endIdempotency({ requestId: first.requestId, tenantId: identity.tenantId });
+            await expectCode(check(identity, claim), "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED");
+            // A claim whose request vanished without ending it: settled once it expires, never run again.
+            const lapsed = { key: unique("idem-lapsed"), expiresAt: ports().clock.now() - 1 };
+            await debit(identity, 1, lapsed).then(({ requestId }) => refund(identity, requestId));
+            await expectCode(check(identity, lapsed), "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED");
+            await expectCode(debit(identity, 1, lapsed), "GATEWAY_IDEMPOTENCY_ALREADY_SETTLED");
+            // Another tenant's identical key is its own.
+            const otherIdentity = await ports().identity.authenticate(harness.fixtures.otherTenantRequest());
+            await check(otherIdentity, { key, expiresAt: claim.expiresAt });
+          },
+        ],
+        [
+          "a refund of a request that recorded no money is GATEWAY_INTERNAL",
+          async () => {
+            await expectCode(refund(await tenant(), unique("never-debited")), "GATEWAY_INTERNAL");
+          },
+        ],
+        [
+          "a hard member budget refuses a debit and a text check at its floor; soft and alert admit and flag",
           async () => {
             const fixture = harness.fixtures.memberBudget;
             expect(fixture, "fixture memberBudget is required").toBeDefined();
@@ -697,79 +700,161 @@ export function describeGatewayContract(
             };
             const flagsOn = (flags: BudgetFlag[] | undefined, budgetId: string) =>
               (flags ?? []).filter((flag) => flag.budgetId === budgetId).map((flag) => flag.kind);
-            const over = (budget: { limitMicroCredits: number | null; spentMicroCredits: number; reservedMicroCredits: number }) =>
-              budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits + 1;
+            const over = (budget: Parameters<typeof balance>[0]) => balance(budget) + 1;
 
             const hard = await member("hard");
             const hardBefore = await snapshot(hard.identity);
-            await expectCode(reserve(hard.identity, over(hard.budget)), "GATEWAY_BUDGET_EXCEEDED");
+            await expectCode(debit(hard.identity, over(hard.budget)), "GATEWAY_BUDGET_EXCEEDED");
+            // A zero-limit hard member under a zero floor: nothing left to run on.
+            const refused = await expectCode(check(hard.identity, undefined, undefined, 0), "GATEWAY_BUDGET_EXCEEDED");
+            expect(refused.details?.budgetId).toBe(hard.budget.id);
             expect(await snapshot(hard.identity)).toEqual(hardBefore);
 
             const soft = await member("soft");
-            const first = await reserve(soft.identity, over(soft.budget));
+            const first = await debit(soft.identity, over(soft.budget));
             expect(flagsOn(first.flags, soft.budget.id)).toEqual(["soft_exceeded"]);
-            const softHeld = (await snapshot(soft.identity)).get(soft.budget.id)!;
-            expect(softHeld.spentMicroCredits + softHeld.reservedMicroCredits).toBeGreaterThan(softHeld.limitMicroCredits!);
-            const second = await reserve(soft.identity, 1);
-            expect(flagsOn(second.flags, soft.budget.id)).toEqual(["soft_exceeded"]);
+            const softAfter = (await snapshot(soft.identity)).get(soft.budget.id)!;
+            expect(softAfter.spentMicroCredits).toBeGreaterThan(softAfter.limitMicroCredits!);
+            // Past its limit, every admission is flagged, a text check included.
+            expect(flagsOn((await debit(soft.identity, 1)).flags, soft.budget.id)).toEqual(["soft_exceeded"]);
+            expect(flagsOn((await check(soft.identity)).flags, soft.budget.id)).toEqual(["soft_exceeded"]);
 
             const alert = await member("alert");
-            const crossing = await reserve(alert.identity, over(alert.budget));
+            const crossing = await debit(alert.identity, over(alert.budget));
             expect(flagsOn(crossing.flags, alert.budget.id)).toEqual(["alert_threshold"]);
             expect(crossing.flags!.find((flag) => flag.budgetId === alert.budget.id)).toMatchObject({
               enforcement: "alert",
               limitMicroCredits: alert.budget.limitMicroCredits,
             });
-            const again = await reserve(alert.identity, 1);
-            expect(flagsOn(again.flags, alert.budget.id)).toEqual([]);
-
-            for (const [identity, reservation] of [
-              [soft.identity, first],
-              [soft.identity, second],
-              [alert.identity, crossing],
-              [alert.identity, again],
-            ] as const)
-              await ports().budgets.settle(settlementEvent(identity, reservation.requestId, 0, "upstream_failed"));
-            expect((await snapshot(soft.identity)).get(soft.budget.id)!.reservedMicroCredits).toBe(soft.budget.reservedMicroCredits);
+            // Raised once per limit, whichever write or check sees it next.
+            expect(flagsOn((await debit(alert.identity, 1)).flags, alert.budget.id)).toEqual([]);
+            expect(flagsOn((await check(alert.identity)).flags, alert.budget.id)).toEqual([]);
           },
         ],
       ],
-      unavailable: unavailable(async () => reserve(await tenant(), 1)),
+      unavailable: unavailable(async () => check(await tenant())),
     });
 
     capability("ledger", {
       supported: [
         [
-          "settlement writes one tenant-scoped ledger row",
+          "a charge writes one tenant-scoped ledger row",
           async () => {
             const identity = await tenant();
             const otherIdentity = await ports().identity.authenticate(
               harness.fixtures.otherTenantRequest(),
             );
-            const reservation = await reserve(identity, 4);
-            await ports().budgets.settle(settlementEvent(identity, reservation.requestId, 4));
-            await ports().budgets.settle(settlementEvent(identity, reservation.requestId, 4));
-            const row = await ports().ledger.get({
-              tenantId: identity.tenantId,
-              requestId: reservation.requestId,
-            });
-            expect(row).toMatchObject({ requestId: reservation.requestId, costMicroCredits: 4 });
-            const rows = await ports().ledger.query({ tenantId: identity.tenantId });
-            expect(rows.filter((entry) => entry.requestId === reservation.requestId)).toHaveLength(1);
-            expect(
-              await ports().ledger.get({
-                tenantId: otherIdentity.tenantId,
-                requestId: reservation.requestId,
-              }),
-            ).toBeNull();
-            const foreign = await ports().ledger.query({ tenantId: otherIdentity.tenantId });
-            expect(foreign.some((entry) => entry.requestId === reservation.requestId)).toBe(false);
+            const requestId = ports().ids.requestId();
+            await charge(identity, 4, requestId);
+            await charge(identity, 4, requestId);
+            const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId });
+            expect(row).toMatchObject({ requestId, costMicroCredits: 4, status: "settled" });
+            const rows = await ports().ledger.query({ tenantId: identity.tenantId, limit: 1000 });
+            expect(rows.filter((entry) => entry.requestId === requestId)).toHaveLength(1);
+            expect(await ports().ledger.get({ tenantId: otherIdentity.tenantId, requestId })).toBeNull();
+            const foreign = await ports().ledger.query({ tenantId: otherIdentity.tenantId, limit: 1000 });
+            expect(foreign.some((entry) => entry.requestId === requestId)).toBe(false);
           },
         ],
       ],
       unavailable: unavailable(async () =>
         ports().ledger.query({ tenantId: (await tenant()).tenantId }),
       ),
+    });
+
+    // ─── Settlement (#399, N2 settle runs) ───────────────────────────
+    const chargeIntent = (identity: GatewayIdentity, amount: number, requestId = ports().ids.requestId()) => {
+      const intent: GatewaySettlementIntent = {
+        kind: "charge",
+        event: settlementEvent(identity, requestId, amount),
+        budgetIds: [...identity.budgetIds],
+      };
+      return { requestId, intent };
+    };
+    const delivery = () => {
+      expect(harness.fixtures.settlementDelivery, "fixture settlementDelivery is required").toBeDefined();
+      return harness.fixtures.settlementDelivery!;
+    };
+
+    capability("settlement", {
+      supported: [
+        [
+          "a charge is applied once, however often it is dispatched, recovered or re-applied",
+          async () => {
+            const identity = await tenant();
+            const before = await snapshot(identity);
+            const { requestId, intent } = chargeIntent(identity, 6);
+            expect(await ports().settlement.dispatch(intent)).toEqual({ requestId, kind: "charge", scheduled: true });
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({ costMicroCredits: 6 });
+            const charged = await counters(identity);
+            await ports().settlement.dispatch(structuredClone(intent));
+            expect(await applyGatewaySettlement(ports(), intent)).toMatchObject({ duplicate: true, costMicroCredits: 6 });
+            await ports().settlement.recover();
+            expect(await counters(identity)).toEqual(charged);
+            for (const [id, budget] of await snapshot(identity)) expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + 6);
+            await refund(identity, requestId);
+          },
+        ],
+        [
+          "a different intent for a journaled request id and kind is refused, and the first stands",
+          async () => {
+            const identity = await tenant();
+            const { requestId, intent } = chargeIntent(identity, 2);
+            await ports().settlement.dispatch(intent);
+            await expectCode(ports().settlement.dispatch(chargeIntent(identity, 3, requestId).intent), "GATEWAY_INTERNAL");
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({ costMicroCredits: 2 });
+            await refund(identity, requestId);
+          },
+        ],
+        [
+          "a journaled run the scheduler did not take is applied by recovery, once",
+          async () => {
+            const identity = await tenant();
+            const before = await counters(identity);
+            const { requestId, intent } = chargeIntent(identity, 5);
+            delivery().pause(true);
+            try {
+              expect(await ports().settlement.dispatch(intent)).toMatchObject({ scheduled: false });
+              expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
+              expect(await counters(identity)).toEqual(before);
+              expect((await ports().settlement.recover()).scheduled).toBeGreaterThan(0);
+            } finally {
+              delivery().pause(false);
+            }
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({ costMicroCredits: 5 });
+            const charged = await counters(identity);
+            await ports().settlement.recover();
+            await ports().settlement.dispatch(intent);
+            expect(await counters(identity)).toEqual(charged);
+            await refund(identity, requestId);
+          },
+        ],
+        [
+          "a refund run returns a debit once",
+          async () => {
+            const identity = await tenant();
+            const before = await counters(identity);
+            const { requestId } = await debit(identity, 4);
+            const intent: GatewaySettlementIntent = {
+              kind: "refund",
+              requestId,
+              tenantId: identity.tenantId,
+              status: "upstream_failed",
+              errorCode: "GATEWAY_UPSTREAM_ERROR",
+              occurredAt: ports().clock.now(),
+            };
+            expect(await ports().settlement.dispatch(intent)).toMatchObject({ kind: "refund", scheduled: true });
+            await ports().settlement.dispatch(intent);
+            await ports().settlement.recover();
+            expect(await counters(identity)).toEqual(before);
+            expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
+              status: "upstream_failed",
+              costMicroCredits: 0,
+            });
+          },
+        ],
+      ],
+      unavailable: unavailable(async () => ports().settlement.dispatch(chargeIntent(await tenant(), 1).intent)),
     });
 
     // ─── Limits ──────────────────────────────────────────────────────
@@ -1144,114 +1229,119 @@ export function describeGatewayContract(
     // ─── Composition: admission -> settlement ────────────────────────
     const composed = (title: string, body: (skip: () => void) => Promise<void>) =>
       it(`admission: ${title}`, async (context) => {
-        const needed: GatewayCapabilityId[] = ["identity", "routes", "budgets", "ledger", "limits.rate"];
+        const needed: GatewayCapabilityId[] = ["identity", "routes", "budgets", "ledger", "limits.rate", "settlement"];
         if (needed.some((id) => harness.capabilities[id] !== "supported" || harness.knownGaps?.includes(id)))
           return context.skip();
         await body(() => context.skip());
       });
 
-    const admitText = (): Promise<GatewayAdmission> =>
-      admitGatewayRequest(
-        ports(),
-        {
-          httpRequest: harness.fixtures.tenantRequest(),
-          request: normalizeOpenAIChatRequest({
-            model: harness.fixtures.textModel,
-            messages: [{ role: "user", content: "contract" }],
-            max_tokens: 8,
-          }),
-        },
-        { holdTtlMs: 60_000 },
-      );
+    const textRequest = () =>
+      normalizeOpenAIChatRequest({
+        model: harness.fixtures.textModel,
+        messages: [{ role: "user", content: "contract" }],
+        max_tokens: 8,
+      });
+    const admitText = (credential = harness.fixtures.tenantRequest(), options: Parameters<typeof admitGatewayRequest>[2] = {}) =>
+      admitGatewayRequest(ports(), { httpRequest: credential, request: textRequest() }, options);
+    const admitMedia = (media: NonNullable<GatewayContractHarness["fixtures"]["mediaModel"]>) =>
+      admitGatewayRequest(ports(), {
+        httpRequest: harness.fixtures.tenantRequest(),
+        request: normalizeMediaGenerationRequest({ model: media.code, kind: media.kind, units: media.units }),
+      });
 
-    composed("a completed text request is charged its priced usage once", async () => {
+    composed("a text request is admitted without a money write and charged its priced usage once, after it ends", async () => {
+      const identity = await tenant();
+      const before = await snapshot(identity);
       const admission = await admitText();
-      expect(Number.isSafeInteger(admission.holdMicroCredits)).toBe(true);
+      expect(admission.payment).toEqual({ mode: "postpaid", floorMicroCredits: floor });
+      expect(await snapshot(identity)).toEqual(before);
       const usage = { ...emptyUsage(), inputTokens: 3, outputTokens: 2 };
-      const { settlement, result } = await settleGatewayRequest(ports(), admission, {
+      const { settlement, dispatch } = await settleGatewayRequest(ports(), admission, {
         attempt: admission.plan.attempts[0]!,
         outcome: "completed",
         usage,
       });
       expect(settlement.costMicroCredits).toBe(priceUsage(usage, admission.price).microCredits);
-      expect(result).toMatchObject({ duplicate: false, costMicroCredits: settlement.costMicroCredits });
-      const row = await ports().ledger.get({
-        tenantId: admission.identity.tenantId,
-        requestId: admission.requestId,
-      });
-      expect(row).toMatchObject({
+      expect(dispatch).toEqual({ requestId: admission.requestId, kind: "charge", scheduled: true });
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId: admission.requestId })).toMatchObject({
         status: "settled",
         costMicroCredits: settlement.costMicroCredits,
         priceVersion: admission.price.version,
         catalogVersion: admission.plan.catalogVersion,
       });
+      for (const [id, budget] of await snapshot(identity))
+        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + settlement.costMicroCredits);
     });
 
-    composed("a failed media generation is charged zero", async (skip) => {
-      const media = harness.fixtures.mediaModel;
-      if (!media) return skip();
-      const before = await counters(await tenant());
-      const admission = await admitGatewayRequest(
-        ports(),
-        {
-          httpRequest: harness.fixtures.tenantRequest(),
-          request: normalizeMediaGenerationRequest({
-            model: media.code,
-            kind: media.kind,
-            units: media.units,
-          }),
-        },
-        { holdTtlMs: 60_000 },
-      );
-      expect(admission.holdMicroCredits).toBeGreaterThan(0);
-      const { result } = await settleGatewayRequest(ports(), admission, {
+    composed("a text request that owes nothing writes nothing", async () => {
+      const identity = await tenant();
+      const before = await counters(identity);
+      const admission = await admitText();
+      const { dispatch } = await settleGatewayRequest(ports(), admission, {
         attempt: admission.plan.attempts[0]!,
-        outcome: "upstream_failed",
-        usage: { ...emptyUsage(), units: media.units },
-        error: new GatewayError("GATEWAY_UPSTREAM_ERROR"),
+        outcome: "gateway_failed",
+        usage: emptyUsage(),
+        error: new GatewayError("GATEWAY_KEY_UNAVAILABLE"),
       });
-      expect(result.costMicroCredits).toBe(0);
-      expect(await counters(admission.identity)).toEqual(before);
-      expect(
-        await ports().ledger.get({ tenantId: admission.identity.tenantId, requestId: admission.requestId }),
-      ).toMatchObject({ status: "upstream_failed", costMicroCredits: 0, errorCode: "GATEWAY_UPSTREAM_ERROR" });
+      expect(dispatch).toBeNull();
+      expect(await counters(identity)).toEqual(before);
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId: admission.requestId })).toBeNull();
     });
 
-    composed("a media generation that fails after acceptance is never charged; a success is charged its units", async (skip) => {
+    composed("the credit floor is a knob: a fixed or per-caller floor decides a text admission", async () => {
+      const fixture = harness.fixtures.memberBudget;
+      expect(fixture, "fixture memberBudget is required").toBeDefined();
+      // A zero-limit hard member: refused under a zero floor, admitted under the default one.
+      const credential = await fixture!("hard");
+      await expectCode(admitText(credential, { creditFloor: 0 }), "GATEWAY_BUDGET_EXCEEDED");
+      const seen: string[] = [];
+      const admission = await admitText(credential, {
+        creditFloor: (identity) => {
+          seen.push(identity.tenantId);
+          return floor;
+        },
+      });
+      expect(seen).toEqual([admission.identity.tenantId]);
+      await settleGatewayRequest(ports(), admission, { attempt: admission.plan.attempts[0]!, outcome: "gateway_failed", usage: emptyUsage() });
+      await expectCode(admitText(credential, { creditFloor: -1 }), "GATEWAY_INTERNAL");
+    });
+
+    composed("a media request is prepaid exactly at admission; a failure is refunded in full, a success needs nothing", async (skip) => {
       const media = harness.fixtures.mediaModel;
       if (!media) return skip();
-      const admit = () =>
-        admitGatewayRequest(
-          ports(),
-          {
-            httpRequest: harness.fixtures.tenantRequest(),
-            request: normalizeMediaGenerationRequest({ model: media.code, kind: media.kind, units: media.units }),
-          },
-          { holdTtlMs: 60_000 },
-        );
-      const before = await counters(await tenant());
-      const failed = await admit();
-      const { result } = await settleMediaGeneration(ports(), failed, {
+      const identity = await tenant();
+      const before = await snapshot(identity);
+      const failed = await admitMedia(media);
+      const debit = priceUsage({ ...emptyUsage(), units: media.units }, failed.price).microCredits;
+      expect(failed.payment).toEqual({ mode: "prepaid", debitMicroCredits: debit });
+      for (const [id, budget] of await snapshot(identity)) expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + debit);
+      const refunded = await settleMediaGeneration(ports(), failed, {
         attempt: failed.plan.attempts[0]!,
         result: { status: "failed", error: new GatewayError("GATEWAY_UPSTREAM_ERROR") },
       });
-      expect(result.costMicroCredits).toBe(0);
-      expect(await counters(failed.identity)).toEqual(before);
-      expect(await ports().ledger.get({ tenantId: failed.identity.tenantId, requestId: failed.requestId })).toMatchObject({
+      expect(refunded.dispatch).toEqual({ requestId: failed.requestId, kind: "refund", scheduled: true });
+      expect(await snapshot(identity)).not.toEqual(before);
+      expect(await counters(identity)).toEqual(
+        [...before.values()].map((budget) => [budget.id, budget.spentMicroCredits, budget.reservedMicroCredits]).sort(),
+      );
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId: failed.requestId })).toMatchObject({
         status: "upstream_failed",
         costMicroCredits: 0,
         errorCode: "GATEWAY_UPSTREAM_ERROR",
       });
 
-      const served = await admit();
-      const { settlement } = await settleMediaGeneration(ports(), served, {
+      const served = await admitMedia(media);
+      const charged = await counters(identity);
+      const { settlement, dispatch } = await settleMediaGeneration(ports(), served, {
         attempt: served.plan.attempts[0]!,
         result: { status: "succeeded", units: media.units },
       });
-      expect(settlement.costMicroCredits).toBe(priceUsage({ ...emptyUsage(), units: media.units }, served.price).microCredits);
-      expect(await ports().ledger.get({ tenantId: served.identity.tenantId, requestId: served.requestId })).toMatchObject({
+      expect(dispatch).toBeNull();
+      expect(settlement.costMicroCredits).toBe(debit);
+      expect(await counters(identity)).toEqual(charged);
+      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId: served.requestId })).toMatchObject({
         status: "settled",
-        costMicroCredits: settlement.costMicroCredits,
+        costMicroCredits: debit,
       });
       const text = await admitText();
       await expectCode(
@@ -1264,21 +1354,17 @@ export function describeGatewayContract(
       await settleGatewayRequest(ports(), text, { attempt: text.plan.attempts[0]!, outcome: "gateway_failed", usage: emptyUsage() });
     });
 
-    composed("an unauthenticated request is rejected before anything is held", async () => {
+    composed("an unauthenticated request is rejected before any money moves", async () => {
       const identity = await tenant();
       const before = await counters(identity);
       await expectCode(
-        admitGatewayRequest(
-          ports(),
-          {
-            httpRequest: harness.fixtures.anonymousRequest(),
-            request: normalizeOpenAIChatRequest({
-              model: harness.fixtures.textModel,
-              messages: [{ role: "user", content: "contract" }],
-            }),
-          },
-          { holdTtlMs: 60_000 },
-        ),
+        admitGatewayRequest(ports(), {
+          httpRequest: harness.fixtures.anonymousRequest(),
+          request: normalizeOpenAIChatRequest({
+            model: harness.fixtures.textModel,
+            messages: [{ role: "user", content: "contract" }],
+          }),
+        }),
         "GATEWAY_AUTH_REQUIRED",
       );
       expect(await counters(identity)).toEqual(before);
@@ -1425,34 +1511,55 @@ export function describeGatewayContract(
       }
     });
 
-    dataPlane("a failed settlement still answers the completion, coded, and leaves the hold to reconcile", async () => {
-      const identity = await tenant();
-      const before = await snapshot(identity);
-      const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
-      const res = await chat(stub.port, harness.fixtures.tenantRequest(), chatBody(), {}, {
-        budgets: { ...ports().budgets, settle: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
-      });
-      expect(res.status, await res.clone().text()).toBe(200);
-      expect(((await res.json()) as Record<string, unknown>).choices).toEqual(completion("").choices);
-      const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
-      expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBe(
-        `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`,
-      );
-      expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
-      const held = await snapshot(identity);
-      for (const [id, budget] of held) {
-        expect(budget.reservedMicroCredits).toBeGreaterThan(before.get(id)!.reservedMicroCredits);
-        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits);
-      }
-      // Reconciliation settles the marked hold exactly once.
-      const event = settlementEvent(identity, requestId, 1);
-      expect(await ports().budgets.settle(event)).toMatchObject({ duplicate: false });
-      expect(await ports().budgets.settle(event)).toMatchObject({ duplicate: true });
-      for (const [id, budget] of await snapshot(identity)) {
-        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
-        expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + 1);
-      }
-    });
+    dataPlane(
+      "a charge that cannot be journaled still answers the completion, coded: the accepted edge writes nothing",
+      async () => {
+        const identity = await tenant();
+        const before = await counters(identity);
+        const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+        const res = await chat(stub.port, harness.fixtures.tenantRequest(), chatBody(), {}, {
+          settlement: { ...ports().settlement, dispatch: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
+        });
+        expect(res.status, await res.clone().text()).toBe(200);
+        expect(((await res.json()) as Record<string, unknown>).choices).toEqual(completion("").choices);
+        const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+        expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBe(
+          `failed; code=GATEWAY_SETTLEMENT_FAILED; request_id=${requestId}`,
+        );
+        // Crash before the journal: the charge is lost, and nothing is held or half-written.
+        expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
+        expect(await counters(identity)).toEqual(before);
+        await ports().settlement.recover();
+        expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
+      },
+      ["settlement"],
+    );
+
+    dataPlane(
+      "a journaled charge whose run was not scheduled answers normally and is charged by recovery",
+      async () => {
+        const identity = await tenant();
+        const before = await snapshot(identity);
+        const stub = upstreamStub((_request, body) => Response.json(completion(String(body.model))));
+        delivery().pause(true);
+        let requestId: string;
+        try {
+          const res = await chat(stub.port, harness.fixtures.tenantRequest(), chatBody());
+          expect(res.status, await res.clone().text()).toBe(200);
+          expect(res.headers.get(GATEWAY_SETTLEMENT_HEADER)).toBeNull();
+          requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
+          expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
+          await ports().settlement.recover();
+        } finally {
+          delivery().pause(false);
+        }
+        const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId });
+        expect(row).toMatchObject({ status: "settled" });
+        for (const [id, budget] of await snapshot(identity))
+          expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + row!.costMicroCredits);
+      },
+      ["settlement"],
+    );
 
     const retaining = (title: string, body: () => Promise<void>) => dataPlane(title, body, ["blobs", "retention"]);
     const retain = { retention: { enabled: true } };
@@ -1622,14 +1729,14 @@ export function describeGatewayContract(
       return priceUsage(accumulator.snapshot(), await priceFor(identity)).microCredits;
     };
 
-    dataPlane("streams the upstream event stream byte for byte, reserved before the first byte, and settles its usage once", async () => {
+    dataPlane("streams the upstream event stream byte for byte, writes no money before it ends, and charges its usage once", async () => {
       const identity = await tenant();
       const route = await firstChatRoute(identity);
       const before = await snapshot(identity);
       const upstreamText = streamText(route.upstreamModel);
-      let reservedAtUpstream: Map<string, { reservedMicroCredits: number }> | undefined;
+      let countersAtUpstream: unknown;
       const stub = upstreamStub(async () => {
-        reservedAtUpstream = await snapshot(identity);
+        countersAtUpstream = await counters(identity);
         return eventStream(split(upstreamText));
       });
       const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody({ stream_options: { include_usage: true } }));
@@ -1643,9 +1750,10 @@ export function describeGatewayContract(
       expect(stub.seen).toHaveLength(1);
       expect(stub.seen[0]!.request.headers.get("accept")).toBe("text/event-stream");
       expect(stub.seen[0]!.body).toMatchObject({ stream: true, model: route.upstreamModel, stream_options: { include_usage: true } });
-      // The hold was in place before the upstream produced anything.
-      for (const [id, budget] of reservedAtUpstream!)
-        expect(budget.reservedMicroCredits).toBeGreaterThan(before.get(id)!.reservedMicroCredits);
+      // Postpaid: admission only checked the floor, so nothing moved before the upstream answered.
+      expect(countersAtUpstream).toEqual(
+        [...before.values()].map((budget) => [budget.id, budget.spentMicroCredits, budget.reservedMicroCredits]).sort(),
+      );
 
       const cost = await reportedCost(identity, route.upstreamModel);
       expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toMatchObject({
@@ -1694,9 +1802,13 @@ export function describeGatewayContract(
         const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
         const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId });
         expect(row).toMatchObject({ status: "partial", errorCode: "GATEWAY_UPSTREAM_ERROR", usage: { source: "estimated" } });
-        const hold = computeHold(normalizeOpenAIChatRequest(body), price);
+        const request = normalizeOpenAIChatRequest(body);
+        const ceiling = priceUsage(
+          { ...emptyUsage(), inputTokens: request.estimatedInputTokens, outputTokens: request.maxOutputTokens! },
+          price,
+        ).microCredits;
         expect(row!.costMicroCredits).toBeGreaterThan(0);
-        expect(row!.costMicroCredits).toBeLessThan(hold);
+        expect(row!.costMicroCredits).toBeLessThan(ceiling);
         for (const [id, budget] of await snapshot(identity)) {
           expect(budget.spentMicroCredits).toBe(before.get(id)!.spentMicroCredits + row!.costMicroCredits);
           expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
@@ -1760,17 +1872,11 @@ export function describeGatewayContract(
       expect(rows.filter((row) => row.requestId === requestId)).toHaveLength(1);
     });
 
-    dataPlane("refuses an over-budget stream with a coded 402 naming the budget, before any upstream call", async () => {
+    dataPlane("refuses a stream at the credit floor with a coded 402 naming the budget, before any upstream call", async () => {
       const identity = await ports().identity.authenticate(harness.fixtures.otherTenantRequest());
-      const budgets = await snapshot(identity);
-      const limited = [...budgets.values()].filter((budget) => budget.limitMicroCredits !== null);
-      expect(limited.length, "fixture needs a limited budget").toBeGreaterThan(0);
-      const remaining = (budget: (typeof limited)[number]) =>
-        budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits;
-      const filler = await reserve(identity, Math.min(...limited.map(remaining)));
-      const exhausted = [...(await snapshot(identity)).values()].filter(
-        (budget) => budget.limitMicroCredits !== null && remaining(budget) === 0,
-      );
+      const filler = await drainToFloor(identity);
+      const exhausted = (await limitedHard(identity)).filter((budget) => balance(budget) <= -floor);
+      expect(exhausted.length).toBeGreaterThan(0);
       const stub = upstreamStub(() => eventStream([streamText("unused")]));
       const res = await chat(stub.port, harness.fixtures.otherTenantRequest(), streamBody());
       expect([res.status, res.headers.get("x-clash-error-code")]).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
@@ -1781,7 +1887,7 @@ export function describeGatewayContract(
       expect(refusing, `budget_id ${error.budget_id}`).toBeDefined();
       expect(error.reset_at).toBe(refusing!.resetAt === undefined ? null : new Date(refusing!.resetAt).toISOString());
       expect(stub.seen).toHaveLength(0);
-      await ports().budgets.settle(settlementEvent(identity, filler.requestId, 0, "upstream_failed"));
+      await refund(identity, filler);
     });
 
     dataPlane("sets every streamed chunk's model to the public code: no upstream model name reaches the caller, every other byte unchanged", async () => {
@@ -1803,7 +1909,7 @@ export function describeGatewayContract(
     });
 
     dataPlane(
-      "enforces member budgets on plain and streamed requests: hard is a coded 402 naming the member budget, soft and alert answer flagged",
+      "enforces member budgets on plain and streamed requests: hard at its floor is a coded 402 naming the member budget, soft and alert answer flagged",
       async () => {
         const fixture = harness.fixtures.memberBudget;
         expect(fixture, "fixture memberBudget is required").toBeDefined();
@@ -1815,9 +1921,10 @@ export function describeGatewayContract(
           const body = stream ? streamBody() : chatBody();
           const answer = () => (stream ? eventStream(split(streamText("upstream"))) : Response.json(completion("upstream")));
 
+          // A zero-limit hard member under a zero credit floor (text is otherwise admitted down to the floor).
           const hard = await fixture!("hard");
           const hardStub = upstreamStub(answer);
-          const refused = await chat(hardStub.port, hard, body);
+          const refused = await chat(hardStub.port, hard, body, {}, {}, { creditFloor: 0 });
           expect([refused.status, refused.headers.get("x-clash-error-code")], `stream=${stream}`).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
           expect(((await refused.json()) as { error: { budget_id: string } }).error.budget_id).toBe(await memberBudgetId(hard));
           expect(hardStub.seen).toHaveLength(0);
@@ -1829,7 +1936,11 @@ export function describeGatewayContract(
             const stub = upstreamStub(answer);
             const res = await chat(stub.port, credential, body);
             expect(res.status, `${enforcement} stream=${stream}: ${await res.clone().text()}`).toBe(200);
-            expect(res.headers.get(GATEWAY_BUDGET_HEADER)).toContain(`${kind}; budget_id=${budgetId}; scope=user`);
+            // Admission reports what is already true: a zero limit is at its alert threshold, but a
+            // soft budget is not past its limit until this request's postpaid charge lands.
+            if (enforcement === "alert")
+              expect(res.headers.get(GATEWAY_BUDGET_HEADER)).toContain(`${kind}; budget_id=${budgetId}; scope=user`);
+            else expect(res.headers.get(GATEWAY_BUDGET_HEADER)).toBeNull();
             await res.arrayBuffer();
             expect(
               await ports().ledger.get({ tenantId: (await ports().identity.authenticate(credential)).tenantId, requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! }),
@@ -1839,22 +1950,23 @@ export function describeGatewayContract(
             expect(after.spentMicroCredits).toBeGreaterThan(after.limitMicroCredits!);
             const next = await chat(stub.port, credential, body);
             await next.arrayBuffer();
-            // Soft flags every request; an alert is raised once per limit.
-            if (enforcement === "soft") expect(next.headers.get(GATEWAY_BUDGET_HEADER)).toContain(kind);
+            // Past its limit, soft flags every request; an alert is raised once per limit.
+            if (enforcement === "soft")
+              expect(next.headers.get(GATEWAY_BUDGET_HEADER)).toContain(`${kind}; budget_id=${budgetId}; scope=user`);
             else expect(next.headers.get(GATEWAY_BUDGET_HEADER)).toBeNull();
           }
         }
       },
     );
 
-    dataPlane("a failed settlement is reported inside the stream, coded, and leaves the hold to reconcile", async () => {
+    dataPlane("a charge that cannot be journaled is reported inside the stream, coded, and writes nothing", async () => {
       const identity = await tenant();
       const route = await firstChatRoute(identity);
-      const before = await snapshot(identity);
+      const before = await counters(identity);
       const upstreamText = streamText(route.upstreamModel);
       const stub = upstreamStub(() => eventStream(split(upstreamText)));
       const res = await chat(stub.port, harness.fixtures.tenantRequest(), streamBody({ stream_options: { include_usage: true } }), {}, {
-        budgets: { ...ports().budgets, settle: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
+        settlement: { ...ports().settlement, dispatch: () => Promise.reject(new GatewayError("GATEWAY_INTERNAL")) },
       });
       expect(res.status).toBe(200);
       const requestId = res.headers.get(GATEWAY_REQUEST_ID_HEADER)!;
@@ -1871,15 +1983,8 @@ export function describeGatewayContract(
         request_id: requestId,
       });
       expect(await ports().ledger.get({ tenantId: identity.tenantId, requestId })).toBeNull();
-      for (const [id, budget] of await snapshot(identity))
-        expect(budget.reservedMicroCredits).toBeGreaterThan(before.get(id)!.reservedMicroCredits);
-      expect(await ports().budgets.markSettleFailed({ requestId, tenantId: identity.tenantId, errorCode: "GATEWAY_INTERNAL" })).toEqual({
-        status: "settle_failed",
-      });
-      expect(await ports().budgets.settle(settlementEvent(identity, requestId, 1))).toMatchObject({ duplicate: false });
-      for (const [id, budget] of await snapshot(identity))
-        expect(budget.reservedMicroCredits).toBe(before.get(id)!.reservedMicroCredits);
-    });
+      expect(await counters(identity)).toEqual(before);
+    }, ["settlement"]);
 
     retaining("retains a streamed answer exactly as delivered, and marks a copy cut at the cap as truncated", async () => {
       const identity = await tenant();
@@ -1938,7 +2043,7 @@ export function describeGatewayContract(
       });
     });
 
-    dataPlane("maps an upstream failure to a coded 502, leaks nothing and charges zero", async () => {
+    dataPlane("maps an upstream failure to a coded 502, leaks nothing and writes no money", async () => {
       const identity = await tenant();
       const route = await firstChatRoute(identity);
       const credential = await ports().credentials.resolve({
@@ -1965,7 +2070,8 @@ export function describeGatewayContract(
         tenantId: identity.tenantId,
         requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)!,
       });
-      expect(row).toMatchObject({ status: "upstream_failed", costMicroCredits: 0 });
+      // Postpaid: a failure that delivered nothing owes nothing, so no row is written.
+      expect(row).toBeNull();
     });
 
     dataPlane("answers 401 without a credential and 404 for an unknown model", async () => {
@@ -2198,17 +2304,18 @@ export function describeGatewayContract(
       const row = await ports().ledger.get({ tenantId: identity.tenantId, requestId: res.headers.get(GATEWAY_REQUEST_ID_HEADER)! });
       expect(row).toMatchObject({ status: "partial", errorCode: "GATEWAY_UPSTREAM_ERROR", usage: { source: "estimated" } });
       expect(row!.costMicroCredits).toBeGreaterThan(0);
-      expect(row!.costMicroCredits).toBeLessThan(computeHold(normalizeAnthropicMessagesRequest(body), price));
+      const request = normalizeAnthropicMessagesRequest(body);
+      const ceiling = priceUsage(
+        { ...emptyUsage(), inputTokens: request.estimatedInputTokens, outputTokens: request.maxOutputTokens! },
+        price,
+      ).microCredits;
+      expect(row!.costMicroCredits).toBeLessThan(ceiling);
     });
 
-    dataPlane("anthropic: refuses an over-budget call with a coded 402 in the Anthropic shape, before any upstream call", async () => {
+    dataPlane("anthropic: refuses a call at the credit floor with a coded 402 in the Anthropic shape, before any upstream call", async () => {
       const identity = await ports().identity.authenticate(harness.fixtures.otherTenantRequest());
-      const budgets = await snapshot(identity);
-      const limited = [...budgets.values()].filter((budget) => budget.limitMicroCredits !== null);
-      expect(limited.length, "fixture needs a limited budget").toBeGreaterThan(0);
-      const remaining = (budget: (typeof limited)[number]) =>
-        budget.limitMicroCredits! - budget.spentMicroCredits - budget.reservedMicroCredits;
-      const filler = await reserve(identity, Math.min(...limited.map(remaining)));
+      const limited = await limitedHard(identity);
+      const filler = await drainToFloor(identity);
       const stub = upstreamStub(() => eventStream([anthropicStream("unused")]));
       const res = await messages(stub.port, harness.fixtures.otherTenantRequest(), messagesBody(messagesModel(), { stream: true }));
       expect([res.status, res.headers.get("x-clash-error-code")]).toEqual([402, "GATEWAY_BUDGET_EXCEEDED"]);
@@ -2217,7 +2324,7 @@ export function describeGatewayContract(
       expect(body.error.message).toMatch(/^GATEWAY_BUDGET_EXCEEDED: /);
       expect(limited.map((budget) => budget.id)).toContain(body.error.budget_id);
       expect(stub.seen).toHaveLength(0);
-      await ports().budgets.settle(settlementEvent(identity, filler.requestId, 0, "upstream_failed"));
+      await refund(identity, filler);
     });
 
     dataPlane("anthropic: enforces the rate limit with a coded 429 in the Anthropic shape", async () => {
@@ -2236,7 +2343,7 @@ export function describeGatewayContract(
       expect(await anthropicError(refused!)).toMatchObject({ type: "error", error: { type: "rate_limit_error" } });
     });
 
-    dataPlane("anthropic: proxies count_tokens to the mapped route without a hold or ledger charge", async () => {
+    dataPlane("anthropic: proxies count_tokens to the mapped route without a money check or ledger charge", async () => {
       const identity = await tenant();
       const route = await firstMessagesRoute(identity);
       const credential = await ports().credentials.resolve({ route, scope: identity.credentialScope, tenantId: identity.tenantId });

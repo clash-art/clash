@@ -4,7 +4,7 @@
     "cluster.integration.test.ts": "Three gateways, two existing durable outbox executors, four writers and real PG. Advances pending checkpoint due times only; checks snapshot convergence, recovery and notification isolation.",
     "gateway-process.ts": "Independent HTTP/SSE relay process with real PG pool and dedicated LISTEN; IPC readiness evidence only, no Loro import.",
     "loro-cost.ts": "Standalone diagnostic comparing full Loro fork costs as update and peer counts grow. Prints measurements, not timing assertions.",
-    "gateway-lite.lite.test.ts": "Gateway lite harness (#379): >=3 server.ts gateway processes + mock upstream + race workers on one real Postgres; budget/rate/abort/SIGTERM/SIGKILL/key-rotation/rollover races and a JSON report. Run via test:gateway-lite.",
+    "gateway-lite.lite.test.ts": "Gateway lite harness (#379): >=3 server.ts gateway processes + mock upstream + race workers on one real Postgres; budget/rate/abort/SIGTERM/SIGKILL/key-rotation/rollover races and a JSON report. Charges land through the production outbox-worker.ts process (api-node:gateway-settle runs on BullMQ); the SIGKILL-after-journal case kills a node after its runs are journaled and a worker mid-delivery, then proves each request is charged exactly once. Run via test:gateway-lite.",
     "gateway-lite-worker.ts": "Race worker process for the lite harness: charge, media debit/refund, rollover or re-encrypt against the shared database; result over IPC."
   }
 }

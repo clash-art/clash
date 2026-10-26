@@ -11,23 +11,32 @@
  * keys (d1-abuse.ts). Ports this deployment does not implement yet
  * (scheduler, audit) are explicit `unavailablePort`s that answer
  * GATEWAY_CAPABILITY_UNAVAILABLE.
+ *
+ * Money (#399): media is prepaid at admission and text is postpaid under
+ * GATEWAY_CREDIT_FLOOR; follow-up charges and refunds are `settlement`, the
+ * `api-cf:gateway-settle` Durable Runs of settle-runs.ts on the Workflow
+ * binding (GENERATION_WORKFLOW, the shared Durable Run Workflow).
  * Guide: apps/docs/guide/gateway-data-plane.md.
  */
 import type { D1Database } from "@cloudflare/workers-types";
 import {
   createGatewayApp,
+  GATEWAY_SETTLEMENT_DEFAULTS,
   unavailablePort,
   type GatewayApp,
   type GatewayClock,
+  type GatewayCreditFloor,
   type GatewayLogger,
   type GatewayPorts,
   type GatewayUpstreamPort,
 } from "@clash/gateway-core";
 
+import type { CloudDurableWorkflowBinding } from "../cloud-runs/cloud-durable-dispatcher";
 import type { Env } from "../config";
 import { createGatewayTokenStore } from "../services/gateway-tokens";
 import { createD1GatewayAbusePort } from "./d1-abuse";
 import { createD1GatewayBudgetPorts } from "./d1-budgets";
+import { createD1GatewaySettlementPort } from "./settle-runs";
 import { monotonicClock } from "./d1-common";
 import {
   createD1GatewayCredentialPort,
@@ -61,7 +70,17 @@ export interface D1GatewayPortsInput {
   clock?: GatewayClock;
   logger?: GatewayLogger;
   upstream?: GatewayUpstreamPort;
+  /** Schedules settle runs; without it they are journaled and left to cron recovery. */
+  workflow?: CloudDurableWorkflowBinding;
 }
+
+/**
+ * The text/LLM credit floor of this deployment (#399): a postpaid request is
+ * admitted while every hard budget is above `-floor`. A product knob in code;
+ * GatewayAppOptions.creditFloor also takes a per-caller function when a
+ * tenant-level floor is needed.
+ */
+export const GATEWAY_CREDIT_FLOOR = GATEWAY_SETTLEMENT_DEFAULTS.creditFloorMicroCredits satisfies GatewayCreditFloor;
 
 export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
   const clock = input.clock ?? monotonicClock();
@@ -77,6 +96,12 @@ export function createD1GatewayPorts(input: D1GatewayPortsInput): GatewayPorts {
     credentials: createD1GatewayCredentialPort(input.db, input.secrets),
     upstreamHealth: createD1GatewayUpstreamHealthPort(input.db),
     ...createD1GatewayBudgetPorts(input.db, { clock }),
+    settlement: createD1GatewaySettlementPort({
+      db: input.db,
+      clock,
+      logger,
+      ...(input.workflow ? { workflow: input.workflow } : {}),
+    }),
     limits: createD1GatewayLimitPort(input.db, { clock, ids }),
     blobs: input.bucket ? createR2GatewayBlobPort(input.bucket) : unavailablePort("blobs"),
     retention: createD1GatewayRetentionPort(input.db),
@@ -115,10 +140,12 @@ export function createCloudflareGatewayApp(
       db: env.DB,
       secrets: workerSecrets(env),
       ...(env.R2_BUCKET ? { bucket: env.R2_BUCKET } : {}),
+      ...(env.GENERATION_WORKFLOW ? { workflow: env.GENERATION_WORKFLOW } : {}),
       ...ports,
     }),
     {
       basePath: GATEWAY_BASE_PATH,
+      creditFloor: GATEWAY_CREDIT_FLOOR,
       retention: { enabled: staffPromptAccessEnabled(env) },
       // Hashed into the abuse client fingerprint only (#356); never stored.
       clientAddress: (request) => request.headers.get("cf-connecting-ip"),

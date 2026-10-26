@@ -9,7 +9,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
 import { buildEffectiveModelCards } from "@clash/shared-types/model-routing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { GatewayBudgetDatabase, GatewayBudgetSqlClient } from "./gateway-budget.ts";
+import {
+  readGatewaySettlementFloor,
+  type GatewayBudgetDatabase,
+  type GatewayBudgetSqlClient,
+} from "./gateway-budget.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
 import { createGatewayKeyRing } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort, gatewayLimitConfigKeys } from "./gateway-limits.ts";
@@ -19,6 +23,7 @@ import {
   gatewayRole,
   personalTenantId,
 } from "./gateway-node.ts";
+import { inlinePgSettlement, type InlinePgSettlement } from "./gateway-settle-test-support.ts";
 import { migrateDatabase } from "./migrations.ts";
 import { createMockUpstreamApp, keyIdFor, type MockUpstreamApp } from "./mock-upstream/index.ts";
 
@@ -33,6 +38,7 @@ let queries: string[];
 let mock: MockUpstreamApp;
 let app: ReturnType<typeof createGatewayNodeRoutes>;
 let sessionUser: string | null;
+let settlement: InlinePgSettlement;
 
 function adapt(p: PGlite): GatewayBudgetDatabase {
   const wrap = (q: { query: PGlite["query"] }): GatewayBudgetSqlClient => ({
@@ -150,14 +156,16 @@ beforeEach(async () => {
       [`p1:${unit}`, MODEL, unit, amount, nowS],
     );
   mock = createMockUpstreamApp();
+  settlement = inlinePgSettlement({ db });
   const ports = createPgGatewayPorts({
     db,
     credentials,
     limits: createPgGatewayLimitPort(db),
     session: async () => (sessionUser ? { userId: sessionUser } : null),
     upstream: { fetch: (request) => Promise.resolve(mock.app.fetch(request)) },
+    settlement,
   });
-  app = createGatewayNodeRoutes(ports);
+  app = createGatewayNodeRoutes(ports, { app: { creditFloor: () => readGatewaySettlementFloor(db) } });
   queries = [];
 });
 
@@ -237,6 +245,65 @@ describe("gateway-node routes", () => {
     );
     expect(Number(spent.rows[0]!.spent)).toBe(Number(rows[0]!.amount));
     expect(Number(rows[0]!.amount)).toBeGreaterThan(0);
+  });
+
+  it("journals the charge as an api-node:gateway-settle run first; delivery charges once, redelivery moves nothing", async () => {
+    const { token } = await virtualKey({ tenantId: "tenant-a", userId: "u1" });
+    await budget("b-a", "tenant-a", "tenant", "tenant-a", 1_000_000_000);
+    settlement.paused = true;
+    const response = await chat("/v1/chat/completions", token);
+    expect(response.status).toBe(200);
+    const requestId = response.headers.get("x-clash-request-id")!;
+    const run = () =>
+      pglite.query<{ owner_id: string; output_slot: string; phase: string }>(
+        "SELECT owner_id, output_slot, phase FROM cloud_durable_run_journal WHERE action_run_id = $1",
+        [`gateway-settle:${requestId}`],
+      );
+    const chargeRows = () =>
+      pglite.query<{ amount: string }>(
+        "SELECT amount_micro_credits::text AS amount FROM gateway_usage_ledger WHERE request_id = $1 AND kind = 'charge'",
+        [requestId],
+      );
+    const spent = async () =>
+      Number(
+        (await pglite.query<{ spent: string }>("SELECT spent_micro_credits::text AS spent FROM gateway_budget WHERE id='b-a'"))
+          .rows[0]!.spent,
+      );
+    // Journal first: the run and its outbox row exist, no money moved yet.
+    expect((await run()).rows).toEqual([{ owner_id: "api-node:gateway-settle", output_slot: "charge", phase: "queued" }]);
+    const dispatch = await pglite.query("SELECT 1 FROM cloud_run_dispatch WHERE action_run_id = $1", [
+      `gateway-settle:${requestId}`,
+    ]);
+    expect(dispatch.rows).toHaveLength(1);
+    expect((await chargeRows()).rows).toEqual([]);
+    expect(await spent()).toBe(0);
+    // Delivery applies it once.
+    expect(await settlement.drain()).toBe(1);
+    expect((await run()).rows[0]!.phase).toBe("succeeded");
+    const charged = (await chargeRows()).rows;
+    expect(charged).toHaveLength(1);
+    expect(await spent()).toBe(Number(charged[0]!.amount));
+    // A redelivered outbox row (a worker that died before acknowledging) moves nothing.
+    await pglite.query("INSERT INTO cloud_run_dispatch (action_run_id, output_slot) VALUES ($1, 'charge')", [
+      `gateway-settle:${requestId}`,
+    ]);
+    expect(await settlement.drain()).toBe(1);
+    expect((await chargeRows()).rows).toHaveLength(1);
+    expect(await spent()).toBe(Number(charged[0]!.amount));
+    // The ledger port reads the charge back.
+    const ports = createPgGatewayPorts({
+      db,
+      credentials: createPgGatewayCredentialStore({
+        db,
+        ring: createGatewayKeyRing({ keys: { k1: randomBytes(32) }, current: "k1" }),
+      }),
+      limits: createPgGatewayLimitPort(db),
+    });
+    expect(await ports.ledger.get({ tenantId: "tenant-a", requestId })).toMatchObject({
+      requestId,
+      status: "settled",
+      costMicroCredits: Number(charged[0]!.amount),
+    });
   });
 
   it("lists /v1/models filtered by the key's allowlist", async () => {
@@ -356,11 +423,14 @@ describe("gateway-node routes", () => {
     mock.state.setControl({ mode: "500" }); // stop after admission + one failed attempt
     await chat("/v1/chat/completions", token); // warm-up
     mock.state.setControl({ mode: "ok" });
+    // The request path only journals its settle run; the outbox worker applies it.
+    settlement.paused = true;
     queries = [];
     const response = await chat("/v1/chat/completions", token);
     expect(response.status).toBe(200);
     const upstreamAt = queries.length; // the whole request
-    // Measured on this schema: 9 admission + 2 credential + 8 settlement + 1 lease = 20.
+    // Ceiling from #367 (admission + credential + settlement + lease); journaling
+    // the settle run costs fewer queries than the in-request charge it replaced.
     expect(upstreamAt).toBeLessThanOrEqual(20);
     const admission = queries.slice(0, queries.findIndex((q) => q.includes("gateway_upstream_credential") && q.includes("encrypted_credentials")));
     // Admission: identity+budgets 1, catalog 1, providers 1, price 1, limits 3, floor check 2 (= 9, one spare).

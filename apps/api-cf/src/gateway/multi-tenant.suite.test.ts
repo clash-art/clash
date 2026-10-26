@@ -19,12 +19,14 @@ vi.mock("../containers/render", () => ({
 import { createApp } from "../app";
 import { createSqliteD1 } from "../../../web/app/test-support/sqlite-d1";
 import { signedInAdmin } from "../services/admin-session.test-support";
-import { seedGateway, type SeededGateway } from "./test-support";
+import { inlineSettleWorkflow, seedGateway, type SeededGateway } from "./test-support";
 
 const { d1, sqlite } = createSqliteD1();
 const seeded: Promise<SeededGateway> = seedGateway(d1);
 const ORIGIN = "http://localhost:8789";
 const app = createApp();
+/** Settle runs (postpaid charges) run inline, so the ledger is written when the request ends. */
+const settleWorkflow = inlineSettleWorkflow(d1);
 
 const completion = (model: string) => ({
   id: "chatcmpl-mt",
@@ -59,6 +61,7 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
     GATEWAY_ENCRYPTION_KEY: gateway.encryptionKey,
     BETTER_AUTH_URL: ORIGIN,
     BETTER_AUTH_SECRET: "test-secret-for-gateway-mt-360-0123456789",
+    GENERATION_WORKFLOW: settleWorkflow,
   });
 
   const send = (token: string | undefined, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
@@ -119,11 +122,11 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
   });
 
   describe("3. budget race", () => {
-    it("keeps spent+reserved <= limit under many concurrent reserves on one hard wallet", async () => {
+    it("keeps spent <= limit under many concurrent prepaid debits on one hard wallet", async () => {
       const caller = await gateway.tenantToken({ budgets: false });
       const budgetId = `gwb_race_${crypto.randomUUID().slice(0, 8)}`;
       const limit = 1_000_000;
-      const hold = 100_000;
+      const debit = 100_000;
       await d1
         .prepare(
           `INSERT INTO gateway_budget (id, tenant_id, scope, scope_id, limit_micro_credits) VALUES (?, ?, 'tenant', ?, ?)`,
@@ -140,13 +143,21 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
       const results = await Promise.all(
         Array.from({ length: 40 }, (_, index) =>
           ports.budgets
-            .reserve({
+            .debit({
               requestId: `race-${caller.tenantId}-${index}`,
               tenantId: identity.tenantId,
-              budgetIds: identity.budgetIds,
+              userId: identity.userId,
+              modelCode: "race-media",
+              kind: "image",
+              upstreamId: "race",
               credentialScope: identity.credentialScope,
-              holdMicroCredits: hold,
-              expiresAt: ports.clock.now() + 60_000,
+              usage: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheWriteTokens: 0, units: {}, source: "reported" },
+              costMicroCredits: debit,
+              priceVersion: "race",
+              catalogVersion: "race",
+              status: "settled",
+              occurredAt: ports.clock.now(),
+              budgetIds: identity.budgetIds,
             })
             .then(() => "ok" as const)
             .catch((error: unknown) =>
@@ -162,8 +173,9 @@ describe("#360 multi-tenant suite (api-cf / D1 node:sqlite)", () => {
         .prepare(`SELECT spent_micro_credits, reserved_micro_credits, limit_micro_credits FROM gateway_budget WHERE id = ?`)
         .bind(budgetId)
         .first<{ spent_micro_credits: number; reserved_micro_credits: number; limit_micro_credits: number }>();
-      expect(row!.spent_micro_credits + row!.reserved_micro_credits).toBeLessThanOrEqual(row!.limit_micro_credits);
-      expect(row!.reserved_micro_credits).toBe(admitted * hold);
+      expect(row!.spent_micro_credits).toBeLessThanOrEqual(row!.limit_micro_credits);
+      expect(row!.spent_micro_credits).toBe(admitted * debit);
+      expect(row!.reserved_micro_credits).toBe(0);
     });
   });
 
