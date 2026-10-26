@@ -464,3 +464,24 @@ token handoff (ACP gateway auth with `x-api-key`, and
 (`tool_use` of Read, then `tool_result`), and the run checks headers, bodies,
 public model codes and one settled ledger row per call. The agent's
 environment is built from scratch and no network endpoint is called.
+
+## Node self-host adapter (#367)
+
+`apps/api-node/src/gateway-node.ts` mounts the same `createGatewayApp` over
+Postgres ports on the **api** role (`GATEWAY_ROLE`, default `api`; the full
+role matrix is #373). Surfaces: `/v1/*` and `/api/v1/gateway/*`
+(`/api/v1/gateway/chat/completions` is `/v1/chat/completions`), plus
+`GET /v1/models` / `GET /api/v1/gateway/models` (published catalog after the
+DeepSeek Flash-only policy, filtered by the key's allowlist).
+
+- Identity: `sk_gw_` virtual key (`gateway_virtual_key`, migration 0018;
+  tenant, user, allowlist and credential scope come from the row), a `clsh_`
+  API token, or a Better Auth session cookie (both the personal tenant
+  `personal:<userId>`, official scope). No header is read as identity.
+- Budgets are N2 (#363): text admission is the read-only credit-floor check,
+  settlement is one postpay charge. Limits are #364, credentials #366 (one
+  scope per request; tenant traffic never resolves an official key).
+- The #365 maintenance tick (rollover + limits sweep) starts in-process on
+  the api role. Nothing is kept in process memory between requests.
+- Not yet on Node: shared circuit store (circuits read closed), body
+  retention, blobs, scheduler, audit (explicit `GATEWAY_CAPABILITY_UNAVAILABLE`).

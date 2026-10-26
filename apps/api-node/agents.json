@@ -54,6 +54,7 @@
     "src/gateway-keyring.ts": "Envelope v2 key ring (#366): v2.<kid>.<iv>.<ct> AES-256-GCM, HKDF per (kid, scope), AAD binds scope/tenant/credential id; opens v1 shared-runtime envelopes (official only); derived-key cache; refuses keys shared with ACTION_SECRET_KEY.",
     "src/gateway-credentials.ts": "PG upstream credential store/port (#366) over gateway_upstream_credential: official vs tenant never mix; current kid from gateway_config encryption.current per request (multi-node propagation); lazy CAS reseal of v1/old-kid envelopes; batch reencrypt.",
     "src/gateway-key-admin.ts": "Audited admin rotation routes (#366) /api/v1/admin/gateway/encryption{,/rotate,/reencrypt}; injected admin verifier (#394, platform_admin); audit row in same tx; no key material in responses.",
-    "src/gateway-keyring.test.ts": "PGlite: v2/v1 envelopes, scope isolation, lazy reseal, two-node rotation propagation, audit append-only, no plaintext."
+    "src/gateway-keyring.test.ts": "PGlite: v2/v1 envelopes, scope isolation, lazy reseal, two-node rotation propagation, audit append-only, no plaintext.",
+    "src/gateway-node.ts": "#367: gateway-core createGatewayApp over Postgres ports (sk_gw_ virtual key / clsh_ / session identity, routes, N2 budget adapter, ledger read). Mounted at /v1/* and /api/v1/gateway/* on GATEWAY_ROLE=api (default) by server.ts, which also starts the #365 maintenance tick."
   }
 }

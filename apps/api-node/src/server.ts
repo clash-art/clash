@@ -11,6 +11,11 @@ import { createReplicaHttpGateway } from "./relay-http.ts";
 import { createPostgresNotificationSource } from "./pg-notifications.ts";
 import { shutdownNodeTelemetry } from "@clash/shared-telemetry/node";
 import { apiNodeLog, errorFacts } from "./log.ts";
+import { createGatewayNodeRoutes, createPgGatewayPorts, gatewayRole } from "./gateway-node.ts";
+import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
+import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
+import { createPgGatewayLimitPort } from "./gateway-limits.ts";
+import { startGatewayMaintenance } from "./gateway-maintenance.ts";
 
 const log = apiNodeLog.child("server");
 
@@ -59,6 +64,34 @@ export function startServer(
     }),
   });
   app.route("/", gateway.app);
+  // Model gateway data plane (#367): api role only (role matrix: #373).
+  let stopGatewayMaintenance: (() => void) | undefined;
+  if (gatewayRole(env) === "api") {
+    const limits = createPgGatewayLimitPort(database.db);
+    const ports = createPgGatewayPorts({
+      db: database.db,
+      credentials: createPgGatewayCredentialStore({
+        db: database.db,
+        ring: gatewayKeyRingFromEnv(env),
+      }),
+      limits,
+      ...(auth
+        ? {
+            session: async (headers: Headers) => {
+              const session = await auth.api.getSession({ headers });
+              return session ? { userId: session.user.id } : null;
+            },
+          }
+        : {}),
+    });
+    app.route("/", createGatewayNodeRoutes(ports));
+    stopGatewayMaintenance = startGatewayMaintenance({
+      db: database.db,
+      limits,
+      onError: (error) =>
+        log.error("gateway.maintenance_failed", errorFacts(error)),
+    });
+  }
   const server = createServer(getRequestListener(app.fetch));
   server.listen(config.port, config.hostname);
   server.requestTimeout = 30000;
@@ -69,6 +102,7 @@ export function startServer(
       const deadline = setTimeout(() => server.closeAllConnections(), 10000);
       deadline.unref();
       try {
+        stopGatewayMaintenance?.();
         await gateway.close();
         await new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),

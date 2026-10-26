@@ -33,6 +33,7 @@ it("applies the postgres gateway migration on PGlite (0016)", async () => {
       "gateway_settle_intent",
       "gateway_upstream_credential",
       "gateway_usage_ledger",
+      "gateway_virtual_key",
     ]);
     const checksum = await db.query<{ id: string }>(
       "SELECT id FROM cloud_schema_migration WHERE id = $1",
