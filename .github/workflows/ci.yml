@@ -25,7 +25,7 @@ jobs:
           linux-apt-packages: ffmpeg
 
       - run: make lint
-      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts scripts/e2e/harness.test.ts scripts/architecture-boundaries.test.ts scripts/check-anti-patterns.test.ts
+      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts scripts/e2e/harness.test.ts scripts/architecture-boundaries.test.ts scripts/check-anti-patterns.test.ts .github/scripts/redact-gateway-ci-artifact.test.mjs
       - run: pnpm --filter @clash/desktop test
       - name: Verify Web unit tests
         run: pnpm --dir apps/web exec vitest run
@@ -104,6 +104,50 @@ jobs:
       - name: Render fixture frames through both renderers and compare SSIM
         run: pnpm test:remotion-parity
 
+
+  gateway-unit:
+    name: Gateway unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      # Vitest aliases resolve gateway-core / shared-* to source; api-node still
+      # pulls a few built workspace entries (asset-sdk, shared-runtime).
+      - name: Build workspace packages gateway tests import
+        run: pnpm exec turbo run build --filter='@clash/api-node^...' --filter='@clash/gateway-core'
+
+      - name: gateway-core unit (multi-tenant suite, contract, drift/overspend helpers)
+        run: pnpm --filter @clash/gateway-core test
+
+      - name: api-node gateway unit (budget invariants, billing, routes, health)
+        run: >
+          pnpm --dir apps/api-node exec vitest run
+          src/gateway-admin-console.test.ts
+          src/gateway-admin.test.ts
+          src/gateway-billing-routes.test.ts
+          src/gateway-billing.test.ts
+          src/gateway-budget-rollover.test.ts
+          src/gateway-budget.test.ts
+          src/gateway-cli.test.ts
+          src/gateway-credential-resolution.test.ts
+          src/gateway-health.test.ts
+          src/gateway-keyring.test.ts
+          src/gateway-limits.test.ts
+          src/gateway-migrate.test.ts
+          src/gateway-node-stream.test.ts
+          src/gateway-node.test.ts
+          src/gateway-schema.test.ts
+          src/gateway-settle.test.ts
+          src/deploy-compose.test.ts
+
+      - name: api-cf gateway unit + D1 contract (cf-parity with shared core)
+        # Env-gated staging smoke stays skipped unless GATEWAY_STAGING_SMOKE=1.
+        run: pnpm --dir apps/api-cf exec vitest run src/gateway
+
   gateway-lite:
     name: Gateway lite multi-process harness (Postgres)
     runs-on: ubuntu-latest
@@ -136,6 +180,10 @@ jobs:
           GATEWAY_LITE_DATABASE_URL: postgresql://clash_test@127.0.0.1:5432/postgres
           GATEWAY_LITE_REPORT: ${{ runner.temp }}/gateway-lite-report.json
         run: pnpm --filter @clash/api-node test:gateway-lite
+
+      - name: Redact gateway lite report
+        if: always()
+        run: node .github/scripts/redact-gateway-ci-artifact.mjs "${{ runner.temp }}/gateway-lite-report.json"
 
       - name: Upload gateway lite report
         if: always()

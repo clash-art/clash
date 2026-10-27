@@ -343,6 +343,20 @@ Protocol alternative evaluated: [Durable Streams](https://github.com/durable-str
 PG: [NOTIFY](https://www.postgresql.org/docs/current/sql-notify.html),
 [LISTEN startup reconciliation](https://www.postgresql.org/docs/current/sql-listen.html).
 
+### Model gateway CI (#383)
+
+PR CI (`.github/workflows/ci.yml`):
+
+| Job | What it runs |
+| --- | --- |
+| `gateway-unit` | `@clash/gateway-core` unit + api-node `gateway-*.test.ts` (incl. `checkGatewayInvariants` drift/overspend) + api-cf `src/gateway` (D1 contract = cf-parity). Staging smoke stays skipped. |
+| `gateway-lite` | `#379` multi-process harness on a `postgres:16` service; JSON report uploaded after redaction. |
+
+Optional nightly (`.github/workflows/gateway-staging-smoke.yml`): env-gated staging chat only — never production, never soak/chaos/pg-cluster. Needs secrets `GATEWAY_STAGING_BASE_URL` + `GATEWAY_STAGING_TOKEN` (skips cleanly when unset). Model defaults to DeepSeek Flash.
+
+There is **no** SQLite-minimal-mode CI job and **no** product LB / soak / chaos workflow.
+
+
 ## Personal asset library
 
 Migration `0011_personal_assets.sql` adds owner-scoped Resource facts, library

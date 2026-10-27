@@ -126,5 +126,8 @@ packages/remotion-components/build
 apps/docs/.vitepress/cache/
 apps/docs/.vitepress/dist/
 
+
+# Gateway CI smoke artifacts (#383); uploaded from Actions, never committed.
+artifacts/gateway-staging-smoke/
 # Agent tooling scratch (missions, artifacts) -- never part of the product.
 .pi-subagents/

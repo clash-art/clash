@@ -1,9 +1,10 @@
 /**
- * #360 optional staging smoke (REPORT §13 case 15). Never production.
+ * #360 / #383 optional staging smoke (REPORT §13 case 15). Never production.
  *
  * Enable with GATEWAY_STAGING_SMOKE=1 and GATEWAY_STAGING_BASE_URL /
  * GATEWAY_STAGING_TOKEN (a staging virtual key). Writes a redacted artifact
  * under artifacts/gateway-staging-smoke/; secrets are never printed.
+ * Optional nightly: .github/workflows/gateway-staging-smoke.yml.
  *
  * DeepSeek Flash-only if any model appears. Not a multi-hour soak.
  */

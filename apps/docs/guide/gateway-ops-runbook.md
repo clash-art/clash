@@ -75,6 +75,8 @@ never carry plaintext keys.
      (dual-key window; there is no hold/sweeper path under N2), and
    - staging smoke (`/gateway/v1/chat/completions` or Anthropic messages)
      succeeds on a Flash-allowed model.
+     Optional nightly CI: `.github/workflows/gateway-staging-smoke.yml`
+     (secrets `GATEWAY_STAGING_BASE_URL` + `GATEWAY_STAGING_TOKEN`; never production).
 5. If upstream returns 401/403 after rotation, the data plane maps to
    `502 UPSTREAM_AUTH_FAILED` and does not charge — fix the secret, do not
    blindly retry the client POST.
