@@ -1,7 +1,9 @@
 import { z } from "zod";
 import {
   GATEWAY_BUDGET_ENFORCEMENTS,
+  GATEWAY_PLATFORM_ROLES,
   GATEWAY_SUSPENSION_SUBJECTS,
+  GATEWAY_TENANT_ROLES,
   GatewayAbuseThresholdSchema,
   GatewayIdempotencyKeySchema,
   GatewayPriceVersionSchema,
@@ -106,15 +108,9 @@ const RateLimitRequestSchema = GatewayRateLimitSchema;
 // Guide: apps/docs/guide/gateway-admin.md. Authorization is
 // services/gateway-authz.ts; these schemas only shape the requests.
 
-/** Every role `tenant_member.role` may hold (#392; enforced in D1 by 0038). */
-export const GATEWAY_TENANT_ROLES = ["owner", "member"] as const;
-/**
- * Admin account roles (`admin_accounts.role`, 0040): admin accounts, never
- * product users (#394). `support_agent` (0046, #356) triages abuse without
- * any credential, prompt or configuration access; it is not the team role
- * #392 retired.
- */
-export const GATEWAY_PLATFORM_ROLES = ["platform_admin", "support_agent"] as const;
+// Team roles (enforced in D1 by 0038) and admin account roles (0040, 0046):
+// the one shared matrix in @clash/gateway-core (admin-authz.ts, #372).
+export { GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES };
 
 const reason = () => z.string().trim().min(1).max(500);
 const identifier = () => z.string().regex(/^[A-Za-z0-9._:@/-]{1,256}$/);

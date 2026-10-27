@@ -3,8 +3,9 @@
  *
  * Admin identity is the separate admin system (#394): the host injects
  * `verifyAdmin`, which resolves an admin session (never a product user or
- * token) to an admin account. The single platform role, `platform_admin`, may
- * rotate. Every mutation writes its `gateway_admin_audit` row in the same
+ * token) to an admin account. The account's role must hold `encryption.read`
+ * (GET) or `encryption.rotate` (POST) in gateway-core's role matrix: only
+ * `platform_admin` does. Every mutation writes its `gateway_admin_audit` row in the same
  * transaction as the change, so both commit or neither does.
  *
  *   GET  /api/v1/admin/gateway/encryption          current kid, ring kids, envelope counts
@@ -18,8 +19,10 @@
 import { randomUUID } from "node:crypto";
 import {
   GatewayError,
+  adminRolePermissions,
   gatewayErrorResponseInit,
   toGatewayError,
+  type GatewayPlatformPermission,
 } from "@clash/gateway-core";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
@@ -45,7 +48,8 @@ export interface GatewayAdminIdentity {
 
 export interface GatewayAdminAuditRow {
   tenantId?: string;
-  actor: { kind: "admin"; id: string; role: string };
+  /** An admin account, or the first-account bootstrap (admin-auth.ts). */
+  actor: { kind: "admin" | "bootstrap"; id: string; role: string };
   action: string;
   targetType: string;
   targetId: string;
@@ -99,11 +103,12 @@ export function createGatewayKeyAdminRoutes(deps: {
     const init = gatewayErrorResponseInit(toGatewayError(error), "openai");
     return c.json(init.body, init.status as 400, init.headers);
   };
-  async function admin(c: Context) {
+  async function admin(c: Context, permission: GatewayPlatformPermission) {
     const identity = await deps.verifyAdmin(c.req.raw);
     if (!identity) throw new GatewayError("GATEWAY_ADMIN_SESSION_REQUIRED");
-    if (identity.role !== GATEWAY_PLATFORM_ADMIN_ROLE)
-      throw new GatewayError("GATEWAY_FORBIDDEN");
+    // The shared role matrix (gateway-core admin-authz.ts): platform_admin only.
+    if (!adminRolePermissions(identity.role).includes(permission))
+      throw new GatewayError("GATEWAY_FORBIDDEN", { details: { permission } });
     return { kind: "admin" as const, id: identity.id, role: identity.role };
   }
   async function body<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
@@ -118,7 +123,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.get(GATEWAY_KEY_ADMIN_PREFIX, async (c) => {
     try {
-      await admin(c);
+      await admin(c, "encryption.read");
       const current = await currentEncryptionKid(db, ring);
       const { rows } = await db.query<{
         kid: string;
@@ -145,7 +150,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.post(`${GATEWAY_KEY_ADMIN_PREFIX}/rotate`, async (c) => {
     try {
-      const actor = await admin(c);
+      const actor = await admin(c, "encryption.rotate");
       const { kid } = await body(c, RotateSchema);
       // This node must hold the new key; deploy the ring everywhere first.
       if (!ring.has(kid))
@@ -191,7 +196,7 @@ export function createGatewayKeyAdminRoutes(deps: {
 
   app.post(`${GATEWAY_KEY_ADMIN_PREFIX}/reencrypt`, async (c) => {
     try {
-      const actor = await admin(c);
+      const actor = await admin(c, "encryption.rotate");
       const { limit } = await body(c, ReencryptSchema);
       const result = await store.reencrypt(limit ? { limit } : {});
       const current = await currentEncryptionKid(db, ring);

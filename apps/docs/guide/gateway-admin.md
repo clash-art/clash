@@ -89,13 +89,14 @@ role to `member` (idempotently), and D1 triggers refuse any role other than
 
 ### Permission matrix
 
-`apps/api-cf/src/services/gateway-authz.ts` is the one authorization module.
-Every check names a permission (`authorizeGatewayAccess(access,
+`apps/api-cf/src/services/gateway-authz.ts` is api-cf's one authorization
+module. Every check names a permission (`authorizeGatewayAccess(access,
 "team.budgets.allocate", tenantId)` for a product user's team role,
 `authorizeAdminAccess(admin, "catalog.write")` for an admin account); which
-role holds which permission is data in that module
-(`GATEWAY_TENANT_ROLE_PERMISSIONS`, `GATEWAY_PLATFORM_ROLE_PERMISSIONS`) and
-nowhere else, so configurable permission groups could later replace the role
+role holds which permission is data
+(`GATEWAY_TENANT_ROLE_PERMISSIONS`, `GATEWAY_PLATFORM_ROLE_PERMISSIONS`) in
+`packages/gateway-core/src/admin-authz.ts`, shared with the
+[Node admin listener](#node-admin-listener) (#372), and nowhere else, so configurable permission groups could later replace the role
 tables without touching a check. Every `/api/v1/admin/gateway/*` route and
 every tenant billing route (`/api/v1/gateway/tenants/:tenantId/*`)
 authorizes through it. The server answers `GATEWAY_FORBIDDEN` (403,
@@ -125,7 +126,9 @@ Platform permissions, admin accounts only (`platform_admin` holds all;
 `upstreams.write`, `wallet.adjust`, `subscription.limits.write`,
 `admin_accounts.read`, `admin_accounts.write`, `usage.read_all`,
 `audit.read_all`, `abuse.read`, `abuse.suspend`, `abuse.thresholds.write`,
-`prompts.view`, `retention.purge`, `holds.sweep`.
+`prompts.view`, `retention.purge`, `holds.sweep`, `encryption.read`,
+`encryption.rotate`. The last two cover the credential encryption key ring
+(#366), which only a Node gateway has; api-cf's `/me` never reports them.
 
 The admin console authorizes with `platformRoute`: the caller is the admin
 account the middleware verified, and the permission must come from its role.
@@ -529,6 +532,12 @@ otherwise to `/admin`. The console header shows the signed-in account and a
 | `/admin/usage`     | Ledger, per-model totals, prompt viewer               | `usage.read_all` |
 | `/admin/abuse`     | Abuse signals and thresholds, suspend and lift, alerts, live rate-limit counters | `abuse.read`     |
 | `/admin/audit`     | Audit log                                             | `audit.read_all` |
+| `/admin/encryption` | Credential key ring: current kid, sealed counts, rotate and reseal (Node only) | `encryption.read` |
+
+`/me` reports the role's permissions **that the host serves**, so the
+navigation offers only pages the host answers: api-cf never reports the key
+ring permissions, and a [Node admin listener](#node-admin-listener) reports
+only the views it serves.
 
 Components live in `packages/web-ui/src/components/admin/` with the typed
 client `packages/web-ui/src/lib/adminClient.ts`; controls the caller's grants
@@ -548,8 +557,73 @@ Radix dialog). The viewer asks for a reason, makes the audited call, and
 shows the request and response bodies verbatim with their size and SHA-256,
 or the coded error (expired, not retained).
 
+## Node admin listener
+
+A self-hosted Node gateway (`apps/api-node`, Epic #342) serves the same
+console on its admin role only (#372, N15). Nothing is a second GUI: the
+listener serves the `apps/web` build unchanged, and the console adapts
+through `/me`.
+
+`GATEWAY_ROLE=admin` (`server.ts`, `withGatewayAdminListener`) mounts
+`src/gateway-admin-console.ts` before every product route; `api` and
+`worker` never build it, so they serve no console page, asset or admin API.
+The admin role fails to start without:
+
+| Variable                                     | Meaning                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------ |
+| `GATEWAY_ADMIN_WEB_DIR`                      | the `apps/web` build (`apps/web/dist/client`, holding `index.html`)      |
+| `ADMIN_AUTH_SECRET` (else `BETTER_AUTH_SECRET`) | the admin Better Auth secret, at least 32 characters                  |
+| `GATEWAY_ENCRYPTION_KEYS`, `GATEWAY_ENCRYPTION_CURRENT` | the key ring the key rotation view manages (#366)             |
+
+What it serves:
+
+- `/admin`, `/admin/*`: the build's `index.html` (`no-store`); `/_app/*` and
+  the build's top-level files (favicon, manifest) as static assets.
+- `/api/admin-auth/*`: the admin identity (`src/admin-auth.ts`), its own
+  Better Auth instance with the same base path and `clash-admin` cookies as
+  api-cf, over its own Postgres tables (migration `0022_gateway_admin_accounts`:
+  `admin_account`, `admin_session`, `admin_credential`, `admin_verification`,
+  `admin_rate_limit`), never `auth_*`. Sign-up is off and a disabled account
+  is refused, as on api-cf. Create the first account after `pnpm migrate`
+  with `ADMIN_EMAIL=… ADMIN_NAME=… ADMIN_PASSWORD=… [ADMIN_ROLE=support_agent]
+  pnpm admin-account:create` (password from the environment only, audited as
+  `bootstrap`).
+- `/api/v1/admin/*`: gateway-core's `resolveGatewayAdminRequest`, the same
+  gate as api-cf (401 `GATEWAY_AUTH_REQUIRED`, 403
+  `GATEWAY_ADMIN_SESSION_REQUIRED` for a token or product session), then the
+  shared role matrix per route (403 `GATEWAY_FORBIDDEN`, `details.permission`).
+  An admin path the listener does not serve is 501
+  `GATEWAY_CAPABILITY_UNAVAILABLE`.
+
+The views it serves (`NODE_ADMIN_SERVED_PERMISSIONS`, all that its `/me`
+reports):
+
+| Console page         | Node source                                                                  |
+| -------------------- | ---------------------------------------------------------------------------- |
+| Overview, Usage      | `gateway_usage_ledger` (N2: one entry per settled request, `src/gateway-admin-reads.ts`) |
+| Users & teams        | `tenant`, `tenant_member` (read-only)                                        |
+| Budgets & limits     | `gateway_budget`, virtual keys and their limits, the wallet from the billing port; wallet corrections |
+| Packages             | `src/gateway-billing-routes.ts` (packages, top-up packs, rollover)           |
+| Abuse                | live rate counters and leases only: Node measures no abuse signal yet, so there is no threshold or suspension to act on |
+| Encryption keys      | `src/gateway-key-admin.ts` (read, rotate, reseal; audited)                   |
+
+Catalog, upstream accounts, the audit log, admin account management and
+abuse actions are not served by Node yet; their permissions are not reported,
+so their pages and controls are not offered. Staff prompt access is
+hosted-only (`promptAccess: false`).
+
 ## Tests
 
+- `apps/api-node/src/gateway-admin-console.test.ts`: the build served on the
+  admin role only (other roles never build the listener), the shared gate,
+  role gating per route (a `support_agent` refused keys, prices, wallet and
+  the key ring), `/me` reporting only served permissions, the budget, usage,
+  key and abuse views over PGlite, and an audited key rotation.
+  `apps/api-node/src/admin-auth.test.ts`: the Node admin identity on
+  Better Auth (bootstrap audited, `clash-admin` sign-in, no sign-up, a
+  disabled account refused, no `auth_*` row).
+  `packages/gateway-core/src/admin-authz.test.ts`: the shared gate and
+  per-host console permissions.
 - `apps/api-cf/src/services/gateway-authz.test.ts`: matrix properties; the
   retired environment-variable grant, the removed team roles and the dropped
   product-user grant table are gone from code, tests and docs.

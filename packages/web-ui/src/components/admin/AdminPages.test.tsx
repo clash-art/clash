@@ -3,12 +3,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AbuseSignals, AdminAccount, Budget, CatalogVersion, GatewayKey, TenantMember } from "../../lib/adminClient";
+import type { AbuseSignals, AdminAccount, Budget, CatalogVersion, EncryptionKeyRing, GatewayKey, TenantMember } from "../../lib/adminClient";
 import { chooseOption, gatewayError, stubAdminFetch } from "../../test-support/admin";
 import { AdminAbuse } from "./AdminAbuse";
 import { AdminAudit } from "./AdminAudit";
 import { AdminBudgets, type BudgetPermissions } from "./AdminBudgets";
 import { AdminCatalog, AdminPrices } from "./AdminCatalog";
+import { AdminEncryption } from "./AdminEncryption";
 import { AdminPackages } from "./AdminPackages";
 import { AdminUsage } from "./AdminUsage";
 import { AdminAccounts, AdminMembers } from "./AdminUsers";
@@ -531,5 +532,49 @@ describe("AdminAudit", () => {
     type(form, "Actor id", "adm_staff");
     fireEvent.submit(form);
     expect(onFiltersChange).toHaveBeenCalledWith({ action: "upstream", actorId: "adm_staff" });
+  });
+});
+
+describe("AdminEncryption", () => {
+  const ring: EncryptionKeyRing = {
+    current: "k1",
+    ringKids: ["k1", "k2"],
+    envelopes: [
+      { kid: "k1", scope: "official", count: 3 },
+      { kid: "v1", scope: "tenant", count: 2 },
+    ],
+  };
+
+  it("shows key ids and envelope counts read-only without encryption.rotate", () => {
+    render(<AdminEncryption ring={ring} canRotate={false} onChanged={() => undefined} />);
+    const table = screen.getByRole("table", { name: "Sealed credentials" });
+    expect(within(table).getByText("v1")).toBeInTheDocument();
+    expect(screen.getByText("2 sealed under an older key.")).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Rotate key" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reseal a batch" })).toBeNull();
+  });
+
+  it("rotates to a ring key other than the current one, and reseals a batch", async () => {
+    const onChanged = vi.fn();
+    const calls = stubAdminFetch((call) =>
+      call.path.endsWith("/rotate")
+        ? Response.json({ previous: "k1", current: "k2", configVersion: 2 })
+        : Response.json({ current: "k1", resealed: 2, failed: 0, skipped: 0 }),
+    );
+    render(<AdminEncryption ring={ring} canRotate onChanged={onChanged} />);
+    fireEvent.submit(screen.getByRole("form", { name: "Rotate key" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({ method: "POST", path: "/api/v1/admin/gateway/encryption/rotate", body: { kid: "k2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reseal a batch" }));
+    await waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]).toEqual({ method: "POST", path: "/api/v1/admin/gateway/encryption/reencrypt", body: {} });
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows the server's coded refusal of a rotation", async () => {
+    stubAdminFetch(() => gatewayError(400, "GATEWAY_INVALID_REQUEST", "kid_not_in_ring"));
+    render(<AdminEncryption ring={ring} canRotate onChanged={() => undefined} />);
+    fireEvent.submit(screen.getByRole("form", { name: "Rotate key" }));
+    expect(await screen.findByText("GATEWAY_INVALID_REQUEST")).toBeInTheDocument();
   });
 });

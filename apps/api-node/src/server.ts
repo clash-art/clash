@@ -18,8 +18,19 @@ import {
   gatewayRole,
 } from "./gateway-node.ts";
 import { createPgGatewayCredentialStore } from "./gateway-credentials.ts";
-import { createPgGatewayBilling } from "./gateway-billing.ts";
-import { createGatewayBillingTenantRoutes, gatewayBillingPurchaseConfigFromEnv } from "./gateway-billing-routes.ts";
+import { createNodeAdminAuth, nodeAdminSessionVerifier } from "./admin-auth.ts";
+import {
+  createGatewayAdminListener,
+  loadAdminWebBuild,
+  withGatewayAdminListener,
+} from "./gateway-admin-console.ts";
+import { createPgGatewayBilling, createPgGatewayPriceBook } from "./gateway-billing.ts";
+import {
+  createGatewayBillingAdminRoutes,
+  createGatewayBillingTenantRoutes,
+  gatewayBillingPurchaseConfigFromEnv,
+} from "./gateway-billing-routes.ts";
+import { createGatewayKeyAdminRoutes } from "./gateway-key-admin.ts";
 import { gatewayKeyRingFromEnv } from "./gateway-keyring.ts";
 import { createPgGatewayLimitPort } from "./gateway-limits.ts";
 import { startGatewayMaintenance } from "./gateway-maintenance.ts";
@@ -31,6 +42,44 @@ import {
 } from "./gateway-health.ts";
 
 const log = apiNodeLog.child("server");
+
+/** GATEWAY_ROLE=admin: fails the start without its admin auth secret, console build or a valid key ring. */
+function createAdminListener(
+  env: Record<string, string | undefined>,
+  config: ReturnType<typeof readConfig>,
+  database: ReturnType<typeof openPostgres>,
+) {
+  const secret = env.ADMIN_AUTH_SECRET ?? env.BETTER_AUTH_SECRET;
+  if (!secret)
+    throw Error("GATEWAY_ROLE=admin requires ADMIN_AUTH_SECRET or BETTER_AUTH_SECRET");
+  const adminAuth = createNodeAdminAuth({
+    pool: database.pool,
+    publicUrl: config.publicUrl,
+    secret,
+  });
+  const ring = gatewayKeyRingFromEnv(env);
+  const billing = createPgGatewayBilling({ db: database.db });
+  return createGatewayAdminListener({
+    db: database.db,
+    billing,
+    build: loadAdminWebBuild(env.GATEWAY_ADMIN_WEB_DIR),
+    verifyAdminSession: nodeAdminSessionVerifier(adminAuth),
+    adminAuthHandler: (request) => adminAuth.handler(request),
+    routes: (verifyAdmin) => [
+      createGatewayBillingAdminRoutes({
+        billing,
+        priceBook: createPgGatewayPriceBook({ db: database.db }),
+        verifyAdmin,
+      }),
+      createGatewayKeyAdminRoutes({
+        db: database.db,
+        ring,
+        store: createPgGatewayCredentialStore({ db: database.db, ring }),
+        verifyAdmin,
+      }),
+    ],
+  });
+}
 
 export function startServer(
   env: Record<string, string | undefined> = process.env,
@@ -136,7 +185,10 @@ export function startServer(
         log.error("gateway.maintenance_failed", errorFacts(error)),
     });
   }
-  const server = createServer(getRequestListener(app.fetch));
+  // The admin listener (#372): the shared console and the admin API, on the
+  // admin role only, routed before every product route.
+  const root = withGatewayAdminListener(role, app, () => createAdminListener(env, config, database));
+  const server = createServer(getRequestListener(root.fetch));
   server.listen(config.port, config.hostname);
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;

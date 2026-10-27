@@ -16,6 +16,7 @@
     "test:cluster": "node scripts/test-cluster.ts",
     "test:gateway-lite": "node scripts/test-gateway-lite.ts",
     "seed:gateway": "tsx --tsconfig tsconfig.check.json src/gateway-seed.ts",
+    "admin-account:create": "tsx --tsconfig tsconfig.check.json src/admin-account-cli.ts",
     "mock-upstream": "tsx --tsconfig tsconfig.check.json src/mock-upstream/cli.ts"
   },
   "dependencies": {

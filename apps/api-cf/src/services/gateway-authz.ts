@@ -20,127 +20,48 @@
  *   environment-variable grant and no grant on a product user.
  *
  * Checks name a permission (`budgets.read`, `team.members.manage`, ...);
- * which role holds which permission is data, in the two role tables below
- * and nowhere else.
+ * which role holds which permission is data, in the two role tables of
+ * @clash/gateway-core's admin-authz.ts (shared with api-node's admin
+ * listener, #372) and nowhere else.
  *
  * Failures are coded: GATEWAY_AUTH_REQUIRED (401), GATEWAY_FORBIDDEN (403,
  * details.permission names the missing permission).
  */
 import type { D1Database } from "@cloudflare/workers-types";
 import type { Context } from "hono";
-import { GatewayError } from "@clash/gateway-core";
+import {
+  GatewayError,
+  adminRolePermissions,
+  isGatewayTenantPermission,
+  tenantRolePermissions,
+  type GatewayPermission,
+  type GatewayTenantPermission,
+} from "@clash/gateway-core";
 import { z } from "zod";
 
 import type { Env } from "../config";
-import { GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES } from "../domain/requests";
 import type { GatewayAdminActor } from "../gateway/d1-admin-audit";
 import { requireAdminIdentity, type AdminIdentity } from "./admin-identity";
 import { gatewayParam } from "./gateway-admin";
 import { gatewayErrorResponse } from "./gateway-tokens";
 import { getResolvedIdentity } from "./request-identity";
 
-export { GATEWAY_PLATFORM_ROLES, GATEWAY_TENANT_ROLES };
-export type GatewayTenantRole = (typeof GATEWAY_TENANT_ROLES)[number];
-export type GatewayPlatformRole = (typeof GATEWAY_PLATFORM_ROLES)[number];
-
-/** Actions on one tenant's resources. */
-export const GATEWAY_TENANT_PERMISSIONS = [
-  "usage.read_own",
-  "budgets.read_own",
-  "tenant.read",
-  "usage.read",
-  "budgets.read",
-  "team.budgets.allocate",
-  "keys.read",
-  "limits.write",
-  "team.members.read",
-  "team.members.manage",
-  "audit.read",
-  "billing.read",
-  "billing.purchase",
-] as const;
-export type GatewayTenantPermission = (typeof GATEWAY_TENANT_PERMISSIONS)[number];
-
-/** Actions on platform resources or across tenants: admin accounts only. */
-export const GATEWAY_PLATFORM_PERMISSIONS = [
-  "tenants.list",
-  "catalog.read",
-  "catalog.write",
-  "prices.read",
-  "prices.write",
-  "packages.read",
-  "packages.write",
-  "billing.rollover",
-  "upstreams.read",
-  "upstreams.write",
-  "wallet.adjust",
-  "subscription.limits.write",
-  "admin_accounts.read",
-  "admin_accounts.write",
-  "usage.read_all",
-  "audit.read_all",
-  "abuse.read",
-  // Suspending and lifting take a tenant or key id only: no key material (#356).
-  "abuse.suspend",
-  "abuse.thresholds.write",
-  "prompts.view",
-  "retention.purge",
-  "holds.sweep",
-] as const;
-export type GatewayPlatformPermission = (typeof GATEWAY_PLATFORM_PERMISSIONS)[number];
-
-export type GatewayPermission = GatewayTenantPermission | GatewayPlatformPermission;
-
-/**
- * Tenant role -> tenant permissions. Owner: every tenant action (members and
- * roles, budget allocation, keys and limits, billing). Member: their own
- * usage and budget only.
- */
-export const GATEWAY_TENANT_ROLE_PERMISSIONS: Readonly<Record<GatewayTenantRole, readonly GatewayTenantPermission[]>> = {
-  owner: GATEWAY_TENANT_PERMISSIONS,
-  member: ["usage.read_own", "budgets.read_own"],
-};
-
-/**
- * Admin account role -> permissions: platform_admin holds every permission,
- * on every tenant. support_agent (#356) reads tenants, members, budgets, usage,
- * audit and abuse signals and suspends or lifts by id; it holds nothing that
- * lists keys (`keys.read`), touches upstream credentials or retained prompts,
- * or changes thresholds, wallets, limits, catalog or admin accounts.
- */
-export const GATEWAY_PLATFORM_ROLE_PERMISSIONS: Readonly<Record<GatewayPlatformRole, readonly GatewayPermission[]>> = {
-  platform_admin: [...GATEWAY_PLATFORM_PERMISSIONS, ...GATEWAY_TENANT_PERMISSIONS],
-  support_agent: [
-    "tenants.list",
-    "team.members.read",
-    "budgets.read",
-    "usage.read_all",
-    "audit.read_all",
-    "abuse.read",
-    "abuse.suspend",
-  ],
-};
-
-export function isGatewayTenantPermission(permission: string): permission is GatewayTenantPermission {
-  return (GATEWAY_TENANT_PERMISSIONS as readonly string[]).includes(permission);
-}
-
-function isTenantRole(role: string): role is GatewayTenantRole {
-  return (GATEWAY_TENANT_ROLES as readonly string[]).includes(role);
-}
-
-function isPlatformRole(role: string): role is GatewayPlatformRole {
-  return (GATEWAY_PLATFORM_ROLES as readonly string[]).includes(role);
-}
-
-export function tenantRolePermissions(role: string): readonly GatewayTenantPermission[] {
-  return isTenantRole(role) ? GATEWAY_TENANT_ROLE_PERMISSIONS[role] : [];
-}
-
-/** Every permission an admin account's role holds; none for an unknown role. */
-export function adminRolePermissions(role: string): readonly GatewayPermission[] {
-  return isPlatformRole(role) ? GATEWAY_PLATFORM_ROLE_PERMISSIONS[role] : [];
-}
+export {
+  GATEWAY_PLATFORM_PERMISSIONS,
+  GATEWAY_PLATFORM_ROLE_PERMISSIONS,
+  GATEWAY_PLATFORM_ROLES,
+  GATEWAY_TENANT_PERMISSIONS,
+  GATEWAY_TENANT_ROLE_PERMISSIONS,
+  GATEWAY_TENANT_ROLES,
+  adminRolePermissions,
+  isGatewayTenantPermission,
+  tenantRolePermissions,
+  type GatewayPermission,
+  type GatewayPlatformPermission,
+  type GatewayPlatformRole,
+  type GatewayTenantPermission,
+  type GatewayTenantRole,
+} from "@clash/gateway-core";
 
 export interface GatewayMembership {
   tenantId: string;
