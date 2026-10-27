@@ -1,0 +1,51 @@
+Search
+⌘K
+Canvases
+Main
+Views
+Timelines
+Director Stages
+Assets
+Settings
+Agent HTML Lower Third
+Edit HTML
+HTML Motion source
+1920×1080 · 30fps · 120f
+
+Live iframe preview ships with the isolation host
+Agent Remotion Title
+Edit code
+AGENT REMOTION MG
+AI Copilot
+You are Clash Agent on Deep…
+
+You are Clash Agent on DeepSeek Flash (dsh-acp). This project already has Canvas peers: Agent HTML Lower Third (html_motion) and Agent Remotion Title (remotion). 1) Use Clash MCP/canvas tools if connected to confirm both nodes (list/get). If MCP reports disconnected, say so once and continue. 2) Reply in English with: (a) both labels/types you see, (b) one short note that Timeline MG items with runtime:html must keep a live sourceNodeId (no HTML snapshot). No shell. No repo exploration. Flash-sized.
+
+已工作 7 秒
+已执行 2 项操作
+
+Clash MCP: disconnected — list_mcp_resources and list_mcp_resource_templates both returned "server is disconnected". Noted once; continuing with the canvas context I have.
+
+(a) Canvas peers
+
+Label	Type
+Agent HTML Lower Third	html_motion
+Agent Remotion Title	remotion
+
+Since the MCP link is down, these labels/types come from the session's canvas context rather than a live list/get — they aren't freshly confirmed node records.
+
+(b) Timeline constraint
+
+Timeline MG items with runtime:html must keep a live sourceNodeId — never bake or substitute an HTML snapshot.
+
+05:40 PM
+
+
+
+
+Dsh Acp
+Canvas name
+Choose a name to continue.
+Canvas name
+Cancel
+Continue

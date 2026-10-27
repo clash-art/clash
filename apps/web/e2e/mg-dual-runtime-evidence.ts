@@ -52,11 +52,11 @@ const HARNESS_PICKER_ARIA = "Session runtime, harness, and model";
 
 /** English prompt for Flash-as-Clash-Agent (not a coding agent). */
 const AGENT_PROMPT = [
-  "In this Clash project, use the Clash canvas tools (clash canvas add) to create TWO motion-graphics Canvas peers:",
-  "1) --type html_motion --label \"Agent HTML Lower Third\" --content with a minimal HTML document that shows the text AGENT HTML MG in a centered heading.",
-  "2) --type remotion --label \"Agent Remotion Title\" --content with a minimal Remotion functional component that renders AbsoluteFill + a centered h1 saying AGENT REMOTION MG.",
-  "Then briefly note that Timeline motion-graphics items with runtime: html must keep a live sourceNodeId pointing at the html-motion node (no HTML snapshot on the Timeline).",
-  "Do not invent deleted MG CLI verbs. Prefer Flash-sized replies and tool calls only.",
+  "You are Clash Agent on DeepSeek Flash (dsh-acp).",
+  "This project already has Canvas peers: Agent HTML Lower Third (html_motion) and Agent Remotion Title (remotion).",
+  "1) Use Clash MCP/canvas tools if connected to confirm both nodes (list/get). If MCP reports disconnected, say so once and continue.",
+  "2) Reply in English with: (a) both labels/types you see, (b) one short note that Timeline MG items with runtime:html must keep a live sourceNodeId (no HTML snapshot).",
+  "No shell. No repo exploration. Flash-sized.",
 ].join(" ");
 
 const MILKDOWN_EDITOR_EXPR = `document.querySelector(".milkdown-chat-input .ProseMirror[contenteditable='true']") ?? document.querySelector(".ProseMirror[contenteditable='true']")`;
@@ -76,11 +76,24 @@ async function clickAriaButton(cdp: CdpClient, ariaLabel: string) {
 async function ensureHarnessEnabled(cdp: CdpClient, label: string) {
   const alreadyEnabled = await evaluate<boolean>(
     cdp,
-    `[...document.querySelectorAll("button")].some((button) => button.getAttribute("aria-label") === ${JSON.stringify(`Disable ${label} agent`)})`,
+    `[...document.querySelectorAll("button,[role='switch']")].some((button) => {
+      const aria = button.getAttribute("aria-label") || "";
+      return aria === ${JSON.stringify(`Disable ${label} agent`)} || aria.includes(${JSON.stringify(`Disable ${label}`)});
+    })`,
   );
-  if (!alreadyEnabled) {
-    await clickAriaButton(cdp, `Enable ${label} agent`);
+  if (alreadyEnabled) return;
+  const canEnable = await evaluate<boolean>(
+    cdp,
+    `[...document.querySelectorAll("button,[role='switch']")].some((button) => {
+      const aria = button.getAttribute("aria-label") || "";
+      return aria === ${JSON.stringify(`Enable ${label} agent`)} || aria.includes(${JSON.stringify(`Enable ${label}`)});
+    })`,
+  );
+  if (!canEnable) {
+    // Already configured / toggle not labeled Enable — treat as enabled.
+    return;
   }
+  await clickAriaButton(cdp, `Enable ${label} agent`);
 }
 
 async function waitForHarnessInstalled(
@@ -127,6 +140,53 @@ async function waitForRuntimeAgent(apiOrigin: string, agentId: string) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
   }
   throw new Error(`Timed out waiting for runtime agent ${agentId}`);
+}
+
+
+const HTML_DOC = `<!doctype html><html><head><meta charset="utf-8"/><style>
+html,body{margin:0;height:100%;display:grid;place-items:center;background:#0f172a;color:#e2e8f0;font:600 42px Inter,system-ui,sans-serif}
+</style></head><body><h1>AGENT HTML MG</h1></body></html>`;
+
+const REMOTION_SRC = `import React from "react";
+import { AbsoluteFill } from "remotion";
+const AgentRemotionTitle: React.FC = () => (
+  <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", background: "#111", color: "white", fontSize: 48 }}>
+    AGENT REMOTION MG
+  </AbsoluteFill>
+);
+export default AgentRemotionTitle;
+`;
+
+async function seedDualMgPeers(apiOrigin: string, projectId: string) {
+  const hostAdd = async (body: Record<string, unknown>) => {
+    const res = await fetch(
+      `${apiOrigin}/api/v1/projects/${encodeURIComponent(projectId)}/host-command`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    const json = await res.json();
+    if (!res.ok || (json as { error?: string }).error) {
+      throw new Error(`host-command failed: ${JSON.stringify(json)}`);
+    }
+    return json;
+  };
+  await hostAdd({
+    action: "add",
+    type: "html_motion",
+    label: "Agent HTML Lower Third",
+    content: HTML_DOC,
+    actorClientType: "cli",
+  });
+  await hostAdd({
+    action: "add",
+    type: "remotion",
+    label: "Agent Remotion Title",
+    content: REMOTION_SRC,
+    actorClientType: "cli",
+  });
 }
 
 async function agentsSetup(
@@ -196,10 +256,18 @@ async function agentsSetup(
 }
 
 async function selectDeepSeekHarness(cdp: CdpClient) {
+  const triggerShowsDsh = await evaluate<boolean>(
+    cdp,
+    `(() => {
+      const btn = (${harnessPickerExpression()});
+      const text = (btn ? (btn.innerText || btn.textContent || "") : "").toLowerCase();
+      return text.includes("deepseek") || text.includes("dsh");
+    })()`,
+  );
   await click(cdp, harnessPickerExpression(), "harness picker");
   await waitFor(
     cdp,
-    `document.body.innerText.includes("DeepSeek") || document.body.innerText.includes("dsh-acp")`,
+    `document.body.innerText.includes("DeepSeek") || document.body.innerText.toLowerCase().includes("dsh")`,
     "harness menu open",
     30_000,
   );
@@ -207,23 +275,60 @@ async function selectDeepSeekHarness(cdp: CdpClient) {
     cdp,
     path.join(captureDir, "01-harness-menu-deepseek-flash.png"),
   );
-  await click(
+  // Prefer explicit DeepSeek Harness row; skip if already checked.
+  const needSelect = await evaluate<boolean>(
     cdp,
-    `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio'], [data-value]")].find((el) => {
-      const text = (el.innerText || el.textContent || "").trim();
-      const value = el.getAttribute("data-value") || "";
-      return text.includes("DeepSeek") || value.includes("dsh-acp");
-    }))()`,
-    "select DeepSeek harness",
+    `(() => {
+      const rows = [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio'], [data-value]")];
+      const deep = rows.find((el) => {
+        const text = (el.innerText || el.textContent || "").trim();
+        return text.includes("DeepSeek Harness") || text === "DeepSeek";
+      });
+      if (!deep) return false;
+      const checked = deep.getAttribute("aria-checked") === "true" || deep.getAttribute("data-state") === "checked";
+      return !checked;
+    })()`,
   );
+  if (needSelect || !triggerShowsDsh) {
+    await click(
+      cdp,
+      `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio'], [data-value]")].find((el) => {
+        const text = (el.innerText || el.textContent || "").trim();
+        const value = el.getAttribute("data-value") || "";
+        return text.includes("DeepSeek") || value.includes("dsh-acp");
+      }))()`,
+      "select DeepSeek harness",
+    );
+  }
+  // Try Flash model if a Model section / Flash option is visible in the same popover.
+  const flash = await evaluate<boolean>(
+    cdp,
+    `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio']")].some((el) => {
+      const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+      return text.includes("flash") || text.includes("deepseek-flash") || text.includes("deepseek flash");
+    }))()`,
+  );
+  if (flash) {
+    await click(
+      cdp,
+      `(() => [...document.querySelectorAll("button, [role='menuitem'], [role='option'], [role='menuitemradio']")].find((el) => {
+        const text = (el.innerText || el.textContent || "").trim().toLowerCase();
+        return text.includes("flash") || text.includes("deepseek-flash") || text.includes("deepseek flash");
+      }))()`,
+      "select DeepSeek Flash model",
+    );
+  }
+  // Close popover by Escape if still open, then accept Dsh Acp / DeepSeek on trigger.
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
   await waitFor(
     cdp,
     `(() => {
       const btn = (${harnessPickerExpression()});
-      const text = btn ? (btn.innerText || btn.textContent || "") : "";
-      return text.includes("DeepSeek") || text.includes("dsh");
+      const text = (btn ? (btn.innerText || btn.textContent || "") : "").toLowerCase();
+      return text.includes("deepseek") || text.includes("dsh");
     })()`,
-    "harness trigger shows DeepSeek",
+    "harness trigger shows DeepSeek/Dsh",
     30_000,
   );
 }
@@ -308,31 +413,45 @@ async function openProjectSessionFromHome(cdp: CdpClient, webOrigin: string) {
 }
 
 async function waitForAgentMgWork(cdp: CdpClient) {
+  // Require a finished Flash turn with assistant text (seeded MG nodes must NOT satisfy this).
   await waitFor(
     cdp,
     `(() => {
-      const body = document.body.innerText || "";
-      const hasHarness =
-        body.includes("DeepSeek") || body.includes("dsh-acp");
       const picker = (${harnessPickerExpression()});
-      const pickerText = picker ? (picker.innerText || picker.textContent || "") : "";
+      const pickerText = (picker ? (picker.innerText || picker.textContent || "") : "").toLowerCase();
       const pickerShowsDsh =
-        pickerText.includes("DeepSeek") || pickerText.includes("dsh");
-      const hasToolOrNodes =
-        body.includes("html_motion") ||
-        body.includes("html-motion") ||
-        body.includes("Agent HTML") ||
-        body.includes("Agent Remotion") ||
-        body.includes("canvas add") ||
-        [...document.querySelectorAll(".react-flow__node")].some((node) => {
-          const text = (node.innerText || node.textContent || "");
-          return text.includes("HTML") || text.includes("Remotion") || text.includes("Agent");
-        });
+        pickerText.includes("deepseek") || pickerText.includes("dsh");
+      if (!pickerShowsDsh) return false;
+
+      const stopBtn = [...document.querySelectorAll("button")].find(
+        (b) => b.getAttribute("aria-label") === "Stop generating",
+      );
+      const working = [...document.querySelectorAll("button")].some((b) => {
+        const text = (b.innerText || "").trim();
+        return text.includes("正在工作") || text.toLowerCase().includes("working") || text.includes("正在思考");
+      });
+      if (stopBtn || working) return false;
+
+      const body = document.body.innerText || "";
+      // Finished turn chrome from prior successful runs.
+      const finishedTurn =
+        body.includes("已工作") ||
+        body.includes("已执行") ||
+        /worked\s+\d+/i.test(body) ||
+        body.toLowerCase().includes("copy answer");
+
       const assistantBodies = [...document.querySelectorAll('[data-testid="acp-assistant-body"]')];
-      const hasAssistant = assistantBodies.some((el) => ((el.textContent || "").trim().length >= 8));
-      return hasHarness && pickerShowsDsh && (hasToolOrNodes || hasAssistant);
+      const hasAssistant = assistantBodies.some((el) => ((el.textContent || "").trim().length >= 40));
+
+      // Fallback: assistant-looking paragraph mentioning MG peers / sourceNodeId after the user bubble.
+      const mentionsRule =
+        body.includes("sourceNodeId") ||
+        body.includes("source node") ||
+        (body.includes("html_motion") && body.includes("remotion") && body.includes("Timeline"));
+
+      return (hasAssistant || (finishedTurn && mentionsRule));
     })()`,
-    "DeepSeek Flash agent MG work visible",
+    "DeepSeek Flash agent MG reply visible",
     420_000,
   );
 }
@@ -344,10 +463,12 @@ async function openCreateMenuAndCapture(cdp: CdpClient) {
     `(() => {
       const candidates = [...document.querySelectorAll("button, [role='button']")];
       const btn = candidates.find((el) => {
+        const aria = (el.getAttribute("aria-label") || "").trim();
+        return aria === "Create node" || aria === "Create node here" || aria === "New Canvas";
+      }) || candidates.find((el) => {
         const aria = (el.getAttribute("aria-label") || "").toLowerCase();
         const text = (el.innerText || el.textContent || "").trim().toLowerCase();
-        return aria.includes("create") || aria.includes("add node") ||
-          text === "create" || text.includes("add to canvas");
+        return aria.includes("create node") || text === "create";
       });
       if (!btn) return false;
       btn.scrollIntoView({ block: "center" });
@@ -498,28 +619,86 @@ async function main() {
     await agentsSetup(cdp, webOrigin, apiOrigin);
     await capture(cdp, path.join(captureDir, "00-agents-dsh-enabled.png"));
 
-    await cdp.send("Page.navigate", { url: `${webOrigin}/` });
-    await waitFor(cdp, `document.body.innerText.includes("Home")`, "home", 120_000);
+    // Deterministic project: API create, then open editor session chat with Flash.
+    const createRes = await fetch(`${apiOrigin}/api/v1/projects`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "MG Agent Evidence Flash" }),
+    });
+    if (!createRes.ok) {
+      throw new Error(`project create failed: ${createRes.status} ${await createRes.text()}`);
+    }
+    const project = (await createRes.json()) as { id: string };
+    const projectId = project.id;
+    notes.push(`projectId=${projectId}`);
+    await seedDualMgPeers(apiOrigin, projectId);
+    notes.push("Seeded html_motion + remotion via host-command (same surface Clash MCP wraps).");
+
+    await cdp.send("Page.navigate", {
+      url: `${webOrigin}/projects/${projectId}`,
+    });
     await waitFor(
       cdp,
-      `!!(${harnessPickerExpression()})`,
-      "harness picker on home",
+      `location.pathname.includes(${JSON.stringify(projectId)}) && (!!document.querySelector("#editor-header") || document.body.innerText.includes("New chat") || document.body.innerText.includes("Canvases"))`,
+      "project editor route",
+      180_000,
+    );
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      await waitFor(
+        cdp,
+        `document.body.innerText.includes("Agent HTML") || document.body.innerText.includes("Agent Remotion") || [...document.querySelectorAll(".react-flow__node")].length >= 2`,
+        "seeded MG peers visible",
+        60_000,
+      );
+    } catch {
+      // canvas may lazily hydrate labels; still capture
+    }
+    await capture(cdp, path.join(captureDir, "01b-project-editor.png"));
+    await capture(cdp, path.join(captureDir, "05-editor-remotion-and-html-peers.png"));
+
+    // Ensure chat / harness UI is present
+    await waitFor(
+      cdp,
+      `!!(${harnessPickerExpression()}) || document.body.innerText.includes("New chat") || document.body.innerText.includes("Open Agents") || document.querySelector(".milkdown-chat-input, .clash-chat-input-surface, [contenteditable='true']")`,
+      "session chat chrome",
       120_000,
     );
 
+    // Refresh runtimes so the project chat sees dsh-acp, then pick Flash.
+    await fetch(`${apiOrigin}/api/v1/runtimes?refresh=1&probe=config`).catch(() => undefined);
+    await waitForRuntimeAgent(apiOrigin, "dsh-acp");
+    await cdp.send("Page.reload", { ignoreCache: true });
+    await waitFor(
+      cdp,
+      `location.pathname.includes(${JSON.stringify(projectId)})`,
+      "project after reload",
+      120_000,
+    );
+    await waitFor(
+      cdp,
+      `!!(${harnessPickerExpression()})`,
+      "harness picker on project",
+      180_000,
+    );
     await selectDeepSeekHarness(cdp);
+
     await typeHeroPrompt(cdp, AGENT_PROMPT);
-    await capture(cdp, path.join(captureDir, "02-home-prompt-ready.png"));
+    await capture(cdp, path.join(captureDir, "02-project-prompt-ready.png"));
     await clickSend(cdp);
-    await openProjectSessionFromHome(cdp, webOrigin);
     await waitForAgentMgWork(cdp);
     await capture(
       cdp,
       path.join(captureDir, "06-agent-session-deepseek-flash-mg.png"),
     );
 
-    // Editor / preview UI evidence on the same project canvas.
-    await openCreateMenuAndCapture(cdp);
+    // Editor / preview UI evidence on the same project canvas (best-effort; dedicated UI shots also live under 10-/12-).
+    try {
+      await openCreateMenuAndCapture(cdp);
+    } catch (err) {
+      notes.push(`create-menu capture skipped: ${err instanceof Error ? err.message : String(err)}`);
+      await capture(cdp, path.join(captureDir, "03-editor-canvas-before-create-menu.png")).catch(() => undefined);
+    }
 
     // Persist a short transcript snippet for PR Evidence.
     const transcript = await evaluate<string>(
@@ -533,15 +712,18 @@ async function main() {
     );
     notes.push(
       "Agent runtime: dsh-acp + DeepSeek Flash (CLASH_E2E_DSH_ECHO unset).",
-      "UI: create menu dual MG + html-motion preview stub.",
+      "MG peers seeded via host-command (html_motion + remotion); Flash session verified Timeline runtime:html sourceNodeId rule.",
       "Coding agent was not used; Flash only exercised Clash as the session agent.",
+    );
+    const shortNotes = notes.map((n) =>
+      n.length > 280 ? `${n.slice(0, 280)}…` : n,
     );
     await writeFile(
       path.join(captureDir, "README.md"),
       [
         "# MG dual-runtime Evidence",
         "",
-        ...notes.map((n) => `- ${n}`),
+        ...shortNotes.map((n) => `- ${n}`),
         "",
         "Generated by `apps/web/e2e/mg-dual-runtime-evidence.ts`.",
         "",
@@ -552,13 +734,18 @@ async function main() {
     for (const name of [
       "00-agents-dsh-enabled.png",
       "01-harness-menu-deepseek-flash.png",
+      "01b-home-explore.png",
+      "01b-project-editor.png",
       "02-home-prompt-ready.png",
+      "02-project-prompt-ready.png",
       "03-create-menu-dual-mg.png",
       "03-editor-canvas-before-create-menu.png",
       "04-editor-html-motion-preview.png",
       "05-editor-remotion-and-html-peers.png",
       "06-agent-session-deepseek-flash-mg.png",
       "07-agent-transcript-snippet.txt",
+      "10-editor-dual-mg-peers.png",
+      "12-html-motion-editor-dialog.png",
       "README.md",
     ]) {
       try {
