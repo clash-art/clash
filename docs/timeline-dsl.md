@@ -10,7 +10,7 @@ explicit adapters, with compile-time/test coverage gates against descriptor
 drift.
 
 The current release is schema version `14`
-with fingerprint `fnv1a32:7533d74d`. Version 14
+with fingerprint `fnv1a32:141c42d1`. Version 14
 documents compact Timeline list reads and atomic shared-boundary roll edits.
 Authored Timeline YAML remains compatible. Version 13
 clarifies that create, save, and apply validate automatically before mutation
@@ -27,9 +27,9 @@ receipt fields.
 Timeline media fields are downstream references, not producer state. A Stage
 capture follows Stage revision → capture receipt → immutable Project Asset →
 downstream Timeline `assetId`; it never writes the output into the producer
-Stage or Action state. Custom Remotion items similarly keep `sourceNodeId` as
-a reference to the Canvas-owned component instead of copying component source
-into persisted Timeline state.
+Stage or Action state. Custom Remotion and live HTML items similarly keep
+`sourceNodeId` as a reference to the Canvas-owned source instead of copying
+component or document source into persisted Timeline state.
 
 Create, save, or apply directly; each write validates before mutation and an
 invalid submission leaves product state unchanged. For diagnostic-only work
@@ -181,12 +181,12 @@ authored optional field is absent; parsing does not silently materialize it.
 
 | Field | Required (authored / runtime) | Projection policy | Consumer fallback | Editor routing | Applies to | Runtime consumers | Meaning |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `compositionKind` | authored / runtime | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Composition domain label; motion-graphics must resolve a live Remotion Canvas component. |
-| `runtime` | authored / runtime | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Runtime used by the composition source. |
+| `compositionKind` | authored / runtime | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Composition domain label; motion-graphics resolves a live Canvas source node whose runtime is Remotion or HTML. |
+| `runtime` | authored / runtime | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Runtime used by the composition source; motion-graphics supports Remotion and HTML with a live sourceNodeId. |
 | `compositionId` | authored / runtime | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Stable composition implementation id. |
 | `sourcePath` | authored / runtime | editable | — | none | all declared owners | composition-runtime, preview, render | User-owned local project path for the composition source. |
 | `renderedAssetPath` | optional / optional | preserve / derived | — | none | all declared owners | preview, render, export | Host-produced rendered preview/export asset path for legacy React composition states, preserved by agents. |
-| `spec` | optional / optional | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Optional runtime configuration for legacy custom compositions; motion graphics use Canvas Remotion component source instead. |
+| `spec` | optional / optional | editable | — | properties-panel | all declared owners | composition-runtime, preview, render | Optional inert configuration preserved for legacy custom compositions; motion-graphics source lives on the linked Canvas node instead. |
 
 ### `derived-overlay` item fields
 

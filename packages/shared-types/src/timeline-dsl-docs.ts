@@ -204,9 +204,9 @@ receipt fields.
 Timeline media fields are downstream references, not producer state. A Stage
 capture follows Stage revision → capture receipt → immutable Project Asset →
 downstream Timeline \`assetId\`; it never writes the output into the producer
-Stage or Action state. Custom Remotion items similarly keep \`sourceNodeId\` as
-a reference to the Canvas-owned component instead of copying component source
-into persisted Timeline state.
+Stage or Action state. Custom Remotion and live HTML items similarly keep
+\`sourceNodeId\` as a reference to the Canvas-owned source instead of copying
+component or document source into persisted Timeline state.
 
 Create, save, or apply directly; each write validates before mutation and an
 invalid submission leaves product state unchanged. For diagnostic-only work

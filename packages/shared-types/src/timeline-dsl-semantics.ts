@@ -738,26 +738,28 @@ function evaluateStructuralSemanticRules(
         }
         if (
           item.compositionKind === "motion-graphics" &&
-          item.runtime !== "remotion"
+          item.runtime !== "remotion" &&
+          item.runtime !== "html"
         ) {
           issues.push(
             issue(
               "timeline.composition.preview-contract",
               [...itemPath, "runtime"],
-              "motion-graphics compositions must use Remotion with a live Canvas sourceNodeId",
+              "motion-graphics compositions must use Remotion or HTML with a live Canvas sourceNodeId",
             ),
           );
         }
         if (
-          item.runtime === "remotion" &&
-          (typeof item.sourceNodeId !== "string" ||
-            item.sourceNodeId.length === 0)
+          (item.runtime === "remotion" ||
+            (item.compositionKind === "motion-graphics" &&
+              item.runtime === "html")) &&
+          !nonEmptyString(item.sourceNodeId)
         ) {
           issues.push(
             issue(
               "timeline.composition.preview-contract",
               [...itemPath, "sourceNodeId"],
-              "Remotion compositions require a live Canvas sourceNodeId",
+              `${item.runtime === "html" ? "HTML" : "Remotion"} compositions require a live Canvas sourceNodeId`,
             ),
           );
         }
