@@ -325,8 +325,8 @@ describe("desktop Electron runtime", () => {
     ).toBe(true);
   });
 
-  it("installs published OpenMA common 0.11.0 from the npm registry", () => {
-    const pin = /"@openma\/common": "\^0\.11\.0"/;
+  it("installs published OpenMA common 0.12.0 from the npm registry", () => {
+    const pin = /"@openma\/common": "\^0\.12\.0"/;
     for (const relativePath of [
       "../../../package.json",
       "../../../apps/local-api/package.json",
@@ -365,14 +365,14 @@ describe("desktop Electron runtime", () => {
       "utf8",
     );
     expect(pin).toContain(
-      "OPENMA_COMMON_SHA=c7ba9d66b4d80a096f816a57fb4ed4646a50609a",
+      "OPENMA_COMMON_SHA=9fab253bf862345c87de9c40fa255be6e994c977",
     );
-    expect(pin).toContain("OPENMA_COMMON_TAG=v0.11.0");
+    expect(pin).toContain("OPENMA_COMMON_TAG=v0.12.0");
     expect(pin).toContain(
-      "OPENMA_COMMON_TARBALL_SHA256=8c37b736cffaf7dd110f12689fbdf3397928ec62459d8fc33aefd3a0af374dd2\n",
+      "OPENMA_COMMON_TARBALL_SHA256=40374c582058954249e1b0b95ba0671ddc6e39056ddeb08b246773d827dacf21\n",
     );
     expect(pin).toContain(
-      "OPENMA_COMMON_TARBALL_URL=https://registry.npmjs.org/@openma/common/-/common-0.11.0.tgz\n",
+      "OPENMA_COMMON_TARBALL_URL=https://registry.npmjs.org/@openma/common/-/common-0.12.0.tgz\n",
     );
     expect(commonSetup).toContain(".github/actions/setup-common/pin.env");
     expect(commonSetup).not.toContain(
