@@ -1,0 +1,3 @@
+{
+  "summary": "Cross-origin Remotion preview frame for PreviewHost (#435). Speaks clash.preview-host.v1; mounts @remotion/player + VideoComposition. Separate from timeline-render export frame — preview latency budget only. No audio-master-clock."
+}

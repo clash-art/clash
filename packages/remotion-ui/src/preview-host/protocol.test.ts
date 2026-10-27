@@ -25,6 +25,21 @@ describe("preview host protocol", () => {
       isPreviewHostCommand(
         command({
           type: "mount",
+          parentOrigin: "http://localhost:5173",
+          composition: {
+            width: 1920,
+            height: 1080,
+            fps: 30,
+            durationInFrames: 300,
+            tracks: [],
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isPreviewHostCommand(
+        command({
+          type: "mount",
           composition: {
             width: 1920,
             height: 1080,
@@ -33,7 +48,7 @@ describe("preview host protocol", () => {
           },
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("rejects commands from another protocol or with a broken payload", () => {

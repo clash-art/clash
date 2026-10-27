@@ -19,6 +19,12 @@ export interface PostMessageFrameOptions {
   title?: string;
   /** Document that owns the frame. Defaults to the ambient document. */
   document?: Document;
+  /**
+   * When true the frame is visible and receives pointer events (Timeline
+   * preview). When false it is hidden and non-interactive (measurement /
+   * background hosts).
+   */
+  visible?: boolean;
 }
 
 /**
@@ -44,19 +50,38 @@ export function createPostMessageFrameBridge(
       "A preview frame needs a document to create the iframe in.",
     );
   }
+  const visible = options.visible !== false;
   const frame = ownerDocument.createElement("iframe");
   frame.title = options.title ?? "Clash preview host";
-  frame.setAttribute("aria-hidden", "true");
-  frame.tabIndex = -1;
-  frame.style.cssText = [
-    "position:absolute",
-    "left:0",
-    "top:0",
-    "width:100%",
-    "height:100%",
-    "border:0",
-    "pointer-events:none",
-  ].join(";");
+  if (!visible) {
+    frame.setAttribute("aria-hidden", "true");
+    frame.tabIndex = -1;
+  }
+  frame.style.cssText = visible
+    ? [
+        "position:absolute",
+        "left:0",
+        "top:0",
+        "width:100%",
+        "height:100%",
+        "border:0",
+        "background:#000",
+      ].join(";")
+    : [
+        "position:absolute",
+        "left:0",
+        "top:0",
+        "width:100%",
+        "height:100%",
+        "border:0",
+        "pointer-events:none",
+      ].join(";");
+  // Preview is Remotion Player only in this cutover; allow scripts. HTML MG
+  // later must tighten sandbox (allow-scripts without allow-same-origin) per
+  // Hilo interactive hosting notes — Remotion Player needs same-origin for
+  // module scripts on the frame's own site.
+  frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+  frame.setAttribute("data-preview-host-frame", "remotion");
 
   const listeners = new Set<(event: PreviewHostEvent) => void>();
   const onMessage = (event: MessageEvent) => {

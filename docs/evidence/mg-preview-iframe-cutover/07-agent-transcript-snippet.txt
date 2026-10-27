@@ -1,0 +1,27 @@
+# Clash Agent (dsh-acp + DeepSeek Flash) — PreviewHost iframe cutover (#435 / #445)
+
+Coding for this PR: Grok Bot executor (no Claude / mcode / cloud).
+Clash Agent Evidence only: `dsh --profile headless` (default model deepseek-flash).
+
+## Prompt
+
+You are Clash Agent on DeepSeek Flash (dsh-acp), not a coding agent. In 4 short
+English bullets confirm: (1) Remotion Player stays clock owner for Clash MG
+preview; (2) PreviewHost isolation is cross-site iframe not Dedicated Worker;
+(3) measured editor parent longtasks dropped 583ms to 0ms over 4s while work
+stayed in the OOPIF; (4) no audio-master-clock and preview must not share a
+host with browser-export encode. No tools. No repo exploration.
+
+## Flash reply (2026-10-27 America/Detroit)
+
+- Remotion Player remains the clock owner for the Clash MG preview — no
+  separate time authority is introduced.
+- PreviewHost isolation is a cross-site iframe (OOPIF), not a Dedicated
+  Worker, so preview rendering is site-isolated from the editor.
+- Measured editor parent longtasks fell from 583 ms to 0 ms over 4 s, with
+  the preview work staying inside the OOPIF.
+- No audio-master-clock, and the preview must not share a host with
+  browser-export encoding.
+
+Harness screenshots: `00-agents-dsh-enabled.png`, `01-harness-menu-deepseek-flash.png`
+(from dual-MG Evidence pack; same Flash harness used in Clash Agent UI).

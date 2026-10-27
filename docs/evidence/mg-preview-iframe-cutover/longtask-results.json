@@ -1,0 +1,43 @@
+{
+  "capturedAt": "2026-10-27T06:15:43-04:00",
+  "zone": "America/Detroit",
+  "command": "CHROME_BIN=/usr/bin/google-chrome pnpm --filter @clash/web test:e2e:preview-longtask",
+  "scenario": "1920x1080 timeline preview, 120 text items, 4 s window",
+  "framesAdvanced": {
+    "mainThread": 120,
+    "crossSiteIframe": 119
+  },
+  "mainThread": {
+    "scenario": "remotion-timeline-preview-1080p",
+    "hostMode": "main-thread",
+    "longTasks": 9,
+    "totalLongTaskMs": 583,
+    "longestLongTaskMs": 97,
+    "windowMs": 4000
+  },
+  "crossSiteIframe": {
+    "outOfProcess": true,
+    "parent": {
+      "scenario": "remotion-timeline-preview-1080p",
+      "hostMode": "iframe",
+      "longTasks": 0,
+      "totalLongTaskMs": 0,
+      "longestLongTaskMs": 0,
+      "windowMs": 4000
+    },
+    "frame": {
+      "scenario": "remotion-timeline-preview-1080p",
+      "hostMode": "iframe",
+      "longTasks": 9,
+      "totalLongTaskMs": 603,
+      "longestLongTaskMs": 87,
+      "windowMs": 4000
+    }
+  },
+  "notes": [
+    "Parent long-task budget dropped from 583 ms to 0 ms over the same 4 s window.",
+    "Frame retained ~603 ms of long tasks — work moved off the editor thread, not deleted.",
+    "CDP Target.getTargets confirmed out-of-process iframe (localhost parent → 127.0.0.1 frame).",
+    "No audio-master-clock. Preview isolation is separate from browser-export encode Worker."
+  ]
+}

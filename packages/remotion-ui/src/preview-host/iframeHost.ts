@@ -25,10 +25,15 @@ export interface PreviewHostBridge {
 
 export interface IframePreviewHostOptions {
   /**
-   * Creates the isolated frame. The host calls this on mount, so the frame is
-   * created lazily and torn down on unmount.
+   * Creates the isolated frame. The host calls this on the first mount, so the
+   * frame is created lazily and torn down on unmount.
    */
   createBridge(): PreviewHostBridge;
+  /**
+   * Origin of the editor document. Required on every mount so the frame knows
+   * where replies may go (referrer alone is unreliable under strict policies).
+   */
+  parentOrigin: string;
 }
 
 function factFromEvent(event: PreviewHostEvent): PreviewHostFact | null {
@@ -53,6 +58,10 @@ function factFromEvent(event: PreviewHostEvent): PreviewHostFact | null {
  * the frame and republishes the frames and transport facts the frame reports.
  * The producer inside the frame stays the time authority, so the Remotion
  * Player keeps its own clock once it is hosted there.
+ *
+ * Mount is deferred until the frame announces `ready`, matching the browser
+ * Timeline render-frame handshake so a postMessage never races the frame's
+ * module load.
  */
 export function createIframePreviewHost(
   options: IframePreviewHostOptions,
@@ -61,8 +70,26 @@ export function createIframePreviewHost(
   let bridge: PreviewHostBridge | null = null;
   let unsubscribe: (() => void) | null = null;
   let currentFrame: number | null = null;
+  let frameReady = false;
+  let pendingComposition: PreviewCompositionDescriptor | null = null;
+
+  const sendMount = (composition: PreviewCompositionDescriptor) => {
+    bridge?.send({
+      protocol: PREVIEW_HOST_PROTOCOL,
+      type: "mount",
+      composition,
+      parentOrigin: options.parentOrigin,
+    });
+  };
 
   const handleEvent = (event: PreviewHostEvent) => {
+    if (event.type === "ready") {
+      frameReady = true;
+      if (pendingComposition) {
+        sendMount(pendingComposition);
+      }
+      return;
+    }
     const fact = factFromEvent(event);
     if (!fact) return;
     if (fact.type === "frame") {
@@ -74,13 +101,14 @@ export function createIframePreviewHost(
   return {
     mode: "iframe",
     mount(next: PreviewCompositionDescriptor) {
-      bridge = options.createBridge();
-      unsubscribe = bridge.onEvent(handleEvent);
-      bridge.send({
-        protocol: PREVIEW_HOST_PROTOCOL,
-        type: "mount",
-        composition: next,
-      });
+      pendingComposition = next;
+      if (!bridge) {
+        frameReady = false;
+        bridge = options.createBridge();
+        unsubscribe = bridge.onEvent(handleEvent);
+      } else if (frameReady) {
+        sendMount(next);
+      }
     },
     unmount() {
       bridge?.send({ protocol: PREVIEW_HOST_PROTOCOL, type: "unmount" });
@@ -89,6 +117,8 @@ export function createIframePreviewHost(
       bridge?.dispose();
       bridge = null;
       currentFrame = null;
+      frameReady = false;
+      pendingComposition = null;
     },
     seek(frame: number) {
       bridge?.send({ protocol: PREVIEW_HOST_PROTOCOL, type: "seek", frame });
