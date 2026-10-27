@@ -128,7 +128,10 @@ async function main() {
       await baseline.waitForFunction(
         () => typeof (window as unknown as { __previewProbe?: unknown }).__previewProbe === "object",
       );
-      const baselineResult = (await baseline.evaluate(async (windowMs) => {
+      const baselineResult = await baseline.evaluate<
+        { longTasks: number[]; currentFrame: number },
+        number
+      >(async (windowMs) => {
         const scope = window as unknown as {
           __previewProbe: {
             play(): void;
@@ -144,7 +147,7 @@ async function main() {
           longTasks: scope.__previewProbe.longTasks(),
           currentFrame: scope.__previewProbe.currentFrame(),
         };
-      }, MEASUREMENT_WINDOW_MS)) as { longTasks: number[]; currentFrame: number };
+      }, MEASUREMENT_WINDOW_MS);
       await baseline.close();
 
       // Isolated: the same preview runs in a cross-site frame.
@@ -152,11 +155,14 @@ async function main() {
       // `localhost` and `127.0.0.1` are different sites. Two ports on one host
       // are the same site and would share the parent's renderer process.
       await hosted.goto(`http://localhost:${hostPort}/`);
-      const isolated = await hosted.evaluate(async () => {
+      const isolated = await hosted.evaluate<{
+        parentLongTasks: number[];
+        report: { longTasks: number[]; currentFrame: number } | null;
+      }>(async () => {
         const scope = window as unknown as {
           startPreview(): Promise<{
             parentLongTasks: number[];
-            report: { longTasks: number[] } | null;
+            report: { longTasks: number[]; currentFrame: number } | null;
           }>;
         };
         return scope.startPreview();
