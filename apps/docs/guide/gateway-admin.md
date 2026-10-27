@@ -544,6 +544,9 @@ audit, is the metadata/ledger retention job
 
 ## Node admin listener
 
+Threat model for the public vs admin listeners and `GATEWAY_ROLE`:
+[gateway-node-threat-model.md](gateway-node-threat-model.md) (#385).
+
 The self-hosted Node gateway (`apps/api-node`, #371) serves the admin API on
 a **separate listener** so it can sit on a private network (N14). The public
 data-plane listener answers 404 for every `/api/v1/admin` path, however it is

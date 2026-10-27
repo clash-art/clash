@@ -13,6 +13,8 @@ Related guides: [gateway-admin.md](gateway-admin.md),
 
 Self-host (Node + Postgres) backup/restore is covered by Epic B
 issue #384 / [gateway-node-backup.md](gateway-node-backup.md) (when present).
+Self-host threat model (api vs admin listeners, #385):
+[gateway-node-threat-model.md](gateway-node-threat-model.md).
 Load balancing is the deployer's choice; gateway nodes are stateless and
 expose health endpoints.
 

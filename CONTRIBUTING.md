@@ -105,6 +105,8 @@ Do instead: use local services or staging only.
 | `pnpm-lock.yaml` resolves one zod version | push, PR | 5 |
 | No non-Flash DeepSeek ids in tracked text files | push, PR | 6 |
 | No scoping phrases in added lines | push, PR | 1 |
+| Gateway secret scan + self-host defaults (no prompt logging, admin not EXPOSEd) | push, PR | #385 / N29 |
 
-Run locally: `node scripts/check-anti-patterns.ts repo --base origin/master`
-and `node --test scripts/check-anti-patterns.test.ts`.
+Run locally: `node scripts/check-anti-patterns.ts repo --base origin/master`,
+`node scripts/check-gateway-security.ts`,
+and `node --test scripts/check-anti-patterns.test.ts scripts/check-gateway-security.test.ts`.

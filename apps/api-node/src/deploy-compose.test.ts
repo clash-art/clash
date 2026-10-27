@@ -362,4 +362,18 @@ describe("gateway-node deploy directory (#374 + #373)", () => {
     for (const file of copied)
       expect(existsSync(join(repoRoot, file)), file).toBe(true);
   });
+
+  it("security contract (#385): no admin EXPOSE, loopback publish, no staff prompt flag", () => {
+    const body = readFileSync(dockerfilePath, "utf8");
+    const exposes = [...body.matchAll(/^\s*EXPOSE\s+(\S+)/gim)].map((m) => m[1]);
+    expect(exposes).toEqual(["8080"]);
+    const text = readFileSync(composePath, "utf8");
+    expect(text).toMatch(/GATEWAY_PUBLISH_HOST:-\s*127\.0\.0\.1/);
+    expect(text).not.toMatch(/GATEWAY_STAFF_PROMPT_ACCESS\s*:\s*["']?enabled/);
+    for (const [name, service] of [...adminNodes, ...allNodes]) {
+      const published = (service.ports ?? []).join(" ");
+      expect(published, name).toMatch(/127\.0\.0\.1|GATEWAY_PUBLISH_HOST/);
+    }
+  });
+
 });

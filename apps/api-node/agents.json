@@ -77,6 +77,8 @@
     "src/gateway-settle.ts": "#399 owner api-node:gateway-settle of the shared gateway-settle run (gateway-core settle-run.ts): createPgGatewaySettlementPort (journal first via createPostgresRunJournal, whose transaction also writes the cloud_run_dispatch outbox row; recover re-arms due runs) and createNodeGatewaySettleCoordinator (the BullMQ runtime's executor). The Workers host wires the same run in apps/api-cf/src/gateway/settle-runs.ts.",
     "src/gateway-settle.test.ts": "PGlite: journal + outbox first, charge once through storage retries and redelivery, media refund once, coded refusal fails at once and is never recovered, recovery re-arms only journaled runs, routeRunCoordinators owner routing.",
     "src/gateway-settle-test-support.ts": "Test-only inlinePgSettlement: the Postgres settlement port with each run driven inline as the outbox worker would (paused: journal only, drain() delivers).",
-    "deploy/entrypoint.sh": "#373 role entrypoint: migrate \u2192 gateway-cli migrate; api|admin|all \u2192 tsx server.ts; explicit compose command overrides (outbox worker, mock-upstream)."
+    "deploy/entrypoint.sh": "#373 role entrypoint: migrate \u2192 gateway-cli migrate; api|admin|all \u2192 tsx server.ts; explicit compose command overrides (outbox worker, mock-upstream).",
+    "src/gateway-security.test.ts": "#385 / N29: self-host security defaults \u2014 GATEWAY_ROLE matrix, admin listener \u2260 PORT, retention unavailablePort (no prompt logging), Dockerfile EXPOSE 8080 only, compose loopback publish, Flash-only seed assert.",
+    "deploy/ops/SBOM.md": "#385 dependency/SBOM notes for the multi-stage gateway image: syft SPDX/CycloneDX, pnpm audit --prod, digest-pinned base, no secrets in layers, deliberate tsx ship."
   }
 }

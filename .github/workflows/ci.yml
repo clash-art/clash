@@ -25,7 +25,7 @@ jobs:
           linux-apt-packages: ffmpeg
 
       - run: make lint
-      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts scripts/e2e/harness.test.ts scripts/architecture-boundaries.test.ts scripts/check-anti-patterns.test.ts .github/scripts/redact-gateway-ci-artifact.test.mjs
+      - run: node --test scripts/runtime-dependency-identity.test.ts .github/scripts/verify-openma-prebuilt.test.ts scripts/deploy-config-environment.test.ts scripts/ensure-dev-vars.test.ts scripts/e2e/harness.test.ts scripts/architecture-boundaries.test.ts scripts/check-anti-patterns.test.ts scripts/check-gateway-security.test.ts .github/scripts/redact-gateway-ci-artifact.test.mjs
       - run: pnpm --filter @clash/desktop test
       - name: Verify Web unit tests
         run: pnpm --dir apps/web exec vitest run
@@ -140,6 +140,7 @@ jobs:
           src/gateway-migrate.test.ts
           src/gateway-node-stream.test.ts
           src/gateway-node.test.ts
+          src/gateway-security.test.ts
           src/gateway-schema.test.ts
           src/gateway-settle.test.ts
           src/deploy-compose.test.ts

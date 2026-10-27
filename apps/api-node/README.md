@@ -88,6 +88,10 @@ encryption key ring. Admin / `all` also need `ADMIN_AUTH_SECRET` (or
 (the image ships a placeholder `index.html`). Ports publish on `127.0.0.1`
 unless `GATEWAY_PUBLISH_HOST` says otherwise.
 
+Security review (api vs admin listeners, prompt logging defaults, SBOM):
+[gateway-node-threat-model.md](../docs/guide/gateway-node-threat-model.md) and
+[deploy/ops/SBOM.md](deploy/ops/SBOM.md) (#385).
+
 What the deployer provides, on purpose not shipped here:
 
 - **Load balancer.** Point it at the api nodes, health-check `GET /readyz`
