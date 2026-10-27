@@ -1,0 +1,65 @@
+name: Gateway staging smoke
+
+# Optional nightly (#383): one env-gated chat against staging. Never production.
+# Never soak/chaos/pg-cluster/load. Requires repo secrets:
+#   GATEWAY_STAGING_BASE_URL  — staging origin only (refused if it looks like prod)
+#   GATEWAY_STAGING_TOKEN     — staging virtual key (sk_gw_...)
+# Optional repo variable:
+#   GATEWAY_STAGING_MODEL     — defaults to deepseek-flash (Flash-only)
+# When secrets are missing the job exits 0 (optional).
+
+on:
+  schedule:
+    # 06:17 UTC daily (~02:17 America/Detroit during EDT).
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: gateway-staging-smoke
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  staging-smoke:
+    name: Staging smoke (never production)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up workspace
+        uses: ./.github/actions/setup-workspace
+
+      - name: Run staging smoke or skip when secrets are unset
+        env:
+          GATEWAY_STAGING_BASE_URL: ${{ secrets.GATEWAY_STAGING_BASE_URL }}
+          GATEWAY_STAGING_TOKEN: ${{ secrets.GATEWAY_STAGING_TOKEN }}
+          GATEWAY_STAGING_MODEL: ${{ vars.GATEWAY_STAGING_MODEL || 'deepseek-flash' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GATEWAY_STAGING_BASE_URL:-}" ] || [ -z "${GATEWAY_STAGING_TOKEN:-}" ]; then
+            echo "Optional staging smoke skipped: set secrets GATEWAY_STAGING_BASE_URL and GATEWAY_STAGING_TOKEN."
+            exit 0
+          fi
+          case "${GATEWAY_STAGING_BASE_URL}" in
+            *clash.art*|*production*|*prod.*)
+              echo "Refusing production-looking GATEWAY_STAGING_BASE_URL host."
+              exit 1
+              ;;
+          esac
+          export GATEWAY_STAGING_SMOKE=1
+          pnpm --dir apps/api-cf exec vitest run src/gateway/gateway-staging-smoke.test.ts
+
+      - name: Redact staging smoke artifacts
+        if: always()
+        run: node .github/scripts/redact-gateway-ci-artifact.mjs artifacts/gateway-staging-smoke
+
+      - name: Upload redacted staging smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gateway-staging-smoke
+          path: artifacts/gateway-staging-smoke/
+          if-no-files-found: ignore
