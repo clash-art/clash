@@ -26,7 +26,7 @@
     "@clash/asset-sdk": "workspace:*",
     "@clash/shared-runtime": "workspace:*",
     "@clash/shared-types": "workspace:*",
-    "@openma/common": "^0.11.0",
+    "@openma/common": "^0.12.0",
     "yaml": "^2.6.0",
     "zod": "^4.6.7"
   },

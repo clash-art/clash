@@ -33,8 +33,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.4
       '@openma/common':
-        specifier: ^0.11.0
-        version: 0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: ^0.12.0
+        version: 0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       better-auth:
         specifier: ^1.4.6
         version: 1.6.23(@opentelemetry/api@1.9.1)(pg@8.23.0)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)(vitest@4.1.0(@opentelemetry/api@1.9.1)(@types/node@24.13.2)(jsdom@29.1.1(@noble/hashes@2.2.0))(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.23.0)(yaml@2.9.0)))(vue@3.5.39(typescript@5.9.3))
@@ -331,8 +331,8 @@ importers:
         specifier: 7.11.2
         version: 7.11.2
       '@openma/common':
-        specifier: ^0.11.0
-        version: 0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: ^0.12.0
+        version: 0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@remotion/bundler':
         specifier: 4.0.536
         version: 4.0.536(lightningcss@1.32.0)(postcss@8.5.16)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -472,8 +472,8 @@ importers:
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.27)
       '@openma/common':
-        specifier: ^0.11.0
-        version: 0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: ^0.12.0
+        version: 0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -726,8 +726,8 @@ importers:
         specifier: ^7.17.2
         version: 7.21.2
       '@openma/common':
-        specifier: ^0.11.0
-        version: 0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: ^0.12.0
+        version: 0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -1423,8 +1423,8 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
       '@openma/common':
-        specifier: ^0.11.0
-        version: 0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: ^0.12.0
+        version: 0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       yaml:
         specifier: ^2.6.0
         version: 2.9.0
@@ -1740,8 +1740,8 @@ importers:
         specifier: ^7.17.2
         version: 7.21.2
       '@openma/common':
-        specifier: ^0.11.0
-        version: 0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        specifier: ^0.12.0
+        version: 0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -5423,8 +5423,8 @@ packages:
   '@open-draft/until@3.0.1':
     resolution: {integrity: sha512-s7/9ELP4aP9YZtW7RJaa0Xf3RISaRH9+EFN18FtykJYRHGNrl8f9ymvoNXzjhrjmftFvkQudtuDU9RYhk0xs3A==}
 
-  '@openma/common@0.11.0':
-    resolution: {integrity: sha512-u4z5U/owZdFuQLdiHvMP+JIzVQ9docpaPJjC4OHAAkaboaop+VcvLCuEEd+/PtKOAh4fQ/YlgsbOo6u6Kas/kA==}
+  '@openma/common@0.12.0':
+    resolution: {integrity: sha512-1oX/N4d0YdbvMA+AfbqZrZd0aIfH4XXnSFjosdl4BuHM93FxvDHljm4eem88qNWcz+HatlW13cCvW/i8slPmcQ==}
     engines: {node: '>=20'}
     peerDependencies:
       '@anthropic-ai/sdk': 0.120.x
@@ -16825,7 +16825,7 @@ snapshots:
 
   '@open-draft/until@3.0.1': {}
 
-  '@openma/common@0.11.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+  '@openma/common@0.12.0(@anthropic-ai/sdk@0.110.0(zod@4.6.7))(@opentelemetry/api@1.9.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@agentclientprotocol/sdk': 1.3.0(zod@4.6.7)
       '@radix-ui/react-collapsible': 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
