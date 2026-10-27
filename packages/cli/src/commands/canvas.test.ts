@@ -171,6 +171,7 @@ test("canvas add exposes the distinct Remotion component node type", () => {
   );
 
   assert.match(source, /Node type:.*remotion/);
+  assert.match(source, /Node type:.*html_motion/);
   assert.match(source, /Body content.*Remotion TSX/);
   assert.match(source, /action: "add",[\s\S]*type: options\.type/);
   assert.match(canvasContractSource, /remotion:\s*\{ rfType: RF_NODE_TYPE\.RemotionComponent \}/);

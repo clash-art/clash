@@ -8,6 +8,7 @@ import {
   Square,
   Cube,
   Code,
+  Browser,
   CaretRight,
 } from "@phosphor-icons/react";
 import {
@@ -33,6 +34,7 @@ const creationItems = [
   { id: "video-editor", label: "Editor", icon: FilmSlate },
   { id: "director-stage", label: "Director Stage", icon: Cube },
   { id: "remotion-component", label: "Remotion Component", icon: Code },
+  { id: "html-motion", label: "HTML Motion", icon: Browser },
   { id: "group", label: "Group", icon: Square },
   { id: "text", label: "Text", icon: TextT },
 ];

@@ -96,6 +96,7 @@ import {
   updateProjectName,
 } from "@clash/web-ui/lib/clientActions";
 import { deriveRemotionComponentConnectionUpdate } from "@clash/web-ui/lib/remotionComponentTimeline";
+import { deriveHtmlMotionConnectionUpdate } from "@clash/web-ui/lib/htmlMotionTimeline";
 import { withProjectSessionSearch } from "@clash/web-ui/lib/projectSessionRoute";
 import VideoNode from "./nodes/VideoNode";
 import ImageNode from "./nodes/ImageNode";
@@ -104,6 +105,10 @@ import RemotionComponentNode, {
   calculateRemotionComponentNodeDimensions,
   DEFAULT_REMOTION_COMPONENT_SOURCE,
 } from "./nodes/RemotionComponentNode";
+import HtmlMotionNode, {
+  calculateHtmlMotionNodeDimensions,
+  DEFAULT_HTML_MOTION_SOURCE,
+} from "./nodes/HtmlMotionNode";
 import AudioNode from "./nodes/AudioNode";
 import PromptActionNode from "./nodes/ActionBadge"; // Renamed: ActionBadge -> PromptActionNode
 import GroupNode from "./nodes/GroupNode";
@@ -814,6 +819,7 @@ const nodeTypes = {
   text: TextNode,
   context: TextNode, // Remap context to TextNode
   "remotion-component": RemotionComponentNode,
+  "html-motion": HtmlMotionNode,
   audio: AudioNode,
   "action-badge": PromptActionNode, // Merged: Prompt + Action
   group: GroupNode,
@@ -2719,6 +2725,15 @@ export default function ProjectEditor({
               timelines: loroSync.timelines,
             })
           : null;
+      const htmlMotionTimelineUpdate =
+        !remotionTimelineUpdate && srcId && tgtId
+          ? deriveHtmlMotionConnectionUpdate({
+              sourceId: srcId,
+              targetId: tgtId,
+              nodes: currentNodes,
+              timelines: loroSync.timelines,
+            })
+          : null;
       // Canonical edgeId — same shape ActionBadge.addRefNode uses.
       // Without this, drag-connect and @-mention auto-connect produce
       // two parallel edges (different ids, same source/target) and
@@ -2742,6 +2757,16 @@ export default function ProjectEditor({
           !(await loroSync.applyTimelineState(
             remotionTimelineUpdate.timelineId,
             remotionTimelineUpdate.state,
+          )).ok
+        ) {
+          loroSync.removeEdge(addedEdge.id);
+          return;
+        }
+        if (
+          htmlMotionTimelineUpdate &&
+          !(await loroSync.applyTimelineState(
+            htmlMotionTimelineUpdate.timelineId,
+            htmlMotionTimelineUpdate.state,
           )).ok
         ) {
           loroSync.removeEdge(addedEdge.id);
@@ -3035,6 +3060,17 @@ export default function ProjectEditor({
           durationInFrames: 120,
           ...extraData,
         };
+      } else if (type === "html-motion") {
+        nodeData = {
+          label: "HTML Motion",
+          documentId: "HtmlMotion",
+          content: DEFAULT_HTML_MOTION_SOURCE,
+          compositionWidth: 1920,
+          compositionHeight: 1080,
+          fps: 30,
+          durationInFrames: 120,
+          ...extraData,
+        };
       } else if (type === "context") {
         // Remap context creation to text node style but keep label if needed, or just treat as text
         nodeData = {
@@ -3230,6 +3266,27 @@ export default function ProjectEditor({
             ? nodeData.compositionHeight
             : 1280;
         const dimensions = calculateRemotionComponentNodeDimensions(
+          compositionWidth,
+          compositionHeight,
+        );
+        defaultWidth = dimensions.width;
+        defaultHeight = dimensions.height;
+        layoutWidth = dimensions.width;
+        layoutHeight = dimensions.height;
+      } else if (nodeType === "html-motion") {
+        const compositionWidth =
+          typeof nodeData.compositionWidth === "number" &&
+          Number.isFinite(nodeData.compositionWidth) &&
+          nodeData.compositionWidth > 0
+            ? nodeData.compositionWidth
+            : 1920;
+        const compositionHeight =
+          typeof nodeData.compositionHeight === "number" &&
+          Number.isFinite(nodeData.compositionHeight) &&
+          nodeData.compositionHeight > 0
+            ? nodeData.compositionHeight
+            : 1080;
+        const dimensions = calculateHtmlMotionNodeDimensions(
           compositionWidth,
           compositionHeight,
         );

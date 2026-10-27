@@ -93,13 +93,13 @@ that fail the live-reference contract fail closed instead of silently rendering.
 
 ## Not in this PR (follow-ups)
 
-1. Full Canvas HTML MG editor UI (create/edit/sandbox the HTML source).
+1. ~~Canvas HTML node discriminator~~ → see `mg-html-canvas-node-436.md` (create/edit node + live Timeline handoff; sandboxed iframe preview still open).
 2. Full Timeline HTML live preview paint and preview transport integration.
 3. HTML MG export (browser and/or existing container path) with parity rules.
 4. Agent skill rewrite so the MG skill may teach HTML authoring; package-boundary
    and artifact-eval bans stay in place until that replacement contract ships.
-5. Canvas HTML node discriminator/UX and Library apply contracts for both
-   runtimes.
+5. Library apply contracts for both runtimes; richer Canvas HTML editor UX /
+   sandbox preview.
 6. A migration for legacy HTML `spec` / `renderedAssetPath` states, if product
    data warrants it.
 

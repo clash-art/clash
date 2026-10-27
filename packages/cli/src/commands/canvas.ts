@@ -649,7 +649,7 @@ canvasCommand
   .command("add")
   .description("Add content, an existing Project Asset, or an action-badge node")
   .option("--project <id>", "Project ID (defaults to cwd marker or $CLASH_PROJECT_ID)")
-  .requiredOption("--type <type>", "Node type: text, group, remotion, image, video, audio, image_gen, video_gen, audio_gen, text_gen, model_gen")
+  .requiredOption("--type <type>", "Node type: text, group, remotion, html_motion, image, video, audio, image_gen, video_gen, audio_gen, text_gen, model_gen")
   .requiredOption("--label <label>", "Node label")
   .option("--asset <id>", "Existing active Project Asset ID. Required for type image, video, or audio; projects independently with no lineage edge.")
   .option("--prompt <text>", "Generation prompt for *_gen nodes. May contain `@[Label](node:<id>)` mentions to reference canvas asset nodes; type partitioning is automatic from the referenced asset's kind.")

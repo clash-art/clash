@@ -75,6 +75,25 @@ describe("ProjectHostCommandSchema", () => {
       assetId: "asset-otter",
     });
 
+    expect(ProjectHostCommandSchema.parse({
+      action: "add",
+      type: "html_motion",
+      label: "Lower Third",
+      content: "<!doctype html><title>x</title>",
+      actorClientType: "agent",
+    })).toMatchObject({
+      action: "add",
+      type: "html_motion",
+      label: "Lower Third",
+    });
+
+    expect(ProjectHostCommandSchema.parse({
+      action: "add",
+      type: "remotion",
+      label: "Title Card",
+      content: "export const Title = () => null;",
+    })).toMatchObject({ action: "add", type: "remotion", label: "Title Card" });
+
     for (const command of [
       { action: "add", type: "unknown", label: "Bad" },
       { action: "add", type: "text", label: "Bad", data: { actorUserId: "spoofed" } },

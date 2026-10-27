@@ -1192,6 +1192,30 @@ function handleCommand(
         if (typeof cmd.content === "string") data.content = cmd.content;
       }
 
+      // Product-scaffold defaults for dual MG Canvas peers (Remotion + HTML).
+      // Agents may pass only --type/--label/--content; preview/Timeline handoff
+      // still needs documentId / componentId and composition geometry.
+      if (requestedNodeType === "html_motion") {
+        if (typeof data.documentId !== "string" || !String(data.documentId).trim()) {
+          data.documentId = String(cmd.label).trim() || "HtmlMotion";
+        }
+        if (typeof data.compositionWidth !== "number") data.compositionWidth = 1920;
+        if (typeof data.compositionHeight !== "number") data.compositionHeight = 1080;
+        if (typeof data.fps !== "number") data.fps = 30;
+        if (typeof data.durationInFrames !== "number") data.durationInFrames = 120;
+        if (typeof data.content !== "string" || !String(data.content).trim()) {
+          data.content = `<!doctype html><html><body style="margin:0;display:grid;place-items:center;height:100vh;background:#171717;color:#f5f5f5;font:600 48px Inter,system-ui,sans-serif"><h1>HTML Motion</h1></body></html>`;
+        }
+      } else if (requestedNodeType === "remotion") {
+        if (typeof data.componentId !== "string" || !String(data.componentId).trim()) {
+          data.componentId = String(cmd.label).trim() || "Component";
+        }
+        if (typeof data.compositionWidth !== "number") data.compositionWidth = 720;
+        if (typeof data.compositionHeight !== "number") data.compositionHeight = 1280;
+        if (typeof data.fps !== "number") data.fps = 30;
+        if (typeof data.durationInFrames !== "number") data.durationInFrames = 120;
+      }
+
       if (isGenerationNode && references.refNodeIds.length > 0) {
         data.referenceImageOrder = references.refNodeIds;
       }
