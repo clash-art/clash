@@ -44,7 +44,7 @@ describe("the shared admin gate (#372)", () => {
 
 describe("console permissions per host (#372)", () => {
   it("reports the role's permissions the host serves, and nothing for an unknown role", () => {
-    const servedByHosted = (permission: string) => !GATEWAY_KEY_RING_PERMISSIONS.includes(permission as never);
+    const servedByHosted = (permission: string) => !(GATEWAY_KEY_RING_PERMISSIONS as readonly string[]).includes(permission);
     expect(adminConsolePermissions("platform_admin", servedByHosted)).toEqual(adminRolePermissions("platform_admin").filter(servedByHosted));
     expect(adminConsolePermissions("platform_admin", servedByHosted)).not.toContain("encryption.read");
     expect(adminConsolePermissions("platform_admin", () => true)).toEqual([...adminRolePermissions("platform_admin")]);

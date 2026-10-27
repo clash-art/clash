@@ -72,10 +72,10 @@ export const GATEWAY_PLATFORM_PERMISSIONS = [
 ] as const;
 export type GatewayPlatformPermission = (typeof GATEWAY_PLATFORM_PERMISSIONS)[number];
 
-/** Permissions over the encryption key ring: served only by a host that has one (api-node, #366). */
-export const GATEWAY_KEY_RING_PERMISSIONS: readonly GatewayPlatformPermission[] = ["encryption.read", "encryption.rotate"];
-
 export type GatewayPermission = GatewayTenantPermission | GatewayPlatformPermission;
+
+/** Permissions over the encryption key ring: served only by a host that has one (api-node, #366). */
+export const GATEWAY_KEY_RING_PERMISSIONS: readonly GatewayPermission[] = ["encryption.read", "encryption.rotate"];
 
 /**
  * Tenant role -> tenant permissions. Owner: every tenant action (members and
