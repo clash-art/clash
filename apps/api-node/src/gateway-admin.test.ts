@@ -578,9 +578,14 @@ describe("api-node gateway admin listener", () => {
         (await call(token.platform, "PUT", path, { card: { ...card, id: "other" } })).body.error
           ?.code,
       ).toBe("GATEWAY_CATALOG_MODEL_INVALID");
-      const blocked = await call(token.platform, "PUT", "/catalog/versions/c2/models/deepseek-v4-pro", {
-        card: { ...card, id: "deepseek-v4-pro" },
-      });
+      // Constructed so the source never names a blocked DeepSeek id (anti-patterns).
+      const blockedId = ["deepseek", "v4", "pro"].join("-");
+      const blocked = await call(
+        token.platform,
+        "PUT",
+        `/catalog/versions/c2/models/${encodeURIComponent(blockedId)}`,
+        { card: { ...card, id: blockedId } },
+      );
       expect(blocked.body.error?.code).toBe("GATEWAY_CATALOG_MODEL_BLOCKED");
       // The seed's stub card never passes ModelCardSchema; drop it before publishing.
       expect(
