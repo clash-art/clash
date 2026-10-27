@@ -18,6 +18,7 @@
 # Hardening: non-root `node`, tini as PID 1, HEALTHCHECK /healthz, base image
 # pinned by digest, no secrets in layers (compose injects them at run time).
 # Compose sets `read_only: true` + tmpfs for /tmp (and keeps /data on a volume).
+# Dependency/SBOM notes for operators: deploy/ops/SBOM.md (#385).
 
 # Pin node:24-slim (bookworm) multi-arch index; bump deliberately.
 ARG NODE_IMAGE=node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205

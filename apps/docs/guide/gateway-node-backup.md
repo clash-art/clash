@@ -13,6 +13,7 @@ Related: cloud Workers ops runbook (#361 /
 [gateway-ops-runbook.md](gateway-ops-runbook.md)). Compose / health / drain
 land in #374 / #375. Load balancing is the deployer's choice; nodes are
 stateless and expose health endpoints (`/healthz`, `/readyz`).
+ Security review: [gateway-node-threat-model.md](gateway-node-threat-model.md) (#385).
 
 ## What to back up
 

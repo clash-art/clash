@@ -57,3 +57,15 @@ jobs:
       - env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: node scripts/check-anti-patterns.ts repo --base "$BASE"
+
+  gateway-security:
+    name: Gateway security (secrets, admin EXPOSE, no prompt logging default)
+    if: github.event_name != 'issues' && !(github.event_name == 'pull_request' && github.event.action == 'edited')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: node --test scripts/check-gateway-security.test.ts
+      - run: node scripts/check-gateway-security.ts
